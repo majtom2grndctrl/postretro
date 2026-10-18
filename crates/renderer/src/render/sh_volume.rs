@@ -152,12 +152,10 @@ pub struct ShVolumeResources {
     pub probe_irradiance: Vec<[f32; 3]>,
     /// CPU copies of grid origin and cell size. `grid_info_buffer` is the
     /// canonical GPU-side source for the forward / fog / billboard shaders;
-    /// these mirror the values consumed by `sh_diagnostics` (probe-marker
-    /// emission) and remain available to any future CPU-side consumer (the
-    /// SDF shadow pass reads them from the section directly).
-    #[allow(dead_code)]
+    /// these mirror it for `sh_diagnostics` (probe-marker emission) and the
+    /// fluid grid (`FullRenderer::sh_sampler_lattice`). The placeholder's
+    /// while `present` is false.
     pub grid_origin: [f32; 3],
-    #[allow(dead_code)]
     pub cell_size: [f32; 3],
     grid_info_buffer: wgpu::Buffer,
     probe_occlusion_enabled: bool,

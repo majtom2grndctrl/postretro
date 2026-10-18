@@ -415,6 +415,12 @@ impl ShResidencyState {
         self.grid_dimensions
     }
 
+    /// The manifest base lattice, origin and cell size: what this level's
+    /// streamed grid uniform carries, so what the SH sampler reads.
+    pub(in crate::render) fn base_lattice(&self) -> ([f32; 3], [f32; 3]) {
+        (self.base_metadata.grid_origin, self.base_metadata.cell_size)
+    }
+
     fn logical_occupancy_bytes(&self) -> u64 {
         let Some(gpu) = self.gpu.as_ref() else {
             return 0;

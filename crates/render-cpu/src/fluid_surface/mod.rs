@@ -12,6 +12,7 @@ use postretro_level_format::geometry::NO_TEXTURE;
 mod cull;
 mod drift;
 pub mod fog;
+pub mod grid;
 pub mod motion;
 pub mod reflection;
 pub mod reflection_search;
@@ -20,6 +21,7 @@ mod slots;
 
 pub use cull::FluidSurfaceRenderCollector;
 pub use drift::{FluidFaceDriftMap, fill_drift_rates};
+pub use grid::{FLUID_GRID_VERTEX_CAP, FluidGridLattice, FluidGridPlanes};
 pub use slots::{
     FLUID_FOG_COLOR_SCALE, FluidParamsRow, FluidShaderVariant, FluidSurfaceLook, FluidSurfaceSlots,
     slot_window,
@@ -96,6 +98,8 @@ pub struct FluidSurfaceMesh {
     /// then face), `None` for a face that draws nothing. A drift slice in the
     /// same order turns into per-vertex rates ([`fill_drift_rates`]).
     pub face_drift_maps: Vec<Option<FluidFaceDriftMap>>,
+    /// The planes the faces were cut along, `None` when packed ungridded.
+    pub grid: Option<FluidGridPlanes>,
 }
 
 /// One fluid volume to draw this frame, with its fluid's packed look.
@@ -262,18 +266,42 @@ fn triangulate_convex_face(
     }
 }
 
-/// Triangulate every drawable surface face into one shared mesh. A face with
-/// a collinear vertex fans from an added centroid vertex, so the vertices
-/// that close T-junctions stay triangle corners; every other face is the fan
-/// from its first vertex. Each face's mesh vertices stay contiguous. Each
-/// volume's faces are grouped by material, so a volume draws one range per
-/// material. Volumes without drawable faces get no slot.
+/// Triangulate every drawable surface face into one shared mesh. With a
+/// usable `lattice`, every face is first cut along the SH lattice's planes
+/// (`grid`), so baked light evaluated per vertex varies within a probe cell;
+/// the level's vertex count stays within [`FLUID_GRID_VERTEX_CAP`]. A face no
+/// plane crosses, or every face without a grid, triangulates as before: a
+/// face with a collinear vertex fans from an added centroid vertex, so the
+/// vertices that close T-junctions stay triangle corners; every other face is
+/// the fan from its first vertex. Each face's mesh vertices stay contiguous.
+/// Each volume's faces are grouped by material, so a volume draws one range
+/// per material. Volumes without drawable faces get no slot.
 pub fn pack_fluid_surfaces(
     volumes: &[EnvironmentVolumeRecord],
     texture_dimensions: &[[u32; 2]],
     material_count: usize,
+    lattice: Option<&FluidGridLattice>,
 ) -> FluidSurfaceMesh {
-    let mut mesh = FluidSurfaceMesh::default();
+    pack_fluid_surfaces_within(
+        volumes,
+        texture_dimensions,
+        material_count,
+        lattice,
+        FLUID_GRID_VERTEX_CAP,
+    )
+}
+
+fn pack_fluid_surfaces_within(
+    volumes: &[EnvironmentVolumeRecord],
+    texture_dimensions: &[[u32; 2]],
+    material_count: usize,
+    lattice: Option<&FluidGridLattice>,
+    vertex_cap: u64,
+) -> FluidSurfaceMesh {
+    let mut mesh = FluidSurfaceMesh {
+        grid: grid::choose_grid_planes(volumes, lattice, vertex_cap),
+        ..FluidSurfaceMesh::default()
+    };
     let mut faces: Vec<(usize, Vec3, usize)> = Vec::new();
     // Per surface face: its first mesh vertex and its mesh vertex count.
     let mut vertex_ranges: Vec<Option<(u32, u32)>> = Vec::new();
@@ -315,13 +343,43 @@ pub fn pack_fluid_surfaces(
                 let position = Vec3::from(vertex.position);
                 bounds_min = bounds_min.min(position);
                 bounds_max = bounds_max.max(position);
-                mesh.vertices.push(FluidSurfaceVertex {
-                    position: vertex.position,
-                    normal: normal.to_array(),
-                    uv: normalized_uv(vertex.uv, face.texture_index, texture_dimensions),
-                });
             }
-            triangulate_convex_face(face, base, &mut mesh.vertices, &mut mesh.indices);
+            let uvs: Vec<[f32; 2]> = face
+                .vertices
+                .iter()
+                .map(|vertex| normalized_uv(vertex.uv, face.texture_index, texture_dimensions))
+                .collect();
+            let cut = mesh.grid.as_ref().and_then(|planes| {
+                let uvs: Vec<DVec2> = uvs.iter().map(|&uv| Vec2::from(uv).as_dvec2()).collect();
+                grid::cut_face(face, normal, &uvs, planes)
+            });
+            match cut {
+                Some(cut) => {
+                    // The face's own vertices lead, so they round-trip unchanged.
+                    for (position, uv) in cut.positions.iter().zip(&cut.uvs) {
+                        mesh.vertices.push(FluidSurfaceVertex {
+                            position: position.as_vec3().to_array(),
+                            normal: normal.to_array(),
+                            uv: uv.as_vec2().to_array(),
+                        });
+                    }
+                    mesh.indices.extend(
+                        cut.triangles
+                            .iter()
+                            .flat_map(|triangle| triangle.map(|vertex| base + vertex)),
+                    );
+                }
+                None => {
+                    for (vertex, uv) in face.vertices.iter().zip(uvs) {
+                        mesh.vertices.push(FluidSurfaceVertex {
+                            position: vertex.position,
+                            normal: normal.to_array(),
+                            uv,
+                        });
+                    }
+                    triangulate_convex_face(face, base, &mut mesh.vertices, &mut mesh.indices);
+                }
+            }
             vertex_ranges[face_index] = Some((base, mesh.vertices.len() as u32 - base));
             let index_count = mesh.indices.len() as u32 - index_start;
             match ranges.last_mut() {

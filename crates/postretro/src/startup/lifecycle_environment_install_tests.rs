@@ -1414,7 +1414,7 @@ fn a_staged_reload_changing_only_reflectivity_draws_the_new_value_next_frame() {
     let mut app = test_app();
     commit_staged_manifest(&mut app, mod_root.path());
     let world = level_with_reflecting_pool();
-    let mesh = pack_fluid_surfaces(&world.environment_volumes.volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&world.environment_volumes.volumes, &[], 1, None);
     app.install_level_payload(world, PathBuf::from("baked"))
         .expect("fixture installs");
     let mut slots = FluidSurfaceSlots::new(&mesh.volumes);

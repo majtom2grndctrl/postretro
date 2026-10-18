@@ -199,6 +199,36 @@ fn unorm10x3_packs_red_lowest_and_never_carries_a_nan() {
     assert_eq!(pack_unorm10x3([2.0, -1.0, f32::NAN]), 1023);
 }
 
+// P15: a grid cut keeps each face's vertices contiguous, so its binding's
+// probe covers every grid vertex it owns and no other face's.
+#[test]
+fn probe_indices_cover_every_grid_vertex_of_a_bound_face() {
+    let volumes = vec![fluid(vec![
+        level_top(0.0, 0.0, 2.5),
+        level_top(2.5, 0.0, 2.5),
+    ])];
+    let lattice = crate::fluid_surface::FluidGridLattice::new([0.0; 3], [1.0; 3]).unwrap();
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, Some(&lattice));
+    let ranges: Vec<_> = mesh
+        .face_drift_maps
+        .iter()
+        .map(|map| {
+            let map = map.expect("both faces draw");
+            map.vertex_start as usize..(map.vertex_start + map.vertex_count) as usize
+        })
+        .collect();
+    assert!(ranges.iter().all(|range| range.len() > 4), "both faces gridded");
+    let bound = section(
+        vec![room_probe([0.0, 0.002, 0.0], 0)],
+        vec![binding(0, 1, 0)],
+    );
+    let mut indices = vec![7; mesh.vertices.len()];
+    fill_probe_indices(&volumes, &mesh.face_drift_maps, Some(&bound), &mut indices);
+    assert!(indices[ranges[0].clone()].iter().all(|&i| i == FLUID_REFLECTION_NO_PROBE));
+    assert!(indices[ranges[1].clone()].iter().all(|&i| i == 0));
+    assert_eq!(ranges[1].end, mesh.vertices.len());
+}
+
 // Every vertex a bound face owns takes its binding's probe, the centroid its
 // triangulation adds included; faces no binding names, and every face of a
 // level without probes, take the no-probe index.
@@ -222,7 +252,7 @@ fn probe_indices_cover_each_bound_faces_vertices_and_nothing_else() {
         },
         fluid(vec![level_top(5.0, 0.0, 1.0)]),
     ];
-    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
     assert_eq!(mesh.vertices.len(), 4 + 6 + 4, "the insert adds a centroid");
     let probes = vec![
         room_probe([0.0, 0.002, 0.0], 0),
@@ -273,7 +303,7 @@ fn probe_indices_cover_each_bound_faces_vertices_and_nothing_else() {
 #[test]
 fn a_section_with_a_bad_payload_or_tile_format_is_unusable() {
     let volumes = vec![fluid(vec![level_top(0.0, 0.0, 1.0)])];
-    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
     let good = section(
         vec![room_probe([0.0, 0.002, 0.0], 0)],
         vec![binding(0, 0, 0)],
@@ -376,7 +406,7 @@ fn a_section_with_a_bad_tile_header_or_probe_layer_is_unusable() {
         level_top(0.0, 0.0, 1.0),
         level_top(1.0, 0.0, 1.0),
     ])];
-    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
     let two = section(
         vec![
             room_probe([0.0, 0.002, 0.0], 0),

@@ -5,6 +5,16 @@ use super::*;
 use postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES;
 use postretro_render_cpu::fluid_surface::{FLUID_SLOTS_PER_WINDOW, FluidSurfaceVertex};
 
+/// The fluid shader's own text, split by responsibility, without the shared
+/// SH and light snippets `SHADER_SOURCE` appends.
+const FLUID_WGSL: &str = concat!(
+    include_str!("../shaders/fluid_surface.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_motion.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection.wgsl"),
+);
+
 fn validated_module() -> naga::Module {
     validated_module_and_info().0
 }
@@ -261,7 +271,7 @@ fn reached_names(module: &naga::Module, entry_point: &str) -> (Vec<String>, Vec<
 // naga declares from the entry's `global_uses`; the next test pins those.
 #[test]
 fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path() {
-    let source = code_only(include_str!("../shaders/fluid_surface.wgsl"));
+    let source = code_only(FLUID_WGSL);
     assert!(
         !source.contains("override"),
         "the shader selects its variant by entry point, not an override"
@@ -287,7 +297,6 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
     for kept in [
         "fluid_shade",
         "fluid_warp_uv",
-        "fluid_sample_sh",
         "fluid_light",
         "fluid_fog_composite",
     ] {
@@ -388,7 +397,7 @@ fn the_reflection_free_entry_declares_none_of_the_reflection_globals() {
 // name.
 #[test]
 fn both_fluid_entry_points_return_the_shared_shading_where_the_gate_is_shut() {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     assert_eq!(
         code_only(wgsl_fn(source, "fs_main")),
         "fnfs_main(in:VertexOutput)->@location(0)vec4<f32>{returnfluid_shade(in).surface;}"
@@ -558,7 +567,7 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
     for entry in [&probe_array, &probe_table, &probe_distance] {
         assert_eq!(entry.visibility, wgpu::ShaderStages::FRAGMENT);
     }
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     assert!(source.contains("@group(4) @binding(1) var fluid_probe_array: texture_2d_array<f32>;"));
     assert!(source.contains("@group(4) @binding(2) var<uniform> fluid_probes: FluidProbeTable;"));
     assert!(
@@ -658,18 +667,29 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
     );
 }
 
-// The water lights per fragment so a dynamic light near a large face shades
-// it smoothly: every light evaluation lives in fluid_shade, none in vs_main. Baked
-// direct comes from direct SH, never from the VERTEX-only billboard scatter.
+// Baked light is per vertex: the ambient floor, SH indirect and baked direct
+// SH evaluate in vs_main and reach the fragment interpolated, so no fragment
+// entry samples the SH volume. Dynamic and promoted-static runtime lights
+// stay per fragment, so a dynamic light near a large face shades it smoothly.
+// Baked direct comes from direct SH, never from the VERTEX-only billboard
+// scatter.
 #[test]
-fn fluid_lighting_is_evaluated_per_fragment_from_direct_sh() {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+fn fluid_baked_light_is_per_vertex_and_runtime_lights_per_fragment() {
+    let source = FLUID_WGSL;
     let vertex = code_only(wgsl_fn(source, "vs_main"));
+    let baked = code_only(wgsl_fn(source, "fluid_baked_light"));
     let fragment = code_only(wgsl_fn(source, "fluid_shade"));
-    for call in ["fluid_sample_sh(", "fluid_light(", "fluid_warp_uv("] {
+    assert!(vertex.contains("out.baked=fluid_baked_light(in.position,in.normal);"));
+    assert!(baked.contains("fluid_sample_sh("));
+    assert!(fragment.contains("varlighting=in.baked;"));
+    for call in ["fluid_light(", "fluid_warp_uv("] {
         assert!(fragment.contains(call), "fluid_shade must call {call}");
         assert!(!vertex.contains(call), "vs_main must not call {call}");
     }
+    assert!(!fragment.contains("fluid_sample_sh("));
+    assert!(!fragment.contains("fluid_baked_light("));
+    // The viewer side, as the fragment's runtime lights take it.
+    assert!(baked.contains("ifdot(n,uniforms.camera_position-world_pos)<0.0{n=-n;}"));
     assert!(source.contains("@group(3) @binding(15) var sh_direct_atlas"));
     assert!(!source.contains("billboard_direct_scatter"));
     assert!(!source.contains("@binding(17)"));
@@ -678,10 +698,55 @@ fn fluid_lighting_is_evaluated_per_fragment_from_direct_sh() {
     assert!(fragment.contains("letopacity=clamp(row.surface.x,0.0,1.0);"));
 }
 
+/// The SH volume's sampled resources: both atlases, the probe-depth moments
+/// and the grid uniform.
+const SH_SAMPLED_GLOBALS: [&str; 4] = [
+    "sh_total_atlas",
+    "sh_direct_atlas",
+    "sh_depth_moments",
+    "sh_grid",
+];
+
+// What each entry point's compiled signature declares (naga's `global_uses`,
+// which the MSL writer turns into entry arguments): vs_main uses every SH
+// sampled resource and neither fragment entry uses any, under any gate. Both
+// fragment entries keep the runtime lights; the reflecting entry keeps the
+// shared linear-clamp sampler for its probe reads.
+#[test]
+fn only_the_vertex_entry_samples_the_sh_volume() {
+    let (module, info) = validated_module_and_info();
+    let uses_of = |entry_name: &str, global_name: &str| {
+        let index = module
+            .entry_points
+            .iter()
+            .position(|entry| entry.name == entry_name)
+            .unwrap_or_else(|| panic!("shader declares entry point {entry_name}"));
+        let (handle, _) = module
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.name.as_deref() == Some(global_name))
+            .unwrap_or_else(|| panic!("shader declares global {global_name}"));
+        !info.get_entry_point(index)[handle].is_empty()
+    };
+    for global in SH_SAMPLED_GLOBALS {
+        assert!(uses_of("vs_main", global), "vs_main must use {global}");
+        for fragment in ["fs_main", "fs_main_reflecting"] {
+            assert!(!uses_of(fragment, global), "{fragment} must not use {global}");
+        }
+    }
+    assert!(uses_of("vs_main", "sh_atlas_sampler"));
+    for fragment in ["fs_main", "fs_main_reflecting"] {
+        for global in ["lights", "light_influence"] {
+            assert!(uses_of(fragment, global), "{fragment} must use {global}");
+        }
+    }
+    assert!(uses_of("fs_main_reflecting", "sh_atlas_sampler"));
+}
+
 #[test]
 fn fluid_post_retro_sampling_matches_the_mover_shader() {
     let fluid = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "sample_post_retro",
     ));
     let mover = code_only(wgsl_fn(
@@ -735,7 +800,7 @@ fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
 /// The literal of `const name: ty = literal;` in the fluid shader's code, so a
 /// commented-out declaration cannot shadow the live one.
 fn shader_const(name: &str, ty: &str) -> String {
-    let code = code_only(include_str!("../shaders/fluid_surface.wgsl"));
+    let code = code_only(FLUID_WGSL);
     let needle = format!("const{name}:{ty}=");
     let at = code
         .find(&needle)
@@ -821,7 +886,7 @@ fn fluid_motion_shader_constants_match_the_cpu_reference() {
 #[test]
 fn fluid_shade_samples_albedo_and_emissive_at_the_warped_uv() {
     let fragment = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_shade",
     ));
     // The warp reads the unwarped UV and its derivatives' footprint.
@@ -844,7 +909,7 @@ fn fluid_shade_samples_albedo_and_emissive_at_the_warped_uv() {
 
 #[test]
 fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
-    let code = code_only(include_str!("../shaders/fluid_surface.wgsl"));
+    let code = code_only(FLUID_WGSL);
     assert!(
         !code.contains("sin("),
         "fluid_surface.wgsl must not call sin"
@@ -856,7 +921,7 @@ fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
 
     // Cells floor the UNWARPED texel UV, before any scroll joins it.
     let warp = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_warp_uv",
     ));
     let texel = warp
@@ -884,35 +949,29 @@ fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
     assert!(warp.contains("letwave_texels=vec2<f32>(fluid_wave_offset(cell,time,wave));"));
     assert!(warp.contains("return(texel_uv+drift_texels+wave_texels+cell_texels)/dims;"));
     let displayed_body = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_displayed_offset",
     ));
     assert!(!displayed_body.contains("wave"));
     let wave = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_wave_offset",
     ));
     assert!(wave.contains("->vec2<i32>{"));
     let displayed = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_displayed_offset",
     ));
     assert!(displayed.contains("->vec2<i32>{"));
 }
 
-/// The shader's warp: its whole-texel motion block (shimmer, rings, fade,
-/// drift scroll, wave and the warped UV), from the first motion constant to
-/// the depth fog's, and the vertex stage that scrolls drift.
+/// The shader's warp: its whole-texel motion file (shimmer, rings, fade,
+/// drift scroll, wave and the warped UV), and the vertex stage that scrolls
+/// drift.
 fn fluid_warp_source() -> String {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
-    let start = source
-        .find("const FLUID_MOTION_STEP_HZ")
-        .expect("motion block");
-    let end = start
-        + source[start..]
-            .find("const FLUID_FOG_BAND")
-            .expect("fog block");
-    let block = &source[start..end];
+    let source = FLUID_WGSL;
+    let block = include_str!("../shaders/fluid_motion.wgsl");
+    assert!(block.contains("const FLUID_MOTION_STEP_HZ"), "motion block");
     for warp_fn in [
         "fn fluid_warp_uv(",
         "fn fluid_displayed_offset(",
@@ -960,7 +1019,7 @@ fn fluid_warp_reads_no_reduce_motion_accessibility_or_render_profile_input() {
         }
     }
     // Nothing in the fluid shader reads reduce motion or accessibility.
-    let shader = code_only(include_str!("../shaders/fluid_surface.wgsl")).to_lowercase();
+    let shader = code_only(FLUID_WGSL).to_lowercase();
     for forbidden in ["reduce_motion", "reducemotion", "accessibility"] {
         assert!(
             !shader.contains(forbidden),
@@ -981,7 +1040,7 @@ fn fluid_probe_index_rides_a_third_vertex_buffer_at_location_four_read_flat() {
     assert_eq!(PROBE_INDEX_ATTRIBUTES[0].shader_location, 4);
     assert_eq!(PROBE_INDEX_ATTRIBUTES[0].format, wgpu::VertexFormat::Uint32);
     assert_eq!(FLUID_PROBE_INDEX_STRIDE, std::mem::size_of::<u32>());
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     let code = code_only(source);
     assert!(code.contains("@location(4)probe:u32,"));
     assert!(code.contains("@location(5)@interpolate(flat)probe:u32,"));
@@ -1010,7 +1069,7 @@ fn fluid_drift_rides_a_second_vertex_buffer_at_location_three() {
     assert_eq!(DRIFT_ATTRIBUTES[0].shader_location, 3);
     assert_eq!(DRIFT_ATTRIBUTES[0].format, wgpu::VertexFormat::Float32x2);
     assert_eq!(FLUID_DRIFT_RATE_STRIDE, std::mem::size_of::<[f32; 2]>());
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     assert!(code_only(source).contains("@location(3)drift_rate:vec2<f32>,"));
 }
 
@@ -1041,7 +1100,7 @@ fn fluid_drift_writes_directly_so_every_re_resolve_point_stays_unbatched() {
 // the displayed scroll from the CPU reference, so the exact text is pinned.
 #[test]
 fn fluid_drift_scroll_wgsl_matches_the_cpu_mirror() {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     let function = |name: &str| code_only(wgsl_fn(source, name));
     assert_eq!(
         function("fluid_high_half"),
@@ -1081,7 +1140,7 @@ fn fluid_drift_scroll_wgsl_matches_the_cpu_mirror() {
 // or direction table, so each body is pinned as exact comment-free text.
 #[test]
 fn fluid_motion_wgsl_bodies_match_the_cpu_reference() {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     let function = |name: &str| code_only(wgsl_fn(source, name));
     assert_eq!(
         function("fluid_hash_u32"),
@@ -1300,7 +1359,7 @@ fn fluid_motion_cpu_reference_bodies_are_pinned() {
 // edit to either alone fails here while the property tests stay green.
 #[test]
 fn fluid_wave_wgsl_bodies_match_the_cpu_twin() {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     let function = |name: &str| code_only(wgsl_fn(source, name));
     let pinned: [(&str, &str); 5] = [
         (
@@ -1456,7 +1515,7 @@ fn fluid_fog_shader_constants_match_the_cpu_reference() {
 // and composite are the CPU fog reference in WGSL, pinned on both sides.
 #[test]
 fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
-    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let wgsl = FLUID_WGSL;
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/fog.rs");
     let pinned: [(&str, &str, &str, &str); 6] = [
         (
@@ -1550,11 +1609,11 @@ fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
 #[test]
 fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the_composite() {
     let shade = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_shade",
     ));
     let reflecting = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fs_main_reflecting",
     ));
     let fragment = format!("{shade}{reflecting}");
@@ -1836,7 +1895,7 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
 // and the tile sampled at level 0 through the SH atlas sampler.
 #[test]
 fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
-    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let wgsl = FLUID_WGSL;
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
     let pinned: [(&str, &str, &str, &str); 10] = [
         (
@@ -2035,7 +2094,7 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
 // weight.
 #[test]
 fn fluid_reflection_search_wgsl_bodies_match_the_cpu_reference() {
-    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let wgsl = FLUID_WGSL;
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_search.rs");
     assert_eq!(
         code_only(wgsl_fn(wgsl, "fluid_reflection_search_h")),
@@ -2251,7 +2310,7 @@ fn fluid_reflection_style_shader_constants_match_the_cpu_reference() {
 // reflection-style reference in WGSL, pinned on both sides.
 #[test]
 fn fluid_reflection_style_wgsl_bodies_match_the_cpu_reference() {
-    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let wgsl = FLUID_WGSL;
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_style.rs");
     let pinned: [(&str, &str, &str, &str); 6] = [
         (
@@ -2379,11 +2438,11 @@ fn fluid_reflection_style_wgsl_bodies_match_the_cpu_reference() {
 #[test]
 fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
     let main = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fs_main_reflecting",
     ));
     let shade = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_shade",
     ));
     let derivatives = main
@@ -2408,7 +2467,7 @@ fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
         2
     );
     let free = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fs_main",
     ));
     assert!(!free.contains("dpdx(") && !free.contains("dpdy("), "{free}");
@@ -2424,13 +2483,13 @@ fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
         "fluid_reflection_cell_normal",
         "fluid_reflection_point",
     ] {
-        let body = code_only(wgsl_fn(include_str!("../shaders/fluid_surface.wgsl"), name));
+        let body = code_only(wgsl_fn(FLUID_WGSL, name));
         for forbidden in ["drift", "wave", "fluid_warp_uv", "dpdx", "dpdy"] {
             assert!(!body.contains(forbidden), "`{name}` reads `{forbidden}`");
         }
     }
     let point = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_reflection_point",
     ));
     assert!(
@@ -2445,7 +2504,7 @@ fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
 // light by; the live value's is render-cpu `sh_compose::animated_light_scale`.
 #[test]
 fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
-    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let wgsl = FLUID_WGSL;
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
     let format = include_str!("../../../level-format/src/reflection_probes.rs");
     let compose = include_str!("../../../render-cpu/src/sh_compose.rs");
@@ -2615,7 +2674,7 @@ fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
 #[test]
 fn fluid_reflection_light_value_ports_the_sh_compose_light_scale() {
     let fluid = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_reflection_light_value",
     ));
     let compose = code_only(wgsl_fn(
@@ -2640,7 +2699,7 @@ fn fluid_reflection_light_value_ports_the_sh_compose_light_scale() {
 /// Every `fn fluid_reflection_*` in the fluid shader, by name, with its body
 /// as code only.
 fn fluid_reflection_functions() -> Vec<(String, String)> {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     source
         .match_indices("fn fluid_reflection_")
         .map(|(at, _)| {
@@ -2656,7 +2715,7 @@ fn fluid_reflection_functions() -> Vec<(String, String)> {
 /// to the composite.
 fn fs_main_reflection_tail() -> String {
     let main = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fs_main_reflecting",
     ));
     let start = main
@@ -2714,7 +2773,7 @@ fn fluid_reflection_light_evaluation_reads_no_promotion_weight_or_debug_override
         assert!(!body.contains("mask"), "`{name}` must not read the mask");
         assert!(!body.contains("LIGHT_TERM"), "`{name}`");
     }
-    let code = code_only(include_str!("../shaders/fluid_surface.wgsl"));
+    let code = code_only(FLUID_WGSL);
     for binding in [
         "animated_light_scale_uniform",
         "compose_weights",
@@ -2763,7 +2822,7 @@ fn fluid_reflection_term_takes_no_sh_read() {
         }
     }
     let ratio = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
+        FLUID_WGSL,
         "fluid_reflection_light_value",
     ));
     assert!(ratio.contains("anim_descriptors[roster_index]"));
@@ -2779,7 +2838,7 @@ fn fluid_reflection_reads_descriptors_from_the_shared_group_3_binding_11() {
     use postretro_render_cpu::sh_volume::{
         ANIMATION_DESCRIPTOR_ACTIVE_OFFSET, ANIMATION_DESCRIPTOR_SIZE, BIND_ANIM_DESCRIPTORS,
     };
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     assert!(source.contains(
         "@group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;"
     ));
@@ -3116,7 +3175,7 @@ fn fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform() {
         FLUID_SCENE_INPUTS_GROUP as usize,
         FLUID_BIND_GROUP_COUNT - 1
     );
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     assert!(source.contains("@group(5) @binding(0) var scene_depth: texture_depth_2d;"));
     assert!(source.contains("@group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;"));
 }
@@ -3191,7 +3250,7 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
     for (file, source) in [
         (
             "fluid_surface.wgsl",
-            include_str!("../shaders/fluid_surface.wgsl"),
+            FLUID_WGSL,
         ),
         ("fluid_surface.rs", include_str!("fluid_surface.rs")),
         (
@@ -3234,7 +3293,7 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
 // direction only its lobe weights.
 #[test]
 fn fluid_probe_layer_derives_from_the_face_binding_alone() {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let source = FLUID_WGSL;
     let code = code_only(source);
     assert!(code_only(wgsl_fn(source, "vs_main")).contains("out.probe=in.probe;"));
 
@@ -3342,4 +3401,38 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
     let ratio = code_only(wgsl_fn(source, "fluid_reflection_ratio"));
     assert_eq!(ratio.matches("direction").count(), 2, "{ratio}");
     assert!(ratio.contains("letlobes=fluid_reflection_lobe_weights(direction);"));
+}
+
+// P3 and P4: the fluid grid takes the lattice the SH sampler reads. A
+// streamed level's base wins over its legacy resources' placeholder; a level
+// whose legacy volume is absent or refused (not present) has none; an
+// unusable lattice is none.
+#[test]
+fn the_fluid_grid_takes_the_lattice_the_sh_sampler_reads() {
+    use super::super::renderer_types::sh_sampler_lattice;
+    use postretro_render_cpu::fluid_surface::FluidGridLattice;
+    let streamed = ([3.0, -1.0, 2.5], [0.75, 1.0, 0.75]);
+    let section = ([0.5, 0.0, 0.5], [1.0, 1.0, 1.0]);
+    let placeholder = ([0.0; 3], [1.0; 3]);
+    assert_eq!(
+        sh_sampler_lattice(Some(streamed), None),
+        FluidGridLattice::new(streamed.0, streamed.1)
+    );
+    // The streamed path never consults the legacy mirrors, whatever they hold.
+    assert_eq!(
+        sh_sampler_lattice(Some(streamed), Some(placeholder)),
+        FluidGridLattice::new(streamed.0, streamed.1)
+    );
+    assert_eq!(
+        sh_sampler_lattice(None, Some(section)),
+        FluidGridLattice::new(section.0, section.1)
+    );
+    assert_eq!(sh_sampler_lattice(None, None), None);
+    assert_eq!(sh_sampler_lattice(None, Some(([0.0; 3], [0.0, 1.0, 1.0]))), None);
+    // The renderer offers the legacy mirrors only while a section is bound.
+    let types = code_only(include_str!("renderer_types.rs"));
+    assert!(types.contains(
+        "self.sh_volume_resources.present.then_some((self.sh_volume_resources.grid_origin,\
+         self.sh_volume_resources.cell_size,)),"
+    ));
 }

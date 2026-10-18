@@ -39,9 +39,9 @@ No crate source changed between the brief's `read at` (2f1f96297) and this plan'
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Grid packing in render-cpu: lattice type + validation, spacing/cap choice from per-face bounds, per-face plane cutting with edge-determined crossings, Steiner-free triangulation, warn once; shared-edge and cap tests | integrating executor | — | |
-| 2 | Renderer: lattice seam (streamed base / legacy present / none), `FluidSurfacePass::install` takes it, install log reports spacing | integrating executor | 1 | |
-| 3 | Shader: split `fluid_surface.wgsl`; baked terms to `vs_main` (viewer-side normal, masks, scales), interpolated to both fragment entries; invert per-fragment pins, add `global_uses` test | integrating executor | — | |
+| 1 | Grid packing in render-cpu: lattice type + validation, spacing/cap choice from per-face bounds, per-face plane cutting with edge-determined crossings, Steiner-free triangulation, warn once; shared-edge and cap tests | integrating executor | — | done: `fluid_surface::grid` (16 tests), `probe_indices_cover_every_grid_vertex_of_a_bound_face` |
+| 2 | Renderer: lattice seam (streamed base / legacy present / none), `FluidSurfacePass::install` takes it, install log reports spacing | integrating executor | 1 | done: `FullRenderer::sh_sampler_lattice`; `the_fluid_grid_takes_the_lattice_the_sh_sampler_reads` |
+| 3 | Shader: split `fluid_surface.wgsl`; baked terms to `vs_main` (viewer-side normal, masks, scales), interpolated to both fragment entries; invert per-fragment pins, add `global_uses` test | integrating executor | — | done: `only_the_vertex_entry_samples_the_sh_volume`, `fluid_baked_light_is_per_vertex_and_runtime_lights_per_fragment`; 60 fluid pins + budget tests pass unedited; 14 adapter frame tests pass |
 | 4 | 5300M measurement + parity on the Metal kit; settle spacing and cap | integrating executor | 2, 3 | |
 | 5 | Adapter frame tests (A7) over an in-memory SH section; lattice selection and level-change adapter tests (A4, A6) | worker | 2, 3 | |
 | 6 | Install-order source tests (A6), no-fluid/no-lattice log tests (A5) | integrating executor | 2 | |

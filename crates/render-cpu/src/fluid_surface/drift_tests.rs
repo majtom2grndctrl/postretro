@@ -52,7 +52,7 @@ fn record(faces: Vec<EnvironmentSurfaceFace>) -> EnvironmentVolumeRecord {
 }
 
 fn maps(faces: Vec<EnvironmentSurfaceFace>) -> Vec<FluidFaceDriftMap> {
-    pack_fluid_surfaces(&[record(faces)], &[DIMS], 1)
+    pack_fluid_surfaces(&[record(faces)], &[DIMS], 1, None)
         .face_drift_maps
         .into_iter()
         .map(|map| map.expect("every fixture face draws"))
@@ -203,6 +203,7 @@ fn drift_rates_fill_every_vertex_a_face_owns_and_a_mismatched_slice_leaves_all_s
         ])],
         &[DIMS],
         1,
+        None,
     );
     assert_eq!(mesh.vertices.len(), 4 + 5 + 1);
     assert_eq!(mesh.face_drift_maps[0].unwrap().vertex_count, 4);

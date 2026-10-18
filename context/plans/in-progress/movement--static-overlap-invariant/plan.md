@@ -81,6 +81,24 @@ grounded Decision reads stand. Source re-read this session: `movement/substrate.
   `MovementEvents` (a tick-local, never-serialized struct; no wire field), the agent
   controller on its `SlideResult`.
 
+- The overlap measure and the check use the engine's exact capsule–triangle contact
+  (`collision/capsule_triangle.rs`), not parry's `intersection_test`. On the fixtures'
+  100 m triangles parry reported a capsule 0.515 mm clear as overlapping by 2.4 mm (its
+  GJK drift beside large triangles, the reason the skin cast exists). Task-1 pre-fix
+  reproductions were re-measured exactly against the task-2 source: all still exceed
+  0.5 mm (0.74 mm to 7.7 cm), and the baseline's embed flags are unchanged.
+- Swept moves stop `OVERLAP_TOLERANCE` (0.5 mm) short of a surface, so every in-band
+  move b0a5c0f made stays exactly as it was; only surface-crossing moves are clipped.
+  The step-up rise is the exception: it stops a full skin short, like a slide sweep,
+  because a lifted capsule 0.5 mm under a ceiling meets the ceiling's coplanar seams on
+  its forward probe (the skin cast's documented seam limitation) and refuses the step.
+- B1 comparator: the tick after a b0a5c0f embed tick measures its displacement from the
+  last tick that was clear at b0a5c0f, since the embedded pose no longer exists. Every
+  clear tick still matches within 1 mm; this restates the reference pose, not the bound.
+- A5 low step: the step's edge is a walkable contact, so the pawn rides it until the
+  ceiling stops it, its feet still below the top. "Below the step" is asserted as feet
+  below the top, centre short of the riser.
+
 ## Delegated answers
 - The check's variable name — `POSTRETRO_OVERLAP_CHECK`: `1` turns the check on in any
   build, `0` turns it off in any build, unset keeps the build default (on with debug
@@ -161,8 +179,8 @@ over it needs `rest / cos` of room), so A3's walkable-limit case is a chamfered 
 |---|---|---|---|---|
 | 1 | Riskiest premise first: test-only overlap helper, the lip-edge fixture, the displacement baseline and every per-bypass fixture, run on pre-fix source; commit baseline + lip expected-failure | integrating executor | — | done: fixtures + baseline committed pre-fix |
 | 2 | Behaviour-preserving: swept-move helper and shared step-up / snap-to-floor primitives in a sibling module; player substrate and agent controller call them; agent copies deleted | integrating executor | 1 | done: `movement::swept`; physics 374 + sim 1471 tests unchanged, fixtures still reproduce |
-| 3 | Overlap check: tolerance query, armed assertion, build/env gate, report with texture + TrenchBroom position, warn-once on `CollisionWorld`, caller logging (host, prediction, agents), timing stage | integrating executor | 2 | |
-| 4 | Convert every unswept move at its source; flip lip fixture | integrating executor | 3 | |
+| 3 | Overlap check: tolerance query, armed assertion, build/env gate, report with texture + TrenchBroom position, warn-once on `CollisionWorld`, caller logging (host, prediction, agents), timing stage | integrating executor | 2 | done: `collision::overlap`, `movement::overlap_check`, `sim::report_static_overlap`, `SimStage::OverlapCheck` |
+| 4 | Convert every unswept move at its source; flip lip fixture | integrating executor | 3 | done: every task-1 fixture flipped; physics 376, sim 1471, netcode 799, ai 245 pass armed |
 | 5 | Resize growth clearance: anchored stand-up, growing entry | integrating executor | 3 | |
 | 6 | Remaining AC fixtures, grep gates, determinism replay | integrating executor | 4, 5 | |
 | 7 | Measurement on `stress-env-volumes` | integrating executor | 3 | |

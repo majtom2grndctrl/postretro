@@ -220,7 +220,6 @@ fn placed(
 // Regression: with the per-tick floor push spent, a second TOI-0 walkable
 // contact free-advanced the capsule into a tilted surface, unswept.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_pawn_walking_onto_a_chamfered_lip_ends_every_tick_clear() {
     let desc = descriptor();
     let rise = desc.ground.step_height;
@@ -252,7 +251,6 @@ fn a_pawn_walking_onto_a_chamfered_lip_ends_every_tick_clear() {
 // Regression: free advance into a ramp, then ground-stick from the embedded
 // pose (a TOI-0 walkable hit, drop 0), kept the pawn inside the ramp.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn free_advance_then_ground_stick_at_a_ramp_foot_ends_clear() {
     let desc = descriptor();
     let world = Geometry::default()
@@ -276,7 +274,6 @@ fn free_advance_then_ground_stick_at_a_ramp_foot_ends_clear() {
 // Regression: the floor push lifted a pawn resting within a skin of a ceiling
 // into it, unswept.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_floor_push_under_a_ceiling_within_a_skin_ends_clear() {
     for step_height in [0.0, descriptor().ground.step_height] {
         let mut desc = descriptor();
@@ -319,7 +316,6 @@ fn standing_height(desc: &PlayerMovementDescriptor) -> f32 {
 // Regression: the step-up lift rose unswept, so a ceiling over a step whose
 // top cannot fit the standing capsule took the pawn's head.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_step_without_room_for_the_standing_capsule_leaves_the_pawn_below_it_and_clear() {
     let desc = descriptor();
     // A low step, so the lift rises clear of its riser and into the ceiling.
@@ -339,9 +335,12 @@ fn a_step_without_room_for_the_standing_capsule_leaves_the_pawn_below_it_and_cle
             40,
             "low step",
         );
+        // The step's edge is a walkable contact the pawn may ride until the
+        // ceiling stops it; its feet never reach the top.
+        let feet = end.y - desc.capsule.half_height - desc.capsule.radius;
         assert!(
-            end.x < 5.0 && (end.y - rest_y(&desc, 0.0)).abs() < 1.0e-3,
-            "the pawn stays on the lower floor, at {end:?}"
+            end.x < 5.0 && feet < rise,
+            "the pawn stays below the step, at {end:?}"
         );
     }
 }
@@ -350,7 +349,6 @@ fn a_step_without_room_for_the_standing_capsule_leaves_the_pawn_below_it_and_cle
 // headroom, so a step the standing capsule fits on was refused, the head
 // sinking into the ceiling on the way.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_step_with_room_for_the_capsule_but_not_the_lift_margin_still_steps_up() {
     let desc = descriptor();
     let rise = desc.ground.step_height;
@@ -377,7 +375,6 @@ fn a_step_with_room_for_the_capsule_but_not_the_lift_margin_still_steps_up() {
 // The step-up rise followed by a floor push on one tick, under an overhang.
 // Neither moves the pawn into it once both are swept.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_step_up_then_a_floor_push_under_an_overhang_ends_clear() {
     let desc = descriptor();
     let rise = desc.ground.step_height;
@@ -420,7 +417,6 @@ fn ledge_drop(top: f32) -> CollisionWorld {
 // steep normal, its centre-ray fallback dropped the capsule beside the riser
 // by the ray distance, unswept.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn ground_stick_beside_a_riser_over_a_drop_ends_clear() {
     let desc = descriptor();
     let step = desc.ground.step_height;
@@ -448,7 +444,6 @@ fn ground_stick_beside_a_riser_over_a_drop_ends_clear() {
 // Regression: same centre-ray drop, reached by a pawn standing still with its
 // capsule over the edge (zero velocity: no slide iteration runs).
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_still_pawn_over_a_ledge_edge_ends_clear_after_ground_stick() {
     let desc = descriptor();
     let step = desc.ground.step_height;
@@ -480,7 +475,6 @@ fn a_still_pawn_over_a_ledge_edge_ends_clear_after_ground_stick() {
 // which stays inside the skin band: only a wider descriptor threshold drives
 // it into the ramp, so the fixture widens it.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_corner_wedge_on_the_steepest_walkable_ramp_ends_clear_after_the_rollback() {
     let mut desc = descriptor();
     desc.stuck_stop_threshold = 0.1;

@@ -97,8 +97,17 @@ pub fn step_up(
         return None;
     }
 
-    // 2. Is the lifted capsule clear of the obstacle?
-    let lifted = position + Vec3::new(0.0, step_height + params.lift_margin, 0.0);
+    // 2. Is the lifted capsule clear of the obstacle? The rise is a skin cast,
+    // like a slide sweep, so a ceiling lower than the full lift caps it a skin
+    // short: a step whose top has room for the capsule still steps up, one
+    // without room is refused below, and the lift never commits into the
+    // ceiling. Stopping a skin short (not `swept_move`'s tolerance) leaves the
+    // lifted capsule at the band's edge, where a slide along the ceiling is
+    // tangent; deeper in the band its coplanar seams tilt the contact normal
+    // and refuse the forward probe.
+    let lift = step_height + params.lift_margin;
+    let rise = cast(position, Vec3::Y, lift).map_or(lift, |h| h.time_of_impact.clamp(0.0, lift));
+    let lifted = position + Vec3::Y * rise;
     let lifted_clear = match cast(lifted, dir, probe_dist) {
         None => true,
         Some(h) => h.time_of_impact >= probe_dist - SKIN_DISTANCE,
@@ -147,6 +156,24 @@ pub fn floor_below(
     max_down: f32,
     cos_walkable: f32,
 ) -> Option<FloorBelow> {
+    probe_floor(collision, capsule, position, max_down, cos_walkable).map(|(floor, _)| floor)
+}
+
+/// Where a [`FloorBelow`] came from: the swept down-cast already proved its
+/// drop clear; the centre ray proved nothing beside the capsule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloorSource {
+    Sweep,
+    CentreRay,
+}
+
+fn probe_floor(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: CollisionCapsule,
+    position: Vec3,
+    max_down: f32,
+    cos_walkable: f32,
+) -> Option<(FloorBelow, FloorSource)> {
     if let Some(h) = cast_capsule_combined_parry(
         collision.static_world,
         collision.movers,
@@ -157,11 +184,12 @@ pub fn floor_below(
         max_down,
     ) && h.normal.y >= cos_walkable
     {
-        return Some(FloorBelow {
+        let floor = FloorBelow {
             drop: h.time_of_impact,
             normal: h.normal,
             ground: ground_ref_from_hit(h),
-        });
+        };
+        return Some((floor, FloorSource::Sweep));
     }
     // Wall-normal preference fallback: when the capsule is pressed against a
     // wall the swept down-cast may report the wall's normal first (n.y ≈ 0).
@@ -185,10 +213,13 @@ pub fn floor_below(
     // SKIN_DISTANCE.
     let drop = h.time_of_impact - (reach + SKIN_DISTANCE);
     // Only downward, and only within the envelope the swept down-cast covered.
-    (drop > 0.0 && drop <= max_down).then(|| FloorBelow {
-        drop,
-        normal: h.normal,
-        ground: ground_ref_from_hit(h),
+    (drop > 0.0 && drop <= max_down).then(|| {
+        let floor = FloorBelow {
+            drop,
+            normal: h.normal,
+            ground: ground_ref_from_hit(h),
+        };
+        (floor, FloorSource::CentreRay)
     })
 }
 
@@ -204,12 +235,21 @@ pub fn snap_to_floor(
     if params.step_height <= 0.0 {
         return None;
     }
-    let floor = floor_below(
+    let (floor, source) = probe_floor(
         collision,
         capsule,
         position,
         ground_stick_reach(params),
         params.cos_walkable,
     )?;
-    Some((position - Vec3::new(0.0, floor.drop, 0.0), floor))
+    let drop = Vec3::new(0.0, -floor.drop, 0.0);
+    let snapped = match source {
+        FloorSource::Sweep => position + drop,
+        // The ray found the floor past an edge the sweep met first, so the
+        // drop is swept: beside a riser it rests on the edge instead of sinking
+        // the capsule's side into it. The floor still classifies the body as
+        // grounded, as before.
+        FloorSource::CentreRay => swept_move(collision, position, capsule, drop),
+    };
+    Some((snapped, floor))
 }

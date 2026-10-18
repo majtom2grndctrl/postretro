@@ -44,6 +44,11 @@ pub enum SimStage {
     /// Inside `Weapons`: hitscan pellets' fluid-crossing queries for splash
     /// facts. Absent in a tick that fired no hitscan.
     WeaponFluidCrossings,
+    /// Inside `Tick`: the tick overlap check for every body whose own movement
+    /// moved it — host movement's pawns (inside `Movement`) and agents (inside
+    /// `SteerAgents`). Like `Environment` it spans two siblings: never add it to
+    /// them. Absent when no body moved or the check is off (`movement.md` §1).
+    OverlapCheck,
     /// Player-event evaluation and in-tick fires, after the tick settles.
     /// Runs outside `Tick`, so it reports beside it.
     PlayerEvents,
@@ -64,6 +69,7 @@ impl StageSet for SimStage {
         Self::SteerMovers,
         Self::Environment,
         Self::WeaponFluidCrossings,
+        Self::OverlapCheck,
         Self::PlayerEvents,
     ];
 
@@ -86,6 +92,7 @@ impl StageSet for SimStage {
             Self::SteerMovers => "sim_steer_movers",
             Self::Environment => "sim_environment",
             Self::WeaponFluidCrossings => "sim_weapon_fluid_crossings",
+            Self::OverlapCheck => "sim_overlap_check",
             Self::PlayerEvents => "sim_player_events",
         }
     }
@@ -108,7 +115,10 @@ mod tests {
     fn environment_stages_are_registered_with_their_labels_and_parents() {
         assert!(SimStage::ALL.contains(&SimStage::Environment));
         assert!(SimStage::ALL.contains(&SimStage::WeaponFluidCrossings));
+        assert!(SimStage::ALL.contains(&SimStage::OverlapCheck));
         assert_eq!(SimStage::Environment.label(), "sim_environment");
+        assert_eq!(SimStage::OverlapCheck.label(), "sim_overlap_check");
+        assert_eq!(SimStage::OverlapCheck.parent(), Some(SimStage::Tick));
         assert_eq!(
             SimStage::WeaponFluidCrossings.label(),
             "sim_weapon_fluid_crossings"

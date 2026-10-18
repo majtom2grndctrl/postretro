@@ -12,6 +12,7 @@ mod intents;
 pub mod knockback;
 mod ledge_probe;
 mod mover_carry;
+pub mod overlap_check;
 mod push;
 mod substrate;
 pub mod swept;
@@ -98,6 +99,9 @@ pub struct MovementEvents {
     /// swim enter and exit sounds name their fluid after the pawn is dry.
     pub swim_fluid: Option<u16>,
     pub teleport: Option<TeleportEvent>,
+    /// The tick's own movement ended inside static geometry after starting clear
+    /// (`overlap_check`). The caller logs it; it is never wire or script state.
+    pub static_overlap: Option<crate::collision::StaticOverlap>,
 }
 
 impl MovementEvents {
@@ -163,6 +167,9 @@ pub struct SubstrateResult {
     /// A genuine landing transition (airborne → grounded) cleared the
     /// air-tick hysteresis gate. Maps directly to `MovementEvents::landed`.
     pub(crate) landed: bool,
+    /// The pose the tick overlap check starts from: after mover carry and mover
+    /// displacement, which mover policy polices instead.
+    pub(crate) checked_start: Vec3,
 }
 
 /// A state transition a per-state intent warrants this tick: the `next` state to
@@ -424,6 +431,16 @@ pub fn tick_with_immersion_and_armed(
         previous_ground,
         carry_ground,
         events.jumped || launched || left_ground,
+    );
+
+    events.static_overlap = overlap_check::check_own_movement(
+        collision.static_world,
+        substrate.checked_start,
+        current_pos,
+        crate::collision::CollisionCapsule::new(
+            component.capsule.radius,
+            component.capsule.half_height,
+        ),
     );
 
     // Contact flows forward through the tick seam: the active intent has
@@ -5667,6 +5684,7 @@ mod tests {
             ],
             swim_fluid: None,
             teleport: None,
+            static_overlap: None,
         };
         let mut addresses = Vec::new();
         events.append_named_events(&mut addresses);

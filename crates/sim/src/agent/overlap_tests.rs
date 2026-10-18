@@ -172,7 +172,6 @@ fn ledge_drop(top: f32) -> CollisionWorld {
 // Regression: the agent's step-up lift rose unswept into the ceiling over a
 // step whose top cannot fit its capsule.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn an_agent_walking_into_a_step_without_headroom_stays_below_it_and_clear() {
     let capsule = capsule(STEP);
     // Ten centimetres short of fitting the capsule on the top, yet clear over
@@ -196,7 +195,6 @@ fn an_agent_walking_into_a_step_without_headroom_stays_below_it_and_clear() {
 // Regression: the unswept lift needed `step_height + 0.05` of headroom, so an
 // agent was refused a step its capsule fits on.
 #[test]
-#[should_panic(expected = "climbed the step")]
 fn an_agent_still_steps_up_with_room_for_its_capsule_but_not_the_lift_margin() {
     let capsule = capsule(STEP);
     let world = step_under_ceiling(STEP, STEP + height(&capsule) + 2.0 * SKIN_DISTANCE + 0.005);
@@ -222,7 +220,6 @@ fn an_agent_still_steps_up_with_room_for_its_capsule_but_not_the_lift_margin() {
 // swept down-cast met the ledge edge, dropping the capsule beside the riser
 // by the ray distance, unswept.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn agent_ground_stick_beside_a_riser_over_a_drop_ends_clear() {
     let capsule = capsule(STEP);
     // Taller than one step, within ground-stick reach.
@@ -243,7 +240,6 @@ fn agent_ground_stick_beside_a_riser_over_a_drop_ends_clear() {
 // Regression: an idle agent with no destination still settles through
 // ground-stick every tick, so the centre-ray drop reached it standing still.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn an_idle_agent_settling_over_a_ledge_edge_ends_clear() {
     let capsule = capsule(STEP);
     let world = ledge_drop(STEP);

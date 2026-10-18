@@ -156,7 +156,9 @@ fn record(desc: &PlayerMovementDescriptor, scenario: &Scenario) -> Vec<(Vec3, f3
 /// Every tick matches the recorded displacement within 1 mm. A tick that was
 /// embedded at b0a5c0f ends clear instead: its horizontal displacement still
 /// matches, and its height lies between the recorded heights either side, so
-/// the climb neither dips nor overshoots.
+/// the climb neither dips nor overshoots. The embedded pose is no reference for
+/// the tick after it, so a clear tick measures its displacement from the last
+/// tick that was clear at b0a5c0f.
 fn keeps_recorded_displacement(name: &str) {
     let desc = descriptor();
     let scenario = scenarios(&desc)
@@ -164,6 +166,7 @@ fn keeps_recorded_displacement(name: &str) {
         .find(|scenario| scenario.name == name)
         .expect("a named scenario");
     {
+        let mut last_clear = 0;
         let track = record(&desc, &scenario);
         let recorded = scenario.recorded;
         assert_eq!(track.len(), recorded.len(), "{name}: track length");
@@ -174,16 +177,19 @@ fn keeps_recorded_displacement(name: &str) {
                 depth <= OVERLAP_TOLERANCE,
                 "{name} tick {i}: ended {depth} m inside static geometry at {position:?}"
             );
-            let moved = position - track[i - 1].0;
-            let was = pose(&recorded[i]) - pose(&recorded[i - 1]);
             let embedded_then = recorded[i][3] > 0.5;
             if !embedded_then {
+                let moved = position - track[last_clear].0;
+                let was = pose(&recorded[i]) - pose(&recorded[last_clear]);
                 assert!(
                     (moved - was).length() <= TOLERANCE,
-                    "{name} tick {i}: moved {moved:?}, recorded {was:?}"
+                    "{name} tick {i}: moved {moved:?} since tick {last_clear}, recorded {was:?}"
                 );
+                last_clear = i;
                 continue;
             }
+            let moved = position - track[i - 1].0;
+            let was = pose(&recorded[i]) - pose(&recorded[i - 1]);
             let horizontal = Vec2::new(moved.x - was.x, moved.z - was.z).length();
             assert!(
                 horizontal <= TOLERANCE,
@@ -209,14 +215,12 @@ fn a_ramp_walk_keeps_its_recorded_displacement() {
 // Regression: walking up stairs at step height, ground-stick's centre-ray drop
 // sank the pawn into each step corner on its approach tick.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_stair_climb_keeps_its_recorded_displacement() {
     keeps_recorded_displacement("stairs");
 }
 
 // Regression: the same centre-ray drop on the approach to a single ledge.
 #[test]
-#[should_panic(expected = "inside static geometry")]
 fn a_step_up_keeps_its_recorded_displacement() {
     keeps_recorded_displacement("step_up");
 }

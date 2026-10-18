@@ -12,8 +12,10 @@
 
 use glam::Vec3;
 
+use crate::collision::StaticOverlap;
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule};
+use crate::movement::overlap_check::check_own_movement;
 use crate::movement::swept::{StepParams, snap_to_floor, step_up};
 use postretro_collision::{EnvironmentView, resolve_gravity};
 
@@ -90,6 +92,9 @@ pub(crate) struct SlideResult {
     /// vertical carrying gravity / ground state). The caller stores this back on
     /// the agent so momentum and fall speed persist across ticks.
     pub(crate) velocity: Vec3,
+    /// The step ended inside static geometry after starting clear; the caller
+    /// logs it (`movement_overlap`).
+    pub(crate) overlap: Option<StaticOverlap>,
 }
 
 /// Resolve one tick of agent motion: take a desired horizontal velocity, the
@@ -220,6 +225,7 @@ pub(crate) fn collide_and_slide(
         position: current_pos,
         grounded,
         velocity,
+        overlap: check_own_movement(world, position, current_pos, collision_shape),
     }
 }
 

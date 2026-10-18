@@ -140,6 +140,7 @@ pub(super) fn integrate_collision(
 
     let mut current_pos = apply_mover_carry(position, carry_ground, collision);
     current_pos = displace_from_movers(component, carry_ground, collision, &capsule, current_pos);
+    let checked_start = current_pos;
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
     // Each of the substrate's walkable-contact paths overwrites this with its
@@ -239,15 +240,25 @@ pub(super) fn integrate_collision(
                         // up to 4 = +0.1 m per tick).
                         if floor_push_remaining > 0.0 {
                             let push = floor_push_remaining;
-                            current_pos.y += push;
+                            // Swept: a ceiling within a skin stops the push.
+                            current_pos =
+                                swept::swept_move(collision, current_pos, body, Vec3::Y * push);
                             floor_push_remaining = 0.0;
                             consumed = 0.0;
                         } else {
                             // Already pushed this tick — no further lift is
-                            // safe. Free-advance tangentially and exit the
-                            // loop. Ground-stick at end of tick re-establishes
-                            // contact.
-                            current_pos += component.velocity * remaining_dt;
+                            // safe. Advance tangentially and exit the loop;
+                            // ground-stick at end of tick re-establishes
+                            // contact. The advance is swept: against a tilted
+                            // walkable contact (a ramp, a chamfered lip) the
+                            // y-zeroed velocity closes on the surface, and an
+                            // unswept advance carried the capsule into it.
+                            current_pos = swept::swept_move(
+                                collision,
+                                current_pos,
+                                body,
+                                component.velocity * remaining_dt,
+                            );
                             break;
                         }
                     } else {
@@ -314,8 +325,8 @@ pub(super) fn integrate_collision(
     // without making meaningful forward progress.
     //
     // When triggered we zero the horizontal part of `velocity` and of both
-    // protected layers (knockback and drift) and roll back the
-    // horizontal component of `current_pos` to its pre-slide value, killing
+    // protected layers (knockback and drift) and sweep the horizontal
+    // component of `current_pos` back toward its pre-slide value, killing
     // the residual XZ wobble that wall nudges and alternating projections
     // leave at a corner wedge. `velocity.y` and any vertical motion from
     // gravity / step-up / ground-stick are preserved so the rest of the
@@ -337,8 +348,15 @@ pub(super) fn integrate_collision(
             // its vertical current (`push::project_drift`).
             component.push_velocity.x = 0.0;
             component.push_velocity.z = 0.0;
-            current_pos.x = slide_start_xz.x;
-            current_pos.z = slide_start_xz.y;
+            // Swept: the rollback keeps the tick's new Y, so after a downhill
+            // slide restoring the start X/Z unswept would sink the body into
+            // the ramp. It stops short of the ramp instead.
+            let rollback = Vec3::new(
+                slide_start_xz.x - current_pos.x,
+                0.0,
+                slide_start_xz.y - current_pos.z,
+            );
+            current_pos = swept::swept_move(collision, current_pos, body, rollback);
         }
     }
     // Wall slide can project a small +vy when the capsule corners the edge of a
@@ -408,6 +426,7 @@ pub(super) fn integrate_collision(
             hit_floor: hit_floor_this_tick,
             floor_normal: last_floor_normal,
             landed,
+            checked_start,
         },
     )
 }

@@ -24,6 +24,7 @@
 //! See: `context/lib/entity_model.md` §7.
 
 use std::fmt;
+use std::sync::atomic::AtomicBool;
 
 use glam::Vec3;
 use parry3d::math::Pose;
@@ -36,6 +37,8 @@ use postretro_level_loader::LevelWorld;
 
 mod capsule_triangle;
 pub mod moving;
+mod overlap;
+pub use overlap::{MAP_UNIT_METRES, OverlapCheckTimer, StaticOverlap};
 mod skin_cast;
 mod solid_cells;
 
@@ -84,6 +87,11 @@ pub struct CollisionWorld {
     /// Solid and exterior cells, for shapes no triangle touches.
     solid_cells: solid_cells::SolidCells,
     pub teleporters: crate::teleporters::Teleporters,
+    /// Texture per triangle, for the tick overlap check's warning.
+    surfaces: overlap::SurfaceTable,
+    /// The tick overlap check's one warning per level load.
+    overlap_warned: AtomicBool,
+    overlap_timer: OverlapCheckTimer,
 }
 
 impl CollisionWorld {
@@ -93,8 +101,22 @@ impl CollisionWorld {
     pub fn from_triangles_for_test(vertices: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Self {
         Self {
             mesh: TriMesh::new(vertices, triangles).expect("test collision mesh must be valid"),
-            solid_cells: Default::default(),
-            teleporters: Default::default(),
+            ..Self::new()
+        }
+    }
+
+    /// [`Self::from_triangles_for_test`] with a texture index per triangle
+    /// (`u16::MAX` for none) into `texture_names`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_textured_triangles_for_test(
+        vertices: Vec<Vec3>,
+        triangles: Vec<[u32; 3]>,
+        triangle_textures: Vec<u16>,
+        texture_names: Vec<String>,
+    ) -> Self {
+        Self {
+            surfaces: overlap::SurfaceTable::for_test(triangle_textures, texture_names),
+            ..Self::from_triangles_for_test(vertices, triangles)
         }
     }
 
@@ -107,33 +129,25 @@ impl CollisionWorld {
         self.mesh.project_point(&Pose::IDENTITY, point, solid).point
     }
 
-    /// How deep an upright capsule at `position` overlaps the static mesh: how far
-    /// its radius must shrink before it no longer intersects, to 0.1 µm. Zero when
-    /// clear. Fixtures compare it against the tick overlap tolerance.
+    /// How deep an upright capsule at `position` overlaps the static mesh: the
+    /// deepest surface penetration over every triangle, from exact
+    /// capsule–triangle closest points; a core piercing a triangle counts as
+    /// the full radius. Zero when clear. Fixtures compare it against the tick
+    /// overlap tolerance.
     #[cfg(any(test, feature = "test-support"))]
     pub fn overlap_depth_for_test(&self, position: Vec3, capsule: CollisionCapsule) -> f32 {
-        let intersects = |radius: f32| {
-            intersection_test(
-                &Pose::from_translation(position),
-                &ParryCapsule::new_y(capsule.half_height, radius),
-                &Pose::IDENTITY,
-                &self.mesh,
+        let shape = ParryCapsule::new_y(capsule.half_height, capsule.radius);
+        let pos12 = Pose::from_translation(position).inverse();
+        self.mesh
+            .triangles()
+            .filter(|triangle| triangle.normal().is_some())
+            .map(
+                |triangle| match capsule_triangle::contact(&pos12, &shape, &triangle) {
+                    Some(contact) => (-contact.dist).max(0.0),
+                    None => capsule.radius,
+                },
             )
-            .is_ok_and(|hit| hit.intersecting)
-        };
-        if !intersects(capsule.radius) {
-            return 0.0;
-        }
-        let (mut clear, mut hit) = (0.0_f32, capsule.radius);
-        for _ in 0..24 {
-            let mid = 0.5 * (clear + hit);
-            if intersects(mid) {
-                hit = mid;
-            } else {
-                clear = mid;
-            }
-        }
-        capsule.radius - clear
+            .fold(0.0, f32::max)
     }
 
     /// Initialize with a structurally valid 1-triangle mesh. `parry3d::TriMesh`
@@ -152,6 +166,9 @@ impl CollisionWorld {
                 .expect("the one-triangle placeholder mesh is always valid"),
             solid_cells: Default::default(),
             teleporters: Default::default(),
+            surfaces: Default::default(),
+            overlap_warned: AtomicBool::new(false),
+            overlap_timer: OverlapCheckTimer::default(),
         }
     }
 
@@ -191,6 +208,8 @@ impl CollisionWorld {
             mesh: TriMesh::new(points, triangles).map_err(CollisionMeshError::from_parry)?,
             solid_cells: solid_cells::SolidCells::from_level(world),
             teleporters: crate::teleporters::Teleporters::from_section(&world.teleporters),
+            surfaces: overlap::SurfaceTable::from_level(world),
+            ..Self::new()
         })
     }
 

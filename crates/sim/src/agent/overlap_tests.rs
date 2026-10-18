@@ -453,7 +453,13 @@ fn a_falling_agent_beside_a_step_still_steps_up() {
     let mut vertical = -1.0;
     let mut grounded = false;
     for _ in 0..30 {
-        let result = step(&world, &capsule, position, Vec3::new(3.0, 0.0, 0.0), vertical);
+        let result = step(
+            &world,
+            &capsule,
+            position,
+            Vec3::new(3.0, 0.0, 0.0),
+            vertical,
+        );
         position = result.position;
         vertical = result.velocity.y;
         grounded = result.grounded;

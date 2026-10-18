@@ -4,7 +4,8 @@ usage: python3 measurements/fluid-base-pass-cost/metal/variants.py [out_dir]
 
 Each variant is the whole fluid shader module (fluid_surface.wgsl plus the
 snippets `fluid_surface.rs` concatenates after it), with one textual edit to
-the reflection-free path of `fs_main`. An experiment build reads one through
+`fs_main`, or to `fluid_baked_light` (the per-vertex baked terms, run from
+`vs_main`). An experiment build reads one through
 `POSTRETRO_FLUID_WGSL_EXPERIMENT` (never committed; see README.md). Every edit
 must match exactly once, so a drifted shader fails loudly instead of timing the
 wrong thing.
@@ -16,10 +17,14 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 SHADERS = ROOT / "crates/renderer/src/shaders"
 # Order and separators of `fluid_surface.rs` SHADER_SOURCE.
-PARTS = ("fluid_surface.wgsl", "sh_indirection.wgsl", "sh_sample.wgsl", "curve_eval.wgsl",
+PARTS = ("fluid_surface.wgsl", "fluid_motion.wgsl", "fluid_reflection.wgsl", "sh_indirection.wgsl", "sh_sample.wgsl", "curve_eval.wgsl",
          "light_falloff.wgsl", "light_eval.wgsl")
 
-SH_CALL = "    let sh = fluid_sample_sh(in.world_position, n, has_direct_sh());\n"
+# The SH sample now lives in `fluid_baked_light` (per vertex, `world_pos`), so
+# `nosh`, `shindirect`, `shshared` and `noocc` change the per-vertex cost, not per-fragment.
+SH_CALL = "    let sh = fluid_sample_sh(world_pos, n, has_direct_sh());\n"
+# Anchor for fs_main diagnostics; `n` and `in.world_position` are in scope there.
+FS_LIGHTING = "    var lighting = in.baked;\n"
 WARP_CALL = ("    let uv = fluid_warp_uv(in.uv, in.drift_scroll, dims, row.wave, uniforms.time, "
              "texels_per_pixel);\n")
 ALBEDO = "    let albedo = sample_post_retro(base_texture, aniso_sampler, uv, ddx, ddy);\n"
@@ -198,33 +203,7 @@ VARIANTS["shshared"] = [
 VARIANTS["noocc"] = [("    let probe_occlusion = sh_grid.probe_occlusion != 0u;\n",
                       "    let probe_occlusion = false;\n")]
 
-# Cost probe for the lower-rate shape: the baked SH terms evaluated per vertex
-# (as billboards do) on today's coarse mesh. The image is faceted; only the
-# cost is representative.
-SH_LIGHTING = (SH_CALL
-    + "    var lighting = select(vec3<f32>(0.0), vec3<f32>(uniforms.ambient_floor), use_ambient_floor);\n"
-    + "    if use_indirect {\n        lighting = lighting + sh.a * uniforms.indirect_scale;\n    }\n"
-    + "    lighting = lighting + sh.b * uniforms.direct_scale;\n")
-VS_RETURN = "    out.probe = in.probe;\n    return out;\n"
-VS_SH = """    out.probe = in.probe;
-    var vn = normalize(in.normal);
-    if dot(vn, uniforms.camera_position - in.position) < 0.0 {
-        vn = -vn;
-    }
-    let vsh = fluid_sample_sh(in.position, vn, has_direct_sh());
-    var baked = select(vec3<f32>(0.0), vec3<f32>(uniforms.ambient_floor), (uniforms.light_term_mask & 0x01u) != 0u);
-    if (uniforms.light_term_mask & 0x06u) != 0u {
-        baked = baked + vsh.a * uniforms.indirect_scale;
-    }
-    out.baked = baked + vsh.b * uniforms.direct_scale;
-    return out;
-"""
-VARIANTS["vertexsh"] = [
-    ("    @location(5) @interpolate(flat) probe: u32,\n};\n",
-     "    @location(5) @interpolate(flat) probe: u32,\n    @location(6) baked: vec3<f32>,\n};\n"),
-    (VS_RETURN, VS_SH),
-    (SH_LIGHTING, "    var lighting = in.baked;\n"),
-]
+# (The old `vertexsh` arm, SH evaluated per vertex, is now the shipped shader: `base`.)
 
 # Diagnostics: images, never timed.
 SH_PATH = """    if uniforms.time > -1.0 && sh_grid.has_sh_volume != 0u {
@@ -252,7 +231,7 @@ SH_PATH_FLOOR = SH_PATH.replace(
     "            textureLoad(scene_depth, vec2<i32>(in.clip_position.xy), 0));\n"
     "        let floor_pos = in.world_position + normalize(in.world_position - uniforms.camera_position) * behind;\n"
     "        let ow = floor_pos + n * 0.1 * sh_grid.cell_size;\n")
-DIAGNOSTICS = {"shpath": [(SH_CALL, SH_PATH + SH_CALL)], "shpathfloor": [(SH_CALL, SH_PATH_FLOOR + SH_CALL)]}
+DIAGNOSTICS = {"shpath": [(FS_LIGHTING, SH_PATH + FS_LIGHTING)], "shpathfloor": [(FS_LIGHTING, SH_PATH_FLOOR + FS_LIGHTING)]}
 
 
 def build(name, edits, extra=None):

@@ -81,6 +81,9 @@ POSES = {
     "low": {"map": E24_MAP, "position": [-4.8768, 1.6, -44.2976], "yaw": 0.0, "pitch": -15.0},
     "mid": {"map": E24_MAP, "position": [-4.8768, 1.6, -44.2976], "yaw": 0.0, "pitch": -30.0},
     "tilt": {"map": E24_MAP, "position": [-4.8768, 1.6, -44.2976], "yaw": 0.0, "pitch": -45.0},
+    # Inside e24's still pool, a metre under its surface (y -0.4064), looking up
+    # at the surface's underside: the parity view from below.
+    "under": {"map": E24_MAP, "position": [-4.8768, -1.4064, -44.2976], "yaw": 0.0, "pitch": 60.0},
 }
 # (config, pose, resolution): 4K everywhere, 1080p for near and far.
 CONFIGS = (("near-4k", "near", UHD), ("near-1080", "near", FHD), ("test-4k", "test", UHD),

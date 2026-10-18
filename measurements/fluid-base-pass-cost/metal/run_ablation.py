@@ -2,13 +2,17 @@
 
 usage: python3 measurements/fluid-base-pass-cost/metal/run_ablation.py --arms a,b,... [options]
   --arms       comma list of <config>:<variant>[:<mask hex>] (variant is a file in
-               variants/ without .wgsl, or "stock" for the binary's own shader; mask
+               variants/ without .wgsl, "stock" for the binary's own shader, or
+               "before"/"after" for a two-binary A/B: that arm launches
+               CELL_BIN_BEFORE / CELL_BIN_AFTER with its own shader; mask
                defaults to 0x13F, the all-terms mask without SPECULAR, which selects
                the reflection-free variant)
   --rounds N   interleaved rounds (default 2: forward, then reversed)
   --warmup N / --samples N   capture frames (default 120 / 120)
   --tag T      results file suffix (results-<T>.{json,md})
-env: CELL_BIN (engine binary, must be named postretro), IDLE_GAP (default 15).
+env: CELL_BIN (engine binary, must be named postretro), CELL_BIN_BEFORE /
+     CELL_BIN_AFTER (per-arm binaries for the before/after variants, each named
+     postretro), IDLE_GAP (default 15).
 
 A thin driver over run.py (copied from claude/cell-rate-spike's kit): same
 recording, watchdog, clock polling, machine-state checks, complete-frame
@@ -27,9 +31,14 @@ import run as kit  # noqa: E402
 kit.RUNS = HERE / "runs"
 kit.RAW = HERE / "raw"
 UHD, FHD = kit.UHD, kit.FHD
+AUTO = [1536, 960]
 CONFIGS = {"near-4k": ("near", UHD), "near-1080": ("near", FHD), "test-4k": ("test", UHD),
-           "mid-4k": ("mid", UHD), "far-4k": ("far", UHD)}
+           "mid-4k": ("mid", UHD), "far-4k": ("far", UHD),
+           # The 5300M's Auto resolution (landing row M2).
+           "near-auto": ("near", AUTO), "test-auto": ("test", AUTO), "mid-auto": ("mid", AUTO)}
 FREE_MASK = 0x13F
+# Two-binary A/B: these variants run their own binary's shader, no override.
+BINARY_VARIANTS = {"before": "CELL_BIN_BEFORE", "after": "CELL_BIN_AFTER"}
 BASE_ENV = dict(kit.ENGINE_ENV)
 
 
@@ -57,11 +66,19 @@ def parse_arm(text):
     mask = int(parts[2], 16) if len(parts) > 2 else FREE_MASK
     pose, res = CONFIGS[config]
     name = f"{config}-{variant}" + (f"-m{mask:03x}" if mask != FREE_MASK else "")
-    wgsl = None if variant == "stock" else HERE / "variants" / f"{variant}.wgsl"
+    own_shader = variant == "stock" or variant in BINARY_VARIANTS
+    wgsl = None if own_shader else HERE / "variants" / f"{variant}.wgsl"
     if wgsl is not None and not wgsl.is_file():
         raise SystemExit(f"missing variant {wgsl} (run variants.py)")
+    if variant in BINARY_VARIANTS:
+        if BINARY_VARIANTS[variant] not in os.environ:
+            raise SystemExit(f"variant {variant} needs {BINARY_VARIANTS[variant]}")
+        binary = Path(os.environ[BINARY_VARIANTS[variant]])
+    else:
+        binary = Path(os.environ.get("CELL_BIN", kit.ROOT / "target/release/postretro"))
     return {"name": name, "config": config, "pose": pose, "resolution": res, "mode": variant,
-            "ratio_one": False, "mask": mask, "wgsl": str(wgsl) if wgsl else None}
+            "ratio_one": False, "mask": mask, "wgsl": str(wgsl) if wgsl else None,
+            "binary": str(binary)}
 
 
 def main():
@@ -76,9 +93,9 @@ def main():
     kit.RUNS.mkdir(exist_ok=True)
     trace_dir = Path(tempfile.gettempdir()) / "fluid-base-pass-traces"
     trace_dir.mkdir(parents=True, exist_ok=True)
-    binary = Path(os.environ.get("CELL_BIN", kit.ROOT / "target/release/postretro"))
-    if binary.name != "postretro" or not binary.is_file():
-        raise SystemExit(f"bad engine binary {binary}")
+    for binary in {Path(a["binary"]) for a in chosen}:
+        if binary.name != "postretro" or not binary.is_file():
+            raise SystemExit(f"bad engine binary {binary}")
     if kit.busy_processes():
         raise SystemExit(f"busy: {kit.busy_processes()}")
     flags = kit.xctrace_flags()
@@ -120,10 +137,11 @@ def main():
                 kit.ENGINE_ENV = dict(BASE_ENV)
                 if a["wgsl"]:
                     kit.ENGINE_ENV["POSTRETRO_FLUID_WGSL_EXPERIMENT"] = a["wgsl"]
+                os.environ["CELL_BIN"] = a["binary"]  # run.py's run_one launches CELL_BIN
                 label = f"{args.tag}-{a['name']}-r{rnd}"
                 print(f"run {label} ...", flush=True)
                 r = kit.run_one(label, a, rnd, args, trace_dir, flags)
-                r["variant"], r["mask"] = a["mode"], a["mask"]
+                r["variant"], r["mask"], r["binary"] = a["mode"], a["mask"], a["binary"]
                 (kit.RUNS / f"{label}.run.json").write_text(json.dumps(r, indent=2) + "\n")
                 records.append(r)
                 print(f"  fluid {kit.fmt(r.get('fluid_ms'), 3)} forward {kit.fmt(r.get('forward_ms'), 3)} "

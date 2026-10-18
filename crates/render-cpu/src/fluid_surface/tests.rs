@@ -69,7 +69,7 @@ fn signed_twice_area(a: DVec3, b: DVec3, c: DVec3, normal: DVec3) -> f64 {
 /// borders exactly one triangle; no triangle edge passes through a face
 /// vertex; and the triangles' areas sum to the face's. Returns the mesh.
 fn assert_tiles_face_without_t_junctions(face: &EnvironmentSurfaceFace) -> FluidSurfaceMesh {
-    let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[], 1);
+    let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[], 1, None);
     let ring = face.vertices.len();
     let position = |i: u32| Vec3::from(mesh.vertices[i as usize].position).as_dvec3();
     let normal = Vec3::from(mesh.vertices[0].normal).as_dvec3();
@@ -167,6 +167,7 @@ fn packing_triangulates_a_strictly_convex_face_into_vertex_count_minus_two_trian
         &[volume(vec![top_face(0, [0.0; 3], 1.0), pentagon])],
         &[[64, 32]],
         1,
+        None,
     );
     // No added vertex: 2 triangles for the square, 3 for the pentagon.
     assert_eq!(mesh.vertices.len(), 4 + 5);
@@ -312,7 +313,7 @@ fn packing_gives_an_added_centroid_the_faces_mean_uv() {
     let mut face = top_face(0, [0.0; 3], 1.0);
     face.vertices
         .insert(1, vertex([0.0, 1.0, 0.25], [0.0, 8.0]));
-    let mesh = pack_fluid_surfaces(&[volume(vec![face])], &[[64, 32]], 1);
+    let mesh = pack_fluid_surfaces(&[volume(vec![face])], &[[64, 32]], 1, None);
     assert_eq!(mesh.vertices.len(), 5 + 1);
     let centroid = mesh.vertices[5];
     assert_eq!(centroid.position, [0.4, 1.0, 0.45]);
@@ -322,7 +323,7 @@ fn packing_gives_an_added_centroid_the_faces_mean_uv() {
 #[test]
 fn packing_takes_the_outward_normal_from_ccw_winding() {
     // CCW seen from +Y: the pool's top face points up.
-    let up = pack_fluid_surfaces(&[volume(vec![top_face(0, [0.0; 3], 1.0)])], &[], 1);
+    let up = pack_fluid_surfaces(&[volume(vec![top_face(0, [0.0; 3], 1.0)])], &[], 1, None);
     for v in &up.vertices {
         assert_eq!(v.normal, [0.0, 1.0, 0.0]);
     }
@@ -330,7 +331,7 @@ fn packing_takes_the_outward_normal_from_ccw_winding() {
     // The same polygon wound the other way is the bottom of a floating block.
     let mut reversed = top_face(0, [0.0; 3], 1.0);
     reversed.vertices.reverse();
-    let down = pack_fluid_surfaces(&[volume(vec![reversed])], &[], 1);
+    let down = pack_fluid_surfaces(&[volume(vec![reversed])], &[], 1, None);
     for v in &down.vertices {
         assert_eq!(v.normal, [0.0, -1.0, 0.0]);
     }
@@ -356,6 +357,7 @@ fn packing_normalizes_texel_uvs_by_the_face_texture_dimensions() {
         &[volume(vec![top_face(1, [0.0; 3], 0.0)])],
         &[[16, 16], [64, 32]],
         2,
+        None,
     );
     let uvs: Vec<[f32; 2]> = mesh.vertices.iter().map(|v| v.uv).collect();
     assert_eq!(uvs, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
@@ -370,6 +372,7 @@ fn packing_leaves_uvs_raw_and_uses_the_placeholder_for_unknown_textures() {
         ])],
         &[[64, 32]],
         1,
+        None,
     );
     // Unknown dimensions keep texel UVs, as world normalization does.
     assert_eq!(mesh.vertices[2].uv, [64.0, 32.0]);
@@ -398,6 +401,7 @@ fn packing_groups_each_volumes_faces_into_one_range_per_material() {
         ],
         &[[64, 32], [64, 32]],
         2,
+        None,
     );
     assert_eq!(mesh.volumes.len(), 2);
     assert_eq!(
@@ -442,7 +446,7 @@ fn packing_gives_slots_only_to_volumes_with_drawable_faces_and_keeps_their_bound
         volume(vec![sliver]),
         volume(vec![top_face(0, [3.0, 0.0, 4.0], 2.0)]),
     ];
-    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
     assert_eq!(mesh.volumes.len(), 1);
     let only = &mesh.volumes[0];
     assert_eq!(only.volume_index, 2);
@@ -454,7 +458,7 @@ fn packing_gives_slots_only_to_volumes_with_drawable_faces_and_keeps_their_bound
     );
     assert_eq!(surface_bounds(&volumes[1]), None);
 
-    assert!(pack_fluid_surfaces(&[], &[], 1).indices.is_empty());
+    assert!(pack_fluid_surfaces(&[], &[], 1, None).indices.is_empty());
 }
 
 fn opacity_all(opacity: f32) -> impl Fn(usize) -> Option<FluidSurfaceLook> {
@@ -599,7 +603,7 @@ fn collector_with_no_volumes_returns_no_draws_and_the_slots_gate_stays_closed() 
     );
     assert!(draws.is_empty());
 
-    let mesh = pack_fluid_surfaces(&[], &[], 1);
+    let mesh = pack_fluid_surfaces(&[], &[], 1, None);
     let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
     slots.set_draws(collector.draws());
     assert!(!slots.has_draws());
@@ -633,7 +637,7 @@ fn collector_rebuilds_bounds_when_the_level_changes() {
 #[test]
 fn slots_upload_only_changed_rows_and_skip_volumes_without_surfaces() {
     let volumes = two_pools();
-    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
     let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
     assert_eq!(slots.slot_count(), 2);
     assert_eq!(slots.window_count(), 1);
@@ -892,7 +896,7 @@ fn a_reload_reuploads_exactly_the_changed_fluids_slots_and_nothing_when_unchange
         volume(vec![top_face(0, [10.0, 0.0, 0.0], 0.0)]),
         volume(vec![top_face(0, [20.0, 0.0, 0.0], 0.0)]),
     ];
-    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
     let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
     let frame = |water: FluidSurfaceLook| [draw(3, sludge_look()), draw(2, water), draw(0, water)];
     slots.set_draws(&frame(water_look()));
@@ -953,7 +957,7 @@ fn a_reload_changing_only_reflectivity_reuploads_that_fluids_slots_and_nothing_w
         volume(vec![top_face(0, [10.0, 0.0, 0.0], 0.0)]),
         volume(vec![top_face(0, [20.0, 0.0, 0.0], 0.0)]),
     ];
-    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
     let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
     let bound = FluidSurfaceLook {
         has_bound_face: true,
@@ -1044,7 +1048,7 @@ fn an_interleaved_change_uploads_one_range_whose_every_row_is_current() {
         volume(vec![top_face(0, [10.0, 0.0, 0.0], 0.0)]),
         volume(vec![top_face(0, [20.0, 0.0, 0.0], 0.0)]),
     ];
-    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
     let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
     let frame = |water: FluidSurfaceLook| [draw(1, sludge_look()), draw(2, water), draw(0, water)];
     slots.set_draws(&frame(water_look()));
@@ -1224,7 +1228,7 @@ fn slots_pair_each_frame_draw_with_its_shader_variant_in_draw_order() {
         volume(vec![top_face(0, [2.0, 0.0, 0.0], 0.0)]),
         volume(vec![top_face(0, [4.0, 0.0, 0.0], 0.0)]),
     ];
-    let mesh = pack_fluid_surfaces(&volumes, &[[64, 32]], 1);
+    let mesh = pack_fluid_surfaces(&volumes, &[[64, 32]], 1, None);
     let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
     let reflecting = FluidSurfaceLook {
         has_bound_face: true,

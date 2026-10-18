@@ -25,3 +25,4 @@ postretro-visibility.workspace = true
 [dev-dependencies]
 postretro-lighting.workspace = true
 proptest.workspace = true
+postretro-test-log-capture.workspace = true

@@ -149,7 +149,7 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 | 1 | Seed the level default gravity from the EnvironmentVolumes header (before scripts run) |
 | 2 | Texture upload from `.prm` sidecars |
 | 3 | UV normalize using uploaded texture dimensions |
-| 4 | Apply the current player shadow tier at the renderer boundary, then upload geometry (rebuilding the spot-shadow pool and resolution-coupled caches only when the retained resolution changed), then fluid surfaces, whose UVs normalize by the uploaded texture sizes; they draw still until drift resolves (note below) |
+| 4 | Apply the current player shadow tier at the renderer boundary, then upload geometry (rebuilding the spot-shadow pool and resolution-coupled caches only when the retained resolution changed), then fluid surfaces, whose UVs normalize by the uploaded texture sizes and whose grid follows the SH lattice geometry upload installs (`rendering_pipeline.md` §7.3a); they draw still until drift resolves (note below) |
 | 5 | World mesh spawn (see seam note below) |
 | 6 | Light bridge: one light entity per map-authored light |
 | 7 | Collision world committed from static geometry (separate from BSP; built before stage 1, so a rejected mesh — a defensive route, see `entity_model.md` §7 — fails the load before any mutation), then the environment volume set and its query tree, replaced whole. Both exist before the level content digest publishes and before the first tick, on the renderer-less path too |

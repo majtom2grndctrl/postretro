@@ -1325,12 +1325,40 @@ impl FullRenderer {
             .unwrap_or(&self.sh_volume_resources.mesh_bind_group)
     }
 
+    /// The lattice group 3's SH sampler reads, for the fluid grid: the
+    /// streamed manifest base, else an installed section's. `None` while the
+    /// placeholder is bound (no section, or one the device refused) or the
+    /// lattice is unusable.
+    pub(super) fn sh_sampler_lattice(
+        &self,
+    ) -> Option<postretro_render_cpu::fluid_surface::FluidGridLattice> {
+        sh_sampler_lattice(
+            self.sh_streaming
+                .as_ref()
+                .map(sh_streaming::ShResidencyState::base_lattice),
+            self.sh_volume_resources.present.then_some((
+                self.sh_volume_resources.grid_origin,
+                self.sh_volume_resources.cell_size,
+            )),
+        )
+    }
+
     pub(super) fn sh_depth_moment_view(&self) -> wgpu::TextureView {
         self.sh_streaming
             .as_ref()
             .and_then(sh_streaming::ShResidencyState::depth_moment_view)
             .unwrap_or_else(|| self.sh_volume_resources.make_depth_moment_view())
     }
+}
+
+/// A streamed level's base lattice wins: its legacy resources still hold the
+/// placeholder (origin 0, 1 m cells), which no sampler reads.
+pub(super) fn sh_sampler_lattice(
+    streamed: Option<([f32; 3], [f32; 3])>,
+    legacy: Option<([f32; 3], [f32; 3])>,
+) -> Option<postretro_render_cpu::fluid_surface::FluidGridLattice> {
+    let (origin, cell_size) = streamed.or(legacy)?;
+    postretro_render_cpu::fluid_surface::FluidGridLattice::new(origin, cell_size)
 }
 
 impl Renderer {

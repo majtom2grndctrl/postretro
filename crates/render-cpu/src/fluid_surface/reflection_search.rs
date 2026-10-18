@@ -1,6 +1,6 @@
 // Fluid reflection distance search: box projection corrected against the
 // probe's stored per-texel distance. GPU-free CPU reference for
-// `fluid_surface.wgsl`'s search, which mirrors it and a test pins.
+// `fluid_reflection.wgsl`'s search, which mirrors it and a test pins.
 // See: context/lib/rendering_pipeline.md §7.3a (Reflection) · resource_management.md §5
 
 use glam::{Vec2, Vec3};

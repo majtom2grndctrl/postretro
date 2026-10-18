@@ -10,9 +10,9 @@ use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_render_cpu::fluid_surface::{
     FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES,
-    FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidShaderVariant,
-    FluidSurfaceDraw, FluidSurfaceSlots, FluidSurfaceVolume, fill_drift_rates, pack_fluid_surfaces,
-    slot_window,
+    FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidGridLattice,
+    FluidShaderVariant, FluidSurfaceDraw, FluidSurfaceSlots, FluidSurfaceVolume, fill_drift_rates,
+    pack_fluid_surfaces, slot_window,
 };
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
@@ -40,6 +40,10 @@ pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 6;
 
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/fluid_surface.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_motion.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection.wgsl"),
     "\n",
     include_str!("../shaders/sh_indirection.wgsl"),
     "\n",
@@ -213,6 +217,9 @@ struct InstalledFluidSurfaces {
     /// Indexed by draw slot.
     volumes: Vec<FluidSurfaceVolume>,
     slots: FluidSurfaceSlots,
+    /// The planes the faces were cut along; tests read it.
+    #[cfg(test)]
+    grid: Option<postretro_render_cpu::fluid_surface::FluidGridPlanes>,
     /// Parameter-row uploads so far; tests read it.
     #[cfg(test)]
     param_uploads: u32,
@@ -321,7 +328,10 @@ impl FluidSurfacePass {
     /// index); faces whose texture is past `material_count` draw with the
     /// placeholder material. `reflection_probes` (section 54) uploads whole
     /// with the surfaces, and its bindings write each face's probe index; a
-    /// level without it binds dummies.
+    /// level without it binds dummies. Faces are cut along `lattice`, the
+    /// level's SH lattice, so the vertex stage's baked lighting varies within
+    /// a probe cell; without one they pack whole.
+    #[allow(clippy::too_many_arguments)]
     pub fn install(
         &mut self,
         device: &wgpu::Device,
@@ -330,9 +340,10 @@ impl FluidSurfacePass {
         reflection_probes: Option<&ReflectionProbesSection>,
         texture_dimensions: &[[u32; 2]],
         material_count: usize,
+        lattice: Option<&FluidGridLattice>,
     ) {
         self.installed = None;
-        let mesh = pack_fluid_surfaces(volumes, texture_dimensions, material_count);
+        let mesh = pack_fluid_surfaces(volumes, texture_dimensions, material_count, lattice);
         if mesh.indices.is_empty() {
             return;
         }
@@ -388,11 +399,23 @@ impl FluidSurfacePass {
                 probe_distance,
             ],
         });
-        log::info!(
-            "[Renderer] Fluid surfaces installed: {} volumes, {} triangles",
-            mesh.volumes.len(),
-            mesh.indices.len() / 3,
-        );
+        match mesh.grid {
+            Some(grid) => log::info!(
+                "[Renderer] Fluid surfaces installed: {} volumes, {} triangles, {} vertices on a \
+                 {:.3?} m grid",
+                mesh.volumes.len(),
+                mesh.indices.len() / 3,
+                mesh.vertices.len(),
+                grid.spacing().to_array(),
+            ),
+            None => log::info!(
+                "[Renderer] Fluid surfaces installed: {} volumes, {} triangles, {} vertices, \
+                 no grid",
+                mesh.volumes.len(),
+                mesh.indices.len() / 3,
+                mesh.vertices.len(),
+            ),
+        }
         self.installed = Some(InstalledFluidSurfaces {
             vertex_buffer,
             drift_buffer,
@@ -405,6 +428,8 @@ impl FluidSurfacePass {
             params_bind_group,
             volumes: mesh.volumes,
             slots,
+            #[cfg(test)]
+            grid: mesh.grid,
             #[cfg(test)]
             param_uploads: 0,
         });
@@ -443,6 +468,15 @@ impl FluidSurfacePass {
             0,
             bytemuck::cast_slice(&installed.drift_rates),
         );
+    }
+
+    /// The installed level's grid planes: `None` without a level, or for
+    /// one packed whole.
+    #[cfg(test)]
+    pub(crate) fn installed_grid(
+        &self,
+    ) -> Option<postretro_render_cpu::fluid_surface::FluidGridPlanes> {
+        self.installed.as_ref().and_then(|installed| installed.grid)
     }
 
     /// Layers of the installed probe array: 1 for the dummy.
@@ -648,10 +682,12 @@ fn create_fluid_pipeline(
 impl Renderer {
     /// Install the level's fluid surfaces and their reflection probes. Call
     /// after `install_textures` and `install_level_geometry` (which drops the
-    /// previous level's): UVs normalize by the installed diffuse dimensions,
-    /// as `normalize_world_uvs` does for world faces. Volumes without surface
-    /// faces allocate nothing, probes included; a level without any never
-    /// opens the pass. `reflection_probes` is the level's section 54.
+    /// previous level's and installs its SH volume): UVs normalize by the
+    /// installed diffuse dimensions, as `normalize_world_uvs` does for world
+    /// faces, and faces are cut along the lattice the SH sampler now reads.
+    /// Volumes without surface faces allocate nothing, probes included; a
+    /// level without any never opens the pass. `reflection_probes` is the
+    /// level's section 54.
     pub fn install_fluid_surfaces(
         &mut self,
         volumes: &[EnvironmentVolumeRecord],
@@ -669,6 +705,7 @@ impl Renderer {
         let texture_dimensions =
             super::renderer_models::loaded_texture_dimensions(&full.loaded_textures);
         let material_count = full.gpu_textures.len();
+        let lattice = full.sh_sampler_lattice();
         full.fluid_surface.install(
             device,
             queue,
@@ -676,6 +713,7 @@ impl Renderer {
             reflection_probes,
             &texture_dimensions,
             material_count,
+            lattice.as_ref(),
         );
     }
 

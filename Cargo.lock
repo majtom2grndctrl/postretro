@@ -4681,6 +4681,7 @@ dependencies = [
  "postretro-lighting",
  "postretro-model",
  "postretro-render-data",
+ "postretro-test-log-capture",
  "postretro-visibility",
  "proptest",
 ]

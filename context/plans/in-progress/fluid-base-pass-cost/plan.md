@@ -53,9 +53,25 @@ Parity at 960×540, |today − new| in 8-bit sRGB over water pixels (water mask 
 | M1 5300M near + probes 4K ≤ 3.0 ms, whole frame reported | Metal kit, `results-landing1` | manual | **pass:** 2.16 / 2.13 ms (whole frame 27.9 / 25.9; today 53.9 / 21.7 ms, 79.6 / 50.7) |
 | M2 5300M at Auto, near/probes/mid vs today | Metal kit, `results-landing1` | manual | **measured:** 0.51 / 0.54 / 0.54 ms vs 9.90 / 4.14 / 4.18 ms; new-arm clocks low, directional |
 | M3 Windows DX12 FXC compile, both variants | owner, Windows | manual | **outstanding** |
-| M4 GTX 1660 Vulkan no regression; reflecting-minus-free at e24 near 4K before/after | owner, Windows | manual | **outstanding** |
+| M4 GTX 1660 Vulkan no regression; reflecting-minus-free at e24 near 4K before/after | owner, Windows | manual | **pass** (GTX 1660 Super, Vulkan, 96ab6c9f4 → e00a42fc5, 64/64 runs valid): every view and mask faster, forward unchanged; reflecting − reflection-free at e24 near 4K 9.99 → 2.48 ms (GTX 1660 table below) |
 | M5 parity at near, probes, mid, under; near-wall subset | Metal kit, `parity.py` | manual | **measured:** max 1/255 per channel at every view, near-wall included (mid: 41 075 px) |
 | M6 owner look | owner, in engine | manual | **outstanding** |
+
+## GTX 1660 Super (Vulkan)
+Release `--features capture,dev-tools` (capture alone reports GPU timing `plain-build-unavailable`), `POSTRETRO_GPU_TIMING=1`, sync-proof SH, 120 warmup + 360 samples, ABBA over 2 rounds; GPU frame = sum of per-pass averages; spreads ≤ 0.10 ms. Measured by the Windows session.
+
+| config | fluid before → after ms | forward before → after | GPU frame before → after |
+|---|---|---|---|
+| near 4K reflection-free | 12.542 → 0.831 | 7.293 → 7.325 | 20.810 → 9.119 |
+| near 4K reflecting | 22.531 → 3.313 | 8.488 → 8.306 | 32.002 → 12.583 |
+| probes 4K reflection-free | 6.577 → 0.792 | 6.162 → 6.158 | 14.393 → 8.649 |
+| probes 4K reflecting | 11.068 → 4.574 | 6.920 → 6.934 | 19.626 → 13.179 |
+| mid 4K reflection-free | 5.341 → 0.462 | 6.450 → 6.433 | 12.790 → 7.886 |
+| mid 4K reflecting | 7.546 → 1.751 | 7.720 → 7.720 | 16.280 → 10.460 |
+| near 1080p reflection-free | 3.170 → 0.255 | 1.928 → 1.928 | 5.393 → 2.464 |
+| near 1080p reflecting | 6.129 → 0.888 | 2.197 → 2.180 | 8.618 → 3.354 |
+
+Reflecting − reflection-free fluid: near 4K 9.99 → 2.48 ms, probes 4K 4.49 → 3.78, mid 4K 2.21 → 1.29, near 1080p 2.96 → 0.63. Removing baked SH from `fs_main` removes most of the near-4K read penalty; about 3.8 ms remains on the probes pool, which is what the reflection brief's split draw still has to win.
 
 ## Review loop
 - Preflight: green (fmt, clippy, 11 691 tests, release check, crate graph; dev-tools clippy + 3 346 tests). `capture,observability,dev-tools` fails to compile on `main` already (missing `swim`/`vault` in observability initializers), unrelated.

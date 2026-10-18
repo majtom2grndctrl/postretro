@@ -36,7 +36,7 @@ Developer-raised, from the cell-rate spike and an attribution experiment on the 
 ### Manual
 - [ ] **5300M, near and probes 4K** (Metal kit, `research.md` §Method): reflection-free fluid pass at most 3.0 ms, whole-frame GPU time reported beside it. Today: 55.0 and 22.3 ms.
 - [ ] **5300M at Auto (1536×960)**, near, probes, mid: measured and reported against today.
-- [ ] **GTX 1660, Vulkan:** no measured view slower than today. Measured and reported.
+- [ ] **GTX 1660, Vulkan:** no measured view slower than today, and the reflecting-minus-reflection-free difference at e24 near 4K recorded before and after (`research.md` §Interaction). Measured and reported.
 - [ ] **Parity:** against today's per-fragment image at near, probes and mid views, per-channel max and mean difference over water pixels, reported.
 - [ ] **Owner look**, in engine over e24's pools and the probes map, steep and grazing: no visible grid lines, no light leak at pool walls, the water still matches baked light on adjacent walls, and a dynamic light near the water still lights it smoothly.
 

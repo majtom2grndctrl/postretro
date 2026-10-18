@@ -72,12 +72,16 @@ ablation2, 2 runs each, spread ≤ 0.6 ms. Removing work made the pass up to 48%
 | Half-resolution fluid lighting target with upsample | Independent of mesh | New targets and pass; depth-aware upsample over translucency; edge artefacts at pool walls |
 | Tighter per-fragment SH sampler | No look change | Measured lottery above; cannot be validated off the 5300M |
 | Per-face constant baked term | Cheapest | Visible: a pool lit by one value; fails "matches baked lighting on adjacent walls" (E24) |
+| Compile-time tessellation in prl-build | prl-build already closes T-junctions, splits faces at 2 mm and knows the SH lattice; a cap warning reaches the mapper at build time | Changes the PRL format; freezes sample density into baked data, so retuning needs a rebake; couples a renderer quality choice to the format |
+| World-space irradiance texture per fluid face, written by compute when SH compose runs | No mesh change, no T-junction proof, no vertex cap; near free while lights are static | New pass, new fragment binding (fluid fragment storage is spent, §10), persistent VRAM, chart gutters; refreshes every frame while any animated light runs; falls in the texture-space shading class the reflection brief already sends to IP review, where a per-vertex grid is long-standing practice |
 
 ## Grid notes for the executor
 
 - **Shared edges.** The compiler splits fluid faces at 2 mm depth and inserts collinear vertices to close T-junctions (§7.3a Triangulation). A grid cut per face would put new vertices on a neighbour's edge that the neighbour lacks: a T-junction, a crack. Lattice planes fixed in world space cut a shared edge at the same points from both faces, provided both compute each crossing the same way (for example, from the edge's lexicographically lower endpoint).
 - **Lattice alignment.** Planes on the SH probe lattice (and its subdivisions) keep each sub-polygon inside one probe cell, where the field is closest to linear.
 - **Streams.** Drift (location 3) and probe index (location 4) are per vertex and written per face; a face's grid vertices must stay contiguous so its ranges still cover them. The reflection cell-rate spike's per-face affine fit reads face vertices; extra vertices on the plane do not change it.
+- **Which lattice.** Align to the base (finest) SH lattice. Scaled adaptive nodes (§4) reconstruct L1 across a 2× or 4× node edge, so base-lattice planes over-sample them, which is harmless; do not align to node boundaries.
+- **Code shape.** §7.3's Surface Depth note (AMD Metal register allocation) applies to the new `vs_main` and to every later `fs_main` edit: re-measure the reflection-free pass on the 5300M when either changes.
 - **Bound.** A mapper can author a huge ocean face. Vertex count must not scale without bound; coarsen the spacing past a per-level cap and warn, as other install-time bounds do (`development_guide.md` §1.4).
 
 ## Wider finding
@@ -87,3 +91,11 @@ The world forward pass runs the same per-fragment sampler for SH indirect. At th
 ## Interaction with `reflection-probe-fluid-pass-performance`
 
 That draft's done-row is "reflecting water within 1 ms of reflection-free". Its reflecting variant runs the same base lighting, so this brief lowers both variants' floor by the same ~53 ms at near 4K. After it lands, the reflection term (10–14 ms at full-screen 4K) is most of the reflecting pass, and that brief's levers carry more of the frame.
+- **GTX 1660 read penalty.** On the 1660 the reflecting variant pays ~8.4 ms at e24 near 4K for one long-latency reflection read held across the heavy per-fragment lighting it shares a shader with (`origin/claude/cell-rate-spike`, `findings-1660.md` items 4–7). That penalty is the whole case for the reflection brief's deferred split draw. Moving the baked lighting out of `fs_main` plausibly removes it, so the split-draw question should be measured after this lands; this brief's 1660 row records the reflecting-minus-free difference at e24 near for that reason.
+- **Per-frame face records.** The reflection brief's candidate "per-frame rewrite of the drawn faces' vertex words" would scale with this grid's vertex count, not the face count. Its other candidate, a uniform table keyed by face index, is unaffected. A coordination note for that draft.
+
+## Foreclosure and neighbours
+
+- **Normal-perturbing water.** Per-vertex baked light cannot respond to a per-pixel normal. Today's wave is a UV warp with no height, so nothing is lost now; a future normal-mapped or height-wave water re-opens per-fragment baked SH, or interpolates per vertex and corrects per fragment.
+- **`fluid-ssr-reflections` fallback.** That draft names Fresnel-weighted reads from the baked SH probes as its fallback. Built per fragment, it would put back the cost this brief removes.
+

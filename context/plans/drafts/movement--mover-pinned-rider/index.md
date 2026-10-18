@@ -9,24 +9,26 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
 - **Only `crush` may leave a body pinned. Every other policy yields to a pinned body.**
   - This diverges from `done/E17--doors-blocking-movers` AC4 (the default stays "byte-for-byte as today"), from `movement.md` §6 ("never yield"), and from `done/E17--rider-not-a-blocking-contact`'s "no static-pin logic" for stop/reverse riders.
   - Argument: a pin is a softlock, so no working map can rely on one. And every classic default pusher (Quake, Doom, Source) refuses to move into what it cannot push clear (`research.md` §Prior art).
-  - Owner ratifies: Open question 1.
+  - Owner ratified, with the `crush` widening below.
 - **Pinned has one definition, for every policy, crush included.**
   - A rider is the body the mover carries, keyed on carry ground: grounded on it, or vaulting onto it. A rider is pinned when its carry would sweep into static geometry or into another mover.
-  - Any other body is pinned when the mover's push on it is blocked by static geometry or by another mover. That widens today's crush predicate (`mover_push_is_blocked_by_static`), which ignores movers. Without the widening, a default double door closing on a player leaves them inside a leaf.
-  - Crush therefore also crushes a rider carried sideways into a wall, and a body squeezed between two movers.
-- **The host decides one tick ahead.** The pin test runs on this tick's pose and on the preview of next tick's pose, as the stop hold's preview already does. So on the host the mover yields before its carry embeds a rider.
+  - Any other body is pinned when the mover's push on it is blocked by static geometry or by another mover. This widens the blocking pass's pin test only; the movement substrate's displacement keeps ignoring movers. Without the widening, a default double door closing on a player leaves them inside a leaf.
+  - Crush therefore also crushes a rider carried sideways into a wall, and a body squeezed between two movers. This changes authored crushers (`campaign-test`, the stress-warren maps); owner ratified.
+- **The host decides one tick ahead.** The pin test runs on this tick's pose and on the preview of next tick's pose. So on the host the mover yields before its carry embeds a rider.
+- **No course reaches the driver unpreviewed.** A mover whose phase a command changed after the pass (the frame-end script drain: reactions, sequence steps, `wait` tails) is pin-tested again before the next mover tick, and yields there as the pass would. A script can move a held mover only along a course that pins nothing.
 - **A pin overrides the rider skip and the airborne rider grace**, as crush already ignores the grace. Unpinned contacts keep today's reactions exactly.
-- **Yield by policy.** `stop` holds. `reverse` reverses when its path heading drives into the pin. Otherwise it holds: when it is pathless, as `effective_block_policy` already degrades it, or when the pin comes from spin or is off its heading. `displace` takes Open question 2's answer. A hold is the replicated stop hold: it freezes translation and spin, fires the blocked event and sound at onset, and resumes on the first tick the preview no longer pins. No wire field, no digest input, no FGD key or value.
+- **Yield by policy.** `stop` holds. `displace` and `reverse` reverse when their path heading drives into the pin and the reversed course pins nothing, as Quake and Doom doors and lifts back off a blocked player. Otherwise they hold: when pathless (as `effective_block_policy` already degrades `reverse`), when the pin comes from spin or is off the heading, or when the reversed course would pin another body. A hold is the replicated stop hold: it freezes translation and spin, fires the blocked event and sound at onset, and resumes on the first tick the preview no longer pins. No wire field, no digest input, no FGD key or value.
+  - Owner chose reverse for `displace` over hold: a held lift in an enclosed shaft would trap its rider in place of embedding it, and reversing carries them out. The cost, stated to mappers: a reversal clears a scripted `goToPathNode` target, and sends a `once` mover back to its start.
 - **Unpinned motion is unchanged.** A `displace` mover still pushes what it can push clear, and a rider with headroom rides as before.
 - **Carry stays unswept and exempt from the overlap check** (`movement.md` §1). The guarantee is the mover yielding, not the body.
-- **The block decision stays host-only** (`networking.md` §Current contract). A client predicts the mover moving until the new phase arrives, and its pawn can embed for that window. The reconcile against the held or reversed mover clears it. Owner trade-off: Open question 3.
-- **Placement.** Mover policy, in the host blocking pass in `postretro-physics`. The movement substrate does not change.
-- **Mapper surface.** The FGD `block_policy` help and the SDK `setBlockPolicy` doc comment state the pin rule. `docs/level_design.md` gains a movers section. It says what each policy does to players and gives the pin rule. It says that `crush`, even at its default zero damage, is the one policy that never yields. It says that in co-op any player can hold a default door by standing where it would pin them, so a door that must close authors `crush`. It covers no agent behaviour yet.
-- **A yield to a pinned rider warns once per mover per level load**, naming the mover and its TrenchBroom position. In an enclosed shaft a held lift is otherwise the mapper's only sign of too little headroom.
+- **The block decision stays host-only** (`networking.md` §Current contract). A client predicts the mover moving until the new phase arrives, and its pawn can embed for that window. The reconcile against the held or reversed mover clears it. Owner accepted this correction, the one a `stop` door already takes, over predicting the yield on the client, which would put block policy into the digest and on the wire.
+- **Placement.** Mover policy, in the host blocking pass in `postretro-physics`, and the host's re-test before the mover tick. The movement substrate does not change.
+- **Mapper surface.** The FGD `block_policy` help and the SDK `setBlockPolicy` doc comment state the pin rule. `docs/level_design.md` gains a movers section. It says what each policy does to players and gives the pin rule: a default mover backs off a pinned player, or waits when it cannot back off. It says what a back-off costs a scripted or `once` mover. It says that `crush`, even at its default zero damage, is the one policy that never yields. It says that in co-op any player can hold a default door by standing where it would pin them, so a door that must close authors `crush`. It covers no agent behaviour yet.
+- **A yield to a pinned rider warns once per mover per level load**, naming the mover and its TrenchBroom position. In an enclosed shaft a lift that keeps backing off or holding is otherwise the mapper's only sign of too little headroom.
 - **Non-goals.**
   - **Agents.** They are never carried or displaced (`movement.md` §6), so no mover pins one, and agent reactions stay as they are. "Enemy–mover interaction" adopts this predicate (`context/research/enemy-mover-interaction.md` §8).
   - **Static depenetration of an embedded body.** A pinned body has no free pose until the mover yields, and once movers yield they no longer create one.
-  - **Crush beyond the shared predicate.** It keeps pressing at any damage. Multi-victim crush order belongs to "Enemy–mover interaction" (§4 there).
+  - **Crush beyond the shared predicate.** Multi-victim crush order belongs to "Enemy–mover interaction" (§4 there).
 
 ## Acceptance
 ### Automated
@@ -36,12 +38,12 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
 - [ ] Under `crush` with non-zero `crush_damage`, a rider carried sideways into a static wall takes no damage and ends inside the wall. A pawn squeezed between the crusher and another mover takes no damage either.
 
 **No non-crush mover leaves a body pinned** (driver, player movement and host blocking pass in tick order, under `displace`, `stop` and `reverse`. "Resumes" is a holding mover's outcome; a reversing one heads back along its path instead.)
-- [ ] A rider lifted toward a too-low ceiling never ends a tick overlapping static geometry by more than 0.5 mm. Under `reverse` the lift carries it back down.
+- [ ] A rider lifted toward a too-low ceiling never ends a tick overlapping static geometry by more than 0.5 mm. A `stop` lift holds; a `displace` or `reverse` lift carries it back down.
 - [ ] A rider overhanging a lift's edge, rising under an upper-floor slab edge: the lift yields. When the rider steps toward the platform's centre, the lift resumes the next tick and reaches its top stop with the rider clear.
 - [ ] A rider on a platform translating under a low arch, and one on a spinning carousel whose rim passes under a static pillar, never end a tick inside static geometry. The carousel's spin holds under every policy, `reverse` included. Pin Q6.
 - [ ] Each of these pawns is never left more than one tick's mover travel inside the mover: one standing against a jamb as a door closes, one under a descending lift, one against a wall a rotating door swings toward, and one between two closing door leaves. After it steps away, the movers resume the next tick and complete.
 - [ ] A rider on a lift rising toward a closed hatch mover never ends a tick overlapping the hatch's hull. The lift yields, and resumes the tick after the hatch opens clear of the rider's carry.
-- [ ] A rider that jumped off a rising lift and is caught against a ceiling within the 150 ms grace window counts as pinned.
+- [ ] A rider that jumped off a rising lift and is caught against a ceiling within the grace window counts as pinned.
 - [ ] A vault onto a rising mover under a ceiling never ends a tick inside the ceiling.
 - [ ] Two pawns on one tick, one pinned and one not: the mover yields, whatever order the pawns are visited in.
 - [ ] The tick after the preview first pins, a holding mover moves nothing and its rider ends where it ended the tick before. A reversing one carries its rider away from the pin. Pin Q5.
@@ -49,12 +51,13 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
 - [ ] A yield to a pinned rider logs one warning naming the mover and a TrenchBroom position. Later yields of that mover in the same level load are silent, and after a reload the next one warns.
 
 **Orderings** (`research.md` pins)
-- [ ] An auto-close timer that expires while a pawn pins the door never moves the door into the pawn. It holds if its closing course drives into the pin. Pin Q1.
-- [ ] A `start` or `reverse` command on a held mover never moves it into the pin. A command whose course leaves the pin moves it, and one that drives into the pin leaves it held. Pin Q2.
+- [ ] An auto-close timer that expires while a pawn pins the door never moves the door into the pawn. It yields if its closing course drives into the pin. Pin Q1.
+- [ ] A `start` or `reverse` command on a held mover never moves it into the pin. A command whose course leaves the pin moves it, and one that drives into the pin yields again. Pin Q2.
+- [ ] A default `once` door closing on a pawn at its jamb reverses to its start and stays there; a default lift sent by `moverGoToPathNode` that backs off a pinned rider drops the scripted target. Both match the movers section of `docs/level_design.md`.
 - [ ] A pinned pawn that despawns or disconnects releases the hold on the next tick. Pin Q3.
 - [ ] `setBlockPolicy("crush")` on a held mover resumes it the next tick and crushes. A crusher switched to `displace` mid-pin yields the next tick. Pin Q4.
 - [ ] A `moverStart`, `moverReverse`, `moverGoToPathNode` or `moverSetSpinRate` reaction run from the frame-end script drain on a mover holding for a pinned rider never carries the rider into static geometry on the next tick. Pin Q7.
-- [ ] A `reverse` lift whose rider is pinned against a ceiling while a pawn stands pinned under it holds. It never moves onto the pawn, never changes direction on successive ticks, and fires one blocked event. Pin Q8.
+- [ ] A `displace` or `reverse` lift whose rider is pinned against a ceiling while a pawn stands pinned under it holds. It never moves onto the pawn, never changes direction on successive ticks, and fires one blocked event. Pin Q8.
 
 **Unpinned motion unchanged** (regression guards)
 - [ ] A default slider pushing a pawn across open floor, and a rider on a default lift with headroom, reproduce their c1cad7e positions exactly.
@@ -66,7 +69,7 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
 
 **Co-op and gates**
 - [ ] Loopback harness with the host blocking pass running, under the mandated link profile: a client riding a default lift toward a too-low ceiling converges to the host's pose. Its pawn overlaps static geometry on no tick after the first reconcile carrying the yield. The largest correction is reported in the plan of record.
-- [ ] Diff gate: no wire field, content-digest input, or FGD key or value is added, unless Open question 3 chooses client prediction.
+- [ ] Diff gate: no wire field, content-digest input, or FGD key or value is added.
 - [ ] `docs/` gains no `cargo run -p xtask`.
 
 ### Manual
@@ -80,22 +83,14 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
   - `preview_next_mover_pose`; `mover_push_is_blocked_by_static`, with the rider test beside it, sweeping to `apply_mover_carry`'s end pose. The other-mover blocker can use other movers' current poses.
   - `player_capsules` returns `movement.ground`; rider identity needs `carry_ground` (movement/mod.rs).
   - Reverse's heading test needs a normal: use the push or carry direction.
-  - `apply_mover_command` (`Start`, `Reverse`) and `travel_toward_closed_terminus` clear `blocked` before the pass runs.
+  - `apply_mover_command` (`Start`, `Reverse`, `GoToPathNode`) and `travel_toward_closed_terminus` clear `blocked`. Trigger-stage commands run before the pass; the frame-end script drain runs after it, so the host re-test sits at the top of `simulate_tick`, before the mover tick, over the movers the drain changed.
+  - A reversal needs its own preview of the reversed course before it commits (pin Q8).
 - **Shape:** the mover yields to a pinned body, reusing hold and reverse.
-- **Strongest rival:** swept carry. Rejected as the fix: the platform then rises into the rider and must still yield. It remains an alternative in Open question 3.
+- **Strongest rival:** swept carry. Rejected: the platform then rises into the rider and must still yield, and it changes `movement.md` §1's carry exemption.
 - **First slice:** the reproduce-first rider fixture under driver, movement and pass. It falsifies the riskiest premise: that the one-tick preview yields before the carry embeds.
 - **Tests.** The overlap_tests.rs mover fixtures place poses by hand and never run the pass. The netcode loopback `host_simulate_tick` skips the pass too.
-- **Files past 800 lines:** kinematic_mover/blocking.rs (2942, mostly tests). Move its test module to a sibling file first, in its own behaviour-preserving commit.
-- **At landing:** in `movement.md`, replace the §1 Not covered bullet and restate §6's displace and rider-exemption text. In `networking.md` §Current contract, the stop hold now also serves `displace`.
+- **Files past 800 lines:** kinematic_mover/blocking.rs, mostly tests. Move its test module to a sibling file first, in its own behaviour-preserving commit.
+- **At landing:** in `movement.md`, replace the §1 Not covered bullet and restate §6's displace and rider-exemption text. In `networking.md` §Current contract, the stop hold and reversal now also serve `displace`.
 
 ## Open questions
-- Ratify the divergence: default `displace`, and the `stop`/`reverse` rider skip, yield to a pinned body. This changes E17's shipped default and rider exemption only where a pin occurs. Recommendation: yes, because the pin is a softlock today. — owner — **blocks build**
-- How a pinned `displace` mover yields: hold, as `stop` does, or reverse, as Quake, Doom and Source doors do.
-  - Recommendation: hold. Reverse clears a scripted `goToPathNode` target and sends a `once` mover back to its start, where it stays unless an auto-close timer recloses it. Hold reuses the stop hold exactly.
-  - Cost: a rider pinned in an enclosed shaft waits instead of being carried back. Mappers who want bounce author `reverse`.
-  - owner — **blocks build**
-- Client latency window: accept the reconcile correction, swept carry, or a predicted yield.
-  - Recommendation: accept the reconcile correction, the one a `stop` door already takes.
-  - Swept carry is a body-side mitigation, but it changes `movement.md` §1's carry exemption.
-  - Predicting the yield for the client's own pawn puts block policy into the digest and on the wire.
-  - owner — **blocks build**
+- None. The owner settled the divergence (with the `crush` widening), reverse-then-hold for `displace`, the client reconcile correction, and the re-test for commands after the pass; each is recorded in Decisions.

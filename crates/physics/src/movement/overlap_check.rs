@@ -97,7 +97,7 @@ fn check(
     #[cfg(any(test, feature = "test-support"))]
     if test_assert::armed() {
         panic!(
-            "{what} ended a tick inside static geometry: started clear at {start:?}, \
+            "{what} ended inside static geometry: started clear at {start:?}, \
              ended at {end:?} (texture {:?})",
             overlap.texture
         );
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "own movement ended a tick inside static geometry")]
+    #[should_panic(expected = "own movement ended inside static geometry")]
     fn an_armed_check_panics_on_a_breach() {
         let world = floor();
         check_own_movement(

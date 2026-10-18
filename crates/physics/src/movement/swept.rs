@@ -141,7 +141,8 @@ pub fn ground_stick_reach(params: StepParams) -> f32 {
 /// A walkable floor found below a pose.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FloorBelow {
-    /// How far the capsule drops to rest a skin width above the floor.
+    /// How far the capsule drops to rest a skin width above what stops it: the
+    /// floor, or for [`snap_to_floor`] perched beside a riser, the edge.
     pub drop: f32,
     pub normal: Vec3,
     pub ground: GroundRef,

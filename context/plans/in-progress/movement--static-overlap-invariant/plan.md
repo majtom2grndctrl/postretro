@@ -172,7 +172,7 @@ armed as an assertion.
 | B5 pawn steps onto mover top; agent ignores it | `a_pawn_steps_up_onto_and_snaps_to_a_movers_top`, `an_agent_ignores_a_mover_top_its_pawn_neighbour_steps_onto` | automated |
 | B6 controllers keep call rules; own walkable slope | `a_falling_agent_beside_a_step_still_steps_up`, `an_airborne_pawn_beside_a_step_does_not_step_up`, `a_pawn_tuned_to_a_shallower_walkable_slope_classifies_floors_by_its_own_slope` | automated |
 | B7 carried into ceiling behaves as before; no assert | `a_pawn_carried_into_a_static_ceiling_rides_on_and_never_trips_the_assertion` (carry code is untouched; the fixture proves the ride and the silent assertion) | automated |
-| B8 existing suites pass armed | `cargo test` physics 391, sim 1477, netcode 801, ai 245, postretro 1812 + 3 | automated |
+| B8 existing suites pass armed | `cargo test` physics 396, sim 1477, netcode 800, ai 245, postretro 1812 + 3, all armed | automated |
 | C1 predictor replay reproduces host poses exactly | `predictor_replay_reproduces_host_poses_exactly_over_a_vault_step_up_and_ground_stick` | automated |
 | D1 grep gate: no unswept position writes | `the_substrate_writes_no_body_position_outside_a_swept_move`, `the_agent_controller_writes_no_body_position_outside_a_swept_move` | automated |
 | D2 stand-up / slide exit under low ceiling | `a_stand_up_under_a_ceiling_too_low_…`, `a_slide_exit_under_a_ceiling_too_low_…` | automated |
@@ -195,4 +195,4 @@ armed as an assertion.
 | 5 | Resize growth clearance: anchored stand-up, growing entry | integrating executor | 3 | done: crouch stand-up and crouch-jump sweep in the anchor's growth direction; crouch and slide entry test a growing crouch capsule. Without it D3 ends 0.4 m in the floor, D4 0.3 m in the ceiling |
 | 6 | Remaining AC fixtures, grep gates, determinism replay | integrating executor | 4, 5 | done |
 | 7 | Measurement on `stress-env-volumes` | integrating executor | 3 | done: `measurements/overlap-check-cost/` |
-| 8 | Preflight, review panel, fixes | integrating executor | 6, 7 | |
+| 8 | Preflight, review panel, fixes | integrating executor | 6, 7 | done: two review rounds; fixes in 63b19aa and after |

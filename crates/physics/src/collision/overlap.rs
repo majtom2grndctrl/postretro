@@ -25,7 +25,8 @@ pub const MAP_UNIT_METRES: f32 = 0.0254;
 /// level load (`CollisionWorld::claim_overlap_warning`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StaticOverlap {
-    /// Capsule centre at the end of the tick, engine metres.
+    /// Capsule centre where the breach was found, engine metres: the end of
+    /// the tick, or for a capsule resize, the resized pose.
     pub position: Vec3,
     /// Texture of the deepest triangle overlapped, as an index for
     /// [`CollisionWorld::texture_name`]. `None` for an untextured face or a

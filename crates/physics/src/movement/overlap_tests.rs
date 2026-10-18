@@ -1079,9 +1079,13 @@ fn a_pawn_perched_on_a_ledge_edge_over_a_mover_is_not_its_rider() {
             end.y > rest_y(&desc, top - desc.ground.step_height) + 0.05,
             "offset {offset}: the edge stops the drop, at {end:?}"
         );
-        assert_ne!(
+        assert!(
+            end.y < position.y - 0.05,
+            "offset {offset}: ground-stick dropped the pawn onto the edge, at {end:?}"
+        );
+        assert_eq!(
             component.ground,
-            GroundRef::Mover(PLATFORM),
+            GroundRef::World,
             "offset {offset}: perched on the static edge, not riding the mover below"
         );
     }

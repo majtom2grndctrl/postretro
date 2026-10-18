@@ -91,7 +91,7 @@ The world forward pass runs the same per-fragment sampler for SH indirect. At th
 
 ## Interaction with `reflection-probe-fluid-pass-performance`
 
-That draft is not merged: it lives on `claude/reflection-perf-brief`. Its Decisions say the reflection-free variant "keeps today's cost and image"; this brief changes both, so that line needs a coordination edit when either lands.
+That draft is not merged: it lives on `claude/reflection-perf-brief`. Its Decisions say the reflection-free variant "keeps today's cost and image"; this brief changes both, so that line needs a coordination edit; whichever brief lands second makes it.
 
 That draft's done-row is "reflecting water within 1 ms of reflection-free". Its reflecting variant runs the same base lighting, so this brief lowers both variants' floor by the same ~53 ms at near 4K. After it lands, the reflection term (10–14 ms at full-screen 4K) is most of the reflecting pass, and that brief's levers carry more of the frame.
 - **GTX 1660 read penalty.** On the 1660 the reflecting variant pays ~8.4 ms at e24 near 4K for one long-latency reflection read held across the heavy per-fragment lighting it shares a shader with (`origin/claude/cell-rate-spike`, `findings-1660.md` items 4–7). That penalty is the whole case for the reflection brief's deferred split draw. Moving the baked lighting out of `fs_main` plausibly removes it, so the split-draw question should be measured after this lands; this brief's 1660 row records the reflecting-minus-free difference at e24 near for that reason.
@@ -110,15 +110,19 @@ That draft's done-row is "reflecting water within 1 ms of reflection-free". Its 
 | P2 | level change, SH level to one with another lattice or none | geometry install clears fluid and replaces SH, then fluid install | the second level packs on its own lattice, or ungridded; nothing carries over |
 | P3 | streamed-SH level | streamed state initialises after the legacy SH resources, which hold the placeholder lattice (origin 0, 1 m) | grid on the manifest base lattice, never the placeholder |
 | P4 | level with no SH volume, or one the device rejects | SH resources fall to the placeholder | packs as today; ambient floor only; no error |
-| P5 | level at or under the cap | count before pack | chosen spacing; no log |
-| P6 | level past the cap, overflow reached only by the last face, which shares an edge with the first | count every face before packing any | one coarser spacing for every face; shared edge identical; under the cap; one log |
-| P7 | level whose ungridded vertices alone exceed the cap | coarsening has no spacing left | packs as today; terminates; one log |
+| P5 | level at or under the cap | count before pack | finest spacing; no cap warning |
+| P6 | level past the cap, overflow reached only by the last face, which shares an edge with the first | count every face before packing any | the finest fitting spacing for every face; shared edge identical; at or under the cap; one warning |
+| P7 | level whose ungridded vertices alone exceed the cap | coarsening has no spacing left | packs as today; terminates; one warning |
 | P8 | face spanning several probe cells | cut by every lattice family crossing it | no sub-polygon wider than one spacing on any lattice axis |
 | P9 | edge shared by a top face and a side face, and by a sloped face | each face cuts by every lattice family crossing the edge | identical vertices along the edge from both faces |
 | P10 | original vertex exactly on a lattice plane | crossing coincides with a corner | no duplicate vertex; no zero-area triangle |
 | P11 | face edge lying in a lattice plane | plane is parallel to and on the edge | no vertex added along it; no sliver strip |
-| P12 | crossing within the collinear tolerance of an original vertex on a shared edge | snap decided from the edge alone | both faces snap the same way |
-| P13 | edge with an open T-junction today (burial, or between volumes): face A's edge spans two of face B's segments | each face cuts its own edges | crossings agree on both sides; the existing T-vertex stays; no new one |
+| P12 | crossing within, and just outside, the collinear tolerance of an original vertex on a shared edge | snap decided from the edge alone | both faces snap the same way; the one outside stays a vertex |
+| P13 | edge with an open T-junction today (burial, or between volumes): face A's edge spans two of face B's segments | each face cuts its own edges | crossings agree within the collinear tolerance on both sides; the existing T-vertex stays; no new one |
 | P14 | level with no fluid | install returns before packing | no grid, no cap log |
 | P15 | drift re-resolve (script or fluid table reload) | drift rewrite runs over the packed mesh | grid untouched; drift stream covers every grid vertex |
 | P16 | camera below, then crossing, the water plane | per-vertex and per-fragment terms read one camera position per frame | baked term takes the viewer's side the same frame dynamic lights do |
+| P17 | level whose finest fitting spacing is several steps coarser than the finest | spacing search runs to completion before any face is cut | the finest spacing that fits; one warning, not one per step |
+| P18 | one authored face whose finest grid would be far past the cap (a 10 km ocean) | spacing chosen from the face's extent, before cutting | packs at or under the cap; the finer mesh is never built (`development_guide.md` §1.4, full lifetime) |
+| P19 | level change or reload after a level that coarsened | second install chooses its spacing from its own faces | the second level's spacing and warning are its own; nothing carries over |
+| P20 | SH section with zero, negative or non-finite cell size | lattice read before packing | packs as today; no grid; no panic |

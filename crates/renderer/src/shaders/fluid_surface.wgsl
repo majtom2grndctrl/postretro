@@ -430,7 +430,7 @@ fn fluid_warp_uv(uv: vec2<f32>, drift_scroll: vec2<f32>, dims: vec2<f32>, wave: 
 }
 
 // Depth fog. Mirrors `postretro_render_cpu::fluid_surface::fog`: each fog
-// function and constant here is pinned to it, and `fs_main`'s tail inlines its
+// function and constant here is pinned to it, and `fluid_shade`'s tail inlines its
 // `fog_fragment`. The extinction constants are CPU-only, used in packing.
 const FLUID_FOG_BAND: f32 = 0.08;
 const FLUID_FOG_PATH_MAX: f32 = 1.0e4;
@@ -474,15 +474,9 @@ fn fluid_fog_composite(rgb: vec3<f32>, alpha: f32, fog_rgb: vec3<f32>, fog_opaci
     return vec4<f32>(out, total);
 }
 
-// Set per pipeline (render-cpu `FluidShaderVariant`). The pass builds this
-// shader twice over one layout: false for draws that cannot reflect, so their
-// fragments compile with no reflection code at all (its mere presence slows
-// the always-run lighting on some drivers), true for the rest.
-override FLUID_REFLECTIONS: bool = true;
-
 // Reflection probes. Mirrors `postretro_render_cpu::fluid_surface::reflection`:
-// each function and constant here is pinned to it, and `fs_main`'s tail
-// inlines its `reflection_fragment` after the fog composite.
+// each function and constant here is pinned to it, and `fs_main_reflecting`'s
+// tail inlines its `reflection_fragment` after the fog composite.
 const FLUID_REFLECTION_BASE_F0: f32 = 0.02;
 const FLUID_REFLECTION_NO_PROBE: u32 = 0xFFFFFFFFu;
 const FLUID_REFLECTION_ALL_TERMS: u32 = 0x17Fu;
@@ -1106,14 +1100,26 @@ fn fluid_light(light_idx: u32, world_pos: vec3<f32>, n: vec3<f32>, scripted: boo
     return effective_color * attenuation * max(dot(n, L), 0.0);
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Derivatives in uniform control flow, from the unwarped UV, and the
-    // world position's for the pixel reflection style's texel axes.
+// What the reflection tail needs from the shared shading. Only
+// `fs_main_reflecting` reads past `surface`.
+struct FluidShaded {
+    surface: vec4<f32>,
+    outward: vec3<f32>,
+    view_dir: vec3<f32>,
+    uv_dx_texels: vec2<f32>,
+    uv_dy_texels: vec2<f32>,
+    dims: vec2<f32>,
+    texels_per_pixel: f32,
+    reflectivity: f32,
+};
+
+// Everything up to and including the fog composite. Both fragment entry
+// points share it, so they match pixel for pixel wherever the reflecting
+// gate is shut.
+fn fluid_shade(in: VertexOutput) -> FluidShaded {
+    // Derivatives in uniform control flow, from the unwarped UV.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    let ddx_world = dpdx(in.world_position);
-    let ddy_world = dpdy(in.world_position);
     let dims = vec2<f32>(textureDimensions(base_texture, 0));
     let texels_per_pixel = max(length(ddx * dims), length(ddy * dims));
     let row = fluid_volumes.slots[in.slot];
@@ -1186,18 +1192,37 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let fog_opacity = fluid_fog_layer_opacity(fluid_scene.fog_weight, proximity, transmittance);
         surface = fluid_fog_composite(rgb, alpha, row.fog_albedo.rgb * lighting, fog_opacity);
     }
-    // The reflection-free variant ends here; the block below folds away.
-    if !FLUID_REFLECTIONS {
-        return surface;
-    }
+    return FluidShaded(surface, outward, V, ddx * dims, ddy * dims, dims, texels_per_pixel,
+        row.surface.z);
+}
+
+// Reflection-free entry: the shading alone. It is its own entry point, not an
+// override branch, so naga leaves the reflection globals out of its signature.
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return fluid_shade(in).surface;
+}
+
+@fragment
+fn fs_main_reflecting(in: VertexOutput) -> @location(0) vec4<f32> {
+    // The world position's derivatives, for the pixel reflection style's
+    // texel axes, in uniform control flow before the first branch.
+    let ddx_world = dpdx(in.world_position);
+    let ddy_world = dpdy(in.world_position);
+    let shaded = fluid_shade(in);
+    let surface = shaded.surface;
+    let outward = shaded.outward;
+    let V = shaded.view_dir;
+    let dims = shaded.dims;
+    let texels_per_pixel = shaded.texels_per_pixel;
     // A probe-bound face seen from above under the all-terms mask mirrors its
     // probe over that at union coverage; every other fragment is unchanged.
     // The reflection starts from the style's point and sees the eye from there.
-    let reflectivity = row.surface.z;
+    let reflectivity = shaded.reflectivity;
     if !fluid_reflection_gate(in.probe, outward, V, uniforms.light_term_mask, reflectivity) {
         return surface;
     }
-    let axes = fluid_reflection_texel_axes(ddx * dims, ddy * dims, ddx_world, ddy_world);
+    let axes = fluid_reflection_texel_axes(shaded.uv_dx_texels, shaded.uv_dy_texels, ddx_world, ddy_world);
     let point = fluid_reflection_point(fluid_scene.reflection_style, in.uv * dims, in.world_position,
         outward, axes, uniforms.time, texels_per_pixel, fluid_probes.probes[in.probe].box_min,
         fluid_probes.probes[in.probe].box_max, fluid_probes.probes[in.probe].capture_point);

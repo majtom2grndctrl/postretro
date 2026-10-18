@@ -204,7 +204,7 @@ pub enum FluidShaderVariant {
 impl FluidShaderVariant {
     pub const ALL: [Self; 2] = [Self::ReflectionFree, Self::Reflecting];
 
-    /// The value of the shader's `FLUID_REFLECTIONS` override.
+    /// Whether this variant runs the reflection tail.
     pub fn reflections(self) -> bool {
         self == Self::Reflecting
     }

@@ -85,9 +85,9 @@ fn face_triangles(mesh: &FluidSurfaceMesh, range: &Range<usize>) -> Vec<[u32; 3]
         .collect()
 }
 
-fn on_some_plane(p: DVec3, spacing: f64) -> bool {
+fn on_some_plane(p: DVec3, spacing: f64, origin: DVec3) -> bool {
     (0..3).any(|axis| {
-        let origin = f64::from(ORIGIN[axis]);
+        let origin = origin[axis];
         let k = ((p[axis] - origin) / spacing).round();
         (p[axis] - (origin + k * spacing)).abs() <= 1.0e-5 * (1.0 + p[axis].abs())
     })
@@ -107,6 +107,17 @@ fn assert_gridded_face(
     index: usize,
     face: &EnvironmentSurfaceFace,
     spacing: f64,
+) -> Range<usize> {
+    assert_gridded_face_on(mesh, index, face, spacing, dvec(ORIGIN))
+}
+
+/// [`assert_gridded_face`] for planes at `origin` (the lattice's own).
+fn assert_gridded_face_on(
+    mesh: &FluidSurfaceMesh,
+    index: usize,
+    face: &EnvironmentSurfaceFace,
+    spacing: f64,
+    origin: DVec3,
 ) -> Range<usize> {
     let range = face_range(mesh, index);
     let ring = face.vertices.len();
@@ -149,7 +160,10 @@ fn assert_gridded_face(
             uv_at(p)
         );
         if i >= range.start + ring {
-            assert!(on_some_plane(p, spacing), "added vertex {p} on no plane");
+            assert!(
+                on_some_plane(p, spacing, origin),
+                "added vertex {p} on no plane"
+            );
         }
         for j in (range.start..i).filter(|&j| !(original(i) && original(j))) {
             assert_ne!(
@@ -338,9 +352,12 @@ fn faces_sharing_an_edge_carry_identical_vertices_along_it() {
     shared(3, 4, [2.9, 1.1, 0.0], [4.2, -0.3, 0.6]);
 }
 
-// P11: an edge lying in a lattice plane, or within the plane tolerance of
-// it so that the plane falls strictly inside one face's extent, gains
-// nothing from that plane, and no sliver strip runs beside it.
+// P11: an edge lying in a lattice plane, or 0.1 mm off it (inside the
+// tolerance, so the plane is excluded for both faces either way), gains
+// nothing from that plane, and no sliver strip runs beside it. This documents
+// the outcome; it cannot fail on a mismatched predicate. The shared `side`
+// predicate is pinned at the tolerance boundary by
+// `a_vertex_at_the_plane_tolerance_boundary_is_judged_alike_by_both_faces`.
 #[test]
 fn an_edge_in_a_lattice_plane_gains_no_vertex_from_it() {
     // On x = 1.25; 0.1 mm into the right face's extent; 0.1 mm into the left's.
@@ -715,11 +732,23 @@ fn a_part_with_a_millimetre_side_far_from_the_origin_keeps_every_triangle() {
 fn a_lattice_too_fine_for_its_distance_packs_within_the_cap() {
     let far = FluidGridLattice::new([-1.0e10; 3], [2.0e-10; 3]).expect("a usable lattice");
     let pool = top(0.0, 0.002, 0.0, 0.002, 1.1);
-    let volumes = [volume(vec![pool])];
+    let volumes = [volume(vec![pool.clone()])];
     for cap in [16, 1000] {
         let mesh = pack_fluid_surfaces_within(&volumes, &[], 1, Some(&far), cap);
         assert!(mesh.vertices.len() as u64 <= cap, "cap {cap}");
     }
+    // At cap 1000 the grid coarsens to a spacing near the plane tolerance: a
+    // crossing at one plane is On the next, so only every other plane cuts.
+    // The per-triangle span bound (spacing + 2 tolerances) already admits the
+    // resulting 2 × spacing + tolerance.
+    let mesh = pack_fluid_surfaces_within(&volumes, &[], 1, Some(&far), 1000);
+    let planes = mesh.grid.expect("a grid at cap 1000");
+    assert!(
+        planes.spacing().x < 4.0 * PLANE_TOLERANCE,
+        "spacing {}",
+        planes.spacing().x
+    );
+    assert_gridded_face_on(&mesh, 0, &pool, planes.spacing().x, DVec3::splat(-1.0e10));
 }
 
 // Regression: two vertices of one shallow edge within the tolerance on
@@ -784,7 +813,11 @@ fn a_face_repeating_a_vertex_cuts_without_a_crack() {
 #[test]
 fn a_range_too_wide_or_too_fine_to_count_saturates_the_bound() {
     let unit = FluidGridLattice::new([0.0; 3], [2.0; 3]).unwrap().planes(0);
-    assert!(unit.splitting_count(0, 0.5, 1.0e9 + 0.5) >= 1_000_000_000);
+    // Planes 1..=1e9: the count at the saturation limit itself.
+    assert_eq!(
+        unit.splitting_count(0, 0.5, 1.0e9 + 0.5),
+        PLANE_COUNT_LIMIT as u64
+    );
     assert_eq!(
         unit.splitting_count(0, 0.0, 4.0e9),
         PLANE_COUNT_LIMIT as u64
@@ -793,4 +826,95 @@ fn a_range_too_wide_or_too_fine_to_count_saturates_the_bound() {
         .unwrap()
         .planes(0);
     assert_eq!(far.splitting_count(0, 0.0, 0.002), PLANE_COUNT_LIMIT as u64);
+}
+
+/// The ring wound CCW seen from +Y, as the fixtures' tops are.
+fn upward(mut points: Vec<[f32; 3]>) -> EnvironmentSurfaceFace {
+    if face_normal(&face(&points)).unwrap().y < 0.0 {
+        points.reverse();
+    }
+    let f = face(&points);
+    assert!(face_normal(&f).unwrap().y > 0.99);
+    f
+}
+
+// `split`'s run rule with ring vertex 0 on the plane: the ring's side there
+// is the side before the run, found by searching backward. The diamond's
+// vertex 0 and (with the insert) the collinear insert before it form a
+// multi-vertex run Above -> On -> Below; vertex 2 is a run Below -> On ->
+// Above: both chords of the one plane. The neighbour holds the shared edge
+// the other way round.
+#[test]
+fn a_run_on_a_plane_at_ring_vertex_zero_cuts_both_chords_and_matches_its_neighbour() {
+    // On x = 1.25 within the tolerance, on the diamond's edge (1.6, 0.5)-(1.25, 0).
+    let insert = [1.2501, 1.1, 1.0e-4 * 0.5 / 0.35];
+    let diamond = upward(vec![
+        [1.25, 1.1, 0.0],
+        [0.9, 1.1, 0.5],
+        [1.25, 1.1, 1.0],
+        [1.6, 1.1, 0.5],
+        insert,
+    ]);
+    let neighbour = upward(vec![
+        [1.25, 1.1, 0.0],
+        insert,
+        [1.6, 1.1, 0.5],
+        [2.0, 1.1, -1.0],
+    ]);
+    assert_eq!(diamond.vertices[0].position, [1.25, 1.1, 0.0]);
+    let mesh = pack(&[volume(vec![diamond.clone(), neighbour.clone()])]);
+    let ranges = [
+        assert_gridded_face(&mesh, 0, &diamond, SPACING),
+        assert_gridded_face(&mesh, 1, &neighbour, SPACING),
+    ];
+    let (a, b) = ([1.25, 1.1, 0.0], [1.6, 1.1, 0.5]);
+    let from_diamond = edge_vertices(&mesh, &ranges[0], a, b);
+    let from_neighbour = edge_vertices(&mesh, &ranges[1], a, b);
+    assert!(from_diamond.contains(&insert), "{from_diamond:?}");
+    assert!(from_diamond.len() > 3, "the z plane crosses the edge");
+    assert_eq!(from_diamond, from_neighbour);
+}
+
+/// The lowest `f32` x whose offset below x = 1.25 is within the tolerance,
+/// and the next one down, which is beyond it.
+fn tolerance_boundary_xs() -> (f32, f32) {
+    let mut inside = (1.25 - PLANE_TOLERANCE) as f32;
+    while 1.25 - f64::from(inside) > PLANE_TOLERANCE {
+        inside = f32::from_bits(inside.to_bits() + 1);
+    }
+    while 1.25 - f64::from(f32::from_bits(inside.to_bits() - 1)) <= PLANE_TOLERANCE {
+        inside = f32::from_bits(inside.to_bits() - 1);
+    }
+    let outside = f32::from_bits(inside.to_bits() - 1);
+    assert!(1.25 - f64::from(inside) <= PLANE_TOLERANCE);
+    assert!(1.25 - f64::from(outside) > PLANE_TOLERANCE);
+    (inside, outside)
+}
+
+// The plane range of an extent and the cut judge a vertex by the same
+// predicate. A shared vertex V sits one f32 step either side of the
+// tolerance from x = 1.25. For one face V is the extent's minimum, so the
+// plane is at the boundary of its range; for the other it is strictly inside.
+// Within the tolerance neither crosses the shared edge; beyond it both do, at
+// the same point.
+#[test]
+fn a_vertex_at_the_plane_tolerance_boundary_is_judged_alike_by_both_faces() {
+    let (inside, outside) = tolerance_boundary_xs();
+    let (w, p, q) = ([1.9, 1.1, 1.0], [0.6, 1.1, 1.0], [2.4, 1.1, 0.0]);
+    let mut crossed = Vec::new();
+    for x in [inside, outside] {
+        let v = [x, 1.1, 0.0];
+        let wide = upward(vec![v, p, w]);
+        let narrow = upward(vec![v, w, q]);
+        let mesh = pack(&[volume(vec![wide.clone(), narrow.clone()])]);
+        let ranges = [
+            assert_gridded_face(&mesh, 0, &wide, SPACING),
+            assert_gridded_face(&mesh, 1, &narrow, SPACING),
+        ];
+        let from_wide = edge_vertices(&mesh, &ranges[0], v, w);
+        let from_narrow = edge_vertices(&mesh, &ranges[1], v, w);
+        assert_eq!(from_wide, from_narrow, "edge from x = {x}");
+        crossed.push(from_wide.iter().any(|c| c[0] == 1.25));
+    }
+    assert_eq!(crossed, [false, true], "plane crossings of the shared edge");
 }

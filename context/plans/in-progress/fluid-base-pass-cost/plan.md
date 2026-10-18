@@ -39,23 +39,29 @@ Parity at 960×540, |today − new| in 8-bit sRGB over water pixels (water mask 
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 fragment entries sample no SH atlas / probe depth / SH grid; `vs_main` samples each; runtime lights stay in both fragment entries; reflecting entry keeps the shared sampler; per-fragment pins inverted | naga `global_uses` test over all three entries + inverted source pins (`fluid_surface_tests.rs`) | achievable as stated |
-| A2 layout keeps groups, entries, visibilities and vertex stride | existing layout/stride/budget tests unedited; BGL builders untouched in the diff | achievable as stated |
-| A3 grid packing (areas, planes, UV, shared edges P9–P12, T-junctions P13, originals P10, contiguity + streams P15, uncut face, cap P5–P7 P17 P18) | render-cpu `fluid_surface::grid` tests | achievable as stated |
-| A4 lattice the SH sampler uses (section's or manifest base, never placeholder, P3) | GPU-free selection test + adapter test on legacy and streamed installs | achievable as stated |
-| A5 no usable SH volume → packs as today, ambient only, no error (P4, P20); no fluid → no grid, no log (P14) | render-cpu lattice-validation + no-lattice pack tests; adapter frame test (ambient only); log-capture test | achievable as stated |
-| A6 fluid install after geometry install on level and capture paths; level change repacks on its own lattice / cap warning (P1, P2, P19) | source-order tests (lifecycle, capture); adapter level-change test | achievable as stated |
-| A7 GPU frame tests: variant parity; uniform field vs CPU formula within 1/255 across scales and masks incl. fog layer; viewer side above/below/crossing on both variants (P16) | `fluid_surface_frame_test.rs` adapter tests over an in-memory RGBA16F SH section | achievable as stated |
-| A8 budget pins pass unedited, vertex stage included | existing budget tests, unedited | achievable as stated |
-| A9 diff touches no level-compiler, level-format or wire code | `git diff --stat main` over those crates at preflight | achievable as stated |
-| M1 5300M near + probes 4K reflection-free pass ≤ 3.0 ms, whole frame reported | executor, Metal kit (this machine is the 5300M) | manual |
-| M2 5300M at Auto (1536×960), near/probes/mid vs today | executor, Metal kit | manual |
-| M3 Windows DX12 FXC compile, both variants | owner, Windows | manual |
-| M4 GTX 1660 Vulkan no regression; reflecting-minus-free at e24 near 4K before/after | owner, Windows | manual |
-| M5 parity vs per-fragment at near, probes, mid, under e24; and within one spacing of a pool wall | executor, Metal kit captures | manual |
-| M6 owner look: grid lines, wall leaks, wall match, dynamic light smooth | owner, in engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 fragment entries sample no SH atlas / probe depth / SH grid; `vs_main` samples each; runtime lights in both fragment entries; reflecting entry keeps the shared sampler; per-fragment pins inverted | `only_the_vertex_entry_samples_the_sh_volume` (naga `global_uses`), `fluid_baked_light_is_per_vertex_and_runtime_lights_per_fragment`, `the_reflection_free_variant_compiles_no_reflection_into_its_executable_path` | achievable as stated | **pass** |
+| A2 layout keeps groups, entries, visibilities and vertex stride | existing layout/stride/binding tests unedited; no BGL builder in the diff | achievable as stated | **pass** |
+| A3 grid packing (areas, planes, UV, shared edges P9–P12, T-junctions P13, originals P10, contiguity + streams P15, uncut face, cap P5–P7 P17 P18) | `fluid_surface::grid` (24 tests), `probe_indices_cover_every_grid_vertex_of_a_bound_face` | achievable as stated | **pass, one case open:** P13 on an edge at a shallow angle to a plane whose T-vertex lies within tolerance of that plane: the long side gains a crossing up to (tolerance + T offset)/sin θ along the edge from the T-vertex, on the open edge's own line (crack no wider than the compiler's T-junction). Owner decision below. Area sums hold to f32 packing (~1e-4 relative at 1 km on oblique edges). |
+| A4 lattice the SH sampler uses (section's or manifest base, never placeholder, P3) | `the_fluid_grid_takes_the_lattice_the_sh_sampler_reads`; adapter: `the_fluid_grid_takes_each_levels_sh_lattice_and_a_level_without_one_draws_ambient_only`, `a_streamed_level_cuts_its_fluid_on_the_manifest_base_lattice` | achievable as stated | **pass** |
+| A5 no usable SH volume → packs as today, ambient only, no error (P4, P20); no fluid → no grid, no log (P14) | `no_fluid_or_no_lattice_builds_no_grid_and_logs_nothing`, `an_unusable_lattice_is_refused`; adapter: zero-dimension, zero-cell and NaN-origin levels draw the ambient floor alone (renderer now refuses a degenerate lattice) | achievable as stated | **pass** |
+| A6 fluid install after geometry install on level and capture paths; level change repacks on its own lattice / cap warning (P1, P2, P19) | `fluid_surfaces_install_after_level_geometry_on_the_level_and_capture_paths`, `a_second_level_takes_its_own_spacing_and_warning`, adapter level-change test | achievable as stated | **pass** |
+| A7 GPU frame tests: variant parity; uniform field vs formula within 1/255 across scales and masks incl. fog; viewer side above/below/crossing on both variants (P16) | `fluid_baked_frame_test` (4 adapter tests, ran on the 5300M Mac, none skipped) | achievable as stated | **pass** (worst 1/255; reflection composite 2/255) |
+| A8 budget pins pass unedited, vertex stage included | `pipeline_budget_tests` unedited (one comment line reworded) | achievable as stated | **pass** |
+| A9 diff touches no level-compiler, level-format or wire code | `git diff --stat main...HEAD -- crates/level-compiler crates/level-format crates/net crates/netcode` empty | achievable as stated | **pass** |
+| M1 5300M near + probes 4K ≤ 3.0 ms, whole frame reported | Metal kit, `results-landing1` | manual | **pass:** 2.16 / 2.13 ms (whole frame 27.9 / 25.9; today 53.9 / 21.7 ms, 79.6 / 50.7) |
+| M2 5300M at Auto, near/probes/mid vs today | Metal kit, `results-landing1` | manual | **measured:** 0.51 / 0.54 / 0.54 ms vs 9.90 / 4.14 / 4.18 ms; new-arm clocks low, directional |
+| M3 Windows DX12 FXC compile, both variants | owner, Windows | manual | **outstanding** |
+| M4 GTX 1660 Vulkan no regression; reflecting-minus-free at e24 near 4K before/after | owner, Windows | manual | **outstanding** |
+| M5 parity at near, probes, mid, under; near-wall subset | Metal kit, `parity.py` | manual | **measured:** max 1/255 per channel at every view, near-wall included (mid: 41 075 px) |
+| M6 owner look | owner, in engine | manual | **outstanding** |
+
+## Review loop
+- Preflight: green (fmt, clippy, 11 691 tests, release check, crate graph; dev-tools clippy + 3 346 tests). `capture,observability,dev-tools` fails to compile on `main` already (missing `swim`/`vault` in observability initializers), unrelated.
+- Panel 1 (2 tracers + adversarial, opus; hygiene, sonnet): 0 🔴; fixed: sliver parts dropped beyond ~105 m from the origin, i64 overflow on a huge origin with a tiny cell, overlapping halves on an on-plane vertex run, mismatched range/side predicates, unsaturated count, degenerate SH lattice still sampled (P20), tests not exercising the tolerance, comment drift and the measurement kit after the shader split.
+- Panel 2 (adversarial on the fix round): 0 🔴; closed two test gaps (run rule at ring vertex 0, tolerance-boundary predicate), mutation-checked.
+- Owner decision open: the P13 shallow-angle case in A3 (above). No edge-local rule exists: the long face cannot see the neighbour's T-vertex.
 
 ## Tasks
 

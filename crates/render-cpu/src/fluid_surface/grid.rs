@@ -33,8 +33,9 @@ const PLANE_INDEX_LIMIT: f64 = (1u64 << 53) as f64;
 /// spacing is below the precision of the planes' formula.
 const PLANE_SEARCH_STEPS: u32 = 4;
 /// A ring turns at a vertex when the turn's sine exceeds this. f64 rounding
-/// of the turn stays far below it, and an f32 position off a line by one ulp
-/// lies far above it.
+/// of the turn stays far below it. A vertex whose turn falls under it, such
+/// as an f32 position off a long edge by an ulp near the origin, is treated
+/// as collinear and later clipped into a corner, so nothing is lost.
 const CORNER_SINE: f64 = 1.0e-12;
 
 /// The SH probe lattice the fluid grid aligns to: the one the sampler reads.
@@ -430,9 +431,10 @@ fn crossing(
 /// and planes passing near a corner); each stays a triangle corner. Each step
 /// clips a corner beside a collinear vertex, which turns that vertex into a
 /// corner, so three corners always remain; with none left, any corner.
-/// Corners are judged on the positions as packed, in f32, so a part with any
-/// drawn area keeps it, however far from the origin. A part with no corner
-/// left has no area and draws nothing.
+/// Corners are judged on the positions as packed, in f32, so a part keeps its
+/// drawn area however far from the origin, down to a final triangle judged at
+/// one vertex: area under about 1e-12 of its longer sides' product can be
+/// dropped. A part with no corner left has no area and draws nothing.
 fn triangulate_convex(
     polygon: &[u32],
     positions: &[DVec3],

@@ -589,8 +589,9 @@ impl FluidSurfacePass {
     }
 }
 
-/// One fluid pipeline: `variant` picks the fragment entry point. Everything else is shared, so both
-/// variants draw under one layout, vertex layout, blend and depth state.
+/// One fluid pipeline: `variant` picks the fragment entry point. Everything
+/// else is shared, so both variants draw under one layout, vertex layout,
+/// blend and depth state.
 fn create_fluid_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,

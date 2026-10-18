@@ -22,8 +22,9 @@ use crate::frame_uniforms::LightTermMask;
 use crate::sh_compose::{AnimatedLightScaleDescriptor, animated_light_scale};
 
 // The shader mirrors each reference function below, `reflection_fragment`
-// inlined as `fs_main`'s tail after the fog composite, and each constant but
-// the packing-only ones; `render/fluid_surface_tests.rs` pins them.
+// inlined as `fs_main_reflecting`'s tail after the fog composite, and each
+// constant but the packing-only ones; `render/fluid_surface_tests.rs` pins
+// them.
 
 /// Schlick base reflectance per unit of `surfaceReflectivity`: 1 is water's
 /// 0.02, and [`FLUID_REFLECTIVITY_MAX`] tops at a mirror (F0 = 1).
@@ -542,16 +543,16 @@ pub struct FluidReflectionFragment {
     pub texels_per_pixel: f32,
 }
 
-/// The fragment's output as `fs_main`'s tail computes it from `surface`
-/// (the fog reference's output): unchanged when the gate is off, else the
-/// probe's capture, sampled toward the distance search's lookup and scaled
-/// by the live-lighting ratio toward that same direction, composited over it
-/// at the Fresnel weight times the search's (0 in the capture shadow,
-/// fading in over the pinned capture texels of angle beside it) times the
-/// eye's band: an eye within [`super::fog::FLUID_FOG_BAND`] above the plane
-/// scales the term by its height through the band, the fog's own proximity
-/// ([`fog_proximity`]), reaching 0 at the plane, so an eye bobbing there
-/// never flips the mirror.
+/// The fragment's output as `fs_main_reflecting`'s tail computes it from
+/// `surface` (the fog reference's output): unchanged when the gate is off,
+/// else the probe's capture, sampled toward the distance search's lookup
+/// and scaled by the live-lighting ratio toward that same direction,
+/// composited over it at the Fresnel weight times the search's (0 in the
+/// capture shadow, fading in over the pinned capture texels of angle beside
+/// it) times the eye's band: an eye within [`super::fog::FLUID_FOG_BAND`]
+/// above the plane scales the term by its height through the band, the fog's
+/// own proximity ([`fog_proximity`]), reaching 0 at the plane, so an eye
+/// bobbing there never flips the mirror.
 /// The reflection starts from the style's point (the fragment, or its texel
 /// cell's centre, held to the probe's box at a wall rim, about the cell's
 /// tilted normal) and sees the eye from there, so every fragment of a

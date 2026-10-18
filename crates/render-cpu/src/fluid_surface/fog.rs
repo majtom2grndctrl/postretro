@@ -4,7 +4,7 @@
 use glam::{Mat4, Vec3, Vec4};
 
 // The shader mirrors each function below, `fog_fragment` inlined as
-// `fs_main`'s tail, and each constant but the two packing-only extinction
+// `fluid_shade`'s tail, and each constant but the two packing-only extinction
 // constants; `render/fluid_surface_tests.rs` pins them against it.
 
 /// Extinction per unit of `1 / fogDistance`: transmittance at a path of one
@@ -106,7 +106,7 @@ pub struct FluidFogFragment {
     pub weight: f32,
 }
 
-/// The fragment's output, as `fs_main`'s tail computes it: the surface
+/// The fragment's output, as `fluid_shade`'s tail computes it: the surface
 /// `(rgb, alpha)` unchanged when the fluid has no fog or the face is seen from
 /// inside, else composited over its fog.
 pub fn fog_fragment(rgb: Vec3, alpha: f32, fragment: &FluidFogFragment) -> Vec4 {

@@ -176,7 +176,7 @@ armed as an assertion.
 | D5 grep gate: agent holds no step-up/snap logic | `the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own` | automated |
 | D6 default off in release, on with debug assertions, variable on in release | `the_check_defaults_on_with_debug_assertions_and_off_in_release`, `the_variable_turns_the_check_on_or_off_in_any_build` | automated |
 | D7 diff gate: no wire / descriptor field | `git diff fd8982c -- crates/net crates/foundation crates/entities crates/netcode/src/wire*` is empty | checked |
-| D8 measured cost on `stress-env-volumes` | task 7 | pending |
+| D8 measured cost on `stress-env-volumes` | `measurements/overlap-check-cost/` — `sim_overlap_check` 0.024 ms per tick (0.040 ms over the first 600 ticks) with the check on; absent with it off; `sim_tick` unchanged; dumps byte-identical. Under 0.1 ms, so every moving body is checked | measured headless (no GPU here: the tick's stage timing turned on by a local patch, recorded with the result); a windowed release run is the owner's |
 | M1–M4 | owner, in-engine | manual |
 
 ## Tasks
@@ -189,5 +189,5 @@ armed as an assertion.
 | 4 | Convert every unswept move at its source; flip lip fixture | integrating executor | 3 | done: every task-1 fixture flipped; physics 376, sim 1471, netcode 799, ai 245 pass armed |
 | 5 | Resize growth clearance: anchored stand-up, growing entry | integrating executor | 3 | done: crouch stand-up and crouch-jump sweep in the anchor's growth direction; crouch and slide entry test a growing crouch capsule. Without it D3 ends 0.4 m in the floor, D4 0.3 m in the ceiling |
 | 6 | Remaining AC fixtures, grep gates, determinism replay | integrating executor | 4, 5 | done |
-| 7 | Measurement on `stress-env-volumes` | integrating executor | 3 | |
+| 7 | Measurement on `stress-env-volumes` | integrating executor | 3 | done: `measurements/overlap-check-cost/` |
 | 8 | Preflight, review panel, fixes | integrating executor | 6, 7 | |

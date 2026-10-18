@@ -1,11 +1,13 @@
 // Normal-state velocity intent.
 // See: context/lib/movement.md §4
 
+use crate::collision::moving::CombinedCollisionWorld;
 use glam::{Vec2, Vec3};
 
 use crate::movement::carry::CarryRule;
 use crate::movement::substrate::{
-    JumpEdges, ResizeAnchor, air_jump_ready, pm_accelerate, resize_capsule, wish_dir_from_input,
+    JumpEdges, ResizeAnchor, air_jump_ready, anchored_standup_clearance_probe, pm_accelerate,
+    resize_capsule, wish_dir_from_input,
 };
 use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -34,12 +36,14 @@ use super::{GROUND_STOP_FRICTION, OVERSPEED_BLEED_MARGIN};
 /// ONCE per tick by `derive_jump_edges` before this intent runs (D5). The jump
 /// steps consume `jump_edges.grounded` / `jump_edges.air` IN PLACE OF the raw
 /// `jump_pressed` bit so forgiveness is never re-derived here.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn normal_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     jump_edges: JumpEdges,
     gravity: f32,
     dt: f32,
+    collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
     events: &mut MovementEvents,
 ) -> Option<Transition> {
@@ -191,7 +195,7 @@ pub(crate) fn normal_intent(
     // velocity reset, so momentum is preserved unchanged (the §6 parity no-op).
     if input.crouch_intent {
         if component.is_grounded()
-            && let Some(transition) = try_enter_slide(component, position)
+            && let Some(transition) = try_enter_slide(component, collision, position)
         {
             return Some(transition);
         }
@@ -203,6 +207,19 @@ pub(crate) fn normal_intent(
             } else {
                 ResizeAnchor::Head
             };
+            // An authored crouch capsule taller than the standing one grows on
+            // entry; it needs room in the direction it grows, or the pawn stays
+            // standing and retries while crouch holds.
+            if !anchored_standup_clearance_probe(
+                component,
+                collision,
+                *position,
+                component.capsule.half_height,
+                target_half_height,
+                anchor,
+            ) {
+                return None;
+            }
             let eye_current = component.capsule.eye_height;
             let delta = resize_capsule(component, target_half_height, target_eye_height, anchor);
             position.y += delta;

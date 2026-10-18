@@ -579,3 +579,205 @@ fn vaults_never_end_a_tick_overlapping_static_geometry() {
         vault_case(1.0, chamfer, 0.0, Some(3), &idle_input());
     }
 }
+
+// --- Capsule resizes -------------------------------------------------------------
+
+fn with_crouch(mut desc: PlayerMovementDescriptor, half_height: f32) -> PlayerMovementDescriptor {
+    desc.crouch = Some(postretro_foundation::CrouchParams {
+        half_height,
+        eye_height: half_height * 0.5,
+        transition_rate: 15.0,
+    });
+    desc
+}
+
+fn with_slide(mut desc: PlayerMovementDescriptor) -> PlayerMovementDescriptor {
+    desc.slide = Some(postretro_foundation::SlideParams {
+        min_speed: 8.0,
+        slide_drag: 2.0,
+        slope_assist: 1.0,
+        steer_rate: 180.0,
+        entry_boost: 1.5,
+        min_duration_ms: 250.0,
+    });
+    desc
+}
+
+fn crouching(input: MovementInput) -> MovementInput {
+    MovementInput {
+        crouch_intent: true,
+        ..input
+    }
+}
+
+fn kind(component: &PlayerMovementComponent) -> MovementStateKind {
+    component.movement_state.kind()
+}
+
+/// Open floor for x < 5, then a ceiling at `ceiling_y` over x > 5: room for the
+/// crouched capsule, not the standing one.
+fn low_tunnel(ceiling_y: f32) -> CollisionWorld {
+    Geometry::default()
+        .floor((-50.0, 60.0), 0.0)
+        .wall_x(5.0, (ceiling_y, 10.0), Vec3::NEG_X)
+        .ceiling((5.0, 60.0), ceiling_y)
+        .build()
+}
+
+#[test]
+fn a_stand_up_under_a_ceiling_too_low_for_the_standing_capsule_stays_crouched_and_clear() {
+    let desc = with_crouch(descriptor(), 0.4);
+    let world = low_tunnel(2.0);
+    let (mut component, mut position) =
+        settled(&desc, &world, Vec3::new(3.0, rest_y(&desc, 0.0), 0.0));
+    // Crouch-walk into the tunnel, then release.
+    position = run_clear(
+        &mut component,
+        &world,
+        &crouching(toward_x()),
+        position,
+        90,
+        "crouch walk",
+    );
+    assert!(position.x > 6.0 && kind(&component) == MovementStateKind::Crouch);
+    for _ in 0..30 {
+        position = step_clear(
+            &mut component,
+            &world,
+            &idle_input(),
+            position,
+            "released crouch",
+        );
+        assert_eq!(
+            kind(&component),
+            MovementStateKind::Crouch,
+            "stays crouched under the ceiling"
+        );
+    }
+}
+
+#[test]
+fn a_slide_exit_under_a_ceiling_too_low_for_the_standing_capsule_stays_crouched_and_clear() {
+    let desc = with_slide(with_crouch(descriptor(), 0.4));
+    let world = low_tunnel(2.0);
+    let (mut component, mut position) =
+        settled(&desc, &world, Vec3::new(1.0, rest_y(&desc, 0.0), 0.0));
+    component.velocity = Vec3::new(12.0, 0.0, 0.0);
+    let running = MovementInput {
+        running: true,
+        ..toward_x()
+    };
+    // Slide in under the ceiling, then release crouch while beneath it.
+    let mut slid = false;
+    for _ in 0..30 {
+        position = step_clear(
+            &mut component,
+            &world,
+            &crouching(running.clone()),
+            position,
+            "slide in",
+        );
+        slid |= kind(&component) == MovementStateKind::Slide;
+        if position.x > 6.0 {
+            break;
+        }
+    }
+    assert!(
+        slid && position.x > 6.0,
+        "the fixture slides under the ceiling, at {position:?}"
+    );
+    let position = run_clear(&mut component, &world, &running, position, 40, "slide exit");
+    assert!(position.x > 5.5, "still under the ceiling, at {position:?}");
+    assert_eq!(
+        kind(&component),
+        MovementStateKind::Crouch,
+        "the exit stays crouched"
+    );
+}
+
+// Regression: an airborne stand-up anchors the head, which drops the feet by
+// twice the size change, but its clearance probe swept only upward, so a
+// crouched pawn just above a floor stood up into it.
+#[test]
+fn an_airborne_stand_up_just_above_a_floor_stays_crouched_until_the_feet_have_room() {
+    let desc = with_crouch(descriptor(), 0.4);
+    let world = Geometry::default().floor((-50.0, 60.0), 0.0).build();
+    let mut component = PlayerMovementComponent::from_descriptor(&desc);
+    component.coyote_timer_ms = 1000.0;
+    // Falling from feet 2 m up; crouch in the air (the head stays put, so the
+    // crouched feet start 2.8 m up).
+    let mut position = Vec3::new(
+        0.0,
+        2.0 + desc.capsule.half_height + desc.capsule.radius,
+        0.0,
+    );
+    position = step_clear(
+        &mut component,
+        &world,
+        &crouching(idle_input()),
+        position,
+        "air crouch",
+    );
+    assert_eq!(kind(&component), MovementStateKind::Crouch);
+    let crouched_reach = 0.4 + desc.capsule.radius;
+    let growth = 2.0 * (desc.capsule.half_height - 0.4);
+    while position.y - crouched_reach > 0.3 {
+        position = step_clear(
+            &mut component,
+            &world,
+            &crouching(idle_input()),
+            position,
+            "falling crouched",
+        );
+    }
+    // Release with the feet closer to the floor than the stand-up would drop them.
+    let mut stood = false;
+    for _ in 0..60 {
+        let feet = position.y - crouched_reach;
+        let airborne = !component.is_grounded();
+        position = step_clear(
+            &mut component,
+            &world,
+            &idle_input(),
+            position,
+            "airborne release",
+        );
+        if kind(&component) == MovementStateKind::Normal {
+            stood = true;
+            assert!(
+                !airborne || feet > growth,
+                "an airborne stand-up only once the feet have {growth} m of room, feet were {feet}"
+            );
+            break;
+        }
+    }
+    assert!(stood, "the pawn stands up once the feet have room");
+}
+
+// Regression: crouch entry anchors the feet and grows the head when the
+// authored crouch capsule is the larger one, with no clearance test.
+#[test]
+fn a_crouch_entry_larger_than_the_standing_capsule_under_a_low_ceiling_stays_standing_and_clear() {
+    let desc = with_crouch(descriptor(), 1.0);
+    let head = rest_y(&desc, 0.0) + desc.capsule.half_height + desc.capsule.radius;
+    let world = Geometry::default()
+        .floor((-50.0, 60.0), 0.0)
+        .ceiling((-50.0, 60.0), head + 0.1)
+        .build();
+    let (mut component, position) = settled(&desc, &world, Vec3::new(0.0, rest_y(&desc, 0.0), 0.0));
+    let mut position = position;
+    for _ in 0..20 {
+        position = step_clear(
+            &mut component,
+            &world,
+            &crouching(idle_input()),
+            position,
+            "large crouch",
+        );
+        assert_eq!(
+            kind(&component),
+            MovementStateKind::Normal,
+            "a blocked entry stays standing"
+        );
+    }
+}

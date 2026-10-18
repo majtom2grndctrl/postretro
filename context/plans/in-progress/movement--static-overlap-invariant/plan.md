@@ -181,7 +181,7 @@ over it needs `rest / cos` of room), so A3's walkable-limit case is a chamfered 
 | 2 | Behaviour-preserving: swept-move helper and shared step-up / snap-to-floor primitives in a sibling module; player substrate and agent controller call them; agent copies deleted | integrating executor | 1 | done: `movement::swept`; physics 374 + sim 1471 tests unchanged, fixtures still reproduce |
 | 3 | Overlap check: tolerance query, armed assertion, build/env gate, report with texture + TrenchBroom position, warn-once on `CollisionWorld`, caller logging (host, prediction, agents), timing stage | integrating executor | 2 | done: `collision::overlap`, `movement::overlap_check`, `sim::report_static_overlap`, `SimStage::OverlapCheck` |
 | 4 | Convert every unswept move at its source; flip lip fixture | integrating executor | 3 | done: every task-1 fixture flipped; physics 376, sim 1471, netcode 799, ai 245 pass armed |
-| 5 | Resize growth clearance: anchored stand-up, growing entry | integrating executor | 3 | |
+| 5 | Resize growth clearance: anchored stand-up, growing entry | integrating executor | 3 | done: crouch stand-up and crouch-jump sweep in the anchor's growth direction; crouch and slide entry test a growing crouch capsule. Without it D3 ends 0.4 m in the floor, D4 0.3 m in the ceiling |
 | 6 | Remaining AC fixtures, grep gates, determinism replay | integrating executor | 4, 5 | |
 | 7 | Measurement on `stress-env-volumes` | integrating executor | 3 | |
 | 8 | Preflight, review panel, fixes | integrating executor | 6, 7 | |

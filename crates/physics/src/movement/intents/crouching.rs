@@ -6,7 +6,7 @@ use glam::{Vec2, Vec3};
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::dispatch::{stand_up_resize, stand_up_transition};
 use crate::movement::substrate::{
-    JumpEdges, ResizeAnchor, air_jump_ready, pm_accelerate, standup_clearance_probe,
+    JumpEdges, ResizeAnchor, air_jump_ready, anchored_standup_clearance_probe, pm_accelerate,
     wish_dir_from_input,
 };
 use crate::movement::{MovementEvents, MovementInput, Transition};
@@ -27,8 +27,10 @@ use super::{GROUND_STOP_FRICTION, OVERSPEED_BLEED_MARGIN};
 ///     by a framerate-independent exponential approach at `transition_rate` per
 ///     second, written into `component.capsule.eye_height` each tick for the
 ///     camera follow.
-///   - Stand-up (D7): while `crouch_intent` is INACTIVE, sweep the standing
-///     capsule up via `standup_clearance_probe`; when CLEAR, resize back to
+///   - Stand-up (D7): while `crouch_intent` is INACTIVE, sweep the crouched
+///     capsule in the direction standing grows it (up when the entry anchored the
+///     feet, down when it anchored the head) via
+///     `anchored_standup_clearance_probe`; when CLEAR, resize back to
 ///     standing (apply the center delta to `position` — the feet stay planted,
 ///     the center rises), transition to `Normal` with `KEEP_ALL` (a resize, not
 ///     a velocity reset). When BLOCKED, stay crouched and retry next tick.
@@ -197,12 +199,13 @@ pub(crate) fn crouching_intent(
     // exit to `Normal` carrying the jump just launched; blocked ⇒ stay crouched,
     // the jump still applies (lower arc). Either way the jump is never swallowed.
     if jumped_this_tick && input.crouch_intent {
-        if standup_clearance_probe(
+        if anchored_standup_clearance_probe(
             component,
             collision,
             *position,
             crouched_half_height,
             standing_half_height,
+            stand_up_anchor,
         ) {
             stand_up_resize(component, position, stand_up_anchor);
             *eye_current = component.capsule.eye_height;
@@ -216,12 +219,13 @@ pub(crate) fn crouching_intent(
     // capsule upward; CLEAR ⇒ resize to standing (center rises, feet planted) and
     // exit to `Normal`; BLOCKED ⇒ stay crouched and retry next tick.
     if !input.crouch_intent
-        && standup_clearance_probe(
+        && anchored_standup_clearance_probe(
             component,
             collision,
             *position,
             crouched_half_height,
             standing_half_height,
+            stand_up_anchor,
         )
     {
         stand_up_resize(component, position, stand_up_anchor);

@@ -107,6 +107,35 @@ impl CollisionWorld {
         self.mesh.project_point(&Pose::IDENTITY, point, solid).point
     }
 
+    /// How deep an upright capsule at `position` overlaps the static mesh: how far
+    /// its radius must shrink before it no longer intersects, to 0.1 µm. Zero when
+    /// clear. Fixtures compare it against the tick overlap tolerance.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn overlap_depth_for_test(&self, position: Vec3, capsule: CollisionCapsule) -> f32 {
+        let intersects = |radius: f32| {
+            intersection_test(
+                &Pose::from_translation(position),
+                &ParryCapsule::new_y(capsule.half_height, radius),
+                &Pose::IDENTITY,
+                &self.mesh,
+            )
+            .is_ok_and(|hit| hit.intersecting)
+        };
+        if !intersects(capsule.radius) {
+            return 0.0;
+        }
+        let (mut clear, mut hit) = (0.0_f32, capsule.radius);
+        for _ in 0..24 {
+            let mid = 0.5 * (clear + hit);
+            if intersects(mid) {
+                hit = mid;
+            } else {
+                clear = mid;
+            }
+        }
+        capsule.radius - clear
+    }
+
     /// Initialize with a structurally valid 1-triangle mesh. `parry3d::TriMesh`
     /// requires at least one triangle; the placeholder is placed at `x = 1e6` —
     /// far outside any plausible game-space origin — so an unpopulated world

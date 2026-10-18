@@ -487,6 +487,12 @@ pub fn tick_with_immersion_and_armed(
 #[cfg(test)]
 mod environment_tests;
 #[cfg(test)]
+mod overlap_baseline_tests;
+#[cfg(test)]
+mod overlap_baseline_tracks;
+#[cfg(test)]
+mod overlap_tests;
+#[cfg(test)]
 mod push_tests;
 #[cfg(test)]
 mod swim_tests;

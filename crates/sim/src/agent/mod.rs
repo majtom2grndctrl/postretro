@@ -316,6 +316,9 @@ fn ground_stick(
 }
 
 #[cfg(test)]
+mod overlap_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use glam::Vec3;

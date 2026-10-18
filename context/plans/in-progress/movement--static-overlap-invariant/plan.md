@@ -88,6 +88,35 @@ grounded Decision reads stand. Source re-read this session: `movement/substrate.
   diagnostic switches; the `0` value exists so the measured AC can compare set/unset in
   one build.
 
+## Pre-fix fixture results (A2)
+
+Run on unmodified movement source (task 1 commit). Every row below is committed as
+`#[should_panic]` naming its bug; the fix flips it to a plain test.
+
+| Fixture | Bypass | Worst overlap at b0a5c0f |
+|---|---|---|
+| `a_pawn_walking_onto_a_chamfered_lip_ends_every_tick_clear` (A1) | free advance | 3.6 mm (walk), deeper at run |
+| `free_advance_then_ground_stick_at_a_ramp_foot_ends_clear` (A8, P5) | free advance, then ground-stick | grows every tick; 5.1 mm on the first |
+| `a_floor_push_under_a_ceiling_within_a_skin_ends_clear` (A4) | floor push, step height 0 | 1.1 mm |
+| `a_step_without_room_for_the_standing_capsule_leaves_the_pawn_below_it_and_clear` (A5) | step-up rise | 7.3 mm |
+| `a_step_up_then_a_floor_push_under_an_overhang_ends_clear` (A9, P4) | step-up approach (centre-ray drop at the riser) | 1.6 mm |
+| `ground_stick_beside_a_riser_over_a_drop_ends_clear` (A6) | centre-ray drop | 6.8 cm |
+| `a_still_pawn_over_a_ledge_edge_ends_clear_after_ground_stick` (A10, P7) | centre-ray drop | 7.7 cm |
+| `a_corner_wedge_on_the_steepest_walkable_ramp_ends_clear_after_the_rollback` (A7) | stuck-stop rollback | 3.5 mm, with `stuck_stop_threshold` 0.1 m (at the default 1 mm it cannot leave the skin band, noted in the test) |
+| `a_step_with_room_for_the_capsule_but_not_the_lift_margin_still_steps_up` (B2) | step-up headroom | 1.2 mm, and never climbs |
+| `a_stair_climb_keeps_its_recorded_displacement` (B1) | centre-ray drop | 6.9 cm |
+| `a_step_up_keeps_its_recorded_displacement` (B1) | centre-ray drop | 7.0 cm |
+| agent `an_agent_walking_into_a_step_without_headroom_stays_below_it_and_clear` (A5) | agent step-up rise | reproduces |
+| agent `agent_ground_stick_beside_a_riser_over_a_drop_ends_clear` (A6) | agent centre-ray drop | reproduces |
+| agent `an_idle_agent_settling_over_a_ledge_edge_ends_clear` (A11, P6) | agent centre-ray drop, idle call site | reproduces |
+| agent `an_agent_still_steps_up_with_room_for_its_capsule_but_not_the_lift_margin` (B2) | agent step-up headroom | clear, but never climbs |
+
+Clean at b0a5c0f, as expected: the ramp, wall-slide and seam baselines, and every vault
+fixture (`vaults_never_end_a_tick_overlapping_static_geometry`: flat lip and a lip
+chamfered at exactly `max_slope`; on the path, aborted, oblique, held and neutral after
+exit). A sloped vault top is refused by the probe at any tilt that tall (the capsule
+over it needs `rest / cos` of room), so A3's walkable-limit case is a chamfered lip.
+
 ## AC-to-proof
 
 | AC | Proof | Status |
@@ -130,7 +159,7 @@ grounded Decision reads stand. Source re-read this session: `movement/substrate.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Riskiest premise first: test-only overlap helper, the lip-edge fixture, the displacement baseline and every per-bypass fixture, run on pre-fix source; commit baseline + lip expected-failure | integrating executor | — | in progress |
+| 1 | Riskiest premise first: test-only overlap helper, the lip-edge fixture, the displacement baseline and every per-bypass fixture, run on pre-fix source; commit baseline + lip expected-failure | integrating executor | — | done: fixtures + baseline committed pre-fix |
 | 2 | Behaviour-preserving: swept-move helper and shared step-up / snap-to-floor primitives in a sibling module; player substrate and agent controller call them; agent copies deleted | integrating executor | 1 | |
 | 3 | Overlap check: tolerance query, armed assertion, build/env gate, report with texture + TrenchBroom position, warn-once on `CollisionWorld`, caller logging (host, prediction, agents), timing stage | integrating executor | 2 | |
 | 4 | Convert every unswept move at its source; flip lip fixture | integrating executor | 3 | |

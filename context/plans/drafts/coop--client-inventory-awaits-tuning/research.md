@@ -1,6 +1,6 @@
 # coop--client-inventory-awaits-tuning — research
 
-Read at b0a5c0f. Symbols, not lines. **V** means read in source this session. **I** means inferred, or carried over from earlier research without being re-read.
+Read at b0a5c0f; symbols rechecked at fd8982c (no crate change between). Symbols, not lines. **V** means read in source this session. **I** means inferred, or carried over from earlier research without being re-read.
 
 ## Client composition paths today
 
@@ -34,7 +34,8 @@ The local pawn gets a `PlayerMovementComponent` only from the payload's movement
 - I: the local world-body weapon prop comes from replicated archetype attachments (`local_weapon_attachments`), not from the composed inventory, so deferring composition does not change it.
 - I: the crates hold several dozen other `Inventory` readers, and only the consumers above were traced. The executor confirms that none reaches the local pawn through `local_player_pawn()` before movement materializes.
 - V: Input is still sent every tick before the baseline arms (`client_predict_tick_with_sender` step 1). Its `firing_slot` reads the local movement pawn and so defaults to 0 in the window. This brief does not change that.
-- V: the host resolves a remote command's weapon from its own inventory at `firing_slot` (`prepare_remote_pawn_command`). I: after a level change that carried the selection off slot 0, fire held during the window could resolve against slot 0 on the host, a weapon the player is not holding. Whether the remote activation machine actually fires it without a client initiation has not been traced. Found by `/validate-plan`; it is out of scope here and needs its own ticket.
+- V (re-traced at fd8982c): the host fires slot 0 on a fresh press in the window. `ActivationInputCapture::command` emits an initiation for any `Pressed` edge with no pawn check. `predict_client_weapon_command` bails without a local pawn, so nothing clears the initiation or overwrites `firing_slot`. The host takes the slot through `observe_activation` → `deliver_due_start` → `prepare_remote_pawn_command`, and no step compares it to the active slot. `guard_initiation` and `run_remote_weapon_commands` check only that the weapon exists, the ledger, cadence, the fire gate and liveness. A level that was already held does not fire: `run_remote_weapon_commands` passes `controller_starts: false`. No test covers the pre-arm window.
+- Not verified: that the host pawn is in `MovementOwners` before the client's baseline arms; that a weapon holstered after a carried selection is `Idle`. I: a held reload in the window ticks slot 0's weapon the same way. Out of scope here; it needs its own ticket, `coop--pre-arm-fire-resolves-slot-zero`.
 
 Consequence: composing from the client's own descriptor only produces state that the late payload then has to correct. The correction is adoption, with the re-sync as its fallback.
 

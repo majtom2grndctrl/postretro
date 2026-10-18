@@ -1,8 +1,6 @@
 # coop--client-inventory-awaits-tuning
 
-Brief · compact · reads: `context/lib/networking.md` §What gates, and what replicates instead, §Combat authority (active-slot re-sync), §Session-state ledger · read at b0a5c0f
-
-> **Investigate at next review:** a possible separate defect, not yet traced. During the join window the client's Input sends `firing_slot` as 0, and the host's `prepare_remote_pawn_command` resolves remote fire against that slot of its own inventory. After a level change that carried the selection off slot 0, fire held in the window could resolve against a weapon the player isn't holding. Confirm whether the host actually fires it, and if so give it its own ticket (`research.md`; Decisions › Non-goals).
+Brief · compact · reads: `context/lib/networking.md` §What gates, and what replicates instead, §Combat authority (active-slot re-sync), §Session-state ledger · read at fd8982c
 
 ## Problem
 Raised in review of the lossy-link loss-handling work (PR #601). Basis: a defect found by reading source; #601 patched its symptom. Cause: when a connected client's pawn baseline arms before the host's tuning payload installs, the client composes the pawn's weapon inventory from its own descriptor, a local fallback for a value the host replicates. #601 then reconciles the late payload onto that composition: it adopts the payload's spawn active slot while the selection is untouched, and an active-slot re-sync converges the host to the client's slot when adoption is skipped. Nothing the player sees gains from composing early. The client also materializes movement only from the payload. Every inventory consumer traced (viewmodel, weapon HUD, selection, switch declaration, weapon prediction, re-sync) reads only the local movement pawn, so a pre-payload inventory is never presented (`research.md`). When done, a connected client composes its pawn's inventory once, from the host's payload, whichever of baseline and payload lands first. On the late-payload path its active slot is the host's spawn active slot, and no adoption or re-sync is needed to reach it.
@@ -17,7 +15,7 @@ Raised in review of the lossy-link loss-handling work (PR #601). Basis: a defect
 - **Layer placement.** Client only: the netcode client endpoint and the sim's client-inventory materializer. The host's composition, carried restore and payload build are unchanged.
 - **Non-goals.**
   - Deferring the arm itself until the payload. That is the rival in Path, and it touches reconcile and the camera hand-off (`coop--client-spawn-view-handoff`).
-  - The client's pre-payload Input. The host already acts on it while the client predicts nothing, and that predates this brief. Its `firing_slot` defaults to 0 in the window, and the host resolves remote fire against that slot (`research.md`). That needs a separate fix, and this brief neither causes it nor changes it.
+  - The client's pre-arm Input. Its `firing_slot` defaults to 0 in the window, and a fresh fire press there fires the host pawn's slot-0 weapon whatever its active slot (`research.md`). That predates this brief, which neither causes nor changes it. It needs its own ticket, `coop--pre-arm-fire-resolves-slot-zero`.
 
 ## Acceptance
 ### Automated
@@ -43,6 +41,7 @@ Raised in review of the lossy-link loss-handling work (PR #601). Basis: a defect
 - Removal: `spawn_slot_adoption_open`, `adopt_payload_spawn_active_slot`, the `selection_idle` parameter, and the `Tuning` arm's caller in main.rs's `client_drain_control`, plus their tests. The install's return value can become "the slot composition chose", so the caller still resets the selection latch to it.
 - `networking.md` §What gates and §Combat authority describe the composition and adoption this brief removes. Rewrite those sentences at promotion.
 - Strongest rival: don't arm the local pawn until the payload installs. That gives one ordering but delays reconcile seeding and the camera hand-off, and those belong to other seams. The chosen shape changes only what the arm composes.
+- Runs beside `movement--static-overlap-invariant`, in build elsewhere. The seams are disjoint: that brief owns the movement substrate and the agent controller. Both may touch `netcode/src/lib.rs`, but in different functions, so neither waits on the other. Whichever lands second merges the base branch.
 - First slice: the conditioned-link late-payload row, driven through `switch_order.rs`'s harness. It falsifies the claim that composing on install reaches the host's slot with no re-sync.
 
 ## Direction review

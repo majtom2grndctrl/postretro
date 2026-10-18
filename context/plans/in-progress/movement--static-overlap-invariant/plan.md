@@ -1,10 +1,10 @@
 # movement--static-overlap-invariant — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: fd8982c
 
-## Block — Acceptance row B1 needs restatement
+## Resolved block — Acceptance row B1 (owner restated)
 
 B1 reads: "Ramps, stairs at step height, step-up onto a ledge, sliding along a wall, and
 running across a coplanar seam keep the displacement recorded at b0a5c0f, within 1 mm
@@ -33,29 +33,11 @@ distance, replacing the free advance and the ground-stick drop.
 - **Stairs and step-up, vertical:** differs only on the embed ticks, by up to 13.6 cm,
   because the pawn stays on the step edge instead of sinking into it.
 
-Proposed wording for B1:
-
-> Ramps, stairs at step height, step-up onto a ledge, sliding along a wall, and running
-> across a coplanar seam keep the displacement recorded at b0a5c0f, within 1 mm per
-> tick. The baseline is a committed test that runs before the fix. A seam slide that
-> loses free-advance distance is noted in the plan of record. A tick whose b0a5c0f pose
-> overlapped static geometry is exempt from the vertical comparison. It still ends
-> clear, its horizontal displacement still holds to 1 mm, and its height falls between
-> the recorded heights of the ticks either side, so the climb never dips or overshoots.
-> (At b0a5c0f, ground-stick's centre-ray drop sinks a pawn approaching a stair riser up
-> to 7 cm into the step corner.)
-
-Why this shape: B1 guards feel, not b0a5c0f's numbers. In the prototype, every tick that
-was clear at b0a5c0f matches within 1 mm in all three axes. Only the embed tick differs,
-and there the fixed height lands between its neighbours. At b0a5c0f the eye holds flat
-at 1.22 m for that tick, then jumps 25 cm on the next. Fixed, it rises 13.6 cm and then
-11.8 cm. The between-neighbours bound is what makes that a tested property: an earlier
-draft held only horizontal displacement and the end pose, which would have passed a
-pawn that bobbed up and down at the riser.
-
-The alternatives are to drop stairs and step-up from B1, or to keep B1 and accept a
-fix that reproduces the b0a5c0f embed, which contradicts the invariant. I recommend the
-wording above.
+Owner decision: B1 takes the between-neighbours restatement, revised so step height
+is never a literal. Step height is per-descriptor tuning, so the baseline fixtures build
+stair rise and ledge height from `desc.ground.step_height`. The brief's B1 row now
+carries the authorized wording. The 0.3 m and 7 cm figures above are evidence from the
+canonical test descriptor only.
 
 ### Other task-1 findings (no restatement needed)
 - **A1 lip fixture:** a 0.3 m chamfered lip at 25° embeds a pawn walking onto it by
@@ -79,8 +61,7 @@ wording above.
   The lifted forward probe hits the next riser, so the pawn creeps along the first riser
   edge at about 2 mm per tick.
 
-On resume: rebuild the task-1 fixtures from the geometry above (the session's
-exploration was not committed), then continue at task 1 with the owner's B1 wording.
+
 
 No crate source changed between the brief's `read at` (b0a5c0f) and fd8982c, so the
 grounded Decision reads stand. Source re-read this session: `movement/substrate.rs`,
@@ -126,7 +107,7 @@ grounded Decision reads stand. Source re-read this session: `movement/substrate.
 | A13 mover push toward wall (P1) | fixture | achievable as stated |
 | A14 check resumes after mover embed (P8) | fixture | achievable as stated |
 | A15 warning text, once per load, reload re-arms | sim log-capture test through the test-only hook | achievable as stated |
-| B1 displacement baseline within 1 mm/tick | `overlap_baseline::*` committed before the fix | **needs restatement** (see Block) |
+| B1 displacement baseline within 1 mm/tick; embed ticks bounded between neighbours; rise from descriptor step height | `overlap_baseline_tests::*` committed before the fix | achievable as restated |
 | B2 headroom for capsule but not lift margin still steps up | pawn + agent fixtures | achievable as stated |
 | B3 step height zero | pawn + agent fixtures | achievable as stated |
 | B4 teleport arrival beside wall lands grounded | teleport test | achievable as stated |
@@ -149,7 +130,7 @@ grounded Decision reads stand. Source re-read this session: `movement/substrate.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Riskiest premise first: test-only overlap helper, the lip-edge fixture, the displacement baseline and every per-bypass fixture, run on pre-fix source; commit baseline + lip expected-failure | integrating executor | — | explored; blocked on B1 |
+| 1 | Riskiest premise first: test-only overlap helper, the lip-edge fixture, the displacement baseline and every per-bypass fixture, run on pre-fix source; commit baseline + lip expected-failure | integrating executor | — | in progress |
 | 2 | Behaviour-preserving: swept-move helper and shared step-up / snap-to-floor primitives in a sibling module; player substrate and agent controller call them; agent copies deleted | integrating executor | 1 | |
 | 3 | Overlap check: tolerance query, armed assertion, build/env gate, report with texture + TrenchBroom position, warn-once on `CollisionWorld`, caller logging (host, prediction, agents), timing stage | integrating executor | 2 | |
 | 4 | Convert every unswept move at its source; flip lip fixture | integrating executor | 3 | |

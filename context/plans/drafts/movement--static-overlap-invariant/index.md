@@ -11,7 +11,7 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
   - in `integrate_collision`: the second-TOI-0 free advance, the per-tick floor push, and the stuck-stop rollback (it restores the start X/Z but keeps the new Y);
   - `step_up_lift`'s rise;
   - the centre-ray drop in `floor_below`;
-  - in the agent controller (`crates/sim/src/agent/mod.rs`), its `step_up_lift` and `ground_stick` copies.
+  - in the agent controller (`crates/sim/src/agent/mod.rs`): its near-verbatim copies of `step_up_lift` and `ground_stick`.
 
   `research.md` ranks the free advance at a convex lip edge as the likeliest cause of the observed embed.
 - **The guard checks and reports; it never reverts.** It uses the static half of `capsule_fits_combined` with the skin tolerance.
@@ -21,6 +21,11 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
 
   A revert would re-fire every tick under held input and freeze the body, a stall in place of an embed. The swept helper is a convention the compiler does not enforce, and the skin cast's guarantee has exceptions (`entity_model.md` §7: non-capsule pairs, degenerate triangles, a core piercing a triangle). The dev warning is the net for those.
 - **Host and client run identical code.** Pose and motion stay pure functions of input and geometry, so prediction, replay and host simulation stay deterministic. No wire or tuning change.
+- **Players and enemies share geometry primitives, not controllers.** Swept step-up and swept snap-to-floor become pure functions of collision query, capsule, step height and walkable slope. The player substrate and the agent controller both call them, and the agent's copies are deleted.
+  - Each controller keeps its own policy: when to call a primitive, and with what tuning. Player feel stays in player code.
+  - An enemy can later move to a cheaper mode, such as navmesh projection, by not calling them.
+  - One step-up keeps the navmesh bake's step height and the agents' real step reach as one contract, not two copies that drift.
+  - The separate-controller commitment holds (`movement.md` §7; agent grounding stays its own).
 - **Placement.** The movement substrate in `postretro-physics`, plus the agent controller in `postretro-sim`. This is not co-op code and not vault code: the vault moves only by swept velocity, and its ledge probe already proves the full capsule (`research.md`).
 - **Non-goals.**
   - Rescuing a body already embedded at tick start, by Quake-style nudge or static depenetration. Own movement can no longer create one. Mover carry under the `displace` policy still can, by lifting a rider into a static ceiling. Under the default `displace` policy nothing resolves that: movers never yield, and only `crush` handles a pinned rider (`movement.md` §6). It is an unowned leftover. Raise a follow-up ticket for it, not this brief. The guard stays off for a tick that starts embedded.
@@ -52,11 +57,11 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
 
 ## Path
 - Unswept moves in movement/substrate.rs: the floor branch's free advance after the floor-push budget is spent, the floor push itself, the stuck-stop rollback, `step_up_lift`, and the `floor_below` centre-ray fallback.
-- Agent copies: `step_up_lift` and `ground_stick` in crates/sim/src/agent/mod.rs, beside `collide_and_slide`.
+- Agent copies to delete: `step_up_lift` and `ground_stick` in crates/sim/src/agent/mod.rs, beside `collide_and_slide`. The agent queries static-only `CollisionWorld` and the player queries `CombinedCollisionWorld`, so the primitives take the query as a parameter. `postretro-sim` already depends on `postretro-physics`.
 - Overlap check: `capsule_fits_combined`, whose caller is teleport arrival in movement/teleport.rs. Add a static-only variant with the skin tolerance. The agent capsule needs the same check against `CollisionWorld`.
 - Mover carry runs at the top of `integrate_collision` via `apply_mover_carry`. The assertion's start pose is taken after it.
 - Existing coverage to extend: vault_tests.rs (its lip and headroom distance check covers only the nominal path), and the movement module's mover "without persistent overlap" tests.
-- Chosen shape: convert every unswept move at its source behind one swept helper, and assert in tests. Rival weighed: keep the source fixes and add a release-build revert. Rejected because a revert re-fires under held input and freezes the body. The guard-alone rival is weaker than both.
+- Chosen shape: convert every unswept move at its source behind one swept helper, and assert in tests. Rival weighed: keep the source fixes and add a release-build revert. Rejected because a revert re-fires under held input and freezes the body. The guard-alone rival is weaker than both. For enemies, fixing each copy in place was rejected, because copying is how the defect reached them; sharing the whole controller was rejected, because it couples player feel to AI movement and per-tick cost.
 - First slice: the failing lip-edge fixture. It confirms the free advance can embed before any fix lands.
 - substrate.rs is past 800 lines. Introduce the swept helper in a sibling module first, in its own behaviour-preserving commit.
 - At promotion: add the tick-level invariant to `entity_model.md` §7 beside the skin-cast contract. Update `movement.md` §4 Vault ("collision has no overlap query"), and note in §7 that enemies share the invariant.

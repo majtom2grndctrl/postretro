@@ -406,7 +406,7 @@ impl FluidSurfacePass {
                 mesh.volumes.len(),
                 mesh.indices.len() / 3,
                 mesh.vertices.len(),
-                grid.spacing(),
+                grid.spacing().to_array(),
             ),
             None => log::info!(
                 "[Renderer] Fluid surfaces installed: {} volumes, {} triangles, {} vertices, \

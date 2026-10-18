@@ -1488,3 +1488,26 @@ fn a_staged_reload_flips_a_zero_opacity_fluids_draw_with_its_reflectivity() {
         "the reverse reload draws again"
     );
 }
+
+// P1 and P2: on the level path and the capture path alike, fluid surfaces
+// install after level geometry, which installs this level's SH volume (and
+// drops the last level's fluid): the fluid grid then reads this level's
+// lattice, never the previous level's or a placeholder.
+#[test]
+fn fluid_surfaces_install_after_level_geometry_on_the_level_and_capture_paths() {
+    for (path, source) in [
+        ("startup/lifecycle.rs", include_str!("lifecycle.rs")),
+        ("capture/prepared.rs", include_str!("../capture/prepared.rs")),
+    ] {
+        // Production code only: lifecycle.rs's own test module quotes these.
+        let source = source.split("#[cfg(test)]\npub(crate) mod tests").next().unwrap();
+        let geometry = "renderer.install_level_geometry(";
+        let fluid = "renderer.install_fluid_surfaces(";
+        assert_eq!(source.matches(geometry).count(), 1, "{path}");
+        assert_eq!(source.matches(fluid).count(), 1, "{path}");
+        assert!(
+            source.find(geometry) < source.find(fluid),
+            "{path} installs fluid surfaces before level geometry"
+        );
+    }
+}

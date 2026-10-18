@@ -12,8 +12,30 @@ No crate source changed between the brief's `read at` (2f1f96297) and this plan'
 - Path "Large files: `fluid_surface.wgsl` is past 800 lines; split before extending" → split by responsibility into `fluid_surface.wgsl` (interface, shading, entries), `fluid_motion.wgsl` (warp, drift, wave) and `fluid_reflection.wgsl` (reflection term), concatenated by `SHADER_SOURCE`; source-pinning tests read the fluid texts through one helper.
 
 ## Delegated answers
-- Grid spacing and per-level vertex cap — provisional: half a probe cell per axis, coarsening by doubling (planes nest), cap 2^18 vertices per level; final values and their 5300M cost and parity recorded under Results.
-- Parity bound — reported from measurement, no threshold set (brief).
+- Grid spacing and per-level vertex cap — half a probe cell per axis (`FLUID_GRID_DIVISIONS = 2`), coarsening by doubling (planes nest), cap 2^18 vertices per level (`FLUID_GRID_VERTEX_CAP`, about a 500 m square ocean at 0.5 m). Kept from measurement: e24's 12 pools pack to 3,154 vertices on the 0.5 m grid, and the gridded pass costs 2.16 ms at near 4K against the no-SH floor's 2.05 and the coarse-mesh `vertexsh` probe's 2.11, so grid vertex work is about 0.05 ms; parity is already within 1/255 at that spacing, so no finer spacing is warranted.
+- Parity bound — reported from measurement, no threshold set (brief): max 1/255 per channel at every view (Results).
+
+## Measurement (5300M, Metal System Trace)
+Kit: `measurements/fluid-base-pass-cost/metal/`, A/B through the experiment hook in one binary built from this branch at ef4ad05d7: `stock` = this branch's shader, `today` = `main`'s composed module (`landing_variants.py`), both on the gridded mesh; mask 0x13F (reflection-free), 2 interleaved rounds. Results: `results-landing1.{md,json}`; parity: `parity.py` → `results-landing-parity.json`.
+
+| view | today fluid ms | new fluid ms | today whole frame | new whole frame | notes |
+|---|---|---|---|---|---|
+| near 4K | 53.87 | 2.16 | 79.62 | 27.93 | 2/2 valid each, clocks ~1150–1220 |
+| probes 4K | 21.72 | 2.13 | 50.73 | 25.92 | 2/2 valid each |
+| near Auto 1536×960 | 9.90 | 0.51 | 14.96 | 6.16 | new arm's clock low (998; 81 median r2): directional |
+| probes Auto | 4.14 | 0.54 | 9.98 | 7.53 | new 1/2 valid, clock ~550–590: directional |
+| mid Auto | 4.18 | 0.54 | 9.20 | 8.20 | 1/2 valid each, new clock ~577: directional |
+
+Auto-resolution runs do not saturate the GPU, so its clock drops (`rendering_pipeline.md` §12); those rows show direction, not exact ratios.
+
+Parity at 960×540, |today − new| in 8-bit sRGB over water pixels (water mask from a flat-colour variant; near-wall = world point within one spacing of a pool wall, from the ray's hit on the pool surface and the maps' fluid brush rectangles):
+
+| view | water px | max (r, g, b) | mean (r, g, b) | near-wall px | near-wall max | near-wall mean |
+|---|---|---|---|---|---|---|
+| near (e24) | 518 400 | 1, 1, 1 | 0.002, 0.004, 0.004 | 0 (walls off screen) | — | — |
+| probes | 518 400 | 1, 1, 1 | 0.004, 0.005, 0.005 | 0 (walls off screen) | — | — |
+| mid (e24, pitch −30) | 258 805 | 1, 1, 1 | 0.002, 0.004, 0.003 | 41 075 | 1, 1, 1 | 0.004, 0.006, 0.005 |
+| under (e24, 1 m below, pitch +60) | 518 400 | 1, 1, 1 | 0.000, 0.001, 0.001 | 0 | — | — |
 
 ## AC-to-proof
 
@@ -42,6 +64,6 @@ No crate source changed between the brief's `read at` (2f1f96297) and this plan'
 | 1 | Grid packing in render-cpu: lattice type + validation, spacing/cap choice from per-face bounds, per-face plane cutting with edge-determined crossings, Steiner-free triangulation, warn once; shared-edge and cap tests | integrating executor | — | done: `fluid_surface::grid` (16 tests), `probe_indices_cover_every_grid_vertex_of_a_bound_face` |
 | 2 | Renderer: lattice seam (streamed base / legacy present / none), `FluidSurfacePass::install` takes it, install log reports spacing | integrating executor | 1 | done: `FullRenderer::sh_sampler_lattice`; `the_fluid_grid_takes_the_lattice_the_sh_sampler_reads` |
 | 3 | Shader: split `fluid_surface.wgsl`; baked terms to `vs_main` (viewer-side normal, masks, scales), interpolated to both fragment entries; invert per-fragment pins, add `global_uses` test | integrating executor | — | done: `only_the_vertex_entry_samples_the_sh_volume`, `fluid_baked_light_is_per_vertex_and_runtime_lights_per_fragment`; 60 fluid pins + budget tests pass unedited; 14 adapter frame tests pass |
-| 4 | 5300M measurement + parity on the Metal kit; settle spacing and cap | integrating executor | 2, 3 | |
+| 4 | 5300M measurement + parity on the Metal kit; settle spacing and cap | integrating executor | 2, 3 | done: Measurement section |
 | 5 | Adapter frame tests (A7) over an in-memory SH section; lattice selection and level-change adapter tests (A4, A6) | worker | 2, 3 | |
-| 6 | Install-order source tests (A6), no-fluid/no-lattice log tests (A5) | integrating executor | 2 | |
+| 6 | Install-order source tests (A6), no-fluid/no-lattice log tests (A5) | integrating executor | 2 | done: `fluid_surfaces_install_after_level_geometry_on_the_level_and_capture_paths`; A5 log pins in `fluid_surface::grid` |

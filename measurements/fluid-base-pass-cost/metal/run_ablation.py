@@ -27,8 +27,11 @@ import run as kit  # noqa: E402
 kit.RUNS = HERE / "runs"
 kit.RAW = HERE / "raw"
 UHD, FHD = kit.UHD, kit.FHD
+AUTO = [1536, 960]
 CONFIGS = {"near-4k": ("near", UHD), "near-1080": ("near", FHD), "test-4k": ("test", UHD),
-           "mid-4k": ("mid", UHD), "far-4k": ("far", UHD)}
+           "mid-4k": ("mid", UHD), "far-4k": ("far", UHD),
+           # The 5300M's Auto resolution (landing row M2).
+           "near-auto": ("near", AUTO), "test-auto": ("test", AUTO), "mid-auto": ("mid", AUTO)}
 FREE_MASK = 0x13F
 BASE_ENV = dict(kit.ENGINE_ENV)
 

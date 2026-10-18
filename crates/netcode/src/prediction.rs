@@ -1269,4 +1269,150 @@ mod tests {
             "only the pre-wrap prefix is pruned; the post-wrap tail survives"
         );
     }
+
+    /// Quads for the replay course along +X, each facing `normal`.
+    fn course_world() -> CollisionWorld {
+        let mut points = Vec::new();
+        let mut tris = Vec::new();
+        let mut quad = |corners: [Vec3; 4], normal: Vec3| {
+            let base = points.len() as u32;
+            points.extend(corners);
+            let face = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+            if face.dot(normal) >= 0.0 {
+                tris.extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+            } else {
+                tris.extend([[base, base + 2, base + 1], [base, base + 3, base + 2]]);
+            }
+        };
+        let (z0, z1) = (-20.0, 20.0);
+        let floor = |x0: f32, x1: f32, y: f32| {
+            [
+                Vec3::new(x0, y, z0),
+                Vec3::new(x1, y, z0),
+                Vec3::new(x1, y, z1),
+                Vec3::new(x0, y, z1),
+            ]
+        };
+        let riser = |x: f32, y0: f32, y1: f32| {
+            [
+                Vec3::new(x, y0, z0),
+                Vec3::new(x, y1, z0),
+                Vec3::new(x, y1, z1),
+                Vec3::new(x, y0, z1),
+            ]
+        };
+        // Floor, a step up at x = 3, a vault ledge at x = 8 whose lip is a
+        // convex edge, its top, and a drop back down a step at x = 12.
+        quad(floor(-20.0, 3.0, 0.0), Vec3::Y);
+        quad(riser(3.0, 0.0, 0.25), Vec3::NEG_X);
+        quad(floor(3.0, 8.0, 0.25), Vec3::Y);
+        quad(riser(8.0, 0.25, 1.25), Vec3::NEG_X);
+        quad(floor(8.0, 12.0, 1.25), Vec3::Y);
+        quad(riser(12.0, 1.0, 1.25), Vec3::X);
+        quad(floor(12.0, 40.0, 1.0), Vec3::Y);
+        // A wall along the course at z = -0.45, against the capsule's side.
+        quad(
+            [
+                Vec3::new(-20.0, 0.0, -0.45),
+                Vec3::new(40.0, 0.0, -0.45),
+                Vec3::new(40.0, 4.0, -0.45),
+                Vec3::new(-20.0, 4.0, -0.45),
+            ],
+            Vec3::Z,
+        );
+        CollisionWorld::from_triangles_for_test(points, tris)
+    }
+
+    // Host movement and the client predictor run the same pure tick: replaying
+    // the recorded commands reproduces the host's poses bit for bit, through a
+    // step-up, a vault across a convex lip under held then neutral input, and a
+    // ground-stick drop beside a wall.
+    #[test]
+    fn predictor_replay_reproduces_host_poses_exactly_over_a_vault_step_up_and_ground_stick() {
+        use crate::sim::run_host_movement_tick;
+        use postretro_entities::EntityRegistry;
+        use postretro_foundation::{VaultEntry, VaultParams, VaultTrigger};
+
+        let mut desc = descriptor();
+        desc.vault = Some(VaultParams {
+            max_height: 1.6,
+            swim_max_height: 0.9,
+            duration_ms: 320.0,
+            from: VaultEntry {
+                ground: Some(VaultTrigger::Auto),
+                ..VaultEntry::default()
+            },
+            allow_fire: false,
+        });
+        let world = course_world();
+        let environment = postretro_collision::EnvironmentView::level_only(GRAVITY);
+        let start = Transform {
+            position: Vec3::new(0.0, 1.22, -0.03),
+            ..Transform::default()
+        };
+        let pawn_component = PlayerMovementComponent::from_descriptor(&desc);
+
+        // Forward along +X (yaw -pi/2), walking: held into the ledge until the
+        // vault exits (tick 91), neutral just after, then on over the drop.
+        const NEUTRAL: std::ops::Range<u32> = 92..120;
+        let mut commands = Vec::new();
+        for tick in 0..240u32 {
+            let mut command = forward_command(tick, false);
+            command.movement.facing_yaw = -std::f32::consts::FRAC_PI_2;
+            command.movement.running = false;
+            if NEUTRAL.contains(&tick) {
+                command.movement.wish_dir = [0.0, 0.0];
+            }
+            commands.push(command);
+        }
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(start);
+        registry
+            .set_component(pawn, pawn_component.clone())
+            .unwrap();
+        let mut host = Vec::new();
+        for command in &commands {
+            let yaw = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .teleport
+                .accumulated_yaw;
+            let input = input_command_to_sim_at_yaw(command, yaw).movement;
+            run_host_movement_tick(&mut registry, &world, environment, &[(pawn, input)], DT);
+            host.push(registry.get_component::<Transform>(pawn).unwrap().position);
+        }
+
+        let mut prediction = ClientPrediction::new();
+        prediction.arm(NetworkId(7), pawn);
+        prediction.mark_first_record_adopted();
+        let mut prev = (start, pawn_component);
+        let mut states = Vec::new();
+        for (command, host_position) in commands.iter().zip(&host) {
+            prev = prediction
+                .predict_tick(*command, prev, &world, environment, DT)
+                .expect("armed prediction advances the pawn");
+            assert_eq!(
+                prev.0.position.to_array(),
+                host_position.to_array(),
+                "client tick {}: the replay diverged from the host",
+                command.client_tick
+            );
+            states.push(prev.1.movement_state.kind());
+        }
+        let vault_ticks: Vec<usize> = (0..states.len())
+            .filter(|&tick| states[tick] == MovementStateKind::Vault)
+            .collect();
+        assert!(
+            vault_ticks
+                .last()
+                .is_some_and(|&last| last + 1 < NEUTRAL.start as usize),
+            "the course vaults under held input and exits before the neutral window"
+        );
+        let end = host.last().unwrap();
+        assert!(
+            end.x > 13.0 && (end.y - 2.22).abs() < 1.0e-3,
+            "the course ends past the drop, at {end:?}"
+        );
+    }
 }

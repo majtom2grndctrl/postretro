@@ -122,6 +122,60 @@ impl Drop for OverlapAssertDisarmed {
 mod tests {
     use super::*;
 
+    fn floor() -> CollisionWorld {
+        CollisionWorld::from_triangles_for_test(
+            vec![
+                Vec3::new(-50.0, 0.0, -50.0),
+                Vec3::new(50.0, 0.0, -50.0),
+                Vec3::new(50.0, 0.0, 50.0),
+                Vec3::new(-50.0, 0.0, 50.0),
+            ],
+            vec![[0, 2, 1], [0, 3, 2]],
+        )
+    }
+
+    const CAPSULE: CollisionCapsule = CollisionCapsule {
+        radius: 0.4,
+        half_height: 0.8,
+    };
+    /// Centre height resting a skin above the floor.
+    const REST: f32 = 1.22;
+
+    #[test]
+    fn after_a_mover_caused_embed_the_first_tick_that_starts_clear_is_checked_again() {
+        let world = floor();
+        let _disarmed = disarm_overlap_assert_for_test();
+        // A mover left the body embedded: ticks that start inside stay silent,
+        // even one that sinks it deeper.
+        let embedded = Vec3::new(0.0, REST - 0.2, 0.0);
+        assert_eq!(
+            check_own_movement(&world, embedded, embedded - Vec3::Y * 0.05, CAPSULE),
+            None
+        );
+        // The first tick that starts clear is checked: a forced overlap is caught.
+        let clear = Vec3::new(0.0, REST, 0.0);
+        let sunk = Vec3::new(0.1, REST - 0.07, 0.0);
+        let overlap = check_own_movement(&world, clear, sunk, CAPSULE)
+            .expect("the first clear-start tick is checked again");
+        assert_eq!(overlap.position, sunk);
+        // Resting contact inside the skin band, or within the tolerance, is
+        // not a breach.
+        let resting = Vec3::new(0.2, REST - 0.0195, 0.0);
+        assert_eq!(check_own_movement(&world, clear, resting, CAPSULE), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "own movement ended a tick inside static geometry")]
+    fn an_armed_check_panics_on_a_breach() {
+        let world = floor();
+        check_own_movement(
+            &world,
+            Vec3::new(0.0, REST, 0.0),
+            Vec3::new(0.0, REST - 0.1, 0.0),
+            CAPSULE,
+        );
+    }
+
     #[test]
     fn the_check_defaults_on_with_debug_assertions_and_off_in_release() {
         assert_eq!(resolve_overlap_check(None, true), Ok(true));

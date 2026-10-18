@@ -254,3 +254,289 @@ fn an_idle_agent_settling_over_a_ledge_edge_ends_clear() {
         );
     }
 }
+
+/// The controller's source, without its test modules.
+fn controller_source() -> &'static str {
+    let src = include_str!("mod.rs");
+    &src[..src.find("#[cfg(test)]").expect("the controller has tests")]
+}
+
+// Own position changes go through a swept move: a convention, so this gate
+// holds it. Outside the wall-contact nudge (below the overlap tolerance), every
+// write is the slide sweep's own advance or a `movement::swept` result.
+#[test]
+fn the_agent_controller_writes_no_body_position_outside_a_swept_move() {
+    let allowed = [
+        "current_pos = position;",
+        "current_pos = lifted;",
+        "current_pos += velocity * remaining_dt;",
+        "current_pos += dir * toi;",
+        "current_pos += normal * NORMAL_NUDGE;",
+        "current_pos = snapped;",
+    ];
+    let writes: Vec<&str> = controller_source()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with("//"))
+        .map(|line| line.trim_start_matches("let mut "))
+        .filter(|line| {
+            [
+                "current_pos =",
+                "current_pos +=",
+                "current_pos -=",
+                "current_pos.",
+            ]
+            .iter()
+            .any(|write| line.starts_with(write) && !line.contains("=="))
+        })
+        .collect();
+    assert!(!writes.is_empty(), "the gate reads the controller");
+    for write in writes {
+        assert!(
+            allowed.contains(&write),
+            "unswept position write in the agent controller: `{write}`"
+        );
+    }
+}
+
+// Players and enemies share the geometry primitives, not controllers: the
+// agent reaches step-up and snap-to-floor only through `movement::swept`.
+#[test]
+fn the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own() {
+    let src = controller_source();
+    for copy in [
+        "fn step_up",
+        "fn ground_stick",
+        "fn snap_to_floor",
+        "cast_ray(",
+    ] {
+        assert!(
+            !src.contains(copy),
+            "the agent controller holds its own `{copy}`"
+        );
+    }
+    assert!(
+        src.contains("use crate::movement::swept::{StepParams, snap_to_floor, step_up};"),
+        "the agent controller calls the shared primitives"
+    );
+}
+
+// --- The warning -------------------------------------------------------------------
+
+#[test]
+fn an_overlap_warns_once_per_level_load_naming_descriptor_texture_and_position() {
+    use log::Level;
+    use postretro_entities::{
+        DescriptorProvenance, DescriptorSpawnPath, EntityRegistry, Transform,
+    };
+    use postretro_test_log_capture::LogCapture;
+
+    use crate::movement::overlap_check::{check_own_movement, disarm_overlap_assert_for_test};
+
+    // A floor whose two triangles carry texture 0 of the level's names.
+    let level = || {
+        CollisionWorld::from_textured_triangles_for_test(
+            vec![
+                Vec3::new(-50.0, 0.0, -50.0),
+                Vec3::new(50.0, 0.0, -50.0),
+                Vec3::new(50.0, 0.0, 50.0),
+                Vec3::new(-50.0, 0.0, 50.0),
+            ],
+            vec![[0, 2, 1], [0, 3, 2]],
+            vec![0, 0],
+            vec![String::from("metal/floor_grate")],
+        )
+    };
+    let mut registry = EntityRegistry::new();
+    let grunt = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            grunt,
+            DescriptorProvenance {
+                canonical_name: String::from("enemy.grunt"),
+                owned_components: Default::default(),
+                map_overrides: Default::default(),
+                spawn_path: DescriptorSpawnPath::MapPlacement,
+            },
+        )
+        .unwrap();
+    let shape = CollisionCapsule::new(0.35, 0.55);
+    let clear = Vec3::new(0.0, 0.92, 0.0);
+    // Engine (x, y, z) = (-2.54, 0.85, 5.08) is TrenchBroom (-200 100 33).
+    let sunk = Vec3::new(-2.54, 0.85, 5.08);
+    let _disarmed = disarm_overlap_assert_for_test();
+    let capture = LogCapture::start();
+
+    let world = level();
+    let report = check_own_movement(&world, clear, sunk, shape)
+        .expect("an overlapping end pose handed to the check is reported");
+    assert_eq!(report.position, sunk, "the check moves nothing");
+    crate::sim::report_static_overlap(&world, &registry, grunt, &report);
+    capture.assert_logged_once(
+        Level::Warn,
+        "[Movement] `enemy.grunt` ended a tick inside static geometry against texture \
+         `metal/floor_grate` at TrenchBroom (-200 100 33)",
+    );
+    // A second overlap in the same level load is silent, whoever it is.
+    crate::sim::report_static_overlap(&world, &registry, grunt, &report);
+    capture.assert_logged_once(Level::Warn, "inside static geometry");
+
+    // A level reload builds a new world, which warns again.
+    let reloaded = level();
+    let report = check_own_movement(&reloaded, clear, sunk, shape).unwrap();
+    crate::sim::report_static_overlap(&reloaded, &registry, grunt, &report);
+    let warnings = capture
+        .records()
+        .iter()
+        .filter(|record| {
+            record.level == Level::Warn && record.message.contains("inside static geometry")
+        })
+        .count();
+    assert_eq!(warnings, 2, "the reload re-arms the one warning");
+}
+
+// --- Controller call rules ---------------------------------------------------------
+
+#[test]
+fn with_step_height_zero_an_agent_neither_steps_up_nor_snaps_to_the_floor() {
+    let capsule = capsule(0.0);
+    // Taller than the lower sphere's centre, so the slide cannot ride its edge.
+    let low = capsule.radius + 0.15;
+    let world = Geometry::default()
+        .floor((-50.0, 5.0), 0.0)
+        .wall_x(5.0, (0.0, low), Vec3::NEG_X)
+        .floor((5.0, 60.0), low)
+        .build();
+    let (end, _) = run_clear(
+        &world,
+        &capsule,
+        Vec3::new(4.0, rest_y(&capsule, 0.0), 0.0),
+        Vec3::new(2.0, 0.0, 0.0),
+        40,
+        "agent step zero",
+    );
+    assert!(end.x < 5.0, "no step-up with step height zero, at {end:?}");
+
+    // Off a 5 cm ledge, the tick its centre clears the edge: gravity alone
+    // lowers it, no snap.
+    let top = 0.05;
+    let world = ledge_drop(top);
+    let mut position = Vec3::new(5.0 + 0.06, rest_y(&capsule, top), 0.0);
+    let result = step(&world, &capsule, position, Vec3::new(1.0, 0.0, 0.0), 0.0);
+    position = result.position;
+    assert!(
+        position.y > rest_y(&capsule, 0.0) + 0.02,
+        "no snap to the lower floor, at {position:?}"
+    );
+}
+
+#[test]
+fn a_falling_agent_beside_a_step_still_steps_up() {
+    // The agent's own call rule: step-up runs whenever it is not rising,
+    // grounded or not; the pawn's runs only grounded. Over a pit, nothing
+    // drops the lifted agent back, so the lift shows: it climbs out onto the
+    // step's top instead of falling.
+    let capsule = capsule(STEP);
+    let world = Geometry::default()
+        .floor((-50.0, 5.0), -10.0)
+        .wall_x(5.0, (-10.0, 0.0), Vec3::NEG_X)
+        .floor((5.0, 60.0), 0.0)
+        .build();
+    // Falling, feet a fifth of a step below the top's edge.
+    let feet = -0.2 * STEP;
+    let start = Vec3::new(
+        5.0 - capsule.radius - SKIN_DISTANCE,
+        feet + capsule.half_height + capsule.radius,
+        0.0,
+    );
+    let mut position = start;
+    let mut vertical = -1.0;
+    let mut grounded = false;
+    for _ in 0..30 {
+        let result = step(&world, &capsule, position, Vec3::new(3.0, 0.0, 0.0), vertical);
+        position = result.position;
+        vertical = result.velocity.y;
+        grounded = result.grounded;
+    }
+    assert!(
+        grounded && position.x > 5.0 && (position.y - rest_y(&capsule, 0.0)).abs() < 2.0e-3,
+        "the falling agent stepped up onto the top, at {position:?}"
+    );
+}
+
+#[test]
+fn an_agent_ignores_a_mover_top_its_pawn_neighbour_steps_onto() {
+    use crate::collision::moving::{
+        CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource,
+    };
+
+    struct Still;
+    impl MoverPoseSource for Still {
+        fn pose(&self, id: u32) -> Option<MoverPose> {
+            (id == 1).then_some(MoverPose {
+                transform: postretro_entities::Transform {
+                    position: Vec3::new(5.0, 0.0, 0.0),
+                    ..Default::default()
+                },
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: glam::Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: DT,
+            })
+        }
+    }
+    let rise = 0.25;
+    let (z0, z1) = (-4.0, 4.0);
+    let movers = [MoverCollider::from_local_triangles(
+        1,
+        &[
+            Vec3::new(0.0, 0.0, z0),
+            Vec3::new(0.0, rise, z0),
+            Vec3::new(0.0, rise, z1),
+            Vec3::new(0.0, 0.0, z1),
+            Vec3::new(0.0, rise, z0),
+            Vec3::new(4.0, rise, z0),
+            Vec3::new(4.0, rise, z1),
+            Vec3::new(0.0, rise, z1),
+        ],
+        &[[0, 2, 1], [0, 3, 2], [4, 6, 5], [4, 7, 6]],
+    )
+    .unwrap()];
+    let world = Geometry::default().floor((-50.0, 60.0), 0.0).build();
+    // The pawn's query sees the mover and steps onto its top...
+    let combined = CombinedCollisionWorld::new(&world, &movers, &Still);
+    let start = Vec3::new(3.0, rest_y(&capsule(STEP), 0.0), 0.0);
+    let lifted = crate::movement::swept::step_up(
+        &combined,
+        CollisionCapsule::new(0.35, 0.55),
+        Vec3::new(4.5, 0.92, 0.0),
+        Vec3::new(3.0, 0.0, 0.0),
+        DT,
+        crate::movement::swept::StepParams {
+            step_height: STEP,
+            lift_margin: crate::collision::STEP_UP_LIFT_MARGIN,
+            cos_walkable: crate::collision::COS_WALKABLE,
+        },
+    );
+    assert!(
+        lifted.is_some(),
+        "the combined query steps up onto the mover"
+    );
+    // ...while the agent, querying static geometry only, walks on at floor
+    // height through where the mover stands, as it always has.
+    let (end, grounded) = run_clear(
+        &world,
+        &capsule(STEP),
+        start,
+        Vec3::new(3.0, 0.0, 0.0),
+        80,
+        "agent past mover",
+    );
+    assert!(grounded && end.x > 6.0, "the agent walked on, at {end:?}");
+    assert!(
+        (end.y - start.y).abs() < 1.0e-3,
+        "at floor height, never on the mover"
+    );
+}

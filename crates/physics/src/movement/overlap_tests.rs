@@ -781,3 +781,425 @@ fn a_crouch_entry_larger_than_the_standing_capsule_under_a_low_ceiling_stays_sta
         );
     }
 }
+
+// --- Movers ----------------------------------------------------------------------
+
+use crate::collision::moving::{CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource};
+use postretro_foundation::GroundRef;
+
+/// One mover's pose for this tick, moving at `velocity`.
+#[derive(Default)]
+struct OnePose(Option<(u32, MoverPose)>);
+
+impl OnePose {
+    fn place(&mut self, id: u32, position: Vec3, velocity: Vec3) {
+        self.0 = Some((
+            id,
+            MoverPose {
+                transform: postretro_entities::Transform {
+                    position,
+                    ..Default::default()
+                },
+                linear_velocity: velocity,
+                tick_delta: velocity * DT,
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: DT,
+            },
+        ));
+    }
+}
+
+impl MoverPoseSource for OnePose {
+    fn pose(&self, id: u32) -> Option<MoverPose> {
+        self.0
+            .filter(|(placed, _)| *placed == id)
+            .map(|(_, pose)| pose)
+    }
+}
+
+const PLATFORM: u32 = 5;
+
+/// A mover-local platform top at local y = 0, `half` wide in X and Z.
+fn platform(half: f32) -> MoverCollider {
+    MoverCollider::from_local_triangles(
+        PLATFORM,
+        &[
+            Vec3::new(-half, 0.0, -half),
+            Vec3::new(half, 0.0, -half),
+            Vec3::new(half, 0.0, half),
+            Vec3::new(-half, 0.0, half),
+        ],
+        &[[0, 1, 2], [0, 2, 3]],
+    )
+    .unwrap()
+}
+
+/// A mover-local block: a riser facing -X at local x = 0 up to `height`, and
+/// its top, 4 m deep.
+fn block(height: f32) -> MoverCollider {
+    let (z0, z1) = (-4.0, 4.0);
+    MoverCollider::from_local_triangles(
+        PLATFORM,
+        &[
+            Vec3::new(0.0, 0.0, z0),
+            Vec3::new(0.0, height, z0),
+            Vec3::new(0.0, height, z1),
+            Vec3::new(0.0, 0.0, z1),
+            Vec3::new(0.0, height, z0),
+            Vec3::new(4.0, height, z0),
+            Vec3::new(4.0, height, z1),
+            Vec3::new(0.0, height, z1),
+        ],
+        &[[0, 2, 1], [0, 3, 2], [4, 6, 5], [4, 7, 6]],
+    )
+    .unwrap()
+}
+
+fn tick_combined(
+    component: &mut PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    input: &MovementInput,
+    position: Vec3,
+) -> Vec3 {
+    tick_with_immersion(component, input, collision, ENV, DT, position).0
+}
+
+// The carry is exempt; the own movement after it is not.
+#[test]
+fn a_rider_walking_into_a_chamfered_lip_while_its_platform_moves_ends_clear() {
+    let desc = descriptor();
+    let rise = desc.ground.step_height;
+    let run = rise / 25.0_f32.to_radians().tan();
+    // The platform top sits flush with the floor the chamfer rises from.
+    let world = Geometry::default()
+        .slope((5.0, 5.0 + run), (0.0, rise))
+        .floor((5.0 + run, 60.0), rise)
+        .build();
+    let movers = [platform(3.0)];
+    let mut poses = OnePose::default();
+    let platform_velocity = Vec3::new(2.0, 0.0, 0.0);
+    let mut platform_x = 2.0;
+    poses.place(PLATFORM, Vec3::new(platform_x, 0.0, 0.0), platform_velocity);
+    let mut component = PlayerMovementComponent::from_descriptor(&desc);
+    component.ground = GroundRef::Mover(PLATFORM);
+    component.velocity = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
+    let mut position = Vec3::new(3.5, rest_y(&desc, 0.0), 0.0);
+    let running = MovementInput {
+        running: true,
+        ..toward_x()
+    };
+    let mut rode_onto_the_lip = false;
+    for _ in 0..40 {
+        platform_x += platform_velocity.x * DT;
+        poses.place(PLATFORM, Vec3::new(platform_x, 0.0, 0.0), platform_velocity);
+        let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+        position = tick_combined(&mut component, &collision, &running, position);
+        assert!(
+            overlap_depth(&world, position, &component.capsule) <= OVERLAP_TOLERANCE,
+            "rider ended inside the lip at {position:?}"
+        );
+        rode_onto_the_lip |= component.ground == GroundRef::World;
+    }
+    assert!(
+        rode_onto_the_lip,
+        "the rider walked off its platform onto the lip"
+    );
+}
+
+// Mover displacement runs before the check's start sample: a pawn pushed out
+// of a mover toward a static wall is mover policy's, never the assertion's.
+#[test]
+fn a_pawn_pushed_out_of_a_mover_toward_a_static_wall_does_not_trip_the_assertion() {
+    let desc = descriptor();
+    let world = Geometry::default()
+        .floor((-50.0, 60.0), 0.0)
+        .wall_x(0.0, (0.0, 5.0), Vec3::X)
+        .build();
+    // A block advancing on the pawn from +X, pinning it against the wall.
+    let movers = [{
+        let (z0, z1) = (-4.0, 4.0);
+        MoverCollider::from_local_triangles(
+            PLATFORM,
+            &[
+                Vec3::new(0.0, 0.0, z0),
+                Vec3::new(0.0, 3.0, z0),
+                Vec3::new(0.0, 3.0, z1),
+                Vec3::new(0.0, 0.0, z1),
+            ],
+            &[[0, 2, 1], [0, 3, 2]],
+        )
+        .unwrap()
+    }];
+    let mut poses = OnePose::default();
+    let speed = Vec3::new(-3.0, 0.0, 0.0);
+    let (mut component, mut position) =
+        settled(&desc, &world, Vec3::new(1.0, rest_y(&desc, 0.0), 0.0));
+    let mut face_x = 2.0;
+    for _ in 0..40 {
+        face_x = (face_x + speed.x * DT).max(0.5);
+        poses.place(PLATFORM, Vec3::new(face_x, 0.0, 0.0), speed);
+        let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+        // Armed: a breach the check attributed to own movement would panic.
+        position = tick_combined(&mut component, &collision, &idle_input(), position);
+    }
+    assert!(
+        position.x < 1.0,
+        "the mover pushed the pawn toward the wall, at {position:?}"
+    );
+}
+
+#[test]
+fn a_pawn_carried_into_a_static_ceiling_rides_on_and_never_trips_the_assertion() {
+    let desc = descriptor();
+    let ceiling = 4.0;
+    let world = Geometry::default().ceiling((-50.0, 60.0), ceiling).build();
+    let movers = [platform(3.0)];
+    let mut poses = OnePose::default();
+    let lift = Vec3::new(0.0, 2.0, 0.0);
+    let mut platform_y = 0.0;
+    poses.place(PLATFORM, Vec3::new(0.0, platform_y, 0.0), Vec3::ZERO);
+    let mut component = PlayerMovementComponent::from_descriptor(&desc);
+    component.ground = GroundRef::Mover(PLATFORM);
+    let mut position = Vec3::new(0.0, rest_y(&desc, 0.0), 0.0);
+    for _ in 0..60 {
+        platform_y += lift.y * DT;
+        poses.place(PLATFORM, Vec3::new(0.0, platform_y, 0.0), lift);
+        let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+        // Armed: the carry is mover policy, so the overlap it causes never
+        // reaches the assertion.
+        position = tick_combined(&mut component, &collision, &idle_input(), position);
+        assert_eq!(
+            component.ground,
+            GroundRef::Mover(PLATFORM),
+            "still riding at {position:?}"
+        );
+        assert!(
+            (position.y - rest_y(&desc, platform_y)).abs() < 0.05,
+            "the carry keeps the rider on its platform: {} against {}",
+            position.y,
+            rest_y(&desc, platform_y)
+        );
+    }
+    let head = position.y + desc.capsule.half_height + desc.capsule.radius;
+    assert!(
+        head > ceiling,
+        "the fixture carried the pawn into the ceiling"
+    );
+}
+
+#[test]
+fn a_pawn_steps_up_onto_and_snaps_to_a_movers_top() {
+    let desc = descriptor();
+    let rise = desc.ground.step_height;
+    let world = Geometry::default().floor((-50.0, 60.0), 0.0).build();
+    let movers = [block(rise)];
+    let mut poses = OnePose::default();
+    poses.place(PLATFORM, Vec3::new(5.0, 0.0, 0.0), Vec3::ZERO);
+    let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+    let mut component = PlayerMovementComponent::from_descriptor(&desc);
+    let mut position = Vec3::new(4.0, rest_y(&desc, 0.0), 0.0);
+    for _ in 0..20 {
+        position = tick_combined(&mut component, &collision, &idle_input(), position);
+    }
+    for _ in 0..40 {
+        position = tick_combined(&mut component, &collision, &toward_x(), position);
+    }
+    assert_eq!(
+        component.ground,
+        GroundRef::Mover(PLATFORM),
+        "standing on the mover's top"
+    );
+    assert!(
+        (position.y - rest_y(&desc, rise)).abs() < 2.0e-3,
+        "snapped onto the top, at {position:?}"
+    );
+}
+
+// --- Controller call rules ---------------------------------------------------------
+
+#[test]
+fn with_step_height_zero_a_pawn_neither_steps_up_nor_snaps_to_the_floor() {
+    let mut desc = descriptor();
+    desc.ground.step_height = 0.0;
+    // Without ground-stick a resting pawn alternates grounded and airborne
+    // ticks, as it always has, so the fixture places it rather than settling.
+    let start = |world: &CollisionWorld, at: Vec3| {
+        let mut component = PlayerMovementComponent::from_descriptor(&desc);
+        let mut position = at;
+        for _ in 0..20 {
+            position =
+                tick_with_immersion(&mut component, &idle_input(), world, ENV, DT, position).0;
+        }
+        (component, position)
+    };
+    // Taller than the hemisphere can ride up its edge as a walkable contact
+    // (`radius · (1 − cos max_slope)`, about 0.12 m here).
+    let low = 0.5 * desc.capsule.radius;
+    let riser = Geometry::default()
+        .floor((-50.0, 5.0), 0.0)
+        .wall_x(5.0, (0.0, low), Vec3::NEG_X)
+        .floor((5.0, 60.0), low)
+        .build();
+    let (mut component, position) = start(&riser, Vec3::new(4.0, rest_y(&desc, 0.0), 0.0));
+    let end = run_clear(
+        &mut component,
+        &riser,
+        &toward_x(),
+        position,
+        40,
+        "step zero riser",
+    );
+    let feet = end.y - desc.capsule.half_height - desc.capsule.radius;
+    assert!(
+        feet < low && end.x < 5.0,
+        "no step-up with step height zero, at {end:?}"
+    );
+
+    // Walking off a 5 cm ledge: ground-stick would put the pawn on the lower
+    // floor the tick its centre clears the edge; without it gravity alone
+    // lowers it.
+    let top = 0.05;
+    let ledge = ledge_drop(top);
+    let (mut component, mut position) = start(&ledge, Vec3::new(4.0, rest_y(&desc, top), 0.0));
+    let past_edge = 5.0 + 0.05;
+    while position.x <= past_edge {
+        position = step_clear(
+            &mut component,
+            &ledge,
+            &toward_x(),
+            position,
+            "step zero ledge",
+        );
+    }
+    assert!(
+        position.y > rest_y(&desc, 0.0) + 0.02,
+        "no snap to the lower floor: centre at {} past the edge",
+        position.y
+    );
+}
+
+#[test]
+fn an_airborne_pawn_beside_a_step_does_not_step_up() {
+    let desc = descriptor();
+    let rise = desc.ground.step_height;
+    let world = Geometry::default()
+        .floor((-50.0, 5.0), 0.0)
+        .wall_x(5.0, (0.0, rise), Vec3::NEG_X)
+        .floor((5.0, 60.0), rise)
+        .build();
+    let mut component = PlayerMovementComponent::from_descriptor(&desc);
+    component.coyote_timer_ms = 1000.0;
+    component.velocity = Vec3::new(4.0, -1.0, 0.0);
+    // Falling beside the riser, feet a hair over the lower floor.
+    let start = Vec3::new(
+        5.0 - desc.capsule.radius - 0.05,
+        rest_y(&desc, 0.0) + 0.01,
+        0.0,
+    );
+    let next = step_clear(
+        &mut component,
+        &world,
+        &toward_x(),
+        start,
+        "airborne at riser",
+    );
+    assert!(
+        next.y < start.y + 0.05,
+        "an airborne pawn is never lifted by step-up: {} from {}",
+        next.y,
+        start.y
+    );
+}
+
+#[test]
+fn a_pawn_tuned_to_a_shallower_walkable_slope_classifies_floors_by_its_own_slope() {
+    let ramp_deg = 35.0_f32;
+    let slope = ramp_deg.to_radians().tan();
+    let world = Geometry::default()
+        .slope((-20.0, 20.0), (-20.0 * slope, 20.0 * slope))
+        .build();
+    for (max_slope, walkable) in [(45.0, true), (30.0, false)] {
+        let mut desc = descriptor();
+        desc.ground.max_slope = max_slope;
+        let mut component = PlayerMovementComponent::from_descriptor(&desc);
+        let rest_over_slope = desc.capsule.half_height
+            + (desc.capsule.radius + SKIN_DISTANCE) * (1.0 + slope * slope).sqrt();
+        let mut position = Vec3::new(0.0, rest_over_slope + 0.01, 0.0);
+        let mut grounded = 0;
+        for _ in 0..30 {
+            position = step_clear(&mut component, &world, &idle_input(), position, "ramp");
+            grounded += usize::from(component.is_grounded());
+        }
+        assert_eq!(
+            grounded > 20,
+            walkable,
+            "max slope {max_slope} on a {ramp_deg} degree ramp: grounded {grounded} of 30 ticks"
+        );
+    }
+}
+
+// --- Gate --------------------------------------------------------------------------
+
+/// Statements that change a body's position in `src` (assignments to
+/// `current_pos`, its fields, or compound forms), trimmed.
+pub(super) fn position_writes(src: &str) -> Vec<String> {
+    let lines: Vec<&str> = src.lines().map(str::trim).collect();
+    let mut writes = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if line.starts_with("//") {
+            continue;
+        }
+        let statement = line.trim_start_matches("let mut ");
+        let is_write = [
+            "current_pos =",
+            "current_pos +=",
+            "current_pos -=",
+            "current_pos.",
+        ]
+        .iter()
+        .any(|write| statement.starts_with(write) && !statement.contains("=="));
+        if !is_write {
+            continue;
+        }
+        // rustfmt wraps a long assignment after its `=`.
+        match lines.get(i + 1) {
+            Some(next) if statement.ends_with('=') => writes.push(format!("{statement} {next}")),
+            _ => writes.push(statement.to_string()),
+        }
+    }
+    writes
+}
+
+// Own position changes go through a swept move: a convention, so this gate
+// holds it. Outside the exemptions the brief names (mover carry and
+// displacement, the sub-tolerance wall-contact nudge), every write in the
+// substrate is a slide sweep's own advance or a `movement::swept` result.
+#[test]
+fn the_substrate_writes_no_body_position_outside_a_swept_move() {
+    let allowed = [
+        // Mover carry and mover displacement: mover policy, exempt.
+        "current_pos = apply_mover_carry(position, carry_ground, collision);",
+        "current_pos = displace_from_movers(component, carry_ground, collision, &capsule, current_pos);",
+        // The slide sweep's advance: to its hit, or the whole move it proved clear.
+        "current_pos += velocity * remaining_dt;",
+        "current_pos += dir * toi;",
+        // The wall-contact nudge, below the overlap tolerance: exempt.
+        "current_pos += normal * NORMAL_NUDGE;",
+        // `movement::swept` results.
+        "current_pos = lifted;",
+        "current_pos = swept::swept_move(",
+        "current_pos = swept::swept_move(collision, current_pos, body, rollback);",
+        "current_pos = swept::swept_move(collision, current_pos, body, Vec3::Y * push);",
+        "current_pos = snapped;",
+    ];
+    let writes = position_writes(include_str!("substrate.rs"));
+    assert!(!writes.is_empty(), "the gate reads the substrate");
+    for write in &writes {
+        assert!(
+            allowed.contains(&write.as_str()),
+            "unswept position write in the substrate: `{write}`"
+        );
+    }
+}

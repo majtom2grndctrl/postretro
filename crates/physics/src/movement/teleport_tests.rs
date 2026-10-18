@@ -888,6 +888,51 @@ fn teleport_classic_arrival_onto_a_floor_grounds_in_place_and_can_jump() {
     }
 }
 
+// Teleport arrival keeps its floor classification: only ground-stick's drop
+// became swept, so a wall pressed against the arrival capsule (which can turn
+// the swept down-cast's first hit into the wall's) still grounds it.
+#[test]
+fn teleport_classic_arrival_beside_a_wall_still_lands_grounded() {
+    let reach = 1.2;
+    let radius = canonical_descriptor().capsule.radius;
+    let destination = Vec3::new(60.0, reach + 0.02, 0.0);
+    // The floor, plus a wall facing -X a centimetre past the arrival capsule.
+    let wall_x = destination.x + radius + 0.01;
+    let mut world = CollisionWorld::from_triangles_for_test(
+        vec![
+            Vec3::new(-50.0, 0.0, -50.0),
+            Vec3::new(-50.0, 0.0, 50.0),
+            Vec3::new(100.0, 0.0, 50.0),
+            Vec3::new(100.0, 0.0, -50.0),
+            Vec3::new(wall_x, 0.0, -50.0),
+            Vec3::new(wall_x, 5.0, -50.0),
+            Vec3::new(wall_x, 5.0, 50.0),
+            Vec3::new(wall_x, 0.0, 50.0),
+        ],
+        vec![[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6]],
+    );
+    let mut gate = record(TeleportMode::Classic, destination, 0.0);
+    gate.brushes = vec![brush(
+        Vec3::new(-3.0, -1.0, -3.0),
+        Vec3::new(3.0, 12.0, 3.0),
+    )];
+    install(&mut world, vec![gate]);
+    let mut pawn = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+    pawn.ground = GroundRef::Airborne;
+    pawn.coyote_timer_ms = 1000.0;
+    pawn.velocity = Vec3::new(0.0, -5.0, 0.0);
+    let (arrival, events) = step_with(
+        &world,
+        &mut pawn,
+        &idle_input(),
+        Vec3::new(0.0, 8.0, 0.0),
+        true,
+    );
+    assert!(events.teleport.is_some());
+    near(arrival, destination);
+    assert_eq!(pawn.ground, GroundRef::World, "the arrival lands grounded");
+}
+
 /// Walk a settled pawn into a classic gate whose destination puts its feet
 /// `feet_above_floor` over the copy floor at x = 60; returns the arrival.
 fn walk_into_gate_arriving(

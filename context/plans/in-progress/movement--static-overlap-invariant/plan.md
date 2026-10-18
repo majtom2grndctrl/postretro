@@ -137,40 +137,46 @@ over it needs `rest / cos` of room), so A3's walkable-limit case is a chamfered 
 
 ## AC-to-proof
 
+Fixtures live in `crates/physics/src/movement/overlap_tests.rs` (pawn), `overlap_baseline_tests.rs`
+(B1), `overlap_check.rs` (A14, gate resolver), `teleport_tests.rs` (B4),
+`crates/sim/src/agent/overlap_tests.rs` (agents, A15, D1/D5 agent side) and
+`crates/netcode/src/prediction.rs` (C1). Every movement and agent test runs with the check
+armed as an assertion.
+
 | AC | Proof | Status |
 |---|---|---|
-| A1 lip-edge reproduces first | `overlap_fixtures::a_pawn_pressed_along_a_tilted_convex_lip_edge_ends_clear` (committed `should_panic` first, flipped by the fix) | achievable as stated |
-| A2 per-bypass fixtures overlap at b0a5c0f | each fixture run on pre-fix source; results table below | achievable as stated |
-| A3 vault fixtures | `overlap_fixtures::vault_*` | achievable as stated |
-| A4 step 0 floor push / ground-stick under ceiling (P7) | `overlap_fixtures::floor_push_*` | achievable as stated |
-| A5 step with too little headroom | pawn + agent fixtures | achievable as stated |
-| A6 ground-stick beside wall, pawn + agent | pawn + agent fixtures | achievable as stated |
-| A7 corner wedge stuck-stop rollback | `overlap_fixtures::stuck_stop_*` | achievable as stated |
-| A8 two bypasses one tick (P5) | fixture | achievable as stated |
-| A9 step-up then floor push under overhang (P4) | fixture | achievable as stated |
-| A10 still pawn over ledge edge (P7) | fixture | achievable as stated |
-| A11 idle agent over ledge edge (P6) | sim agent fixture | achievable as stated |
-| A12 rider walks into lip (P2) | fixture | achievable as stated |
-| A13 mover push toward wall (P1) | fixture | achievable as stated |
-| A14 check resumes after mover embed (P8) | fixture | achievable as stated |
-| A15 warning text, once per load, reload re-arms | sim log-capture test through the test-only hook | achievable as stated |
-| B1 displacement baseline within 1 mm/tick; embed ticks bounded between neighbours; rise from descriptor step height | `overlap_baseline_tests::*` committed before the fix | achievable as restated |
-| B2 headroom for capsule but not lift margin still steps up | pawn + agent fixtures | achievable as stated |
-| B3 step height zero | pawn + agent fixtures | achievable as stated |
-| B4 teleport arrival beside wall lands grounded | teleport test | achievable as stated |
-| B5 pawn steps onto/snaps to mover top; agent ignores | fixture pair | achievable as stated |
-| B6 controllers keep call rules; slope by own walkable | fixtures | achievable as stated |
-| B7 carried into ceiling behaves as before; no assert | existing mover tests + fixture | achievable as stated |
-| B8 existing suites pass armed | `cargo test` physics/sim/netcode/ai/postretro | achievable as stated |
-| C1 predictor replay reproduces host poses exactly | netcode test | achievable as stated |
-| D1 grep gate: no unswept position writes | source-scan test | achievable as stated |
-| D2 stand-up / slide exit under low ceiling | fixtures | achievable as stated |
-| D3 airborne stand-up above floor (P11) | fixture | achievable as stated |
-| D4 larger crouch capsule entry under low ceiling | fixture | achievable as stated |
-| D5 grep gate: agent holds no step-up/snap logic | source-scan test | achievable as stated |
-| D6 default off in release, on with debug assertions, variable on in release | unit test of the gate resolver + release-build check | achievable as stated |
-| D7 diff gate: no wire / descriptor field | `git diff` over `crates/net`, wire convert, foundation descriptor | achievable as stated |
-| D8 measured cost on `stress-env-volumes` | `POSTRETRO_CPU_TIMING` runs, set/unset | achievable as stated (needs a runnable engine in the container) |
+| A1 lip-edge reproduces first | `a_pawn_walking_onto_a_chamfered_lip_ends_every_tick_clear` (committed `should_panic` in 92537d4, plain since f87df31) | automated |
+| A2 per-bypass fixtures overlap at b0a5c0f | table above | automated (recorded) |
+| A3 vault fixtures | `vaults_never_end_a_tick_overlapping_static_geometry` | automated |
+| A4 floor push / ground-stick under ceiling (P7) | `a_floor_push_under_a_ceiling_within_a_skin_ends_clear` (step 0 and positive) | automated |
+| A5 step with too little headroom, pawn and agent | `a_step_without_room_for_the_standing_capsule_leaves_the_pawn_below_it_and_clear`, agent `an_agent_walking_into_a_step_without_headroom_stays_below_it_and_clear` | automated |
+| A6 ground-stick beside wall, pawn and agent | `ground_stick_beside_a_riser_over_a_drop_ends_clear`, agent `agent_ground_stick_beside_a_riser_over_a_drop_ends_clear` | automated |
+| A7 corner wedge stuck-stop rollback | `a_corner_wedge_on_the_steepest_walkable_ramp_ends_clear_after_the_rollback` | automated |
+| A8 two bypasses one tick (P5) | `free_advance_then_ground_stick_at_a_ramp_foot_ends_clear` | automated |
+| A9 step-up then floor push under overhang (P4) | `a_step_up_then_a_floor_push_under_an_overhang_ends_clear` | automated |
+| A10 still pawn over ledge edge (P7) | `a_still_pawn_over_a_ledge_edge_ends_clear_after_ground_stick` | automated |
+| A11 idle agent over ledge edge (P6) | `an_idle_agent_settling_over_a_ledge_edge_ends_clear` | automated |
+| A12 rider walks into lip (P2) | `a_rider_walking_into_a_chamfered_lip_while_its_platform_moves_ends_clear` | automated |
+| A13 mover push toward wall (P1) | `a_pawn_pushed_out_of_a_mover_toward_a_static_wall_does_not_trip_the_assertion` | automated |
+| A14 check resumes after mover embed (P8) | `after_a_mover_caused_embed_the_first_tick_that_starts_clear_is_checked_again`, `an_armed_check_panics_on_a_breach` | automated |
+| A15 warning text, once per load, reload re-arms | `an_overlap_warns_once_per_level_load_naming_descriptor_texture_and_position` | automated |
+| B1 displacement baseline; embed ticks bounded between neighbours; rise from descriptor step height | `a_ramp_walk_…`, `a_stair_climb_…`, `a_step_up_…`, `a_wall_slide_…`, `a_run_across_coplanar_seams_keeps_its_recorded_displacement` | automated; ramp, wall slide and seam match exactly, so no seam slide loses free-advance distance |
+| B2 headroom for capsule not lift margin still steps up | `a_step_with_room_for_the_capsule_but_not_the_lift_margin_still_steps_up`, agent `an_agent_still_steps_up_with_room_for_its_capsule_but_not_the_lift_margin` | automated |
+| B3 step height zero | `with_step_height_zero_a_pawn_neither_steps_up_nor_snaps_to_the_floor`, agent `with_step_height_zero_an_agent_neither_steps_up_nor_snaps_to_the_floor` | automated |
+| B4 teleport arrival beside wall lands grounded | `teleport_classic_arrival_beside_a_wall_still_lands_grounded` | automated |
+| B5 pawn steps onto mover top; agent ignores it | `a_pawn_steps_up_onto_and_snaps_to_a_movers_top`, `an_agent_ignores_a_mover_top_its_pawn_neighbour_steps_onto` | automated |
+| B6 controllers keep call rules; own walkable slope | `a_falling_agent_beside_a_step_still_steps_up`, `an_airborne_pawn_beside_a_step_does_not_step_up`, `a_pawn_tuned_to_a_shallower_walkable_slope_classifies_floors_by_its_own_slope` | automated |
+| B7 carried into ceiling behaves as before; no assert | `a_pawn_carried_into_a_static_ceiling_rides_on_and_never_trips_the_assertion` (carry code is untouched; the fixture proves the ride and the silent assertion) | automated |
+| B8 existing suites pass armed | `cargo test` physics 391, sim 1477, netcode 801, ai 245, postretro 1812 + 3 | automated |
+| C1 predictor replay reproduces host poses exactly | `predictor_replay_reproduces_host_poses_exactly_over_a_vault_step_up_and_ground_stick` | automated |
+| D1 grep gate: no unswept position writes | `the_substrate_writes_no_body_position_outside_a_swept_move`, `the_agent_controller_writes_no_body_position_outside_a_swept_move` | automated |
+| D2 stand-up / slide exit under low ceiling | `a_stand_up_under_a_ceiling_too_low_…`, `a_slide_exit_under_a_ceiling_too_low_…` | automated |
+| D3 airborne stand-up above floor (P11) | `an_airborne_stand_up_just_above_a_floor_stays_crouched_until_the_feet_have_room` (pre-fix: 0.4 m in the floor) | automated |
+| D4 larger crouch capsule entry under low ceiling | `a_crouch_entry_larger_than_the_standing_capsule_under_a_low_ceiling_stays_standing_and_clear` (pre-fix: 0.3 m in the ceiling) | automated |
+| D5 grep gate: agent holds no step-up/snap logic | `the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own` | automated |
+| D6 default off in release, on with debug assertions, variable on in release | `the_check_defaults_on_with_debug_assertions_and_off_in_release`, `the_variable_turns_the_check_on_or_off_in_any_build` | automated |
+| D7 diff gate: no wire / descriptor field | `git diff fd8982c -- crates/net crates/foundation crates/entities crates/netcode/src/wire*` is empty | checked |
+| D8 measured cost on `stress-env-volumes` | task 7 | pending |
 | M1–M4 | owner, in-engine | manual |
 
 ## Tasks
@@ -182,6 +188,6 @@ over it needs `rest / cos` of room), so A3's walkable-limit case is a chamfered 
 | 3 | Overlap check: tolerance query, armed assertion, build/env gate, report with texture + TrenchBroom position, warn-once on `CollisionWorld`, caller logging (host, prediction, agents), timing stage | integrating executor | 2 | done: `collision::overlap`, `movement::overlap_check`, `sim::report_static_overlap`, `SimStage::OverlapCheck` |
 | 4 | Convert every unswept move at its source; flip lip fixture | integrating executor | 3 | done: every task-1 fixture flipped; physics 376, sim 1471, netcode 799, ai 245 pass armed |
 | 5 | Resize growth clearance: anchored stand-up, growing entry | integrating executor | 3 | done: crouch stand-up and crouch-jump sweep in the anchor's growth direction; crouch and slide entry test a growing crouch capsule. Without it D3 ends 0.4 m in the floor, D4 0.3 m in the ceiling |
-| 6 | Remaining AC fixtures, grep gates, determinism replay | integrating executor | 4, 5 | |
+| 6 | Remaining AC fixtures, grep gates, determinism replay | integrating executor | 4, 5 | done |
 | 7 | Measurement on `stress-env-volumes` | integrating executor | 3 | |
 | 8 | Preflight, review panel, fixes | integrating executor | 6, 7 | |

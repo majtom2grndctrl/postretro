@@ -56,7 +56,7 @@ Ranked by likelihood of the observed vault embed:
 | P7 | zero velocity; zero dt; step height zero | no slide iterations; ground-stick runs at zero velocity; step height zero skips step-up and ground-stick | ends clear; step height zero keeps today's behaviour |
 | P8 | mover-caused embed, then walked clear | tick starts embedded: unchecked → first tick that starts clear: checked | check resumes |
 | P10 | forced overlap in a test build | detect → assert → no warn | test builds panic; outside tests the check warns when it is on (debug-assertion default, or the variable in release) |
-| P11 | airborne crouched pawn stands up just above a floor | head-anchored resize drops the feet by twice the half-height change; the stand-up probe sweeps only upward | at b0a5c0f the feet end inside the floor; after the fix it stands up from the feet if there is headroom, else it stays crouched |
+| P11 | airborne crouched pawn stands up just above a floor | head-anchored resize drops the feet by twice the half-height change; the stand-up probe sweeps only upward | at b0a5c0f the feet end inside the floor; after the fix it stays crouched (head anchor kept, per `movement.md` §4) and stands up once the feet have room |
 | P12 | a resize overlaps before the substrate runs | resize → mover carry and displacement → start sample → own move → end sample | the tick starts intersecting, so the check is silent; only the resize's own overlap test can stop it |
 
 Reach notes:
@@ -79,7 +79,7 @@ Reach notes:
 
 - Tolerance: shrinking the capsule radius by 0.5 mm, half-height unchanged, is exactly "overlaps a surface by more than 0.5 mm". This needs a new variant of `capsule_fits_combined`, which has no tolerance input.
 - Airborne stand-up in intents/crouching.rs anchors the head, but `standup_clearance_probe` sweeps only upward. The swim seam uses the anchor-aware probe, and slide stands up feet-first.
-- Crouch and slide entry only shrink the capsule, so their overlap test is vacuous.
+- Crouch and slide entry shrink the capsule only while the authored crouch half-height is the smaller one. Validation checks only that it is finite and positive, so a larger crouch makes entry grow (round 3, G3).
 - `test-support` is enabled in the dev-dependencies of sim, netcode, ai and postretro. Physics' own suites arm through `cfg(test)`, so gate on `cfg(any(test, feature = "test-support"))`. `cargo test -p postretro` also builds the binary with the feature on (`headless_byte_identity` spawns it).
 - The warn-once flag can live on `CollisionWorld`, which every level load rebuilds and which both controllers reach. Neither physics nor sim reads an env var today.
 - Neither the pawn tick nor `collide_and_slide` carries an entity id; only their callers do.

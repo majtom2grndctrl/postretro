@@ -12,13 +12,13 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
   - It sits beside the skin-cast contract in `entity_model.md` §7. That contract bounds depth into the skin band per cast; this one bounds surface overlap per tick.
   - Exempt moves are mover carry and mover displacement (mover policy), teleport relocation (which has its own fit check), and the sub-tolerance wall-contact nudge.
 - **Own position changes go through a swept move.** This is a convention, enforced by a grep gate rather than the compiler. The unswept moves are converted at their source (`research.md` has the list and the likeliest culprit).
-  - Growing resizes (stand-up and the swim seam) must pass the overlap test before they commit. A stand-up tries its usual anchor first, then the other end, as the swim seam already does. It stays crouched only when neither fits, as Quake and Source refuse a stand-up with no headroom. Crouch and slide entry only shrink the capsule, so they need no test.
+  - Every resize that grows the capsule must pass a clearance test in the direction it grows before it commits. That covers stand-up, slide exit, the swim seam, and a crouch entry whose authored crouch capsule is not smaller. Each keeps the anchor its crouch entered with (`movement.md` §4: feet when grounded, head when airborne), because swapping ends floats the body by twice the size change. A blocked growth stays crouched and retries, as the swim seam and Quake and Source already do.
   - Teleport arrival keeps today's floor classification. Only the ground-stick drop changes.
 - **The check reports; it never reverts.**
   - Tests assert it on every movement tick. It is armed through the physics `test-support` feature, which dependent crates already enable, so agent, teleport and replay tests run armed.
   - Outside tests it compiles into every build (`development_guide.md` §6.4). It is on by default in debug-assertion builds and off by default in release, and a `POSTRETRO_*` variable turns it on in any build.
   - When it fires, the movement code returns an overlap report and its caller logs it, so entity identity stays out of the physics code. The log is one warning per level load, shared by all bodies.
-  - The warning names what a mapper can act on: the body's descriptor name, the texture of the surface it intersected, and a position in map-source units (or engine units with the conversion stated).
+  - The warning names what a mapper can act on: the body's descriptor name, the texture of the surface it intersected, and the position in TrenchBroom units. A solid-cell hit or an untextured face gives the position only.
   - It stays off for a tick that starts intersecting, and resumes on the first tick that starts clear.
   - A revert would re-fire every tick under held input and freeze the body, a stall in place of an embed. The skin cast's guarantee has exceptions (`entity_model.md` §7), and the level compiler leaves hairline gaps in compiled geometry (`drafts/geometry-integrity-validation`). The warning is the net for both, for engine developers as much as for modders.
 - **Host and client run identical code.** Pose and motion stay pure functions of input and geometry, so prediction, replay and host simulation stay deterministic. No wire or tuning change.
@@ -66,12 +66,12 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
 **Gates**
 - [ ] Grep gate: outside the swept move, the movement substrate and the agent controller write no body position, except the exemptions Decisions names.
 - [ ] A stand-up or slide exit under a ceiling too low for the standing capsule leaves the body crouched and clear.
-- [ ] An airborne stand-up just above a floor, where the head-anchored resize would drop the feet into it, stands up from the feet when there is headroom above, and ends clear. At b0a5c0f the same fixture ends intersecting the floor. Pin P11.
-- [ ] The same airborne stand-up with no room at either end stays crouched and clear. Pin P11.
+- [ ] An airborne stand-up just above a floor, where the head-anchored resize would drop the feet into it, stays crouched and clear, and stands up once the feet have room. At b0a5c0f the same fixture ends intersecting the floor. Pin P11.
+- [ ] A crouch entry whose authored crouch capsule is larger than the standing one, under a low ceiling, stays standing and clear.
 - [ ] Grep gate: the agent controller holds no step-up or snap-to-floor logic of its own. It reaches them only through the shared primitives.
 - [ ] The check is off by default in release and on by default in debug-assertion builds, and its `POSTRETRO_*` variable turns it on in a release build.
 - [ ] Diff gate: the change adds no wire field and no movement-descriptor field.
-- [ ] Measured: the check's per-tick cost in a dev build on the heaviest enemy map, with the most bodies moving, is reported in the plan of record. If it is material in dev builds, the check runs only for bodies that moved that tick.
+- [ ] Measured: the check's per-tick cost on `stress-env-volumes` (64 agents), with `POSTRETRO_CPU_TIMING` and the check's variable set, is reported in the plan of record. If it exceeds 0.1 ms per tick, the check runs only for bodies that moved that tick.
 
 ### Manual
 - [ ] Single player: vault the campaign-test ledges 20× at varied angles and speeds, and walk ramps and stairs. No embed and no felt hitch. Enemies chasing over the same ledges and stairs don't clip in.
@@ -80,7 +80,8 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
 - [ ] Release build with the check's variable set, on `campaign-test`: any warning names a texture and a position a mapper can find in TrenchBroom.
 
 ## Path
-- Unswept moves in movement/substrate.rs: the floor branch's free advance after the floor-push budget is spent, the floor push, the stuck-stop rollback (it keeps the new Y), `step_up_lift`'s rise, and the ground-stick drop through the `floor_below` centre-ray fallback. Convert the fallback at the ground-stick call site, not inside `floor_below`, because teleport arrival calls `floor_below` for grounding only. Wall-contact nudge: exempt. Resize writes: intents/normal.rs, intents/slide.rs, dispatch.rs, swim transition. The airborne stand-up in intents/crouching.rs anchors the head, and `standup_clearance_probe` sweeps only upward. The swim seam's anchor-aware probe is the precedent for trying both ends. The triangle→texture lookup for the warning likely needs a per-triangle face map at collision build (`FaceMeta` carries `texture_index`).
+- Unswept moves in movement/substrate.rs: the floor branch's free advance after the floor-push budget is spent, the floor push, the stuck-stop rollback (it keeps the new Y), `step_up_lift`'s rise, and the ground-stick drop through the `floor_below` centre-ray fallback. Convert the fallback at the ground-stick call site, not inside `floor_below`, because teleport arrival calls `floor_below` for grounding only. Wall-contact nudge: exempt. Resize writes: intents/normal.rs, intents/slide.rs, dispatch.rs, swim transition. The airborne stand-up in intents/crouching.rs anchors the head, but `standup_clearance_probe` sweeps only upward. The swim seam's anchor-aware probe is the precedent for sweeping in the growth direction. Slide exit and slide jump stand from the feet (intents/slide.rs). Crouch half-height is validated only as finite and positive.
+- Warning lookup: triangle → BVH leaf (each face has one leaf with its index range) → `material_bucket_id`, which is the texture index today → texture name in `LevelWorld`. The collision trimesh is `world.indices` unfiltered, so no PRL change is needed. TrenchBroom units come from the fixed idTech2 conversion (1 unit = 0.0254 m, axes (x,y,z)→(−y,z,−x); `build_pipeline.md`, map_format.rs). The runtime already hard-codes 0.0254 in teleport.rs, and the swizzle is `pub(crate)` in the compiler.
 - Agent copies to delete: `step_up_lift` and `ground_stick` in crates/sim/src/agent/mod.rs, beside `collide_and_slide`. The agent queries static-only `CollisionWorld` and the player queries `CombinedCollisionWorld`, so the primitives take the query as a parameter. `postretro-sim` already depends on `postretro-physics`.
 - Overlap check: the static half of `capsule_fits_combined` (exact intersection, teleport arrival's check), with the 0.5 mm tolerance added. `CombinedCollisionWorld::static_only` wraps the agent's `CollisionWorld`, and a movement collision-source trait already spans both. Substrate helpers take parry's capsule type, and `postretro-sim` has no parry dependency, so the shared primitives take engine capsule params.
 - Primitive inputs: collision query, capsule, step height, lift margin, walkable slope. Lift margins match today (0.05 m), and walkable slope differs. Each controller passes its own values.
@@ -92,4 +93,4 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
 - At promotion: add the tick-level invariant to `entity_model.md` §7 beside the skin-cast contract. Update `movement.md` §4 Vault ("collision has no overlap query"), note in §6 and §7 that enemies share the primitives and the invariant, and list the check's `POSTRETRO_*` variable beside the other diagnostics.
 
 ## Open questions
-- The check's variable name, and how the warning gets map-source units: does the runtime know the source unit scale and axis order, or does it state the conversion? — **delegated**.
+- The check's variable name. — **delegated**.

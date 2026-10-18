@@ -56,7 +56,7 @@ Ranked by likelihood of the observed vault embed:
 | P7 | zero velocity; zero dt; step height zero | no slide iterations; ground-stick runs at zero velocity; step height zero skips step-up and ground-stick | ends clear; step height zero keeps today's behaviour |
 | P8 | mover-caused embed, then walked clear | tick starts embedded: unchecked → first tick that starts clear: checked | check resumes |
 | P10 | forced overlap in a test build | detect → assert → no warn | test builds panic; outside tests the check warns when it is on (debug-assertion default, or the variable in release) |
-| P11 | airborne crouched pawn stands up just above a floor | head-anchored resize drops the feet by twice the half-height change; the stand-up probe sweeps only upward | at b0a5c0f the feet end inside the floor; after the fix the stand-up is refused and the body stays crouched |
+| P11 | airborne crouched pawn stands up just above a floor | head-anchored resize drops the feet by twice the half-height change; the stand-up probe sweeps only upward | at b0a5c0f the feet end inside the floor; after the fix it stands up from the feet if there is headroom, else it stays crouched |
 | P12 | a resize overlaps before the substrate runs | resize → mover carry and displacement → start sample → own move → end sample | the tick starts intersecting, so the check is silent; only the resize's own overlap test can stop it |
 
 Reach notes:

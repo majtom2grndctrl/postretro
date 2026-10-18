@@ -33,13 +33,14 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
 **Reproduce first** (at c1cad7e; each is committed as an expected failure naming the bug, and the fix makes it a plain test)
 - [ ] A rider on a default lift rising to a stop with less headroom than the standing capsule ends ticks overlapping the ceiling by more than 0.5 mm. It is still overlapping 60 ticks after the lift stops. It replaces the fixture that asserts a rider rides through a ceiling.
 - [ ] A pawn that a default door closes on against a static jamb, and one caught between two default door leaves meeting, each ends inside a door's hull once the doors close.
-- [ ] Under `crush`, a rider carried sideways into a static wall takes no damage and ends inside the wall. A pawn squeezed between the crusher and another mover takes no damage either.
+- [ ] Under `crush` with non-zero `crush_damage`, a rider carried sideways into a static wall takes no damage and ends inside the wall. A pawn squeezed between the crusher and another mover takes no damage either.
 
 **No non-crush mover leaves a body pinned** (driver, player movement and host blocking pass in tick order, under `displace`, `stop` and `reverse`. "Resumes" is a holding mover's outcome; a reversing one heads back along its path instead.)
 - [ ] A rider lifted toward a too-low ceiling never ends a tick overlapping static geometry by more than 0.5 mm. Under `reverse` the lift carries it back down.
 - [ ] A rider overhanging a lift's edge, rising under an upper-floor slab edge: the lift yields. When the rider steps toward the platform's centre, the lift resumes the next tick and reaches its top stop with the rider clear.
 - [ ] A rider on a platform translating under a low arch, and one on a spinning carousel whose rim passes under a static pillar, never end a tick inside static geometry. The carousel's spin holds under every policy, `reverse` included. Pin Q6.
 - [ ] Each of these pawns is never left more than one tick's mover travel inside the mover: one standing against a jamb as a door closes, one under a descending lift, one against a wall a rotating door swings toward, and one between two closing door leaves. After it steps away, the movers resume the next tick and complete.
+- [ ] A rider on a lift rising toward a closed hatch mover never ends a tick overlapping the hatch's hull. The lift yields, and resumes the tick after the hatch opens clear of the rider's carry.
 - [ ] A rider that jumped off a rising lift and is caught against a ceiling within the 150 ms grace window counts as pinned.
 - [ ] A vault onto a rising mover under a ceiling never ends a tick inside the ceiling.
 - [ ] Two pawns on one tick, one pinned and one not: the mover yields, whatever order the pawns are visited in.
@@ -52,6 +53,8 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
 - [ ] A `start` or `reverse` command on a held mover never moves it into the pin. A command whose course leaves the pin moves it, and one that drives into the pin leaves it held. Pin Q2.
 - [ ] A pinned pawn that despawns or disconnects releases the hold on the next tick. Pin Q3.
 - [ ] `setBlockPolicy("crush")` on a held mover resumes it the next tick and crushes. A crusher switched to `displace` mid-pin yields the next tick. Pin Q4.
+- [ ] A `moverStart`, `moverReverse`, `moverGoToPathNode` or `moverSetSpinRate` reaction run from the frame-end script drain on a mover holding for a pinned rider never carries the rider into static geometry on the next tick. Pin Q7.
+- [ ] A `reverse` lift whose rider is pinned against a ceiling while a pawn stands pinned under it holds. It never moves onto the pawn, never changes direction on successive ticks, and fires one blocked event. Pin Q8.
 
 **Unpinned motion unchanged** (regression guards)
 - [ ] A default slider pushing a pawn across open floor, and a rider on a default lift with headroom, reproduce their c1cad7e positions exactly.
@@ -59,6 +62,7 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
 - [ ] Existing E17 blocking and rider tests pass unchanged, except the default's pinned-push case, which this brief restates.
 - [ ] Agents: a default door still ignores an enemy, and `stop`/`reverse`/`crush` treat enemies as at c1cad7e.
 - [ ] Under `crush`, a rider lifted into a ceiling is still damaged on its cadence, the mover keeps moving, and the armed overlap assertion stays silent.
+- [ ] Under `crush` with non-zero `crush_damage`, a rider carried sideways into a static wall, and a pawn squeezed between the crusher and another mover, each take damage on the crusher's cadence while it keeps moving.
 
 **Co-op and gates**
 - [ ] Loopback harness with the host blocking pass running, under the mandated link profile: a client riding a default lift toward a too-low ceiling converges to the host's pose. Its pawn overlaps static geometry on no tick after the first reconcile carrying the yield. The largest correction is reported in the plan of record.

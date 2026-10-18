@@ -114,6 +114,7 @@ Pattern: every classic engine's default pusher refuses to move into an entity it
 - The stale-hold sweep clears `blocked` on every non-`stop` mover, so a displace hold must survive it.
 - `reverse` needs a contact normal for its heading test. For a pin, use the push or carry direction.
 - `player_capsules` returns `movement.ground`. The rider test needs the carry ground, which is the vault mover while vaulting.
+- The stop hold is gated on `policy == Stop` in four places in the pass, not one: the stale-hold sweep, the preview's `ignore_stop_hold` argument, `policy_is_active_this_tick`'s held-mover arm, and the `blocked = stop_contact` write with its onset event. A `displace` or `reverse` hold needs each. Missing the preview or the activity arm drops a held mover from the snapshot, so it never resumes.
 - File sizes: blocking.rs is 2942 lines, mostly its test module; movement/mod.rs is past 6000.
 - Dev map: the content maps were not checked for pin geometry. A new `content/dev/maps/` map (low-ceiling lift, overhang lift, jamb door, double door, descending lift, rotating door, low-arch platform, carousel and pillar) gives the manual rows a place.
 
@@ -129,3 +130,5 @@ Host tick order (`entity_model.md` §5): mover tick → player movement → trig
 | Q4 | `setBlockPolicy` while held: displace→crush, or crush→displace mid-pin | command → stale-hold sweep (clears `blocked` on every non-`stop` mover) → pass | to crush: resumes the next tick and crushes; to displace: yields the next tick |
 | Q5 | preview pins on tick N | pass on N sets hold or reversal → mover tick N+1 → carry on N+1 | hold: zero delta, so the rider ends N+1 where it ended N; reversal: the carry moves the rider away from the pin |
 | Q6 | `reverse` mover pinned by spin, or with its path heading off the pin | pass finds the pin → heading test fails | holds, so the pin never goes unanswered |
+| Q7 | a script reaction, sequence step or trigger `wait` tail runs `moverStart`, `moverReverse`, `moverGoToPathNode` or `moverSetSpinRate` on a mover holding for, or one tick from pinning, a rider | blocking pass (last stage of the frame's last tick) → frame-end script drain applies the command (`Start`/`Reverse`/`GoToPathNode` clear `blocked`) → next mover tick runs a course no pass previewed | a course into the pin never moves; the rider never ends a tick inside static geometry; a course away from the pin moves |
+| Q8 | `reverse` mover pinned ahead with a second body pinned on its reversed course (a rider against the ceiling, a pawn under the lift) | pass previews only the current course → a reversal commits a course no pass previewed → next mover tick runs it | holds: never reverses onto the second body, never flips on successive ticks; one blocked event at onset |

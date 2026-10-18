@@ -38,15 +38,24 @@ Proposed wording for B1:
 > Ramps, stairs at step height, step-up onto a ledge, sliding along a wall, and running
 > across a coplanar seam keep the displacement recorded at b0a5c0f, within 1 mm per
 > tick. The baseline is a committed test that runs before the fix. A seam slide that
-> loses free-advance distance is noted in the plan of record. On a tick whose b0a5c0f
-> pose itself overlapped static geometry (at b0a5c0f, ground-stick's centre-ray drop
-> sinks a pawn approaching a stair riser up to 7 cm into the step corner), only the
-> horizontal displacement is held to 1 mm, and the climb still ends within 1 mm of the
-> b0a5c0f end pose.
+> loses free-advance distance is noted in the plan of record. A tick whose b0a5c0f pose
+> overlapped static geometry is exempt from the vertical comparison. It still ends
+> clear, its horizontal displacement still holds to 1 mm, and its height falls between
+> the recorded heights of the ticks either side, so the climb never dips or overshoots.
+> (At b0a5c0f, ground-stick's centre-ray drop sinks a pawn approaching a stair riser up
+> to 7 cm into the step corner.)
+
+Why this shape: B1 guards feel, not b0a5c0f's numbers. In the prototype, every tick that
+was clear at b0a5c0f matches within 1 mm in all three axes. Only the embed tick differs,
+and there the fixed height lands between its neighbours. At b0a5c0f the eye holds flat
+at 1.22 m for that tick, then jumps 25 cm on the next. Fixed, it rises 13.6 cm and then
+11.8 cm. The between-neighbours bound is what makes that a tested property: an earlier
+draft held only horizontal displacement and the end pose, which would have passed a
+pawn that bobbed up and down at the riser.
 
 The alternatives are to drop stairs and step-up from B1, or to keep B1 and accept a
-different fix. The second would need to reproduce the b0a5c0f embed and so contradicts
-the invariant. I recommend the wording above.
+fix that reproduces the b0a5c0f embed, which contradicts the invariant. I recommend the
+wording above.
 
 ### Other task-1 findings (no restatement needed)
 - **A1 lip fixture:** a 0.3 m chamfered lip at 25° embeds a pawn walking onto it by

@@ -55,7 +55,9 @@ Ranked by likelihood of the observed vault embed:
 | P6 | idle agent and steering agent at a ledge edge | start sample → agent move → end sample, at both call sites | both checked, both clear |
 | P7 | zero velocity; zero dt; step height zero | no slide iterations; ground-stick runs at zero velocity; step height zero skips step-up and ground-stick | ends clear; step height zero keeps today's behaviour |
 | P8 | mover-caused embed, then walked clear | tick starts embedded: unchecked → first tick that starts clear: checked | check resumes |
-| P10 | forced overlap in a test build | detect → assert → no warn | test builds panic; only non-test debug builds warn |
+| P10 | forced overlap in a test build | detect → assert → no warn | test builds panic; outside tests the check warns when it is on (debug-assertion default, or the variable in release) |
+| P11 | airborne crouched pawn stands up just above a floor | head-anchored resize drops the feet by twice the half-height change; the stand-up probe sweeps only upward | at b0a5c0f the feet end inside the floor; after the fix the stand-up is refused and the body stays crouched |
+| P12 | a resize overlaps before the substrate runs | resize → mover carry and displacement → start sample → own move → end sample | the tick starts intersecting, so the check is silent; only the resize's own overlap test can stop it |
 
 Reach notes:
 - Ground-stick undoes the floor push whenever step height is positive.
@@ -72,3 +74,13 @@ Reach notes:
 - `floor_below` has a second caller: teleport arrival uses it only to classify grounding.
 - Mover displacement is already swept against static geometry (mover_carry.rs).
 - Enemy step height already comes from baked nav data (sim/nav, agent_steering.rs), so sharing the step-up adds no bake contract.
+
+## Round-2 premise notes
+
+- Tolerance: shrinking the capsule radius by 0.5 mm, half-height unchanged, is exactly "overlaps a surface by more than 0.5 mm". This needs a new variant of `capsule_fits_combined`, which has no tolerance input.
+- Airborne stand-up in intents/crouching.rs anchors the head, but `standup_clearance_probe` sweeps only upward. The swim seam uses the anchor-aware probe, and slide stands up feet-first.
+- Crouch and slide entry only shrink the capsule, so their overlap test is vacuous.
+- `test-support` is enabled in the dev-dependencies of sim, netcode, ai and postretro. Physics' own suites arm through `cfg(test)`, so gate on `cfg(any(test, feature = "test-support"))`. `cargo test -p postretro` also builds the binary with the feature on (`headless_byte_identity` spawns it).
+- The warn-once flag can live on `CollisionWorld`, which every level load rebuilds and which both controllers reach. Neither physics nor sim reads an env var today.
+- Neither the pawn tick nor `collide_and_slide` carries an entity id; only their callers do.
+- PRL has no brush id. `FaceMeta` holds `leaf_index` and `texture_index`. `CollisionWorld` keeps only the trimesh, and `intersection_test` returns a bool.

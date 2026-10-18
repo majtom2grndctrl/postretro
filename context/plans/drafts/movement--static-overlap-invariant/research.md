@@ -63,3 +63,12 @@ Reach notes:
 - The centre-ray drop is refused past ground-stick reach (step height + 0.1 m).
 - The stuck-stop rollback sinks the body only after a downhill slide, by less than 1 mm × sin(slope).
 - Agent ground-stick runs every tick with vertical velocity ≤ 1e-3, idle agents included (two call sites, idle and steering, in agent_steering.rs).
+
+## Other position writes (`/review-brief` premise lens)
+
+- Wall-contact nudge: 0.1 mm along the normal per resting wall contact, at most four per tick (substrate.rs; the agent copy is in agent/mod.rs). Below the 0.5 mm tolerance, so exempt.
+- Teleport relocation (movement/mod.rs, after the substrate): an unswept arrival cleared by `capsule_fits_combined`. Exempt, with its own fit check.
+- Capsule-resize centre shifts on crouch and slide entry, stand-up and the swim seam (intents/normal.rs, intents/slide.rs, dispatch.rs): written before mover carry. These now take the overlap test before committing.
+- `floor_below` has a second caller: teleport arrival uses it only to classify grounding.
+- Mover displacement is already swept against static geometry (mover_carry.rs).
+- Enemy step height already comes from baked nav data (sim/nav, agent_steering.rs), so sharing the step-up adds no bake contract.

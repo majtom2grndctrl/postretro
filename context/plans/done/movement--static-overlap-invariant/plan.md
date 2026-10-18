@@ -1,7 +1,7 @@
 # movement--static-overlap-invariant — plan of record
 
 mode: compact
-status: active
+status: done
 read at: fd8982c
 
 ## Resolved block — Acceptance row B1 (owner restated)
@@ -182,7 +182,7 @@ armed as an assertion.
 | D6 default off in release, on with debug assertions, variable on in release | `the_check_defaults_on_with_debug_assertions_and_off_in_release`, `the_variable_turns_the_check_on_or_off_in_any_build` | automated |
 | D7 diff gate: no wire / descriptor field | `git diff fd8982c -- crates/net crates/foundation crates/entities crates/netcode/src/wire*` is empty | checked |
 | D8 measured cost on `stress-env-volumes` | `measurements/overlap-check-cost/` — `sim_overlap_check` 0.024 ms per tick (0.040 ms over the first 600 ticks) with the check on; absent with it off; `sim_tick` unchanged; dumps byte-identical. Under 0.1 ms, so every moving body is checked | measured headless (no GPU here: the tick's stage timing turned on by a local patch, recorded with the result); a windowed release run is the owner's |
-| M1–M4 | owner, in-engine | manual |
+| M1–M4 | owner, in-engine | landed on the owner's play test: stair stepping reliable, including under net lag (part of M1, M2). Vault runs, enemies, seam feel (M3) and the release-build warning (M4) not reported |
 
 ## Tasks
 

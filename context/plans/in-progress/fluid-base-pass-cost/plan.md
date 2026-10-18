@@ -57,6 +57,20 @@ Parity at 960×540, |today − new| in 8-bit sRGB over water pixels (water mask 
 | M5 parity at near, probes, mid, under; near-wall subset | Metal kit, `parity.py` | manual | **measured:** max 1/255 per channel at every view, near-wall included (mid: 41 075 px) |
 | M6 owner look | owner, in engine | manual | **outstanding** |
 
+## 5300M two-binary before/after
+`results-landing2.{md,json}`: BEFORE 96ab6c9f4 and AFTER e00a42fc5, each its own release binary (`capture,dev-tools`, no hook), interleaved, 2 rounds, 24/24 runs valid, 4K.
+
+| view | mask | fluid before → after ms | GPU frame before → after ms | forward Δ ms |
+|---|---|---|---|---|
+| near | reflection-free | 52.35 → 2.16 | 78.18 → 27.88 | −0.12 |
+| probes | reflection-free | 21.28 → 2.14 | 49.91 → 25.91 | −0.79 |
+| mid | reflection-free | 18.42 → 1.25 | 40.74 → 23.45 | −0.04 |
+| near | reflecting | 64.15 → 12.33 | 92.61 → 41.23 | +0.35 |
+| probes | reflecting | 35.57 → 14.82 | 65.08 → 40.95 | −0.23 |
+| mid | reflecting | 25.06 → 6.52 | 55.65 → 32.44 | −2.51 |
+
+Reflecting − reflection-free fluid on the 5300M stays large: near 11.80 → 10.16 ms, probes 14.29 → 12.69, mid 6.65 → 5.27. Unlike the 1660, this GPU's reflection term costs about the same with baked SH gone; it is the reflection brief's to remove. The probes and mid-reflecting frames drop 3–5 ms more than the fluid pass does; not attributed here. The same-binary override A/B (`results-landing1`) agrees within 3%.
+
 ## GTX 1660 Super (Vulkan)
 Release `--features capture,dev-tools` (capture alone reports GPU timing `plain-build-unavailable`), `POSTRETRO_GPU_TIMING=1`, sync-proof SH, 120 warmup + 360 samples, ABBA over 2 rounds; GPU frame = sum of per-pass averages; spreads ≤ 0.10 ms. Measured by the Windows session.
 

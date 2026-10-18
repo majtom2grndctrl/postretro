@@ -53,15 +53,15 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
 );
 
-/// The shader's pipeline-overridable constant that selects its variant.
-pub(crate) const FLUID_REFLECTIONS_OVERRIDE: &str = "FLUID_REFLECTIONS";
-
-/// The fragment stage's override values for `variant`.
-pub(crate) fn fluid_variant_constants(variant: FluidShaderVariant) -> [(&'static str, f64); 1] {
-    [(
-        FLUID_REFLECTIONS_OVERRIDE,
-        if variant.reflections() { 1.0 } else { 0.0 },
-    )]
+/// The fragment entry point for `variant`. Each variant is its own entry
+/// point so naga's per-entry compaction leaves the reflection globals out of
+/// the reflection-free entry's signature; an override constant would not.
+pub(crate) fn fluid_fragment_entry_point(variant: FluidShaderVariant) -> &'static str {
+    if variant.reflections() {
+        "fs_main_reflecting"
+    } else {
+        "fs_main"
+    }
 }
 
 /// Group 4, level-scoped: one uniform window (at most 64 KiB) of per-volume
@@ -589,9 +589,9 @@ impl FluidSurfacePass {
     }
 }
 
-/// One fluid pipeline: `variant` sets the shader's `FLUID_REFLECTIONS`
-/// override in the fragment stage. Everything else is shared, so both
-/// variants draw under one layout, vertex layout, blend and depth state.
+/// One fluid pipeline: `variant` picks the fragment entry point. Everything
+/// else is shared, so both variants draw under one layout, vertex layout,
+/// blend and depth state.
 fn create_fluid_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
@@ -599,7 +599,6 @@ fn create_fluid_pipeline(
     depth_format: wgpu::TextureFormat,
     variant: FluidShaderVariant,
 ) -> wgpu::RenderPipeline {
-    let constants = fluid_variant_constants(variant);
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(match variant {
             FluidShaderVariant::ReflectionFree => "Fluid Surface Pipeline (reflection-free)",
@@ -633,16 +632,13 @@ fn create_fluid_pipeline(
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(fluid_fragment_entry_point(variant)),
             targets: &[Some(wgpu::ColorTargetState {
                 format: SCENE_COLOR_FORMAT,
                 blend: Some(fluid_blend_state()),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &constants,
-                ..Default::default()
-            },
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         multiview_mask: None,
         cache: None,

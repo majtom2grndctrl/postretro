@@ -6,15 +6,19 @@ use postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES;
 use postretro_render_cpu::fluid_surface::{FLUID_SLOTS_PER_WINDOW, FluidSurfaceVertex};
 
 fn validated_module() -> naga::Module {
+    validated_module_and_info().0
+}
+
+fn validated_module_and_info() -> (naga::Module, naga::valid::ModuleInfo) {
     let module = naga::front::wgsl::parse_str(composed_shader_source())
         .expect("fluid surface shader must parse as WGSL");
-    naga::valid::Validator::new(
+    let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
     )
     .validate(&module)
     .expect("fluid surface shader must pass naga validation");
-    module
+    (module, info)
 }
 
 fn struct_span(module: &naga::Module, name: &str) -> u32 {
@@ -82,34 +86,22 @@ fn fluid_shader_passes_naga_validation() {
     validated_module();
 }
 
-/// The module one stage of `variant`'s pipeline compiles: the shader with
-/// that pipeline's override constants applied, as wgpu applies them, compacted
-/// to `entry_point`. The vertex stage sets no constant, as the pipeline does.
+/// The module one stage of `variant`'s pipeline compiles: the shader
+/// compacted to `entry_point`, as wgpu compiles it. The shader has no
+/// override constants; the variant is the entry point.
 fn variant_stage_module(
     variant: FluidShaderVariant,
     stage: naga::ShaderStage,
     entry_point: &str,
 ) -> naga::Module {
-    let module = validated_module();
-    let info = naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::all(),
-    )
-    .validate(&module)
-    .expect("fluid surface shader must pass naga validation");
-    let mut constants = naga::back::PipelineConstants::default();
-    if stage == naga::ShaderStage::Fragment {
-        for (name, value) in fluid_variant_constants(variant) {
-            constants.insert(name.to_owned(), value);
-        }
-    }
+    let (module, info) = validated_module_and_info();
     let (processed, _) = naga::back::pipeline_constants::process_overrides(
         &module,
         &info,
         Some((stage, entry_point)),
-        &constants,
+        &naga::back::PipelineConstants::default(),
     )
-    .unwrap_or_else(|error| panic!("{variant:?} {entry_point} overrides apply: {error}"));
+    .unwrap_or_else(|error| panic!("{variant:?} {entry_point} compacts: {error}"));
     processed.into_owned()
 }
 
@@ -259,31 +251,32 @@ fn reached_names(module: &naga::Module, entry_point: &str) -> (Vec<String>, Vec<
     (functions, globals)
 }
 
-// Two fluid pipelines: the reflection-free variant's fragment stage reaches
+// Two fluid pipelines, one entry point each: the reflection-free entry reaches
 // no reflection function (the distance search included) and reads none of the
-// probe array, the probe table or the distance array; everything up to the
-// surface it returns stays (lighting, fog, the warp). The reflecting variant
-// reaches the probe term and its search, so the walk is not vacuous. Each
-// variant's override is the shader's own `FLUID_REFLECTIONS`, default true,
-// set per pipeline.
+// probe array, the probe table, the distance array or the animation
+// descriptors; everything up to the surface it returns stays (lighting, fog,
+// the warp). The reflecting entry reaches the probe term and its search, so
+// the walk is not vacuous. The shader has no override constant: a branch
+// folded by one would leave its globals in the entry's Metal signature, which
+// naga declares from the entry's `global_uses`; the next test pins those.
 #[test]
 fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path() {
     let source = code_only(include_str!("../shaders/fluid_surface.wgsl"));
     assert!(
-        source.contains("overrideFLUID_REFLECTIONS:bool=true;"),
-        "the shader declares the variant override"
+        !source.contains("override"),
+        "the shader selects its variant by entry point, not an override"
     );
-    assert_eq!(FLUID_REFLECTIONS_OVERRIDE, "FLUID_REFLECTIONS");
     for variant in FluidShaderVariant::ALL {
         assert_eq!(FluidShaderVariant::ALL[variant as usize], variant);
-        assert_eq!(
-            fluid_variant_constants(variant),
-            [(
-                "FLUID_REFLECTIONS",
-                if variant.reflections() { 1.0 } else { 0.0 }
-            )]
-        );
     }
+    assert_eq!(
+        fluid_fragment_entry_point(FluidShaderVariant::ReflectionFree),
+        "fs_main"
+    );
+    assert_eq!(
+        fluid_fragment_entry_point(FluidShaderVariant::Reflecting),
+        "fs_main_reflecting"
+    );
 
     let reflection_free = variant_stage_module(
         FluidShaderVariant::ReflectionFree,
@@ -292,6 +285,7 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
     );
     let (functions, globals) = reached_names(&reflection_free, "fs_main");
     for kept in [
+        "fluid_shade",
         "fluid_warp_uv",
         "fluid_sample_sh",
         "fluid_light",
@@ -310,7 +304,7 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
         reflecting_functions.is_empty(),
         "the reflection-free variant calls {reflecting_functions:?}"
     );
-    for probe_global in ["fluid_probes", "fluid_probe_array", "fluid_probe_distance"] {
+    for probe_global in REFLECTION_GLOBALS {
         assert!(
             !globals.iter().any(|name| name == probe_global),
             "the reflection-free variant reads {probe_global}: {globals:?}"
@@ -320,10 +314,11 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
     let reflecting = variant_stage_module(
         FluidShaderVariant::Reflecting,
         naga::ShaderStage::Fragment,
-        "fs_main",
+        "fs_main_reflecting",
     );
-    let (functions, globals) = reached_names(&reflecting, "fs_main");
+    let (functions, globals) = reached_names(&reflecting, "fs_main_reflecting");
     for reached in [
+        "fluid_shade",
         "fluid_reflection_gate",
         "fluid_reflection_sample",
         "fluid_reflection_search",
@@ -338,12 +333,7 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
             "reaches {reached}: {functions:?}"
         );
     }
-    for probe_global in [
-        "fluid_probes",
-        "fluid_probe_array",
-        "fluid_probe_distance",
-        "anim_descriptors",
-    ] {
+    for probe_global in REFLECTION_GLOBALS {
         assert!(
             globals.iter().any(|name| name == probe_global),
             "the reflecting variant reads {probe_global}: {globals:?}"
@@ -351,12 +341,71 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
     }
 }
 
+const REFLECTION_GLOBALS: [&str; 4] = [
+    "fluid_probes",
+    "fluid_probe_array",
+    "fluid_probe_distance",
+    "anim_descriptors",
+];
+
+// What naga's MSL writer declares as entry-point arguments: the globals in the
+// entry's `global_uses`. The reflection-free entry uses none of the four
+// reflection globals; the reflecting entry uses each. An override-folded
+// branch would still count as a use, so this fails against a shader that
+// selects the variant by override constant.
+#[test]
+fn the_reflection_free_entry_declares_none_of_the_reflection_globals() {
+    let (module, info) = validated_module_and_info();
+    let uses_of = |entry_name: &str, global_name: &str| {
+        let index = module
+            .entry_points
+            .iter()
+            .position(|entry| entry.name == entry_name)
+            .unwrap_or_else(|| panic!("shader declares entry point {entry_name}"));
+        let (handle, _) = module
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.name.as_deref() == Some(global_name))
+            .unwrap_or_else(|| panic!("shader declares global {global_name}"));
+        info.get_entry_point(index)[handle]
+    };
+    for global in REFLECTION_GLOBALS {
+        assert!(
+            uses_of("fs_main", global).is_empty(),
+            "fs_main must not use {global}"
+        );
+        assert!(
+            !uses_of("fs_main_reflecting", global).is_empty(),
+            "fs_main_reflecting must use {global}"
+        );
+    }
+}
+
+// Pixel parity: where the reflecting gate is shut, both entry points return
+// `fluid_shade(in).surface`. `fs_main` is that call alone. `FluidShaded`'s
+// fields run in the order `fluid_shade` constructs them, so no reordered
+// field of a shared type hands the reflection tail one value under another's
+// name.
+#[test]
+fn both_fluid_entry_points_return_the_shared_shading_where_the_gate_is_shut() {
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    assert_eq!(
+        code_only(wgsl_fn(source, "fs_main")),
+        "fnfs_main(in:VertexOutput)->@location(0)vec4<f32>{returnfluid_shade(in).surface;}"
+    );
+    assert!(code_only(source).contains(
+        "structFluidShaded{surface:vec4<f32>,outward:vec3<f32>,view_dir:vec3<f32>,\
+         uv_dx_texels:vec2<f32>,uv_dy_texels:vec2<f32>,dims:vec2<f32>,texels_per_pixel:f32,\
+         reflectivity:f32,};"
+    ));
+}
+
 // Every resource the shader binds must exist in the layout the pipeline is
 // built from, visible to the fragment stage that reads it. A mismatch would
 // only surface as a pipeline-creation panic on a real GPU.
 //
-// Both pipelines: each variant's vertex and fragment stage, as its override
-// constants compile them, binds only what the one shared layout holds.
+// Both pipelines: each variant's vertex and fragment entry point, as the
+// pipeline compiles them, binds only what the one shared layout holds.
 #[test]
 fn fluid_shader_bindings_are_present_in_the_pipeline_layout() {
     let groups = fluid_pipeline_bind_group_layout_entries();
@@ -370,7 +419,7 @@ fn fluid_shader_bindings_are_present_in_the_pipeline_layout() {
             (
                 naga::ShaderStage::Fragment,
                 wgpu::ShaderStages::FRAGMENT,
-                "fs_main",
+                fluid_fragment_entry_point(variant),
             ),
         ] {
             let module = variant_stage_module(variant, stage, entry_point);
@@ -610,15 +659,15 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
 }
 
 // The water lights per fragment so a dynamic light near a large face shades
-// it smoothly: every light evaluation lives in fs_main, none in vs_main. Baked
+// it smoothly: every light evaluation lives in fluid_shade, none in vs_main. Baked
 // direct comes from direct SH, never from the VERTEX-only billboard scatter.
 #[test]
 fn fluid_lighting_is_evaluated_per_fragment_from_direct_sh() {
     let source = include_str!("../shaders/fluid_surface.wgsl");
     let vertex = code_only(wgsl_fn(source, "vs_main"));
-    let fragment = code_only(wgsl_fn(source, "fs_main"));
+    let fragment = code_only(wgsl_fn(source, "fluid_shade"));
     for call in ["fluid_sample_sh(", "fluid_light(", "fluid_warp_uv("] {
-        assert!(fragment.contains(call), "fs_main must call {call}");
+        assert!(fragment.contains(call), "fluid_shade must call {call}");
         assert!(!vertex.contains(call), "vs_main must not call {call}");
     }
     assert!(source.contains("@group(3) @binding(15) var sh_direct_atlas"));
@@ -770,10 +819,10 @@ fn fluid_motion_shader_constants_match_the_cpu_reference() {
 }
 
 #[test]
-fn fluid_fs_main_samples_albedo_and_emissive_at_the_warped_uv() {
+fn fluid_shade_samples_albedo_and_emissive_at_the_warped_uv() {
     let fragment = code_only(wgsl_fn(
         include_str!("../shaders/fluid_surface.wgsl"),
-        "fs_main",
+        "fluid_shade",
     ));
     // The warp reads the unwarped UV and its derivatives' footprint.
     assert!(fragment.contains("letddx=dpdx(in.uv);"));
@@ -1487,23 +1536,28 @@ fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
     }
 }
 
-// `fs_main`'s tail is the CPU references' `fog_fragment` then
-// `reflection_fragment`: no fog or an inside view keeps the surface;
-// otherwise one depth load, then path, transmittance, proximity, layer and
-// composite. The reflection gate then returns that unchanged, or wraps it in
-// the probe's union composite, for the fog branch and the clear path alike,
-// at Fresnel times the search's weight times the eye's band (the fog's own
-// proximity). The fog part is pinned in order; the reflection block, from its
-// variant gate to the shader's output, is pinned exactly. The outside gate,
-// the proximity, the band and the reflection read the interpolated outward
-// normal, never the viewer-flipped shading normal `n`, which always faces the
-// camera.
+// `fluid_shade`'s tail is the CPU references' `fog_fragment`, and
+// `fs_main_reflecting`'s is `reflection_fragment`: no fog or an inside view
+// keeps the surface; otherwise one depth load, then path, transmittance,
+// proximity, layer and composite. The reflection gate then returns that
+// unchanged, or wraps it in the probe's union composite, for the fog branch
+// and the clear path alike, at Fresnel times the search's weight times the
+// eye's band (the fog's own proximity). The fog part is pinned in order in
+// `fluid_shade`, its hand-off exactly; the reflecting entry point, whole, is
+// pinned exactly. The outside gate, the proximity, the band and the
+// reflection read the interpolated outward normal, never the viewer-flipped
+// shading normal `n`, which always faces the camera.
 #[test]
-fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
-    let fragment = code_only(wgsl_fn(
+fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the_composite() {
+    let shade = code_only(wgsl_fn(
         include_str!("../shaders/fluid_surface.wgsl"),
-        "fs_main",
+        "fluid_shade",
     ));
+    let reflecting = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fs_main_reflecting",
+    ));
+    let fragment = format!("{shade}{reflecting}");
     let tail = [
         "letoutward=normalize(in.world_normal);",
         "varn=outward;",
@@ -1521,18 +1575,33 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
     ];
     let mut at = 0;
     for line in tail {
-        let found = fragment[at..]
+        let found = shade[at..]
             .find(line)
-            .unwrap_or_else(|| panic!("fs_main must contain, in order: {line}\n{fragment}"));
+            .unwrap_or_else(|| panic!("fluid_shade must contain, in order: {line}\n{shade}"));
         at += found + line.len();
     }
     assert_eq!(
-        &fragment[at..],
-        "if!FLUID_REFLECTIONS{returnsurface;}\
-         letreflectivity=row.surface.z;\
+        &shade[at..],
+        "returnFluidShaded(surface,outward,V,ddx*dims,ddy*dims,dims,texels_per_pixel,\
+         row.surface.z);}",
+        "fluid_shade ends by handing the reflection tail its inputs"
+    );
+    assert_eq!(
+        reflecting,
+        "fnfs_main_reflecting(in:VertexOutput)->@location(0)vec4<f32>{\
+         letddx_world=dpdx(in.world_position);\
+         letddy_world=dpdy(in.world_position);\
+         letshaded=fluid_shade(in);\
+         letsurface=shaded.surface;\
+         letoutward=shaded.outward;\
+         letV=shaded.view_dir;\
+         letdims=shaded.dims;\
+         lettexels_per_pixel=shaded.texels_per_pixel;\
+         letreflectivity=shaded.reflectivity;\
          if!fluid_reflection_gate(in.probe,outward,V,uniforms.light_term_mask,reflectivity){\
          returnsurface;}\
-         letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);\
+         letaxes=fluid_reflection_texel_axes(shaded.uv_dx_texels,shaded.uv_dy_texels,\
+         ddx_world,ddy_world);\
          letpoint=fluid_reflection_point(fluid_scene.reflection_style,in.uv*dims,\
          in.world_position,outward,axes,uniforms.time,texels_per_pixel,\
          fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
@@ -1542,7 +1611,7 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity)*reflection.weight;\
          letband=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);\
          returnfluid_reflection_composite(surface,reflection.capture,fresnel*band);}",
-        "the reflection block, from its variant gate to the shader's output"
+        "the reflecting entry point"
     );
     for flipped in [
         "fluid_fog_seen_from_outside(n,",
@@ -1912,8 +1981,8 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
 
     // The sample chain: the ray floored above the horizon, then the search
     // runs first and ends, then one colour tap and the ratio read its lookup;
-    // the search's weight rides out beside the capture for `fs_main` to scale
-    // Fresnel by, with the eye's band.
+    // the search's weight rides out beside the capture for `fs_main_reflecting`
+    // to scale Fresnel by, with the eye's band.
     assert_eq!(
         code_only(wgsl_fn(wgsl, "fluid_reflection_sample")),
         "fnfluid_reflection_sample(probe:u32,world_position:vec3<f32>,view:vec3<f32>,\
@@ -2301,27 +2370,48 @@ fn fluid_reflection_style_wgsl_bodies_match_the_cpu_reference() {
     }
 }
 
-// The pixel style keys on the unwarped cell: `fs_main` hands it the unwarped
-// texel UV (never the warped sample UV), the warp's own clock and fade
-// footprint, and the face's texel axes from derivatives taken at the top of
-// `fs_main`, in uniform control flow. No style function reads drift or the
-// wave, so neither moves a cell's reflection direction.
+// The pixel style keys on the unwarped cell: `fs_main_reflecting` hands it the
+// unwarped texel UV (never the warped sample UV), the warp's own clock and
+// fade footprint, and the face's texel axes from derivatives taken at the top
+// of `fluid_shade` and `fs_main_reflecting`, in uniform control flow. The
+// reflection-free `fs_main` takes none of its own. No style function reads
+// drift or the wave, so neither moves a cell's reflection direction.
 #[test]
 fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
     let main = code_only(wgsl_fn(
         include_str!("../shaders/fluid_surface.wgsl"),
-        "fs_main",
+        "fs_main_reflecting",
+    ));
+    let shade = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fluid_shade",
     ));
     let derivatives = main
         .find("letddx_world=dpdx(in.world_position);letddy_world=dpdy(in.world_position);")
-        .expect("world derivatives in fs_main");
+        .expect("world derivatives in fs_main_reflecting");
     let first_branch = main.find("if").expect("a branch");
     assert!(
         derivatives < first_branch,
         "the derivatives precede every branch"
     );
-    assert_eq!(main.matches("dpdx(").count(), 2, "{main}");
-    assert_eq!(main.matches("dpdy(").count(), 2, "{main}");
+    let shade_derivatives = shade.find("letddx=dpdx(in.uv);").expect("uv derivatives");
+    assert!(
+        shade_derivatives < shade.find("if").expect("a branch"),
+        "the derivatives precede every branch"
+    );
+    assert_eq!(
+        main.matches("dpdx(").count() + shade.matches("dpdx(").count(),
+        2
+    );
+    assert_eq!(
+        main.matches("dpdy(").count() + shade.matches("dpdy(").count(),
+        2
+    );
+    let free = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fs_main",
+    ));
+    assert!(!free.contains("dpdx(") && !free.contains("dpdy("), "{free}");
     let tail = fs_main_reflection_tail();
     assert!(tail.contains("in.uv*dims"));
     assert!(!tail.contains("(uv*dims") && !tail.contains(",uv*dims"));
@@ -2562,14 +2652,15 @@ fn fluid_reflection_functions() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The probe term's part of `fs_main`: from the gate to the composite.
+/// The probe term's part of `fs_main_reflecting`: from the reflectivity read
+/// to the composite.
 fn fs_main_reflection_tail() -> String {
     let main = code_only(wgsl_fn(
         include_str!("../shaders/fluid_surface.wgsl"),
-        "fs_main",
+        "fs_main_reflecting",
     ));
     let start = main
-        .find("letreflectivity=row.surface.z;")
+        .find("letreflectivity=shaded.reflectivity;")
         .expect("reflection tail");
     main[start..].to_owned()
 }
@@ -2639,8 +2730,8 @@ fn fluid_reflection_light_evaluation_reads_no_promotion_weight_or_debug_override
 }
 
 // The probe term takes no SH read: no reflection function, and no part of
-// `fs_main`'s reflection tail, touches the SH atlases, grid, depth moments or
-// sampler chain, or the SH-lit surface lighting. Its only group-3 reads are
+// `fs_main_reflecting`'s reflection tail, touches the SH atlases, grid, depth
+// moments or sampler chain, or the SH-lit surface lighting. Its only group-3 reads are
 // the descriptors and curve samples (and the SH atlas's linear-clamp sampler,
 // which reads no SH data), so a pool whose capture point's cells are not
 // resident still follows a switch (P5).
@@ -2648,7 +2739,7 @@ fn fluid_reflection_light_evaluation_reads_no_promotion_weight_or_debug_override
 fn fluid_reflection_term_takes_no_sh_read() {
     let mut scanned = fluid_reflection_functions();
     scanned.push((
-        "fs_main reflection tail".to_owned(),
+        "fs_main_reflecting reflection tail".to_owned(),
         fs_main_reflection_tail(),
     ));
     for (name, body) in &scanned {
@@ -3131,8 +3222,8 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
 
 // Acceptance row 31, source scan: the probe's array layer derives from the
 // face's binding input alone. The flat `probe` varying, written from the
-// install-time probe-index vertex buffer, is the only probe index `fs_main`
-// passes on or reads the table by (its tail reads the face's box for the
+// install-time probe-index vertex buffer, is the only probe index
+// `fs_main_reflecting` passes on or reads the table by (its tail reads the face's box for the
 // pixel-style cell); every other probe-table read indexes by that `probe`
 // parameter; the
 // one probe-array tap reads `fluid_probes.probes[probe].layer`, and no
@@ -3152,14 +3243,17 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
         "fluid_reflection_gate(in.probe,",
         "fluid_reflection_sample(in.probe,",
     ] {
-        assert!(tail.contains(call), "fs_main passes the varying: `{call}`");
+        assert!(
+            tail.contains(call),
+            "fs_main_reflecting passes the varying: `{call}`"
+        );
     }
     assert_eq!(tail.matches("probe,").count(), 2, "{tail}");
     assert!(!tail.contains("letprobe") && !tail.contains("varprobe"));
 
     // Every table read is indexed by the face's probe: the `probe`
-    // parameter, or in `fs_main`'s tail the varying itself, read there only
-    // for the box and capture point the pixel-style cell is held to.
+    // parameter, or in `fs_main_reflecting`'s tail the varying itself, read
+    // there only for the box and capture point the pixel-style cell is held to.
     let table_reads = code.matches("fluid_probes.probes[").count();
     assert!(table_reads >= 7, "{table_reads}");
     assert_eq!(

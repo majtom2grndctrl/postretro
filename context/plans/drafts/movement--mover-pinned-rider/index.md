@@ -57,6 +57,7 @@ Raised by the `movement--static-overlap-invariant` review: its Non-goals name th
 - [ ] A pinned pawn that despawns or disconnects releases the hold on the next tick. Pin Q3.
 - [ ] `setBlockPolicy("crush")` on a held mover resumes it the next tick and crushes. A crusher switched to `displace` mid-pin yields the next tick. Pin Q4.
 - [ ] A `moverStart`, `moverReverse`, `moverGoToPathNode` or `moverSetSpinRate` reaction run from the frame-end script drain on a mover holding for a pinned rider never carries the rider into static geometry on the next tick. Pin Q7.
+- [ ] A player event whose fire list starts or reverses a mover holding for a pinned rider, in a frame that runs two fixed ticks, never carries the rider into static geometry on the next tick. Pin Q9.
 - [ ] A `displace` or `reverse` lift whose rider is pinned against a ceiling while a pawn stands pinned under it holds. It never moves onto the pawn, never changes direction on successive ticks, and fires one blocked event. Pin Q8.
 
 **Unpinned motion unchanged** (regression guards)

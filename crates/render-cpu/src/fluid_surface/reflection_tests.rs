@@ -217,14 +217,21 @@ fn probe_indices_cover_every_grid_vertex_of_a_bound_face() {
             map.vertex_start as usize..(map.vertex_start + map.vertex_count) as usize
         })
         .collect();
-    assert!(ranges.iter().all(|range| range.len() > 4), "both faces gridded");
+    assert!(
+        ranges.iter().all(|range| range.len() > 4),
+        "both faces gridded"
+    );
     let bound = section(
         vec![room_probe([0.0, 0.002, 0.0], 0)],
         vec![binding(0, 1, 0)],
     );
     let mut indices = vec![7; mesh.vertices.len()];
     fill_probe_indices(&volumes, &mesh.face_drift_maps, Some(&bound), &mut indices);
-    assert!(indices[ranges[0].clone()].iter().all(|&i| i == FLUID_REFLECTION_NO_PROBE));
+    assert!(
+        indices[ranges[0].clone()]
+            .iter()
+            .all(|&i| i == FLUID_REFLECTION_NO_PROBE)
+    );
     assert!(indices[ranges[1].clone()].iter().all(|&i| i == 0));
     assert_eq!(ranges[1].end, mesh.vertices.len());
 }

@@ -731,7 +731,10 @@ fn only_the_vertex_entry_samples_the_sh_volume() {
     for global in SH_SAMPLED_GLOBALS {
         assert!(uses_of("vs_main", global), "vs_main must use {global}");
         for fragment in ["fs_main", "fs_main_reflecting"] {
-            assert!(!uses_of(fragment, global), "{fragment} must not use {global}");
+            assert!(
+                !uses_of(fragment, global),
+                "{fragment} must not use {global}"
+            );
         }
     }
     assert!(uses_of("vs_main", "sh_atlas_sampler"));
@@ -745,10 +748,7 @@ fn only_the_vertex_entry_samples_the_sh_volume() {
 
 #[test]
 fn fluid_post_retro_sampling_matches_the_mover_shader() {
-    let fluid = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "sample_post_retro",
-    ));
+    let fluid = code_only(wgsl_fn(FLUID_WGSL, "sample_post_retro"));
     let mover = code_only(wgsl_fn(
         include_str!("../shaders/kinematic_brush.wgsl"),
         "sample_post_retro",
@@ -885,10 +885,7 @@ fn fluid_motion_shader_constants_match_the_cpu_reference() {
 
 #[test]
 fn fluid_shade_samples_albedo_and_emissive_at_the_warped_uv() {
-    let fragment = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_shade",
-    ));
+    let fragment = code_only(wgsl_fn(FLUID_WGSL, "fluid_shade"));
     // The warp reads the unwarped UV and its derivatives' footprint.
     assert!(fragment.contains("letddx=dpdx(in.uv);"));
     assert!(fragment.contains("letddy=dpdy(in.uv);"));
@@ -920,10 +917,7 @@ fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
     );
 
     // Cells floor the UNWARPED texel UV, before any scroll joins it.
-    let warp = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_warp_uv",
-    ));
+    let warp = code_only(wgsl_fn(FLUID_WGSL, "fluid_warp_uv"));
     let texel = warp
         .find("lettexel_uv=uv*dims;")
         .expect("texel UV from the unwarped UV");
@@ -948,20 +942,11 @@ fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
     // outside the displayed offset the flash guards measure.
     assert!(warp.contains("letwave_texels=vec2<f32>(fluid_wave_offset(cell,time,wave));"));
     assert!(warp.contains("return(texel_uv+drift_texels+wave_texels+cell_texels)/dims;"));
-    let displayed_body = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_displayed_offset",
-    ));
+    let displayed_body = code_only(wgsl_fn(FLUID_WGSL, "fluid_displayed_offset"));
     assert!(!displayed_body.contains("wave"));
-    let wave = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_wave_offset",
-    ));
+    let wave = code_only(wgsl_fn(FLUID_WGSL, "fluid_wave_offset"));
     assert!(wave.contains("->vec2<i32>{"));
-    let displayed = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_displayed_offset",
-    ));
+    let displayed = code_only(wgsl_fn(FLUID_WGSL, "fluid_displayed_offset"));
     assert!(displayed.contains("->vec2<i32>{"));
 }
 
@@ -1608,14 +1593,8 @@ fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
 // shading normal `n`, which always faces the camera.
 #[test]
 fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the_composite() {
-    let shade = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_shade",
-    ));
-    let reflecting = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fs_main_reflecting",
-    ));
+    let shade = code_only(wgsl_fn(FLUID_WGSL, "fluid_shade"));
+    let reflecting = code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"));
     let fragment = format!("{shade}{reflecting}");
     let tail = [
         "letoutward=normalize(in.world_normal);",
@@ -2437,14 +2416,8 @@ fn fluid_reflection_style_wgsl_bodies_match_the_cpu_reference() {
 // drift or the wave, so neither moves a cell's reflection direction.
 #[test]
 fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
-    let main = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fs_main_reflecting",
-    ));
-    let shade = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_shade",
-    ));
+    let main = code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"));
+    let shade = code_only(wgsl_fn(FLUID_WGSL, "fluid_shade"));
     let derivatives = main
         .find("letddx_world=dpdx(in.world_position);letddy_world=dpdy(in.world_position);")
         .expect("world derivatives in fs_main_reflecting");
@@ -2466,10 +2439,7 @@ fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
         main.matches("dpdy(").count() + shade.matches("dpdy(").count(),
         2
     );
-    let free = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fs_main",
-    ));
+    let free = code_only(wgsl_fn(FLUID_WGSL, "fs_main"));
     assert!(!free.contains("dpdx(") && !free.contains("dpdy("), "{free}");
     let tail = fs_main_reflection_tail();
     assert!(tail.contains("in.uv*dims"));
@@ -2488,10 +2458,7 @@ fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
             assert!(!body.contains(forbidden), "`{name}` reads `{forbidden}`");
         }
     }
-    let point = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_reflection_point",
-    ));
+    let point = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_point"));
     assert!(
         point.contains("fluid_displayed_offset(vec2<i32>(floor(texel_uv)),time,texels_per_pixel)")
     );
@@ -2673,10 +2640,7 @@ fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
 // weight and gates on the lighting mask and its debug override.
 #[test]
 fn fluid_reflection_light_value_ports_the_sh_compose_light_scale() {
-    let fluid = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_reflection_light_value",
-    ));
+    let fluid = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_light_value"));
     let compose = code_only(wgsl_fn(
         include_str!("../shaders/sh_compose.wgsl"),
         "animated_light_scale",
@@ -2714,10 +2678,7 @@ fn fluid_reflection_functions() -> Vec<(String, String)> {
 /// The probe term's part of `fs_main_reflecting`: from the reflectivity read
 /// to the composite.
 fn fs_main_reflection_tail() -> String {
-    let main = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fs_main_reflecting",
-    ));
+    let main = code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"));
     let start = main
         .find("letreflectivity=shaded.reflectivity;")
         .expect("reflection tail");
@@ -2821,10 +2782,7 @@ fn fluid_reflection_term_takes_no_sh_read() {
             );
         }
     }
-    let ratio = code_only(wgsl_fn(
-        FLUID_WGSL,
-        "fluid_reflection_light_value",
-    ));
+    let ratio = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_light_value"));
     assert!(ratio.contains("anim_descriptors[roster_index]"));
     assert!(ratio.contains("uniforms.time"));
 }
@@ -3248,10 +3206,7 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         }
     }
     for (file, source) in [
-        (
-            "fluid_surface.wgsl",
-            FLUID_WGSL,
-        ),
+        ("fluid_surface.wgsl", FLUID_WGSL),
         ("fluid_surface.rs", include_str!("fluid_surface.rs")),
         (
             "fluid_reflection_probes.rs",
@@ -3428,7 +3383,10 @@ fn the_fluid_grid_takes_the_lattice_the_sh_sampler_reads() {
         FluidGridLattice::new(section.0, section.1)
     );
     assert_eq!(sh_sampler_lattice(None, None), None);
-    assert_eq!(sh_sampler_lattice(None, Some(([0.0; 3], [0.0, 1.0, 1.0]))), None);
+    assert_eq!(
+        sh_sampler_lattice(None, Some(([0.0; 3], [0.0, 1.0, 1.0]))),
+        None
+    );
     // The renderer offers the legacy mirrors only while a section is bound.
     let types = code_only(include_str!("renderer_types.rs"));
     assert!(types.contains(

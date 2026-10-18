@@ -110,7 +110,10 @@ fn assert_gridded_face(
     let ring = face.vertices.len();
     let position = |i: usize| dvec(mesh.vertices[i].position);
     for (offset, source) in face.vertices.iter().enumerate() {
-        assert_eq!(mesh.vertices[range.start + offset].position, source.position);
+        assert_eq!(
+            mesh.vertices[range.start + offset].position,
+            source.position
+        );
     }
     let normal = face_normal(face).unwrap().as_dvec3();
     let corners: Vec<DVec3> = face.vertices.iter().map(|v| dvec(v.position)).collect();
@@ -122,7 +125,10 @@ fn assert_gridded_face(
     };
     for i in range.clone() {
         let p = position(i);
-        assert!((p - a).dot(normal).abs() <= 1.0e-5, "vertex {i} off the plane");
+        assert!(
+            (p - a).dot(normal).abs() <= 1.0e-5,
+            "vertex {i} off the plane"
+        );
         for edge in 0..ring {
             let (e0, e1) = (corners[edge], corners[(edge + 1) % ring]);
             assert!(
@@ -159,7 +165,10 @@ fn assert_gridded_face(
             "triangle {t:?} spans {span}"
         );
         for side in 0..3 {
-            let (s0, s1) = (position(t[side] as usize), position(t[(side + 1) % 3] as usize));
+            let (s0, s1) = (
+                position(t[side] as usize),
+                position(t[(side + 1) % 3] as usize),
+            );
             for w in range.clone().filter(|w| !t.contains(&(*w as u32))) {
                 let w = position(w);
                 let along = (w - s0).dot(s1 - s0) / (s1 - s0).length_squared();
@@ -189,7 +198,12 @@ fn assert_gridded_face(
 }
 
 /// The face's vertices on segment `a`–`b`, ordered from `a`.
-fn edge_vertices(mesh: &FluidSurfaceMesh, range: &Range<usize>, a: [f32; 3], b: [f32; 3]) -> Vec<[f32; 3]> {
+fn edge_vertices(
+    mesh: &FluidSurfaceMesh,
+    range: &Range<usize>,
+    a: [f32; 3],
+    b: [f32; 3],
+) -> Vec<[f32; 3]> {
     let (a, b) = (dvec(a), dvec(b));
     let mut on: Vec<(f64, [f32; 3])> = range
         .clone()
@@ -228,8 +242,8 @@ fn a_sloped_face_is_cut_by_every_axis_crossing_it() {
     let mesh = pack(&[volume(vec![ramp.clone()])]);
     let range = assert_gridded_face(&mesh, 0, &ramp, SPACING);
     let added = &mesh.vertices[range.start + 4..range.end];
-    for axis in 0..3 {
-        let origin = f64::from(ORIGIN[axis]);
+    for (axis, &origin) in ORIGIN.iter().enumerate() {
+        let origin = f64::from(origin);
         assert!(
             added.iter().any(|v| {
                 let p = f64::from(v.position[axis]);
@@ -269,7 +283,12 @@ fn faces_sharing_an_edge_carry_identical_vertices_along_it() {
     let left = top(0.0, 1.3, 0.0, 2.0, 1.1);
     let right = top(1.3, 2.9, 0.0, 2.0, 1.1);
     // The side wall under the left top's z = 0 edge, facing −z.
-    let side = face(&[[0.0, 1.1, 0.0], [1.3, 1.1, 0.0], [1.3, -0.6, 0.0], [0.0, -0.6, 0.0]]);
+    let side = face(&[
+        [0.0, 1.1, 0.0],
+        [1.3, 1.1, 0.0],
+        [1.3, -0.6, 0.0],
+        [0.0, -0.6, 0.0],
+    ]);
     let ramp = face(&[
         [2.9, 1.1, 0.0],
         [2.9, 1.1, 2.0],
@@ -426,7 +445,10 @@ fn each_faces_grid_vertices_stay_contiguous_under_its_drift() {
         for &index in &mesh.indices {
             let inside = range.contains(&(index as usize));
             assert!(
-                inside || face_triangles(&mesh, range).iter().all(|t| !t.contains(&index)),
+                inside
+                    || face_triangles(&mesh, range)
+                        .iter()
+                        .all(|t| !t.contains(&index)),
             );
         }
     }
@@ -579,7 +601,10 @@ fn an_unusable_lattice_is_refused() {
     // A vanishing cell still terminates: no spacing fits, so it packs plain.
     let tiny = FluidGridLattice::new([0.0; 3], [1.0e-30; 3]).unwrap();
     let volumes = [volume(vec![square(0.0)])];
-    assert_eq!(pack_fluid_surfaces(&volumes, &[], 1, Some(&tiny)).grid, None);
+    assert_eq!(
+        pack_fluid_surfaces(&volumes, &[], 1, Some(&tiny)).grid,
+        None
+    );
 }
 
 #[test]

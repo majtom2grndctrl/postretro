@@ -36,7 +36,7 @@ use postretro_render_cpu::sh_volume::{
 };
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
-const SIDE: u32 = 16;
+pub(super) const SIDE: u32 = 16;
 const WHITE: ClearColor = ClearColor {
     r: 1.0,
     g: 1.0,
@@ -45,7 +45,7 @@ const WHITE: ClearColor = ClearColor {
 };
 const ALL: VisibleCells = VisibleCells::DrawAll;
 
-fn renderer() -> Option<Renderer> {
+pub(super) fn renderer() -> Option<Renderer> {
     match Renderer::new_offscreen(SIDE, SIDE) {
         Ok(renderer) => Some(renderer),
         Err(error) if error.to_string().contains("requires a GPU adapter") => {
@@ -60,7 +60,7 @@ fn clear_draw(volume_index: u32, opacity: f32) -> FluidSurfaceDraw {
     look_draw(volume_index, FluidSurfaceLook::surface_only(opacity))
 }
 
-fn look_draw(volume_index: u32, look: FluidSurfaceLook) -> FluidSurfaceDraw {
+pub(super) fn look_draw(volume_index: u32, look: FluidSurfaceLook) -> FluidSurfaceDraw {
     FluidSurfaceDraw {
         volume_index,
         params: look.pack(),
@@ -70,7 +70,7 @@ fn look_draw(volume_index: u32, look: FluidSurfaceLook) -> FluidSurfaceDraw {
 /// A screen-height quad spanning clip x `x0..x1` at clip depth 0.5 under an
 /// identity view-projection, its outward normal toward the capture camera at
 /// z = −1, so it is seen from outside its volume.
-fn fluid_quad(x0: f32, x1: f32) -> EnvironmentVolumeRecord {
+pub(super) fn fluid_quad(x0: f32, x1: f32) -> EnvironmentVolumeRecord {
     // Texel UVs over one tile of the 64-texel placeholder checkerboard.
     let corner = |x: f32, y: f32| EnvironmentSurfaceVertex {
         position: [x, y, 0.5],
@@ -95,7 +95,7 @@ fn fluid_quad(x0: f32, x1: f32) -> EnvironmentVolumeRecord {
     }
 }
 
-fn full_screen_fluid() -> EnvironmentVolumeRecord {
+pub(super) fn full_screen_fluid() -> EnvironmentVolumeRecord {
     fluid_quad(-1.0, 1.0)
 }
 
@@ -115,12 +115,12 @@ fn capture(renderer: &mut Renderer) -> Vec<u8> {
 /// [`capture`] with the shading camera at `camera`; the identity
 /// view-projection still frames the quads, so only lighting, fog and
 /// reflection see the move.
-fn capture_from(renderer: &mut Renderer, camera: Vec3) -> Vec<u8> {
+pub(super) fn capture_from(renderer: &mut Renderer, camera: Vec3) -> Vec<u8> {
     capture_through(renderer, Mat4::IDENTITY, camera)
 }
 
 /// One captured frame under `view_proj`, shaded from `camera`.
-fn capture_through(renderer: &mut Renderer, view_proj: Mat4, camera: Vec3) -> Vec<u8> {
+pub(super) fn capture_through(renderer: &mut Renderer, view_proj: Mat4, camera: Vec3) -> Vec<u8> {
     renderer
         .capture_frame_indirect(
             CameraCullVisibility {
@@ -178,7 +178,7 @@ const CAPTURE_KNEE_START: f32 = 0.98;
 /// shader's soft-knee tonemap, then the `Rgba8UnormSrgb` capture target's
 /// sRGB transfer. Pinned to both by
 /// `capture_encode_mirrors_the_soft_knee_tonemap_and_srgb_target`.
-fn capture_encode(linear: Vec3) -> [u8; 3] {
+pub(super) fn capture_encode(linear: Vec3) -> [u8; 3] {
     let peak = linear.max_element();
     let toned = if peak <= CAPTURE_KNEE_START {
         linear
@@ -203,7 +203,7 @@ fn linear_to_srgb(linear: f32) -> u8 {
 /// World position of capture pixel (`column`, `row`)'s centre on a
 /// [`fluid_quad`] face: clip depth 0.5 under the identity view-projection,
 /// row 0 at the top.
-fn pixel_world(column: u32, row: u32) -> Vec3 {
+pub(super) fn pixel_world(column: u32, row: u32) -> Vec3 {
     let step = 2.0 / SIDE as f32;
     Vec3::new(
         (column as f32 + 0.5) * step - 1.0,
@@ -231,7 +231,7 @@ fn distance_tiles(section: &ReflectionProbesSection) -> Vec<Vec<f32>> {
 /// A probe term as the CPU reference evaluates it: the level's probes, each
 /// array layer's uniform capture colour and decoded distance tile, and the
 /// row's reflectivity.
-struct ReferenceProbes<'a> {
+pub(super) struct ReferenceProbes<'a> {
     section: &'a ReflectionProbesSection,
     layer_colours: &'a [Vec3],
     distances: Vec<Vec<f32>>,
@@ -239,7 +239,7 @@ struct ReferenceProbes<'a> {
 }
 
 impl<'a> ReferenceProbes<'a> {
-    fn new(
+    pub(super) fn new(
         section: &'a ReflectionProbesSection,
         layer_colours: &'a [Vec3],
         reflectivity: f32,
@@ -269,7 +269,7 @@ impl<'a> ReferenceProbes<'a> {
 /// lights, its distance search reading the section's own distance tiles)
 /// when `probe` names one, blended straight-alpha over the white clear, then
 /// [`capture_encode`]d.
-fn expected_pixel(
+pub(super) fn expected_pixel(
     camera: Vec3,
     column: u32,
     row: u32,
@@ -304,7 +304,7 @@ fn expected_pixel(
 
 /// The largest per-channel deviation of `pixels` from `expected` over
 /// `columns`, every row, and the pixel it occurs at.
-fn worst_deviation(
+pub(super) fn worst_deviation(
     pixels: &[u8],
     columns: std::ops::Range<u32>,
     expected: impl Fn(u32, u32) -> [u8; 3],
@@ -328,7 +328,7 @@ fn worst_deviation(
 /// A probe section over one fluid volume: probe `p` samples layer
 /// `layers[p]`, each layer's tile the uniform f16 colour `tiles[layer]`, and
 /// `bindings` are (face, probe) pairs of volume 0.
-fn uniform_probe_section(
+pub(super) fn uniform_probe_section(
     dimension: u32,
     layers: &[u32],
     tiles: &[[u16; 3]],
@@ -372,7 +372,7 @@ fn uniform_probe_section(
 }
 
 /// Linear RGB of f16 bits, for exact values (0, powers of two, small sums).
-fn f16_rgb(bits: [u16; 3]) -> Vec3 {
+pub(super) fn f16_rgb(bits: [u16; 3]) -> Vec3 {
     Vec3::from(bits.map(|half| {
         let exponent = i32::from((half >> 10) & 0x1F) - 15;
         let mantissa = f32::from(half & 0x3FF) / 1024.0;
@@ -422,7 +422,7 @@ fn capture_encode_mirrors_the_soft_knee_tonemap_and_srgb_target() {
 /// A full-screen face whose UVs span texels 3.5..4.5 of the placeholder,
 /// inside its first 8-texel magenta square: shimmer and rings move the sample
 /// at most two texels, so every fragment's albedo is linear (1, 0, 1).
-fn magenta_fluid() -> EnvironmentVolumeRecord {
+pub(super) fn magenta_fluid() -> EnvironmentVolumeRecord {
     let mut volume = full_screen_fluid();
     for vertex in &mut volume.surface_faces[0].vertices {
         vertex.uv = [vertex.position[0], vertex.position[1]].map(|clip| 3.5 + (clip + 1.0) * 0.5);
@@ -788,7 +788,7 @@ fn uniform_rgba16f_tile(dimension: u32, rgb: [u16; 3]) -> Vec<u8> {
 /// The shading camera high off the faces' outward (−Z) side, about 72° from
 /// the normal at the centre: a grazing view. The identity view-projection
 /// still frames the quads.
-const GRAZING: Vec3 = Vec3::new(0.0, 3.0, -0.5);
+pub(super) const GRAZING: Vec3 = Vec3::new(0.0, 3.0, -0.5);
 
 /// An unlit face at opacity 0.5: black at half coverage, so today's value
 /// over the white clear is linear 0.5.

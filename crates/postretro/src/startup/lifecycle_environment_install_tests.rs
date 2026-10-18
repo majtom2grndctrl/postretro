@@ -1497,10 +1497,16 @@ fn a_staged_reload_flips_a_zero_opacity_fluids_draw_with_its_reflectivity() {
 fn fluid_surfaces_install_after_level_geometry_on_the_level_and_capture_paths() {
     for (path, source) in [
         ("startup/lifecycle.rs", include_str!("lifecycle.rs")),
-        ("capture/prepared.rs", include_str!("../capture/prepared.rs")),
+        (
+            "capture/prepared.rs",
+            include_str!("../capture/prepared.rs"),
+        ),
     ] {
         // Production code only: lifecycle.rs's own test module quotes these.
-        let source = source.split("#[cfg(test)]\npub(crate) mod tests").next().unwrap();
+        let source = source
+            .split("#[cfg(test)]\npub(crate) mod tests")
+            .next()
+            .unwrap();
         let geometry = "renderer.install_level_geometry(";
         let fluid = "renderer.install_fluid_surfaces(";
         assert_eq!(source.matches(geometry).count(), 1, "{path}");

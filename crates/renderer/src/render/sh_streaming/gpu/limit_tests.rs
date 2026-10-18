@@ -1,8 +1,7 @@
 //! GPU-backed SH growth limit and drain transaction proofs.
 use super::*;
 
-#[path = "load_fixture.rs"]
-mod load_fixture;
+use crate::render::sh_streaming::gpu::load_fixture;
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 use crate::render::sh_streaming::floor::{
     DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES, plan_initial_pool_floor,

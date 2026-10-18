@@ -40,9 +40,8 @@ impl FluidGridLattice {
     pub fn new(origin: [f32; 3], cell_size: [f32; 3]) -> Option<Self> {
         let origin = Vec3::from(origin).as_dvec3();
         let cell_size = Vec3::from(cell_size).as_dvec3();
-        (origin.is_finite() && cell_size.is_finite() && cell_size.min_element() > 0.0).then_some(
-            Self { origin, cell_size },
-        )
+        (origin.is_finite() && cell_size.is_finite() && cell_size.min_element() > 0.0)
+            .then_some(Self { origin, cell_size })
     }
 
     /// The planes at `coarsening` doublings of the finest spacing. Each
@@ -83,7 +82,12 @@ impl FluidGridPlanes {
         let spacing = self.spacing[axis];
         let first = ((low - self.origin[axis]) / spacing).floor();
         let last = ((high - self.origin[axis]) / spacing).ceil();
-        if !(low < high) || !(last - first <= PLANE_COUNT_LIMIT) || !first.is_finite() {
+        // Non-finite bounds (NaN included) fail the finiteness checks.
+        if low >= high
+            || !first.is_finite()
+            || !last.is_finite()
+            || last - first > PLANE_COUNT_LIMIT
+        {
             return None;
         }
         let (mut first, mut last) = (first as i64, last as i64);
@@ -100,7 +104,7 @@ impl FluidGridPlanes {
     /// Planes splitting `min..max` on `axis`, saturating far past any cap.
     fn splitting_count(&self, axis: usize, min: f64, max: f64) -> u64 {
         let span = (max - min) / self.spacing[axis];
-        if !(span <= PLANE_COUNT_LIMIT) {
+        if span.is_nan() || span > PLANE_COUNT_LIMIT {
             return PLANE_COUNT_LIMIT as u64;
         }
         self.splitting(axis, min, max)
@@ -113,10 +117,9 @@ fn position(face: &EnvironmentSurfaceFace, i: usize) -> DVec3 {
 }
 
 fn face_extent(face: &EnvironmentSurfaceFace) -> (DVec3, DVec3) {
-    (0..face.vertices.len()).fold(
-        (DVec3::INFINITY, DVec3::NEG_INFINITY),
-        |(min, max), i| (min.min(position(face, i)), max.max(position(face, i))),
-    )
+    (0..face.vertices.len()).fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(min, max), i| {
+        (min.min(position(face, i)), max.max(position(face, i)))
+    })
 }
 
 /// Mesh vertices a drawable face packs into, today's triangulation.
@@ -131,7 +134,8 @@ fn ungridded_vertex_count(face: &EnvironmentSurfaceFace) -> u64 {
 /// different axes; its triangulation adds none.
 fn face_vertex_bound(face: &EnvironmentSurfaceFace, planes: &FluidGridPlanes) -> u64 {
     let (min, max) = face_extent(face);
-    let lines: [u64; 3] = std::array::from_fn(|axis| planes.splitting_count(axis, min[axis], max[axis]));
+    let lines: [u64; 3] =
+        std::array::from_fn(|axis| planes.splitting_count(axis, min[axis], max[axis]));
     if lines == [0; 3] {
         return ungridded_vertex_count(face);
     }
@@ -165,9 +169,7 @@ pub fn choose_grid_planes(
     cap: u64,
 ) -> Option<FluidGridPlanes> {
     let lattice = lattice?;
-    if drawable_faces(volumes).next().is_none() {
-        return None;
-    }
+    drawable_faces(volumes).next()?;
     let ungridded: u64 = drawable_faces(volumes).map(ungridded_vertex_count).sum();
     if ungridded > cap {
         log::warn!(
@@ -252,19 +254,27 @@ pub(super) fn cut_face(
         crossings.clear();
         let mut next = Vec::with_capacity(polygons.len());
         for polygon in polygons {
-            let (low, high) = polygon.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &i| {
-                let p = cut.positions[i as usize][axis];
-                (l.min(p), h.max(p))
-            });
+            let (low, high) =
+                polygon
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &i| {
+                        let p = cut.positions[i as usize][axis];
+                        (l.min(p), h.max(p))
+                    });
             let Some((first, last)) = planes.splitting(axis, low, high) else {
                 next.push(polygon);
                 continue;
             };
             let mut rest = polygon;
             for k in first..=last {
-                if let Some((below, above)) =
-                    split(&rest, axis, k, planes.plane(axis, k), &mut cut, &mut crossings)
-                {
+                if let Some((below, above)) = split(
+                    &rest,
+                    axis,
+                    k,
+                    planes.plane(axis, k),
+                    &mut cut,
+                    &mut crossings,
+                ) {
                     next.push(below);
                     rest = above;
                 }
@@ -345,7 +355,8 @@ fn crossing(
 ) -> u32 {
     *crossings.entry((k, a.min(b), a.max(b))).or_insert_with(|| {
         let (pa, pb) = (cut.positions[a as usize], cut.positions[b as usize]);
-        let lower_first = pa.to_array().partial_cmp(&pb.to_array()) != Some(std::cmp::Ordering::Greater);
+        let lower_first =
+            pa.to_array().partial_cmp(&pb.to_array()) != Some(std::cmp::Ordering::Greater);
         let (lo, hi) = if lower_first { (a, b) } else { (b, a) };
         let (lo_p, hi_p) = (cut.positions[lo as usize], cut.positions[hi as usize]);
         let t = (plane - lo_p[axis]) / (hi_p[axis] - lo_p[axis]);
@@ -391,7 +402,11 @@ fn triangulate_convex(
         let count = ring.len();
         corner.clear();
         corner.extend((0..count).map(|i| {
-            height(ring[(i + count - 1) % count], ring[i], ring[(i + 1) % count]) > epsilon
+            height(
+                ring[(i + count - 1) % count],
+                ring[i],
+                ring[(i + 1) % count],
+            ) > epsilon
         }));
         let beside_collinear =
             |i: usize| corner[i] && (!corner[(i + count - 1) % count] || !corner[(i + 1) % count]);
@@ -401,7 +416,11 @@ fn triangulate_convex(
         else {
             return;
         };
-        triangles.push([ring[(tip + count - 1) % count], ring[tip], ring[(tip + 1) % count]]);
+        triangles.push([
+            ring[(tip + count - 1) % count],
+            ring[tip],
+            ring[(tip + 1) % count],
+        ]);
         ring.remove(tip);
     }
     if ring.len() == 3 && height(ring[0], ring[1], ring[2]) > epsilon {

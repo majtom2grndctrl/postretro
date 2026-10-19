@@ -8,17 +8,17 @@ Developer-raised, from the `fluid-base-pass-cost` build. Its grid cuts a shared 
 ## Decisions
 - **Close at bake, in the compiler, for every fluid face; the push-cut gate goes.** It bakes over computing (`index.md` §2), and the compiler already owns closure and every face's clip context. Every surveyed BSP compiler closes T-junctions at bake, and no surveyed engine closes them at load (`research.md` §Prior art, §Rivals).
 - **Scope: every pair of fluid surface faces in the level.** That covers faces within a volume (burial, siblings, push parts) and across volumes, fluids, planes and facings. The tolerance stays the compiler's split epsilon of 0.1 mm, because the renderer's collinear tolerance and the grid's plane tolerance derive from it (`COLLINEAR_DISTANCE`, `PLANE_TOLERANCE`).
-- **Shared means bit-identical, judged as encoded.** Closure judges every distance on positions rounded to f32, so it and the check below agree exactly. A face vertex within tolerance of another face's boundary is, bit for bit, one of that face's vertices, whether a corner or a T-vertex. The grid compares shared edges exactly and watertight rasterization needs identical vertices; today only inserted T-vertices are guaranteed identical (`research.md` §Current behaviour).
+- **Shared means bit-identical, as encoded.** A face vertex within tolerance of another face's boundary is, bit for bit, one of that face's vertices, whether a corner or a T-vertex, with the tolerance measured on the f32 positions the renderer reads. The grid compares shared edges exactly and watertight rasterization needs identical vertices; today only inserted T-vertices are guaranteed identical (`research.md` §Current behaviour). Identity outranks a sliver's probe binding: a weld may tilt a piece under 6 mm across off up-facing, which no player sees.
 - **Vertices move, faces do not.** Closure inserts vertices and snaps them by at most the tolerance, each taking its UV from its own side's projection; it adds, drops and reorders no face and changes no texture index. So id-54's (volume, face) bindings and per-volume drift maps keep their meaning, there is no format, version, section, loader or wire change, and the level content digest still skips surface faces (`networking.md` §Level identity and level content digest).
 - **Runs last, on the final face set:** after subtraction, sibling overlap and push splitting, across all volumes, before encoding.
 - **Retires the byte-identity promise.** This diverges from `plans/done/fluid-surface-motion` (A11) and `build_pipeline.md` §Fluid surfaces: the gate existed to keep id-52 bytes, and it is what leaves burial's T-junctions open. A level whose fluid faces have no T-junction or near-coincident vertex still keeps identical id-52 bytes; each affected map recaptures its probes once, because id-54's cache key hashes id-52.
-- **Retires `fluid-base-pass-cost`'s accepted limit** (`rendering_pipeline.md` §7.3a): with every shared edge closed, both sides cut it identically.
+- **Narrows `fluid-base-pass-cost`'s accepted limit** (`rendering_pipeline.md` §7.3a) to what closure leaves: a PRL built before it, and a near-junction 0.1 to 0.2 mm off a neighbour's edge, which the grid's plane tolerance still treats as on the plane. Neither crack is wider than the gap already there.
 - **Bounded, deterministic bake.** The stage is uncached and runs on every warm build, so candidate lookup is output-sensitive and never pairs every face with every other, whether in the level or in a volume. It is sized for an authored ocean of many abutting brushes (`development_guide.md` §1.4), and its output is identical warm and cold, run to run, and across worker counts.
 - **Install stays bounded, in render-cpu.** Closure can give one face many vertices, as on an ocean edge beside many small pieces, so this change keeps every install step that reads a face's vertices within n log n of their count (`research.md` §Consumers).
 - **Non-goals:**
   - Removing the faces two adjacent volumes draw against each other (the "reflective water walls"). That is face emission, and adjacent tops still meet without those faces; because closure runs last, it composes with such a rule in either landing order.
   - Fluid-to-world welding. The opaque, depth-written wall shows through such a seam, which blends no surface twice, and ericw-tools never welds translucent faces to opaque ones.
-  - World and mover T-junctions. They are opaque, depth-written geometry, and `geometry-integrity-validation` holds general welding out of scope until its root-cause questions show welding is the fix.
+  - World and mover T-junctions. This is a fluid-surface brief, and opaque cracks are a different defect: `geometry-integrity-validation` holds welding out of scope for the world until its root-cause questions show it is the fix, and no plan yet covers movers.
 
 ## Acceptance
 ### Automated
@@ -34,24 +34,24 @@ Developer-raised, from the `fluid-base-pass-cost` build. Its grid cuts a shared 
   - a vertex within 0.1 mm of a neighbour's corner (P4);
   - two near-coincident corners on a third face's edge (P11);
   - a corner the weld moves into, and one it moves out of, a third face's tolerance (P12);
-  - a vertex 0.1 mm from a neighbour's edge in f64 that f32 encoding brings under 0.1 mm (P16);
-  - a zero-face volume between two fluid volumes, and a level with a single fluid face (P15);
+  - a vertex just over 0.1 mm from a neighbour's edge in f64 that f32 encoding brings under 0.1 mm (P16);
+  - a sliver triangle whose 0.05 mm edge lies on a neighbour's edge, once with one end at the neighbour's corner (P17);
+  - a corner that an insert's bend brings within 0.1 mm of a neighbour's edge (P18);
+  - a zero-face volume between two fluid volumes that share an open T-junction, and a level with a single fluid face, which closure leaves as it was and is exempt from failing before (P15);
   - e24.
 - [ ] Holds on campaign-test, reflection-probes-test, vault-test and stress-env-volumes (`#[ignore]` suite).
 - [ ] End to end through the renderer's packing: faces compiled from a fixture with today's open T-junction, at a shallow angle to a lattice plane within tolerance of the T-vertex, carry identical vertices along the shared edge on a lattice. Today the same fixture fails that.
 
 **Nothing else moves.**
 - [ ] Closure changes no face count, face order or texture index, compared with the same build's faces before closure (P5). Every vertex's UV is its own side's projection at its position.
-- [ ] A vertex 0.15 mm from a neighbour's corner, or from a neighbour's edge, is left as it was, and the neighbour gains no vertex (P9).
+- [ ] A vertex 0.15 mm from a neighbour's corner, or from a neighbour's edge, is left as it was, and the neighbour gains no vertex (P9); so is one just under 0.1 mm from a neighbour's edge in f64 that f32 encoding puts just over (P19).
 - [ ] Every vertex after closure lies within 0.1 mm of its own face's boundary before closure, and every corner before closure has a vertex after it within 0.1 mm, including along a weld chain (P10).
 - [ ] No level-format, loader, wire or digest code changes, and a PRL built earlier still loads (P7). Proved by a diff gate: no change under `crates/level-format`, `crates/level-loader` or the level content digest, against `main`.
-- [ ] Every face keeps at least three distinct vertices, and its area changes by at most 0.1 mm × its perimeter, compared with the same build's faces before closure (P8).
-- [ ] A face with a normal before closure keeps one, and an up-facing face stays up-facing, including a ~1 mm² piece whose corner welds 0.1 mm off its plane (P14).
+- [ ] Every face keeps at least three distinct vertices and a normal, and its area changes by at most 0.1 mm × its perimeter, compared with the same build's faces before closure. An up-facing face at least 6 mm across stays up-facing; a smaller one may tilt off it (P8, P14, P17).
 - [ ] A level whose fluid faces have no T-junction or near-coincident vertex keeps identical id-52 bytes, against bytes captured from the compiler before this change (regression guard).
-- [ ] On e24 and the probes map, every face resolves the same drift push as the same build's faces before closure, and id-54 binds the same (volume, face) pairs to the same probes.
+- [ ] On e24 and the probes map, every face resolves the same drift push as the same build's faces before closure, and id-54 binds the same (volume, face) pairs to the same probes, except a face under 6 mm across that P14 lets tilt.
 - [ ] id-52 bytes are identical across two cold builds, warm against cold, and across worker counts, so the id-54 key hits on the next warm build (P6).
-- [ ] Today's pin that burial and sibling T-junctions stay open now asserts they close.
-- [ ] No `context/lib` text says the compiler leaves fluid T-junctions open or closes them only where a push cut. Proved by a grep gate over `build_pipeline.md` and `rendering_pipeline.md`.
+- [ ] No `context/lib` text says the compiler leaves fluid T-junctions open or closes them only where a push cut. Proved by a grep gate over `build_pipeline.md` and `rendering_pipeline.md`: neither file's fluid-surface text holds "only a push cut", "stay open" or "without a partial push".
 
 **Bounded.**
 - [ ] On a synthetic ocean (a grid of abutting fluid brushes, once as one fluid entity and once as one entity per brush, and one face bordered by thousands of pieces), closure's candidate tests, vertex-to-vertex for the weld and vertex-to-edge for the insert, grow no faster than n log n in the level's vertex count, compared at two sizes. The proof is a count, not wall time.
@@ -74,7 +74,7 @@ Developer-raised, from the `fluid-base-pass-cost` build. Its grid cuts a shared 
 - **Shape and rival.** Chosen: level-wide weld-and-insert in the compiler on the final pieces. Rival: weld at fluid install before the grid cut. It needs no rebake, but costs every load, works on f32, splits closure between two owners, and leaves ungridded levels cracked if gated on the grid (`research.md` §Rivals).
 - **First slice.** A level-wide detector, then count today's open T-junctions and non-identical shared corners on e24 and stress-env-volumes. That sizes the weld's need and the bake work before building either.
 - **Large files.** `surface_tests.rs` is past 800 lines; split it before extending, behaviour-preserving, in its own commit.
-- **With the change.** `build_pipeline.md` §Fluid surfaces loses the push-cut gate and the byte-identity sentence; `rendering_pipeline.md` §7.3a loses the accepted limit.
+- **With the change.** `build_pipeline.md` §Fluid surfaces loses the push-cut gate and the byte-identity sentence; `rendering_pipeline.md` §7.3a's accepted limit narrows to the two cases its Decision names.
 
 ## Open questions
 - Weld mechanism, canonical choice and index shape — **delegated**: the executor picks them from the first slice's counts and reports them.

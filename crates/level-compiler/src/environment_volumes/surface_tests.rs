@@ -224,16 +224,19 @@ fn outward_normal(face: &EnvironmentSurfaceFace) -> DVec3 {
     normal.normalize()
 }
 
-/// Engine-space sample point 2 mm inside the fluid below a face's centroid,
-/// where drift samples the push (the face normal points out of the fluid).
+/// Engine-space sample point where drift samples a face's push, mirroring the
+/// runtime: the face's area centroid, 2 mm inside the fluid (the face normal
+/// points out of the fluid).
 fn inside_sample(face: &EnvironmentSurfaceFace) -> DVec3 {
-    let points = positions(face);
-    let centroid = points.iter().sum::<DVec3>() / points.len() as f64;
-    centroid - outward_normal(face) * SAMPLE_DEPTH
+    let normal = postretro_render_cpu::fluid_surface::face_normal(face)
+        .expect("a test face is not degenerate");
+    let centroid = postretro_render_cpu::fluid_surface::face_area_centroid(face, normal);
+    centroid - normal.as_dvec3() * SAMPLE_DEPTH
 }
 
 /// Every vertex of one face of `record` lying strictly inside another face's
-/// edge, in engine space: a T-junction.
+/// edge, in engine space: a T-junction. Checks within one record only;
+/// level-wide checks (`open_seams`) live in this file and `closure.rs`.
 fn t_junctions(record: &EnvironmentVolumeRecord) -> Vec<DVec3> {
     let faces: Vec<Vec<DVec3>> = record.surface_faces.iter().map(positions).collect();
     let mut found = Vec::new();

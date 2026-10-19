@@ -113,15 +113,21 @@ pub struct FluidSurfaceDraw {
 
 /// Outward unit normal of a convex face from its winding (Newell's method),
 /// or `None` for a degenerate or non-finite face, which draws nothing.
+///
+/// Summed in f64, relative to the first vertex. Each Newell term scales with
+/// the positions' magnitude while the sum is twice the face's area, so in f32
+/// on absolute positions a narrow face far from the origin, with thousands of
+/// inserted vertices on one long edge, rounds past its own area and flips.
 pub fn face_normal(face: &EnvironmentSurfaceFace) -> Option<Vec3> {
     let vertices = &face.vertices;
     if vertices.len() < 3 {
         return None;
     }
-    let mut normal = Vec3::ZERO;
+    let first = world_position(&vertices[0]);
+    let mut normal = DVec3::ZERO;
     for (i, vertex) in vertices.iter().enumerate() {
-        let a = Vec3::from(vertex.position);
-        let b = Vec3::from(vertices[(i + 1) % vertices.len()].position);
+        let a = world_position(vertex) - first;
+        let b = world_position(&vertices[(i + 1) % vertices.len()]) - first;
         normal.x += (a.y - b.y) * (a.z + b.z);
         normal.y += (a.z - b.z) * (a.x + b.x);
         normal.z += (a.x - b.x) * (a.y + b.y);
@@ -129,14 +135,16 @@ pub fn face_normal(face: &EnvironmentSurfaceFace) -> Option<Vec3> {
     // Newell's vector is twice the polygon's area; this floor drops slivers
     // far below the compiler's minimum kept piece.
     let length = normal.length();
-    (length.is_finite() && length > 1.0e-9).then(|| normal / length)
+    (length.is_finite() && length > 1.0e-9).then(|| (normal / length).as_vec3())
 }
 
-/// Area centroid of a convex face with outward unit `normal`: the point the
-/// app samples its drift push from, and the apex of its centroid fan. The
-/// compiler's T-junction inserts add zero-area fan triangles, so thousands on
-/// one edge leave it where it was, where the vertex mean would sit within a
-/// millimetre of that edge.
+/// Area centroid of a convex face with outward unit `normal`, the face's
+/// [`face_normal`]: the point the app samples its drift push from, and the
+/// apex of its centroid fan. The compiler's T-junction inserts add zero-area
+/// fan triangles, so thousands on one edge leave it where it was, where the
+/// vertex mean would sit within a millimetre of that edge. A normal that
+/// disagrees with the winding weighs the fan negative, and the face falls
+/// back to that mean.
 pub fn face_area_centroid(face: &EnvironmentSurfaceFace, normal: Vec3) -> DVec3 {
     area_centroid(face.vertices.len(), normal.as_dvec3(), |i| {
         (world_position(&face.vertices[i]), DVec2::ZERO)
@@ -229,10 +237,12 @@ fn normalized_uv(
 
 /// A vertex within this distance, meters, of the line through its ring
 /// neighbours, or of the neighbour before it, is collinear. The compiler
-/// inserts a T-junction vertex within 0.1 mm of its edge's line; twice that
-/// also covers f32 position rounding within about 1 km of the origin.
-/// Absolute, as the compiler's vertex spacing is: vertices 0.1 mm apart are
-/// as near on a 10 m face as on a 10 cm one.
+/// inserts a T-junction vertex within 0.1 mm of its edge's line, judged on
+/// the encoded f32 positions, so their rounding is already inside that. Twice
+/// it covers an insert judged against an edge that earlier inserts or welds
+/// bent, which can leave it a little over 0.1 mm from its final neighbours'
+/// chord. Absolute, as the compiler's vertex spacing is: vertices 0.1 mm
+/// apart are as near on a 10 m face as on a 10 cm one.
 const COLLINEAR_DISTANCE: f64 = 2.0e-4;
 /// A face under 2 cm across takes this fraction of its extent instead, so its
 /// real corners keep the plain fan.
@@ -244,8 +254,9 @@ fn world_position(vertex: &EnvironmentSurfaceVertex) -> DVec3 {
 
 // Steps of the per-face install work that reads a face's vertices: the drift
 // fit and fit test, the grid split and ear clip, and the centroid fan. Each
-// step is O(log n) at most. Closure can give one face thousands of vertices,
-// so tests bound this count's growth, not wall time.
+// counted unit is O(1), or O(log n) for an ordered-set operation. Closure can
+// give one face thousands of vertices, so tests bound this count's growth,
+// not wall time.
 #[cfg(test)]
 thread_local! {
     static INSTALL_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };

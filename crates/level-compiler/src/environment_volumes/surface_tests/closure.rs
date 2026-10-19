@@ -96,9 +96,9 @@ pub(super) fn assert_nothing_else_moves(
 /// One face before and after closure, as encoded: every vertex after lies
 /// within `reach` of the boundary before; every corner before has a vertex
 /// after within the tolerance; every vertex closure added lay within the
-/// tolerance of the edge it joined ([`assert_added_vertices_peel`]); the face
-/// keeps three
-/// distinct vertices, a normal, its area within the tolerance times its
+/// tolerance of the face's boundary as closure then left it
+/// ([`assert_added_vertices_peel`]); the face keeps three distinct vertices,
+/// a normal facing the way it did, its area within the tolerance times its
 /// perimeter, and a boundary that runs in order round its area centroid.
 #[track_caller]
 fn assert_face_kept(was: &[DVec3], now: &[DVec3], reach: f64) {
@@ -122,6 +122,12 @@ fn assert_face_kept(was: &[DVec3], now: &[DVec3], reach: f64) {
     assert!(distinct.len() >= 3, "a face collapsed: {now:?}");
     let geometry = FaceGeometry::from_polygon(now).expect("a face keeps a normal");
     let old_geometry = FaceGeometry::from_polygon(was).expect("the fixture face has a normal");
+    assert!(
+        geometry.normal.dot(old_geometry.normal) > 0.0,
+        "the face flipped from {} to {}: {now:?}",
+        old_geometry.normal,
+        geometry.normal
+    );
     let perimeter: f64 = (0..was.len())
         .map(|i| was[i].distance(was[(i + 1) % was.len()]))
         .sum();
@@ -136,11 +142,15 @@ fn assert_face_kept(was: &[DVec3], now: &[DVec3], reach: f64) {
 
 /// The vertices closure added to `now` (those not within the tolerance of a
 /// corner of `was`) peel back off: one at a time where it lies within the
-/// tolerance of the segment its ring neighbours span, or as a run of added
-/// vertices within the tolerance of the segment the kept vertices either side
-/// span, as inserts judged together against one edge are. So, in some
-/// insertion order, each added vertex lay within the tolerance of the edge it
-/// joined, as closure then left that edge (P18, P22).
+/// tolerance of the segment its ring neighbours span, or failing that of the
+/// rest of the ring's boundary, or as a run of added vertices within the
+/// tolerance of the segment the kept vertices either side span, as inserts
+/// judged together against one edge are. So, in some insertion order, each
+/// added vertex lay within the tolerance of the face's boundary as closure
+/// then left it (P18, P22). The boundary fallback is the edge choice's
+/// allowance: a vertex joins the edge whose sector about the area centroid
+/// holds it, and beside a near-flat corner that edge may lie about half a
+/// millimetre off.
 #[track_caller]
 fn assert_added_vertices_peel(was: &[DVec3], now: &[DVec3]) {
     let mut ring: Vec<(DVec3, bool)> = now
@@ -152,14 +162,20 @@ fn assert_added_vertices_peel(was: &[DVec3], now: &[DVec3]) {
         .collect();
     while ring.iter().any(|&(_, added)| added) {
         let count = ring.len();
-        let single = (0..count).find(|&i| {
-            ring[i].1
-                && segment_distance(
-                    ring[(i + count - 1) % count].0,
-                    ring[(i + 1) % count].0,
-                    ring[i].0,
-                ) <= TOLERANCE
-        });
+        let on_chord = |i: usize| {
+            segment_distance(
+                ring[(i + count - 1) % count].0,
+                ring[(i + 1) % count].0,
+                ring[i].0,
+            ) <= TOLERANCE
+        };
+        let on_rest = |i: usize| {
+            let rest: Vec<DVec3> = (0..count).filter(|&j| j != i).map(|j| ring[j].0).collect();
+            boundary_distance(&rest, ring[i].0) <= TOLERANCE
+        };
+        let single = (0..count)
+            .find(|&i| ring[i].1 && on_chord(i))
+            .or_else(|| (0..count).find(|&i| ring[i].1 && on_rest(i)));
         if let Some(i) = single {
             ring.remove(i);
             continue;
@@ -753,6 +769,46 @@ fn a_sliver_keeps_its_corners_and_its_neighbour_holds_both() {
     }
 }
 
+// Regression (review), P8, P17: a greedy weld can flatten or flip a sliver. F's
+// corners v1 and v2 lie 0.05 mm apart; a neighbour's corner w sorts first and
+// founds an anchor, v1 joins it, and v2, barred from an anchor already holding
+// F, stays. With w level with v2, F's three corners end on one line; with w
+// above v2, F winds the other way. Either way F keeps its positions, and the
+// inserts close the seam instead.
+#[test]
+fn a_sliver_the_weld_would_flatten_or_flip_keeps_its_shape() {
+    let (v1, v2) = (DVec3::ZERO, DVec3::new(0.0, 0.0, 0.05 * MILLI));
+    let sliver = vec![DVec3::new(-1.0, 0.0, 0.05 * MILLI), v1, v2];
+    let before = FaceGeometry::from_polygon(&sliver).expect("the sliver has area");
+    // Flattens, then flips.
+    for w in [
+        DVec3::new(-0.01 * MILLI, 0.0, 0.05 * MILLI),
+        DVec3::new(-0.01 * MILLI, 0.0, 0.09 * MILLI),
+    ] {
+        assert!(w.distance(v1) <= TOLERANCE && w.distance(v2) <= TOLERANCE);
+        // Its base is off-centre: a centroid exactly on the line through v1
+        // and v2, which the neighbour gains, would give them one angle.
+        let neighbour = vec![w, DVec3::new(-0.5, 0.0, 1.0), DVec3::new(0.7, 0.0, 1.0)];
+        let closed = assert_polygons_close(&[vec![sliver.clone()], vec![neighbour]], TOLERANCE);
+        let face: Vec<DVec3> = closed[0][0].iter().map(|&p| encoded(p)).collect();
+        let mut distinct: Vec<[u64; 3]> = face
+            .iter()
+            .map(|p| p.to_array().map(f64::to_bits))
+            .collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(distinct.len() >= 3, "{w}: {face:?}");
+        let after = FaceGeometry::from_polygon(&face).expect("the sliver keeps a normal");
+        assert!(after.normal.dot(before.normal) > 0.0, "{w}: {face:?}");
+        for corner in [v1, v2] {
+            assert!(
+                face.iter().any(|p| *p == encoded(corner)),
+                "{w}: the sliver moved {corner}: {face:?}"
+            );
+        }
+    }
+}
+
 // P18: an insert bends its edge, and the corner the bend brings within the
 // tolerance is inserted too. That corner lies 0.18 mm from the edge as it
 // stood before closure.
@@ -877,6 +933,38 @@ fn a_corner_near_both_edges_of_an_acute_corner_joins_the_edge_its_sector_holds()
             .count();
         assert_eq!(gained, 1, "{:?}", closed[0][0]);
     }
+}
+
+// Regression (review), P23, owner ruling: a neighbour's corner P lies 0.09 mm
+// off edge s→c and 0.22 mm from c, the end of a near-flat (174°) corner, but
+// past the area centroid's ray through c. It joins c→e, the edge whose sector
+// holds it, though that edge lies 0.22 mm off, so F's angle order holds; the
+// nearest edge would put it before c.
+#[test]
+fn a_corner_past_a_near_flat_corners_ray_joins_the_edge_its_sector_holds() {
+    let (s, c, e) = (
+        DVec3::new(-0.01, 0.0, 0.0),
+        DVec3::ZERO,
+        DVec3::new(10.0, 0.0, -1.0),
+    );
+    let face = vec![s, c, e, DVec3::new(-0.01, 0.0, -1.0)];
+    let p = DVec3::new(-0.2 * MILLI, 0.0, 0.09 * MILLI);
+    assert!(segment_distance(s, c, p) <= TOLERANCE);
+    assert!(p.distance(c) > 2.0 * TOLERANCE && segment_distance(c, e, p) > 2.0 * TOLERANCE);
+    // Past the ray from the centroid through c, so in c→e's sector.
+    let (centre, normal) = centroid_and_normal(&face);
+    assert!((c - centre).cross(p - centre).dot(normal) > 0.0);
+
+    let closed = assert_polygons_close(&[vec![face], vec![standing_triangle(p)]], TOLERANCE);
+    let ring = &closed[0][0];
+    let at = |point: DVec3| {
+        let found: Vec<usize> = (0..ring.len())
+            .filter(|&i| encoded(ring[i]) == encoded(point))
+            .collect();
+        assert_eq!(found.len(), 1, "{point} in {ring:?}");
+        found[0]
+    };
+    assert_eq!((at(c) + 1, at(p) + 1), (at(p), at(e)), "{ring:?}");
 }
 
 /// A fluid box over x `x0..x1`, z 0..32, bounded on one side by the plane

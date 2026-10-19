@@ -1,5 +1,5 @@
-//! Push splitting at the drift sample depth; the split pieces' T-junctions
-//! close.
+//! Push splitting at the drift sample depth. Level-wide seam closure closes the
+//! split pieces' T-junctions; these tests check the pieces come out closed.
 
 use super::*;
 
@@ -239,8 +239,8 @@ fn a_push_sunk_just_under_the_waterline_splits_the_face_only_past_the_drift_samp
 }
 
 // Two cuts leave one part's corner inside another part's edge, and on the
-// edges of the sides the push does not reach; every face gains the corners
-// lying on its edges.
+// edges of the sides the push does not reach; seam closure then gives every
+// face the corners lying on its edges.
 #[test]
 fn a_push_over_one_corner_leaves_no_vertex_inside_another_parts_edge() {
     let corner = box_brush([96, 48, 0], [160, 96, 64], "push_tex");
@@ -265,7 +265,8 @@ fn an_inset_current_flush_with_the_waterline_leaves_no_t_junction() {
 }
 
 // The sunk push splits the sides under it at the waterline but leaves the top
-// whole: the top gains the corners the split sides leave on its edges.
+// whole: seam closure gives the top the corners the split sides leave on its
+// edges.
 #[test]
 fn a_whole_top_gains_the_corners_its_split_sides_leave_on_its_edges() {
     let wind = box_brush_at([0.0, 0.0, 64.0 - 0.5 * MM], [64.0, 64.0, 128.0], "push_tex");

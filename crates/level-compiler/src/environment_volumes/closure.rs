@@ -4,7 +4,8 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+use std::f64::consts::TAU;
 
 use glam::DVec3;
 
@@ -50,10 +51,12 @@ struct Vertex {
 /// [`SEAM_TOLERANCE`] of each other take one position, one of their own, so no
 /// vertex moves further than the tolerance and a chain of near points breaks
 /// rather than drifting. Two vertices of one face never weld together, so a
-/// face keeps its corners distinct. Then the inserts: each face gains every
-/// other face's welded vertex within the tolerance of its boundary, in order
-/// round it, repeated on the edges an insert bends until none is left to add.
-/// Faces are neither added, dropped nor reordered.
+/// face keeps its corners distinct, and a face the weld would flip or flatten
+/// keeps its positions. Then the inserts: each face gains every other face's
+/// welded vertex within the tolerance of its boundary, on the edge whose
+/// sector about its area centroid holds it, so rings stay star-shaped about
+/// that centroid. Every face an insert changed is judged again, until none is
+/// left to add. Faces are neither added, dropped nor reordered.
 pub(super) fn close_seams(volumes: &mut [Vec<SurfacePiece<'_>>]) -> ClosureStats {
     let mut stats = ClosureStats::default();
     let mut faces: Vec<Vec<Vertex>> = volumes
@@ -114,6 +117,13 @@ struct Anchor {
 /// Weld vertices of different faces within the tolerance. Vertices are taken
 /// in position order; each joins the nearest earlier anchor within the
 /// tolerance that holds no vertex of its own face, or becomes an anchor.
+///
+/// Greedy joins can still flip or flatten a sliver, whose corners may join
+/// anchors lying on the wrong side of one another. A face the weld would
+/// flip or flatten ([`weld_keeps_shape`]) keeps all its positions. Founders
+/// never move, so no other face's weld rests on it, and the inserts then
+/// carry the shared boundary across: the face gains the anchor, its
+/// neighbours its vertex.
 fn weld(faces: &mut [Vec<Vertex>], stats: &mut ClosureStats) {
     let mut order: Vec<(usize, usize)> = faces
         .iter()
@@ -131,12 +141,25 @@ fn weld(faces: &mut [Vec<Vertex>], stats: &mut ClosureStats) {
         let point = faces[face][index].key;
         let [x, y, z] = cell(point);
         let mut best: Option<(f64, usize)> = None;
+        // A cell's edge is the tolerance, so every anchor within it lies in
+        // this cell or one of its 26 neighbours.
         for neighbour in (-1..=1).flat_map(|dx| {
-            (-1..=1).flat_map(move |dy| (-1..=1).map(move |dz| [x + dx, y + dy, z + dz]))
+            (-1..=1).flat_map(move |dy| {
+                (-1..=1).map(move |dz| {
+                    [
+                        x.saturating_add(dx),
+                        y.saturating_add(dy),
+                        z.saturating_add(dz),
+                    ]
+                })
+            })
         }) {
             for &anchor in cells.get(&neighbour).into_iter().flatten() {
                 stats.weld_tests += 1;
                 let distance = anchors[anchor].position.distance(point);
+                // An anchor already holding this face is passed over, so one
+                // face's corners stay distinct and a sliver never collapses
+                // by merging two of them.
                 if distance <= SEAM_TOLERANCE
                     && !anchors[anchor].faces.contains(&face)
                     && best.is_none_or(|(d, a)| (distance, anchor) < (d, a))
@@ -162,18 +185,61 @@ fn weld(faces: &mut [Vec<Vertex>], stats: &mut ClosureStats) {
         anchors[anchor].faces.push(face);
         assigned.push(anchor);
     }
+    // Every vertex's welded position, face by face, judged per face before any
+    // moves.
+    let mut welded: Vec<Vec<DVec3>> = faces
+        .iter()
+        .map(|vertices| vertices.iter().map(|vertex| vertex.key).collect())
+        .collect();
     for (&(face, index), anchor) in order.iter().zip(assigned) {
-        let position = anchors[anchor].position;
-        let vertex = &mut faces[face][index];
-        if bits(position) != bits(vertex.key) {
-            stats.largest_move = stats.largest_move.max(position.distance(vertex.key));
-            *vertex = Vertex {
-                key: position,
-                out: position,
-            };
-            stats.welded += 1;
+        welded[face][index] = anchors[anchor].position;
+    }
+    for (vertices, welded) in faces.iter_mut().zip(welded) {
+        let moves = vertices
+            .iter()
+            .zip(&welded)
+            .any(|(vertex, &position)| bits(vertex.key) != bits(position));
+        if !moves {
+            continue;
+        }
+        let keys: Vec<DVec3> = vertices.iter().map(|vertex| vertex.key).collect();
+        if !weld_keeps_shape(&keys, &welded) {
+            continue;
+        }
+        for (vertex, position) in vertices.iter_mut().zip(welded) {
+            if bits(position) != bits(vertex.key) {
+                stats.largest_move = stats.largest_move.max(position.distance(vertex.key));
+                *vertex = Vertex {
+                    key: position,
+                    out: position,
+                };
+                stats.welded += 1;
+            }
         }
     }
+}
+
+/// Whether the ring `was`, moved to `welded`, keeps its facing and its shape:
+/// its Newell normal still points the way `was`'s does, every corner that
+/// turned the ring's way still does, and no edge shrinks to nothing. Two
+/// anchors share a position where two vertices of one face that encode equal
+/// found them, and an edge whose ends join one each shrinks so.
+fn weld_keeps_shape(was: &[DVec3], welded: &[DVec3]) -> bool {
+    let normal = newell_normal(was);
+    if newell_normal(welded).dot(normal) <= 0.0 {
+        return false;
+    }
+    let count = was.len();
+    (0..count).all(|i| {
+        let (previous, next) = ((i + count - 1) % count, (i + 1) % count);
+        let turn = |ring: &[DVec3]| {
+            (ring[i] - ring[previous])
+                .cross(ring[next] - ring[i])
+                .dot(normal)
+        };
+        let collapses = bits(welded[i]) == bits(welded[next]) && bits(was[i]) != bits(was[next]);
+        !collapses && (turn(was) <= 0.0 || turn(welded) > 0.0)
+    })
 }
 
 /// Insert in every face each other face's vertex within the tolerance of its
@@ -185,12 +251,12 @@ fn insert(faces: &mut [Vec<Vertex>], stats: &mut ClosureStats) {
     let tree = PointTree::build(&points);
 
     let mut pending: Vec<usize> = (0..faces.len()).collect();
-    let mut candidates = Vec::new();
+    let mut scratch = Scratch::default();
     while !pending.is_empty() {
         let mut changed = Vec::new();
         for &face in &pending {
             if let Some(ring) =
-                gain_boundary_points(&faces[face], &points, &tree, &mut candidates, stats)
+                gain_boundary_points(&faces[face], &points, &tree, &mut scratch, stats)
             {
                 faces[face] = ring;
                 changed.push(face);
@@ -200,69 +266,85 @@ fn insert(faces: &mut [Vec<Vertex>], stats: &mut ClosureStats) {
     }
 }
 
+/// Buffers the inserts reuse from face to face.
+#[derive(Default)]
+struct Scratch {
+    /// The tree walk's node stack.
+    stack: Vec<u32>,
+    /// Point indices one tree query found.
+    candidates: Vec<usize>,
+    /// Point indices a face gains.
+    gained: Vec<usize>,
+}
+
 /// `ring` with every point within the tolerance of its boundary that is not
 /// already one of its vertices, or `None` when it gains none.
 ///
-/// A point near two edges, as beside an acute corner or on a sliver, joins
-/// the one whose sector about the face's area centroid holds it, so the
-/// boundary keeps turning one way round that centroid; failing that, the
-/// nearer. Within an edge, points take their order round the centroid.
+/// Each gained point joins the edge whose sector about the face's area
+/// centroid holds it, found by binary search on the corners' angles round
+/// that centroid, so the ring stays star-shaped about it. A
+/// point within the tolerance of one edge but past a near-flat corner's ray
+/// from the centroid thus joins the next edge, which may lie about half a
+/// millimetre off. Within an edge, points take their order round the
+/// centroid. Work is linear in the ring plus logarithmic per gained point.
 fn gain_boundary_points(
     ring: &[Vertex],
     points: &[DVec3],
     tree: &PointTree<'_>,
-    candidates: &mut Vec<usize>,
+    scratch: &mut Scratch,
     stats: &mut ClosureStats,
 ) -> Option<Vec<Vertex>> {
     let own: HashSet<[u64; 3]> = ring.iter().map(|vertex| bits(vertex.key)).collect();
-    // Each gained point with every edge it lies near, as (edge, distance).
-    let mut near: BTreeMap<usize, Vec<(usize, f64)>> = BTreeMap::new();
+    let Scratch {
+        stack,
+        candidates,
+        gained,
+    } = scratch;
+    gained.clear();
     for edge in 0..ring.len() {
         let (start, end) = (ring[edge].key, ring[(edge + 1) % ring.len()].key);
-        tree.near_segment(start, end, candidates);
+        tree.near_segment(start, end, stack, candidates);
         for &candidate in candidates.iter() {
             stats.insert_tests += 1;
             let point = points[candidate];
-            if own.contains(&bits(point)) {
-                continue;
-            }
-            let distance = segment_distance(start, end, point);
-            if distance <= SEAM_TOLERANCE {
-                near.entry(candidate).or_default().push((edge, distance));
+            if !own.contains(&bits(point)) && segment_distance(start, end, point) <= SEAM_TOLERANCE
+            {
+                gained.push(candidate);
             }
         }
     }
-    if near.is_empty() {
+    if gained.is_empty() {
         return None;
     }
+    // A point near several edges was found once per edge.
+    gained.sort_unstable();
+    gained.dedup();
 
     let keys: Vec<DVec3> = ring.iter().map(|vertex| vertex.key).collect();
     let (centre, normal) = centroid_and_normal(&keys);
-    let angle = |point: DVec3, from: DVec3| {
-        let (a, b) = (from - centre, point - centre);
-        a.cross(b).dot(normal).atan2(a.dot(b) * normal.length())
+    let first = keys[0] - centre;
+    // Angle round the centroid from the first corner, in [0, 2π): it
+    // increases corner by corner round a star-shaped ring.
+    let angle = |point: DVec3| {
+        let offset = point - centre;
+        let angle = first
+            .cross(offset)
+            .dot(normal)
+            .atan2(first.dot(offset) * normal.length());
+        if angle < 0.0 { angle + TAU } else { angle }
     };
-    // (edge, angle past the edge's start, point)
-    let mut inserts: Vec<(usize, f64, DVec3)> = near
-        .into_iter()
-        .map(|(candidate, edges)| {
+    let corners: Vec<f64> = keys.iter().map(|&key| angle(key)).collect();
+    // (edge, angle, point)
+    let mut inserts: Vec<(usize, f64, DVec3)> = gained
+        .iter()
+        .map(|&candidate| {
             let point = points[candidate];
-            let in_sector = |&(edge, _): &(usize, f64)| {
-                let (start, end) = (keys[edge], keys[(edge + 1) % keys.len()]);
-                angle(point, start) >= 0.0 && angle(end, point) > 0.0
-            };
-            let (edge, _) = edges
-                .iter()
-                .copied()
-                .find(in_sector)
-                .or_else(|| {
-                    edges
-                        .iter()
-                        .copied()
-                        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
-                })
-                .expect("a gained point lies near some edge");
-            (edge, angle(point, keys[edge]), point)
+            let radians = angle(point);
+            // The last corner at or before the point's angle starts its edge.
+            let edge = corners
+                .partition_point(|&corner| corner <= radians)
+                .saturating_sub(1);
+            (edge, radians, point)
         })
         .collect();
     inserts.sort_by(|a, b| {
@@ -273,17 +355,17 @@ fn gain_boundary_points(
     stats.inserted += inserts.len();
 
     let mut inserts = inserts.into_iter().peekable();
-    let mut gained = Vec::with_capacity(ring.len() + inserts.len());
+    let mut grown = Vec::with_capacity(ring.len() + inserts.len());
     for (edge, &corner) in ring.iter().enumerate() {
-        gained.push(corner);
+        grown.push(corner);
         while let Some((_, _, point)) = inserts.next_if(|insert| insert.0 == edge) {
-            gained.push(Vertex {
+            grown.push(Vertex {
                 key: point,
                 out: point,
             });
         }
     }
-    Some(gained)
+    Some(grown)
 }
 
 /// Distance from `point` to the closed segment `start`→`end`, meters.
@@ -304,10 +386,7 @@ pub(super) fn segment_distance(start: DVec3, end: DVec3, point: DVec3) -> f64 {
 /// area takes its vertex mean.
 pub(super) fn centroid_and_normal(polygon: &[DVec3]) -> (DVec3, DVec3) {
     let first = polygon[0];
-    let mut normal = DVec3::ZERO;
-    for (i, &a) in polygon.iter().enumerate() {
-        normal += (a - first).cross(polygon[(i + 1) % polygon.len()] - first);
-    }
+    let normal = newell_normal(polygon);
     let (mut weighted, mut weight) = (DVec3::ZERO, 0.0);
     for pair in polygon[1..].windows(2) {
         let (a, b) = (pair[0] - first, pair[1] - first);
@@ -320,6 +399,17 @@ pub(super) fn centroid_and_normal(polygon: &[DVec3]) -> (DVec3, DVec3) {
     }
     let sum: DVec3 = polygon.iter().map(|&point| point - first).sum();
     (first + sum / polygon.len() as f64, normal)
+}
+
+/// The Newell normal of `polygon`, twice its area long, taken relative to its
+/// first vertex so precision holds far from the origin.
+fn newell_normal(polygon: &[DVec3]) -> DVec3 {
+    let first = polygon[0];
+    let mut normal = DVec3::ZERO;
+    for (i, &a) in polygon.iter().enumerate() {
+        normal += (a - first).cross(polygon[(i + 1) % polygon.len()] - first);
+    }
+    normal
 }
 
 /// A static bounding-volume tree over points, answering which points may lie
@@ -392,14 +482,16 @@ impl<'a> PointTree<'a> {
     }
 
     /// Every point whose box, grown by the tolerance, the segment crosses: a
-    /// superset of the points within the tolerance of it.
-    fn near_segment(&self, start: DVec3, end: DVec3, found: &mut Vec<usize>) {
+    /// superset of the points within the tolerance of it. `stack` is the
+    /// caller's, reused across queries.
+    fn near_segment(&self, start: DVec3, end: DVec3, stack: &mut Vec<u32>, found: &mut Vec<usize>) {
         found.clear();
+        stack.clear();
         if self.nodes.is_empty() {
             return;
         }
         let margin = DVec3::splat(SEAM_TOLERANCE);
-        let mut stack = vec![0u32];
+        stack.push(0);
         while let Some(node) = stack.pop() {
             let node = &self.nodes[node as usize];
             if !segment_crosses_box(start, end, node.min - margin, node.max + margin) {

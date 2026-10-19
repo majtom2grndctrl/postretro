@@ -21,7 +21,8 @@ pub const FLUID_GRID_VERTEX_CAP: u64 = 1 << 18;
 const FLUID_GRID_MAX_COARSENING: u32 = 20;
 /// A vertex within this distance of a plane, along the plane's axis, lies on
 /// it: the plane passes through the vertex and adds none beside it. The
-/// compiler's collinear tolerance, so a plane never adds a vertex nearer an
+/// renderer's collinear tolerance (`COLLINEAR_DISTANCE`, derived from the
+/// compiler's split epsilon), so a plane never adds a vertex nearer an
 /// existing one than the compiler would.
 const PLANE_TOLERANCE: f64 = COLLINEAR_DISTANCE;
 /// Plane counts past this saturate: the bound only has to exceed the cap.
@@ -87,7 +88,7 @@ impl FluidGridPlanes {
 
     /// The planes on `axis` splitting a polygon whose extent on it is
     /// `min..max`: those with a vertex below and one above, by [`side`], as
-    /// [`split`] judges them.
+    /// [`level`] and [`cut_axis`] judge each vertex.
     fn splitting(&self, axis: usize, min: f64, max: f64) -> Splitting {
         let (origin, spacing) = (self.origin[axis], self.spacing[axis]);
         let first = ((min + PLANE_TOLERANCE - origin) / spacing).floor() + 1.0;
@@ -280,8 +281,9 @@ pub(super) struct GridCut {
 /// edge's lexicographically lower endpoint, and whether a vertex lies on a
 /// plane is a function of that vertex alone. Two faces sharing an edge
 /// therefore cut it at the same points, so the grid adds no T-junction.
-/// Axes cut in order, planes ascending, so a shared edge's sub-segments
-/// match too.
+/// Axes cut in order. Within an axis each crossing is keyed by its edge and
+/// plane, so the order planes are walked in cannot change where a shared
+/// edge is cut.
 pub(super) fn cut_face(
     face: &EnvironmentSurfaceFace,
     normal: Vec3,
@@ -409,7 +411,8 @@ fn cut_axis(
         let there = levels[following];
         // Planes strictly between the edge's ends, in ring order.
         let (low, high) = (here.min(there), here.max(there));
-        let mut between: Vec<i64> = (low + 1..high).filter(|level| level % 2 == 1).collect();
+        super::count_install_steps((high - low) as usize);
+        let mut between: Vec<i64> = (low + 1..high).filter(|height| height % 2 == 1).collect();
         if there < here {
             between.reverse();
         }
@@ -475,12 +478,12 @@ fn on_plane_runs(levels: &[i64]) -> Vec<(i64, i64, bool)> {
     let mut offset = 0;
     while offset < count {
         let begin = (start + offset) % count;
-        let level = levels[begin];
+        let run_level = levels[begin];
         let mut length = 1;
-        while length < count && levels[(begin + length) % count] == level {
+        while length < count && levels[(begin + length) % count] == run_level {
             length += 1;
         }
-        if level % 2 == 1 {
+        if run_level % 2 == 1 {
             let before = levels[(begin + count - 1) % count];
             let after = levels[(begin + length) % count];
             for i in 0..length {
@@ -522,7 +525,9 @@ fn crossing(
 
 /// Triangulate a convex polygon over its own vertices. A grid cut leaves
 /// collinear vertices on a part's edges (the compiler's T-junction inserts,
-/// and planes passing near a corner); each stays a triangle corner. Each step
+/// and planes passing near a corner); each stays a triangle corner, except a
+/// vertex repeating the one before it, as packed, which joins the ring once
+/// (its position stays covered by its twin). Each step
 /// clips the earliest corner in ring order beside a collinear vertex, which
 /// turns that vertex into a corner, so three corners always remain; with none
 /// left, the earliest corner. Corners are judged on the positions as packed,
@@ -530,7 +535,7 @@ fn crossing(
 /// to a final triangle judged at one vertex: area under about 1e-12 of its
 /// longer sides' product can be dropped. A part with no corner left has no
 /// area and draws nothing. A vertex repeating the one before it, as packed,
-/// joins the ring once: the repeat draws no edge, and its zero-length edge
+/// joins the ring once: the repeat draws no triangle, and its zero-length edge
 /// turns nowhere, so it would block every clip beside it.
 ///
 /// A clip changes the corner status of the two vertices beside the tip

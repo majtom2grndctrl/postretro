@@ -421,7 +421,7 @@ impl InsertedGrid {
 // holds every insert; and every plane along its inserted edge crossing it, so
 // the planes grow with the vertices), keeps the drift map of the same face
 // without them, and its install work, counted, grows within n log n of its
-// vertex count, the per-plane cut included.
+// vertex count, the grid cut included.
 #[test]
 fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps() {
     let pack = |face: &EnvironmentSurfaceFace, lattice: Option<&FluidGridLattice>| {
@@ -505,6 +505,69 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
             ratio <= bound,
             "{grid:?}: {small_steps} steps at {small} vertices, {large_steps} at {large}: \
              ratio {ratio}, n log n allows {bound}"
+        );
+    }
+}
+
+// Regression (review): the face normal was a Newell sum in f32 on absolute
+// positions. On a narrow strip far from the origin with thousands of inserts
+// on one long edge, its rounding outgrew twice the strip's area and flipped
+// the normal down: the gridded strip's ear clip then clipped nothing, and its
+// area centroid fell back to the vertex mean.
+#[test]
+fn a_narrow_strip_far_out_with_thousands_of_inserts_packs_facing_up() {
+    // 2 cm × 50 m at x ≈ 1000.37, CCW seen from +Y, whose x = x1 edge
+    // carries the inserts from z 51 down to 1. Positions and texel UVs are
+    // computed in f64 and rounded to f32 separately, as `inserted_top`'s are.
+    let inserts: usize = 4000;
+    let (x0, x1, z0, z1) = (1000.37, 1000.39, 1.0, 51.0);
+    let mut points = vec![DVec2::new(x0, z0), DVec2::new(x0, z1), DVec2::new(x1, z1)];
+    points.extend(
+        (0..inserts).map(|i| DVec2::new(x1, z1 - (z1 - z0) * (i as f64 + 0.5) / inserts as f64)),
+    );
+    points.push(DVec2::new(x1, z0));
+    let face = EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: points
+            .iter()
+            .map(|p| {
+                vertex(
+                    [p.x as f32, 1.1, p.y as f32],
+                    (*p / 0.0254).as_vec2().to_array(),
+                )
+            })
+            .collect(),
+    };
+    let normal = face_normal(&face).expect("the strip has area");
+    assert!(normal.abs_diff_eq(Vec3::Y, 1.0e-6), "{normal:?}");
+
+    // Planes every 8 m: z = 8 to 48 cross the strip, its inserted edge too.
+    for lattice in [None, FluidGridLattice::new([0.0; 3], [16.0; 3])] {
+        let mesh = pack_fluid_surfaces(
+            &[volume(vec![face.clone()])],
+            &[[64, 64]],
+            1,
+            lattice.as_ref(),
+        );
+        assert_eq!(mesh.grid.is_some(), lattice.is_some());
+        for packed in &mesh.vertices {
+            let packed = Vec3::from(packed.normal);
+            assert!(packed.abs_diff_eq(Vec3::Y, 1.0e-6), "{packed:?}");
+        }
+        if lattice.is_some() {
+            assert!(
+                mesh.vertices.iter().any(|v| v.position[2] == 8.0),
+                "the z = 8 plane cuts the strip"
+            );
+            // Planes cut the inserted edge's segments, so only the tiling's
+            // area and winding are checked.
+            assert_tiles_up_facing_face(&mesh, &face, 3..3);
+        } else {
+            assert_tiles_up_facing_face(&mesh, &face, 3..3 + inserts as u32);
+        }
+        assert!(
+            mesh.face_drift_maps[0].is_some(),
+            "the strip takes a drift map"
         );
     }
 }

@@ -140,12 +140,6 @@ export const playerEntity = defineEntity({
       // Landing and jumping sounds, played at the local pawn (`audio.md` §4).
       sounds: positionalSoundMovementSounds,
       viewFeel: {
-        slide: {
-          eyeDrop: 0.15,
-          fovIncrease: 5,
-          enterRate: 18,
-          exitRate: 12,
-        },
         bob: {
           verticalFrequency: 0.25,
           lateralFrequency: 0.125,
@@ -179,15 +173,27 @@ export const playerEntity = defineEntity({
             },
           },
         },
-        // Held while vaulting: a downward look at the ledge that eases in over
-        // the first 15% of durationMs, rests through the climb, and levels
-        // out over the last 20% as the pawn moves onto the top.
-        vault: {
-          pitch: -38.5, // degrees; + looks up
-          roll: 10,
-          fov: -30, // horizontal degrees added to the base FOV
-          easeIn: 0.33, // share of durationMs spent easing in
-          easeOut: 0.33, // share spent easing back at the end
+        // Camera poses held while a movement state lasts. Rows add, each on
+        // its own timing.
+        pose: {
+          // A dip and a wider view for the whole slide, eased by rates.
+          slide: {
+            eyeDrop: 0.15,
+            fov: 5,
+            enterRate: 18, // 1/sec
+            exitRate: 12,
+          },
+          // Weighted by the climb: eases in over the first third, holds, and
+          // levels out over the last third as the pawn steps onto the top.
+          vault: {
+            // Pull the view toward the landing spot: 70% of the way from the
+            // aim at entry down to the ledge line, never more than 30°.
+            ledgeFocus: { strength: 0.7, maxPitch: 30 },
+            roll: 10, // degrees
+            fov: -30, // horizontal degrees added to the base FOV
+            easeIn: 0.33, // share of the climb spent easing in
+            easeOut: 0.33, // share spent easing back at the end
+          },
         },
       },
     },

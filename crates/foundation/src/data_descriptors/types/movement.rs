@@ -533,6 +533,9 @@ pub struct ViewFeelParams {
     /// Optional camera pose held while vaulting. Absent ⇒ no vault pose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault: Option<VaultViewParams>,
+    /// Optional sustained camera poses keyed by movement state. Absent ⇒ none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<super::view_pose::PoseParams>,
 }
 
 /// Sustained slide view tuning. All four fields are required when present.

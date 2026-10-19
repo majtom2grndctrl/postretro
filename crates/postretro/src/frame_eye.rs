@@ -3,11 +3,13 @@
 // See: context/lib/rendering_pipeline.md §11 · context/lib/audio.md §3
 
 use glam::Vec3;
-use postretro_entities::EntityId;
-use postretro_foundation::{MovementStateKind, ViewFeelParams};
+use postretro_entities::{EntityId, EntityRegistry};
+use postretro_foundation::{
+    MovementState, MovementStateKind, PlayerMovementComponent, ViewFeelParams,
+};
 
 use crate::camera::RenderCamera;
-use crate::view_feel::vault::VaultViewInput;
+use crate::view_feel::pose::VaultViewInput;
 use crate::view_feel::{self, TimedMovementEdge, ViewFeelState};
 
 /// The pawn driving view feel this frame, with the movement facts the
@@ -57,6 +59,82 @@ pub(crate) struct FrameEye {
     pub(crate) roll: f32,
     pub(crate) yaw_offset: f32,
     pub(crate) pitch_offset: f32,
+}
+
+/// The followed pawn's view-feel driver for this frame, or `None` when that
+/// pawn carries no `view_feel`. Only the local pawn drives view feel
+/// (`followed_player_pawn`), so a remote pawn's slide or vault never poses the
+/// local camera. `alpha` is the frame's interpolation share toward the latest
+/// tick, whose movement state the registry holds.
+pub(crate) fn view_feel_driver(
+    registry: &EntityRegistry,
+    presented_eye_y: f32,
+    latest_tick_eye_y: f32,
+    tick_dt: f32,
+    alpha: f32,
+) -> Option<ViewFeelDriver> {
+    let pawn = crate::followed_player_pawn(registry)?;
+    let component = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .ok()?;
+    let params = component.view_feel.as_ref()?;
+    Some(ViewFeelDriver {
+        pawn,
+        params: params.clone(),
+        velocity: component.velocity,
+        is_grounded: component.is_grounded(),
+        movement_state: component.movement_state.kind(),
+        vault: presented_vault(registry, component, tick_dt, alpha),
+        eye_height_above_feet: presented_eye_clearance(
+            presented_eye_y,
+            latest_tick_eye_y,
+            component.capsule.eye_height + component.capsule.half_height + component.capsule.radius,
+        ),
+    })
+}
+
+/// The local pawn's vault as this frame presents it.
+fn presented_vault(
+    registry: &EntityRegistry,
+    component: &PlayerMovementComponent,
+    tick_dt: f32,
+    alpha: f32,
+) -> Option<VaultViewInput> {
+    let MovementState::Vault {
+        elapsed_ms,
+        target,
+        mover,
+        ..
+    } = component.movement_state
+    else {
+        return None;
+    };
+    let duration_ms = component.vault.as_ref()?.duration_ms;
+    Some(VaultViewInput::presented(
+        elapsed_ms,
+        duration_ms,
+        tick_dt,
+        alpha,
+        presented_landing(registry, target, mover, alpha),
+    ))
+}
+
+/// The vault's landing spot in world space as this frame presents it. On a
+/// mover the target is mover-local, carried through the mover's pose at the
+/// eye's own interpolation share: the mover render collector runs after the
+/// eye, so its pose for this frame is not yet known there.
+fn presented_landing(
+    registry: &EntityRegistry,
+    target: Vec3,
+    mover: Option<u32>,
+    alpha: f32,
+) -> Option<Vec3> {
+    let Some(mover_id) = mover else {
+        return Some(target);
+    };
+    let entity = crate::sound_events::mover_entity(registry, mover_id)?;
+    let pose = registry.interpolated_transform(entity, alpha).ok()?;
+    Some(pose.position + pose.rotation.normalize() * target)
 }
 
 /// Eye clearance in the same presented space as the interpolated camera.
@@ -129,13 +207,32 @@ pub(crate) fn assemble_frame_eye(
                 inputs.frame_dt,
                 inputs.view_feel_scale,
             );
+            let pose = view_feel::pose::evaluate(
+                driver.params.pose.as_ref(),
+                view_feel::pose::PoseFrame {
+                    movement_state: driver.movement_state,
+                    vault: driver.vault,
+                    aim_pitch_deg: inputs.pitch.to_degrees(),
+                    eye: inputs.presented_eye + eye,
+                    available_drop: (driver.eye_height_above_feet + eye.y
+                        - view_feel::pose::MIN_EYE_CLEARANCE)
+                        .max(0.0),
+                },
+                tracking.state.pose_mut(),
+                inputs.frame_dt,
+                inputs.view_feel_scale,
+            );
+            eye.y -= pose.eye_drop;
             (
-                output.impulse_fov + slide.fov_increase + vault.fov,
+                output.impulse_fov + slide.fov_increase + vault.fov + pose.fov,
                 roll,
                 yaw,
                 pitch,
                 eye,
-                vault,
+                HeldPose {
+                    pitch: vault.pitch + pose.pitch,
+                    roll: vault.roll + pose.roll,
+                },
             )
         }
         None => {
@@ -151,7 +248,7 @@ pub(crate) fn assemble_frame_eye(
                 0.0,
                 0.0,
                 Vec3::ZERO,
-                view_feel::vault::VaultViewOutput::default(),
+                HeldPose::default(),
             )
         }
     };
@@ -179,6 +276,13 @@ pub(crate) fn assemble_frame_eye(
     }
 }
 
+/// Held pitch and roll, degrees, that turn the render camera only.
+#[derive(Default)]
+struct HeldPose {
+    pitch: f32,
+    roll: f32,
+}
+
 /// The audio listener for a frame: the rendered eye and its look direction.
 /// `attached` names the pawn the listener rides, whose own sounds play
 /// unpositioned.
@@ -193,6 +297,10 @@ pub(crate) fn listener_for(
         attached,
     }
 }
+
+#[cfg(test)]
+#[path = "frame_eye_pose_tests.rs"]
+mod pose_tests;
 
 #[cfg(test)]
 mod tests {
@@ -219,6 +327,7 @@ mod tests {
             sway: None,
             impulse: None,
             vault: None,
+            pose: None,
         }
     }
 
@@ -393,6 +502,7 @@ mod tests {
             driver.vault = Some(VaultViewInput {
                 progress: 0.5,
                 path_s: 0.42,
+                landing: None,
             });
             let mut state = ViewFeelState::default();
             let mut followed = None;

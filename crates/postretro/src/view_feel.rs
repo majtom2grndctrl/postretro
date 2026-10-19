@@ -16,6 +16,7 @@ use postretro_foundation::{
 
 mod bob;
 mod impulse;
+pub(crate) mod pose;
 pub(crate) mod slide;
 mod sway;
 mod tilt;
@@ -51,6 +52,8 @@ pub(crate) struct ViewFeelState {
     slide_blend: f32,
     /// Sustained vault pose, independent of transition kicks.
     vault_view: vault::VaultViewState,
+    /// Sustained state poses (`viewFeel.pose`), independent of transition kicks.
+    pose: pose::PoseState,
 }
 
 impl Default for ViewFeelState {
@@ -64,6 +67,7 @@ impl Default for ViewFeelState {
             impulse_springs: [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT],
             slide_blend: 0.0,
             vault_view: vault::VaultViewState::default(),
+            pose: pose::PoseState::default(),
         }
     }
 }
@@ -75,6 +79,11 @@ impl ViewFeelState {
         self.impulse_springs = [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT];
         self.slide_blend = 0.0;
         self.vault_view = vault::VaultViewState::default();
+        self.pose = pose::PoseState::default();
+    }
+
+    pub(crate) fn pose_mut(&mut self) -> &mut pose::PoseState {
+        &mut self.pose
     }
 }
 
@@ -330,6 +339,7 @@ mod tests {
             sway: None,
             impulse: None,
             vault: None,
+            pose: None,
         }
     }
 
@@ -341,6 +351,7 @@ mod tests {
             sway: None,
             impulse: None,
             vault: None,
+            pose: None,
         }
     }
 
@@ -352,6 +363,7 @@ mod tests {
             sway: Some(s),
             impulse: None,
             vault: None,
+            pose: None,
         }
     }
 
@@ -371,6 +383,7 @@ mod tests {
                 states,
             }),
             vault: None,
+            pose: None,
         }
     }
 
@@ -774,6 +787,7 @@ mod tests {
             sway: Some(sway(0.5, false)),
             impulse: None,
             vault: None,
+            pose: None,
         };
         let mut state = ViewFeelState::default();
         // Even with strong velocity, scale = 0 zeroes everything.
@@ -797,6 +811,7 @@ mod tests {
             sway: Some(sway(0.5, false)),
             impulse: None,
             vault: None,
+            pose: None,
         };
 
         let sample = |scale: f32| -> ViewFeelOutput {
@@ -825,6 +840,7 @@ mod tests {
             sway: Some(sway(0.5, false)),
             impulse: None,
             vault: None,
+            pose: None,
         };
         // Advance to a non-trivial state first.
         let mut state = ViewFeelState::default();
@@ -857,6 +873,7 @@ mod tests {
             sway: Some(sway(0.5, false)),
             impulse: None,
             vault: None,
+            pose: None,
         };
         let mut state = ViewFeelState::default();
         let out = run_frames(&params, 5.0, 4.0, true, &mut state, 1.0 / 120.0, 1.0, 300);
@@ -876,6 +893,7 @@ mod tests {
             sway: Some(sway(0.5, false)),
             impulse: None,
             vault: None,
+            pose: None,
         };
         let mut state = ViewFeelState::default();
         let mut bob_peak = 0.0_f32;
@@ -901,6 +919,7 @@ mod tests {
             sway: None,
             impulse: None,
             vault: None,
+            pose: None,
         };
         let mut state = ViewFeelState::default();
         let mut bob_peak = 0.0_f32;
@@ -1178,6 +1197,7 @@ mod tests {
             sway: None,
             impulse: None,
             vault: None,
+            pose: None,
         };
         let cleared = evaluate_with_edges(&no_impulse, 0.0, 0.0, true, &[], &mut state, 0.0, 1.0);
         assert!(approx_eq(cleared.impulse_fov, 0.0));

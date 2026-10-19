@@ -827,7 +827,7 @@ export type PlayerMovementDescriptor = {
   swim: SwimParams?,
   --- Optional vault (mantle) tuning. When omitted, the player never vaults. When present, `maxHeight`, `swimMaxHeight` and `durationMs` are required; a block that fails validation is dropped with a warning naming `movement.vault.<field>`, and the player cannot vault. Never overridable by a map.
   vault: VaultParams?,
-  --- Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.
+  --- Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse, sustained state poses). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.
   viewFeel: ViewFeelParams?,
   --- Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated.
   sounds: MovementSounds?,
@@ -992,7 +992,7 @@ export type VaultTrigger =
   --- Vault when jump is held or buffered at a ledge within reach.
   | "jump"
 
---- First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide and vault poses). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide`/`vault` is independently optional; an absent sub-object disables that motion.
+--- First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained state poses). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`pose` is independently optional; an absent sub-object disables that motion. The retired `slide` and `vault` keys are rejected: author `pose.slide` and `pose.vault`.
 export type ViewFeelParams = {
   --- Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`.
   bob: BobParams?,
@@ -1002,36 +1002,58 @@ export type ViewFeelParams = {
   sway: SwayParams?,
   --- Optional state-transition camera displacement. When present, `tension`, `max`, and `states` are required; state rows and their entry/exit displacements are sparse.
   impulse: ImpulseParams?,
-  --- Optional sustained slide camera dip and FOV increase. When present, all four fields are required. Omission disables this effect.
-  slide: SlideViewParams?,
-  --- Optional camera pose held while vaulting. Every field is optional. Omission disables this effect.
-  vault: VaultViewParams?,
+  --- Optional camera poses held while a movement state lasts, one row per state. Omission disables them.
+  pose: PoseParams?,
 }
 
---- Camera pose held while vaulting. Its weight follows the vault's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the vault ends. A vault that ends early (an abort, death, a correction) eases back from wherever the pose was. This affects presentation only: aim, the shot line and the weapon model are unchanged. It composes with bob, tilt, sway and impulses and is scaled by view-feel accessibility settings; reduced motion removes it.
-export type VaultViewParams = {
-  --- Held pitch offset in degrees; positive looks up, so a negative value looks down toward the ledge. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit.
+--- Camera poses held while a movement state lasts. Each row is optional and runs on its own timing; rows that overlap add, so a slide easing out while a vault eases in shows both. `normal` takes no row: a pose there would be a permanent offset. Presentation only: aim, the shot line and the weapon model are unchanged, so with `movement.vault.allowFire: true` the screen-centre reticle sits off the shot line by the presented pose. Scaled by view-feel accessibility settings; reduced motion removes it. Strict: an unknown key, or an entry inherited through a prototype or `__index`, is rejected at every level.
+export type PoseParams = {
+  --- Optional pose held while sliding, eased by rates.
+  slide: PoseRow?,
+  --- Optional pose held while vaulting, weighted by the climb's progress so it reaches neutral as the pawn reaches the top.
+  vault: VaultPoseRow?,
+}
+
+--- A pose row timed by rates. Its weight eases toward the pose at `enterRate` while the state lasts and back to neutral at `exitRate` once it ends, however it ends. Channels are optional and default to 0; both rates are required. Takes rates, not shares.
+export type PoseRow = {
+  --- Pitch offset in degrees; positive looks up. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit.
   pitch: number?,
-  --- Held roll offset in degrees. Must be finite in [-90, 90]; default 0.
+  --- Roll offset in degrees. Must be finite in [-90, 90]; default 0.
   roll: number?,
-  --- Held horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV.
+  --- Downward eye displacement in metres. Must be finite and ≥ 0; default 0. The drops of every row together keep at least 0.05 m of eye-to-feet clearance.
+  eyeDrop: number?,
+  --- Horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV.
+  fov: number?,
+  --- Exponential response rate while the state lasts, in 1/sec. Must be finite in [0.1, 240]; larger values reach the pose sooner.
+  enterRate: number,
+  --- Exponential response rate after the state ends, in 1/sec. Must be finite in [0.1, 240]; larger values return sooner.
+  exitRate: number,
+}
+
+--- The vault pose row, weighted by the climb's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the pawn reaches the top. A vault that ends early (an abort, death, a correction) eases back from the last presented pose. Takes shares, not rates. Every field is optional.
+export type VaultPoseRow = {
+  --- Pitch offset in degrees; positive looks up. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit.
+  pitch: number?,
+  --- Roll offset in degrees. Must be finite in [-90, 90]; default 0.
+  roll: number?,
+  --- Downward eye displacement in metres. Must be finite and ≥ 0; default 0. The drops of every row together keep at least 0.05 m of eye-to-feet clearance.
+  eyeDrop: number?,
+  --- Horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV.
   fov: number?,
   --- Share of `durationMs` spent easing in. Must be finite in [0, 1]; default 0.15. 0 holds the pose from the first frame.
   easeIn: number?,
   --- Share of `durationMs` spent easing back at the end. Must be finite in [0, 1]; default 0.2. `easeIn + easeOut` must be at most 1.
   easeOut: number?,
+  --- Optional downward pull toward the vault's landing spot. Vault row only.
+  ledgeFocus: LedgeFocus?,
 }
 
---- Sustained slide camera tuning. The current slide state holds the dip and FOV increase; every exit eases both back to zero. This affects presentation only, composed with bob and impulses and scaled by view-feel accessibility settings.
-export type SlideViewParams = {
-  --- Downward eye displacement in metres. Must be finite and ≥ 0; 0 disables the dip. Presentation retains at least 0.05 m of eye-to-feet clearance.
-  eyeDrop: number,
-  --- Horizontal field-of-view increase in degrees. Must be finite in [0, 90]; 0 disables the increase. The renderer clamps final FOV.
-  fovIncrease: number,
-  --- Exponential response rate while sliding, in 1/sec. Must be finite in [0.1, 240]; larger values enter sooner.
-  enterRate: number,
-  --- Exponential response rate after sliding, in 1/sec. Must be finite in [0.1, 240]; larger values return sooner.
-  exitRate: number,
+--- A downward pitch offset toward the line from the rendered eye to the vault's landing spot. It is measured against a reference taken on the pose's first frame of the vault: that frame's aim plus the row's `pitch`. While the reference looks above the line, the view pulls down by `strength` of the gap, capped at `maxPitch`; at or below the line, or with the landing spot at or above the eye, it adds nothing. Pitch only, never yaw. The offset is additive, so mouse look stays 1:1 through the climb. Both fields are required.
+export type LedgeFocus = {
+  --- Share of the gap between the reference and the ledge line. Must be finite in [0, 1].
+  strength: number,
+  --- Largest pull in degrees. Must be finite in (0, 89].
+  maxPitch: number,
 }
 
 --- Distance-phased head-bob tuning. Vertical and lateral motion have independent cadences. All fields are required except `groundedOnly`, which defaults to true.

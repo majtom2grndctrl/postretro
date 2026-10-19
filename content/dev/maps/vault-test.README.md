@@ -17,8 +17,9 @@ The tuning is content/dev's player (`scripts/player.ts`):
 - standing capsule 2.0 m, `stepHeight` 0.5 m, jump peak about 1.16 m;
 - `vault.maxHeight` 1.6 m, `vault.swimMaxHeight` 0.9 m, `durationMs` 800;
 - `from: { air: "auto", swim: "auto" }` and `allowFire: false`;
-- `viewFeel.vault` holds a 38.5° look down and narrows the FOV by 30°, easing
-  in over the first 33% of the climb and back over the last 33%.
+- `viewFeel.pose.vault` focuses the view on the ledge (`ledgeFocus` strength
+  0.7, capped at 30°), rolls 10° and narrows the FOV by 30°, easing in over the
+  first 33% of the climb and back over the last 33%.
 
 The expectations below follow from those numbers. If you retune the player,
 re-derive them.
@@ -58,13 +59,16 @@ re-derive them.
    the top, or a stall at the lip. The move onto the top should speed up into
    your running pace and carry it off the ledge, with no slow crawl followed
    by a lurch. The view should never clip into the riser or the lip.
-2. Watch the camera through each vault: it should dip about 6° toward the
-   ledge as the climb starts, rest there through the climb, and level out as
-   you step onto the top, never snapping. A vault cut short (dying
-   mid-climb, or a co-op correction in N2) must still ease the view back
-   level. Turn reduced motion on and confirm no dip at all.
-   The weapon must stay where it sits in view during the dip.
-3. On the 0.4 m ledge, confirm it is an ordinary step-up with no vault dip.
+2. Watch the camera through each vault, aiming level as you jump. It should
+   settle toward the ledge as the climb starts, hold through the climb, and
+   level out as you step onto the top, never snapping. Each graded ledge
+   should settle differently: a low ledge pulls down at once, the 2.2 m ledge
+   only once your eye clears its top. Look around during a climb: the mouse
+   should move the view as freely as ever, with the pull added on top. A
+   vault cut short (dying mid-climb, or a co-op correction in N2) must still
+   ease the view back level. Turn reduced motion on and confirm no pose at
+   all. The weapon must stay where it sits in view during the climb.
+3. On the 0.4 m ledge, confirm it is an ordinary step-up with no vault pose.
    On the 3.0 m ledge, confirm the jump just hits the wall.
 4. Chains. Each should flow with no hitch between moves.
    - From the 1.0 m ledge's top, jump straight into the 1.5 m ledge beside
@@ -80,7 +84,8 @@ re-derive them.
    not land floating above it, sunk into it, or snapped sideways.
 7. In the pool, mantle out onto the 0.3 m and 0.8 m segments. On the 1.2 m
    segment, fluid-jump and catch the lip. Then swim under the deck lip and
-   confirm nothing mantles while your eye is underwater.
+   confirm nothing mantles while your eye is underwater. A pool exit never
+   pulls the view up toward a ledge above your eye.
 8. Hold fire through a vault. Nothing fires until the vault ends
    (`allowFire: false`), and the held trigger fires on the first tick after
    it ends. Then set `allowFire: true` in `scripts/player.ts` and repeat: you

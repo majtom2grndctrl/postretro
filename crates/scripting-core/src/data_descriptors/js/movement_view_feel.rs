@@ -2,7 +2,7 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
-use rquickjs::object::Filter;
+use rquickjs::{Atom, object::Filter};
 
 pub fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams, DescriptorError> {
     let bob = if obj.contains_key("bob").map_err(js_err)? {
@@ -58,125 +58,97 @@ pub fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams
     } else {
         None
     };
-    let slide = if obj.contains_key("slide").map_err(js_err)? {
-        let raw: JsValue = obj.get("slide").map_err(js_err)?;
-        if raw.is_null() || raw.is_undefined() {
-            None
-        } else {
-            let slide_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
-                reason: "`movement.viewFeel.slide` must be an object".to_string(),
-            })?;
-            Some(slide_view_params_from_js(&slide_obj)?)
+    for moved in ["slide", "vault"] {
+        if obj.contains_key(moved).map_err(js_err)? {
+            let raw: JsValue = obj.get(moved).map_err(js_err)?;
+            if !raw.is_null() && !raw.is_undefined() {
+                return Err(moved_view_block(moved));
+            }
         }
-    } else {
-        None
-    };
-    let vault = if obj.contains_key("vault").map_err(js_err)? {
-        let raw: JsValue = obj.get("vault").map_err(js_err)?;
-        if raw.is_null() || raw.is_undefined() {
-            None
-        } else {
-            // Arrays and functions carry the object tag in QuickJS but are not
-            // a block of fields. Luau refuses the same shapes: a table with
-            // array entries or a non-string key, and any non-table.
-            let not_a_block = raw.is_array() || raw.is_function();
-            let vault_obj = match Object::from_value(raw) {
-                Ok(vault_obj) if !not_a_block => vault_obj,
-                _ => return Err(vault_view_not_an_object()),
-            };
-            Some(vault_view_params_from_js(&vault_obj)?)
-        }
-    } else {
-        None
-    };
+    }
+    let pose = pose_params_from_value(pose_from_js(obj)?)?;
     Ok(ViewFeelParams {
         bob,
         tilt,
         sway,
         impulse,
-        slide,
-        vault,
+        slide: None,
+        vault: None,
+        pose,
     })
 }
 
-/// Parse a `viewFeel.vault` sub-object. Every error names its field as
-/// `movement.viewFeel.vault.<field>`, worded exactly as the Luau
-/// `vault_view_params_from_lua` words it.
-pub fn vault_view_params_from_js<'js>(
-    obj: &Object<'js>,
-) -> Result<VaultViewParams, DescriptorError> {
-    vault_view_params_from_fields(|field| {
-        if !obj.contains_key(field).map_err(js_err)? {
-            return Ok(RawViewNumber::Absent);
-        }
-        let raw: JsValue = obj.get(field).map_err(js_err)?;
-        if raw.is_null() || raw.is_undefined() {
-            return Ok(RawViewNumber::Absent);
-        }
-        Ok(raw
-            .as_int()
-            .map(f64::from)
-            .or_else(|| raw.as_float())
-            .map_or(RawViewNumber::Other, RawViewNumber::Number))
-    })
-}
-
-pub fn slide_view_params_from_js<'js>(
-    obj: &Object<'js>,
-) -> Result<SlideViewParams, DescriptorError> {
-    Ok(SlideViewParams {
-        eye_drop: slide_view_number_from_js(obj, "eyeDrop", 0.0, f64::from(f32::MAX))?,
-        fov_increase: slide_view_number_from_js(
-            obj,
-            "fovIncrease",
-            0.0,
-            f64::from(SlideViewParams::MAX_FOV_INCREASE),
-        )?,
-        enter_rate: slide_view_number_from_js(
-            obj,
-            "enterRate",
-            0.1,
-            f64::from(SlideViewParams::MAX_RATE),
-        )?,
-        exit_rate: slide_view_number_from_js(
-            obj,
-            "exitRate",
-            0.1,
-            f64::from(SlideViewParams::MAX_RATE),
-        )?,
-    })
-}
-
-// Check the authored number before f32 narrowing can round an invalid value
-// onto a valid boundary (or a tiny negative eye drop to zero).
-fn slide_view_number_from_js(
-    obj: &Object<'_>,
-    field: &'static str,
-    min: f64,
-    max: f64,
-) -> Result<f32, DescriptorError> {
-    if !obj.contains_key(field).map_err(js_err)? {
-        return Err(DescriptorError::MissingField { field });
-    }
-    let raw: JsValue = obj.get(field).map_err(js_err)?;
+/// Read `viewFeel.pose` for the shared validator. Only an own `pose` counts;
+/// one `viewFeel` inherits is rejected rather than read.
+fn pose_from_js(view_feel: &Object<'_>) -> Result<Option<PoseValue>, DescriptorError> {
+    let raw: JsValue = view_feel.get("pose").map_err(js_err)?;
     if raw.is_null() || raw.is_undefined() {
-        return Err(DescriptorError::MissingField { field });
+        return Ok(None);
     }
-    let value = raw
-        .as_int()
-        .map(f64::from)
-        .or_else(|| raw.as_float())
-        .ok_or_else(|| DescriptorError::InvalidShape {
-            reason: format!("`movement.viewFeel.slide.{field}` must be a number"),
-        })?;
-    if !value.is_finite() || !(min..=max).contains(&value) {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "`movement.viewFeel.slide.{field}` must be finite in [{min}, {max}], got {value}"
-            ),
-        });
+    if !has_own_string_key_js(view_feel, "pose")? {
+        return Err(inherited_pose_block());
     }
-    Ok(value as f32)
+    pose_value_from_js(raw, POSE_BLOCK_DEPTH)
+}
+
+/// Classify one pose value. `blocks_left` counts the blocks that may still
+/// nest here; an object past it is not read.
+fn pose_value_from_js(
+    raw: JsValue<'_>,
+    blocks_left: u8,
+) -> Result<Option<PoseValue>, DescriptorError> {
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    if let Some(value) = raw.as_number() {
+        return Ok(Some(PoseValue::Number(value)));
+    }
+    // Arrays and functions carry the object tag in QuickJS but are not a
+    // block of fields; Luau refuses a table with array entries likewise.
+    if blocks_left == 0 || raw.is_array() || raw.is_function() {
+        return Ok(Some(PoseValue::Other));
+    }
+    let Some(obj) = raw.into_object() else {
+        return Ok(Some(PoseValue::Other));
+    };
+    // A symbol key is the JS twin of a Luau non-string key.
+    if let Some(key) = obj.own_keys::<Atom>(Filter::new().symbol()).next() {
+        key.map_err(js_err)?;
+        return Ok(Some(PoseValue::Other));
+    }
+    let mut block = PoseBlock::default();
+    for key in obj.own_keys::<String>(Filter::new().string()) {
+        let key = key.map_err(js_err)?;
+        let value: JsValue = obj.get(key.as_str()).map_err(js_err)?;
+        if let Some(value) = pose_value_from_js(value, blocks_left - 1)? {
+            block.fields.insert(key, value);
+        }
+    }
+    // Enumerable, non-nullish prototype entries are what `for…in` and a
+    // property read would see; built-in prototypes hold none.
+    let mut proto = obj.get_prototype();
+    for _ in 0..MAX_INHERITANCE_WALK {
+        let Some(current) = proto else {
+            break;
+        };
+        for key in current.own_keys::<String>(Filter::new().string().enum_only()) {
+            let key = key.map_err(js_err)?;
+            let value: JsValue = current.get(key.as_str()).map_err(js_err)?;
+            if !value.is_null() && !value.is_undefined() {
+                block.inherited.insert(key);
+            }
+        }
+        proto = current.get_prototype();
+    }
+    block.inherits_unnamed = proto.is_some();
+    Ok(Some(PoseValue::Block(block)))
+}
+
+fn has_own_string_key_js(obj: &Object<'_>, wanted: &str) -> Result<bool, DescriptorError> {
+    obj.own_keys::<String>(Filter::new().string())
+        .try_fold(false, |found, key| {
+            Ok(found || key.map_err(js_err)? == wanted)
+        })
 }
 
 pub fn impulse_params_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseParams, DescriptorError> {
@@ -230,10 +202,7 @@ fn impulse_states_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseStates, Descr
 }
 
 fn validate_impulse_state_keys_js(obj: &Object<'_>) -> Result<(), DescriptorError> {
-    if let Some(key) = obj
-        .own_keys::<rquickjs::Atom>(Filter::new().symbol())
-        .next()
-    {
+    if let Some(key) = obj.own_keys::<Atom>(Filter::new().symbol()).next() {
         key.map_err(js_err)?;
         return Err(DescriptorError::InvalidShape {
             reason: "`movement.viewFeel.impulse.states` keys must be strings, got symbol"
@@ -260,7 +229,9 @@ fn optional_impulse_state_from_js<'js>(
     obj: &Object<'js>,
     field: &'static str,
 ) -> Result<Option<ImpulseStateParams>, DescriptorError> {
-    if !has_own_impulse_state_key_js(obj, field)? {
+    // State rows are authored descriptor content only when they are own
+    // properties. Prototype rows must not bypass the closed state vocabulary.
+    if !has_own_string_key_js(obj, field)? {
         return Ok(None);
     }
     let raw: JsValue = obj.get(field).map_err(js_err)?;
@@ -284,15 +255,6 @@ fn optional_impulse_state_from_js<'js>(
         enter: optional_impulse_channels_from_js(&state, "enter", field)?,
         exit: optional_impulse_channels_from_js(&state, "exit", field)?,
     }))
-}
-
-/// State rows are authored descriptor content only when they are own
-/// properties. Prototype rows must not bypass the closed state vocabulary.
-fn has_own_impulse_state_key_js(obj: &Object<'_>, wanted: &str) -> Result<bool, DescriptorError> {
-    obj.own_keys::<String>(Filter::new().string())
-        .try_fold(false, |found, key| {
-            Ok(found || key.map_err(js_err)? == wanted)
-        })
 }
 
 fn optional_impulse_channels_from_js<'js>(

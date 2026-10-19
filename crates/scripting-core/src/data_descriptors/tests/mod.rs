@@ -23,6 +23,7 @@ mod movement_slide;
 mod movement_swim;
 mod movement_vault;
 mod movement_view_feel;
+mod movement_view_pose;
 mod player_events;
 mod reactions;
 mod sounds;

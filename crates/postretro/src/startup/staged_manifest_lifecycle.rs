@@ -501,6 +501,7 @@ mod tests {
                     vault: None,
                 },
             }),
+            pose: None,
         }
     }
 

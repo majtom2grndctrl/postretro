@@ -182,6 +182,7 @@ mod tests {
                     exit_rate: 12.0,
                 }),
                 vault: None,
+                pose: None,
             }),
         }
     }

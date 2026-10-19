@@ -2,9 +2,8 @@
 // See: context/lib/movement.md §1
 
 use postretro_foundation::VaultViewParams;
-use postretro_physics::movement::vault_path_ms;
-
 use super::ViewFeelState;
+pub(crate) use super::pose::VaultViewInput;
 
 /// Shortest ease back to neutral, seconds, after a vault ends with weight
 /// left: an early end, or the end of a vault whose `easeOut` is 0. A longer
@@ -14,38 +13,6 @@ const MIN_RELEASE_S: f32 = 0.1;
 /// Progress drop, as a share of the vault, that reads as a new vault rather
 /// than a reconcile nudging the current one.
 const RESTART_PROGRESS_DROP: f32 = 0.05;
-
-/// The local pawn's vault this frame, as the camera presents it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct VaultViewInput {
-    /// Presented share of the vault, 0..=1.
-    pub(crate) progress: f32,
-    /// How long the climb runs, seconds: `durationMs` rounded up to whole
-    /// ticks, as the movement path runs it.
-    pub(crate) path_s: f32,
-}
-
-impl VaultViewInput {
-    /// The presented progress of a vault whose latest tick left `elapsed_ms`
-    /// with `durationMs` `duration_ms`: the camera shows the pose `alpha` of
-    /// the way from the previous tick to that one, so the vault it shows is
-    /// `(1 − alpha)` of a tick behind it. Progress is over the path's own
-    /// length (`vault_path_ms`), so it reaches 1 as the pawn reaches the top.
-    pub(crate) fn presented(elapsed_ms: f32, duration_ms: f32, tick_s: f32, alpha: f32) -> Self {
-        let step_ms = tick_s * 1000.0;
-        let path_ms = vault_path_ms(duration_ms, step_ms);
-        let presented_ms = elapsed_ms - (1.0 - alpha.clamp(0.0, 1.0)) * step_ms;
-        let progress = if path_ms > 0.0 {
-            (presented_ms / path_ms).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        Self {
-            progress,
-            path_s: path_ms / 1000.0,
-        }
-    }
-}
 
 /// Render-side integrator for the vault pose. Not tick state.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -177,6 +144,7 @@ pub(crate) fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_physics::movement::vault_path_ms;
 
     const DT: f32 = 1.0 / 60.0;
     const DURATION_S: f32 = 0.42;
@@ -195,6 +163,7 @@ mod tests {
         Some(VaultViewInput {
             progress,
             path_s: DURATION_S,
+            landing: None,
         })
     }
 
@@ -405,17 +374,17 @@ mod tests {
         // The entry tick leaves one step elapsed; at alpha 0 the camera still
         // shows the pose before it.
         assert_eq!(
-            VaultViewInput::presented(step_ms, 420.0, tick_s, 0.0).progress,
+            VaultViewInput::presented(step_ms, 420.0, tick_s, 0.0, None).progress,
             0.0
         );
-        let half = VaultViewInput::presented(step_ms, 420.0, tick_s, 0.5).progress;
+        let half = VaultViewInput::presented(step_ms, 420.0, tick_s, 0.5, None).progress;
         assert!((half - 0.5 * step_ms / path_ms).abs() < 1.0e-6);
         assert_eq!(
-            VaultViewInput::presented(path_ms + step_ms, 420.0, tick_s, 1.0).progress,
+            VaultViewInput::presented(path_ms + step_ms, 420.0, tick_s, 1.0, None).progress,
             1.0
         );
         assert_eq!(
-            VaultViewInput::presented(path_ms, 420.0, tick_s, 1.0).path_s,
+            VaultViewInput::presented(path_ms, 420.0, tick_s, 1.0, None).path_s,
             path_ms / 1000.0
         );
     }
@@ -429,14 +398,14 @@ mod tests {
             let tick_s = 1.0 / hz;
             let step_ms = tick_s * 1000.0;
             let ticks = vault_path_ticks(420.0, step_ms);
-            let at_top = VaultViewInput::presented(vault_clock(ticks, step_ms), 420.0, tick_s, 1.0);
+            let at_top = VaultViewInput::presented(vault_clock(ticks, step_ms), 420.0, tick_s, 1.0, None);
             assert_eq!(
                 at_top.progress, 1.0,
                 "{hz} Hz: neutral as the top is reached"
             );
             assert_eq!(envelope(&params(), at_top.progress), 0.0);
             let before =
-                VaultViewInput::presented(vault_clock(ticks - 1, step_ms), 420.0, tick_s, 1.0);
+                VaultViewInput::presented(vault_clock(ticks - 1, step_ms), 420.0, tick_s, 1.0, None);
             assert!(
                 envelope(&params(), before.progress) > 0.0,
                 "{hz} Hz: still easing out a tick before the top"

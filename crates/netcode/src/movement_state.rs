@@ -344,6 +344,7 @@ mod tests {
                 impulse: None,
                 slide: None,
                 vault: None,
+                pose: None,
             }),
         }
     }

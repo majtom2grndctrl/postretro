@@ -725,108 +725,130 @@ the old state's exit address before the new state's entry address, so a
 
 ---
 
-## Slide camera feel
+## Camera pose
 
-`components.movement.viewFeel.slide` authors a sustained camera dip and wider
-horizontal field of view while the player is sliding. Leave it out to preserve
-the existing camera presentation. It is independent of movement slide tuning;
-`movement.slide` still controls whether the player can slide.
-
-```typescript
-viewFeel: {
-  slide: { eyeDrop: 0.15, fovIncrease: 5, enterRate: 18, exitRate: 12 },
-}
-```
-
-```lua
-viewFeel = {
-  slide = { eyeDrop = 0.15, fovIncrease = 5, enterRate = 18, exitRate = 12 },
-}
-```
-
-All four fields are required when the block is present. Wrong types, non-finite
-numbers, and values outside these ranges reject the descriptor at load time.
-
-| Field | Units | Accepted values |
-|---|---|---|
-| `eyeDrop` | metres downward | finite and ≥ 0; 0 disables the dip |
-| `fovIncrease` | horizontal degrees | finite in [0, 90]; 0 disables the increase |
-| `enterRate` | per second | finite in [0.1, 240] |
-| `exitRate` | per second | finite in [0.1, 240] |
-
-Larger response rates approach the target sooner. The dip and FOV increase hold
-throughout the current slide, then ease back to zero on every exit, including
-crouch, stand, jump, and dash. They compose with bob and transition impulses.
-The dip retains at least 0.05 m of eye-to-feet clearance, and the renderer clamps
-the final FOV. These are camera effects: collision and aim stay unchanged.
-
-Both channels follow the player's resolved view-feel scale, including reduced
-motion. `viewFeel.impulse.states.slide` remains a separate entry/exit kick;
-keep its FOV channel small or zero when authoring a sustained FOV increase.
-
----
-
-## Vault camera pose
-
-`components.movement.viewFeel.vault` holds a camera pose while the player
-vaults: the view eases into it as the climb starts, rests there for most of the
-climb, and eases back as the player steps onto the top. Use it to look down at
-the ledge being climbed. Leave it out for no pose. It needs a
-[`movement.vault`](#movementvault) block to have anything to follow.
+`components.movement.viewFeel.pose` holds a camera pose while a movement state
+lasts. Each row names a state and the pose held during it: pitch, roll, a dip
+of the eye, and a change of field of view. The view eases into a row's pose,
+holds it for the state, and eases back on every way out. Leave `pose` out for
+no pose.
 
 ```typescript
 viewFeel: {
-  vault: {
-    pitch: -6, fov: 0, roll: 0, // held offsets while vaulting
-    easeIn: 0.15,               // share of the climb spent easing in (optional)
-    easeOut: 0.2,               // share spent easing back at the end (optional)
+  pose: {
+    // Weighted by the climb's progress; releases on every early end.
+    vault: {
+      ledgeFocus: { strength: 0.7, maxPitch: 30 }, // share toward the ledge line; cap, degrees
+      roll: 10, fov: -30,                          // literal holds; pitch, roll in degrees, + looks up
+      easeIn: 0.33, easeOut: 0.33,                 // shares of the climb, [0, 1], sum <= 1
+    },
+    slide: { eyeDrop: 0.15, fov: 5, enterRate: 18, exitRate: 12 }, // 1/sec, [0.1, 240]
   },
 }
 ```
 
 ```lua
 viewFeel = {
-  vault = { pitch = -6, fov = 0, roll = 0, easeIn = 0.15, easeOut = 0.2 },
+  pose = {
+    vault = {
+      ledgeFocus = { strength = 0.7, maxPitch = 30 },
+      roll = 10, fov = -30,
+      easeIn = 0.33, easeOut = 0.33,
+    },
+    slide = { eyeDrop = 0.15, fov = 5, enterRate = 18, exitRate = 12 },
+  },
 }
 ```
 
-Every field is optional. Wrong types, non-finite numbers, and values outside
-these ranges reject the descriptor at load time, and the error names the field
-(for example `movement.viewFeel.vault.pitch`).
+The rows are `slide` and `vault`. Each is optional, and so is each channel in
+a row; a missing channel is 0. `normal` has no row, since a pose there would be
+a permanent offset rather than a cue for a state. Rows evaluate independently
+and add, so leaving a slide straight into a vault eases one out while the other
+eases in.
 
-| Field | Units | Accepted values |
-|---|---|---|
-| `pitch` | degrees, positive looks up | finite in [-90, 90]; default 0 |
-| `roll` | degrees | finite in [-90, 90]; default 0 |
-| `fov` | horizontal degrees added to the base FOV | finite in [-90, 90]; default 0 |
-| `easeIn` | share of the climb | finite in [0, 1]; default 0.15 |
-| `easeOut` | share of the climb | finite in [0, 1]; default 0.2 |
+The block is strict. A misspelled or unknown key, a row other than `slide` or
+`vault`, a field from another row's timing, or a field inherited through a
+prototype (`Object.create`) or an `__index` metatable rejects the descriptor at
+load time, and the error names the field (for example
+`movement.viewFeel.pose.vault.easeIn`). Wrong types, non-finite numbers and
+values outside these ranges reject it too.
 
-`easeIn` plus `easeOut` must be at most 1. The pose follows the climb itself,
-not a timer. The climb lasts `durationMs` rounded up to whole simulation ticks
-(433 ms for 420 at 60 Hz), and both shares are of that time. The pose is fully
-in after the first `easeIn` of the climb and back to neutral exactly as the
-player reaches the top.
+| Field | Rows | Units | Accepted values |
+|---|---|---|---|
+| `pitch` | every row | degrees, positive looks up | finite in [-90, 90]; default 0 |
+| `roll` | every row | degrees | finite in [-90, 90]; default 0 |
+| `eyeDrop` | every row | metres downward | finite and ≥ 0; default 0 |
+| `fov` | every row | horizontal degrees added to the base FOV | finite in [-90, 90]; default 0 |
+| `enterRate` | `slide`, required | per second | finite in [0.1, 240] |
+| `exitRate` | `slide`, required | per second | finite in [0.1, 240] |
+| `easeIn` | `vault` | share of the climb | finite in [0, 1]; default 0.15 |
+| `easeOut` | `vault` | share of the climb | finite in [0, 1]; default 0.2 |
+| `ledgeFocus` | `vault` | see below | optional; both fields required |
+
+### Slide: timed by rates
+
+The `slide` row approaches its pose at `enterRate` while the player slides and
+returns to neutral at `exitRate` on every exit, including crouch, stand, jump,
+dash and a network correction that ends the slide. Larger rates move sooner.
+`movement.slide` still controls whether the player can slide at all.
+
+### Vault: timed by the climb
+
+The `vault` row follows the climb itself, not a timer. It needs a
+[`movement.vault`](#movementvault) block to have anything to follow. The climb
+lasts `durationMs` rounded up to whole simulation ticks (433 ms for 420 at
+60 Hz), and both shares are of that time. The pose is fully in after the first
+`easeIn` of the climb and back to neutral exactly as the player reaches the
+top. `easeIn` plus `easeOut` must be at most 1.
 
 - **`easeIn` 0** starts the pose at full strength.
 - **`easeOut` 0** holds the pose at full strength to the end of the climb, then
   eases it back over 0.1 s after the player is on the top.
-- **A climb that ends early** eases back from wherever the pose was, over the
-  climb's time × `easeOut` (at least 0.1 s). It ends early when it is blocked,
-  the player dies, or a network correction ends it. A new climb started
-  meanwhile picks up from there.
+- **A climb that ends early** eases back from the pose it last showed, ledge
+  focus included, over the climb's time × `easeOut` (at least 0.1 s). It ends
+  early when it is blocked, the player dies, or a network correction ends it.
+  A new climb started meanwhile blends in from there.
 - **A climb that appears already under way** eases in from neutral over the
   climb's time × `easeIn`, then follows the climb. A network correction can
   start a climb your machine did not predict, and a descriptor reload can
   reset the pose mid-climb.
 
-The pose moves only the camera: aim, the shot line and collision are unchanged,
-and the first-person weapon stays where it is in view. With `allowFire: true`
-the crosshair sits off the shot line by the held pose during the climb, so keep
-the pose small if you allow fire. The view never tips past straight up or
-down. The pose composes with bob, tilt, sway and transition impulses and
-follows the player's resolved view-feel scale; reduced motion removes it.
-`viewFeel.impulse.states.vault` remains a separate kick on the climb's edges.
+### Ledge focus
+
+`ledgeFocus` pulls the view down toward the spot the player will stand on, so
+the camera settles on the ledge during the climb. It measures the line from
+the eye to that spot against the aim the player had as the climb started, plus
+the row's `pitch`. While that starting view is above the line, the pull is
+`strength` of the gap, capped at `maxPitch` degrees; at or below the line,
+there is none. A ledge at or above the eye never pulls the view up.
+
+| Field | Units | Accepted values |
+|---|---|---|
+| `strength` | share of the gap | finite in [0, 1] |
+| `maxPitch` | degrees | finite in (0, 89] |
+
+The pull is added on top of the player's own look and never replaces it: from
+the frame after the climb starts, moving the mouse moves the view one to one,
+and looking down mid-climb adds to the pull. Ledge focus turns pitch only,
+never yaw, so a strafing climb keeps its heading. Low ledges pull at once;
+tall ones pull only once the eye has risen above them. On a moving platform the
+spot moves with the platform. A `pitch` on the row counts toward the starting
+view, so a row that already looks down far enough adds no focus.
+
+### What the pose touches
+
+The pose moves only the rendered camera. Aim, the shot line, collision and the
+first-person weapon's placement are unchanged; `eyeDrop` lowers the eye, the
+weapon and the listener together. With `movement.vault.allowFire: true`, the
+crosshair sits off the shot line by the presented pose during the climb, ledge
+focus included, so keep the vault pose small if you allow fire.
+
+Every row's eye drop together keeps at least 0.05 m of eye-to-feet clearance.
+The view never tips past straight up or down, and the renderer clamps the final
+field of view. The pose composes with bob, tilt, sway and transition impulses
+(`viewFeel.impulse.states.slide` and `.vault` stay separate kicks on the
+edges), and follows the player's resolved view-feel scale; reduced motion
+removes it. A descriptor reload snaps the pose to neutral.
 
 ---
 
@@ -3141,7 +3163,7 @@ How vaulting plays:
 
 Starting and finishing a climb fire the reserved `vault_started` and
 `vault_ended` addresses. `viewFeel.impulse.states.vault` adds a camera kick on
-either edge, and [`viewFeel.vault`](#vault-camera-pose) holds a camera pose
+either edge, and [`viewFeel.pose.vault`](#camera-pose) holds a camera pose
 through the climb. A climb cut short by the player's death ends without
 `vault_ended`, so a reaction that pairs the two (a looping climb sound, say)
 should also stop on `playerDied`. A descriptor hot reload does the same but
@@ -3755,7 +3777,7 @@ resolved value, live during play whether or not a menu is open:
 | `accessibility.reduceMotion` | boolean | Reduce motion. Follows the OS setting until the player chooses. |
 | `accessibility.reduceMotionFollowsSystem` | boolean | True while reduce motion follows the OS. |
 | `accessibility.screenShakeScale` | number, 0–1 | Screen-shake scale. |
-| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, slide, vault pose) scale. |
+| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, camera pose and ledge focus) scale. |
 | `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. Limits `screen.flash` and `screen.vignette`. |
 | `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
 | `accessibility.monoAudio` | boolean | Mono audio. |

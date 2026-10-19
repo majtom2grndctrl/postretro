@@ -878,3 +878,79 @@ fn a_corner_near_both_edges_of_an_acute_corner_joins_the_edge_its_sector_holds()
         assert_eq!(gained, 1, "{:?}", closed[0][0]);
     }
 }
+
+/// A fluid box over x `x0..x1`, z 0..32, bounded on one side by the plane
+/// through (0, 0) and (256, 2), 0.45° off the x axis: north of it (to y 64)
+/// when `north`, else south of it (from y -64).
+fn slanted_box(x0: i32, x1: i32, north: bool) -> String {
+    if north {
+        box_brush([x0, 0, 0], [x1, 64, 32], "water_tex").replace(
+            "( 0 0 0 ) ( 0 0 1 ) ( 1 0 0 )",
+            "( 0 0 0 ) ( 0 0 1 ) ( 256 2 0 )",
+        )
+    } else {
+        box_brush([x0, -64, 0], [x1, 0, 32], "water_tex").replace(
+            "( 0 0 0 ) ( 1 0 0 ) ( 0 0 1 )",
+            "( 0 0 0 ) ( 256 2 0 ) ( 0 0 1 )",
+        )
+    }
+}
+
+// End to end through the renderer's packing (the grid's accepted limit
+// before closure). Two volumes' tops meet along an edge 0.45° off a lattice
+// plane, and the north volume's unequal siblings leave a T-vertex mid-edge,
+// 0.1 mm from that plane. Before closure the south top lacks the T-vertex,
+// so the plane crosses its edge 13 mm away and the two sides disagree; after
+// it, both carry identical vertices along the edge.
+#[test]
+fn faces_meeting_at_a_shallow_angle_to_a_lattice_plane_share_their_gridded_edge() {
+    use postretro_render_cpu::fluid_surface::{FluidGridLattice, pack_fluid_surfaces};
+
+    let volumes = [
+        fluid(&[slanted_box(0, 256, false)]),
+        fluid(&[slanted_box(0, 128, true), slanted_box(128, 256, true)]),
+    ];
+    let t_vertex = engine([128.0, 1.0, 32.0]);
+    let (start, end) = (engine([0.0, 0.0, 32.0]), engine([256.0, 2.0, 32.0]));
+    // Planes 8 m apart, one 0.1 mm from the T-vertex on x.
+    let lattice = FluidGridLattice::new([(t_vertex.x + 0.1 * MILLI) as f32, 0.0, 0.0], [16.0; 3])
+        .expect("a usable lattice");
+    // Each top's packed vertices on the shared edge, as f32 bits.
+    let edge_vertices = |section: &EnvironmentVolumesSection| {
+        let mesh = pack_fluid_surfaces(&section.volumes, &[], 1, Some(&lattice));
+        assert!(mesh.grid.is_some());
+        let mut index = 0;
+        let mut per_volume = Vec::new();
+        for record in &section.volumes {
+            let mut on_edge = std::collections::BTreeSet::new();
+            for face in &record.surface_faces {
+                let top = face
+                    .vertices
+                    .iter()
+                    .all(|v| (f64::from(v.position[1]) - t_vertex.y).abs() < 1e-6);
+                if let Some(map) = mesh.face_drift_maps[index].filter(|_| top) {
+                    let range =
+                        map.vertex_start as usize..(map.vertex_start + map.vertex_count) as usize;
+                    for vertex in &mesh.vertices[range] {
+                        let point = DVec3::from(vertex.position.map(f64::from));
+                        if segment_distance(start, end, point) <= 2.0 * TOLERANCE {
+                            on_edge.insert(vertex.position.map(f32::to_bits));
+                        }
+                    }
+                }
+                index += 1;
+            }
+            per_volume.push(on_edge);
+        }
+        per_volume
+    };
+    let before = edge_vertices(&compile_unclosed(&distant_world(), &volumes));
+    assert_ne!(
+        before[0], before[1],
+        "today's open T-junction gives the sides different crossings"
+    );
+    let (_, after) = compile(&distant_world(), &volumes);
+    let after = edge_vertices(&after);
+    assert!(after[0].contains(&t_vertex.as_vec3().to_array().map(f32::to_bits)));
+    assert_eq!(after[0], after[1]);
+}

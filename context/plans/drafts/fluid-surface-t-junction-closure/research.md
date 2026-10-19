@@ -24,6 +24,20 @@ Read at `64d069e19` on the `fluid-base-pass-cost` branch; rechecked at `8bb02a18
   - `adjacent_fluid_entities_each_draw_their_shared_face` counts faces, so closure does not change it.
   - No integration test compares id-52 bytes across builds. `environment_volumes_compile.rs` pins every *other* section byte-identical.
 
+## First slice
+
+Measured at `0ca951403` with a level-wide checker using closure's own distance test on encoded positions, from a build attempt parked before review. An open seam is a face vertex within 0.1 mm of another fluid face's boundary that is not one of its vertices bit for bit.
+
+| Map | Faces | Open before closure | Near a corner | Open after | Welded | Inserted | Largest weld move |
+|---|---|---|---|---|---|---|---|
+| e24-environment-test | 27 | 0 | 0 | 0 | 0 | 0 | — |
+| stress-env-volumes | 5,063 | 6,173 | 2,286 | 0 | 832 | 2,389 | 0.034 mm |
+
+- **e24 is already closed**, even with the push-cut closure removed, so it cannot fail before closure. It proves only that closure moves nothing there.
+- **The weld fixes rounding, not authoring.** Its largest move on the stress map is a third of the tolerance.
+- **P18's insert lands 0.18 mm from the face's boundary before closure**, within 0.1 mm of the edge as the first insert bent it. Prior art inserts the neighbour's own point the same way, so the move bound covers weld moves, and inserts are bounded against the bent edge.
+- **The runtime drift resolve's f32 vertex mean fails P13**, as reported by the parked attempt's test and not re-run: a piece clear of a push drifted at 3 m/s once thousands of inserts pulled its mean onto the push boundary.
+
 ## The grid case
 
 `fluid-base-pass-cost` landed with its own pin P13 as an owner-accepted limit (plan of record A3; `rendering_pipeline.md` §7.3a, "Accepted limit"): an edge at a shallow angle θ to a lattice plane passing within tolerance of an open T-vertex. The long side gains a crossing up to (tolerance + T offset)/sin θ from T. A probe measured this at 0.4 m. The crack lies on the open edge's line, so it is no wider than the T-junction itself. The pin is `an_open_t_junction_keeps_its_vertex_and_the_crossings_agree_within_tolerance` (`grid_tests.rs`).

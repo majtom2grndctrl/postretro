@@ -38,15 +38,14 @@ Developer-raised, from the `fluid-base-pass-cost` build. Its grid cuts a shared 
   - a sliver triangle whose 0.05 mm edge lies on a neighbour's edge, once with one end at the neighbour's corner (P17);
   - a corner that an insert's bend brings within 0.1 mm of a neighbour's edge (P18);
   - a weld that moves the endpoint of an edge another face's corner lies on (P20);
-  - a zero-face volume between two fluid volumes that share an open T-junction, and a level with a single fluid face, which closure leaves as it was and is exempt from failing before (P15);
-  - e24.
-- [ ] Holds on campaign-test, reflection-probes-test, vault-test and stress-env-volumes (`#[ignore]` suite).
+  - a zero-face volume between two fluid volumes that share an open T-junction, and a level with a single fluid face, which closure leaves as it was and is exempt from failing before (P15).
+- [ ] Holds on e24, and in the `#[ignore]` suite on campaign-test, reflection-probes-test, vault-test and stress-env-volumes.
 - [ ] End to end through the renderer's packing: faces compiled from a fixture with today's open T-junction, at a shallow angle to a lattice plane within tolerance of the T-vertex, carry identical vertices along the shared edge on a lattice. Today the same fixture fails that.
 
 **Nothing else moves.** Measured on encoded positions; each per-face row holds on every fixture and map the shared-boundary rows run on.
 - [ ] Closure changes no face count, face order or texture index, compared with the same build's faces before closure (P5). Every vertex's UV is its own side's projection at its position.
 - [ ] A vertex 0.15 mm from a neighbour's corner, or from a neighbour's edge, is left as it was, and the neighbour gains no vertex (P9); so is one just under 0.1 mm from a neighbour's edge in f64 that f32 encoding puts just over (P19).
-- [ ] Every vertex after closure lies within 0.1 mm of its own face's boundary before closure, and every corner before closure has a vertex after it within 0.1 mm, including along a weld chain (P10, P21).
+- [ ] Every vertex the weld moves stays within 0.1 mm of where it was, and every corner before closure has a vertex after it within 0.1 mm, including along a weld chain (P10, P21). An inserted vertex lies within 0.1 mm of the edge it joins as closure leaves it, which an earlier insert may have bent (P18).
 - [ ] No level-format, loader, wire or digest code changes, and a PRL built earlier still loads (P7). Proved by a diff gate: no change under `crates/level-format`, `crates/level-loader` or the level content digest, against `main`.
 - [ ] Every face keeps at least three distinct vertices and a normal, and its area changes by at most 0.1 mm × its perimeter, compared with the same build's faces before closure (P8, P17). P14's 6 mm square stays up-facing; its ~1 mm² piece may tilt off it.
 - [ ] A level whose fluid faces have no T-junction or near-coincident vertex keeps identical id-52 bytes, against bytes captured from the compiler before this change (regression guard).
@@ -61,7 +60,7 @@ Developer-raised, from the `fluid-base-pass-cost` build. Its grid cuts a shared 
 ### Manual
 - [ ] Bake cost, cold, before and after: the fluid-surface log line and the whole build on stress-env-volumes and campaign-test, reported.
 - [ ] Fluid install time on stress-env-volumes, before and after, reported.
-- [ ] Owner look, in engine: e24's sunk pools and a cross-volume seam at grazing angles, above and below. No hairline sparkle at burial edges or seams, compared side by side with today's build.
+- [ ] Owner look, in engine: stress-env-volumes' burial edges and cross-volume seams at grazing angles, above and below. No hairline sparkle, compared side by side with today's build.
 
 ## Path
 - **Seams.**
@@ -73,7 +72,7 @@ Developer-raised, from the `fluid-base-pass-cost` build. Its grid cuts a shared 
 - **Consumers to bound.** `FaceMap::fit` (`render-cpu/src/fluid_surface/drift.rs`) is cubic over a face; `grid::triangulate_convex` is quadratic per part. The runtime drift resolve takes the vertex mean in f32, which inserts keep inside the piece only in exact arithmetic (P13).
 - **Tests.** `surface_tests.rs`'s `t_junctions` helper is per record; make it level-wide. `level-compiler` already dev-depends on `render-cpu`, which the end-to-end row needs.
 - **Shape and rival.** Chosen: level-wide weld-and-insert in the compiler on the final pieces. Rival: weld at fluid install before the grid cut. It needs no rebake, but costs every load, works on f32, splits closure between two owners, and leaves ungridded levels cracked if gated on the grid (`research.md` §Rivals).
-- **First slice.** A level-wide detector, then count today's open T-junctions and non-identical shared corners on e24 and stress-env-volumes, and the largest distance a weld would move a vertex. The counts size the index and the bake work; the weld is owed regardless, since the grid compares shared edges exactly. Capture today's build at a known open T-junction on e24 at a grazing angle, as the side-by-side baseline: the cracks are predicted from the geometry, not yet seen in engine.
+- **First slice.** A level-wide detector, then count today's open T-junctions and non-identical shared corners on e24 and stress-env-volumes, and the largest distance a weld would move a vertex. The counts size the index and the bake work; the weld is owed regardless, since the grid compares shared edges exactly. Capture today's build at a known open seam on stress-env-volumes at a grazing angle, as the side-by-side baseline: the seams are counted (`research.md` §First slice), not yet seen in engine. e24 has none.
 - **Large files.** `surface_tests.rs` is past 800 lines; split it before extending, behaviour-preserving, in its own commit.
 - **With the change.** `build_pipeline.md` §Fluid surfaces loses the push-cut gate and the byte-identity sentence; `rendering_pipeline.md` §7.3a's accepted limit narrows as its Decision states.
 

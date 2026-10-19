@@ -124,7 +124,7 @@ Host tick order (`entity_model.md` §5): mover tick → player movement → trig
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
 | Q1 | auto-close timer expires on a door a pawn pins | auto-close sets the closing course and clears `blocked` → blocking pass previews the new course | a course into the pin yields again that tick; a course away from it moves; never into the pawn |
-| Q2 | `start` or `reverse` trigger command on a held, pinned mover | trigger tick clears `blocked` (`apply_mover_command`) → blocking pass previews the commanded course | a course into the pin yields again that tick (the blocked event may re-fire, as a stop hold's does today); a course away from it moves; never into the pin |
+| Q2 | `start` or `reverse` trigger command on a held, pinned mover | trigger tick clears `blocked` (`apply_mover_command`) → blocking pass previews the commanded course | a course into the pin yields again that tick, silently (the mover was held at the last test, so no new onset); a course away from it moves; never into the pin |
 | Q3 | pinned pawn despawns or its client disconnects while the mover holds | despawn → next blocking pass finds no pinned body | the hold releases; the mover moves on the following tick |
 | Q4 | `setBlockPolicy` while held: displace→crush, or crush→displace mid-pin | trigger-stage command → pass; or frame-end drain command → host re-test before the next mover tick (Q7) | to crush: resumes the next tick and crushes; to displace: yields the next tick |
 | Q5 | preview pins on tick N | pass on N sets hold or reversal → mover tick N+1 → carry on N+1 | hold: zero delta, so the rider ends N+1 where it ended N; reversal: the carry moves the rider away from the pin |

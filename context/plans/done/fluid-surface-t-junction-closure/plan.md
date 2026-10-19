@@ -1,7 +1,7 @@
 # fluid-surface-t-junction-closure — plan of record
 
 mode: compact
-status: active (results reported; awaiting owner look and "land the plane")
+status: done (landed 2026-10-19)
 read at: 0f069d775
 
 ## Corrections
@@ -43,7 +43,7 @@ Rows in Acceptance order.
 | 16 piece clear of a push ≥ 100 m out with thousands of inserts resolves the same push (P13) | `a_piece_clear_of_a_push_drifts_as_without_thousands_of_inserts_on_its_boundary_edge` | achievable as stated | pass |
 | 17 bake cost cold before/after, stress-env-volumes and campaign-test | dev-profile `prl-build --no-cache`, pre-change binary vs branch, same machine, sequential | manual | reported: fluid stage 12.1 → 87.2 ms and whole build 1505 → 1561 s on stress-env-volumes (the whole-build gap is lightmap/SH noise; the owner was browsing); campaign-test 0.1 → 0.1 ms and 20.3 → 20.3 s |
 | 18 fluid install time before/after on stress-env-volumes | temporary timing test, median of 21 `pack_fluid_surfaces` runs on each build's id-52 and SH lattice, main's render-cpu vs the branch's | manual | reported: gridded 53.3 ms (main, pre-change faces) → 66.2 ms (branch, closed faces); ungridded 2.7 → 9.0 ms. A first measurement found the new clipper's bookkeeping alone at 127 ms; a convex-ring fast path brought it back |
-| 19 owner look in engine | owner | manual | outstanding |
+| 19 owner look in engine | owner | manual | pass (owner, 2026-10-19): branch engine on the pre-closure PRL and the branch build of stress-env-volumes; no visible crack in either, so the closure removes a risk the owner had not seen surface |
 
 ## Follow-ups
 - Ear-clip containment on acute tips with sagging dented runs can still exceed n log n (about 2× in a sweep; `ear_clip.rs` doc states it). The established fix is a spatial hash over live reflex vertices keyed by ear, as earcut's z-order hashing, or a monotone sweep; either replaces the beside-first class's fan.

@@ -4,7 +4,7 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use glam::DVec3;
 
@@ -50,10 +50,10 @@ struct Vertex {
 /// [`SEAM_TOLERANCE`] of each other take one position, one of their own, so no
 /// vertex moves further than the tolerance and a chain of near points breaks
 /// rather than drifting. Two vertices of one face never weld together, so a
-/// face keeps its corners distinct. Then the inserts: each face gains, in
-/// order along each edge, every other face's welded vertex within the
-/// tolerance of that edge's interior, repeated on the edges an insert bends
-/// until none is left to add. Faces are neither added, dropped nor reordered.
+/// face keeps its corners distinct. Then the inserts: each face gains every
+/// other face's welded vertex within the tolerance of its boundary, in order
+/// round it, repeated on the edges an insert bends until none is left to add.
+/// Faces are neither added, dropped nor reordered.
 pub(super) fn close_seams(volumes: &mut [Vec<SurfacePiece<'_>>]) -> ClosureStats {
     let mut stats = ClosureStats::default();
     let mut faces: Vec<Vec<Vertex>> = volumes
@@ -81,35 +81,12 @@ pub(super) fn close_seams(volumes: &mut [Vec<SurfacePiece<'_>>]) -> ClosureStats
     stats
 }
 
-/// Where `point` lies along segment `start`→`end` (0 at `start`, 1 at `end`)
-/// when it is within [`SEAM_TOLERANCE`] of the segment's interior.
-pub(super) fn along_edge(start: DVec3, end: DVec3, point: DVec3) -> Option<f64> {
-    let direction = end - start;
-    let length_squared = direction.length_squared();
-    if length_squared == 0.0 {
-        return None;
-    }
-    let along = (point - start).dot(direction) / length_squared;
-    (along > 0.0 && along < 1.0 && point.distance(start + direction * along) <= SEAM_TOLERANCE)
-        .then_some(along)
-}
-
-/// Distance from `point` to the boundary of `polygon`, meters.
+/// Distance from `point` to the boundary of `polygon`, meters: closure's own
+/// test, for the checks that read its output.
 #[cfg(test)]
 pub(super) fn boundary_distance(polygon: &[DVec3], point: DVec3) -> f64 {
     (0..polygon.len())
-        .map(|edge| {
-            let start = polygon[edge];
-            let end = polygon[(edge + 1) % polygon.len()];
-            let direction = end - start;
-            let length_squared = direction.length_squared();
-            let along = if length_squared == 0.0 {
-                0.0
-            } else {
-                ((point - start).dot(direction) / length_squared).clamp(0.0, 1.0)
-            };
-            point.distance(start + direction * along)
-        })
+        .map(|edge| segment_distance(polygon[edge], polygon[(edge + 1) % polygon.len()], point))
         .fold(f64::INFINITY, f64::min)
 }
 
@@ -199,8 +176,8 @@ fn weld(faces: &mut [Vec<Vertex>], stats: &mut ClosureStats) {
     }
 }
 
-/// Insert on every face edge each other face's vertex lying on it, until no
-/// face gains one.
+/// Insert in every face each other face's vertex within the tolerance of its
+/// boundary, until no face gains one.
 fn insert(faces: &mut [Vec<Vertex>], stats: &mut ClosureStats) {
     let mut points: Vec<DVec3> = faces.iter().flatten().map(|vertex| vertex.key).collect();
     points.sort_by(|a, b| point_order(*a, *b));
@@ -209,48 +186,140 @@ fn insert(faces: &mut [Vec<Vertex>], stats: &mut ClosureStats) {
 
     let mut pending: Vec<usize> = (0..faces.len()).collect();
     let mut candidates = Vec::new();
-    let mut inserts: Vec<(f64, DVec3)> = Vec::new();
     while !pending.is_empty() {
         let mut changed = Vec::new();
         for &face in &pending {
-            let ring = &faces[face];
-            // The face's own positions, and every one it gains, so a point
-            // near a corner joins only the first edge holding it.
-            let mut own: HashSet<[u64; 3]> = ring.iter().map(|vertex| bits(vertex.key)).collect();
-            let mut closed = Vec::with_capacity(ring.len());
-            for (edge, &start) in ring.iter().enumerate() {
-                let end = ring[(edge + 1) % ring.len()];
-                closed.push(start);
-                tree.near_segment(start.key, end.key, &mut candidates);
-                inserts.clear();
-                for &candidate in &candidates {
-                    stats.insert_tests += 1;
-                    let point = points[candidate];
-                    if own.contains(&bits(point)) {
-                        continue;
-                    }
-                    if let Some(along) = along_edge(start.key, end.key, point) {
-                        inserts.push((along, point));
-                    }
-                }
-                inserts.sort_by(|a, b| a.0.total_cmp(&b.0).then(point_order(a.1, b.1)));
-                for &(_, point) in &inserts {
-                    if own.insert(bits(point)) {
-                        closed.push(Vertex {
-                            key: point,
-                            out: point,
-                        });
-                    }
-                }
-            }
-            if closed.len() > ring.len() {
-                stats.inserted += closed.len() - ring.len();
-                faces[face] = closed;
+            if let Some(ring) =
+                gain_boundary_points(&faces[face], &points, &tree, &mut candidates, stats)
+            {
+                faces[face] = ring;
                 changed.push(face);
             }
         }
         pending = changed;
     }
+}
+
+/// `ring` with every point within the tolerance of its boundary that is not
+/// already one of its vertices, or `None` when it gains none.
+///
+/// A point near two edges, as beside an acute corner or on a sliver, joins
+/// the one whose sector about the face's area centroid holds it, so the
+/// boundary keeps turning one way round that centroid; failing that, the
+/// nearer. Within an edge, points take their order round the centroid.
+fn gain_boundary_points(
+    ring: &[Vertex],
+    points: &[DVec3],
+    tree: &PointTree<'_>,
+    candidates: &mut Vec<usize>,
+    stats: &mut ClosureStats,
+) -> Option<Vec<Vertex>> {
+    let own: HashSet<[u64; 3]> = ring.iter().map(|vertex| bits(vertex.key)).collect();
+    // Each gained point with every edge it lies near, as (edge, distance).
+    let mut near: BTreeMap<usize, Vec<(usize, f64)>> = BTreeMap::new();
+    for edge in 0..ring.len() {
+        let (start, end) = (ring[edge].key, ring[(edge + 1) % ring.len()].key);
+        tree.near_segment(start, end, candidates);
+        for &candidate in candidates.iter() {
+            stats.insert_tests += 1;
+            let point = points[candidate];
+            if own.contains(&bits(point)) {
+                continue;
+            }
+            let distance = segment_distance(start, end, point);
+            if distance <= SEAM_TOLERANCE {
+                near.entry(candidate).or_default().push((edge, distance));
+            }
+        }
+    }
+    if near.is_empty() {
+        return None;
+    }
+
+    let keys: Vec<DVec3> = ring.iter().map(|vertex| vertex.key).collect();
+    let (centre, normal) = centroid_and_normal(&keys);
+    let angle = |point: DVec3, from: DVec3| {
+        let (a, b) = (from - centre, point - centre);
+        a.cross(b).dot(normal).atan2(a.dot(b) * normal.length())
+    };
+    // (edge, angle past the edge's start, point)
+    let mut inserts: Vec<(usize, f64, DVec3)> = near
+        .into_iter()
+        .map(|(candidate, edges)| {
+            let point = points[candidate];
+            let in_sector = |&(edge, _): &(usize, f64)| {
+                let (start, end) = (keys[edge], keys[(edge + 1) % keys.len()]);
+                angle(point, start) >= 0.0 && angle(end, point) > 0.0
+            };
+            let (edge, _) = edges
+                .iter()
+                .copied()
+                .find(in_sector)
+                .or_else(|| {
+                    edges
+                        .iter()
+                        .copied()
+                        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+                })
+                .expect("a gained point lies near some edge");
+            (edge, angle(point, keys[edge]), point)
+        })
+        .collect();
+    inserts.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.total_cmp(&b.1))
+            .then(point_order(a.2, b.2))
+    });
+    stats.inserted += inserts.len();
+
+    let mut inserts = inserts.into_iter().peekable();
+    let mut gained = Vec::with_capacity(ring.len() + inserts.len());
+    for (edge, &corner) in ring.iter().enumerate() {
+        gained.push(corner);
+        while let Some((_, _, point)) = inserts.next_if(|insert| insert.0 == edge) {
+            gained.push(Vertex {
+                key: point,
+                out: point,
+            });
+        }
+    }
+    Some(gained)
+}
+
+/// Distance from `point` to the closed segment `start`→`end`, meters.
+pub(super) fn segment_distance(start: DVec3, end: DVec3, point: DVec3) -> f64 {
+    let direction = end - start;
+    let length_squared = direction.length_squared();
+    let along = if length_squared == 0.0 {
+        0.0
+    } else {
+        ((point - start).dot(direction) / length_squared).clamp(0.0, 1.0)
+    };
+    point.distance(start + direction * along)
+}
+
+/// The area centroid of `polygon` and its Newell normal, which points the way
+/// the ring winds counter-clockwise round. Positions are taken relative to the
+/// first vertex, so precision holds far from the origin. A polygon with no
+/// area takes its vertex mean.
+pub(super) fn centroid_and_normal(polygon: &[DVec3]) -> (DVec3, DVec3) {
+    let first = polygon[0];
+    let mut normal = DVec3::ZERO;
+    for (i, &a) in polygon.iter().enumerate() {
+        normal += (a - first).cross(polygon[(i + 1) % polygon.len()] - first);
+    }
+    let (mut weighted, mut weight) = (DVec3::ZERO, 0.0);
+    for pair in polygon[1..].windows(2) {
+        let (a, b) = (pair[0] - first, pair[1] - first);
+        let twice_area = a.cross(b).dot(normal);
+        weighted += twice_area * (a + b) / 3.0;
+        weight += twice_area;
+    }
+    if weight > 0.0 && weighted.is_finite() {
+        return (first + weighted / weight, normal);
+    }
+    let sum: DVec3 = polygon.iter().map(|&point| point - first).sum();
+    (first + sum / polygon.len() as f64, normal)
 }
 
 /// A static bounding-volume tree over points, answering which points may lie

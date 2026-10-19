@@ -5,7 +5,9 @@
 //! no face degenerates. Sub-millimetre cases are built as exact polygons.
 
 use super::*;
-use crate::environment_volumes::closure::{ClosureStats, close_seams, encoded};
+use crate::environment_volumes::closure::{
+    ClosureStats, centroid_and_normal, close_seams, encoded, segment_distance,
+};
 use crate::environment_volumes::surface::SurfacePiece;
 use crate::map_data::{BrushSide, TextureProjection};
 use crate::reflection_probes::placement::FaceGeometry;
@@ -59,11 +61,9 @@ fn projected_uv(face: &EnvironmentSurfaceFace, position: DVec3) -> [f64; 2] {
     })
 }
 
-/// Closure kept every record's face count, order and texture, every face's
-/// UVs on its own side's projection, its area within the tolerance times its
-/// perimeter, three distinct vertices and a normal. Every corner before
-/// closure has a vertex after it within the tolerance, and every vertex after
-/// it lies within `reach` of the face's boundary before it.
+/// Closure kept every record's face count, order and texture, and every
+/// face's UVs on its own side's projection; each face keeps its shape
+/// ([`assert_face_kept`]).
 #[track_caller]
 fn assert_nothing_else_moves(
     before: &EnvironmentVolumesSection,
@@ -79,7 +79,7 @@ fn assert_nothing_else_moves(
         );
         for (old, new) in was.surface_faces.iter().zip(&now.surface_faces) {
             assert_eq!(old.texture_index, new.texture_index);
-            let (old_points, new_points) = (positions(old), positions(new));
+            let new_points = positions(new);
             for (point, vertex) in new_points.iter().zip(&new.vertices) {
                 let want = projected_uv(old, *point);
                 let got = vertex.uv.map(f64::from);
@@ -87,39 +87,133 @@ fn assert_nothing_else_moves(
                     (got[0] - want[0]).abs() < 1e-2 && (got[1] - want[1]).abs() < 1e-2,
                     "UV {got:?} is not its side's projection {want:?} at {point}"
                 );
-                assert!(
-                    boundary_distance(&old_points, *point) <= reach,
-                    "{point} lies off the face's boundary before closure"
-                );
             }
-            for corner in &old_points {
-                assert!(
-                    new_points.iter().any(|p| p.distance(*corner) <= TOLERANCE),
-                    "corner {corner} moved past the tolerance"
-                );
-            }
-            let mut distinct = new_points.clone();
-            distinct.sort_by(|a, b| {
-                a.x.total_cmp(&b.x)
-                    .then(a.y.total_cmp(&b.y))
-                    .then(a.z.total_cmp(&b.z))
-            });
-            distinct.dedup();
-            assert!(distinct.len() >= 3, "a face collapsed: {new_points:?}");
-            let geometry = FaceGeometry::from_polygon(&new_points).expect("a face keeps a normal");
-            let old_geometry =
-                FaceGeometry::from_polygon(&old_points).expect("the fixture face has a normal");
-            let perimeter: f64 = (0..old_points.len())
-                .map(|i| old_points[i].distance(old_points[(i + 1) % old_points.len()]))
-                .sum();
-            assert!(
-                (geometry.area - old_geometry.area).abs() <= TOLERANCE * perimeter,
-                "area {} moved from {}",
-                geometry.area,
-                old_geometry.area
-            );
+            assert_face_kept(&positions(old), &new_points, reach);
         }
     }
+}
+
+/// One face before and after closure, as encoded: every vertex after lies
+/// within `reach` of the boundary before; every corner before has a vertex
+/// after within the tolerance; every vertex closure added lay within the
+/// tolerance of the edge it joined ([`assert_added_vertices_peel`]); the face
+/// keeps three
+/// distinct vertices, a normal, its area within the tolerance times its
+/// perimeter, and a boundary that runs in order round its area centroid.
+#[track_caller]
+fn assert_face_kept(was: &[DVec3], now: &[DVec3], reach: f64) {
+    for point in now {
+        assert!(
+            boundary_distance(was, *point) <= reach,
+            "{point} lies {} m off its face's boundary before closure",
+            boundary_distance(was, *point)
+        );
+    }
+    for corner in was {
+        assert!(
+            now.iter().any(|p| p.distance(*corner) <= TOLERANCE),
+            "corner {corner} moved past the tolerance"
+        );
+    }
+    assert_added_vertices_peel(was, now);
+    let mut distinct: Vec<[u64; 3]> = now.iter().map(|p| p.to_array().map(f64::to_bits)).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert!(distinct.len() >= 3, "a face collapsed: {now:?}");
+    let geometry = FaceGeometry::from_polygon(now).expect("a face keeps a normal");
+    let old_geometry = FaceGeometry::from_polygon(was).expect("the fixture face has a normal");
+    let perimeter: f64 = (0..was.len())
+        .map(|i| was[i].distance(was[(i + 1) % was.len()]))
+        .sum();
+    assert!(
+        (geometry.area - old_geometry.area).abs() <= TOLERANCE * perimeter,
+        "area {} moved from {}",
+        geometry.area,
+        old_geometry.area
+    );
+    assert_runs_in_order(now);
+}
+
+/// The vertices closure added to `now` (those not within the tolerance of a
+/// corner of `was`) peel back off: one at a time where it lies within the
+/// tolerance of the segment its ring neighbours span, or as a run of added
+/// vertices within the tolerance of the segment the kept vertices either side
+/// span, as inserts judged together against one edge are. So, in some
+/// insertion order, each added vertex lay within the tolerance of the edge it
+/// joined, as closure then left that edge (P18, P22).
+#[track_caller]
+fn assert_added_vertices_peel(was: &[DVec3], now: &[DVec3]) {
+    let mut ring: Vec<(DVec3, bool)> = now
+        .iter()
+        .map(|&point| {
+            let kept = was.iter().any(|corner| corner.distance(point) <= TOLERANCE);
+            (point, !kept)
+        })
+        .collect();
+    while ring.iter().any(|&(_, added)| added) {
+        let count = ring.len();
+        let single = (0..count).find(|&i| {
+            ring[i].1
+                && segment_distance(
+                    ring[(i + count - 1) % count].0,
+                    ring[(i + 1) % count].0,
+                    ring[i].0,
+                ) <= TOLERANCE
+        });
+        if let Some(i) = single {
+            ring.remove(i);
+            continue;
+        }
+        // Runs of added vertices between kept ones, each judged as a block.
+        let start = ring
+            .iter()
+            .position(|&(_, added)| !added)
+            .expect("closure keeps a vertex near each corner");
+        ring.rotate_left(start);
+        let mut peeled = false;
+        let mut i = 0;
+        while i < ring.len() {
+            let end = (i + 1..ring.len())
+                .find(|&j| !ring[j].1)
+                .unwrap_or(ring.len());
+            let (from, to) = (ring[i].0, ring[end % ring.len()].0);
+            if end > i + 1
+                && ring[i + 1..end]
+                    .iter()
+                    .all(|&(point, _)| segment_distance(from, to, point) <= TOLERANCE)
+            {
+                ring.drain(i + 1..end);
+                peeled = true;
+                break;
+            }
+            i = end;
+        }
+        assert!(
+            peeled,
+            "added vertices lie off every edge they could have joined: {now:?}"
+        );
+    }
+}
+
+/// The angle about `polygon`'s area centroid strictly increases from each
+/// vertex to the next, once round.
+#[track_caller]
+fn assert_runs_in_order(polygon: &[DVec3]) {
+    let (centre, normal) = centroid_and_normal(polygon);
+    let mut total = 0.0;
+    for (i, &point) in polygon.iter().enumerate() {
+        let (a, b) = (point - centre, polygon[(i + 1) % polygon.len()] - centre);
+        let turn = a.cross(b).dot(normal).atan2(a.dot(b) * normal.length());
+        assert!(
+            turn > 0.0,
+            "the boundary turns back at {point}: {polygon:?}"
+        );
+        total += turn;
+    }
+    assert!(
+        (total - std::f64::consts::TAU).abs() < 1e-9,
+        "the boundary winds {total} rad round its centroid"
+    );
 }
 
 // --- Map fixtures --------------------------------------------------------
@@ -282,6 +376,14 @@ fn a_level_with_one_fluid_face_or_none_is_left_as_it_was() {
     let before = compile_unclosed(&distant_world(), std::slice::from_ref(&wind));
     let (_, after) = compile(&distant_world(), &[wind]);
     assert_eq!(before.to_bytes(), after.to_bytes());
+
+    // The only fluid volume lies wholly inside the world, so it draws nothing.
+    let rock = box_brush([-128, -128, -128], [128, 128, 128], "world_tex");
+    let buried = fluid(&[box_brush([-32, -32, -32], [32, 32, 32], "water_tex")]);
+    let before = compile_unclosed(std::slice::from_ref(&rock), std::slice::from_ref(&buried));
+    let (_, after) = compile(&[rock], &[buried]);
+    assert!(after.volumes[0].surface_faces.is_empty());
+    assert_eq!(before.to_bytes(), after.to_bytes());
 }
 
 // The e24 fixture's seams are already closed before closure runs; closure
@@ -426,9 +528,8 @@ fn triangle(x0: f64, z0: f64, x1: f64, z1: f64) -> Vec<DVec3> {
     ]
 }
 
-/// Asserts the polygons leave a seam open before closure, none after, and no
-/// vertex lies further than `reach` from its face's boundary before closure;
-/// returns the closed polygons.
+/// Asserts the polygons leave a seam open before closure, none after, and
+/// each keeps its shape ([`assert_face_kept`]); returns the closed polygons.
 #[track_caller]
 fn assert_polygons_close(volumes: &[Vec<Vec<DVec3>>], reach: f64) -> Vec<Vec<Vec<DVec3>>> {
     assert!(
@@ -442,28 +543,8 @@ fn assert_polygons_close(volumes: &[Vec<Vec<DVec3>>], reach: f64) -> Vec<Vec<Vec
         "closure leaves seams open"
     );
     for (was, now) in volumes.iter().flatten().zip(closed.iter().flatten()) {
-        for point in now {
-            assert!(
-                boundary_distance(was, *point) <= reach,
-                "{point} lies {} m off its face's boundary before closure",
-                boundary_distance(was, *point)
-            );
-        }
-        for corner in was {
-            assert!(
-                now.iter().any(|p| p.distance(*corner) <= TOLERANCE),
-                "corner {corner} moved past the tolerance"
-            );
-        }
-        let mut distinct: Vec<[u64; 3]> =
-            now.iter().map(|p| p.to_array().map(f64::to_bits)).collect();
-        distinct.sort_unstable();
-        distinct.dedup();
-        assert!(distinct.len() >= 3, "a face collapsed: {now:?}");
-        assert!(
-            FaceGeometry::from_polygon(now).is_some(),
-            "a face lost its normal"
-        );
+        let encode = |polygon: &[DVec3]| polygon.iter().map(|&p| encoded(p)).collect::<Vec<_>>();
+        assert_face_kept(&encode(was), &encode(now), reach);
     }
     closed
 }
@@ -720,5 +801,80 @@ fn a_weld_tilts_only_a_narrow_piece_off_up_facing() {
         assert!(stats.welded > 0);
         let piece = FaceGeometry::from_polygon(&closed[1][0]).expect("the piece keeps a normal");
         assert_eq!(piece.is_up_facing(), stays_up, "{size} m square");
+    }
+}
+
+/// A triangle in the plane x = `x` with its apex `apex` on the y = 0 plane
+/// and its base 1 m up: a neighbour touching an up-facing face at one corner.
+fn standing_triangle(apex: DVec3) -> Vec<DVec3> {
+    vec![
+        apex,
+        DVec3::new(apex.x, 1.0, apex.z - 0.2),
+        DVec3::new(apex.x, 1.0, apex.z + 0.2),
+    ]
+}
+
+// P22: two neighbours' corners 0.09 mm off one edge, on opposite sides of its
+// line and far apart along it. Inserting either bends the edge so the other
+// lies 0.12 mm from it; both are judged against the edge as the weld left it,
+// so it gains both, in order along it, whichever neighbour comes first.
+#[test]
+fn an_edge_gains_corners_off_either_side_of_its_line_in_either_order() {
+    let off = 0.09 * MILLI;
+    let (b, c) = (DVec3::new(0.5, 0.0, off), DVec3::new(1.5, 0.0, -off));
+    let edge = rect(0.0, -1.0, 2.0, 0.0);
+    for neighbours in [[b, c], [c, b]] {
+        let volumes = vec![
+            vec![edge.clone()],
+            vec![standing_triangle(neighbours[0])],
+            vec![standing_triangle(neighbours[1])],
+        ];
+        let closed = assert_polygons_close(&volumes, TOLERANCE);
+        let at = |point: DVec3| {
+            closed[0][0]
+                .iter()
+                .position(|p| encoded(*p) == encoded(point))
+                .unwrap_or_else(|| panic!("the edge lacks {point}"))
+        };
+        // The edge runs from (0, 0, 0), ring vertex 1, to (2, 0, 0).
+        assert!(1 < at(b) && at(b) < at(c), "{:?}", closed[0][0]);
+    }
+}
+
+// P23: a neighbour's corner within 0.1 mm of both edges at a sloped piece's
+// 30° corner, 0.3 mm from that corner and a hair to either side of its
+// bisector. It joins
+// the edge whose sector about the piece's centroid holds it, once, so the
+// boundary still turns one way round.
+#[test]
+fn a_corner_near_both_edges_of_an_acute_corner_joins_the_edge_its_sector_holds() {
+    // A plane sloped 20° about the x axis, and a 30° corner at its origin.
+    let (u, v) = (
+        DVec3::X,
+        DVec3::new(0.0, 20f64.to_radians().sin(), 20f64.to_radians().cos()),
+    );
+    let at = |s: f64, t: f64| DVec3::new(0.2, 0.3, 0.1) + u * s + v * t;
+    let half = 15f64.to_radians().tan();
+    let piece = vec![at(1.0, half), at(0.0, 0.0), at(1.0, -half)];
+    let apex = at(0.0, 0.0);
+    let normal = u.cross(v);
+    // Each side of the bisector, so the ring's first edge is the wrong one once.
+    for side in [1.0, -1.0] {
+        let corner = at(0.3 * MILLI, side * 0.01 * MILLI);
+        for (edge_start, edge_end) in [(piece[0], piece[1]), (piece[1], piece[2])] {
+            assert!(segment_distance(edge_start, edge_end, corner) < TOLERANCE);
+        }
+        assert!(corner.distance(apex) > TOLERANCE);
+        let neighbour = vec![
+            corner,
+            corner + normal * 0.5 + u * 0.1,
+            corner + normal * 0.5 - u * 0.1,
+        ];
+        let closed = assert_polygons_close(&[vec![piece.clone()], vec![neighbour]], TOLERANCE);
+        let gained = closed[0][0]
+            .iter()
+            .filter(|p| encoded(**p) == encoded(corner))
+            .count();
+        assert_eq!(gained, 1, "{:?}", closed[0][0]);
     }
 }

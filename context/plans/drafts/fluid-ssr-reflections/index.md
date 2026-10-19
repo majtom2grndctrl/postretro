@@ -1,19 +1,21 @@
 # fluid-ssr-reflections
 
-Brief · resumable · reads: `context/lib/index.md` §1.1, §3 · `rendering_pipeline.md` §7.3a, §7.5, §8, §10, §13 · `player_options.md` §4 · `resource_management.md` §5 · `plans/done/reflection-probes/` (`ip-check.md`, `research.md` §IP) · read at 99f0601c6 · `fluid-surface-motion`, `fluid-depth-fog-waves`, `reflection-probes` and `fluid-base-pass-cost` have landed; independent of `fluid-surface-t-junction-closure` (compiler-only)
+Brief · resumable · reads: `context/lib/index.md` §1.1, §3 · `rendering_pipeline.md` §7.3a, §7.5, §8, §10, §13 · `player_options.md` §4 · `resource_management.md` §5 · `plans/done/reflection-probes/` (`ip-check.md`, `research.md` §IP) · this draft's `ip-check.md` · read at 99f0601c6 · `fluid-surface-motion`, `fluid-depth-fog-waves`, `reflection-probes` and `fluid-base-pass-cost` have landed; independent of `fluid-surface-t-junction-closure` (compiler-only)
 
 ## Problem
-The owner requested a capability. Fluid surfaces now reflect the static room their probe captured (`rendering_pipeline.md` §7.3a, Reflection), but movers, characters and dynamic lights never appear in them. Water behind an object standing in the pool, as seen from the probe's capture point C, stays unreflected (the capture shadow). Players will see the walls, lights and movers around a pool mirrored in its surface, and objects in the water reflected on every side the camera sees. SSR cannot reflect a surface the camera never sees, such as the underside of a dock seen from above, so this brief does not cover it (Non-goals). A game author already chooses pixelated or smooth reflections (`render.reflections.style`). A player turns reflection quality down for cost, never past what the author chose, and can turn reflections off.
+The owner requested a capability. Fluid surfaces now reflect the static room their probe captured (`rendering_pipeline.md` §7.3a, Reflection), but movers, characters and dynamic lights never appear in them. Players will see the walls, lights and movers around a pool mirrored in its surface, and objects standing in the water reflected on every side the camera sees. SSR cannot reflect a surface the camera never sees, such as the underside of a dock seen from above, so this brief does not cover it (Non-goals). A game author already chooses pixelated or smooth reflections (`render.reflections.style`). A player turns reflection quality down for cost, never past what the author chose, and can turn reflections off.
 
 ## Decisions
 - **Screen-space reflections, always composited over the probe term and weighted by confidence.** SSR reflects what surrounds a pool on screen. Each layer covers what the other cannot see:
-  - SSR owns movers, characters, dynamic lights, and the faces of objects standing in the water that face the camera but lie in C's capture shadow.
+  - SSR owns movers, characters, dynamic lights, and the camera-facing sides of objects standing in the water.
   - The probe owns the static room off screen.
-  - On every reflecting fragment the two blend by SSR confidence c = hit confidence × screen-edge fade, and nothing else. c never fades or selects by ray direction (toward the camera or otherwise). Per-pixel technique choice by direction is the Microsoft US10586375B2 pattern that `reflection-probes/research.md` §IP lists under Avoid.
-  - The capture shadow never triggers, selects or gates SSR. It only scales the probe's share. Inside a capture shadow SSR shows because the probe's weight there is 0, not because SSR switched on.
+  - On every reflecting fragment the two blend by SSR confidence c = hit confidence × screen-edge fade, and nothing else.
+  - **No direction term.** c reads no ray-direction quantity. The march never exits early, skips, re-weights or changes step by direction; a ray heading toward the camera marches like any other. Per-pixel technique choice by direction is the Microsoft US10586375B2 pattern (`ip-check.md` §3).
+  - **SSR never reads the capture shadow.** s, the probe's capture-shadow weight, scales the probe's share only, so SSR's contribution F·c·SSR is identical at s = 0 and s = 1. The reflection pass reads no s, distance tile or probe resource. Nothing is added when the probe's obstruction test fires, which keeps clear of Tencent claim 15 (`ip-check.md` §1).
+  - **The probe lookup ignores the SSR hit.** It is keyed to its own search from the fragment or cell point, never to the SSR hit, its depth or its screen position. This distinguishes it from NetEase CN114748874B (`ip-check.md` §4).
 
-  This is the layering §7.3a Limits anticipates ("composites over this term and falls back to it on a miss"). It is not the capture-shadow-triggered fill that §7.3a and `reflection-probes/ip-check.md` (claim 15 row) reserve for IP review. At promotion, the docs record SSR as the dynamic fluid reflection layer.
-- **Owner claims check before shipping.** The confidence-weighted miss handoff to the probe term resembles the SSR-exit pattern that `reflection-probes/research.md` §IP lists under Avoid (EA/Uludag viewport-exit family), and the direction ban above keeps it clear of US10586375B2. The owner's pre-ship claims check, which already covers the probe term, extends to this layer. It gates shipping, not building.
+  This is the layering §7.3a Limits anticipates ("composites over this term and falls back to it on a miss"). It is not the capture-shadow-triggered fill that §7.3a and `reflection-probes/ip-check.md` (claim 15 row) reserve for IP review. At promotion, the docs record SSR as the dynamic fluid reflection layer and state that s scales the probe term only.
+- **Owner claims check before shipping.** `ip-check.md` finds no live claim that reads on this design while the layering rules above hold. The EA/Uludag viewport-exit family claims a roughness-driven ray count and ray tracing of failed rays; this design has neither. Open items are NetEase CN114748874B (granted, China only, claim text unverified) and Microsoft EP3756162 (granted text unread). The owner's pre-ship claims check, which already covers the probe term, extends to this layer with the items in `ip-check.md` §9. It gates shipping, not building.
 - **`index.md` §1.1 gains a third admitted category of runtime ray work.** §1.1 stays a rule. Beside offline bake rays and cheap traces against baked structures, it admits *a bounded screen-space march against the current frame's depth buffer, on gated fragments, under a fixed step budget*. Each use still needs owner sign-off in its own brief. Fluid SSR is the first:
   - The probe term (`reflection-probes`) is the baked equivalent for everything static. What remains, movers and dynamic lights, has none.
   - The march reads scene depth, which fog, forward and the fluid pass already sample, so it adds no acceleration structure.
@@ -58,7 +60,7 @@ The owner requested a capability. Fluid surfaces now reflect the static room the
   - Temporal reuse: a reflection updated below frame rate lags a turning camera without reprojection. `motion-reprojection-layer` owns that facility, and §IP lists reflection history under Avoid.
   - SSR on non-fluid surfaces: `ssr-decals` stays separate and may reuse the march snippet.
   - SSR on faces the probe gate refuses, such as a face bound to no probe. Revisit only if a level shows up-facing water with no derived probe.
-  - Surfaces the camera never sees, such as a dock's underside seen from above. Screen space cannot return them. An authored `reflection_volume` whose `_capture_offset` shifts C horizontally to beneath the deck (C stays 2 mm above the water) may cover them where the deck clears the water (`resource_management.md` §5). At promotion, `roadmap.md`'s fluid-ssr-reflections line and §7.3a Limits ("Water C cannot see or resolve, such as the underside of a dock over open water, waits for that layer") are corrected to say so.
+  - Surfaces the camera never sees, such as a dock's underside seen from above. Screen space cannot return them. An authored `reflection_volume` whose `_capture_offset` shifts C horizontally to beneath the deck (C stays 2 mm above the water) may cover them where the deck clears the water (`resource_management.md` §5). At promotion, `roadmap.md`'s fluid-ssr-reflections line and §7.3a Limits ("Water C cannot see or resolve, such as the underside of a dock over open water, waits for that layer") are corrected to say so, without describing the screen-space layer as filling the capture shadow.
   - Glints from dynamic lights, after `billboard-specular-shimmer`, as a complement for lights off screen or drawn only as billboards. This is a possible follow-up, not this brief.
   - Refraction, as E24 deferred it. Underwater fog stays out.
 
@@ -74,8 +76,9 @@ No new author surface. `render.reflections.style` and `surfaceReflectivity` land
 - [ ] Composite CPU reference:
   - at c = 0 it equals the landed composite for every s, F and a;
   - at c = 1 the probe contributes nothing;
-  - at s = 0 and c > 0 the reflection weight is F·c. SSR shows inside the capture shadow without reading s.
-- [ ] The same ray reaches the same hit at high and low on a fixed synthetic depth buffer (GPU-free march reference), so reach does not shrink with tier. A ray leaving the screen gets c = 0, and one ending at the edge fade band gets 0 < c < 1.
+  - SSR's contribution F·c·SSR is bit-identical at s = 0 and s = 1 for fixed F and c.
+- [ ] The reflection pass's pipeline layout binds no probe resource, and its shader module reads neither s nor the distance tile.
+- [ ] The same ray reaches the same hit at high and low on a fixed synthetic depth buffer (GPU-free march reference), so reach does not shrink with tier. A ray leaving the screen gets c = 0, and one ending at the edge fade band gets 0 < c < 1. A ray heading toward the camera marches the same budget as one heading away and gets c from hit and edge alone.
 - [ ] Pixel style gives one ray per water texel cell, from the same cell point and direction as `fluid_reflection_point`. Every fragment of a cell reads the same reflection value at every tier. Smooth gives one ray per target pixel.
 - [ ] `reflection_quality` round-trips through `settings.toml` and its slot for each of off, low, medium and high. An unrecognized stored value falls back for that field only. The graphics-tab id/count test in `main.rs` counts the new control.
 - [ ] The player setting carries no style value, so the player cannot select smooth under a pixel game.
@@ -86,10 +89,10 @@ No new author surface. `render.reflections.style` and `surfaceReflectivity` land
 - [ ] The DX12 FXC shader test compiles the reflection shader and both fluid variants (Windows, ignored-gated run).
 
 ### Manual
-- [ ] Walls, lights, a moving mover, and a pillar standing in a pool (including the camera-facing side C cannot see) appear in its surface. Under pixel style the reflection breaks into texel blocks that move with the water and line up with the probe term's blocks; under smooth it does not.
-- [ ] Inside a pillar's capture shadow, a mover on screen reflects. Turning the camera so the pillar's far side leaves the screen fades that region to no reflection, with no hard line.
+- [ ] Walls, lights, a moving mover, and a pillar standing in a pool, including the pillar's camera-facing side, appear in its surface. Under pixel style the reflection breaks into texel blocks that move with the water and line up with the probe term's blocks; under smooth it does not.
+- [ ] Panning until a reflected mover leaves the screen fades its reflection with no hard line: to the probe term where the probe sees that water, to no reflection where it does not.
 - [ ] Stepping the tier from high to low makes a smooth-style reflection coarser without shortening it. A pixel-style reflection keeps its texel blocks, with no screen-aligned stair-stepping. Off removes both the SSR and the probe reflection. Each change applies live, mid-level.
-- [ ] A ray leaving the screen edge fades to the probe term with no hard line. The camera at the surface plane, the camera underwater, and a side face seen through glass show no reflection artifacts. Sludge reflects visibly less than water.
+- [ ] The camera at the surface plane, the camera underwater, and a side face seen through glass show no reflection artifacts. Sludge reflects visibly less than water.
 - [ ] GPU cost:
   - Measure on the GTX 1660 Super with `POSTRETRO_GPU_TIMING=1`, and on the RX 5300M Mac via Metal System Trace where timestamps are unsupported.
   - Time the reflection and fluid passes at each tier, under both styles, looking down at a pool that fills the view at 4K near.
@@ -111,6 +114,7 @@ No new author surface. `render.reflections.style` and `surfaceReflectivity` land
   - Only `fs_main_reflecting` references binding 2. Naga's Metal writer declares only the globals an entry uses (§7.3a Two pipelines), so the reflection-free variant gains no argument.
 - **Upsample.** Pixel style reads the target nearest-neighbour by `textureLoad`. Smooth reads it bilinear through the existing linear-clamp sampler, which adds no sampler.
 - **March snippet.** Keep it in its own WGSL module so `ssr-decals` can include it (§8). Give it a render-cpu reference beside the probe references.
+- **IP rules in code.** Comment the no-direction rule beside the march, the s-independence rule beside the composite, and the keying rule beside the probe lookup, so a later change does not cross them unawares.
 - **Option.** Follow the `fog_quality` / `surface_depth_quality` touch list end to end:
   - options `graphics.rs`, `mod.rs`, `persist.rs`, bridge `top_level.rs` / `mod.rs`;
   - `engine_state_catalog.rs`, `slot_table.rs` and the regenerated SDK `.d.ts` / `.d.luau` with typedef fixtures;

@@ -29,8 +29,11 @@ Re-read at 99f0601c6, after `reflection-probes`, `fluid-depth-fog-waves`, `fluid
 - **Pixel cell point.** `fluid_reflection_point` / `fluid_reflection_cell_centre` work on the unwarped UV grid, tilted by `fluid_displayed_offset` (shimmer, rings). They use `dpdx`/`dpdy` texel axes. Their CPU reference is render-cpu `reflection_style.rs` (`FluidReflectionStyle`, `FLUID_REFLECTION_PIXEL_TILT`).
 
 ## IP
-- `reflection-probes/ip-check.md` (claim 15 row): a screen-space layer that fills where the distance test flags occlusion is closer to Tencent WO2026113651A1 claim 15. Compositing on SSR's own hits is a separate technique.
-- `reflection-probes/research.md` §IP lists the EA/Uludag SSR-to-ray-trace viewport-exit family under Avoid. The brief's confidence-weighted miss handoff is under the owner's pre-ship claims check.
+Full triage in `ip-check.md` (this draft). Summary:
+- **Tencent WO2026113651A1 claim 15** (pending): supplements the probe's lighting *when* its obstruction test fires. SSR composited on its own hits, with a contribution independent of s, lacks that step.
+- **EA/Uludag viewport-exit family** (US10621774B2, KR/CN counterparts): claims a roughness-driven ray count and ray tracing of failed rays. The brief has neither.
+- **Microsoft US10586375B2 / US10360720B1**: every independent claim decides whether the ray reflects toward the camera. The brief's direction ban avoids it. EP3756162's text intended for grant is unread.
+- **NetEase CN114748874B** (granted, China only): water reflection from screen colour and a probe, both "according to the reflection position", under Fresnel. The brief keys the probe to its own search, never the SSR hit. Claim text unverified.
 
 ## Perf baseline (`plans/done/fluid-base-pass-cost/`)
 - **5300M at 4K.** The reflection-free fluid pass is 2.2 ms. Reflecting minus free is ≈10 ms: near 11.80 → 10.16, probes 14.29 → 12.69, mid 6.65 → 5.27.

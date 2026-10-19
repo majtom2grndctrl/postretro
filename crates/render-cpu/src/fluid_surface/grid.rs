@@ -320,21 +320,15 @@ pub(super) fn cut_face(
                 next.push(polygon);
                 continue;
             };
-            let mut rest = polygon;
-            for k in first..=last {
-                if let Some((below, above)) = split(
-                    &rest,
-                    axis,
-                    k,
-                    planes.plane(axis, k),
-                    &mut cut,
-                    &mut crossings,
-                ) {
-                    next.push(below);
-                    rest = above;
-                }
-            }
-            next.push(rest);
+            next.extend(cut_axis(
+                &polygon,
+                axis,
+                first,
+                last,
+                planes,
+                &mut cut,
+                &mut crossings,
+            ));
         }
         polygons = next;
     }
@@ -345,58 +339,157 @@ pub(super) fn cut_face(
     Some(cut)
 }
 
-/// Split a convex polygon at plane `k` (`axis` = `plane`) into the parts
-/// below and above it; `None` unless vertices lie on both sides beyond the
-/// plane tolerance. An edge from one side to the other gains a crossing. A
-/// run of vertices on the plane joins the side before it, except where the
-/// ring passes on to the other side: there the run's last vertex is the cut
-/// and joins both. So the parts partition the polygon, and no vertex is added
-/// within the tolerance of one on the plane.
-fn split(
+/// Cut a convex polygon along planes `first..=last` on `axis` in one walk of
+/// its ring, returning its parts from below the first plane up, each wound as
+/// the polygon.
+///
+/// Each vertex lies in one slab between planes, or on one plane within the
+/// plane tolerance. An edge gains a crossing at each plane strictly between
+/// its ends, computed from that edge alone. A run of vertices on a plane
+/// joins the slab on the side the ring came from, except where the ring
+/// passes on to the other side: there the run's last vertex is the cut and
+/// joins both. So the parts partition the polygon, as successive splits at
+/// each plane would, and no vertex is added within the tolerance of one on a
+/// plane. Linear in the polygon's vertices and crossings, however many
+/// planes cross it.
+fn cut_axis(
     polygon: &[u32],
     axis: usize,
-    k: i64,
-    plane: f64,
+    first: i64,
+    last: i64,
+    planes: &FluidGridPlanes,
     cut: &mut GridCut,
     crossings: &mut HashMap<(i64, u32, u32), u32>,
-) -> Option<(Vec<u32>, Vec<u32>)> {
-    super::count_install_steps(polygon.len());
-    let sides: Vec<Side> = polygon
-        .iter()
-        .map(|&i| side(cut.positions[i as usize][axis], plane))
-        .collect();
-    if !sides.contains(&Side::Below) || !sides.contains(&Side::Above) {
-        return None;
-    }
+) -> Vec<Vec<u32>> {
     let count = polygon.len();
-    // The side the ring is on at vertex 0: its own, or the side before the
-    // run on the plane that holds it.
-    let mut current = (0..count)
-        .map(|n| sides[(count - n) % count])
-        .find(|&side| side != Side::On)
-        .expect("a vertex lies below the plane");
-    let (mut below, mut above) = (Vec::new(), Vec::new());
-    for (n, &vertex) in polygon.iter().enumerate() {
-        let following = (n + 1) % count;
-        let onward = sides[following] != Side::On && sides[following] != current;
-        if onward && sides[n] == Side::On {
-            below.push(vertex);
-            above.push(vertex);
-        } else if current == Side::Below {
-            below.push(vertex);
+    super::count_install_steps(count);
+    // A vertex's level: 2s in slab s (below plane `first + s`, above the one
+    // before), 2j + 1 on plane `first + j`.
+    let levels: Vec<i64> = polygon
+        .iter()
+        .map(|&vertex| {
+            level(
+                cut.positions[vertex as usize][axis],
+                axis,
+                first,
+                last,
+                planes,
+            )
+        })
+        .collect();
+    let runs = on_plane_runs(&levels);
+    let slabs = (last - first + 2) as usize;
+    let mut parts: Vec<Vec<u32>> = vec![Vec::new(); slabs];
+    for n in 0..count {
+        let vertex = polygon[n];
+        let here = levels[n];
+        if here % 2 == 0 {
+            parts[(here / 2) as usize].push(vertex);
         } else {
-            above.push(vertex);
+            let (from, onward, last_of_run) = runs[n];
+            let (below, above) = ((here / 2) as usize, (here / 2 + 1) as usize);
+            match (from < here, onward < here) {
+                (true, true) => parts[below].push(vertex),
+                (false, false) => parts[above].push(vertex),
+                (true, false) => {
+                    parts[below].push(vertex);
+                    if last_of_run {
+                        parts[above].push(vertex);
+                    }
+                }
+                (false, true) => {
+                    parts[above].push(vertex);
+                    if last_of_run {
+                        parts[below].push(vertex);
+                    }
+                }
+            }
         }
-        if onward && sides[n] != Side::On {
-            let crossing = crossing(vertex, polygon[following], axis, k, plane, cut, crossings);
-            below.push(crossing);
-            above.push(crossing);
+        let following = (n + 1) % count;
+        let there = levels[following];
+        // Planes strictly between the edge's ends, in ring order.
+        let (low, high) = (here.min(there), here.max(there));
+        let mut between: Vec<i64> = (low + 1..high).filter(|level| level % 2 == 1).collect();
+        if there < here {
+            between.reverse();
         }
-        if onward {
-            current = sides[following];
+        for plane_level in between {
+            let j = plane_level / 2;
+            let k = first + j;
+            let point = crossing(
+                vertex,
+                polygon[following],
+                axis,
+                k,
+                planes.plane(axis, k),
+                cut,
+                crossings,
+            );
+            parts[j as usize].push(point);
+            parts[j as usize + 1].push(point);
         }
     }
-    Some((below, above))
+    parts.retain(|part| !part.is_empty());
+    parts
+}
+
+/// The level of a vertex at `position` on `axis` among planes
+/// `first..=last` (see [`cut_axis`]), judged by [`side`] against each
+/// plane's own formula, so every face agrees.
+fn level(position: f64, axis: usize, first: i64, last: i64, planes: &FluidGridPlanes) -> i64 {
+    let (origin, spacing) = (planes.origin[axis], planes.spacing[axis]);
+    // The first plane the position is not above: estimated, then settled.
+    let estimate = ((position - PLANE_TOLERANCE - origin) / spacing).ceil();
+    let mut k = if estimate.is_finite() {
+        (estimate as i64).clamp(first, last + 1)
+    } else {
+        first
+    };
+    while k > first && side(position, planes.plane(axis, k - 1)) != Side::Above {
+        super::count_install_steps(1);
+        k -= 1;
+    }
+    while k <= last && side(position, planes.plane(axis, k)) == Side::Above {
+        super::count_install_steps(1);
+        k += 1;
+    }
+    let slab = 2 * (k - first);
+    if k <= last && side(position, planes.plane(axis, k)) == Side::On {
+        slab + 1
+    } else {
+        slab
+    }
+}
+
+/// For each ring position on a plane, the levels of the vertices before and
+/// after its run of vertices on that plane, and whether it ends the run; one
+/// walk of the ring. Other positions read their own level and `false`.
+fn on_plane_runs(levels: &[i64]) -> Vec<(i64, i64, bool)> {
+    let count = levels.len();
+    let mut runs: Vec<(i64, i64, bool)> =
+        levels.iter().map(|&level| (level, level, false)).collect();
+    // Start where a run begins, so no run wraps past the walk's end.
+    let Some(start) = (0..count).find(|&n| levels[n] != levels[(n + count - 1) % count]) else {
+        return runs;
+    };
+    let mut offset = 0;
+    while offset < count {
+        let begin = (start + offset) % count;
+        let level = levels[begin];
+        let mut length = 1;
+        while length < count && levels[(begin + length) % count] == level {
+            length += 1;
+        }
+        if level % 2 == 1 {
+            let before = levels[(begin + count - 1) % count];
+            let after = levels[(begin + length) % count];
+            for i in 0..length {
+                runs[(begin + i) % count] = (before, after, i + 1 == length);
+            }
+        }
+        offset += length;
+    }
+    runs
 }
 
 /// The vertex where plane `k` crosses edge `a`–`b`, shared by both polygons

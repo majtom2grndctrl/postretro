@@ -389,14 +389,41 @@ fn assert_tiles_up_facing_face(
     }
 }
 
+/// How [`a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps`]
+/// grids its face.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum InsertedGrid {
+    /// No lattice.
+    None,
+    /// Planes every 8 m: only z = 8 crosses the face, so one part holds every
+    /// insert.
+    OnePlane,
+    /// z planes spaced so about one crosses the inserted edge per four
+    /// inserts: the plane count grows with the vertex count (P24).
+    EveryPlane,
+}
+
+impl InsertedGrid {
+    fn lattice(self, inserts: usize) -> Option<FluidGridLattice> {
+        match self {
+            Self::None => None,
+            Self::OnePlane => FluidGridLattice::new([0.0; 3], [16.0; 3]),
+            Self::EveryPlane => {
+                let spacing = 6.9 / (inserts.max(4) / 4) as f32;
+                FluidGridLattice::new([0.0; 3], [16.0, 16.0, 2.0 * spacing])
+            }
+        }
+    }
+}
+
 // Closure can give one face thousands of collinear vertices. Such a face
-// packs whole, gridded (a lattice plane crossing it, so one part holds every
-// insert) and ungridded, keeps the drift map of the same face without them,
-// and its install work, counted, grows within n log n of its vertex count.
+// packs whole, ungridded and gridded (one plane crossing it, so one part
+// holds every insert; and every plane along its inserted edge crossing it, so
+// the planes grow with the vertices), keeps the drift map of the same face
+// without them, and its install work, counted, grows within n log n of its
+// vertex count, the per-plane cut included.
 #[test]
 fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps() {
-    // Planes at multiples of 8 m: only z = 8 crosses the face.
-    let lattice = FluidGridLattice::new([0.0; 3], [16.0; 3]).expect("a usable lattice");
     let pack = |face: &EnvironmentSurfaceFace, lattice: Option<&FluidGridLattice>| {
         INSTALL_STEPS.with(|steps| steps.set(0));
         let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[[64, 64]], 1, lattice);
@@ -408,23 +435,44 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
         .iter()
         .map(|v| Vec3::from(v.position).as_dvec3())
         .collect();
-    for lattice in [Some(&lattice), None] {
-        let (plain, _) = pack(&bare, lattice);
-        let plain_map = plain.face_drift_maps[0].expect("the face draws");
+    for grid in [
+        InsertedGrid::OnePlane,
+        InsertedGrid::EveryPlane,
+        InsertedGrid::None,
+    ] {
         let mut counted = Vec::new();
         for inserts in [2000, 8000] {
+            let lattice = grid.lattice(inserts);
+            let (plain, _) = pack(&bare, lattice.as_ref());
+            let plain_map = plain.face_drift_maps[0].expect("the face draws");
             let face = inserted_top(inserts);
-            let (mesh, steps) = pack(&face, lattice);
+            let (mesh, steps) = pack(&face, lattice.as_ref());
             assert_eq!(mesh.grid.is_some(), lattice.is_some());
-            if lattice.is_some() {
-                assert!(
-                    mesh.vertices.iter().any(|v| v.position[2] == 8.0),
-                    "the z = 8 plane cuts the face"
-                );
+            match grid {
+                InsertedGrid::OnePlane => {
+                    assert!(
+                        mesh.vertices.iter().any(|v| v.position[2] == 8.0),
+                        "the z = 8 plane cuts the face"
+                    );
+                    // From the first insert to the corner after the last; no
+                    // plane crosses there.
+                    assert_tiles_up_facing_face(&mesh, &face, 3..3 + inserts as u32);
+                }
+                InsertedGrid::EveryPlane => {
+                    let spacing = mesh.grid.expect("gridded").spacing().z;
+                    let planes = (6.9 / spacing) as usize;
+                    assert!(
+                        planes >= inserts / 5,
+                        "{planes} planes cross the inserted edge"
+                    );
+                    // Planes cut the inserted edge's segments, so only the
+                    // tiling's area and winding are checked.
+                    assert_tiles_up_facing_face(&mesh, &face, 3..3);
+                }
+                InsertedGrid::None => {
+                    assert_tiles_up_facing_face(&mesh, &face, 3..3 + inserts as u32);
+                }
             }
-            // From the first insert to the corner after the last; no plane
-            // crosses there.
-            assert_tiles_up_facing_face(&mesh, &face, 3..3 + inserts as u32);
 
             // Within the fit tolerance of the bare face's map at its corners.
             let map = mesh.face_drift_maps[0].expect("the face draws");
@@ -455,9 +503,8 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
         let bound = n_log_n(large) / n_log_n(small);
         assert!(
             ratio <= bound,
-            "gridded {}: {small_steps} steps at {small} vertices, {large_steps} at {large}: \
-             ratio {ratio}, n log n allows {bound}",
-            lattice.is_some()
+            "{grid:?}: {small_steps} steps at {small} vertices, {large_steps} at {large}: \
+             ratio {ratio}, n log n allows {bound}"
         );
     }
 }

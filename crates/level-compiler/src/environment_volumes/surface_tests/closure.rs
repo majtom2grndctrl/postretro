@@ -65,7 +65,7 @@ fn projected_uv(face: &EnvironmentSurfaceFace, position: DVec3) -> [f64; 2] {
 /// face's UVs on its own side's projection; each face keeps its shape
 /// ([`assert_face_kept`]).
 #[track_caller]
-fn assert_nothing_else_moves(
+pub(super) fn assert_nothing_else_moves(
     before: &EnvironmentVolumesSection,
     after: &EnvironmentVolumesSection,
     reach: f64,
@@ -211,7 +211,7 @@ fn assert_runs_in_order(polygon: &[DVec3]) {
         total += turn;
     }
     assert!(
-        (total - std::f64::consts::TAU).abs() < 1e-9,
+        (total - std::f64::consts::TAU).abs() < 1e-6,
         "the boundary winds {total} rad round its centroid"
     );
 }

@@ -134,6 +134,35 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     pub prm_root: &'a Path,
 }
 
+/// The bindings placement gives `environment` over a compiled static world,
+/// as the stage places them: for tests comparing two face sets of one level.
+#[cfg(test)]
+pub(crate) fn placed_bindings(
+    environment: &EnvironmentVolumesSection,
+    authored: &[MapReflectionVolume],
+    world: &crate::fixture_pipeline::FixturePipeline,
+) -> Vec<postretro_level_format::reflection_probes::ReflectionProbeBinding> {
+    let bounds =
+        WorldBounds::from_positions(world.geometry.geometry.vertices.iter().map(|v| &v.position))
+            .expect("the level has static world");
+    let tracer = SceneTracer::new(&world.bvh, &world.primitives, &world.geometry);
+    let classifier = PointClassifier::new(&world.tree, &world.exterior_leaves, environment);
+    let control = BakeControl::unrestricted();
+    let probes = place_probes(
+        environment,
+        authored,
+        &PlacementScene {
+            tracer: &tracer,
+            bounds: &bounds,
+            classifier: &classifier,
+            governor: control.governor(),
+        },
+        MAX_REFLECTION_PROBES,
+    )
+    .expect("placement keeps within the cap");
+    bindings(&probes)
+}
+
 /// Id 54 for the level, from the cache when its key hits; `None` when no
 /// probe is kept, so the section is omitted.
 pub(crate) fn bake_or_load_reflection_probes(

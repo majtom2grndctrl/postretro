@@ -16,7 +16,7 @@ use super::face_normal;
 const PLANE_TOLERANCE: f64 = 1.0e-3;
 /// A face vertex fits a map's UVs within this many texels, plus its rounding
 /// allowance.
-pub(super) const UV_TOLERANCE_TEXELS: f64 = 0.01;
+pub const UV_TOLERANCE_TEXELS: f64 = 0.01;
 /// Multiples of the inputs' f32 rounding a fit allows beyond the fixed
 /// tolerances. Generous on purpose: sharing a map between coplanar faces of
 /// one texture and facing whose UVs nearly agree is harmless, while splitting

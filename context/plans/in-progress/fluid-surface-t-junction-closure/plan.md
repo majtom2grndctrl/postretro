@@ -47,11 +47,11 @@ Rows in Acceptance order.
 |---|---|---|---|---|
 | 1 | Adopt the parked work: split commit, closure, install bounds, drift; baselines (pre-change `prl-build`, guard hashes); rerun the first slice on e24 and stress-env-volumes and every listed map — the riskiest premise is that one level-wide pass closes every map | integrating executor | — | done: every map closes (open before → after: e24 0→0, campaign-test 0→0, reflection-probes-test 10→0, vault-test 0→0, stress-env-volumes 6173→0; 832 welded, 2389 inserted, largest move 0.034 mm); guard hashes re-derived from the pre-change compiler match |
 | 2 | Insert edge choice by angular sector; P22, P23, P15 buried-only fixtures; angle-order assertion | integrating executor | 1 | done: `assert_face_kept` (angle order, peel-back insert bound, area, distinct, normal) on every fixture; P23 fails under first-edge choice, passes under the sector rule; maps still close |
-| 3 | Map suite: check, nothing-else-moves, drift push, drift map, id-54 bindings | integrating executor | 2 | |
+| 3 | Map suite: check, nothing-else-moves, drift push, drift map, id-54 bindings | integrating executor | 2 | done: `closure_maps` (ignored) — every listed map closes and keeps its faces; reflection-probes-test 8 and stress-env-volumes 382 bindings unchanged, 0 tilted, drift maps within 0.0012 texels; placement runs in-process through `reflection_probes::placed_bindings` on `fixture_pipeline` |
 | 4 | Bounded closure counts on a synthetic ocean | integrating executor | 2 | |
 | 5 | Determinism on a level that welds and inserts; id-54 cache hit | integrating executor | 2 | |
 | 6 | End to end through the renderer's packing on a lattice | integrating executor | 2 | |
-| 7 | Grid cut as one sweep per axis (P24); every-plane install bound | integrating executor | 1 | |
+| 7 | Grid cut as one sweep per axis (P24); every-plane install bound | integrating executor | 1 | done: `cut_axis` matched the successive split on 25,805 generated parts (temporary equivalence test, not kept); the every-plane case fails the old cut (ratio 14.9 vs 4.7 allowed) and passes the sweep |
 | 8 | Drift sample point shared from render-cpu; P13 | integrating executor | 1 | done: `face_area_centroid` in render-cpu is the runtime drift sample and the centroid-fan apex; P13 `a_piece_clear_of_a_push_drifts_as_without_thousands_of_inserts_on_its_boundary_edge` (300 m out, 4000 inserts) passes |
 | 9 | Context docs: build_pipeline §Fluid surfaces, rendering_pipeline §7.3a | integrating executor | 2 | |
 | 10 | Preflight, review panel, fixes; manual timings | integrating executor | 1–9 | |

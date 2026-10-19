@@ -20,7 +20,9 @@ pub mod reflection_style;
 mod slots;
 
 pub use cull::FluidSurfaceRenderCollector;
-pub use drift::{FluidFaceDriftMap, fill_drift_rates};
+pub use drift::{
+    FluidFaceDriftMap, UV_TOLERANCE_TEXELS as DRIFT_UV_TOLERANCE_TEXELS, fill_drift_rates,
+};
 pub use grid::{FLUID_GRID_VERTEX_CAP, FluidGridLattice, FluidGridPlanes};
 pub use slots::{
     FLUID_FOG_COLOR_SCALE, FluidParamsRow, FluidShaderVariant, FluidSurfaceLook, FluidSurfaceSlots,

@@ -3,24 +3,24 @@
 Brief · resumable · reads: `context/lib/index.md` §1.1, §3 · `rendering_pipeline.md` §7.3a, §7.5, §8, §10, §13 · `player_options.md` §4 · `resource_management.md` §5 · `plans/done/reflection-probes/` (`ip-check.md`, `research.md` §IP) · read at 99f0601c6 · `fluid-surface-motion`, `fluid-depth-fog-waves`, `reflection-probes` and `fluid-base-pass-cost` have landed; independent of `fluid-surface-t-junction-closure` (compiler-only)
 
 ## Problem
-The owner requested a capability. Fluid surfaces now reflect the static room their probe captured (`rendering_pipeline.md` §7.3a, Reflection), but movers, characters and dynamic lights never appear in them. Water C cannot see, such as the far side of a pillar or the underside of a dock, stays unreflected. Players will see the walls, lights and movers around a pool mirrored in its surface. A game author already chooses pixelated or smooth reflections (`render.reflections.style`). A player turns reflection quality down for cost, never past what the author chose, and can turn reflections off.
+The owner requested a capability. Fluid surfaces now reflect the static room their probe captured (`rendering_pipeline.md` §7.3a, Reflection), but movers, characters and dynamic lights never appear in them. Water behind an object standing in the pool, as seen from the probe's capture point C, stays unreflected (the capture shadow). Players will see the walls, lights and movers around a pool mirrored in its surface, and objects in the water reflected on every side the camera sees. SSR cannot reflect a surface the camera never sees, such as the underside of a dock seen from above, so this brief does not cover it (Non-goals). A game author already chooses pixelated or smooth reflections (`render.reflections.style`). A player turns reflection quality down for cost, never past what the author chose, and can turn reflections off.
 
 ## Decisions
 - **Screen-space reflections, always composited over the probe term and weighted by confidence.** SSR reflects what surrounds a pool on screen. Each layer covers what the other cannot see:
-  - SSR owns movers, characters, dynamic lights, and the far side of objects standing in the water.
+  - SSR owns movers, characters, dynamic lights, and the faces of objects standing in the water that face the camera but lie in C's capture shadow.
   - The probe owns the static room off screen.
-  - On every reflecting fragment the two blend by SSR hit confidence c (hit confidence × screen-edge fade).
+  - On every reflecting fragment the two blend by SSR confidence c = hit confidence × screen-edge fade, and nothing else. c never fades or selects by ray direction (toward the camera or otherwise). Per-pixel technique choice by direction is the Microsoft US10586375B2 pattern that `reflection-probes/research.md` §IP lists under Avoid.
   - The capture shadow never triggers, selects or gates SSR. It only scales the probe's share. Inside a capture shadow SSR shows because the probe's weight there is 0, not because SSR switched on.
 
   This is the layering §7.3a Limits anticipates ("composites over this term and falls back to it on a miss"). It is not the capture-shadow-triggered fill that §7.3a and `reflection-probes/ip-check.md` (claim 15 row) reserve for IP review. At promotion, the docs record SSR as the dynamic fluid reflection layer.
-- **Owner claims check before shipping.** The confidence-weighted miss handoff to the probe term resembles the SSR-exit pattern that `reflection-probes/research.md` §IP lists under Avoid (EA/Uludag viewport-exit family). The owner's pre-ship claims check, which already covers the probe term, extends to this layer. It gates shipping, not building.
-- **`index.md` §1.1 is amended, and this brief is its first approved exception.** The rule becomes a strong preference for tracing baked structures at runtime. An exception needs owner approval and a use case with no reasonable workaround within pre-RTX constraints. Fluid SSR qualifies:
-  - Mirroring nearby movers and dynamic lights has no baked equivalent that moves with the scene. The probe term (`reflection-probes`) is the baked equivalent for everything static.
+- **Owner claims check before shipping.** The confidence-weighted miss handoff to the probe term resembles the SSR-exit pattern that `reflection-probes/research.md` §IP lists under Avoid (EA/Uludag viewport-exit family), and the direction ban above keeps it clear of US10586375B2. The owner's pre-ship claims check, which already covers the probe term, extends to this layer. It gates shipping, not building.
+- **`index.md` §1.1 gains a third admitted category of runtime ray work.** §1.1 stays a rule. Beside offline bake rays and cheap traces against baked structures, it admits *a bounded screen-space march against the current frame's depth buffer, on gated fragments, under a fixed step budget*. Each use still needs owner sign-off in its own brief. Fluid SSR is the first:
+  - The probe term (`reflection-probes`) is the baked equivalent for everything static. What remains, movers and dynamic lights, has none.
   - The march reads scene depth, which fog, forward and the fluid pass already sample, so it adds no acceleration structure.
   - It runs only for fragments the reflecting gate admits, at the player's quality tier, under a fixed step budget.
   - Its cost is measured on the §10 perf floor before landing.
 
-  The amendment lands at promotion. `ssr-decals` would need its own approval.
+  The amendment lands at promotion. `ssr-decals` fits the category but needs its own sign-off.
 - **No new material input.** `surfaceReflectivity` (landed with `reflection-probes`) scales both layers through the same Fresnel. No world material gains a reflection input (§13).
 - **SSR reuses the probe term's gate.** A fragment gets SSR only where the landed reflecting gate admits it:
   - per draw, the `FluidShaderVariant::reflections()` choice made by `FluidParamsRow::shader_variant`: a volume with a probe-bound face, reflectivity above 0, and every `LightTermMask` bit on;
@@ -50,14 +50,16 @@ The owner requested a capability. Fluid surfaces now reflect the static room the
 - **The player owns cost: `reflection_quality` = off / low / medium / high, default high.** The owner chose this four-tier ladder; first-slice measurements tune what each tier costs, not whether it exists.
   - **Off turns off both layers.** Every draw takes the reflection-free variant, so the player recovers the probe term's cost too. `shader_variant` gains the option as an input. No reflection pass is recorded.
   - **Low, medium and high** keep the probe term unchanged and resolve SSR at quarter, half and full scene extent. The step budget scales with resolution, so a ray reaches equally far at every tier.
-  - **Precedent.** It is a standalone graphics option with `fog_quality` as its precedent: a tiered ladder, persisted, slot-exposed and applied live. Unlike fog's `set_fog_step_size`, the setter also creates, resizes or releases the target and rebuilds group 5.
-  - **Divergence from the Surface Depth ruling.** This ladder departs on purpose from the ruling against tiers (`player_options.md` §4). That ruling rejected a tier that changed the shape of the effect at grazing angles. A lower tier here changes only the resolution of the dynamic layer, plus Off.
+  - **Precedent.** It reuses `fog_quality`'s plumbing (a tiered ladder, persisted, slot-exposed, applied live), not its policy. In fog the map owns resolution (`fog_pixel_scale`) and the player owns step size. Here the player owns resolution and reach is fixed. Unlike `set_fog_step_size`, the setter also creates, resizes or releases the target and rebuilds group 5.
+  - **Divergence from the Surface Depth ruling.** This ladder departs on purpose from the ruling against tiers (`player_options.md` §4). That ruling rejected a tier that changed the shape of the effect at grazing angles. A lower tier here changes only the resolution of the dynamic layer, plus Off. Under pixel style, the default, low through high look alike wherever a water texel cell spans several target pixels, and differ only where cells shrink below a target pixel with distance. That makes the ladder mostly a cost lever with little visible loss, which is what a player turning quality down wants. The owner kept four tiers knowing this.
   - No umbrella quality preset is added.
 - **Sequencing.** SSR builds before the roadmap's undrafted "reflection-probe fluid-pass performance" item. That item is drafted afterwards and optimizes the combined composite in `fs_main_reflecting` once.
 - **Non-goals.**
   - Temporal reuse: a reflection updated below frame rate lags a turning camera without reprojection. `motion-reprojection-layer` owns that facility, and §IP lists reflection history under Avoid.
   - SSR on non-fluid surfaces: `ssr-decals` stays separate and may reuse the march snippet.
   - SSR on faces the probe gate refuses, such as a face bound to no probe. Revisit only if a level shows up-facing water with no derived probe.
+  - Surfaces the camera never sees, such as a dock's underside seen from above. Screen space cannot return them. An authored `reflection_volume` whose `_capture_offset` shifts C horizontally to beneath the deck (C stays 2 mm above the water) may cover them where the deck clears the water (`resource_management.md` §5). At promotion, `roadmap.md`'s fluid-ssr-reflections line and §7.3a Limits ("Water C cannot see or resolve, such as the underside of a dock over open water, waits for that layer") are corrected to say so.
+  - Glints from dynamic lights, after `billboard-specular-shimmer`, as a complement for lights off screen or drawn only as billboards. This is a possible follow-up, not this brief.
   - Refraction, as E24 deferred it. Underwater fog stays out.
 
 ### Scripting surface
@@ -84,7 +86,7 @@ No new author surface. `render.reflections.style` and `surfaceReflectivity` land
 - [ ] The DX12 FXC shader test compiles the reflection shader and both fluid variants (Windows, ignored-gated run).
 
 ### Manual
-- [ ] Walls, lights, a moving mover and the far side of a pillar standing in a pool appear in its surface. Under pixel style the reflection breaks into texel blocks that move with the water and line up with the probe term's blocks; under smooth it does not.
+- [ ] Walls, lights, a moving mover, and a pillar standing in a pool (including the camera-facing side C cannot see) appear in its surface. Under pixel style the reflection breaks into texel blocks that move with the water and line up with the probe term's blocks; under smooth it does not.
 - [ ] Inside a pillar's capture shadow, a mover on screen reflects. Turning the camera so the pillar's far side leaves the screen fades that region to no reflection, with no hard line.
 - [ ] Stepping the tier from high to low makes a smooth-style reflection coarser without shortening it. A pixel-style reflection keeps its texel blocks, with no screen-aligned stair-stepping. Off removes both the SSR and the probe reflection. Each change applies live, mid-level.
 - [ ] A ray leaving the screen edge fades to the probe term with no hard line. The camera at the surface plane, the camera underwater, and a side face seen through glass show no reflection artifacts. Sludge reflects visibly less than water.
@@ -117,7 +119,8 @@ No new author surface. `render.reflections.style` and `surfaceReflectivity` land
   - the renderer setter, which feeds both the target and `shader_variant`.
 - **Dev tuning.** Step budget and thickness can join the diagnostics panel's "SDF / Fog Quality" section (`debug_ui/mod.rs`). They are never player-facing.
 - **Planar mirror, rejected.** It is the textbook water technique: re-render the scene from a camera mirrored about the water plane. It costs a scene pass per distinct water height. The mirrored camera sits inside solid geometry, which drops portal visibility to its frustum fallback (§2), and `resource_management.md` §9 rules out runtime render-to-texture for mirrors.
-- **Strongest rival:** texel-snapped glints from lights the fluid pass already binds, after the `billboard-specular-shimmer` pattern, layered on the probe term. It costs no new pass or target, but it cannot mirror a mover or a character, which is the requested look.
+- **Strongest rival:** texel-snapped glints from lights the fluid pass already binds, after the `billboard-specular-shimmer` pattern, layered on the probe term. It costs no new pass or target, but it cannot mirror a mover or a character, which is the requested look. As a complement it stays a follow-up (Non-goals).
+- **Inline march, rejected.** Marching inside `fs_main_reflecting` saves the pass and target. But the reflecting block's size already slows the always-run lighting on AMD Metal (§7.3a Two pipelines), and inline marching would lose the reduced-resolution tiers.
 - **First slice.** The reflection pass at high on one pool with a mover, timed on the 5300M and the 1660 Super. It tests the riskiest assumption, that the march fits beside a reflecting variant already costing ≈10 ms on the 5300M, before any option plumbing.
 
 ## Boundary inventory

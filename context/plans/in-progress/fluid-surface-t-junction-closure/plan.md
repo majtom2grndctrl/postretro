@@ -41,6 +41,9 @@ Rows in Acceptance order.
 | 18 fluid install time before/after on stress-env-volumes | manual timing | manual |
 | 19 owner look in engine | owner | manual |
 
+## Follow-ups
+- Sibling subtraction is all-pairs within one fluid entity (`fluid_surface_pieces`): a 4,000-brush row takes about 32 s, every warm build, since the stage is uncached. Closure on the same level takes 0.25 s. Outside this brief; it wants the `SolidIndex` treatment for siblings.
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
@@ -48,7 +51,7 @@ Rows in Acceptance order.
 | 1 | Adopt the parked work: split commit, closure, install bounds, drift; baselines (pre-change `prl-build`, guard hashes); rerun the first slice on e24 and stress-env-volumes and every listed map — the riskiest premise is that one level-wide pass closes every map | integrating executor | — | done: every map closes (open before → after: e24 0→0, campaign-test 0→0, reflection-probes-test 10→0, vault-test 0→0, stress-env-volumes 6173→0; 832 welded, 2389 inserted, largest move 0.034 mm); guard hashes re-derived from the pre-change compiler match |
 | 2 | Insert edge choice by angular sector; P22, P23, P15 buried-only fixtures; angle-order assertion | integrating executor | 1 | done: `assert_face_kept` (angle order, peel-back insert bound, area, distinct, normal) on every fixture; P23 fails under first-edge choice, passes under the sector rule; maps still close |
 | 3 | Map suite: check, nothing-else-moves, drift push, drift map, id-54 bindings | integrating executor | 2 | done: `closure_maps` (ignored) — every listed map closes and keeps its faces; reflection-probes-test 8 and stress-env-volumes 382 bindings unchanged, 0 tilted, drift maps within 0.0012 texels; placement runs in-process through `reflection_probes::placed_bindings` on `fixture_pipeline` |
-| 4 | Bounded closure counts on a synthetic ocean | integrating executor | 2 | |
+| 4 | Bounded closure counts on a synthetic ocean | integrating executor | 2 | done: `closure_bounds` (ignored for fixture cost): brick ocean 16→32 columns as one entity and per brush, and one long top beside 1000→4000 small brushes, weld and insert tests within n log n. Per-vertex insert tests plateau (34, 37, 32 at 16/32/48 columns); 8 columns is dominated by the ocean's edge, so the test starts at 16 |
 | 5 | Determinism on a level that welds and inserts; id-54 cache hit | integrating executor | 2 | |
 | 6 | End to end through the renderer's packing on a lattice | integrating executor | 2 | |
 | 7 | Grid cut as one sweep per axis (P24); every-plane install bound | integrating executor | 1 | done: `cut_axis` matched the successive split on 25,805 generated parts (temporary equivalence test, not kept); the every-plane case fails the old cut (ratio 14.9 vs 4.7 allowed) and passes the sweep |

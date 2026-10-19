@@ -356,6 +356,7 @@ fn open_seams_among(faces: &[((usize, usize), Vec<DVec3>)]) -> Vec<OpenSeam> {
 
 mod burial;
 mod closure;
+mod closure_bounds;
 mod closure_maps;
 mod e24;
 mod push_split;

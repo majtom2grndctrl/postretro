@@ -48,7 +48,7 @@ With closure, both faces hold P→T→Q with T bit-identical. Crossings are a fu
 
 | Consumer | Reads | Effect of closure |
 |---|---|---|
-| Fluid pack (`pack_fluid_surfaces`) | positions, UVs, order | More collinear vertices. An ungridded face takes the centroid fan (`triangulate_convex_face`), a gridded one ear-clips (`triangulate_convex`, O(n²) in a part's vertices). Already handles inserts. |
+| Fluid pack (`pack_fluid_surfaces`) | positions, UVs, order | More collinear vertices. An ungridded face takes the centroid fan (`triangulate_convex_face`), a gridded one is cut at each lattice plane (`cut_face`, which copies the remaining polygon per plane, O(V·P) for P planes) and ear-clips (`triangulate_convex`, O(n²) in a part's vertices). Already handles inserts. |
 | Drift maps (`drift::volume_drift_maps`) | positions, UVs, per volume | Inserted vertices lie on the face's own plane within 0.1 mm (fit tolerance 1 mm) and carry their own side's UV, so split parts keep sharing one map. Risk: `FaceMap::fit` searches every vertex triple, O(n³) in a face's vertex count. |
 | Runtime drift resolve (`resolve_fluid_surface_drift`, `postretro/src/fluid_presentation/drift.rs`) | vertex-mean centroid in f32, 2 mm in | The mean moves with inserts but stays inside the convex piece in exact arithmetic. Thousands of inserts on one edge pull it to within about a millimetre of that edge, where an f32 sum far from the origin can err by more; P13 pins it. Each piece is wholly under or clear of each push by its 2 mm samples, so the resolved push is unchanged. The edge case is a push touching a piece by under 1 mm², which the split leaves whole. |
 | Cull bounds (`surface_bounds`) | vertex bounds | Grow by ≤ 0.1 mm at most. |
@@ -70,7 +70,7 @@ The 2 mm split depth is a depth along the face normal and is untouched by in-pla
 - **Index precedents in-tree.**
   - `SolidIndex`: an AABB tree with deterministic ascending results.
   - `partition/manifold.rs`: groups edges by quantized supporting line (`ANCHOR_QUANTUM` 1e-4). Quantized keys alone split near-equal points across a cell boundary, so a closure lookup must also probe neighbouring cells (dmap's `GetHashVert` comment, below).
-- **Install.** No new install pass. Closure raises per-face vertex counts, and two install steps are superlinear in them: the drift fit (cubic) and the gridded ear clip (quadratic per part). A large face bordered by many small pieces is the case to bound.
+- **Install.** No new install pass. Closure raises per-face vertex counts, and three install steps are superlinear in them: the drift fit (cubic), the gridded ear clip (quadratic per part), and the grid cut, quadratic where a long edge holds many inserts and many planes cross it. A large face bordered by many small pieces is the case to bound.
 
 ## Prior art
 
@@ -144,3 +144,6 @@ Not covered: ZHLT/VHLT `hlbsp` tjunc, Xash3D and PrimeXT compile tools, Unreal, 
 | P19 | a vertex just under 0.1 mm from a neighbour's edge in f64 that f32 encoding puts just over | closure judges on f32-rounded copies | no insert; the neighbour keeps its vertices bit for bit, and the check, reading the same encoded positions, agrees |
 | P20 | a weld moves the endpoint of face G's edge while another face's corner lies within 0.1 mm of that edge | weld, then insert against the edge as the weld leaves it | the corner ends bit-identical to a vertex of G, or more than 0.1 mm from G's boundary; no vertex moves more than 0.1 mm |
 | P21 | five corners of different faces in a line, each 0.06 mm from the next, 0.24 mm end to end | weld; no merge carries a vertex past the tolerance | no vertex moves more than 0.1 mm, and the shared-boundary check holds |
+| P22 | face A's edge holds two neighbours' corners on opposite sides of its line, each 0.09 mm off it and far apart along it, so inserting either first leaves the other more than 0.1 mm from the bent edge | inserts judged against the edge as the weld leaves it, then again as inserts bend it (P18), with the two neighbours in either entity order | A gains both, in order along the edge, whichever neighbour comes first; the check holds |
+| P23 | a neighbour's corner within 0.1 mm of two edges of one face, near an acute corner of a sloped piece but more than 0.1 mm from it | insert | the face gains the corner once, on one edge, in order along its boundary; the angle about its centroid strictly increases around the boundary; the check holds |
+| P24 | a face whose long edge carries thousands of inserted vertices, crossed along that edge by every lattice plane, at two edge lengths, so vertex count and plane count both double | closure inserts; install cuts the face at every plane, then triangulates and fits | install work, by count, grows no faster than n log n in the face's vertex count, the per-plane cut included |

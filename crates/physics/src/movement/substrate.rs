@@ -7,11 +7,12 @@ use parry3d::shape::Capsule;
 use crate::collision::moving::{
     CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined_parry, cast_ray_combined_parry,
 };
-use crate::collision::{SKIN_DISTANCE, STEP_UP_LIFT_MARGIN};
+use crate::collision::{CollisionCapsule, SKIN_DISTANCE, STEP_UP_LIFT_MARGIN};
 use crate::movement::SubstrateResult;
 use crate::movement::mover_carry::{
     apply_mover_carry, apply_mover_release_velocity, displace_from_movers, ground_ref_from_hit,
 };
+use crate::movement::swept::{self, StepParams};
 use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// Separation nudge along the contact normal applied when parry reports a
@@ -22,7 +23,8 @@ use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 /// `KinematicCharacterController::normal_nudge_factor` default. Critically
 /// it is NOT a physics step: it consumes zero `remaining_dt`, so a grounded
 /// player resting on the floor does not accumulate vertical drift across
-/// iterations.
+/// iterations. It must stay below `OVERLAP_TOLERANCE`: the tick overlap
+/// invariant exempts this one unswept write for that reason.
 const NORMAL_NUDGE: f32 = 1.0e-4;
 
 // The step-up lift (`step_height + STEP_UP_LIFT_MARGIN`) must exceed
@@ -39,6 +41,17 @@ const _: () = assert!(STEP_UP_LIFT_MARGIN > SKIN_DISTANCE);
 /// vault test pins the two together.
 pub(super) fn step_up_limit(step_height: f32) -> f32 {
     step_height + STEP_UP_LIFT_MARGIN - 2.0 * SKIN_DISTANCE
+}
+
+/// The player's step tuning for the shared step-up and snap-to-floor
+/// primitives: the descriptor's step height and walkable slope, and the
+/// player's lift margin.
+pub(super) fn player_step_params(component: &PlayerMovementComponent) -> StepParams {
+    StepParams {
+        step_height: component.ground_params.step_height,
+        lift_margin: STEP_UP_LIFT_MARGIN,
+        cos_walkable: component.cos_walkable,
+    }
 }
 
 /// Cosine threshold (≈ 60°) for detecting that a second wall contact within
@@ -86,65 +99,6 @@ pub(super) fn wish_dir_from_input(input: Vec2, facing_yaw: f32) -> Vec3 {
     }
 }
 
-/// Returns the lifted position if a step-up commit is warranted: horizontal
-/// motion is blocked by a wall-like surface AND a walkable surface exists
-/// within `step_height + skin` below the lifted capsule. Returns `None` for
-/// pure walls (nothing walkable above) so the slide loop handles them via
-/// plane projection without a 0.35 m intra-tick excursion.
-// Cohesive single-call physics probe params; grouping would add an abstraction
-// with one production caller and no reuse.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn step_up_lift(
-    collision: &CombinedCollisionWorld<'_>,
-    capsule: &Capsule,
-    current_pos: Vec3,
-    horiz_vel: Vec3,
-    horiz_speed: f32,
-    step_height: f32,
-    cos_walkable: f32,
-    remaining_dt: f32,
-    radius: f32,
-) -> Option<Vec3> {
-    if horiz_speed <= 1e-4 || step_height <= 0.0 {
-        return None;
-    }
-    let dir = horiz_vel / horiz_speed;
-    let probe_dist = (horiz_speed * remaining_dt).max(step_height + radius);
-    let probe = cast_capsule_query(collision, current_pos, capsule, dir, probe_dist)?;
-    if !(probe.time_of_impact < probe_dist && probe.normal.y.abs() < cos_walkable) {
-        return None;
-    }
-    let lifted = current_pos + Vec3::new(0.0, step_height + STEP_UP_LIFT_MARGIN, 0.0);
-    let lifted_probe = cast_capsule_query(collision, lifted, capsule, dir, probe_dist);
-    let lifted_clear = match lifted_probe {
-        None => true,
-        Some(h) => h.time_of_impact >= probe_dist - SKIN_DISTANCE,
-    };
-    if !lifted_clear {
-        return None;
-    }
-    // Sample beneath a point advanced past the obstacle: at decision time the
-    // capsule center is still over whatever was below `current_pos` (typically
-    // the lower floor for a step), so probing straight down from `lifted`
-    // would miss a higher walkable surface that only exists past the riser.
-    // Cap the forward offset at `radius + step_height` so narrow platforms
-    // (riser plus a small top) aren't overshot when `probe.time_of_impact`
-    // happens to be large (e.g. when probe_dist was inflated for high-speed
-    // motion).
-    let forward_offset = (probe.time_of_impact + radius + SKIN_DISTANCE).min(radius + step_height);
-    let sample = lifted + dir * forward_offset;
-    let down_probe = cast_capsule_query(collision, sample, capsule, Vec3::NEG_Y, step_height + 0.1);
-    let lifted_lands_on_walkable = match down_probe {
-        Some(h) => h.normal.y >= cos_walkable,
-        None => false,
-    };
-    if lifted_lands_on_walkable {
-        Some(lifted)
-    } else {
-        None
-    }
-}
-
 /// Shared physics substrate (movement-tick steps 7–8). Takes the desired
 /// velocity (already authored on `component.velocity` by the active state's
 /// intent) plus the current position/state, integrates it against the world,
@@ -178,6 +132,8 @@ pub(super) fn integrate_collision(
 ) -> (Vec3, SubstrateResult) {
     // 7. Move + collide. Iterative sweep-and-slide against the world trimesh.
     let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
+    let body = CollisionCapsule::new(component.capsule.radius, component.capsule.half_height);
+    let step = player_step_params(component);
     // The drift layer is 3D only while swimming (`push::apply`), and contact
     // leaves its vertical part to the fluid (`push::project_drift`); the state
     // does not change inside the substrate.
@@ -185,6 +141,7 @@ pub(super) fn integrate_collision(
 
     let mut current_pos = apply_mover_carry(position, carry_ground, collision);
     current_pos = displace_from_movers(component, carry_ground, collision, &capsule, current_pos);
+    let checked_start = current_pos;
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
     // Each of the substrate's walkable-contact paths overwrites this with its
@@ -198,20 +155,9 @@ pub(super) fn integrate_collision(
     // obstacle is in front AND a walkable surface sits beneath the lifted
     // position. Pure walls skip the lift to avoid intra-tick camera jitter.
     let horiz_vel = Vec3::new(component.velocity.x, 0.0, component.velocity.z);
-    let horiz_speed = horiz_vel.length();
-    let step_height = component.ground_params.step_height;
     if component.is_grounded()
-        && let Some(lifted) = step_up_lift(
-            collision,
-            &capsule,
-            current_pos,
-            horiz_vel,
-            horiz_speed,
-            step_height,
-            component.cos_walkable,
-            remaining_dt,
-            component.capsule.radius,
-        )
+        && let Some(lifted) =
+            swept::step_up(collision, body, current_pos, horiz_vel, remaining_dt, step)
     {
         current_pos = lifted;
     }
@@ -295,15 +241,25 @@ pub(super) fn integrate_collision(
                         // up to 4 = +0.1 m per tick).
                         if floor_push_remaining > 0.0 {
                             let push = floor_push_remaining;
-                            current_pos.y += push;
+                            // Swept: a ceiling within a skin stops the push.
+                            current_pos =
+                                swept::swept_move(collision, current_pos, body, Vec3::Y * push);
                             floor_push_remaining = 0.0;
                             consumed = 0.0;
                         } else {
                             // Already pushed this tick — no further lift is
-                            // safe. Free-advance tangentially and exit the
-                            // loop. Ground-stick at end of tick re-establishes
-                            // contact.
-                            current_pos += component.velocity * remaining_dt;
+                            // safe. Advance tangentially and exit the loop;
+                            // ground-stick at end of tick re-establishes
+                            // contact. The advance is swept: against a tilted
+                            // walkable contact (a ramp, a chamfered lip) the
+                            // y-zeroed velocity closes on the surface, and an
+                            // unswept advance carried the capsule into it.
+                            current_pos = swept::swept_move(
+                                collision,
+                                current_pos,
+                                body,
+                                component.velocity * remaining_dt,
+                            );
                             break;
                         }
                     } else {
@@ -370,8 +326,8 @@ pub(super) fn integrate_collision(
     // without making meaningful forward progress.
     //
     // When triggered we zero the horizontal part of `velocity` and of both
-    // protected layers (knockback and drift) and roll back the
-    // horizontal component of `current_pos` to its pre-slide value, killing
+    // protected layers (knockback and drift) and sweep the horizontal
+    // component of `current_pos` back toward its pre-slide value, killing
     // the residual XZ wobble that wall nudges and alternating projections
     // leave at a corner wedge. `velocity.y` and any vertical motion from
     // gravity / step-up / ground-stick are preserved so the rest of the
@@ -393,8 +349,15 @@ pub(super) fn integrate_collision(
             // its vertical current (`push::project_drift`).
             component.push_velocity.x = 0.0;
             component.push_velocity.z = 0.0;
-            current_pos.x = slide_start_xz.x;
-            current_pos.z = slide_start_xz.y;
+            // Swept: the rollback keeps the tick's new Y, so after a downhill
+            // slide restoring the start X/Z unswept would sink the body into
+            // the ramp. It stops short of the ramp instead.
+            let rollback = Vec3::new(
+                slide_start_xz.x - current_pos.x,
+                0.0,
+                slide_start_xz.y - current_pos.z,
+            );
+            current_pos = swept::swept_move(collision, current_pos, body, rollback);
         }
     }
     // Wall slide can project a small +vy when the capsule corners the edge of a
@@ -414,22 +377,14 @@ pub(super) fn integrate_collision(
     // `velocity.y <= 1e-3` rather than `<= 0`: the slide loop's per-iteration
     // velocity projection can leave a sub-millimetre positive y from
     // floating-point round-off even when the player is plainly grounded.
-    if (previous_ground.is_grounded() || floor_push_fired) && component.velocity.y <= 1.0e-3 {
-        let step_height = component.ground_params.step_height;
-        if step_height > 0.0
-            && let Some(floor) = floor_below(
-                component,
-                collision,
-                &capsule,
-                current_pos,
-                ground_stick_reach(step_height),
-            )
-        {
-            current_pos.y -= floor.drop;
-            hit_floor_this_tick = true;
-            last_floor_normal = Some(floor.normal);
-            ground_ref_this_tick = floor.ground;
-        }
+    if (previous_ground.is_grounded() || floor_push_fired)
+        && component.velocity.y <= 1.0e-3
+        && let Some((snapped, floor)) = swept::snap_to_floor(collision, body, current_pos, step)
+    {
+        current_pos = snapped;
+        hit_floor_this_tick = true;
+        last_floor_normal = Some(floor.normal);
+        ground_ref_this_tick = floor.ground;
     }
 
     // 8. Ground-state reset + landing result. The collision-state writes
@@ -472,6 +427,7 @@ pub(super) fn integrate_collision(
             hit_floor: hit_floor_this_tick,
             floor_normal: last_floor_normal,
             landed,
+            checked_start,
         },
     )
 }
@@ -559,8 +515,6 @@ pub(super) enum ResizeAnchor {
 ///   - `Head`: keep `position.y + (half_height + radius)` fixed ⇒
 ///     `delta = old_half_height - new_half_height` (positive on a shrink: the
 ///     center rises so the pinned head stays put).
-// Production caller: the `Crouching` intent (entry shrink + stand-up grow);
-// `movement--slide` reuses it later.
 pub(super) fn resize_capsule(
     component: &mut PlayerMovementComponent,
     target_half_height: f32,
@@ -576,47 +530,16 @@ pub(super) fn resize_capsule(
     }
 }
 
-/// Stand-up clearance probe: is there headroom to grow the capsule from the
-/// crouched size back to the standing size with the FEET PLANTED?
-///
-/// Collision exposes only `cast_capsule` (a sweep) — there is no overlap/
-/// intersection query — so headroom is tested by sweeping the CROUCHED-size
-/// capsule straight UP by the head-rise delta. With feet planted, growing the
-/// half-height from crouched to standing raises the head by
-/// `2 × (standing_half_height − crouched_half_height)` (the center rises by the
-/// half-height delta and the top extends a further half-height delta above the
-/// center). A hit within that distance means a ceiling blocks the standing
-/// capsule; clear means the player can stand.
-///
-/// State-agnostic (D8): takes the crouched and standing half-heights as plain
-/// sizes, not a crouch flag — `movement--slide` reuses it to test whether a
-/// slide can stand up. Returns `true` when headroom is CLEAR.
-// Production caller: the `Crouching` intent (stand-up release + crouch-jump);
-// `movement--slide` reuses it later.
-pub(super) fn standup_clearance_probe(
-    component: &PlayerMovementComponent,
-    collision: &CombinedCollisionWorld<'_>,
-    position: Vec3,
-    crouched_half_height: f32,
-    standing_half_height: f32,
-) -> bool {
-    let head_rise = 2.0 * (standing_half_height - crouched_half_height);
-    upward_clearance_probe(
-        component,
-        collision,
-        position,
-        crouched_half_height,
-        head_rise,
-    )
-}
-
-/// Stand-up clearance in the direction `anchor` grows the capsule: `Feet`
-/// raises the head by `2 × (standing_half_height − crouched_half_height)`, the
-/// upward sweep [`standup_clearance_probe`] runs; `Head` lowers the feet by the
-/// same distance, so the crouched capsule sweeps down instead. The swim seam
-/// stands a crouched pawn up with the anchor its crouch entered with, so an
-/// airborne pawn tests the floor below it, not the ceiling above. Returns
-/// `true` when the growth is CLEAR.
+/// Stand-up clearance: can the capsule grow from `crouched_half_height` to
+/// `standing_half_height` about `anchor`? Growing raises the head (`Feet`) or
+/// lowers the feet (`Head`) by `2 × (standing_half_height −
+/// crouched_half_height)`, so the crouched capsule sweeps that far in the growth
+/// direction; the swept volume is exactly the grown capsule. The combined
+/// (mover-aware) collision answers only sweeps, so a sweep, not an overlap
+/// query, tests the room. Every growing resize keeps its entry's anchor and
+/// passes this first: crouch and slide stand-up, the swim seam, and a crouch or
+/// slide entry whose authored crouch capsule is the larger one. A growth of zero
+/// or less (a shrink) is always clear. Returns `true` when the growth is CLEAR.
 pub(super) fn anchored_standup_clearance_probe(
     component: &PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
@@ -643,9 +566,8 @@ pub(super) fn anchored_standup_clearance_probe(
 /// Upward headroom probe: can a capsule of `half_height` (the live radius)
 /// centred at `position` rise `rise` metres straight up without hitting
 /// anything? Sweeps that capsule up by `rise`; a hit strictly within it blocks.
-/// A rise of zero or less needs nothing cleared. Shared by crouch stand-up
-/// (through [`standup_clearance_probe`]) and the swim seam's fluid-jump
-/// qualification. Returns `true` when headroom is CLEAR.
+/// A rise of zero or less needs nothing cleared. The swim seam's fluid-jump
+/// qualification uses it. Returns `true` when headroom is CLEAR.
 pub(super) fn upward_clearance_probe(
     component: &PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
@@ -699,67 +621,6 @@ pub(super) fn touches_ceiling(
         cast_capsule_query(collision, position, &capsule, Vec3::Y, SKIN_DISTANCE),
         Some(h) if h.normal.y < 0.0
     )
-}
-
-/// How far below a pose the ground-stick probe looks: the step-up lift plus a
-/// skin width and headroom, so a body that stepped down a riser or rode a floor
-/// push still finds its floor.
-fn ground_stick_reach(step_height: f32) -> f32 {
-    step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03
-}
-
-/// A walkable floor the ground-stick probe found below a pose.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct FloorBelow {
-    /// How far the capsule drops to rest a skin width above the floor.
-    pub(super) drop: f32,
-    pub(super) normal: Vec3,
-    pub(super) ground: GroundRef,
-}
-
-/// The ground-stick probe: a swept capsule down-cast within `max_down`, then a
-/// centre-ray fallback. Reads collision only; the caller decides whether to
-/// drop onto the floor (the substrate's ground-stick) or only to classify
-/// against it (a teleport arrival, which never relocates).
-pub(super) fn floor_below(
-    component: &PlayerMovementComponent,
-    collision: &CombinedCollisionWorld<'_>,
-    capsule: &Capsule,
-    position: Vec3,
-    max_down: f32,
-) -> Option<FloorBelow> {
-    if let Some(h) = cast_capsule_query(collision, position, capsule, Vec3::NEG_Y, max_down)
-        && h.normal.y >= component.cos_walkable
-    {
-        return Some(FloorBelow {
-            drop: h.time_of_impact,
-            normal: h.normal,
-            ground: ground_ref_from_hit(h),
-        });
-    }
-    // Wall-normal preference fallback: when the capsule is pressed against a
-    // wall the swept downcast may report the wall's normal first (n.y ≈ 0).
-    // Without a fallback that silently latches the player above the floor. A
-    // thin ray from the capsule center straight down ignores wall geometry on
-    // the side and finds the floor below.
-    let half_height = component.capsule.half_height;
-    let radius = component.capsule.radius;
-    let ray_max = max_down + half_height + radius;
-    let h = cast_ray_query(collision, position, Vec3::NEG_Y, ray_max)?;
-    if h.normal.y < component.cos_walkable {
-        return None;
-    }
-    // Ray TOI is distance from capsule center to the surface; the capsule
-    // rests with its lower hemisphere at `half_height + radius` below center,
-    // separated by SKIN_DISTANCE.
-    let drop = h.time_of_impact - (half_height + radius + SKIN_DISTANCE);
-    // Only downward, and only within the same envelope the swept downcast
-    // would have covered.
-    (drop > 0.0 && drop <= max_down).then(|| FloorBelow {
-        drop,
-        normal: h.normal,
-        ground: ground_ref_from_hit(h),
-    })
 }
 
 /// Air-jump (double-jump) gate: the airborne jump fires only while a charge

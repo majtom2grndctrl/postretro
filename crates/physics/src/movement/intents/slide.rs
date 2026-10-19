@@ -7,7 +7,7 @@ use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::{stand_up_resize, stand_up_transition};
 use crate::movement::substrate::{
-    JumpEdges, ResizeAnchor, air_jump_ready, resize_capsule, standup_clearance_probe,
+    JumpEdges, ResizeAnchor, air_jump_ready, anchored_standup_clearance_probe, resize_capsule,
     wish_dir_from_input,
 };
 use crate::movement::{MovementEvents, MovementInput, Transition};
@@ -21,12 +21,25 @@ pub(crate) const SLIDE_MAX_MS: f32 = 3_000.0;
 /// both descriptor blocks: it reuses crouch's capsule dimensions and eye target.
 pub(crate) fn try_enter_slide(
     component: &mut PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
 ) -> Option<Transition> {
     let slide = component.slide.as_ref()?;
     let crouch = component.crouch.as_ref()?;
     let horizontal = Vec2::new(component.velocity.x, component.velocity.z);
     if horizontal.length() < slide.min_speed {
+        return None;
+    }
+    // A crouch capsule taller than the standing one grows on entry, feet
+    // planted: it needs headroom first, or the pawn keeps running.
+    if !anchored_standup_clearance_probe(
+        component,
+        collision,
+        *position,
+        component.capsule.half_height,
+        crouch.half_height,
+        ResizeAnchor::Feet,
+    ) {
         return None;
     }
 
@@ -79,12 +92,13 @@ fn natural_exit(
         };
     }
 
-    if standup_clearance_probe(
+    if anchored_standup_clearance_probe(
         component,
         collision,
         *position,
         component.capsule.half_height,
         component.standing_half_height,
+        ResizeAnchor::Feet,
     ) {
         // Slide entry is always feet-anchored, even if it subsequently reaches
         // a ledge, so its inverse stand-up resize must use Feet as well.
@@ -177,12 +191,13 @@ pub(crate) fn sliding_intent(
         false
     };
     if jumped {
-        if standup_clearance_probe(
+        if anchored_standup_clearance_probe(
             component,
             collision,
             *position,
             component.capsule.half_height,
             component.standing_half_height,
+            ResizeAnchor::Feet,
         ) {
             stand_up_resize(component, position, ResizeAnchor::Feet);
             *eye_current = component.capsule.eye_height;

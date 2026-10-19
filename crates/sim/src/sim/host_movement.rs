@@ -82,6 +82,9 @@ pub fn run_host_movement_tick(
             position,
             |index| world.static_world.teleporters.armed(registry, index),
         );
+        if let Some(overlap) = &events.static_overlap {
+            super::report_static_overlap(world.static_world, registry, id, overlap);
+        }
         // Write the advanced pose. `get_component` re-read tolerates a Transform that
         // vanished mid-loop (it cannot here — single-threaded — but keeps the write
         // total).

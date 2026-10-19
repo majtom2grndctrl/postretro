@@ -1,12 +1,11 @@
 // The single post-movement pawn relocation chokepoint, shared by authority and prediction.
 // See: context/lib/movement.md §6 (Teleport)
 
-use super::substrate::floor_below;
+use super::swept::floor_below;
 use super::{MovementEvents, MovementInput, MovementStateEdge};
-use crate::collision::SKIN_DISTANCE;
 use crate::collision::moving::CombinedCollisionWorld;
+use crate::collision::{CollisionCapsule, MAP_UNIT_METRES, SKIN_DISTANCE};
 use glam::{Quat, Vec3};
-use parry3d::shape::Capsule;
 use postretro_foundation::{
     GroundRef, MovementState, MovementStateKind, PlayerMovementComponent, wrap_teleport_yaw,
 };
@@ -129,7 +128,7 @@ pub(super) fn resolve(
 /// arrival never drops the pawn onto the floor, so any wider band would ground a
 /// floating pawn: its next tick would take a grounded jump, or a ground-entry
 /// vault, from feet hanging in the air.
-const ARRIVAL_GROUND_TOLERANCE: f32 = SKIN_DISTANCE + 0.0254;
+const ARRIVAL_GROUND_TOLERANCE: f32 = SKIN_DISTANCE + MAP_UNIT_METRES;
 
 /// Ground the pawn on the static floor under its arrival pose, or leave it
 /// airborne with coyote spent. The capsule never moves: the arrival is exact.
@@ -155,13 +154,12 @@ fn settle_arrival_ground(
 ) {
     let floor = (component.velocity.y <= 1.0e-3)
         .then(|| {
-            let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
             floor_below(
-                component,
                 &CombinedCollisionWorld::static_only(collision.static_world),
-                &capsule,
+                CollisionCapsule::new(component.capsule.radius, component.capsule.half_height),
                 arrival,
                 ARRIVAL_GROUND_TOLERANCE,
+                component.cos_walkable,
             )
         })
         .flatten();

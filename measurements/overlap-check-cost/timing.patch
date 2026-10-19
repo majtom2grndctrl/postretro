@@ -1,0 +1,46 @@
+diff --git a/crates/sim/src/sim/mod.rs b/crates/sim/src/sim/mod.rs
+index 91cabed..c8f2500 100644
+--- a/crates/sim/src/sim/mod.rs
++++ b/crates/sim/src/sim/mod.rs
+@@ -456,7 +456,7 @@ where
+     let touch_edges = HashMap::new();
+     let factions = FactionRegistry::default();
+     let faction_sentiment = RefCell::new(FactionSentimentState::default());
+-    simulate_tick_with_presentation_aim(
++    let events = simulate_tick_with_presentation_aim(
+         registry,
+         collision_world,
+         hit_zone_store,
+@@ -484,8 +484,30 @@ where
+         trigger_context,
+         |_, _| {},
+         on_impact,
+-        crate::sim::TimingGate::OFF,
+-    )
++        crate::sim::TimingGate::new(std::env::var("OVL_MEASURE").is_ok()),
++    );
++    if std::env::var("OVL_MEASURE").is_ok() {
++        use cpu_stages::SimStage;
++        thread_local! {
++            static TOTALS: std::cell::RefCell<(u64, u64, u64, u64, u64)> = const { std::cell::RefCell::new((0, 0, 0, 0, 0)) };
++        }
++        TOTALS.with(|totals| {
++            let mut t = totals.borrow_mut();
++            t.0 += 1;
++            t.1 += events.cpu.value(SimStage::Tick).unwrap_or(0);
++            t.2 += events.cpu.value(SimStage::OverlapCheck).unwrap_or(0);
++            t.3 += events.cpu.value(SimStage::SteerAgents).unwrap_or(0);
++            t.4 += events.cpu.value(SimStage::Movement).unwrap_or(0);
++            if t.0 % 600 == 0 {
++                let n = t.0 as f64;
++                eprintln!(
++                    "OVL_MEASURE ticks {} sim_tick {:.4} ms sim_overlap_check {:.4} ms sim_steer_agents {:.4} ms sim_movement {:.4} ms (per-tick means)",
++                    t.0, t.1 as f64 / n / 1e6, t.2 as f64 / n / 1e6, t.3 as f64 / n / 1e6, t.4 as f64 / n / 1e6
++                );
++            }
++        });
++    }
++    events
+ }
+ 
+ /// Fixed-tick simulation with the render-assembly camera aim captured by the App.

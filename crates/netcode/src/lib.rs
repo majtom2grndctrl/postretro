@@ -1349,6 +1349,15 @@ pub(crate) fn client_predict_tick_with_sender<C: MovementCollisionSource>(
         };
     };
 
+    if let Some(overlap) = &movement_events.static_overlap {
+        crate::sim::report_static_overlap(
+            collision.combined_collision().static_world,
+            registry,
+            armed.entity_id,
+            overlap,
+        );
+    }
+
     // 5. Stamp previous = current for the local pawn BEFORE writing the new predicted
     //    pose — the per-tick transform-history bookkeeping the render path needs. The
     //    connected client skips `simulate_tick` (it would rerun AI/weapons/death), so

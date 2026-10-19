@@ -1,20 +1,22 @@
 // Movable navigation agent: collide-and-slide harness.
 //
-// A minimal, standalone capsule sweep-and-slide for navmesh agents — iterative
-// slide, step-up, ground-stick, and gravity — built directly on
-// `collision::cast_capsule` / `cast_ray`. It deliberately does NOT touch the
-// player movement substrate (`movement::integrate_collision` / `step_up_lift`
-// are private and player-coupled); this copies the *pattern* (iterative
-// project-and-advance, step-up probe, ground-stick down-cast) in an
-// agent-shaped, much smaller form. The agent is a custom-kinematic capsule, not
-// a simulated rigid body — collision queries only.
+// A minimal capsule sweep-and-slide for navmesh agents — iterative slide,
+// step-up, ground-stick, and gravity — built on `collision::cast_capsule`. It
+// shares the swept step-up and snap-to-floor geometry with the player substrate
+// (`movement::swept`), passing its own step tuning, but keeps its own controller:
+// the player's `integrate_collision` is player-coupled. The agent is a
+// custom-kinematic capsule, not a simulated rigid body — collision queries only.
 //
 // See: context/lib/movement.md §1 (custom-kinematic capsule, collision-only)
 //      context/lib/entity_model.md §7 (collision)
 
 use glam::Vec3;
 
-use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
+use crate::collision::StaticOverlap;
+use crate::collision::moving::CombinedCollisionWorld;
+use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule};
+use crate::movement::overlap_check::check_own_movement;
+use crate::movement::swept::{StepParams, snap_to_floor, step_up};
 use postretro_collision::{EnvironmentView, resolve_gravity};
 
 /// Iteration cap for the slide loop — bounds work when a capsule wedges into a
@@ -38,6 +40,9 @@ const _: () = assert!(STEP_UP_LIFT_MARGIN > SKIN_DISTANCE);
 /// Separation nudge applied along the contact normal on a TOI=0 (resting)
 /// contact, to break out of the skin band so the next sweep iteration makes
 /// tangential progress. Consumes zero `dt` (not a physics step).
+///
+/// Must stay below `crate::collision::OVERLAP_TOLERANCE` (0.5 mm): the tick
+/// overlap invariant exempts the nudge for that reason.
 const NORMAL_NUDGE: f32 = 1.0e-4;
 
 /// Termination guard: when remaining motion length squared falls below this,
@@ -66,6 +71,17 @@ impl AgentCapsule {
     fn collision_shape(&self) -> CollisionCapsule {
         CollisionCapsule::new(self.radius, self.half_height)
     }
+
+    /// The agent's step tuning for the shared step-up and snap-to-floor
+    /// primitives: its baked step height, its own lift margin and the fixed
+    /// agent walkable slope.
+    fn step_params(&self) -> StepParams {
+        StepParams {
+            step_height: self.step_height,
+            lift_margin: STEP_UP_LIFT_MARGIN,
+            cos_walkable: COS_WALKABLE,
+        }
+    }
 }
 
 /// Result of one collide-and-slide step.
@@ -79,12 +95,15 @@ pub(crate) struct SlideResult {
     /// vertical carrying gravity / ground state). The caller stores this back on
     /// the agent so momentum and fall speed persist across ticks.
     pub(crate) velocity: Vec3,
+    /// The step ended inside static geometry after starting clear; the caller
+    /// logs it (`movement_overlap`).
+    pub(crate) overlap: Option<StaticOverlap>,
 }
 
 /// Resolve one tick of agent motion: take a desired horizontal velocity, the
 /// current capsule-center position, the carried vertical velocity, and dt;
-/// integrate gravity, sweep-and-slide horizontally against the world, run the
-/// step-up probe, then ground-stick. Returns the resolved position, the
+/// integrate gravity, run the step-up probe, sweep-and-slide against the
+/// world, then ground-stick. Returns the resolved position, the
 /// grounded flag, and the post-step velocity.
 ///
 /// `desired_horizontal` is the steering velocity (XZ; any Y is ignored). The
@@ -104,6 +123,10 @@ pub(crate) fn collide_and_slide(
     dt: f32,
 ) -> SlideResult {
     let collision_shape = capsule.collision_shape();
+    // Agents collide with static geometry only; the shared primitives take the
+    // combined query, so wrap it with no movers.
+    let query = CombinedCollisionWorld::static_only(world);
+    let step = capsule.step_params();
     let gravity = agent_gravity(environment, position);
 
     // Compose the tick velocity: steering horizontal + integrated gravity. The
@@ -122,16 +145,14 @@ pub(crate) fn collide_and_slide(
     // obstacle blocks horizontal motion AND a walkable surface sits within the
     // step beneath the lifted position. Pure walls skip the lift.
     let horiz = Vec3::new(velocity.x, 0.0, velocity.z);
-    let horiz_speed = horiz.length();
     if velocity.y <= 0.0
-        && let Some(lifted) = step_up_lift(
-            world,
+        && let Some(lifted) = step_up(
+            &query,
             collision_shape,
-            capsule,
             current_pos,
             horiz,
-            horiz_speed,
             remaining_dt,
+            step,
         )
     {
         current_pos = lifted;
@@ -189,7 +210,7 @@ pub(crate) fn collide_and_slide(
     // a wall corner. Only when not climbing (vertical velocity non-positive).
     let mut grounded = hit_floor;
     if velocity.y <= 1e-3
-        && let Some(snapped) = ground_stick(world, collision_shape, capsule, current_pos)
+        && let Some((snapped, _floor)) = snap_to_floor(&query, collision_shape, current_pos, step)
     {
         current_pos = snapped;
         grounded = true;
@@ -207,6 +228,7 @@ pub(crate) fn collide_and_slide(
         position: current_pos,
         grounded,
         velocity,
+        overlap: check_own_movement(world, position, current_pos, collision_shape),
     }
 }
 
@@ -220,100 +242,8 @@ fn agent_gravity(environment: EnvironmentView<'_>, position: Vec3) -> f32 {
     resolve_gravity(environment, position).min(0.0)
 }
 
-/// Step-up probe: returns the lifted position when horizontal motion is blocked
-/// by a wall-like surface AND a walkable surface exists within `step_height`
-/// below the lifted capsule. Returns `None` for pure walls (handled by the
-/// slide loop's plane projection) so the agent does not make a spurious
-/// intra-tick vertical excursion.
-fn step_up_lift(
-    world: &CollisionWorld,
-    collision_shape: CollisionCapsule,
-    capsule: &AgentCapsule,
-    current_pos: Vec3,
-    horiz_vel: Vec3,
-    horiz_speed: f32,
-    remaining_dt: f32,
-) -> Option<Vec3> {
-    let step_height = capsule.step_height;
-    if horiz_speed <= 1e-4 || step_height <= 0.0 {
-        return None;
-    }
-    let radius = capsule.radius;
-    let dir = horiz_vel / horiz_speed;
-    let probe_dist = (horiz_speed * remaining_dt).max(step_height + radius);
-
-    // 1. Is a wall-like obstacle in front?
-    let probe = cast_capsule(world, current_pos, collision_shape, dir, probe_dist)?;
-    if !(probe.time_of_impact < probe_dist && probe.normal.y.abs() < COS_WALKABLE) {
-        return None;
-    }
-
-    // 2. Is the lifted capsule clear of the obstacle?
-    let lifted = current_pos + Vec3::new(0.0, step_height + STEP_UP_LIFT_MARGIN, 0.0);
-    let lifted_clear = match cast_capsule(world, lifted, collision_shape, dir, probe_dist) {
-        None => true,
-        Some(h) => h.time_of_impact >= probe_dist - SKIN_DISTANCE,
-    };
-    if !lifted_clear {
-        return None;
-    }
-
-    // 3. Does a walkable surface sit beneath a point advanced past the riser?
-    let forward_offset = (probe.time_of_impact + radius + SKIN_DISTANCE).min(radius + step_height);
-    let sample = lifted + dir * forward_offset;
-    let down = cast_capsule(
-        world,
-        sample,
-        collision_shape,
-        Vec3::NEG_Y,
-        step_height + 0.1,
-    );
-    match down {
-        Some(h) if h.normal.y >= COS_WALKABLE => Some(lifted),
-        _ => None,
-    }
-}
-
-/// Ground-stick down-cast: find a walkable floor within the step envelope below
-/// the capsule and return the position snapped to rest one `SKIN_DISTANCE` above
-/// it. Returns `None` when no walkable floor is within range (the agent is
-/// genuinely airborne). A swept down-cast first; a thin center ray as a fallback
-/// when the sweep reports a wall normal (capsule pressed against a wall).
-fn ground_stick(
-    world: &CollisionWorld,
-    collision_shape: CollisionCapsule,
-    capsule: &AgentCapsule,
-    position: Vec3,
-) -> Option<Vec3> {
-    let step_height = capsule.step_height;
-    if step_height <= 0.0 {
-        return None;
-    }
-    let max_down = step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03;
-
-    // Swept down-cast: returns the toi from the capsule's lower hemisphere.
-    if let Some(h) = cast_capsule(world, position, collision_shape, Vec3::NEG_Y, max_down)
-        && h.normal.y >= COS_WALKABLE
-    {
-        return Some(position - Vec3::new(0.0, h.time_of_impact, 0.0));
-    }
-
-    // Fallback: a thin center ray ignores wall geometry on the side and finds
-    // the floor below. The capsule rests with its lower hemisphere at
-    // `half_height + radius` below center, separated by SKIN_DISTANCE.
-    let half_height = capsule.half_height;
-    let radius = capsule.radius;
-    let ray_max = max_down + half_height + radius;
-    let ray = cast_ray(world, position, Vec3::NEG_Y, ray_max)?;
-    if ray.normal.y >= COS_WALKABLE {
-        let target_gap = half_height + radius + SKIN_DISTANCE;
-        let drop = ray.time_of_impact - target_gap;
-        if drop > 0.0 && drop <= max_down {
-            return Some(position - Vec3::new(0.0, drop, 0.0));
-        }
-    }
-    None
-}
+#[cfg(test)]
+mod overlap_tests;
 
 #[cfg(test)]
 mod tests {

@@ -255,9 +255,9 @@ pub(super) fn dispatch_state_intent(
     let gravity = environment.gravity;
     let mut state = std::mem::replace(&mut component.movement_state, MovementState::Normal);
     let transition = match &mut state {
-        MovementState::Normal => {
-            normal_intent(component, input, jump_edges, gravity, dt, position, events)
-        }
+        MovementState::Normal => normal_intent(
+            component, input, jump_edges, gravity, dt, collision, position, events,
+        ),
         MovementState::Dash { elapsed_ms, boost } => {
             dash_intent(component, input, gravity, dt, elapsed_ms, boost)
         }

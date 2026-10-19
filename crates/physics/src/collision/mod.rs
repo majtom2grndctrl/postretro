@@ -24,6 +24,7 @@
 //! See: `context/lib/entity_model.md` §7.
 
 use std::fmt;
+use std::sync::atomic::AtomicBool;
 
 use glam::Vec3;
 use parry3d::math::Pose;
@@ -36,6 +37,8 @@ use postretro_level_loader::LevelWorld;
 
 mod capsule_triangle;
 pub mod moving;
+mod overlap;
+pub use overlap::{MAP_UNIT_METRES, OverlapCheckTimer, StaticOverlap};
 mod skin_cast;
 mod solid_cells;
 
@@ -84,6 +87,11 @@ pub struct CollisionWorld {
     /// Solid and exterior cells, for shapes no triangle touches.
     solid_cells: solid_cells::SolidCells,
     pub teleporters: crate::teleporters::Teleporters,
+    /// Texture per triangle, for the tick overlap check's warning.
+    surfaces: overlap::SurfaceTable,
+    /// The tick overlap check's one warning per level load.
+    overlap_warned: AtomicBool,
+    overlap_timer: OverlapCheckTimer,
 }
 
 impl CollisionWorld {
@@ -93,8 +101,22 @@ impl CollisionWorld {
     pub fn from_triangles_for_test(vertices: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Self {
         Self {
             mesh: TriMesh::new(vertices, triangles).expect("test collision mesh must be valid"),
-            solid_cells: Default::default(),
-            teleporters: Default::default(),
+            ..Self::new()
+        }
+    }
+
+    /// [`Self::from_triangles_for_test`] with a texture index per triangle
+    /// (`u16::MAX` for none) into `texture_names`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_textured_triangles_for_test(
+        vertices: Vec<Vec3>,
+        triangles: Vec<[u32; 3]>,
+        triangle_textures: Vec<u16>,
+        texture_names: Vec<String>,
+    ) -> Self {
+        Self {
+            surfaces: overlap::SurfaceTable::for_test(triangle_textures, texture_names),
+            ..Self::from_triangles_for_test(vertices, triangles)
         }
     }
 
@@ -105,6 +127,21 @@ impl CollisionWorld {
         use parry3d::query::PointQuery;
 
         self.mesh.project_point(&Pose::IDENTITY, point, solid).point
+    }
+
+    /// How deep an upright capsule at `position` overlaps the static mesh: the
+    /// deepest surface penetration over every triangle, from exact
+    /// capsule–triangle closest points; a core piercing a triangle counts as
+    /// the full radius. Zero when clear. Fixtures compare it against the tick
+    /// overlap tolerance.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn overlap_depth_for_test(&self, position: Vec3, capsule: CollisionCapsule) -> f32 {
+        let shape = ParryCapsule::new_y(capsule.half_height, capsule.radius);
+        let pose = Pose::from_translation(position);
+        self.mesh
+            .triangles()
+            .map(|triangle| overlap::triangle_depth(&pose, &shape, &triangle))
+            .fold(0.0, f32::max)
     }
 
     /// Initialize with a structurally valid 1-triangle mesh. `parry3d::TriMesh`
@@ -123,6 +160,9 @@ impl CollisionWorld {
                 .expect("the one-triangle placeholder mesh is always valid"),
             solid_cells: Default::default(),
             teleporters: Default::default(),
+            surfaces: Default::default(),
+            overlap_warned: AtomicBool::new(false),
+            overlap_timer: OverlapCheckTimer::default(),
         }
     }
 
@@ -162,6 +202,8 @@ impl CollisionWorld {
             mesh: TriMesh::new(points, triangles).map_err(CollisionMeshError::from_parry)?,
             solid_cells: solid_cells::SolidCells::from_level(world),
             teleporters: crate::teleporters::Teleporters::from_section(&world.teleporters),
+            surfaces: overlap::SurfaceTable::from_level(world),
+            ..Self::new()
         })
     }
 
@@ -193,6 +235,13 @@ impl Default for CollisionWorld {
 /// `SKIN_DISTANCE` away. The slide loop in `movement::tick` relies on this
 /// separation for clearance; do not duplicate the offset by pushing again.
 pub const SKIN_DISTANCE: f32 = 0.02;
+
+/// How far a capsule may overlap a static surface and still count as resting
+/// contact rather than intersecting it. Swept own movement stops this far short
+/// of surfaces, and the tick overlap check reports deeper overlap
+/// (`movement.md` §1). It is the skin cast's band intrusion allowance, so a
+/// swept move's dropped graze never ends past it.
+pub const OVERLAP_TOLERANCE: f32 = skin_cast::MAX_BAND_INTRUSION;
 
 /// Query limit for an inclusive `max_toi`. parry's trimesh traversal (its BVH
 /// `find_best`) drops a hit lying exactly at `max_time_of_impact`, unlike its
@@ -244,7 +293,7 @@ pub struct CastHit {
 /// Lift margin added on top of `step_height` by player step-up and by placement
 /// ground probes, so "within the step envelope" means the same thing for
 /// selection and motion.
-pub(crate) const STEP_UP_LIFT_MARGIN: f32 = 0.05;
+pub const STEP_UP_LIFT_MARGIN: f32 = 0.05;
 
 /// Capsule geometry for static placement checks. The capsule axis is world +Y,
 /// matching [`cast_capsule`].
@@ -357,10 +406,23 @@ pub(crate) fn cast_capsule_parry(
     dir: Vec3,
     max_toi: f32,
 ) -> Option<ShapeCastHit> {
+    cast_capsule_parry_to(world, pos, capsule, dir, max_toi, SKIN_DISTANCE)
+}
+
+/// [`cast_capsule_parry`] stopping `target_distance` from surfaces instead of
+/// one skin width.
+pub(crate) fn cast_capsule_parry_to(
+    world: &CollisionWorld,
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<ShapeCastHit> {
     let pos1 = Pose::from_translation(pos);
     let options = ShapeCastOptions {
         max_time_of_impact: inclusive_query_limit(max_toi),
-        target_distance: SKIN_DISTANCE,
+        target_distance,
         stop_at_penetration: false,
         ..Default::default()
     };

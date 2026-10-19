@@ -537,6 +537,9 @@ where
     } else {
         environment
     };
+    // Every body's overlap check this tick reads the level's static world, so
+    // its timer spans host movement and agent steering alike.
+    collision_world.overlap_timer().begin(timing.is_enabled());
     registry.borrow_mut().snapshot_transforms();
     if let Some(ctx) = trigger_context
         .as_ref()
@@ -997,6 +1000,9 @@ where
     repointed_pawns.dedup();
     if let Some(nanos) = environment_timer.body_resolve_nanos() {
         cpu.add_nanos(SimStage::Environment, nanos);
+    }
+    if let Some(nanos) = collision_world.overlap_timer().finish() {
+        cpu.add_nanos(SimStage::OverlapCheck, nanos);
     }
     drop(tick_scope);
 
@@ -1753,6 +1759,7 @@ fn foot_probe_inverse(
 }
 
 mod host_movement;
+mod movement_overlap;
 mod reload;
 pub(crate) mod weapon_stage;
 
@@ -1766,6 +1773,7 @@ pub use weapon_stage::apply_authorized_weapon_impact_damage;
 pub use host_movement::drop_vault_if_dead;
 #[cfg(any(test, feature = "test-support"))]
 pub use host_movement::run_host_movement_tick;
+pub use movement_overlap::report_static_overlap;
 
 // `pub(crate)` so Task 5/7's timed-reaction test modules (new sibling files) can
 // reach `SimHarness` and its `frame`/`new`/`tick`/`record` methods.

@@ -16,7 +16,7 @@ use super::face_normal;
 const PLANE_TOLERANCE: f64 = 1.0e-3;
 /// A face vertex fits a map's UVs within this many texels, plus its rounding
 /// allowance.
-const UV_TOLERANCE_TEXELS: f64 = 0.01;
+pub(super) const UV_TOLERANCE_TEXELS: f64 = 0.01;
 /// Multiples of the inputs' f32 rounding a fit allows beyond the fixed
 /// tolerances. Generous on purpose: sharing a map between coplanar faces of
 /// one texture and facing whose UVs nearly agree is harmless, while splitting
@@ -93,8 +93,14 @@ struct FaceMap {
 }
 
 impl FaceMap {
-    /// Fitted to the face's largest-area vertex triangle; `None` when no
-    /// triangle spans an area.
+    /// Fitted to a spanning triangle of the face's vertices, found in three
+    /// linear passes: the vertex farthest from the first, the one farthest
+    /// from that, then the one farthest from the line through those two, the
+    /// earliest in ring order on a tie. Within a factor of 4 of the
+    /// largest-area vertex triangle in both area and shortest altitude, so the
+    /// fit stays as well conditioned, while a face the compiler gave thousands
+    /// of collinear vertices costs linear work. Taken in ring order, so it
+    /// winds as the convex face does. `None` when no triangle spans an area.
     fn fit(
         face: &EnvironmentSurfaceFace,
         uv: impl Fn(usize) -> Vec2,
@@ -102,25 +108,25 @@ impl FaceMap {
     ) -> Option<Self> {
         let position = |i: usize| world_position(&face.vertices[i]);
         let count = face.vertices.len();
-        let mut best = (0.0f64, 0, 0, 0);
-        for a in 0..count {
-            for b in a + 1..count {
-                for c in b + 1..count {
-                    let area = (position(b) - position(a))
-                        .cross(position(c) - position(a))
-                        .length_squared();
-                    if area > best.0 {
-                        best = (area, a, b, c);
-                    }
-                }
-            }
+        if count < 3 {
+            return None;
         }
-        let (area, a, b, c) = best;
+        super::count_install_steps(3 * count);
+        let from = farthest(count, |i| position(i).distance_squared(position(0)));
+        let to = farthest(count, |i| position(i).distance_squared(position(from)));
+        let axis = position(to) - position(from);
+        let apex = farthest(count, |i| {
+            (position(i) - position(from)).cross(axis).length_squared()
+        });
+        let mut corners = [from, to, apex];
+        corners.sort_unstable();
+        let [a, b, c] = corners;
+        let (e1, e2) = (position(b) - position(a), position(c) - position(a));
+        let n = e1.cross(e2);
+        let area = n.length_squared();
         if !(area > 0.0 && area.is_finite()) {
             return None;
         }
-        let (e1, e2) = (position(b) - position(a), position(c) - position(a));
-        let n = e1.cross(e2);
         let twice_area = n.length();
         let inverse = 1.0 / n.length_squared();
         let gradient = |d1: f64, d2: f64| (e2.cross(n) * d1 + n.cross(e1) * d2) * inverse;
@@ -159,6 +165,7 @@ impl FaceMap {
         rounding: Rounding,
         uv_tolerance: DVec2,
     ) -> bool {
+        super::count_install_steps(face.vertices.len());
         let slope = DVec2::new(self.uv_gradient[0].length(), self.uv_gradient[1].length());
         // A vertex's UV error under this map from one face's rounding: its
         // stored UV's, plus its position's carried through the gradient.
@@ -181,6 +188,18 @@ impl FaceMap {
 
 fn world_position(vertex: &EnvironmentSurfaceVertex) -> DVec3 {
     Vec3::from(vertex.position).as_dvec3()
+}
+
+/// The first of `0..count` with the greatest `score`.
+fn farthest(count: usize, score: impl Fn(usize) -> f64) -> usize {
+    let mut best = (0, score(0));
+    for i in 1..count {
+        let value = score(i);
+        if value > best.1 {
+            best = (i, value);
+        }
+    }
+    best.0
 }
 
 /// Build every drawable face's drift map for one volume. `vertex_ranges[i]`

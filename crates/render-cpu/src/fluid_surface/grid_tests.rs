@@ -808,6 +808,33 @@ fn a_face_repeating_a_vertex_cuts_without_a_crack() {
     assert_eq!(edge(&ranges[0]), edge(&ranges[1]));
 }
 
+// Regression: a part whose every corner the compiler repeated had no vertex
+// the ring turned at, since a zero-length edge turns nowhere, so it dropped
+// most of its area.
+#[test]
+fn a_face_repeating_every_corner_cuts_without_losing_area() {
+    // The x = 0.75 plane cuts one corner off; the other part keeps four
+    // repeated corners.
+    let pentagon = face(&[
+        [0.3, 1.1, 0.2],
+        [0.3, 1.1, 0.2],
+        [0.3, 1.1, 0.5],
+        [0.3, 1.1, 0.5],
+        [0.5, 1.1, 0.6],
+        [0.5, 1.1, 0.6],
+        [0.76, 1.1, 0.5],
+        [0.76, 1.1, 0.5],
+        [0.7, 1.1, 0.2],
+        [0.7, 1.1, 0.2],
+    ]);
+    let mesh = pack(&[volume(vec![pentagon.clone()])]);
+    let range = assert_gridded_face(&mesh, 0, &pentagon, SPACING);
+    assert!(
+        range.len() > pentagon.vertices.len(),
+        "the plane cuts the face"
+    );
+}
+
 // Regression: a range the search gave up counting counted as no planes, so
 // the bound fell under the true count (P18).
 #[test]

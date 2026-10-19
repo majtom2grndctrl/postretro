@@ -3,9 +3,9 @@
 //!
 //! Fluid surface contracts: buried, flush and sibling-shared faces draw nothing;
 //! partly buried faces keep only their exposed part. Faces split along push
-//! brushes where their 2 mm drift sample enters the push; a volume a push cut
-//! has no T-junction, and one no push cut keeps its subtraction output. The
-//! e24 fixture's pools sample the pushes over them.
+//! brushes where their 2 mm drift sample enters the push. Seams between fluid
+//! faces close level-wide. The e24 fixture's pools sample the pushes over
+//! them.
 
 use glam::DVec3;
 use postretro_level_format::environment_volumes::{
@@ -17,7 +17,8 @@ use crate::map_data::MapData;
 use crate::map_format::MapFormat;
 use crate::parse::parse_map_file;
 
-use super::encode_environment_volumes_section;
+use super::closure::{SEAM_TOLERANCE, boundary_distance};
+use super::{encode_environment_volumes_section, encode_environment_volumes_section_unclosed};
 
 /// Quake map units to engine meters.
 const UNIT: f64 = 0.0254;
@@ -54,6 +55,19 @@ fn fluid(brushes: &[String]) -> String {
 
 /// Worldspawn with `world` brushes, then `volumes` as entities 1, 2, …
 fn compile(world: &[String], volumes: &[String]) -> (MapData, EnvironmentVolumesSection) {
+    compile_with(world, volumes, true)
+}
+
+/// [`compile`], with its faces as they stand before seam closure.
+fn compile_unclosed(world: &[String], volumes: &[String]) -> EnvironmentVolumesSection {
+    compile_with(world, volumes, false).1
+}
+
+fn compile_with(
+    world: &[String],
+    volumes: &[String],
+    close: bool,
+) -> (MapData, EnvironmentVolumesSection) {
     static NEXT_MAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let map_text = format!(
         "{}\n{}\n",
@@ -72,7 +86,12 @@ fn compile(world: &[String], volumes: &[String]) -> (MapData, EnvironmentVolumes
     let mut texture_names = TextureNamesSection {
         names: vec!["world_tex".to_string()],
     };
-    let section = encode_environment_volumes_section(
+    let encode = if close {
+        encode_environment_volumes_section
+    } else {
+        encode_environment_volumes_section_unclosed
+    };
+    let section = encode(
         &map.environment_volumes,
         -9.81,
         &map.brush_volumes,
@@ -259,6 +278,84 @@ fn pushes_at(section: &EnvironmentVolumesSection, point: DVec3) -> Vec<[f32; 3]>
         .collect()
 }
 
+/// One vertex of a fluid face lying within the seam tolerance of another
+/// fluid face's boundary without being, bit for bit, one of its vertices.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OpenSeam {
+    /// (record, face) of the face whose boundary the vertex lies near.
+    face: (usize, usize),
+    /// (record, face) of the face the vertex belongs to.
+    from: (usize, usize),
+    vertex: DVec3,
+}
+
+/// Every open seam in `section`, level-wide across records, judged on the
+/// encoded positions with closure's own distance test.
+fn open_seams(section: &EnvironmentVolumesSection) -> Vec<OpenSeam> {
+    let faces: Vec<((usize, usize), Vec<DVec3>)> = section
+        .volumes
+        .iter()
+        .enumerate()
+        .flat_map(|(record, volume)| {
+            volume
+                .surface_faces
+                .iter()
+                .enumerate()
+                .map(move |(face, surface)| ((record, face), positions(surface)))
+        })
+        .collect();
+    open_seams_among(&faces)
+}
+
+/// [`open_seams`] over faces given as (record, face) and encoded positions.
+fn open_seams_among(faces: &[((usize, usize), Vec<DVec3>)]) -> Vec<OpenSeam> {
+    use std::collections::{HashMap, HashSet};
+
+    /// Bucket edge, meters: coarse, as only candidates are bucketed.
+    const CELL: f64 = 1.0;
+    let cell = |point: DVec3| (point / CELL).floor().as_i64vec3().to_array();
+    let mut buckets: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+    for (index, (_, polygon)) in faces.iter().enumerate() {
+        let (mut min, mut max) = (DVec3::INFINITY, DVec3::NEG_INFINITY);
+        for &point in polygon {
+            (min, max) = (min.min(point), max.max(point));
+        }
+        let ([x0, y0, z0], [x1, y1, z1]) = (cell(min - SEAM_TOLERANCE), cell(max + SEAM_TOLERANCE));
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                for z in z0..=z1 {
+                    buckets.entry([x, y, z]).or_default().push(index);
+                }
+            }
+        }
+    }
+    let key = |point: DVec3| point.to_array().map(f64::to_bits);
+    let mut found = Vec::new();
+    for (from, (from_id, vertices)) in faces.iter().enumerate() {
+        for &vertex in vertices {
+            let mut seen = HashSet::new();
+            for &face in buckets.get(&cell(vertex)).into_iter().flatten() {
+                if face == from || !seen.insert(face) {
+                    continue;
+                }
+                let (face_id, polygon) = &faces[face];
+                if boundary_distance(polygon, vertex) <= SEAM_TOLERANCE
+                    && !polygon.iter().any(|&point| key(point) == key(vertex))
+                {
+                    found.push(OpenSeam {
+                        face: *face_id,
+                        from: *from_id,
+                        vertex,
+                    });
+                }
+            }
+        }
+    }
+    found
+}
+
 mod burial;
+mod closure;
+mod closure_maps;
 mod e24;
 mod push_split;

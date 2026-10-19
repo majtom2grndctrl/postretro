@@ -2,7 +2,7 @@
 // probe lattice, so baked light evaluated per vertex varies within a cell.
 // See: context/lib/rendering_pipeline.md §7.3a
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use glam::{DVec2, DVec3, Vec3};
 use postretro_level_format::environment_volumes::{
@@ -360,6 +360,7 @@ fn split(
     cut: &mut GridCut,
     crossings: &mut HashMap<(i64, u32, u32), u32>,
 ) -> Option<(Vec<u32>, Vec<u32>)> {
+    super::count_install_steps(polygon.len());
     let sides: Vec<Side> = polygon
         .iter()
         .map(|&i| side(cut.positions[i as usize][axis], plane))
@@ -429,12 +430,20 @@ fn crossing(
 /// Triangulate a convex polygon over its own vertices. A grid cut leaves
 /// collinear vertices on a part's edges (the compiler's T-junction inserts,
 /// and planes passing near a corner); each stays a triangle corner. Each step
-/// clips a corner beside a collinear vertex, which turns that vertex into a
-/// corner, so three corners always remain; with none left, any corner.
-/// Corners are judged on the positions as packed, in f32, so a part keeps its
-/// drawn area however far from the origin, down to a final triangle judged at
-/// one vertex: area under about 1e-12 of its longer sides' product can be
-/// dropped. A part with no corner left has no area and draws nothing.
+/// clips the earliest corner in ring order beside a collinear vertex, which
+/// turns that vertex into a corner, so three corners always remain; with none
+/// left, the earliest corner. Corners are judged on the positions as packed,
+/// in f32, so a part keeps its drawn area however far from the origin, down
+/// to a final triangle judged at one vertex: area under about 1e-12 of its
+/// longer sides' product can be dropped. A part with no corner left has no
+/// area and draws nothing. A vertex repeating the one before it, as packed,
+/// joins the ring once: the repeat draws no edge, and its zero-length edge
+/// turns nowhere, so it would block every clip beside it.
+///
+/// A clip changes the corner status of the two vertices beside the tip
+/// alone, so the ring keeps its candidates ordered and re-files only those
+/// near the tip: n log n in the part's vertices, which the compiler's
+/// T-junction inserts can number in thousands.
 fn triangulate_convex(
     polygon: &[u32],
     positions: &[DVec3],
@@ -443,38 +452,113 @@ fn triangulate_convex(
 ) {
     let packed = |i: u32| positions[i as usize].as_vec3().as_dvec3();
     let turns = |prev: u32, at: u32, next: u32| {
+        super::count_install_steps(1);
         let (into, out) = (packed(at) - packed(prev), packed(next) - packed(at));
         into.cross(out).dot(normal) > CORNER_SINE * into.length() * out.length()
     };
-    let mut ring = polygon.to_vec();
-    let mut corner = Vec::with_capacity(ring.len());
-    while ring.len() > 3 {
-        let count = ring.len();
-        corner.clear();
-        corner.extend((0..count).map(|i| {
-            turns(
-                ring[(i + count - 1) % count],
-                ring[i],
-                ring[(i + 1) % count],
-            )
-        }));
-        let beside_collinear =
-            |i: usize| corner[i] && (!corner[(i + count - 1) % count] || !corner[(i + 1) % count]);
-        let Some(tip) = (0..count)
-            .find(|&i| beside_collinear(i))
-            .or_else(|| (0..count).find(|&i| corner[i]))
+    super::count_install_steps(polygon.len());
+    let mut vertices: Vec<u32> = Vec::with_capacity(polygon.len());
+    for &vertex in polygon {
+        if vertices
+            .last()
+            .is_none_or(|&last| packed(last) != packed(vertex))
+        {
+            vertices.push(vertex);
+        }
+    }
+    while let [first, .., last] = vertices[..]
+        && packed(first) == packed(last)
+    {
+        vertices.pop();
+    }
+    let count = vertices.len();
+    if count < 3 {
+        return;
+    }
+    let mut ring = ClipRing {
+        prev: (0..count).map(|slot| (slot + count - 1) % count).collect(),
+        next: (0..count).map(|slot| (slot + 1) % count).collect(),
+        corner: Vec::with_capacity(count),
+        beside_collinear: BTreeSet::new(),
+        corners: BTreeSet::new(),
+    };
+    let turns_at = |ring: &ClipRing, slot: usize| {
+        turns(
+            vertices[ring.prev[slot]],
+            vertices[slot],
+            vertices[ring.next[slot]],
+        )
+    };
+    for slot in 0..count {
+        let corner = turns_at(&ring, slot);
+        ring.corner.push(corner);
+    }
+    for slot in 0..count {
+        ring.file(slot);
+    }
+    let (mut live, mut any_live) = (count, 0);
+    while live > 3 {
+        let Some(&tip) = ring
+            .beside_collinear
+            .first()
+            .or_else(|| ring.corners.first())
         else {
             return;
         };
-        triangles.push([
-            ring[(tip + count - 1) % count],
-            ring[tip],
-            ring[(tip + 1) % count],
-        ]);
-        ring.remove(tip);
+        let (before, after) = (ring.prev[tip], ring.next[tip]);
+        triangles.push([vertices[before], vertices[tip], vertices[after]]);
+        ring.next[before] = after;
+        ring.prev[after] = before;
+        ring.corner[tip] = false;
+        ring.file(tip);
+        live -= 1;
+        any_live = after;
+        ring.corner[before] = turns_at(&ring, before);
+        ring.corner[after] = turns_at(&ring, after);
+        for slot in [ring.prev[before], before, after, ring.next[after]] {
+            ring.file(slot);
+        }
     }
-    if ring.len() == 3 && turns(ring[0], ring[1], ring[2]) {
-        triangles.push([ring[0], ring[1], ring[2]]);
+    // The last three in ring order, from the earliest slot.
+    let second = ring.next[any_live];
+    let mut last = [any_live, second, ring.next[second]];
+    let first = (0..3).min_by_key(|&i| last[i]).expect("three slots");
+    last.rotate_left(first);
+    let [a, b, c] = last.map(|slot| vertices[slot]);
+    if turns(a, b, c) {
+        triangles.push([a, b, c]);
+    }
+}
+
+/// A part's ring under ear clipping: each live slot linked to its live
+/// neighbours, and the slots a clip may take, ordered by slot.
+struct ClipRing {
+    prev: Vec<usize>,
+    next: Vec<usize>,
+    /// Whether the ring turns at each slot, judged on its live neighbours.
+    corner: Vec<bool>,
+    /// Corners beside a collinear slot: clipping one makes that slot a corner.
+    beside_collinear: BTreeSet<usize>,
+    corners: BTreeSet<usize>,
+}
+
+impl ClipRing {
+    /// Re-file `slot` among the candidates from its and its neighbours'
+    /// corner status.
+    fn file(&mut self, slot: usize) {
+        super::count_install_steps(1);
+        let corner = self.corner[slot];
+        let beside = corner && !(self.corner[self.prev[slot]] && self.corner[self.next[slot]]);
+        for (set, member) in [
+            (&mut self.corners, corner),
+            (&mut self.beside_collinear, beside),
+        ] {
+            if member {
+                set.insert(slot);
+            } else {
+                set.remove(&slot);
+            }
+        }
     }
 }
 

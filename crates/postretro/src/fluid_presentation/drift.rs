@@ -2,10 +2,12 @@
 // over it at the speed that push carries a swimmer.
 // See: context/lib/rendering_pipeline.md §7.3a · context/lib/movement.md §6
 
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 use postretro_collision::{EnvironmentView, EnvironmentVolumes, resolve_particle_acceleration};
 use postretro_combat_model::FluidMovementTable;
-use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
+use postretro_level_format::environment_volumes::{
+    EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
+};
 use postretro_render_cpu::fluid_surface::face_normal;
 
 /// How far inside the fluid a face samples its push, meters, so a current
@@ -43,13 +45,9 @@ pub(crate) fn resolve_fluid_surface_drift(
         for face in &record.surface_faces {
             let drift = match (viscosity, face_normal(face)) {
                 (Some(viscosity), Some(normal)) => {
-                    let centroid = face
-                        .vertices
-                        .iter()
-                        .map(|vertex| Vec3::from(vertex.position))
-                        .sum::<Vec3>()
-                        / face.vertices.len() as f32;
-                    let inside = centroid - normal * FLUID_DRIFT_SAMPLE_DEPTH;
+                    let inside = (area_centroid(face, normal)
+                        - normal.as_dvec3() * f64::from(FLUID_DRIFT_SAMPLE_DEPTH))
+                    .as_vec3();
                     let (_, push) = resolve_particle_acceleration(view, inside);
                     postretro_physics::movement::steady_drift_velocity(
                         push,
@@ -64,6 +62,30 @@ pub(crate) fn resolve_fluid_surface_drift(
         }
     }
     drifts
+}
+
+/// Area centroid of a convex face with outward unit `normal`, fanned in f64
+/// from its first vertex. The compiler's T-junction inserts add zero-area
+/// fan triangles, so thousands on one edge leave it where it was, where the
+/// vertex mean would sit within a millimetre of that edge. Relative to one
+/// vertex, it holds its precision far from the origin. The vertex mean stands
+/// in for a face too thin to weigh.
+fn area_centroid(face: &EnvironmentSurfaceFace, normal: Vec3) -> DVec3 {
+    let position = |vertex: &EnvironmentSurfaceVertex| Vec3::from(vertex.position).as_dvec3();
+    let first = position(&face.vertices[0]);
+    let normal = normal.as_dvec3();
+    let (mut weighted, mut weight) = (DVec3::ZERO, 0.0);
+    for pair in face.vertices[1..].windows(2) {
+        let (a, b) = (position(&pair[0]) - first, position(&pair[1]) - first);
+        let twice_area = a.cross(b).dot(normal);
+        weighted += twice_area * (a + b) / 3.0;
+        weight += twice_area;
+    }
+    if weight > 0.0 && weighted.is_finite() {
+        return first + weighted / weight;
+    }
+    let sum: DVec3 = face.vertices.iter().map(|v| position(v) - first).sum();
+    first + sum / face.vertices.len() as f64
 }
 
 #[cfg(test)]

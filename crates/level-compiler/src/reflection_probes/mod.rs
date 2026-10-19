@@ -14,7 +14,7 @@ mod derived;
 mod hit;
 mod lightmap_sample;
 mod materials;
-mod placement;
+pub(crate) mod placement;
 mod reference;
 mod sdf_lights;
 mod sh_sample;

@@ -307,6 +307,154 @@ fn packing_skips_only_the_zero_length_segment_of_a_duplicated_vertex() {
     assert_eq!(mesh.indices.len(), 4 * 3);
 }
 
+/// A 2 m × 11 m level top 100 m out at height 1.1, CCW seen from +Y, whose
+/// x = 102 edge carries `inserts` collinear vertices from z 7.9 down to 1:
+/// what closure gives an ocean's edge beside many small pieces. Positions and
+/// texel UVs (one projection, about 39 texels per meter) are computed in f64
+/// and rounded to f32 separately, as the compiler stores them.
+fn inserted_top(inserts: usize) -> EnvironmentSurfaceFace {
+    let (x0, x1, z0, z1) = (100.0, 102.0, 1.0, 12.0);
+    let mut points = vec![DVec2::new(x0, z0), DVec2::new(x0, z1), DVec2::new(x1, z1)];
+    points.extend(
+        (0..inserts).map(|i| DVec2::new(x1, 7.9 - 6.9 * (i as f64 + 0.5) / inserts as f64)),
+    );
+    points.push(DVec2::new(x1, z0));
+    EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: points
+            .iter()
+            .map(|p| {
+                vertex(
+                    [p.x as f32, 1.1, p.y as f32],
+                    (*p / 0.0254).as_vec2().to_array(),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Asserts the mesh of one up-facing face, its own vertices leading, tiles
+/// it: every triangle winds with the face and has area, their areas sum to
+/// the face's, every mesh vertex is a triangle corner, and each face segment
+/// in `segments` (from ring vertex `i` to `i + 1`) is the edge of exactly one
+/// triangle, so no triangle edge spans a vertex there. Linear in the mesh, so
+/// it holds at thousands of vertices.
+fn assert_tiles_up_facing_face(
+    mesh: &FluidSurfaceMesh,
+    face: &EnvironmentSurfaceFace,
+    segments: std::ops::Range<u32>,
+) {
+    let position = |i: u32| Vec3::from(mesh.vertices[i as usize].position).as_dvec3();
+    let mut corner = vec![false; mesh.vertices.len()];
+    let mut edges = std::collections::HashMap::new();
+    let mut tiled = 0.0;
+    for &[a, b, c] in mesh.indices.as_chunks::<3>().0 {
+        let twice = signed_twice_area(position(a), position(b), position(c), DVec3::Y);
+        assert!(twice > 0.0, "triangle {a} {b} {c} has twice-area {twice}");
+        tiled += twice;
+        for (from, to) in [(a, b), (b, c), (c, a)] {
+            corner[from as usize] = true;
+            *edges.entry((from, to)).or_insert(0) += 1;
+        }
+    }
+    for i in segments {
+        assert_eq!(
+            edges.get(&(i, i + 1)),
+            Some(&1),
+            "face segment {i}-{}",
+            i + 1
+        );
+    }
+    let ring: Vec<DVec3> = face
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    let whole: f64 = (1..ring.len() - 1)
+        .map(|i| signed_twice_area(ring[0], ring[i], ring[i + 1], DVec3::Y))
+        .sum();
+    assert!(
+        (whole - tiled).abs() <= 1.0e-6 * whole,
+        "face {whole}, triangles {tiled}"
+    );
+    if let Some(vertex) = corner.iter().position(|&is_corner| !is_corner) {
+        panic!("vertex {vertex} is no triangle corner");
+    }
+}
+
+// Closure can give one face thousands of collinear vertices. Such a face
+// packs whole, gridded (a lattice plane crossing it, so one part holds every
+// insert) and ungridded, keeps the drift map of the same face without them,
+// and its install work, counted, grows within n log n of its vertex count.
+#[test]
+fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps() {
+    // Planes at multiples of 8 m: only z = 8 crosses the face.
+    let lattice = FluidGridLattice::new([0.0; 3], [16.0; 3]).expect("a usable lattice");
+    let pack = |face: &EnvironmentSurfaceFace, lattice: Option<&FluidGridLattice>| {
+        INSTALL_STEPS.with(|steps| steps.set(0));
+        let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[[64, 64]], 1, lattice);
+        (mesh, INSTALL_STEPS.with(std::cell::Cell::get))
+    };
+    let bare = inserted_top(0);
+    let corners: Vec<DVec3> = bare
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    for lattice in [Some(&lattice), None] {
+        let (plain, _) = pack(&bare, lattice);
+        let plain_map = plain.face_drift_maps[0].expect("the face draws");
+        let mut counted = Vec::new();
+        for inserts in [2000, 8000] {
+            let face = inserted_top(inserts);
+            let (mesh, steps) = pack(&face, lattice);
+            assert_eq!(mesh.grid.is_some(), lattice.is_some());
+            if lattice.is_some() {
+                assert!(
+                    mesh.vertices.iter().any(|v| v.position[2] == 8.0),
+                    "the z = 8 plane cuts the face"
+                );
+            }
+            // From the first insert to the corner after the last; no plane
+            // crosses there.
+            assert_tiles_up_facing_face(&mesh, &face, 3..3 + inserts as u32);
+
+            // Within the fit tolerance of the bare face's map at its corners.
+            let map = mesh.face_drift_maps[0].expect("the face draws");
+            assert_eq!(map.vertex_count as usize, mesh.vertices.len());
+            for corner in &corners {
+                let delta = *corner - corners[0];
+                for axis in 0..2 {
+                    let gap =
+                        map.uv_gradient[axis].as_dvec3() - plain_map.uv_gradient[axis].as_dvec3();
+                    let texels = gap.dot(delta).abs() * 64.0;
+                    assert!(
+                        texels <= drift::UV_TOLERANCE_TEXELS,
+                        "{inserts} inserts: map parts by {texels} texels at {corner}"
+                    );
+                }
+            }
+            counted.push((face.vertices.len(), steps));
+        }
+        let [(small, small_steps), (large, large_steps)] = counted[..] else {
+            unreachable!("two sizes");
+        };
+        assert!(
+            small_steps >= small as u64,
+            "the count reaches the fit and the triangulation"
+        );
+        let n_log_n = |n: usize| n as f64 * (n as f64).log2();
+        let ratio = large_steps as f64 / small_steps as f64;
+        let bound = n_log_n(large) / n_log_n(small);
+        assert!(
+            ratio <= bound,
+            "gridded {}: {small_steps} steps at {small} vertices, {large_steps} at {large}: \
+             ratio {ratio}, n log n allows {bound}",
+            lattice.is_some()
+        );
+    }
+}
+
 #[test]
 fn packing_gives_an_added_centroid_the_faces_mean_uv() {
     // UV is affine in position, so the mean of the corners' UVs is exact.

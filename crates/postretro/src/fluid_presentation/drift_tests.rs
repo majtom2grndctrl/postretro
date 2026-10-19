@@ -305,6 +305,44 @@ fn an_unsplit_face_under_part_of_a_push_drifts_whole_by_its_sample_point() {
     );
 }
 
+/// [`top_face`] whose x = `x1` edge carries `inserts` collinear vertices: what
+/// T-junction closure gives a piece's edge beside many small pieces.
+fn top_face_with_inserts(x0: f32, x1: f32, inserts: usize) -> EnvironmentSurfaceFace {
+    let mut face = top_face(x0, x1);
+    let edge = (0..inserts).map(|i| {
+        let z = 1.0 - 2.0 * (i as f32 + 0.5) / inserts as f32;
+        EnvironmentSurfaceVertex {
+            position: [x1, WATERLINE, z],
+            uv: [x1 * 39.37, z * 39.37],
+        }
+    });
+    face.vertices.splice(2..2, edge);
+    face
+}
+
+// P13: a piece clear of a push whose edge on the push boundary carries
+// thousands of inserted vertices resolves the push of the same piece without
+// them. 300 m out, an f32 vertex mean of such a piece errs by millimetres,
+// past that edge and into the push.
+#[test]
+fn a_piece_clear_of_a_push_drifts_as_without_thousands_of_inserts_on_its_boundary_edge() {
+    let (x0, x1) = (300.37, 301.37);
+    let records = [fluid_record(
+        "water",
+        vec![top_face(x0, x1), top_face_with_inserts(x0, x1, 4000)],
+    )];
+    let beside = current(Vec3::new(6.0, 0.0, 0.0), x1, x1 + 1.0);
+    let got = drifts(&records, vec![beside], &water_table());
+    assert_near(got[0], Vec3::ZERO);
+    assert_near(got[1], Vec3::ZERO);
+
+    // Under a push covering the piece, both drift alike.
+    let over = current(Vec3::new(6.0, 0.0, 0.0), x0 - 1.0, x1 + 1.0);
+    let got = drifts(&records, vec![over], &water_table());
+    assert_near(got[0], Vec3::new(3.0, 0.0, 0.0));
+    assert_near(got[1], got[0]);
+}
+
 // The fog, wave and reflectivity fields are local presentation: surface
 // drift resolves from the movement tuning and never reads them, in the app's
 // resolve or the renderer-side rate fill.

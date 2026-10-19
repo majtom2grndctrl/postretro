@@ -1,5 +1,5 @@
-//! Push splitting at the drift sample depth, and T-junction closure where a
-//! push cut.
+//! Push splitting at the drift sample depth; the split pieces' T-junctions
+//! close.
 
 use super::*;
 
@@ -287,68 +287,6 @@ fn a_whole_top_gains_the_corners_its_split_sides_leave_on_its_edges() {
     }
     assert_eq!(t_junctions(record), Vec::<DVec3>::new());
     assert_parts_wholly_under_or_clear(&section, record);
-}
-
-/// Every face of `record` is a quad with each vertex on a corner of its own
-/// bounds: subtraction's output, with no vertex inserted on an edge.
-#[track_caller]
-fn assert_subtraction_quads(record: &EnvironmentVolumeRecord) {
-    for face in &record.surface_faces {
-        let points: Vec<DVec3> = face.vertices.iter().map(|v| quake(v.position)).collect();
-        assert_eq!(points.len(), 4, "a vertex was inserted: {points:?}");
-        let (mut min, mut max) = (points[0], points[0]);
-        for &point in &points {
-            (min, max) = (min.min(point), max.max(point));
-        }
-        for point in &points {
-            for axis in 0..3 {
-                let at = |bound: f64| (point[axis] - bound).abs() < 1e-2;
-                assert!(
-                    at(min[axis]) || at(max[axis]),
-                    "{point} is not a corner of {points:?}"
-                );
-            }
-        }
-    }
-}
-
-// Burial and unequal siblings leave corners on neighbouring edges, but no push
-// cuts these volumes, so each face keeps exactly what subtraction produced and
-// the section's bytes do not depend on push splitting.
-#[test]
-fn volumes_no_push_cuts_keep_their_subtraction_output_with_no_inserted_vertex() {
-    // The wall covers the fluid's -x face only below z = 64.
-    let wall = box_brush([-32, -128, -128], [0, 128, 64], "world_tex");
-    let (_, buried) = compile(
-        &[wall],
-        &[fluid(&[box_brush([0, -32, 32], [64, 32, 96], "water_tex")])],
-    );
-    // Two brushes sharing a top plane, the east one twice as wide.
-    let (_, siblings) = compile(
-        &distant_world(),
-        &[fluid(&[
-            box_brush([0, 0, 0], [64, 64, 64], "water_tex"),
-            box_brush([64, 0, 0], [128, 128, 64], "water_tex"),
-        ])],
-    );
-    assert_areas(
-        &siblings.volumes[0],
-        &[
-            ("+x", 128.0 * 64.0),
-            ("-x", 2.0 * 64.0 * 64.0),
-            ("+y", 2.0 * 64.0 * 64.0),
-            ("-y", 2.0 * 64.0 * 64.0),
-            ("+z", 3.0 * 64.0 * 64.0),
-            ("-z", 3.0 * 64.0 * 64.0),
-        ],
-    );
-    for record in [&buried.volumes[0], &siblings.volumes[0]] {
-        assert!(
-            !t_junctions(record).is_empty(),
-            "the fixture leaves a corner on a neighbouring edge"
-        );
-        assert_subtraction_quads(record);
-    }
 }
 
 // A map with pushes and no fluid has no surface faces to split.

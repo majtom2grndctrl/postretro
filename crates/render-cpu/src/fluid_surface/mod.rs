@@ -192,6 +192,23 @@ fn world_position(vertex: &EnvironmentSurfaceVertex) -> DVec3 {
     Vec3::from(vertex.position).as_dvec3()
 }
 
+// Steps of the per-face install work that reads a face's vertices: the drift
+// fit and fit test, the grid split and ear clip, and the centroid fan. Each
+// step is O(log n) at most. Closure can give one face thousands of vertices,
+// so tests bound this count's growth, not wall time.
+#[cfg(test)]
+thread_local! {
+    static INSTALL_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_install_steps(steps: usize) {
+    INSTALL_STEPS.with(|count| count.set(count.get() + steps as u64));
+}
+
+#[cfg(not(test))]
+fn count_install_steps(_steps: usize) {}
+
 /// Whether a convex face has a vertex on, or within [`COLLINEAR_DISTANCE`]
 /// of, the line through its ring neighbours, or one (nearly) repeating the
 /// vertex before it.
@@ -217,16 +234,16 @@ fn has_collinear_vertex(vertices: &[EnvironmentSurfaceVertex]) -> bool {
 /// Triangulate one convex face whose vertices start at `base` in `vertices`,
 /// appending indices with the face's CCW-from-outside winding.
 ///
-/// The surface is translucent, so a T-junction shows as a crack. In a volume a
-/// push cut, the compiler closes them by inserting collinear vertices on face
-/// edges, at its own absolute spacing (down to 0.1 mm, plus duplicates after
-/// f32 rounding). A fan from one apex cannot honour such a vertex: the
-/// triangle beside it collapses and a chord spans an edge across it. A face
-/// with a collinear vertex therefore gains one vertex at its vertex centroid,
-/// which lies inside the convex face, and fans from it over every boundary
-/// segment. Every boundary vertex stays a corner, every segment borders one
-/// triangle, and no area is dropped, whatever the spacing; only a zero-length
-/// segment draws nothing. Taking a near-flat real corner for collinear is
+/// The surface is translucent, so a T-junction shows as a crack. The compiler
+/// closes them by inserting collinear vertices on face edges, at its own
+/// absolute spacing (down to 0.1 mm, plus duplicates after f32 rounding). A
+/// fan from one apex cannot honour such a vertex: the triangle beside it
+/// collapses and a chord spans an edge across it. A face with a collinear
+/// vertex therefore gains one vertex at its vertex centroid, which lies inside
+/// the convex face, and fans from it over every boundary segment. Every
+/// boundary vertex stays a corner, every segment borders one triangle, and no
+/// area is dropped, whatever the spacing; only a zero-length segment draws
+/// nothing. Taking a near-flat real corner for collinear is
 /// harmless. Every other face keeps the fan from its first vertex: `n - 2`
 /// triangles and no extra vertex.
 fn triangulate_convex_face(
@@ -236,6 +253,7 @@ fn triangulate_convex_face(
     indices: &mut Vec<u32>,
 ) {
     let count = face.vertices.len() as u32;
+    count_install_steps(face.vertices.len());
     if !has_collinear_vertex(&face.vertices) {
         for i in 1..count - 1 {
             indices.extend_from_slice(&[base, base + i, base + i + 1]);

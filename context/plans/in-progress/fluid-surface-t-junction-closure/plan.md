@@ -44,7 +44,7 @@ Rows in Acceptance order.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Adopt the parked work: split commit, closure, install bounds, drift; baselines (pre-change `prl-build`, guard hashes); rerun the first slice on e24 and stress-env-volumes and every listed map — the riskiest premise is that one level-wide pass closes every map | integrating executor | — | |
+| 1 | Adopt the parked work: split commit, closure, install bounds, drift; baselines (pre-change `prl-build`, guard hashes); rerun the first slice on e24 and stress-env-volumes and every listed map — the riskiest premise is that one level-wide pass closes every map | integrating executor | — | done: every map closes (open before → after: e24 0→0, campaign-test 0→0, reflection-probes-test 10→0, vault-test 0→0, stress-env-volumes 6173→0; 832 welded, 2389 inserted, largest move 0.034 mm); guard hashes re-derived from the pre-change compiler match |
 | 2 | Insert edge choice by angular sector; P22, P23, P15 buried-only fixtures; angle-order assertion | integrating executor | 1 | |
 | 3 | Map suite: check, nothing-else-moves, drift push, drift map, id-54 bindings | integrating executor | 2 | |
 | 4 | Bounded closure counts on a synthetic ocean | integrating executor | 2 | |

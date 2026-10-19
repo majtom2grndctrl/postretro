@@ -9,7 +9,7 @@ use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentVolumeRecord,
 };
 
-use super::{COLLINEAR_DISTANCE, face_normal, has_collinear_vertex};
+use super::{COLLINEAR_DISTANCE, face_normal};
 
 /// Planes per probe cell along each axis at the finest spacing.
 pub const FLUID_GRID_DIVISIONS: f64 = 2.0;
@@ -180,9 +180,9 @@ fn face_extent(face: &EnvironmentSurfaceFace) -> (DVec3, DVec3) {
 }
 
 /// Mesh vertices a drawable face packs into under the ungridded
-/// triangulation (`triangulate_convex_face`).
+/// triangulation (`triangulate_convex_face`), which adds none.
 fn ungridded_vertex_count(face: &EnvironmentSurfaceFace) -> u64 {
-    face.vertices.len() as u64 + u64::from(has_collinear_vertex(&face.vertices))
+    face.vertices.len() as u64
 }
 
 /// An upper bound on the mesh vertices `face` packs into under `planes`,
@@ -523,26 +523,34 @@ fn crossing(
     })
 }
 
-/// Triangulate a convex polygon over its own vertices. A grid cut leaves
-/// collinear vertices on a part's edges (the compiler's T-junction inserts,
-/// and planes passing near a corner); each stays a triangle corner, except a
-/// vertex repeating the one before it, as packed, which joins the ring once
-/// (its position stays covered by its twin). Each step
-/// clips the earliest corner in ring order beside a collinear vertex, which
-/// turns that vertex into a corner, so three corners always remain; with none
-/// left, the earliest corner. Corners are judged on the positions as packed,
-/// in f32, so a part keeps its drawn area however far from the origin, down
-/// to a final triangle judged at one vertex: area under about 1e-12 of its
-/// longer sides' product can be dropped. A part with no corner left has no
-/// area and draws nothing. A vertex repeating the one before it, as packed,
-/// joins the ring once: the repeat draws no triangle, and its zero-length edge
-/// turns nowhere, so it would block every clip beside it.
+/// Triangulate a convex polygon over its own vertices: a grid part, or a
+/// whole face with a collinear vertex. Collinear vertices lie on its edges
+/// (the compiler's T-junction inserts, and planes passing near a corner);
+/// each stays a triangle corner. Each step clips the earliest corner in ring
+/// order beside a collinear vertex, which turns that vertex into a corner, so
+/// three corners always remain; with none left, the earliest corner. Corners
+/// are judged on the positions as packed, in f32, so a part keeps its drawn
+/// area however far from the origin, down to a final triangle judged at one
+/// vertex: area under about 1e-12 of its longer sides' product can be
+/// dropped. A part with no corner left has no area and draws nothing. A
+/// vertex repeating the one before it, as packed, joins the ring once, its
+/// twin covering the position: the repeat draws no triangle, and its
+/// zero-length edge turns nowhere, so it would block every clip beside it.
+///
+/// No ear is tested for another vertex inside it. A convex ring holds none.
+/// A compiled face is simple and within about 0.1 mm of convex, so an insert
+/// a hair inside an edge is a reflex dent. A vertex can then lie inside an
+/// ear only at an acute corner whose clip reaches past its neighbour along
+/// the edge, and only within the dent's depth over the corner angle's tangent
+/// of that neighbour: under 0.1 mm at 45° or blunter, a spacing closure's
+/// weld leaves only on a sliver. Such a clip misdraws an area of that size;
+/// every triangle it emits still winds with the polygon.
 ///
 /// A clip changes the corner status of the two vertices beside the tip
 /// alone, so the ring keeps its candidates ordered and re-files only those
 /// near the tip: n log n in the part's vertices, which the compiler's
 /// T-junction inserts can number in thousands.
-fn triangulate_convex(
+pub(super) fn triangulate_convex(
     polygon: &[u32],
     positions: &[DVec3],
     normal: DVec3,

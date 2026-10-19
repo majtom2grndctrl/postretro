@@ -63,44 +63,25 @@ fn signed_twice_area(a: DVec3, b: DVec3, c: DVec3, normal: DVec3) -> f64 {
 }
 
 /// Packs `face` alone and asserts the triangles tile it with no T-junction:
-/// the mesh holds the face's vertices in order, plus at most one vertex at
-/// its area centroid after them; every triangle winds with the face and has
-/// area; every face vertex is a corner; every face edge segment of non-zero
-/// length borders exactly one triangle; no triangle edge passes through a
-/// face vertex; and the triangles' areas sum to the face's. Returns the mesh.
+/// the mesh holds exactly the face's vertices, in order; every triangle winds
+/// with the face and has area; every face vertex is a corner, except one
+/// repeating a ring neighbour's position, which may leave that twin to be;
+/// every face edge segment of non-zero length borders exactly one triangle;
+/// no triangle edge passes through a face vertex; and the triangles' areas
+/// sum to the face's. Returns the mesh.
 fn assert_tiles_face_without_t_junctions(face: &EnvironmentSurfaceFace) -> FluidSurfaceMesh {
     let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[], 1, None);
     let ring = face.vertices.len();
     let position = |i: u32| Vec3::from(mesh.vertices[i as usize].position).as_dvec3();
     let normal = Vec3::from(mesh.vertices[0].normal).as_dvec3();
-    assert!(
-        mesh.vertices.len() == ring || mesh.vertices.len() == ring + 1,
+    assert_eq!(
+        mesh.vertices.len(),
+        ring,
         "{} mesh vertices for a {ring}-vertex face",
         mesh.vertices.len()
     );
     for (packed, source) in mesh.vertices.iter().zip(&face.vertices) {
         assert_eq!(packed.position, source.position);
-    }
-    if let Some(centroid) = mesh.vertices.get(ring) {
-        // The area centroid: each fan triangle's centroid, weighted by area.
-        let corners: Vec<DVec3> = face
-            .vertices
-            .iter()
-            .map(|v| Vec3::from(v.position).as_dvec3())
-            .collect();
-        let (mut weighted, mut area) = (DVec3::ZERO, 0.0);
-        for i in 1..ring - 1 {
-            let twice = signed_twice_area(corners[0], corners[i], corners[i + 1], normal);
-            weighted += twice * (corners[0] + corners[i] + corners[i + 1]) / 3.0;
-            area += twice;
-        }
-        let expected = weighted / area;
-        let error = (Vec3::from(centroid.position).as_dvec3() - expected).length();
-        assert!(
-            error <= 1.0e-6 * (1.0 + expected.length()),
-            "centroid off by {error}"
-        );
-        assert_eq!(centroid.normal, mesh.vertices[0].normal);
     }
     let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
     assert_eq!(mesh.indices.len(), triangles.len() * 3);
@@ -109,20 +90,36 @@ fn assert_tiles_face_without_t_junctions(face: &EnvironmentSurfaceFace) -> Fluid
         let twice = signed_twice_area(position(a), position(b), position(c), normal);
         assert!(twice > 0.0, "triangle {a} {b} {c} has twice-area {twice}");
     }
-    for vertex in 0..mesh.vertices.len() as u32 {
-        assert!(
-            mesh.indices.contains(&vertex),
-            "vertex {vertex} is no triangle corner"
-        );
+    // The corner that stands for each face vertex: itself, or a twin in its
+    // run of ring neighbours at the same position.
+    let ring_step = |i: u32, step: u32| (i + step) % ring as u32;
+    let stand_in = |vertex: u32| {
+        for step in [1, ring as u32 - 1] {
+            let mut i = vertex;
+            for _ in 0..ring {
+                if position(i) != position(vertex) {
+                    break;
+                }
+                if mesh.indices.contains(&i) {
+                    return i;
+                }
+                i = ring_step(i, step);
+            }
+        }
+        panic!("vertex {vertex} is no triangle corner");
+    };
+    for vertex in 0..ring as u32 {
+        stand_in(vertex);
     }
-    for edge in 0..ring as u32 {
-        let next = (edge + 1) % ring as u32;
+    // A zero-length segment borders nothing.
+    for edge in (0..ring as u32).filter(|&i| position(i) != position(ring_step(i, 1))) {
+        let next = ring_step(edge, 1);
+        let (from, to) = (stand_in(edge), stand_in(next));
         let bordering = triangles
             .iter()
-            .filter(|t| t.contains(&edge) && t.contains(&next))
+            .filter(|t| t.contains(&from) && t.contains(&to))
             .count();
-        let expected = usize::from(position(edge) != position(next));
-        assert_eq!(bordering, expected, "edge {edge}-{next}");
+        assert_eq!(bordering, 1, "edge {edge}-{next}");
     }
     for t in &triangles {
         for side in 0..3 {
@@ -198,11 +195,10 @@ fn packing_keeps_collinear_vertices_on_opposite_edges_as_triangle_corners() {
         [0.0, 64.0],
     ]);
     let mesh = assert_tiles_face_without_t_junctions(&face);
-    assert_eq!(mesh.vertices.len(), 8 + 1);
     assert_eq!(mesh.vertices[0].normal, [0.0, 1.0, 0.0]);
-    // One triangle per edge segment, from the centroid.
-    assert_eq!(mesh.indices.len(), 8 * 3);
-    assert_eq!(mesh.volumes[0].material_ranges[0].index_count, 8 * 3);
+    // Ear clipping over the face's own vertices: n - 2 triangles.
+    assert_eq!(mesh.indices.len(), 6 * 3);
+    assert_eq!(mesh.volumes[0].material_ranges[0].index_count, 6 * 3);
 }
 
 #[test]
@@ -210,7 +206,7 @@ fn packing_keeps_a_single_collinear_vertex_as_a_triangle_corner() {
     // A triangle with one collinear vertex on its closing edge.
     let closing_edge = level_face(&[[0.0, 0.0], [64.0, 0.0], [32.0, 64.0], [16.0, 32.0]]);
     let mesh = assert_tiles_face_without_t_junctions(&closing_edge);
-    assert_eq!(mesh.indices.len(), 4 * 3);
+    assert_eq!(mesh.indices.len(), 2 * 3);
 
     // A quad with one collinear vertex beside the first corner.
     let first_edge = level_face(&[
@@ -221,7 +217,7 @@ fn packing_keeps_a_single_collinear_vertex_as_a_triangle_corner() {
         [0.0, 32.0],
     ]);
     let mesh = assert_tiles_face_without_t_junctions(&first_edge);
-    assert_eq!(mesh.indices.len(), 5 * 3);
+    assert_eq!(mesh.indices.len(), 3 * 3);
 }
 
 // The collinear tolerance is absolute, because the compiler's vertex spacing
@@ -236,8 +232,7 @@ fn packing_tiles_large_faces_whose_vertices_sit_half_a_millimeter_apart() {
         [10.0, 10.0],
         [0.0, 10.0],
     ]);
-    let mesh = assert_tiles_face_without_t_junctions(&corner_insert);
-    assert_eq!(mesh.vertices.len(), 5 + 1);
+    assert_tiles_face_without_t_junctions(&corner_insert);
 
     // A corner chamfered by burial, with no insert.
     assert_tiles_face_without_t_junctions(&level_face(&[
@@ -290,8 +285,11 @@ fn packing_tiles_a_thin_long_strip_with_and_without_an_insert() {
     ]));
 }
 
+// A vertex repeating its predecessor joins the ring once: its slot packs but
+// no triangle reads it, its twin standing for the position, and the face
+// still tiles whole.
 #[test]
-fn packing_skips_only_the_zero_length_segment_of_a_duplicated_vertex() {
+fn packing_joins_a_duplicated_vertex_to_its_twin() {
     let mid_ring = level_face(&[
         [0.0, 0.0],
         [10.0, 0.0],
@@ -300,7 +298,8 @@ fn packing_skips_only_the_zero_length_segment_of_a_duplicated_vertex() {
         [0.0, 10.0],
     ]);
     let mesh = assert_tiles_face_without_t_junctions(&mid_ring);
-    assert_eq!(mesh.indices.len(), 4 * 3);
+    assert_eq!(mesh.indices.len(), 2 * 3);
+    assert!(mesh.indices.contains(&1) && !mesh.indices.contains(&2));
 
     // The duplicate closes the ring.
     let closing = level_face(&[
@@ -311,7 +310,8 @@ fn packing_skips_only_the_zero_length_segment_of_a_duplicated_vertex() {
         [0.0, 0.0],
     ]);
     let mesh = assert_tiles_face_without_t_junctions(&closing);
-    assert_eq!(mesh.indices.len(), 4 * 3);
+    assert_eq!(mesh.indices.len(), 2 * 3);
+    assert!(mesh.indices.contains(&0) && !mesh.indices.contains(&4));
 }
 
 /// A 2 m × 11 m level top 100 m out at height 1.1, CCW seen from +Y, whose
@@ -512,8 +512,8 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
 // Regression (review): the face normal was a Newell sum in f32 on absolute
 // positions. On a narrow strip far from the origin with thousands of inserts
 // on one long edge, its rounding outgrew twice the strip's area and flipped
-// the normal down: the gridded strip's ear clip then clipped nothing, and its
-// area centroid fell back to the vertex mean.
+// the normal down: the strip's ear clip, gridded or not, then clips nothing,
+// and its area centroid falls back to the vertex mean.
 #[test]
 fn a_narrow_strip_far_out_with_thousands_of_inserts_packs_facing_up() {
     // 2 cm × 50 m at x ≈ 1000.37, CCW seen from +Y, whose x = x1 edge
@@ -572,18 +572,69 @@ fn a_narrow_strip_far_out_with_thousands_of_inserts_packs_facing_up() {
     }
 }
 
+// A face with an inserted vertex packs its own vertices alone, each with its
+// own normalized UV, and the drift map covers exactly them. Its area
+// centroid, the drift sample, stays at the square's centre: the insert adds
+// no area.
 #[test]
-fn packing_gives_an_added_centroid_the_uv_at_the_faces_area_centroid() {
-    // UV is affine in position, so the area-weighted UV is the centroid's. An
-    // inserted vertex adds no area, so the apex stays at the square's centre.
+fn packing_a_face_with_an_inserted_vertex_adds_no_vertex() {
     let mut face = top_face(0, [0.0; 3], 1.0);
     face.vertices
         .insert(1, vertex([0.0, 1.0, 0.25], [0.0, 8.0]));
-    let mesh = pack_fluid_surfaces(&[volume(vec![face])], &[[64, 32]], 1, None);
-    assert_eq!(mesh.vertices.len(), 5 + 1);
-    let centroid = mesh.vertices[5];
-    assert_eq!(centroid.position, [0.5, 1.0, 0.5]);
-    assert_eq!(centroid.uv, [0.5, 0.5]);
+    let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[[64, 32]], 1, None);
+    let uvs: Vec<[f32; 2]> = mesh.vertices.iter().map(|v| v.uv).collect();
+    assert_eq!(
+        uvs,
+        [[0.0, 0.0], [0.0, 0.25], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]
+    );
+    assert_eq!(mesh.indices.len(), 3 * 3);
+    assert_eq!(mesh.face_drift_maps[0].expect("draws").vertex_count, 5);
+    let centroid = face_area_centroid(&face, Vec3::Y);
+    assert!(
+        centroid.abs_diff_eq(DVec3::new(0.5, 1.0, 0.5), 1.0e-12),
+        "{centroid:?}"
+    );
+}
+
+// Regression (review round 2): a 1 m × 10 mm strip whose top edge holds an
+// insert 0.08 mm inside it, 5 mm from a corner, is simple and within 0.1 mm
+// of convex but not star-shaped about its area centroid (0.5 m, 5 mm). The
+// insert lies past the ray from the centroid c through the near corner: in
+// the short edge's angular sector. The centroid fan's triangle over insert →
+// corner then winds backward, twice-area (insert − c) × (corner − c) =
+// (−0.495, 0.00492) × (−0.5, 0.005) ≈ −1.5e-5 m²: about 7.5 mm² drawn
+// inverted over its neighbour, a hairline double blend half a metre long.
+// Ear clipping over the strip's own vertices draws every triangle facing up.
+#[test]
+fn a_thin_strip_with_an_insert_inside_its_long_edge_near_a_corner_packs_facing_up() {
+    // CCW seen from +Y, in-plane (x, v) with v up; the insert at (0.005,
+    // 0.00992) on the top edge from (1, 0.01) back to (0, 0.01).
+    let strip = level_face(&[
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 0.01],
+        [0.005, 0.00992],
+        [0.0, 0.01],
+    ]);
+    let normal = face_normal(&strip).expect("the strip has area");
+    assert!(normal.abs_diff_eq(Vec3::Y, 1.0e-6), "{normal:?}");
+    let ring: Vec<DVec3> = strip
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    // The old fan's triangle inverts: the premise this guards.
+    let centroid = face_area_centroid(&strip, normal);
+    assert!(signed_twice_area(centroid, ring[3], ring[4], DVec3::Y) < 0.0);
+
+    // Packed ungridded, every triangle winds up and the areas sum to the
+    // strip's, over its own vertices alone: no triangle inverts. The clip
+    // order follows the ring, so each vertex leads once.
+    for lead in 0..strip.vertices.len() {
+        let mut rotated = strip.clone();
+        rotated.vertices.rotate_left(lead);
+        assert_tiles_face_without_t_junctions(&rotated);
+    }
 }
 
 #[test]

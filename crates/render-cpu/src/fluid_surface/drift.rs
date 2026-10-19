@@ -29,7 +29,7 @@ pub struct FluidFaceDriftMap {
     /// First vertex of the face in [`super::FluidSurfaceMesh::vertices`].
     pub vertex_start: u32,
     /// Mesh vertices the face owns, contiguous from `vertex_start`: its own,
-    /// plus any its triangulation adds: grid crossings or a centroid.
+    /// plus any grid crossings its cut adds.
     pub vertex_count: u32,
     /// Gradients of the normalized U and V over world space, per meter. Both
     /// lie in the face's plane, so a world drift's normal part never scrolls.
@@ -272,7 +272,7 @@ fn face_area(face: &EnvironmentSurfaceFace) -> f64 {
 /// volume, in record order, `None` for faces that draw nothing) under
 /// `drifts`, one world drift per surface face in the same order. Writes into
 /// `rates`, one entry per mesh vertex. A face's rate covers every vertex it
-/// owns, grid crossings and any added centroid included, since the shader reads it flat from the
+/// owns, grid crossings included, since the shader reads it flat from the
 /// provoking vertex. Vertices of faces without a drift stay still. A `drifts`
 /// slice of the wrong length leaves every vertex still.
 pub fn fill_drift_rates(

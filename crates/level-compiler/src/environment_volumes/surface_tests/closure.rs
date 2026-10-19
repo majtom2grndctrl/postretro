@@ -4,6 +4,8 @@
 //! texture and side projection hold, corners move at most the tolerance, and
 //! no face degenerates. Sub-millimetre cases are built as exact polygons.
 
+use glam::DVec2;
+
 use super::*;
 use crate::environment_volumes::closure::{
     ClosureStats, centroid_and_normal, close_seams, encoded, segment_distance,
@@ -99,7 +101,7 @@ pub(super) fn assert_nothing_else_moves(
 /// tolerance of the face's boundary as closure then left it
 /// ([`assert_added_vertices_peel`]); the face keeps three distinct vertices,
 /// a normal facing the way it did, its area within the tolerance times its
-/// perimeter, and a boundary that runs in order round its area centroid.
+/// perimeter, and a boundary that never crosses itself.
 #[track_caller]
 fn assert_face_kept(was: &[DVec3], now: &[DVec3], reach: f64) {
     for point in now {
@@ -137,20 +139,18 @@ fn assert_face_kept(was: &[DVec3], now: &[DVec3], reach: f64) {
         geometry.area,
         old_geometry.area
     );
-    assert_runs_in_order(now);
+    assert_never_crosses(now, old_geometry.normal);
 }
 
 /// The vertices closure added to `now` (those not within the tolerance of a
 /// corner of `was`) peel back off: one at a time where it lies within the
-/// tolerance of the segment its ring neighbours span, or failing that of the
-/// rest of the ring's boundary, or as a run of added vertices within the
-/// tolerance of the segment the kept vertices either side span, as inserts
-/// judged together against one edge are. So, in some insertion order, each
-/// added vertex lay within the tolerance of the face's boundary as closure
-/// then left it (P18, P22). The boundary fallback is the edge choice's
-/// allowance: a vertex joins the edge whose sector about the area centroid
-/// holds it, and beside a near-flat corner that edge may lie about half a
-/// millimetre off.
+/// tolerance of the segment its ring neighbours span, or as a run of added
+/// vertices within the tolerance of the segment the kept vertices either side
+/// span, as inserts judged together against one edge are. So, in some
+/// insertion order, each added vertex lay within the tolerance of the edge it
+/// joined, as closure then left that edge (P18, P22). A vertex on the wrong
+/// edge, such as a short edge's beside a long one it lies by, peels off
+/// neither way.
 #[track_caller]
 fn assert_added_vertices_peel(was: &[DVec3], now: &[DVec3]) {
     let mut ring: Vec<(DVec3, bool)> = now
@@ -169,13 +169,7 @@ fn assert_added_vertices_peel(was: &[DVec3], now: &[DVec3]) {
                 ring[i].0,
             ) <= TOLERANCE
         };
-        let on_rest = |i: usize| {
-            let rest: Vec<DVec3> = (0..count).filter(|&j| j != i).map(|j| ring[j].0).collect();
-            boundary_distance(&rest, ring[i].0) <= TOLERANCE
-        };
-        let single = (0..count)
-            .find(|&i| ring[i].1 && on_chord(i))
-            .or_else(|| (0..count).find(|&i| ring[i].1 && on_rest(i)));
+        let single = (0..count).find(|&i| ring[i].1 && on_chord(i));
         if let Some(i) = single {
             ring.remove(i);
             continue;
@@ -211,25 +205,40 @@ fn assert_added_vertices_peel(was: &[DVec3], now: &[DVec3]) {
     }
 }
 
-/// The angle about `polygon`'s area centroid strictly increases from each
-/// vertex to the next, once round.
+/// No two edges of `polygon` that share no corner meet, in the plane
+/// `normal` faces: an edge that ran back along itself, or a vertex carried
+/// across the face, would. Vertices that project onto one point count once.
 #[track_caller]
-fn assert_runs_in_order(polygon: &[DVec3]) {
-    let (centre, normal) = centroid_and_normal(polygon);
-    let mut total = 0.0;
-    for (i, &point) in polygon.iter().enumerate() {
-        let (a, b) = (point - centre, polygon[(i + 1) % polygon.len()] - centre);
-        let turn = a.cross(b).dot(normal).atan2(a.dot(b) * normal.length());
-        assert!(
-            turn > 0.0,
-            "the boundary turns back at {point}: {polygon:?}"
-        );
-        total += turn;
+fn assert_never_crosses(polygon: &[DVec3], normal: DVec3) {
+    let (u, v) = normal.any_orthonormal_pair();
+    // A vertex gained off the face's plane, along its normal, can project onto
+    // its neighbour: a zero-length edge in the plane, not a crossing.
+    let mut flat: Vec<DVec2> = Vec::with_capacity(polygon.len());
+    for p in polygon {
+        let point = DVec2::new(p.dot(u), p.dot(v));
+        if flat.last().is_none_or(|last| *last != point) {
+            flat.push(point);
+        }
     }
-    assert!(
-        (total - std::f64::consts::TAU).abs() < 1e-6,
-        "the boundary winds {total} rad round its centroid"
-    );
+    while flat.len() > 1 && flat[0] == flat[flat.len() - 1] {
+        flat.pop();
+    }
+    let count = flat.len();
+    let cross = |a: DVec2, b: DVec2, c: DVec2| (b - a).perp_dot(c - a);
+    let on = |a: DVec2, b: DVec2, c: DVec2| cross(a, b, c) == 0.0 && (c - a).dot(c - b) <= 0.0;
+    for i in 0..count {
+        for j in i + 2..count {
+            if (j + 1) % count == i {
+                continue;
+            }
+            let (a, b) = (flat[i], flat[(i + 1) % count]);
+            let (c, d) = (flat[j], flat[(j + 1) % count]);
+            let proper =
+                cross(a, b, c) * cross(a, b, d) < 0.0 && cross(c, d, a) * cross(c, d, b) < 0.0;
+            let touching = on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b);
+            assert!(!proper && !touching, "edges {i} and {j} meet: {polygon:?}");
+        }
+    }
 }
 
 // --- Map fixtures --------------------------------------------------------
@@ -786,9 +795,7 @@ fn a_sliver_the_weld_would_flatten_or_flip_keeps_its_shape() {
         DVec3::new(-0.01 * MILLI, 0.0, 0.09 * MILLI),
     ] {
         assert!(w.distance(v1) <= TOLERANCE && w.distance(v2) <= TOLERANCE);
-        // Its base is off-centre: a centroid exactly on the line through v1
-        // and v2, which the neighbour gains, would give them one angle.
-        let neighbour = vec![w, DVec3::new(-0.5, 0.0, 1.0), DVec3::new(0.7, 0.0, 1.0)];
+        let neighbour = vec![w, DVec3::new(-0.5, 0.0, 1.0), DVec3::new(0.5, 0.0, 1.0)];
         let closed = assert_polygons_close(&[vec![sliver.clone()], vec![neighbour]], TOLERANCE);
         let face: Vec<DVec3> = closed[0][0].iter().map(|&p| encoded(p)).collect();
         let mut distinct: Vec<[u64; 3]> = face
@@ -935,13 +942,29 @@ fn a_corner_near_both_edges_of_an_acute_corner_joins_the_edge_its_sector_holds()
     }
 }
 
-// Regression (review), P23, owner ruling: a neighbour's corner P lies 0.09 mm
-// off edge s→c and 0.22 mm from c, the end of a near-flat (174°) corner, but
-// past the area centroid's ray through c. It joins c→e, the edge whose sector
-// holds it, though that edge lies 0.22 mm off, so F's angle order holds; the
-// nearest edge would put it before c.
+/// Asserts each of `points` appears once in `ring`, the ring's vertices in
+/// that order, consecutive.
+#[track_caller]
+fn assert_consecutive(ring: &[DVec3], points: &[DVec3]) {
+    let at = |point: DVec3| {
+        let found: Vec<usize> = (0..ring.len())
+            .filter(|&i| encoded(ring[i]) == encoded(point))
+            .collect();
+        assert_eq!(found.len(), 1, "{point} in {ring:?}");
+        found[0]
+    };
+    for pair in points.windows(2) {
+        assert_eq!((at(pair[0]) + 1) % ring.len(), at(pair[1]), "{ring:?}");
+    }
+}
+
+// Regression (review), P23: a neighbour's corner P lies 0.09 mm off edge s→c
+// and 0.22 mm from c, the end of a near-flat (174°) corner, and past the area
+// centroid's ray through c. It joins s→c, the edge nearest it, though the
+// ring is then not star-shaped about its centroid; the sector's edge c→e lies
+// 0.22 mm off.
 #[test]
-fn a_corner_past_a_near_flat_corners_ray_joins_the_edge_its_sector_holds() {
+fn a_corner_past_a_near_flat_corners_ray_joins_its_nearest_edge() {
     let (s, c, e) = (
         DVec3::new(-0.01, 0.0, 0.0),
         DVec3::ZERO,
@@ -956,15 +979,75 @@ fn a_corner_past_a_near_flat_corners_ray_joins_the_edge_its_sector_holds() {
     assert!((c - centre).cross(p - centre).dot(normal) > 0.0);
 
     let closed = assert_polygons_close(&[vec![face], vec![standing_triangle(p)]], TOLERANCE);
-    let ring = &closed[0][0];
-    let at = |point: DVec3| {
-        let found: Vec<usize> = (0..ring.len())
-            .filter(|&i| encoded(ring[i]) == encoded(point))
-            .collect();
-        assert_eq!(found.len(), 1, "{point} in {ring:?}");
-        found[0]
-    };
-    assert_eq!((at(c) + 1, at(p) + 1), (at(p), at(e)), "{ring:?}");
+    assert_consecutive(&closed[0][0], &[s, p, c]);
+}
+
+// Regression (review round 2): on a 1 m × 10 mm strip, a neighbour's corner
+// 0.08 mm inside the top edge and 5 mm from its corner lies in the short
+// edge's sector about the centroid. It joins the top edge, the edge nearest
+// it; joining the short edge would cut a 10 × 5 mm notch.
+#[test]
+fn a_corner_just_inside_a_thin_faces_long_edge_joins_that_edge() {
+    let strip = rect(-0.5, -5.0 * MILLI, 0.5, 5.0 * MILLI);
+    let (top_left, top_right) = (strip[1], strip[2]);
+    let p = DVec3::new(0.495, 0.0, 4.92 * MILLI);
+    let (centre, normal) = centroid_and_normal(&strip);
+    assert!(
+        (top_right - centre).cross(p - centre).dot(normal) > 0.0,
+        "the corner lies past the top-right corner's ray, in the short edge's sector"
+    );
+    let closed = assert_polygons_close(&[vec![strip], vec![standing_triangle(p)]], TOLERANCE);
+    assert_consecutive(&closed[0][0], &[top_left, p, top_right]);
+}
+
+// Regression (review round 2): a strip 0.05 mm across with a vertex mid-way
+// along each long side, collinear there. A neighbour's corner 0.09 mm off one
+// long side's midpoint lies beyond the other side, so welding that midpoint
+// to it would carry the vertex across the strip while every corner the ring
+// turns at still turns its way. The strip keeps its positions; inserts close
+// the seam instead.
+#[test]
+fn a_weld_that_would_carry_a_vertex_across_a_sliver_is_refused() {
+    let mm = MILLI;
+    let middle = DVec3::new(0.09 * mm, 0.0, 1.0);
+    let sliver = vec![
+        DVec3::new(0.09 * mm, 0.0, 0.0),
+        middle,
+        DVec3::new(0.09 * mm, 0.0, 2.0),
+        DVec3::new(0.04 * mm, 0.0, 2.0),
+        DVec3::new(0.04 * mm, 0.0, 1.0002),
+        DVec3::new(0.04 * mm, 0.0, 0.0),
+    ];
+    let corner = DVec3::new(0.0, 0.0, 1.0);
+    let closed = assert_polygons_close(&[vec![sliver], vec![standing_triangle(corner)]], TOLERANCE);
+    assert!(
+        closed[0][0].iter().any(|p| encoded(*p) == encoded(middle)),
+        "the weld moved the midpoint: {:?}",
+        closed[0][0]
+    );
+}
+
+// Regression (review round 2): two corners of one face, which never weld,
+// lie on another face's edge at the same point along it, one on its line and
+// one 0.05 mm off. Both join the edge, the boundary still never crosses
+// itself, with or without a third corner bending the edge first.
+#[test]
+fn two_corners_at_one_point_along_an_edge_both_join_it() {
+    let (p, q) = (
+        DVec3::new(1.0, 0.0, 0.0),
+        DVec3::new(1.0, 0.0, 0.05 * MILLI),
+    );
+    let sliver = vec![p, q, DVec3::new(1.0, 1.0, 0.0)];
+    for bend in [false, true] {
+        let mut volumes = vec![vec![rect(0.0, -1.0, 2.0, 0.0)], vec![sliver.clone()]];
+        if bend {
+            volumes.push(vec![standing_triangle(DVec3::new(0.2, 0.0, 0.09 * MILLI))]);
+        }
+        let closed = assert_polygons_close(&volumes, TOLERANCE);
+        for corner in [p, q] {
+            assert!(closed[0][0].iter().any(|v| encoded(*v) == encoded(corner)));
+        }
+    }
 }
 
 /// A fluid box over x `x0..x1`, z 0..32, bounded on one side by the plane

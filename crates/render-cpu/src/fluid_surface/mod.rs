@@ -11,6 +11,7 @@ use postretro_level_format::geometry::NO_TEXTURE;
 
 mod cull;
 mod drift;
+mod ear_clip;
 mod ear_index;
 pub mod fog;
 pub mod grid;
@@ -279,7 +280,7 @@ fn has_collinear_vertex(vertices: &[EnvironmentSurfaceVertex]) -> bool {
 /// inverts. Nor can the plain fan honour an insert that dents its edge: the
 /// fan triangle from a neighbouring corner over it winds backward. A face with
 /// a collinear vertex therefore ear-clips over its own vertices, as a grid
-/// part does ([`grid::triangulate_convex`]), adding none: each vertex stays a
+/// part does ([`ear_clip::triangulate_convex`]), adding none: each vertex stays a
 /// corner except one repeating the vertex before it, which joins the ring
 /// once, so each segment of non-zero length borders one triangle; no ear
 /// holds a dent, so the face keeps its area exactly. Taking a near-flat real
@@ -302,7 +303,7 @@ fn triangulate_convex_face(
     let positions: Vec<DVec3> = face.vertices.iter().map(world_position).collect();
     let ring: Vec<u32> = (0..count).collect();
     let mut triangles = Vec::with_capacity(face.vertices.len().saturating_sub(2));
-    grid::triangulate_convex(&ring, &positions, normal.as_dvec3(), &mut triangles);
+    ear_clip::triangulate_convex(&ring, &positions, normal.as_dvec3(), &mut triangles);
     indices.extend(
         triangles
             .iter()

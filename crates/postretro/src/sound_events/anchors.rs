@@ -5,10 +5,7 @@
 
 use glam::Vec3;
 use postretro_audio::SoundAnchor;
-use postretro_entities::{
-    ComponentKind, ComponentValue, Emitter, EntityId, EntityRegistry, KinematicMoverComponent,
-    Transform,
-};
+use postretro_entities::{Emitter, EntityId, EntityRegistry, KinematicMoverComponent, Transform};
 use postretro_foundation::PlayerMovementComponent;
 use postretro_level_loader::LevelWorld;
 

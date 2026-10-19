@@ -38,6 +38,10 @@ impl Drop for TempBuildDir {
 }
 
 fn box_brush(min: [i32; 3], max: [i32; 3], texture: &str) -> String {
+    box_brush_at(min.map(f64::from), max.map(f64::from), texture)
+}
+
+fn box_brush_at(min: [f64; 3], max: [f64; 3], texture: &str) -> String {
     let ([x0, y0, z0], [x1, y1, z1]) = (min, max);
     format!(
         "{{\n\
@@ -52,8 +56,9 @@ fn box_brush(min: [i32; 3], max: [i32; 3], texture: &str) -> String {
 }
 
 /// A sealed room holding a pool of unequal sibling brushes, a second fluid
-/// beside it with a taller, narrower brush, and a current over one corner:
-/// burial, sibling, cross-volume and push seams to close.
+/// beside it with a taller, narrower brush 0.05 mm off the pool's side, and a
+/// current over one corner: burial, sibling, cross-volume and push seams to
+/// close, with corners to weld.
 fn pool_room() -> String {
     let walls = [
         box_brush([-272, -272, -16], [272, 272, 0], TEXTURE),
@@ -77,16 +82,17 @@ fn pool_room() -> String {
          {{\n\"classname\" \"push_volume\"\n\"push\" \"0 8 0\"\n{}\n}}\n",
         walls.join("\n"),
         pool.join("\n"),
-        box_brush([64, -64, 0], [128, -16, 96], FLUID_TEXTURE),
+        box_brush_at([64.002, -64.0, 0.0], [128.0, -16.0, 96.0], FLUID_TEXTURE),
         box_brush([32, 32, 0], [96, 96, 48], TEXTURE),
     )
 }
 
-/// Build `map` to its own output with `extra` arguments; returns the output.
-fn build(temp: &TempBuildDir, map: &Path, name: &str, extra: &[&str]) -> PathBuf {
+/// Build `map` to its own output with `extra` arguments; returns the output
+/// and the build's log.
+fn build(temp: &TempBuildDir, map: &Path, name: &str, extra: &[&str]) -> (PathBuf, String) {
     let output_path = temp.0.join(format!("{name}.prl"));
     let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "info")
         .arg(map)
         .arg("-o")
         .arg(&output_path)
@@ -105,7 +111,10 @@ fn build(temp: &TempBuildDir, map: &Path, name: &str, extra: &[&str]) -> PathBuf
         "prl-build failed for {name}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    output_path
+    (
+        output_path,
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }
 
 fn section(prl: &Path, id: SectionId) -> Vec<u8> {
@@ -125,7 +134,7 @@ fn fluid_seams_close_identically_cold_warm_and_across_worker_counts() {
     let cache = temp.0.join("cache");
     let cache_dir = cache.to_str().expect("UTF-8 temp path");
 
-    let builds = [
+    let built = [
         build(&temp, &map, "cold-a", &["--no-cache"]),
         build(&temp, &map, "cold-b", &["--no-cache"]),
         build(
@@ -142,6 +151,34 @@ fn fluid_seams_close_identically_cold_warm_and_across_worker_counts() {
             &["--cache-dir", cache_dir, "--jobs", "1"],
         ),
     ];
+    // The compiler's fluid surface line: "<n> welded and <m> inserted".
+    let closure_counts = |log: &str| -> (usize, usize) {
+        let line = log
+            .lines()
+            .find(|line| line.contains("[Compiler] Fluid surfaces:"))
+            .expect("the build logs its fluid surfaces");
+        let count = |word: &str| {
+            let before = &line[..line.find(word).expect("the line counts it")];
+            before
+                .split_whitespace()
+                .last()
+                .and_then(|n| n.parse().ok())
+                .expect("a count precedes it")
+        };
+        (count(" welded"), count(" inserted"))
+    };
+    let (welded, inserted) = closure_counts(&built[0].1);
+    assert!(
+        welded > 0 && inserted > 0,
+        "closure welds {welded} and inserts {inserted}"
+    );
+    // The warm fill bakes the probes; the next warm build hits them.
+    assert!(built[3].1.contains("[cache] reflection_probes miss"));
+    assert!(
+        built[4].1.contains("[cache] reflection_probes hit"),
+        "the id-54 key misses on the second warm build"
+    );
+    let builds: Vec<PathBuf> = built.into_iter().map(|(path, _)| path).collect();
     let environment = section(&builds[0], SectionId::EnvironmentVolumes);
     let decoded = EnvironmentVolumesSection::from_bytes(&environment).expect("id 52 decodes");
     assert!(

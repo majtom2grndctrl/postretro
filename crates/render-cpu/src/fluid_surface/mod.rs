@@ -249,6 +249,21 @@ fn count_install_steps(steps: usize) {
 #[cfg(not(test))]
 fn count_install_steps(_steps: usize) {}
 
+// Ears the ear clip set aside because a reflex vertex lay inside them, so a
+// test can show its retry path ran.
+#[cfg(test)]
+thread_local! {
+    static BLOCKED_EARS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_blocked_ear() {
+    BLOCKED_EARS.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(not(test))]
+fn count_blocked_ear() {}
+
 /// Whether a face has a vertex on, or within [`COLLINEAR_DISTANCE`]
 /// of, the line through its ring neighbours, or one (nearly) repeating the
 /// vertex before it.

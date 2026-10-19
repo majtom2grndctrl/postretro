@@ -550,6 +550,237 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
     }
 }
 
+/// An up-facing wedge with a 5° tip T at x 0.3, z 0.6 and long edges a metre
+/// long, each carrying `inserts` vertices from 2.5 mm out from T, 0.12 mm
+/// apart: past closure's 0.1 mm, so closure would leave them. Every other one,
+/// from the first, is a dent inside its edge, alternately 0.05 and 0.09 mm
+/// deep; the rest lie on it. The dented run grows with `inserts`. In-plane, CCW
+/// with v up, in meters: T at the origin, edge A along u, its far corner, edge
+/// B's far corner at 5°, then B's inserts back toward T. Positions are
+/// computed in f64 and rounded to f32, as the compiler stores them.
+fn dented_tip_wedge(inserts: usize) -> EnvironmentSurfaceFace {
+    let (sin, cos) = 5.0f64.to_radians().sin_cos();
+    let depth = |k: usize| match (k % 2, k / 2 % 2) {
+        (1, _) => 0.0,
+        (_, 0) => 5.0e-5,
+        _ => 9.0e-5,
+    };
+    let along = |k: usize| 2.5e-3 + 1.2e-4 * k as f64;
+    let mut ring = vec![DVec2::ZERO];
+    ring.extend((0..inserts).map(|k| DVec2::new(along(k), depth(k))));
+    ring.extend([DVec2::new(1.0, 0.0), DVec2::new(cos, sin)]);
+    ring.extend(
+        (0..inserts)
+            .rev()
+            .map(|k| along(k) * DVec2::new(cos, sin) + depth(k) * DVec2::new(sin, -cos)),
+    );
+    up_facing_face(&ring)
+}
+
+/// An up-facing sliver 0.15 mm wide at x 0.3, z 0.6 whose long edges carry
+/// dents that interleave across it, vertices 0.12 mm apart along it: past
+/// closure's 0.1 mm. In-plane, CCW with v up, in meters: from the origin, the
+/// bottom edge carries `pairs` on-edge vertices at odd multiples of 0.12 mm,
+/// each followed by a dent 0.09 mm inside it at the next even multiple. Back
+/// from the far end, the top edge carries a dent 0.09 mm inside it over every
+/// other bottom on-edge vertex from the first, with an on-edge vertex between.
+/// A top dent then lies 0.06 mm above the bottom edge, inside the ear at the
+/// on-edge vertex below it, whose chord joins the two bottom dents 0.09 mm up.
+/// `pairs` is even; positions as [`dented_tip_wedge`]'s.
+fn interleaved_sliver(pairs: usize) -> EnvironmentSurfaceFace {
+    let (step, depth, width) = (1.2e-4, 9.0e-5, 1.5e-4);
+    let mut ring = vec![DVec2::ZERO];
+    for k in 0..pairs {
+        ring.push(DVec2::new(step * (2 * k + 1) as f64, 0.0));
+        ring.push(DVec2::new(step * (2 * k + 2) as f64, depth));
+    }
+    let length = step * (2 * pairs + 2) as f64;
+    ring.extend([DVec2::new(length, 0.0), DVec2::new(length, width)]);
+    for j in (0..pairs / 2).rev() {
+        ring.push(DVec2::new(step * (4 * j + 3) as f64, width));
+        ring.push(DVec2::new(step * (4 * j + 1) as f64, width - depth));
+    }
+    ring.push(DVec2::new(0.0, width));
+    up_facing_face(&ring)
+}
+
+/// A face facing up in the y = 1.1 plane through in-plane `ring` points
+/// (CCW with v up, meters), placed with the origin at x 0.3, z 0.6. Positions
+/// and texel UVs are computed in f64 and rounded to f32 separately.
+fn up_facing_face(ring: &[DVec2]) -> EnvironmentSurfaceFace {
+    EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: ring
+            .iter()
+            .map(|&DVec2 { x: u, y: v }| {
+                let (x, z) = (0.3 + u, 0.6 - v);
+                vertex(
+                    [x as f32, 1.1, z as f32],
+                    (DVec2::new(x, z) / 0.0254).as_vec2().to_array(),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Packs a dented up-facing face alone and asserts it tiles exactly: its own
+/// vertices alone, each ring segment one triangle's edge, and the triangles'
+/// areas summing to the face's within 1e-9, tighter than
+/// [`assert_tiles_up_facing_face`]'s 1e-6: one dent's notch drawn over is
+/// about 1e-8 of [`dented_tip_wedge`]'s twice-area, and f64 rounding stays
+/// far under 1e-12 of either fixture's. Returns its install steps and blocked
+/// ears, counted.
+fn pack_dented_face(face: &EnvironmentSurfaceFace, context: &str) -> (u64, u64) {
+    INSTALL_STEPS.with(|steps| steps.set(0));
+    BLOCKED_EARS.with(|blocked| blocked.set(0));
+    let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[[64, 64]], 1, None);
+    let counted = (
+        INSTALL_STEPS.with(std::cell::Cell::get),
+        BLOCKED_EARS.with(std::cell::Cell::get),
+    );
+    let count = face.vertices.len();
+    assert!(mesh.grid.is_none());
+    assert_eq!(
+        mesh.vertices.len(),
+        count,
+        "{context}: the face packs its own vertices"
+    );
+    assert_tiles_up_facing_face(&mesh, face, 0..count as u32 - 1);
+    let position = |i: u32| Vec3::from(mesh.vertices[i as usize].position).as_dvec3();
+    let tiled: f64 = mesh
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|&[a, b, c]| signed_twice_area(position(a), position(b), position(c), DVec3::Y))
+        .sum();
+    let whole: f64 = (1..count as u32 - 1)
+        .map(|i| signed_twice_area(position(0), position(i), position(i + 1), DVec3::Y))
+        .sum();
+    assert!(
+        (whole - tiled).abs() <= 1.0e-9 * whole,
+        "{context}: face {whole}, triangles {tiled}"
+    );
+    counted
+}
+
+/// Asserts install steps counted at two vertex counts, `(vertices, steps)`
+/// small then large, reach the fit and the triangulation and grow within
+/// n log n.
+fn assert_steps_within_n_log_n(counted: [(usize, u64); 2], context: &str) {
+    let [(small, small_steps), (large, large_steps)] = counted;
+    assert!(
+        small_steps >= small as u64,
+        "the count reaches the fit and the triangulation"
+    );
+    let n_log_n = |n: usize| n as f64 * (n as f64).log2();
+    let ratio = large_steps as f64 / small_steps as f64;
+    let bound = n_log_n(large) / n_log_n(small);
+    assert!(
+        ratio <= bound,
+        "{context}: {small_steps} steps at {small} vertices, {large_steps} at {large}: \
+         ratio {ratio}, n log n allows {bound}"
+    );
+}
+
+// Regression (review): on an acute wedge whose long edges carry dents near
+// its tip, the ear clip took the earliest slot first and built fans from a
+// pivot near the tip to vertices tens of millimetres out. Each fan triangle
+// ran within a dent's depth of live dents along its whole length, so the
+// containment index's boxes could not separate them and each search grew with
+// the dented run: from the tip, 2113 steps at 51 vertices and 12717 at 195, a
+// ratio of 6.0 where n log n allows 5.1. Clipping the shortest chord first
+// keeps each ear local. Run in rotations leading at the tip, along each edge
+// and at each far corner, at two sizes whose dented runs differ fourfold, the
+// face tiles exactly and its install work grows within n log n of its vertex
+// count. No ear blocks here under that order;
+// `a_sliver_with_interleaved_dents_blocks_ears_and_packs_within_n_log_n_install_steps`
+// runs the blocked-ear path.
+#[test]
+fn a_wedge_dented_near_its_tip_packs_within_n_log_n_install_steps() {
+    // The ring slot each rotation leads at, from the edge's insert count: T,
+    // A's first insert, A's middle, A's far corner, B's far corner, B's
+    // middle, B's insert beside T.
+    let leads: [fn(usize) -> usize; 7] = [
+        |_| 0,
+        |_| 1,
+        |inserts| inserts / 2,
+        |inserts| inserts + 1,
+        |inserts| inserts + 2,
+        |inserts| inserts + 2 + inserts / 2,
+        |inserts| 2 * inserts + 2,
+    ];
+    for (rotation, lead) in leads.iter().enumerate() {
+        let counted = [24, 96].map(|inserts| {
+            let mut face = dented_tip_wedge(inserts);
+            face.vertices.rotate_left(lead(inserts));
+            let normal = face_normal(&face).expect("the wedge has area");
+            assert!(normal.abs_diff_eq(Vec3::Y, 1.0e-6), "{normal:?}");
+            assert_eq!(reflex_vertex_count(&face), inserts, "every dent is reflex");
+            let context = format!("rotation {rotation}, {inserts} inserts");
+            let (steps, _) = pack_dented_face(&face, &context);
+            (face.vertices.len(), steps)
+        });
+        assert_steps_within_n_log_n(counted, &format!("rotation {rotation}"));
+    }
+}
+
+// Regression (review): no count test reached the ear clip's blocked-ear path,
+// where an ear holding a reflex vertex is set aside under it and searched
+// again once that vertex turns, so its bound rested on argument alone. On a
+// sliver whose two long edges carry dents that interleave across it, the ear
+// at each bottom on-edge vertex under a top dent holds that dent. Those ears'
+// chords, two vertex spacings along the bottom edge, are shorter than any
+// top-edge ear's at the start, so the bottom ears come up first: those clear
+// of a top dent clip, and those under one block, about once per top dent,
+// until a clip across the sliver turns that dent and releases them. Run in
+// rotations leading at each corner and along each edge, at two sizes whose
+// dented runs differ fourfold, the face tiles exactly, ears block at both
+// sizes and more at the larger, and the install work, retries included, grows
+// within n log n of the vertex count.
+#[test]
+fn a_sliver_with_interleaved_dents_blocks_ears_and_packs_within_n_log_n_install_steps() {
+    // The ring slot each rotation leads at, from the bottom edge's pairs: the
+    // bottom edge's first corner, its first on-edge vertex, its middle, its
+    // far corner, the top edge's far corner, its middle, its last corner.
+    let leads: [fn(usize) -> usize; 7] = [
+        |_| 0,
+        |_| 1,
+        |pairs| pairs,
+        |pairs| 2 * pairs + 1,
+        |pairs| 2 * pairs + 2,
+        |pairs| 2 * pairs + 3 + pairs / 2,
+        |pairs| 3 * pairs + 3,
+    ];
+    for (rotation, lead) in leads.iter().enumerate() {
+        let counted = [24, 96].map(|pairs| {
+            let mut face = interleaved_sliver(pairs);
+            face.vertices.rotate_left(lead(pairs));
+            let normal = face_normal(&face).expect("the sliver has area");
+            assert!(normal.abs_diff_eq(Vec3::Y, 1.0e-6), "{normal:?}");
+            assert_eq!(
+                reflex_vertex_count(&face),
+                3 * pairs / 2,
+                "every dent is reflex"
+            );
+            let context = format!("rotation {rotation}, {pairs} pairs");
+            let (steps, blocked) = pack_dented_face(&face, &context);
+            assert!(blocked > 0, "{context}: no ear blocked");
+            (face.vertices.len(), steps, blocked)
+        });
+        let [(small, _, small_blocked), (large, _, large_blocked)] = counted;
+        assert!(
+            large_blocked > small_blocked,
+            "rotation {rotation}: {small_blocked} ears blocked at {small} vertices, \
+             {large_blocked} at {large}"
+        );
+        assert_steps_within_n_log_n(
+            counted.map(|(vertices, steps, _)| (vertices, steps)),
+            &format!("rotation {rotation}"),
+        );
+    }
+}
+
 // Regression (review): the face normal was a Newell sum in f32 on absolute
 // positions. On a narrow strip far from the origin with thousands of inserts
 // on one long edge, its rounding outgrew twice the strip's area and flipped
@@ -669,8 +900,8 @@ fn a_thin_strip_with_an_insert_inside_its_long_edge_near_a_corner_packs_facing_u
     assert!(signed_twice_area(centroid, ring[3], ring[4], DVec3::Y) < 0.0);
 
     // Packed ungridded, every triangle winds up and the areas sum to the
-    // strip's, over its own vertices alone: no triangle inverts. The clip
-    // order follows the ring, so each vertex leads once.
+    // strip's, over its own vertices alone: no triangle inverts. Clip order
+    // ties fall to the earliest slot, so each vertex leads once.
     for lead in 0..strip.vertices.len() {
         let mut rotated = strip.clone();
         rotated.vertices.rotate_left(lead);

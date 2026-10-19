@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 
 use glam::DVec3;
 
+use super::COLLINEAR_DISTANCE;
 use super::ear_index::ReflexIndex;
 
 /// A ring turns at a vertex when the turn's sine exceeds this. f64 rounding
@@ -110,6 +111,24 @@ pub(super) fn triangulate_convex(
     }
     let count = vertices.len();
     if count < 3 {
+        return;
+    }
+    // A ring turning at every vertex, each further than the collinear
+    // tolerance from its neighbours' chord, is convex and no fan diagonal
+    // passes near a vertex (in a convex ring that chord is the nearest any
+    // diagonal comes): it fans from its first, as most grid parts do, with
+    // none of the clip bookkeeping.
+    super::count_install_steps(count);
+    if (0..count).all(|i| {
+        let at = |slot: usize| packed(vertices[slot % count]);
+        let (prev, here, next) = (at(i + count - 1), at(i), at(i + 1));
+        let chord = next - prev;
+        ring_turn(prev, here, next, normal) == Turn::Corner
+            && (here - prev).cross(chord).length() > COLLINEAR_DISTANCE * chord.length()
+    }) {
+        for i in 1..count - 1 {
+            triangles.push([vertices[0], vertices[i], vertices[i + 1]]);
+        }
         return;
     }
     let mut ring = ClipRing::new(vertices.iter().map(|&v| packed(v)).collect(), normal);

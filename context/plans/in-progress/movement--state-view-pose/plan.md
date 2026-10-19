@@ -19,47 +19,47 @@ read at: 8aa2f18
 - The graded-ledge proof models a running jump into the riser (first jump distance, in 0.1 m steps, that vaults): a standing jump against the riser clears the 0.6 m ledge, whose top is under the jump's 1.16 m peak.
 
 ## Delegated answers
-- Horizontal-distance floor for the focus angle — 0.5 m (`LEDGE_FOCUS_MIN_HORIZONTAL_M`). It bounds the line at atan(eye height / 0.5) (−71.6° at the dev 1.5 m eye) and stops the line whipping toward −90° as the eye passes over the landing spot, in the climb's last share where the row is already easing out. Revisited against the graded-ledge proof below.
+- Horizontal-distance floor for the focus angle — 0.5 m (`LEDGE_FOCUS_MIN_HORIZONTAL_M`). It bounds the line at atan(eye height / 0.5) (−71.6° at the dev 1.5 m eye) and stops the line whipping toward −90° as the eye passes over the landing spot, in the climb's last share (where a nonzero `easeOut` is also easing the row out). Kept after the graded-ledge proof below.
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| Surface: TS and Luau accept the example, reject the listed cases naming the path, leftover `slide`/`vault` name their `pose` replacement, omission yields no pose | `scripting-core` `tests::movement_view_pose::*` (JS/Luau parity), `sdk/type-tests/view-pose.ts` via `tsc -p sdk/type-tests` | achievable as stated |
-| Migration: `pose.slide` reproduces shipped slide frame for frame, floor included | `view_feel::pose` migration test against `view_feel::slide::evaluate` in one build, then removal | achievable as stated |
-| Migration: `pose.vault` reproduces shipped vault pose over the listed cases | `view_feel::pose` migration test against `view_feel::vault::evaluate` in one build, then removal | achievable as stated |
-| Rate row holds for the state; every exit eases monotonically, a no-edge `Normal` included | `view_feel::pose` unit test | achievable as stated |
-| P1 slide exit then vault: both ease, rows add, no step | `view_feel::pose` unit test | achievable as stated |
-| P2 summed eye drop floored at 0.05 m | `frame_eye` test | achievable as stated |
-| P17 frame-rate independence 30/60/240; zero-length frame holds output, end and first frame | `view_feel::pose` unit test | achievable as stated |
-| Vault row neutral on the tick the path reaches the top at 30/60/144/240 Hz, easing a tick before | `view_feel::pose` unit test (carried from vault) | achievable as stated |
-| Early ends release from last presented pose, focus included, over max(path × easeOut, 0.1 s), monotonic | `view_feel::pose` unit test | achievable as stated |
-| P3 vault ending during a release releases the blended pose | `view_feel::pose` unit test | achievable as stated |
-| P10 back-to-back vaults at different ledges and a rewind: no step beyond ease-in | `view_feel::pose` unit test | achievable as stated |
-| Focus predicates both sides, never upward, capped, finite on the final tick | `view_feel::pose` unit test | achievable as stated |
-| Literal pitch at or below the line adds no focus; above, reference + offset approaches and never passes | `view_feel::pose` unit test | achievable as stated |
-| P5/P14 mouse 1:1 from the frame after capture, through climb and release; new vault or rewind takes a new reference | `view_feel::pose` unit test | achievable as stated |
-| P6 full climb starts and ends neutral; a join eases focus in | `view_feel::pose` unit test | achievable as stated |
-| Frame from a vaulting pawn's live movement state shows its own landing focus; two heights differ | `frame_eye` test driving `physics::movement` ticks into the driver builder | achievable as stated |
-| P15 reference is the capture frame's rendered aim | `view_feel::pose` unit test | achievable as stated |
-| P16 scale 0 at start, restored mid-climb, uses the entry reference | `view_feel::pose` unit test | achievable as stated |
-| P14/P18 join after reconcile or reset takes the join frame's aim | `view_feel::pose` unit test | achievable as stated |
-| P21 abort + new vault in one frame under 5% keeps the reference | `view_feel::pose` unit test | achievable as stated |
-| Focus never turns yaw; same offset at any facing or bearing | `frame_eye` test | achievable as stated |
-| P20 line measured from the dropped eye; more eyeDrop steepens it the same frame | `frame_eye` test | achievable as stated |
-| Dev `pose.vault` gives ≥3 distinct peak focus angles over 0.6/1.0/1.5/2.2 m ledges | `startup::movement_vault_surface_tests` driving real vaults through the dev manifest | achievable as stated |
-| P8/P12/P19 mover vault matches static at same relative geometry, follows tilt at the frame's share, reference does not turn | `frame_eye` / driver-builder test with a registry mover | achievable as stated |
-| Pitch clamp ±89° and FOV band with every row + impulse | `frame_eye` test | achievable as stated |
-| Aim, host aim and shot direction bit-identical over a slide and an `allowFire` vault, pose present vs absent | structural: aim enters `assemble_frame_eye` by value; tick input, host aim and shots read `app.camera`/`presented_aim` (see Corrections) | achievable as stated |
-| Viewmodel transform excludes row pitch/roll; eye drop moves eye, listener and viewmodel together | `frame_eye` test | achievable as stated |
-| P4 scale 1/0.5/0, restore mid-hold, scale 0 through end restored mid-release | `view_feel::pose` unit test | achievable as stated |
-| P9 refresh / hot reload snap; pawn change, no driver, level install reset | `frame_eye` + `startup::staged_manifest_lifecycle` tests | achievable as stated |
-| Remote pawn vaulting or sliding adds no pose locally | driver-builder test with local and remote pawns | achievable as stated |
-| Diff gate: `WIRE_VERSION`, `SNAPSHOT_VERSION`, wire fixtures unchanged; committed typedefs match | `git diff main -- <paths>` empty; `sim` `typedef::tests::committed` | achievable as stated |
-| `player.ts` authors `pose` and loads; grep gate; reference docs cover `pose` and the `allowFire` reticle offset | `startup::movement_vault_surface_tests` + `rg` gate | achievable as stated |
-| Manual: graded ledges settle toward the ledge, hold, level out, no pop; tall ledge dips late; pool exit never pulls up | owner, in-engine, `vault-test` | manual |
-| Manual: mouse look stays responsive and natural through a climb | owner, in-engine | manual |
-| Manual: reduced motion shows no pose; slide and vault feel unchanged with focus off | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| Surface: TS and Luau accept the example, reject the listed cases naming the path, leftover `slide`/`vault` name their `pose` replacement, omission yields no pose | `scripting-core` `tests::movement_view_pose::*` (JS/Luau parity), `sdk/type-tests/view-pose.ts` via `tsc -p sdk/type-tests` | achievable as stated | pass — 14 parity tests; tsc 0 errors (no Luau static type test: none exists beyond particles) |
+| Migration: `pose.slide` reproduces shipped slide frame for frame, floor included | `view_feel::pose` migration test against `view_feel::slide::evaluate` in one build, then removal | achievable as stated | pass — ran in `dcf91cf` beside the shipped evaluator, then removed |
+| Migration: `pose.vault` reproduces shipped vault pose over the listed cases | `view_feel::pose` migration test against `view_feel::vault::evaluate` in one build, then removal | achievable as stated | pass — ran in `dcf91cf` beside the shipped evaluator, then removed |
+| Rate row holds for the state; every exit eases monotonically, a no-edge `Normal` included | `view_feel::pose` unit test | achievable as stated | pass |
+| P1 slide exit then vault: both ease, rows add, no step | `view_feel::pose` unit test | achievable as stated | pass |
+| P2 summed eye drop floored at 0.05 m | `frame_eye` test | achievable as stated | pass |
+| P17 frame-rate independence 30/60/240; zero-length frame holds output, end and first frame | `view_feel::pose` unit test | achievable as stated | pass |
+| Vault row neutral on the tick the path reaches the top at 30/60/144/240 Hz, easing a tick before | `view_feel::pose` unit test (carried from vault) | achievable as stated | pass |
+| Early ends release from last presented pose, focus included, over max(path × easeOut, 0.1 s), monotonic | `view_feel::pose` unit test | achievable as stated | pass |
+| P3 vault ending during a release releases the blended pose | `view_feel::pose` unit test | achievable as stated | pass |
+| P10 back-to-back vaults at different ledges and a rewind: no step beyond ease-in | `view_feel::pose` unit test | achievable as stated | pass — bound per Corrections |
+| Focus predicates both sides, never upward, capped, finite on the final tick | `view_feel::pose` unit test | achievable as stated | pass |
+| Literal pitch at or below the line adds no focus; above, reference + offset approaches and never passes | `view_feel::pose` unit test | achievable as stated | pass |
+| P5/P14 mouse 1:1 from the frame after capture, through climb and release; new vault or rewind takes a new reference | `view_feel::pose` unit test | achievable as stated | pass |
+| P6 full climb starts and ends neutral; a join eases focus in | `view_feel::pose` unit test | achievable as stated | pass |
+| Frame from a vaulting pawn's live movement state shows its own landing focus; two heights differ | `frame_eye` test driving `physics::movement` ticks into the driver builder | achievable as stated | pass |
+| P15 reference is the capture frame's rendered aim | `view_feel::pose` unit test | achievable as stated | pass |
+| P16 scale 0 at start, restored mid-climb, uses the entry reference | `view_feel::pose` unit test | achievable as stated | pass |
+| P14/P18 join after reconcile or reset takes the join frame's aim | `view_feel::pose` unit test | achievable as stated | pass |
+| P21 abort + new vault in one frame under 5% keeps the reference | `view_feel::pose` unit test | achievable as stated | pass |
+| Focus never turns yaw; same offset at any facing or bearing | `frame_eye` test | achievable as stated | pass |
+| P20 line measured from the dropped eye; more eyeDrop steepens it the same frame | `frame_eye` test | achievable as stated | pass — direction per Corrections (shallower for a lower eye) |
+| Dev `pose.vault` gives ≥3 distinct peak focus angles over 0.6/1.0/1.5/2.2 m ledges | `startup::movement_vault_surface_tests` driving real vaults through the dev manifest | achievable as stated | pass — peaks ≈ −38.1/−37.5/−36.7/−39.3° with the dev 0.55/45 (see Corrections) |
+| P8/P12/P19 mover vault matches static at same relative geometry, follows tilt at the frame's share, reference does not turn | `frame_eye` / driver-builder test with a registry mover | achievable as stated | pass |
+| Pitch clamp ±89° and FOV band with every row + impulse | `frame_eye` test | achievable as stated | pass |
+| Aim, host aim and shot direction bit-identical over a slide and an `allowFire` vault, pose present vs absent | structural: aim enters `assemble_frame_eye` by value; tick input, host aim and shots read `app.camera`/`presented_aim` (see Corrections) | achievable as stated | pass — structural; verified by the review tracer |
+| Viewmodel transform excludes row pitch/roll; eye drop moves eye, listener and viewmodel together | `frame_eye` test | achievable as stated | pass |
+| P4 scale 1/0.5/0, restore mid-hold, scale 0 through end restored mid-release | `view_feel::pose` unit test | achievable as stated | pass |
+| P9 refresh / hot reload snap; pawn change, no driver, level install reset | `frame_eye` + `startup::staged_manifest_lifecycle` tests | achievable as stated | pass |
+| Remote pawn vaulting or sliding adds no pose locally | driver-builder test with local and remote pawns | achievable as stated | pass |
+| Diff gate: `WIRE_VERSION`, `SNAPSHOT_VERSION`, wire fixtures unchanged; committed typedefs match | `git diff main -- <paths>` empty; `sim` `typedef::tests::committed` | achievable as stated | pass — no version or wire-fixture change; typedef snapshot fixtures regenerated; committed typedefs match |
+| `player.ts` authors `pose` and loads; grep gate; reference docs cover `pose` and the `allowFire` reticle offset | `startup::movement_vault_surface_tests` + `rg` gate | achievable as stated | pass — dev manifest loads `pose`; grep gate clean |
+| Manual: graded ledges settle toward the ledge, hold, level out, no pop; tall ledge dips late; pool exit never pulls up | owner, in-engine, `vault-test` | manual | outstanding — owner, in-engine |
+| Manual: mouse look stays responsive and natural through a climb | owner, in-engine | manual | outstanding — owner, in-engine |
+| Manual: reduced motion shows no pose; slide and vault feel unchanged with focus off | owner, in-engine | manual | outstanding — owner, in-engine |
 
 ## Tasks
 
@@ -69,4 +69,12 @@ read at: 8aa2f18
 | 2 | Strict `pose` parsing (JS + Luau shared validator), leftover-key rejection, typedef registry, regenerated SDK typedefs, TS type test | worker (scripting surface) | 1 (types) | done — `movement_view_pose` 14 tests, scripting-core 896 + 2, sim typedef 44, `tsc -p sdk/type-tests` 0 errors |
 | 3 | Remove shipped `slide`/`vault` blocks, evaluators, parsers and their types; dev `player.ts`; docs; vault-test README; grep gate | integrating executor | 1, 2 | done — migration proof ran in `dcf91cf` before removal; grep gate clean; `tsc` 0 errors |
 | 4 | Remaining runtime ACs: graded-ledge dev proof, mover, aim bit-identity, remote pawn, lifecycle | integrating executor | 3 | done — `frame_eye::pose_tests::driver::*`, `startup::movement_vault_surface_tests::the_dev_players_ledge_focus_differs_across_the_graded_ledges` |
-| 5 | Preflight, review panel, fix loop, results | integrating executor | 4 | |
+| 5 | Preflight, review panel, fix loop, results | integrating executor | 4 | done — see Results |
+
+## Results
+
+- Preflight: `cargo fmt --check` ✓; `cargo clippy -- -D warnings` ✓ (plus `--all-targets` on postretro, scripting-core, sim, netcode, foundation ✓); `cargo test --no-fail-fast` 11,760 passed, 1 failed — `postretro-ui` `text::tests::runtime_loaded_font_bytes_register_family`, which asserts JetBrains Mono is not a system font; this container installs it in `/usr/share/fonts`. Untouched by this branch; environmental. `cargo check --release` ✓; `crate-graph --check` ✓.
+- Review panel (2 slices: correctness tracer, adversarial tester, contract verifier on opus; hygiene + drift ×2 on sonnet): no 🔴. Acted on: focus held while a mover landing is missing; focus line decoupled from the view-feel scale; three tests that could not fail strengthened or removed; P18 same-frame clear-and-join test; real impulse kick under the clamps; `mover_entity` moved to `runtime_movers`; comment, docs and typedef drift. One loop; the fixes were retested focused and in the full gate.
+- Left as nits: a JS class getter (non-enumerable, inherited) on a pose row is skipped where Luau `__index` rejects; numeric-like JS keys report an unknown field where Luau reports "must be an object"; the `eyeDrop` range error names its f32 ceiling.
+- Durable context: `context/lib/movement.md` §1 and `player_options.md` §5 still describe the channel as decided, not built — rewritten at landing.
+

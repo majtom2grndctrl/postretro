@@ -1,7 +1,7 @@
 # fluid-ssr-reflections — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: db0f270d3
 
 Feature branch: `claude/fluid-ssr-reflections-0b3212` (worktree `.claude/worktrees/fluid-ssr-reflections-0b3212`), cut from the claim commit `db0f270d3`.

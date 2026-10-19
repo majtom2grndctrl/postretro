@@ -1,7 +1,7 @@
 # fluid-surface-t-junction-closure — plan of record
 
 mode: compact
-status: active
+status: active (results reported; awaiting owner look and "land the plane")
 read at: 0f069d775
 
 ## Corrections
@@ -23,27 +23,27 @@ read at: 0f069d775
 
 Rows in Acceptance order.
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 shared boundaries identical on the fixture list, each failing before closure | `surface_tests::closure` fixtures on the level-wide `open_seams` checker; P15's single-face and buried-only levels exempt from failing before | achievable as stated |
-| 2 holds on e24; `#[ignore]` campaign-test, reflection-probes-test, vault-test, stress-env-volumes | `surface_tests::closure` (e24), `surface_tests::closure_maps` (ignored) | achievable as stated |
-| 3 end to end through the renderer's packing, failing today | `level-compiler` test packing a compiled shallow-angle fixture with `render-cpu` on a lattice, before and after closure | achievable as stated |
-| 4 no face count, order or texture change; UV is own side's projection (P5) | `assert_nothing_else_moves` on every fixture and map | achievable as stated |
-| 5 P9 and P19 left alone | fixtures | achievable as stated |
-| 6 move bound, weld chains, insert within tolerance of the edge it joins as left (P10, P18, P21) | fixtures and maps | achievable as stated |
-| 7 no level-format, loader, wire or digest change; old PRL loads (P7) | diff gate against `main` over `crates/level-format`, `crates/level-loader`, `hash_environment_volumes` | gate |
-| 8 three distinct vertices, a normal, area bound (P8, P17); P14 | fixtures and maps | achievable as stated |
-| 9 boundary runs in order: nearest edge, in order along it, never crosses itself (P23; restated, see Owner rulings) | simplicity and peel assertions on every fixture and map | achievable as stated |
-| 10 regression guard: identical id-52 bytes, e24 among them | blake3 hashes captured from the pre-change compiler this session (3 fixtures + e24 `48901a4b…`) | achievable as stated |
-| 11 stress-env-volumes and reflection-probes-test: same drift push, matching drift map, same id-54 bindings except a tilted piece under 6 mm (P14) | `closure_maps` ignored test, before and after closure | achievable as stated |
-| 12 id-52 identical cold/cold, warm/cold, worker counts, on a level that welds and inserts; id-54 key hits next warm build (P6) | `tests/fluid_seam_determinism.rs` | achievable as stated |
-| 13 `context/lib` grep gate | grep at landing | gate |
-| 14 closure candidate tests grow within n log n (synthetic ocean ×2 shapes, one face beside thousands) | closure count test at two sizes | achievable as stated |
-| 15 face with thousands of inserts packs ungridded and gridded (one plane; every plane, P24), drift map matches, install count within n log n | `render-cpu` count test at two sizes | achievable as stated |
-| 16 piece clear of a push ≥ 100 m out with thousands of inserts resolves the same push (P13) | `postretro` drift test | achievable as stated |
-| 17 bake cost cold before/after, stress-env-volumes and campaign-test | manual timing, pre-change binary saved this session | manual |
-| 18 fluid install time before/after on stress-env-volumes | manual timing | manual |
-| 19 owner look in engine | owner | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 shared boundaries identical on the fixture list, each failing before closure | `surface_tests::closure` fixtures on the level-wide `open_seams` checker; P15's single-face and buried-only levels exempt from failing before | achievable as stated | pass |
+| 2 holds on e24; `#[ignore]` campaign-test, reflection-probes-test, vault-test, stress-env-volumes | `surface_tests::closure` (e24), `surface_tests::closure_maps` (ignored) | achievable as stated | pass (stress-env-volumes 6173 open → 0) |
+| 3 end to end through the renderer's packing, failing today | `faces_meeting_at_a_shallow_angle_to_a_lattice_plane_share_their_gridded_edge` | achievable as stated | pass; before closure the sides differ by a crossing 12.8 mm from the T-vertex |
+| 4 no face count, order or texture change; UV is own side's projection (P5) | `assert_nothing_else_moves` on every fixture and map | achievable as stated | pass |
+| 5 P9 and P19 left alone | fixtures | achievable as stated | pass |
+| 6 move bound, weld chains, insert within tolerance of the edge it joins as left (P10, P18, P21) | fixtures and maps (peel check) | achievable as stated | pass; largest weld move on the maps 0.034 mm |
+| 7 no level-format, loader, wire or digest change; old PRL loads (P7) | diff gate against `main` over `crates/level-format`, `crates/level-loader`, `hash_environment_volumes` | gate | pass (empty diff) |
+| 8 three distinct vertices, a normal, area bound (P8, P17); P14 | fixtures and maps; normal sign checked too | achievable as stated | pass |
+| 9 boundary runs in order: nearest edge, in order along it, never crosses itself (P23; restated) | simplicity and peel assertions on every fixture and map | achievable as stated | pass |
+| 10 regression guard: identical id-52 bytes, e24 among them | `levels_with_no_open_seam_keep_their_bytes_from_before_closure` (3 fixtures + e24, hashes from the pre-change compiler) | achievable as stated | pass |
+| 11 stress-env-volumes and reflection-probes-test: same drift push, matching drift map, same id-54 bindings except a tilted piece under 6 mm (P14) | `closure_keeps_every_faces_drift_push_drift_map_and_probe_binding` (ignored) | achievable as stated | pass: 382 and 8 bindings unchanged, 0 tilted, drift maps within 0.0012 texels |
+| 12 id-52 identical cold/cold, warm/cold, worker counts, on a level that welds and inserts; id-54 key hits next warm build (P6) | `tests/fluid_seam_determinism.rs` | achievable as stated | pass |
+| 13 `context/lib` grep gate | grep over build_pipeline.md and rendering_pipeline.md | gate | pass (0 matches each) |
+| 14 closure candidate tests grow within n log n | `closure_bounds` (ignored) | achievable as stated | pass |
+| 15 face with thousands of inserts packs ungridded and gridded (one plane; every plane, P24), drift map matches, install count within n log n | `a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps` (also dented); dented-tip wedge and interleaved sliver count tests | achievable as stated | pass |
+| 16 piece clear of a push ≥ 100 m out with thousands of inserts resolves the same push (P13) | `a_piece_clear_of_a_push_drifts_as_without_thousands_of_inserts_on_its_boundary_edge` | achievable as stated | pass |
+| 17 bake cost cold before/after, stress-env-volumes and campaign-test | dev-profile `prl-build --no-cache`, pre-change binary vs branch, same machine, sequential | manual | reported: fluid stage 12.1 → 87.2 ms and whole build 1505 → 1561 s on stress-env-volumes (the whole-build gap is lightmap/SH noise; the owner was browsing); campaign-test 0.1 → 0.1 ms and 20.3 → 20.3 s |
+| 18 fluid install time before/after on stress-env-volumes | temporary timing test, median of 21 `pack_fluid_surfaces` runs on each build's id-52 and SH lattice, main's render-cpu vs the branch's | manual | reported: gridded 53.3 ms (main, pre-change faces) → 66.2 ms (branch, closed faces); ungridded 2.7 → 9.0 ms. A first measurement found the new clipper's bookkeeping alone at 127 ms; a convex-ring fast path brought it back |
+| 19 owner look in engine | owner | manual | outstanding |
 
 ## Follow-ups
 - Ear-clip containment on acute tips with sagging dented runs can still exceed n log n (about 2× in a sweep; `ear_clip.rs` doc states it). The established fix is a spatial hash over live reflex vertices keyed by ear, as earcut's z-order hashing, or a monotone sweep; either replaces the beside-first class's fan.
@@ -62,7 +62,7 @@ Rows in Acceptance order.
 | 7 | Grid cut as one sweep per axis (P24); every-plane install bound | integrating executor | 1 | done: `cut_axis` matched the successive split on 25,805 generated parts (temporary equivalence test, not kept); the every-plane case fails the old cut (ratio 14.9 vs 4.7 allowed) and passes the sweep |
 | 8 | Drift sample point shared from render-cpu; P13 | integrating executor | 1 | done: `face_area_centroid` in render-cpu is the runtime drift sample (the centroid fan it first also fed was retired in review round 2); P13 `a_piece_clear_of_a_push_drifts_as_without_thousands_of_inserts_on_its_boundary_edge` (300 m out, 4000 inserts) passes |
 | 9 | Context docs: build_pipeline §Fluid surfaces, rendering_pipeline §7.3a | integrating executor | 2 | done: gate retired, closure contract and byte rule stated, accepted limit narrowed, bounded install and area-centroid sample recorded; grep gate clean |
-| 10 | Preflight, review panel, fixes; manual timings | integrating executor | 1–9 | review loop done (4 rounds, below); preflight green; manual timings in progress |
+| 10 | Preflight, review panel, fixes; manual timings | integrating executor | 1–9 | done: review loop 4 rounds (below); preflight green (fmt, clippy -D warnings, 11,781 tests, release check, crate graph, ignored map suite); timings reported |
 
 ## Review loop
 - Round 1 (7 lenses): weld could flatten or flip a sliver → a face whose weld would spoil it keeps its positions; `face_normal` lost its sign on a narrow face far out with thousands of inserts → f64 relative to vertex 0; stale comments and docs fixed; the angle-order/edge-bound conflict went to the owner (ruling 1).

@@ -22,7 +22,7 @@ use postretro_level_format::texture_names::TextureNamesSection;
 use crate::geometry::brush_side_texel_uv;
 use crate::map_data::{BrushVolume, MapEnvironmentVolume};
 
-use closure::close_seams;
+use closure::{ClosureStats, close_seams};
 use push_split::PushBrushes;
 use surface::{SolidWorld, SurfacePiece, fluid_surface_pieces};
 
@@ -88,7 +88,11 @@ fn encode_section(
     let has_fluid = volumes.iter().any(|volume| volume.fluid.is_some());
     // Closure needs every volume's pieces before any is encoded.
     let mut pieces = surface_pieces(volumes, solid_world);
-    let closure = close.then(|| close_seams(&mut pieces)).unwrap_or_default();
+    let closure = if close {
+        close_seams(&mut pieces)
+    } else {
+        ClosureStats::default()
+    };
     let mut textures = TextureTable::new(texture_names);
     let mut face_count = 0usize;
 

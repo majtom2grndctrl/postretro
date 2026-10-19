@@ -53,8 +53,8 @@ Thin or fast movers: the swept push (`sweep_mover_against_capsule`) detects a fa
 - **Co-op:**
   - Carry and displacement are deterministic on host and client, so both peers embed identically and no correction fires.
   - The client's camera shows the embed exactly as the host's pawn has it.
-- **After the fix (the brief's direction):**
-  - The host holds or reverses the mover one tick ahead.
+- **After the fix:**
+  - The host holds the mover one tick ahead (a `reverse` mover may reverse instead).
   - The client still predicts the mover moving until the snapshot carrying the new phase arrives, so for that window its own pawn is carried into the ceiling as today. The reconcile then replays against the held mover and snaps the pawn back out.
   - The correction is bounded by the mover's travel over the client's prediction lead. That is the same correction class a `stop` door closing on a client pawn already takes.
   - The loopback harness (crates/netcode/src/predict_reconcile_harness_test_fixtures.rs, `host_simulate_tick`) runs the mover driver but not the blocking pass, so it cannot show this today.
@@ -94,10 +94,11 @@ Pattern: every classic engine's default pusher refuses to move into an entity it
 |---|---|---|
 | **Mover yields to a pinned body (chosen)** | Only the mover can create free space when a body sits between it and static geometry. Uses the existing replicated hold and reverse phase, so no wire change. Matches classic defaults. Leaves every unpinned case untouched. | Changes the default policy where a pin occurs. The client mispredicts the mover until the hold arrives. |
 | Body-side static depenetration (Quake `SV_CheckStuck` nudge, Source unstick) | Catches any cause | A pinned body has no free pose nearby: both sides are solid. A nudge can push through thin walls or out of the level. It is the rescue the landed invariant brief rejected for own movement. |
-| Swept carry (clip the carry at static) | The client never embeds during the latency window | The platform then rises into the rider's feet, and the displacement is refused, so the body ends inside the mover instead. It still needs the mover to yield, so it adds a mitigation, not a fix. It changes the carry exemption in `movement.md` §1. Rejected by the owner. |
+| Swept carry (clip the carry at static) | The client never embeds during the latency window | The platform then rises into the rider's feet, and the displacement is refused, so the body ends inside the mover instead. It still needs the mover to yield, so it adds a mitigation, not a fix. It changes the carry exemption in `movement.md` §1. |
+| Pinned `displace` reverses by default (Quake and Doom doors and plats) | Frees a rider in an enclosed shaft with no authoring | Prescribes door behaviour authors may not want. A reversal drops a scripted `goToPathNode` target and returns a `once` mover to its start. Authors who want it set `reverse` or a `blocked_event` reaction. |
 | Change the FGD default to `stop` or `reverse` | No new semantics | `stop`/`reverse` react to every pushable contact, so a default slider that pushes a pawn across open floor would halt instead. Every unauthored mover in content and in mods changes behaviour, not only the pinned case. |
-| Load-time headroom check on a lift's stops (`/validate-plan`) | Catches the authored-too-low stop before play | Complement, not rival: misses doors, overhangs, arches and carousels. The once-per-mover warning covers it at runtime. |
-| Partial advance: move the mover up to the pin, not a whole-tick hold (`/validate-plan`) | Smaller gap left by a hold | A per-tick fraction would ride the wire; the gap a hold leaves is at most one tick's travel (0.25 m at 15 m/s) |
+| Load-time headroom check on a lift's stops | Catches the authored-too-low stop before play | Complement, not rival: misses doors, overhangs, arches and carousels. The once-per-mover warning covers it at runtime. |
+| Partial advance: move the mover up to the pin, not a whole-tick hold | Smaller gap left by a hold | A per-tick fraction would ride the wire; the gap a hold leaves is at most one tick's travel (0.25 m at 15 m/s) |
 | Client predicts the yield for its own pawn | No latency correction | Block policy and `setBlockPolicy` would have to enter the digest and the wire (`networking.md`: "a deterministic input to client prediction belongs in the hash"). That is a one-way door for a latency polish. |
 
 ## Pin predicate detail
@@ -117,7 +118,7 @@ Pattern: every classic engine's default pusher refuses to move into an entity it
 - movement/mod.rs is past 6000 lines.
 - Dev map: the content maps were not checked for pin geometry. A new `content/dev/maps/` map (low-ceiling lift, overhang lift, jamb door, double door, descending lift, rotating door, low-arch platform, carousel and pillar) gives the manual rows a place.
 
-## Ordering pins (`/review-brief`)
+## Ordering pins
 
 Host tick order (`entity_model.md` §5): mover tick → player movement → triggers (commands mutate phase) → … → agent steering → auto-close timers → blocking pass.
 

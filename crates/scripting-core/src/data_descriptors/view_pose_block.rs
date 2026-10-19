@@ -327,8 +327,6 @@ fn vault_row(value: PoseValue, path: String) -> Result<VaultPoseRow, DescriptorE
         .concat(),
     )?;
     let channels = row.channels()?;
-    // A default share is a widened f32 (0.2 reads 0.2000000003), so allow that
-    // much over 1: an authored 0.8 with the default 0.2 still fits.
     let ease_in = row
         .number("easeIn", Range::unit())?
         .unwrap_or(f64::from(VaultPoseRow::DEFAULT_EASE_IN));
@@ -336,6 +334,8 @@ fn vault_row(value: PoseValue, path: String) -> Result<VaultPoseRow, DescriptorE
         .number("easeOut", Range::unit())?
         .unwrap_or(f64::from(VaultPoseRow::DEFAULT_EASE_OUT));
     let shares = ease_in + ease_out;
+    // A default share is a widened f32 (0.2 reads 0.2000000003), so allow that
+    // much over 1: an authored 0.8 with the default 0.2 still fits.
     if shares > 1.0 + 1.0e-6 {
         let path = &row.path;
         return Err(invalid(format!(

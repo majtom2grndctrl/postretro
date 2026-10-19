@@ -89,7 +89,9 @@ re-derive them.
 8. Hold fire through a vault. Nothing fires until the vault ends
    (`allowFire: false`), and the held trigger fires on the first tick after
    it ends. Then set `allowFire: true` in `scripts/player.ts` and repeat: you
-   should fire throughout.
+   should fire throughout. Shots follow your aim, not the crosshair: during the
+   climb the crosshair sits off the shot line by the camera pose, ledge focus
+   included.
 
 ### N2: co-op client at about 100 ms
 

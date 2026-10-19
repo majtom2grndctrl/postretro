@@ -72,12 +72,12 @@ pub(crate) struct PoseFrame {
     pub(crate) vault: Option<VaultViewInput>,
     /// The aim pitch this frame renders, degrees, after this frame's look.
     pub(crate) aim_pitch_deg: f32,
-    /// The rendered eye before any row's drop: bob and the other positional
-    /// offsets included.
-    pub(crate) eye: Vec3,
-    /// How far every row's drop together may lower that eye before it meets
-    /// the [`MIN_EYE_CLEARANCE`] floor.
-    pub(crate) available_drop: f32,
+    /// The presented eye before any view-feel offset.
+    pub(crate) presented_eye: Vec3,
+    /// That eye's height above the pawn's feet.
+    pub(crate) eye_height_above_feet: f32,
+    /// The vertical view-feel offset already on the rendered eye (bob), metres.
+    pub(crate) offset_y: f32,
 }
 
 /// Every row's output summed, scaled by the view-feel scale. Angles in degrees;
@@ -137,27 +137,43 @@ pub(crate) fn evaluate(
         state.vault = vault_row::VaultRowState::default();
     }
 
-    let vault_drop = vault.map_or(0.0, |(row, weights)| {
-        let (weight, eye_drop) = vault_row::eye_drop(weights, row.channels.eye_drop, &state.vault);
-        eye_drop * (weight * scale)
+    let (vault_weight, vault_drop) = vault.map_or((0.0, 0.0), |(row, weights)| {
+        vault_row::eye_drop(weights, row.channels.eye_drop, &state.vault)
     });
     // The floor bounds the sum, not each row: two rows easing through a
-    // handoff never put the eye under it.
-    let eye_drop = (slide.eye_drop + vault_drop).min(frame.available_drop);
+    // handoff never put the eye under it. Bob is already on the eye, so the
+    // rendered drop is bounded after it.
+    let eye_drop = (slide.eye_drop + vault_drop * (vault_weight * scale))
+        .min((frame.eye_height_above_feet + frame.offset_y - MIN_EYE_CLEARANCE).max(0.0));
 
+    let slide_drop_unscaled = unscaled_slide_drop(params, state);
     let vault = vault.map_or(PoseValues::default(), |(row, weights)| {
         let mut live = PoseValues::from(row.channels);
-        if let (Some(focus), Some(landing)) =
-            (row.ledge_focus, frame.vault.and_then(|input| input.landing))
-        {
-            let eye = frame.eye - Vec3::Y * eye_drop;
-            live.pitch += vault_row::ledge_focus(
-                &focus,
-                eye,
-                landing,
-                vault_row::reference_deg(&state.vault),
-            );
-        }
+        let focus = match (row.ledge_focus, frame.vault) {
+            (Some(focus), Some(input)) => match input.landing {
+                Some(landing) => {
+                    // The line is measured from the eye the pose presents at
+                    // full scale, before bob: the presented eye lowered by
+                    // every row's unscaled drop under the same floor. The
+                    // view-feel scale multiplies output only, so it must not
+                    // move the line through the drop it scales.
+                    let unscaled_drop = (slide_drop_unscaled + vault_drop * vault_weight)
+                        .min((frame.eye_height_above_feet - MIN_EYE_CLEARANCE).max(0.0));
+                    vault_row::ledge_focus(
+                        &focus,
+                        frame.presented_eye - Vec3::Y * unscaled_drop,
+                        landing,
+                        state.vault.reference_deg,
+                    )
+                }
+                // The landing spot's mover has no presented pose this frame:
+                // hold the focus last shown rather than drop it in one frame.
+                None => state.vault.focus_deg,
+            },
+            _ => 0.0,
+        };
+        state.vault.focus_deg = focus;
+        live.pitch += focus;
         let (weight, values) = vault_row::present(weights, live, &mut state.vault);
         values.scaled(weight * scale)
     });
@@ -169,6 +185,13 @@ pub(crate) fn evaluate(
         eye_drop,
         fov: total.fov,
     }
+}
+
+/// The slide row's drop at its current weight, before the view-feel scale.
+fn unscaled_slide_drop(params: &PoseParams, state: &PoseState) -> f32 {
+    params
+        .slide
+        .map_or(0.0, |row| row.channels.eye_drop * state.slide_weight)
 }
 
 /// Ease a rate row's weight toward 1 while its state is current and toward 0

@@ -24,6 +24,16 @@ use crate::collision::moving::MoverCollider;
 use crate::content_hash::{hash_f32, hash_len, hash_str, hash_u32, hash_vec3};
 use crate::render::{KinematicMoverInstance, MoverOccluderAabb};
 
+/// Find a mover's entity by its level-stable mover id.
+pub(crate) fn mover_entity(registry: &EntityRegistry, mover_id: u32) -> Option<EntityId> {
+    registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .find_map(|(id, value)| match value {
+            ComponentValue::KinematicMover(mover) if mover.mover_id == mover_id => Some(id),
+            _ => None,
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeMoverLoadError {
     message: String,

@@ -1030,7 +1030,7 @@ export type PoseRow = {
   exitRate: number,
 }
 
---- The vault pose row, weighted by the climb's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the pawn reaches the top. A vault that ends early (an abort, death, a correction) eases back from the last presented pose. Takes shares, not rates. Every field is optional.
+--- The vault pose row, weighted by the climb's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the pawn reaches the top (with `easeOut` 0 it holds to the top, then eases back over 0.1 s). A vault that ends early (an abort, death, a correction) eases back from the last presented pose. Takes shares, not rates. Every field is optional.
 export type VaultPoseRow = {
   --- Pitch offset in degrees; positive looks up. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit.
   pitch: number?,

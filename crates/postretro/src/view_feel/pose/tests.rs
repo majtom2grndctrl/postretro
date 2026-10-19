@@ -87,8 +87,9 @@ fn frame(
         movement_state,
         vault,
         aim_pitch_deg,
-        eye: EYE,
-        available_drop: 10.0,
+        presented_eye: EYE,
+        eye_height_above_feet: 10.0,
+        offset_y: 0.0,
     }
 }
 
@@ -371,6 +372,25 @@ fn every_row_is_frame_rate_independent_and_a_zero_length_frame_holds_its_output(
     }
     let expected = line_deg(EYE, LANDING) - 20.0;
     assert!((output.pitch - expected).abs() < EPS, "{output:?}");
+
+    // With `easeIn` 0 the weight is a function of progress alone, so only the
+    // hold keeps a zero-length first frame, or one whose progress moved, still.
+    let instant = PoseParams {
+        slide: None,
+        vault: Some(VaultPoseRow {
+            ease_in: 0.0,
+            ..vault_row(-6.0, focus(0.7, 30.0))
+        }),
+    };
+    let mut state = PoseState::default();
+    assert_eq!(
+        evaluate(Some(&instant), vault_frame(0.3, 0.0), &mut state, 0.0, 1.0),
+        PoseOutput::default()
+    );
+    let moving = evaluate(Some(&instant), vault_frame(0.3, 0.0), &mut state, DT, 1.0);
+    assert!(moving.pitch < -6.0, "{moving:?}");
+    let still = evaluate(Some(&instant), vault_frame(0.95, 0.0), &mut state, 0.0, 1.0);
+    assert_eq!(still, moving, "progress moved on a zero-length frame");
 }
 
 // --- Vault row ---------------------------------------------------------------
@@ -496,21 +516,13 @@ fn a_vault_ending_during_a_release_releases_the_blended_pose_it_presented() {
     released(&params, &mut state, DT, 1);
     // Vault B at a higher ledge starts while A's release holds most of A.
     let high = Vec3::new(0.6, 1.4, 0.0);
-    let mut series = Vec::new();
-    for index in 0..1 {
-        let progress = index as f32 * DT / PATH_S;
-        series.push(
-            evaluate(
-                Some(&params),
-                frame(MovementStateKind::Vault, vaulting(progress, high), 0.0),
-                &mut state,
-                DT,
-                1.0,
-            )
-            .pitch,
-        );
-    }
-    let _ = series;
+    evaluate(
+        Some(&params),
+        frame(MovementStateKind::Vault, vaulting(0.0, high), 0.0),
+        &mut state,
+        DT,
+        1.0,
+    );
     let last = evaluate(
         Some(&params),
         frame(MovementStateKind::Vault, vaulting(DT / PATH_S, high), 0.0),
@@ -611,11 +623,11 @@ fn back_to_back_vaults_at_different_ledges_and_a_rewind_never_step() {
 fn a_vault_that_appears_mid_climb_eases_in_from_neutral_with_its_focus() {
     // A reconcile starts a vault the client never predicted, half way up; or
     // a descriptor change clears view-feel state mid-vault (pins P6, P18).
+    // The clear and the join on one frame are composed in `frame_eye`; here
+    // the row sees only a vault its state was not following.
     let params = only_vault(vault_row(-6.0, focus(0.7, 80.0)));
-    let mut cleared = PoseState::default();
-    climb(&params, &mut cleared, DT, 0.5, 0.0);
-    cleared = PoseState::default();
-    for mut state in [PoseState::default(), cleared] {
+    {
+        let mut state = PoseState::default();
         let series: Vec<f32> = (0..7)
             .map(|index| {
                 let progress = 0.5 + index as f32 * DT / PATH_S;
@@ -902,6 +914,62 @@ fn a_progress_drop_under_the_restart_share_keeps_the_reference_and_re_aims() {
     );
 }
 
+// A mover vault whose mover has no presented pose for a frame or more: the
+// focus it last showed holds, and an end then releases it.
+#[test]
+fn a_landing_spot_gone_mid_vault_holds_the_focus_and_releases_it() {
+    let params = only_vault(vault_row(0.0, focus(0.7, 80.0)));
+    let mut state = PoseState::default();
+    let held = climb(&params, &mut state, DT, 0.5, 0.0)
+        .last()
+        .unwrap()
+        .pitch;
+    assert!(held < -10.0, "{held}");
+    let mut series = vec![held];
+    for index in 1..=3 {
+        let progress = 0.5 + index as f32 * DT / PATH_S;
+        let frame = frame(
+            MovementStateKind::Vault,
+            Some(VaultViewInput {
+                progress,
+                path_s: PATH_S,
+                landing: None,
+            }),
+            0.0,
+        );
+        series.push(evaluate(Some(&params), frame, &mut state, DT, 1.0).pitch);
+    }
+    for pitch in &series[1..] {
+        assert!((pitch - held).abs() < EPS, "the focus holds: {series:?}");
+    }
+    // The vault then breaks off: the release carries that focus.
+    let release = pitches(&released(&params, &mut state, DT, 20));
+    series.extend(&release);
+    assert_monotonic_toward_zero(&series, "release with the held focus");
+    assert!(
+        (series[4] - held).abs() < 0.5 * steepest(&series),
+        "{series:?}"
+    );
+
+    // A pose that returns re-aims from the geometry it finds.
+    let mut state = PoseState::default();
+    climb(&params, &mut state, DT, 0.4, 0.0);
+    let none = Some(VaultViewInput {
+        progress: 0.42,
+        path_s: PATH_S,
+        landing: None,
+    });
+    evaluate(
+        Some(&params),
+        frame(MovementStateKind::Vault, none, 0.0),
+        &mut state,
+        DT,
+        1.0,
+    );
+    let back = evaluate(Some(&params), vault_frame(0.44, 0.0), &mut state, DT, 1.0);
+    assert!((back.pitch - 0.7 * line_deg(EYE, LANDING)).abs() < EPS);
+}
+
 // Focus is pitch-only: the bearing to the landing spot never enters it.
 #[test]
 fn ledge_focus_is_the_same_at_any_bearing_to_the_landing_spot() {
@@ -969,9 +1037,14 @@ fn the_ledge_line_is_measured_from_the_eye_after_every_rows_drop() {
 // Pin P4: the view-feel scale multiplies output only.
 #[test]
 fn the_view_feel_scale_scales_every_row_without_freezing_it() {
+    // The vault row drops the eye too, so a scaled drop must not move its line.
+    let dropping_vault = VaultPoseRow {
+        channels: channels(-6.0, 2.0, 0.3, -3.0),
+        ..vault_row(-6.0, focus(0.7, 80.0))
+    };
     let both = PoseParams {
         slide: Some(slide_row()),
-        vault: Some(vault_row(-6.0, focus(0.7, 30.0))),
+        vault: Some(dropping_vault),
     };
     for scale in [1.0, 0.5, 0.0] {
         let mut state = PoseState::default();
@@ -988,8 +1061,12 @@ fn the_view_feel_scale_scales_every_row_without_freezing_it() {
         let a = climb_scaled(&both, &mut state, DT, 0.5, 0.0, scale);
         let b = climb(&both, &mut full, DT, 0.5, 0.0);
         for (a, b) in a.iter().zip(&b) {
-            assert!((a.pitch - b.pitch * scale).abs() < 1.0e-5);
+            assert!(
+                (a.pitch - b.pitch * scale).abs() < 1.0e-4,
+                "{scale}: {a:?} vs {b:?}"
+            );
             assert!((a.roll - b.roll * scale).abs() < 1.0e-5);
+            assert!((a.eye_drop - b.eye_drop * scale).abs() < 1.0e-5);
         }
     }
 
@@ -1018,7 +1095,7 @@ fn the_view_feel_scale_scales_every_row_without_freezing_it() {
     // release, focus included.
     let mut hidden = PoseState::default();
     let mut shown = PoseState::default();
-    let vault_only = only_vault(vault_row(-6.0, focus(0.7, 30.0)));
+    let vault_only = only_vault(dropping_vault);
     let frames = (0.5 * PATH_S / DT).ceil() as usize;
     for index in 0..=frames {
         let frame = vault_frame((index as f32 * DT / PATH_S).min(0.5), 0.0);

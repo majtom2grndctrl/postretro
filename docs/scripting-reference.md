@@ -736,7 +736,7 @@ no pose.
 ```typescript
 viewFeel: {
   pose: {
-    // Weighted by the climb's progress; releases on every early end.
+    // Weighted by the climb's progress; releases on every early end but a reload.
     vault: {
       ledgeFocus: { strength: 0.7, maxPitch: 30 }, // share toward the ledge line; cap, degrees
       roll: 10, fov: -30,                          // literal holds; pitch, roll in degrees, + looks up
@@ -3120,7 +3120,7 @@ vault = {
 | `swimMaxHeight` | m | above `0` | Highest ledge top a vault reaches out of a fluid, measured from the fluid's surface, so pool edges tune apart from land ledges. |
 | `durationMs` | ms | above `0` | Time from starting the climb to standing on the top, rounded up to whole simulation ticks. |
 | `from` | object | optional | Where a vault may start, each place naming what starts it. Defaults to `{ air: "auto", swim: "auto" }`. |
-| `allowFire` | boolean | optional | Whether the player may start firing while climbing. Defaults to `false`. |
+| `allowFire` | boolean | optional | Whether the player may start firing while climbing. Defaults to `false`. With it on, a [camera pose](#camera-pose) moves the crosshair off the shot line during the climb. |
 
 The places in `from` are `air` (in the air, walking or dashing), `ground` (on
 the ground, walking or dashing) and `swim` (swimming with the eye above the
@@ -3158,7 +3158,9 @@ How vaulting plays:
   through the climb fires again once it ends. A charge stops too, unless its
   weapon action sets `charge.interruptedBy.vault: false`: it then keeps
   charging, and a release during the climb fires once it ends (see
-  [What interrupts a charge](#what-interrupts-a-charge)).
+  [What interrupts a charge](#what-interrupts-a-charge)). With `allowFire`
+  true, shots follow the player's aim, so a [camera pose](#camera-pose) on the
+  climb puts the crosshair off the shot line while it lasts.
 - **Maps cannot change vault tuning.** It belongs to the descriptor.
 
 Starting and finishing a climb fire the reserved `vault_started` and

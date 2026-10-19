@@ -514,7 +514,8 @@ pub enum VaultTrigger {
 /// the optional `groundedOnly` gate. A present impulse block requires its top-level
 /// fields while its per-state rows stay sparse. Pose rows are sparse.
 /// View feel is consumed by the
-/// render-rate evaluator in `view_feel.rs`, called from `main.rs`; this is the data surface only.
+/// render-rate evaluators in `view_feel.rs` and `view_feel/pose.rs`, assembled
+/// in `frame_eye.rs`; this is the data surface only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewFeelParams {
     /// Optional head-bob tuning. Absent ⇒ no head bob.

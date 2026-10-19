@@ -1,5 +1,5 @@
-// Pure first-person view-feel evaluator: head bob, strafe tilt, ambient sway, and
-// state-transition impulses. Render-rate, pawn-driven; caller composes scalar outputs into camera orientation and projection.
+// Pure first-person view-feel evaluator: head bob, strafe tilt, ambient sway,
+// state-transition impulses, and sustained state poses (`pose`). Render-rate, pawn-driven; caller composes scalar outputs into camera orientation and projection.
 // See: context/lib/movement.md
 
 use glam::Vec3;
@@ -72,6 +72,8 @@ impl ViewFeelState {
         self.pose = pose::PoseState::default();
     }
 
+    /// The pose integrator, which `frame_eye` advances after
+    /// [`evaluate_with_edges`]: its eye drop is bounded after bob.
     pub(crate) fn pose_mut(&mut self) -> &mut pose::PoseState {
         &mut self.pose
     }

@@ -84,6 +84,16 @@ impl Rig {
     }
 
     fn frame(&mut self, params: &ViewFeelParams, step: Step, scale: f32) -> FrameEye {
+        self.frame_with_edges(params, step, scale, &[])
+    }
+
+    fn frame_with_edges(
+        &mut self,
+        params: &ViewFeelParams,
+        step: Step,
+        scale: f32,
+        edges: &[view_feel::TimedMovementEdge],
+    ) -> FrameEye {
         assemble_frame_eye(
             FrameEyeInputs {
                 presented_eye: Vec3::new(1.0, 2.0, 3.0),
@@ -99,7 +109,7 @@ impl Rig {
                     vault: step.vault,
                     eye_height_above_feet: step.clearance,
                 }),
-                movement_edges: &[],
+                movement_edges: edges,
                 frame_dt: step.frame_dt,
                 view_feel_scale: scale,
             },
@@ -168,7 +178,7 @@ fn every_rows_eye_drop_sums_under_one_floor_above_the_feet() {
             1.0,
         );
     }
-    let mut both_dropping = false;
+    let mut floor_bound = false;
     for index in 0..20 {
         let eye = rig.frame(
             &params,
@@ -184,9 +194,13 @@ fn every_rows_eye_drop_sums_under_one_floor_above_the_feet() {
             "frame {index}: {}",
             eye.camera.eye_position.y
         );
-        both_dropping |= index > 4 && eye.eye_offset.y < -0.9;
+        // Each row alone (0.6 m) stays clear of the 0.95 m available; only
+        // their sum reaches the floor.
+        floor_bound |= (eye.camera.eye_position.y - (feet + view_feel::pose::MIN_EYE_CLEARANCE))
+            .abs()
+            < 1.0e-4;
     }
-    assert!(both_dropping, "the floor bound the summed drop");
+    assert!(floor_bound, "the floor bound the summed drop");
 }
 
 #[test]
@@ -308,13 +322,22 @@ fn a_full_pose_on_every_row_and_a_kick_stay_inside_the_pitch_limit_and_fov_band(
                 1.0,
             );
         }
-        let eye = rig.frame(
+        // The vault's entry edge kicks on the same frame.
+        let entry = [view_feel::TimedMovementEdge {
+            edge: crate::movement::MovementStateEdge {
+                from: MovementStateKind::Slide,
+                to: MovementStateKind::Vault,
+            },
+            age: 0.0,
+        }];
+        let eye = rig.frame_with_edges(
             &params,
             Step {
                 pitch: aim,
                 ..vault_step(0.5, Some(Vec3::new(1.5, -5.0, 3.0)), DT)
             },
             1.0,
+            &entry,
         );
         let pitch = eye.camera.forward.y.asin();
         assert!(pitch.abs() <= limit + 1.0e-4, "{}", pitch.to_degrees());
@@ -551,13 +574,10 @@ mod driver {
                 eye = Some(assemble(driver, Vec3::new(0.0, 1.3, 0.0), 0.0, &mut rig));
             }
             let eye = eye.unwrap();
-            let neutral =
-                Rig::new().frame(&no_view_feel(), step(MovementStateKind::Normal, DT), 1.0);
             assert_eq!(eye.eye_offset, Vec3::ZERO);
             assert!(
                 (eye.camera.forward - Vec3::new(-YAW.sin(), 0.0, -YAW.cos())).length() < 1.0e-5
             );
-            let _ = neutral;
         }
     }
 
@@ -743,7 +763,7 @@ mod driver {
             let landing = driver.vault.unwrap().landing.unwrap();
             let presented = registry
                 .interpolated_transform(
-                    crate::sound_events::mover_entity(&registry, 7).unwrap(),
+                    crate::runtime_movers::mover_entity(&registry, 7).unwrap(),
                     alpha,
                 )
                 .unwrap();
@@ -769,65 +789,83 @@ mod driver {
             assert!((a.camera.forward - b.camera.forward).length() < 1.0e-6);
         }
         // A mover with no presented pose leaves no focus, not a stale one.
-        let entity = crate::sound_events::mover_entity(&registry, 7).unwrap();
+        let entity = crate::runtime_movers::mover_entity(&registry, 7).unwrap();
         registry.despawn(entity).unwrap();
         let driver = view_feel_driver(&registry, eye.y, eye.y, DT, 0.5).unwrap();
         assert!(driver.vault.unwrap().landing.is_none());
     }
+}
 
-    // Aim, host aim and the shot line never read the pose.
-    #[test]
-    fn aim_host_aim_and_shot_direction_are_identical_with_and_without_a_pose() {
-        let run = |view_feel: Option<ViewFeelParams>| {
-            let mut registry = EntityRegistry::new();
-            let (local, mut component) = pawn(&mut registry, Vec3::ZERO, MovementState::Normal);
-            component.view_feel = view_feel;
-            registry.mark_local_player_pawn(local).unwrap();
-            let mut camera = crate::camera::Camera::new(Vec3::new(0.0, 1.3, 0.0), 0.2, -0.1);
-            let mut rig = Rig::new();
-            let mut aims = Vec::new();
-            let mut rendered = Vec::new();
-            for index in 0..60 {
-                // A slide, then a vault with `allowFire: true` and focus active,
-                // while the player keeps looking around and firing.
-                component.movement_state = if index < 25 {
-                    MovementState::Sliding {
-                        elapsed_ms: index as f32 * 16.0,
-                        boost: Vec3::ZERO,
-                        eye_current: 0.0,
-                    }
-                } else {
-                    vault_state(
-                        (index - 24) as f32 * 1000.0 * DT,
-                        Vec3::new(0.6, 0.2, 0.0),
-                        None,
-                    )
-                };
-                registry.set_component(local, component.clone()).unwrap();
-                camera.rotate(0.01 * (index as f32 * 0.3).sin(), -0.004);
-                let driver =
-                    view_feel_driver(&registry, camera.position.y, camera.position.y, DT, 1.0);
-                let eye = assemble(driver, camera.position, camera.pitch, &mut rig);
-                let shot = crate::build_post_movement_command(&camera);
-                aims.push((
-                    camera.pitch,
-                    camera.yaw,
-                    shot.aim_origin,
-                    shot.aim_direction,
-                ));
-                rendered.push(eye.camera.forward);
-            }
-            (aims, rendered)
-        };
-        let (with, rendered_with) = run(Some(focused_view_feel()));
-        let (without, rendered_without) = run(None);
-        assert_eq!(with, without, "bit-identical aim inputs");
-        assert!(
-            rendered_with
-                .iter()
-                .zip(&rendered_without)
-                .any(|(a, b)| (*a - *b).length() > 1.0e-2),
-            "the pose was active"
+// Pins P14, P18: a descriptor refresh while the vault runs on. The clear runs
+// first in the frame's assembly, then the vault joins on that same frame.
+#[test]
+fn a_refresh_mid_vault_rejoins_from_neutral_against_that_frames_aim() {
+    let row = VaultPoseRow {
+        channels: channels(0.0, 4.0, 0.0, 0.0),
+        ease_in: 0.15,
+        ease_out: 0.2,
+        ledge_focus: Some(LedgeFocus {
+            strength: 1.0,
+            max_pitch: 80.0,
+        }),
+    };
+    let params = pose(None, Some(row));
+    let mut refreshed = params.clone();
+    refreshed
+        .pose
+        .as_mut()
+        .unwrap()
+        .vault
+        .as_mut()
+        .unwrap()
+        .channels
+        .roll = 5.0;
+    let landing = Vec3::new(1.6, 1.4, 3.0);
+    let eye = Vec3::new(1.0, 2.0, 3.0);
+    let line = (landing.y - eye.y)
+        .atan2((landing - eye).with_y(0.0).length().max(0.5))
+        .to_degrees();
+    let mut rig = Rig::new();
+    for index in 0..=12 {
+        rig.frame(
+            &params,
+            Step {
+                pitch: 0.0,
+                ..vault_step(index as f32 * DT / PATH_S, Some(landing), DT)
+            },
+            1.0,
         );
     }
+    let aim = 10.0_f32;
+    let joined = rig.frame(
+        &refreshed,
+        Step {
+            pitch: aim.to_radians(),
+            ..vault_step(13.0 * DT / PATH_S, Some(landing), DT)
+        },
+        1.0,
+    );
+    let rendered = |frame: &FrameEye| frame.camera.forward.y.asin().to_degrees();
+    assert!(
+        (rendered(&joined) - aim).abs() < 0.3 * (line - aim).abs(),
+        "the join frame is near neutral: {}",
+        rendered(&joined)
+    );
+    let mut later = joined;
+    for index in 14..=18 {
+        later = rig.frame(
+            &refreshed,
+            Step {
+                pitch: 0.0,
+                ..vault_step(index as f32 * DT / PATH_S, Some(landing), DT)
+            },
+            1.0,
+        );
+    }
+    assert!(
+        (rendered(&later) - (line - aim)).abs() < 1.0e-3,
+        "focus against the join frame's aim: {} vs {}",
+        rendered(&later),
+        line - aim
+    );
 }

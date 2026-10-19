@@ -924,7 +924,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("VaultPoseRow")
-        .doc("The vault pose row, weighted by the climb's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the pawn reaches the top. A vault that ends early (an abort, death, a correction) eases back from the last presented pose. Takes shares, not rates. Every field is optional.")
+        .doc("The vault pose row, weighted by the climb's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the pawn reaches the top (with `easeOut` 0 it holds to the top, then eases back over 0.1 s). A vault that ends early (an abort, death, a correction) eases back from the last presented pose. Takes shares, not rates. Every field is optional.")
         .field("pitch?", "f32", "Pitch offset in degrees; positive looks up. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit.")
         .field("roll?", "f32", "Roll offset in degrees. Must be finite in [-90, 90]; default 0.")
         .field("eyeDrop?", "f32", "Downward eye displacement in metres. Must be finite and ≥ 0; default 0. The drops of every row together keep at least 0.05 m of eye-to-feet clearance.")

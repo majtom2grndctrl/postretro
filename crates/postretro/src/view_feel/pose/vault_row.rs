@@ -19,8 +19,9 @@ const RESTART_PROGRESS_DROP: f32 = 0.05;
 
 /// Floor on the eye's horizontal distance to the landing spot, metres. As the
 /// eye passes over the landing spot the distance goes to 0 and the ledge line
-/// toward −90°; the floor bounds it (−71.6° at a 1.5 m eye) where the row is
-/// already easing out.
+/// toward −90°; the floor bounds it (−71.6° at an eye 1.5 m above the spot).
+/// With a nonzero `easeOut` the row is also easing out there; with 0 the floor
+/// is the only bound short of `maxPitch`.
 pub(super) const LEDGE_FOCUS_MIN_HORIZONTAL_M: f32 = 0.5;
 
 /// The local pawn's vault this frame, as the camera presents it.
@@ -33,7 +34,7 @@ pub(crate) struct VaultViewInput {
     pub(crate) path_s: f32,
     /// The landing spot in world space at this frame's interpolation share,
     /// through the carrying mover's presented pose. `None` when the mover has
-    /// no presented pose, which leaves no focus.
+    /// no presented pose; the row then holds the focus it last showed.
     pub(crate) landing: Option<Vec3>,
 }
 
@@ -86,7 +87,10 @@ pub(super) struct VaultRowState {
     join_elapsed_s: f32,
     /// Ledge focus reference, degrees: the aim pitch the pose's first frame on
     /// this vault rendered, plus the row's literal pitch.
-    reference_deg: f32,
+    pub(super) reference_deg: f32,
+    /// Ledge focus this vault last presented, degrees, unweighted: held while
+    /// its landing spot has no presented pose.
+    pub(super) focus_deg: f32,
 }
 
 /// The vault row's timing for one frame, before its values are known: the
@@ -162,6 +166,7 @@ pub(super) fn advance(
     if joined {
         state.join_elapsed_s = 0.0;
         state.reference_deg = aim_pitch_deg + row.channels.pitch;
+        state.focus_deg = 0.0;
     }
     if let Some(input) = vaulting {
         state.release_s = (input.path_s * row.ease_out).max(MIN_RELEASE_S);
@@ -236,11 +241,6 @@ pub(super) fn eye_drop(
             live_eye_drop,
         ),
     )
-}
-
-/// This vault's reference, for the focus evaluation.
-pub(super) fn reference_deg(state: &VaultRowState) -> f32 {
-    state.reference_deg
 }
 
 fn blend(w_a: f32, a: PoseValues, w_b: f32, b: PoseValues) -> PoseValues {

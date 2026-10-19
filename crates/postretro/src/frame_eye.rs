@@ -1,6 +1,7 @@
-// Per-frame eye assembly: view feel is evaluated once, into the one
-// `RenderCamera` that render and the audio listener both read.
-// See: context/lib/rendering_pipeline.md §11 · context/lib/audio.md §3
+// Per-frame eye assembly: builds the view-feel driver from the followed pawn and
+// evaluates view feel once, into the one `RenderCamera` that render and the
+// audio listener both read.
+// See: context/lib/rendering_pipeline.md §11 · context/lib/audio.md §3 · context/lib/movement.md §1
 
 use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry};
@@ -132,7 +133,7 @@ fn presented_landing(
     let Some(mover_id) = mover else {
         return Some(target);
     };
-    let entity = crate::sound_events::mover_entity(registry, mover_id)?;
+    let entity = crate::runtime_movers::mover_entity(registry, mover_id)?;
     let pose = registry.interpolated_transform(entity, alpha).ok()?;
     Some(pose.position + pose.rotation.normalize() * target)
 }
@@ -140,7 +141,7 @@ fn presented_landing(
 /// Eye clearance in the same presented space as the interpolated camera.
 /// The latest tick eye already includes client correction, so only its delta
 /// from the rendered eye is needed when capsule resize precedes interpolation.
-pub(crate) fn presented_eye_clearance(
+fn presented_eye_clearance(
     presented_eye_y: f32,
     latest_tick_eye_y: f32,
     latest_tick_clearance: f32,
@@ -188,18 +189,15 @@ pub(crate) fn assemble_frame_eye(
             );
             let (roll, yaw, pitch, mut eye) =
                 view_feel::map_output_to_camera(&output, camera_right);
-            // Every row's drop together is bounded after bob, so a row never
-            // lifts an already low baseline eye.
             let pose = view_feel::pose::evaluate(
                 driver.params.pose.as_ref(),
                 view_feel::pose::PoseFrame {
                     movement_state: driver.movement_state,
                     vault: driver.vault,
                     aim_pitch_deg: inputs.pitch.to_degrees(),
-                    eye: inputs.presented_eye + eye,
-                    available_drop: (driver.eye_height_above_feet + eye.y
-                        - view_feel::pose::MIN_EYE_CLEARANCE)
-                        .max(0.0),
+                    presented_eye: inputs.presented_eye,
+                    eye_height_above_feet: driver.eye_height_above_feet,
+                    offset_y: eye.y,
                 },
                 tracking.state.pose_mut(),
                 inputs.frame_dt,

@@ -84,13 +84,3 @@ impl AnchorScene<'_> {
         Some(pose.position)
     }
 }
-
-/// Find a mover's entity by its level-stable mover id.
-pub(crate) fn mover_entity(registry: &EntityRegistry, mover_id: u32) -> Option<EntityId> {
-    registry
-        .iter_with_kind(ComponentKind::KinematicMover)
-        .find_map(|(id, value)| match value {
-            ComponentValue::KinematicMover(mover) if mover.mover_id == mover_id => Some(id),
-            _ => None,
-        })
-}

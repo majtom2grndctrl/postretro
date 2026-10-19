@@ -1,6 +1,6 @@
 # fluid-surface-t-junction-closure — research
 
-Read at `64d069e19` (branch `fluid-base-pass-cost`; the grid code is on this branch, not yet on `main`).
+Read at `64d069e19` on the `fluid-base-pass-cost` branch; rechecked at `8bb02a18c`, after that brief and its grid landed on `main`.
 
 ## Current behaviour (code)
 
@@ -26,7 +26,7 @@ Read at `64d069e19` (branch `fluid-base-pass-cost`; the grid code is on this bra
 
 ## The grid case
 
-`fluid-base-pass-cost` plan of record, A3, records P13 as open: an edge at a shallow angle θ to a lattice plane passing within tolerance of an open T-vertex. The long side gains a crossing up to (tolerance + T offset)/sin θ from T. A probe measured this at 0.4 m. The crack lies on the open edge's line, so it is no wider than the T-junction itself. The pin is `an_open_t_junction_keeps_its_vertex_and_the_crossings_agree_within_tolerance` (`grid_tests.rs`).
+`fluid-base-pass-cost` landed with its own pin P13 as an owner-accepted limit (plan of record A3; `rendering_pipeline.md` §7.3a, "Accepted limit"): an edge at a shallow angle θ to a lattice plane passing within tolerance of an open T-vertex. The long side gains a crossing up to (tolerance + T offset)/sin θ from T. A probe measured this at 0.4 m. The crack lies on the open edge's line, so it is no wider than the T-junction itself. The pin is `an_open_t_junction_keeps_its_vertex_and_the_crossings_agree_within_tolerance` (`grid_tests.rs`).
 
 With closure, both faces hold P→T→Q with T bit-identical. Crossings are a function of an edge and a plane alone (`grid::crossing`, from the lexicographically lower endpoint), so the case disappears. `faces_sharing_an_edge_carry_identical_vertices_along_it` already compares with `assert_eq!`, which needs bit-identical endpoints. That is why the brief asks for bit-identity and not just "within tolerance".
 
@@ -36,7 +36,7 @@ With closure, both faces hold P→T→Q with T bit-identical. Crossings are a fu
 |---|---|---|
 | Fluid pack (`pack_fluid_surfaces`) | positions, UVs, order | More collinear vertices. An ungridded face takes the centroid fan (`triangulate_convex_face`), a gridded one ear-clips (`triangulate_convex`, O(n²) in a part's vertices). Already handles inserts. |
 | Drift maps (`drift::volume_drift_maps`) | positions, UVs, per volume | Inserted vertices lie on the face's own plane within 0.1 mm (fit tolerance 1 mm) and carry their own side's UV, so split parts keep sharing one map. Risk: `FaceMap::fit` searches every vertex triple, O(n³) in a face's vertex count. |
-| Runtime drift resolve (`resolve_fluid_surface_drift`, `postretro/src/fluid_presentation/drift.rs`) | vertex-mean centroid, 2 mm in | The mean moves with inserts but stays inside the convex piece. Each piece is wholly under or clear of each push by its 2 mm samples, so the resolved push is unchanged. The edge case is a push touching a piece by under 1 mm², which the split leaves whole. |
+| Runtime drift resolve (`resolve_fluid_surface_drift`, `postretro/src/fluid_presentation/drift.rs`) | vertex-mean centroid in f32, 2 mm in | The mean moves with inserts but stays inside the convex piece in exact arithmetic. Thousands of inserts on one edge pull it to within about a millimetre of that edge, where an f32 sum far from the origin can err by more; P13 pins it. Each piece is wholly under or clear of each push by its 2 mm samples, so the resolved push is unchanged. The edge case is a push touching a piece by under 1 mm², which the split leaves whole. |
 | Cull bounds (`surface_bounds`) | vertex bounds | Grow by ≤ 0.1 mm at most. |
 | Probe placement (`reflection_probes/placement.rs`) | area centroid, Newell normal, (x, z) outline, (volume, face) numbering | The area centroid is already documented as unmoved by inserts. Outline bounds may move by ≤ 0.1 mm, so box fit and capture bytes may shift by that much. Face numbering is unchanged as long as faces are neither added nor dropped. |
 | Capture-visibility warning (`capture_visibility::seen_fraction`) | outline fan from vertex 0, sub-triangle samples | Samples redistribute and the fraction can shift slightly. Advisory warning only. |
@@ -117,3 +117,11 @@ Not covered: ZHLT/VHLT `hlbsp` tjunc, Xash3D and PrimeXT compile tools, Unreal, 
 | P6 | first warm build after landing on a map with an open T-junction | id-52 bytes change, so the id-54 stage key misses | probes recapture once; the next warm build hits |
 | P7 | PRL built before the change | load | loads; its cracks remain until rebuilt; no version check |
 | P8 | weld would collapse a face (edge under 0.1 mm across) | weld judged per pair | no face drops below three distinct vertices or loses more than tolerance × perimeter of area |
+| P9 | a corner 0.15 mm from a neighbour's corner, and another 0.15 mm from a neighbour's edge interior | closure | no weld and no insert; both faces keep their vertices bit for bit |
+| P10 | corners of three faces in a line, A–B and B–C each 0.06 mm apart, A–C 0.12 mm | weld; no merge carries a vertex past the tolerance | no vertex moves more than 0.1 mm, and the shared-boundary check holds |
+| P11 | corners of faces 1 and 2 within 0.1 mm of each other, not equal, both within 0.1 mm of face 3's edge interior | weld, then insert on welded positions | face 3 gains one vertex, bit-identical to the welded corner on faces 1 and 2 |
+| P12 | a corner 0.15 mm from face 3's edge that its weld moves to 0.05 mm from it, and one the weld moves from 0.05 mm to 0.15 mm | insert candidates judged after the weld | face 3 gains the first and not the second |
+| P13 | a piece clear of a push, at least 100 m from the origin, whose edge on the push boundary carries thousands of inserted vertices | closure inserts; the runtime resolves drift at the face's f32 vertex mean | the same push as the same piece without the inserts |
+| P14 | a ~1 mm² up-facing piece whose corner welds to a neighbour corner on another plane, 0.1 mm off its own | weld after push split, before id-54 placement | the piece keeps a normal and stays up-facing; id-54 binds it as before |
+| P15 | a dry, push or wholly buried fluid volume between two fluid volumes in entity order; a level with one fluid face; a level with none | every volume's faces gathered, closed, returned by (volume, face) | each face returns to its own volume and index; per-volume counts unchanged; one face or none is left as it was |
+| P16 | a vertex 0.1 mm from a neighbour's edge in f64 that f32 encoding brings under 0.1 mm | positions round to f32, then closure judges | closure inserts it, and the level-wide check, reading the same encoded positions, agrees |

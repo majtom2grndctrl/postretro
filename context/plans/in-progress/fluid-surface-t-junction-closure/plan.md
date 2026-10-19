@@ -46,6 +46,7 @@ Rows in Acceptance order.
 | 19 owner look in engine | owner | manual |
 
 ## Follow-ups
+- Ear-clip containment on acute tips with sagging dented runs can still exceed n log n (about 2× in a sweep; `ear_clip.rs` doc states it). The established fix is a spatial hash over live reflex vertices keyed by ear, as earcut's z-order hashing, or a monotone sweep; either replaces the beside-first class's fan.
 - Sibling subtraction is all-pairs within one fluid entity (`fluid_surface_pieces`): a 4,000-brush row takes about 32 s, every warm build, since the stage is uncached. Closure on the same level takes 0.25 s. Outside this brief; it wants the `SolidIndex` treatment for siblings.
 
 ## Tasks
@@ -59,6 +60,13 @@ Rows in Acceptance order.
 | 5 | Determinism on a level that welds and inserts; id-54 cache hit | integrating executor | 2 | done: `tests/fluid_seam_determinism.rs` — slime brush 0.05 mm off the pool's side forces a weld; the compiler's log line shows welds and inserts; id-52 and id-54 identical cold ×2, one worker, warm fill, warm hit; id-54 misses on the fill and hits next |
 | 6 | End to end through the renderer's packing on a lattice | integrating executor | 2 | done: `faces_meeting_at_a_shallow_angle_to_a_lattice_plane_share_their_gridded_edge` — before closure the south top gains a crossing 12.8 mm from the T-vertex the north holds; after, both carry identical vertices |
 | 7 | Grid cut as one sweep per axis (P24); every-plane install bound | integrating executor | 1 | done: `cut_axis` matched the successive split on 25,805 generated parts (temporary equivalence test, not kept); the every-plane case fails the old cut (ratio 14.9 vs 4.7 allowed) and passes the sweep |
-| 8 | Drift sample point shared from render-cpu; P13 | integrating executor | 1 | done: `face_area_centroid` in render-cpu is the runtime drift sample and the centroid-fan apex; P13 `a_piece_clear_of_a_push_drifts_as_without_thousands_of_inserts_on_its_boundary_edge` (300 m out, 4000 inserts) passes |
+| 8 | Drift sample point shared from render-cpu; P13 | integrating executor | 1 | done: `face_area_centroid` in render-cpu is the runtime drift sample (the centroid fan it first also fed was retired in review round 2); P13 `a_piece_clear_of_a_push_drifts_as_without_thousands_of_inserts_on_its_boundary_edge` (300 m out, 4000 inserts) passes |
 | 9 | Context docs: build_pipeline §Fluid surfaces, rendering_pipeline §7.3a | integrating executor | 2 | done: gate retired, closure contract and byte rule stated, accepted limit narrowed, bounded install and area-centroid sample recorded; grep gate clean |
-| 10 | Preflight, review panel, fixes; manual timings | integrating executor | 1–9 | |
+| 10 | Preflight, review panel, fixes; manual timings | integrating executor | 1–9 | review loop done (4 rounds, below); preflight green; manual timings in progress |
+
+## Review loop
+- Round 1 (7 lenses): weld could flatten or flip a sliver → a face whose weld would spoil it keeps its positions; `face_normal` lost its sign on a narrow face far out with thousands of inserts → f64 relative to vertex 0; stale comments and docs fixed; the angle-order/edge-bound conflict went to the owner (ruling 1).
+- Round 2: ruling 1's sector rule cut a 10 × 5 mm notch in a thin strip → owner ruling 2 (nearest-edge inserts, ear-clipped faces, rows restated); the weld guard also refuses self-crossing.
+- Round 3: the ear clipper drew a strip twice beside an acute dented tip (no ear containment test; pre-existing for grid parts) → ears hold no reflex vertex, found through a counted static index; small faces lost the extent-fraction tolerance and fanned through inserts → the collinear tolerance applies at every size; the weld's crossing test was oblique on sloped faces → in-plane projection. The ear clipper moved out of `grid.rs` (821 lines) into `ear_clip.rs` in its own commit.
+- Round 4: no code defect; the blocked-ear retry path was untested at scale and a new count test then showed the containment search superlinear on a narrow dented tip (ratio 6.0 vs 5.1) → ears clip shortest chord first within the beside-a-non-corner class; a sliver with interleaved dents proves the retry path at two sizes.
+- Not closed (follow-up below): an acute tip whose one edge has merged into a collinear run while the other carries a sagging run of reflex dents can still fan, up to about 2× the n log n bound in a port's sweep; no fixture or map reaches it.

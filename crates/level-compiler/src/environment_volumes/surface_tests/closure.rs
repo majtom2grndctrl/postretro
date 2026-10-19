@@ -470,6 +470,23 @@ fn levels_with_no_open_seam_keep_their_bytes_from_before_closure() {
         let (_, section) = compile(&world, &volumes);
         assert_eq!(blake3::hash(&section.to_bytes()).to_hex().as_str(), hash);
     }
+
+    // The e24 fixture, encoded as the pipeline encodes it, captured the same
+    // way.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/maps/e24-environment-test.map");
+    let map = parse_map_file(&path, MapFormat::IdTech2).expect("e24 fixture parses");
+    let mut texture_names = TextureNamesSection { names: Vec::new() };
+    let section = encode_environment_volumes_section(
+        &map.environment_volumes,
+        map.initial_gravity,
+        &map.brush_volumes,
+        &mut texture_names,
+    );
+    assert_eq!(
+        blake3::hash(&section.to_bytes()).to_hex().as_str(),
+        "48901a4beaf980c347fd8ef3da19f6da59fe975de96e97035fdc10fe50338e5c"
+    );
 }
 
 // --- Exact polygon fixtures ----------------------------------------------

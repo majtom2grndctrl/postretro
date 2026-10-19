@@ -130,6 +130,54 @@ pub fn face_normal(face: &EnvironmentSurfaceFace) -> Option<Vec3> {
     (length.is_finite() && length > 1.0e-9).then(|| normal / length)
 }
 
+/// Area centroid of a convex face with outward unit `normal`: the point the
+/// app samples its drift push from, and the apex of its centroid fan. The
+/// compiler's T-junction inserts add zero-area fan triangles, so thousands on
+/// one edge leave it where it was, where the vertex mean would sit within a
+/// millimetre of that edge.
+pub fn face_area_centroid(face: &EnvironmentSurfaceFace, normal: Vec3) -> DVec3 {
+    area_centroid(face.vertices.len(), normal.as_dvec3(), |i| {
+        (world_position(&face.vertices[i]), DVec2::ZERO)
+    })
+    .0
+}
+
+/// Area centroid of a convex ring of `count` vertices with outward `normal`,
+/// and the value there of `at`'s second term, affine in position as UVs are.
+/// Fanned in f64 from the first vertex, relative to it, so it holds its
+/// precision far from the origin. A ring too thin to weigh takes its vertex
+/// mean.
+fn area_centroid(
+    count: usize,
+    normal: DVec3,
+    at: impl Fn(usize) -> (DVec3, DVec2),
+) -> (DVec3, DVec2) {
+    let (first, first_value) = at(0);
+    let (mut weighted, mut weighted_value, mut weight) = (DVec3::ZERO, DVec2::ZERO, 0.0);
+    for i in 1..count.saturating_sub(1) {
+        let ((a, a_value), (b, b_value)) = (at(i), at(i + 1));
+        let (a, b) = (a - first, b - first);
+        let twice_area = a.cross(b).dot(normal);
+        weighted += twice_area * (a + b) / 3.0;
+        weighted_value += twice_area * (a_value + b_value - 2.0 * first_value) / 3.0;
+        weight += twice_area;
+    }
+    if weight > 0.0 && weighted.is_finite() && weighted_value.is_finite() {
+        return (
+            first + weighted / weight,
+            first_value + weighted_value / weight,
+        );
+    }
+    let (mut sum, mut value_sum) = (DVec3::ZERO, DVec2::ZERO);
+    for i in 0..count {
+        let (position, value) = at(i);
+        sum += position - first;
+        value_sum += value - first_value;
+    }
+    let inverse = 1.0 / count as f64;
+    (first + sum * inverse, first_value + value_sum * inverse)
+}
+
 /// World bounds over a volume's drawable surface faces; `None` when it has none.
 pub fn surface_bounds(volume: &EnvironmentVolumeRecord) -> Option<(Vec3, Vec3)> {
     let mut bounds: Option<(Vec3, Vec3)> = None;
@@ -239,8 +287,9 @@ fn has_collinear_vertex(vertices: &[EnvironmentSurfaceVertex]) -> bool {
 /// absolute spacing (down to 0.1 mm, plus duplicates after f32 rounding). A
 /// fan from one apex cannot honour such a vertex: the triangle beside it
 /// collapses and a chord spans an edge across it. A face with a collinear
-/// vertex therefore gains one vertex at its vertex centroid, which lies inside
-/// the convex face, and fans from it over every boundary segment. Every
+/// vertex therefore gains one vertex at its area centroid
+/// ([`face_area_centroid`]), which lies inside the convex face however many
+/// vertices one edge holds, and fans from it over every boundary segment. Every
 /// boundary vertex stays a corner, every segment borders one triangle, and no
 /// area is dropped, whatever the spacing; only a zero-length segment draws
 /// nothing. Taking a near-flat real corner for collinear is
@@ -261,18 +310,18 @@ fn triangulate_convex_face(
         return;
     }
     let ring = &vertices[base as usize..];
-    let mut position_sum = DVec3::ZERO;
-    let mut uv_sum = DVec2::ZERO;
-    for vertex in ring {
-        position_sum += Vec3::from(vertex.position).as_dvec3();
-        uv_sum += Vec2::from(vertex.uv).as_dvec2();
-    }
-    let inverse = 1.0 / f64::from(count);
-    // UV is affine in position, so the mean UV is the centroid's exact UV.
+    let at = |i: usize| {
+        (
+            Vec3::from(ring[i].position).as_dvec3(),
+            Vec2::from(ring[i].uv).as_dvec2(),
+        )
+    };
+    // UV is affine in position, so the area-weighted UV is the centroid's.
+    let (position, uv) = area_centroid(count as usize, Vec3::from(ring[0].normal).as_dvec3(), at);
     let centroid = FluidSurfaceVertex {
-        position: (position_sum * inverse).as_vec3().to_array(),
+        position: position.as_vec3().to_array(),
         normal: ring[0].normal,
-        uv: (uv_sum * inverse).as_vec2().to_array(),
+        uv: uv.as_vec2().to_array(),
     };
     vertices.push(centroid);
     let center = base + count;

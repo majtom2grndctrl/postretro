@@ -63,11 +63,11 @@ fn signed_twice_area(a: DVec3, b: DVec3, c: DVec3, normal: DVec3) -> f64 {
 }
 
 /// Packs `face` alone and asserts the triangles tile it with no T-junction:
-/// the mesh holds the face's vertices in order, plus at most one centroid
-/// vertex after them; every triangle winds with the face and has area; every
-/// face vertex is a corner; every face edge segment of non-zero length
-/// borders exactly one triangle; no triangle edge passes through a face
-/// vertex; and the triangles' areas sum to the face's. Returns the mesh.
+/// the mesh holds the face's vertices in order, plus at most one vertex at
+/// its area centroid after them; every triangle winds with the face and has
+/// area; every face vertex is a corner; every face edge segment of non-zero
+/// length borders exactly one triangle; no triangle edge passes through a
+/// face vertex; and the triangles' areas sum to the face's. Returns the mesh.
 fn assert_tiles_face_without_t_junctions(face: &EnvironmentSurfaceFace) -> FluidSurfaceMesh {
     let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[], 1, None);
     let ring = face.vertices.len();
@@ -82,15 +82,22 @@ fn assert_tiles_face_without_t_junctions(face: &EnvironmentSurfaceFace) -> Fluid
         assert_eq!(packed.position, source.position);
     }
     if let Some(centroid) = mesh.vertices.get(ring) {
-        let mean = face
+        // The area centroid: each fan triangle's centroid, weighted by area.
+        let corners: Vec<DVec3> = face
             .vertices
             .iter()
             .map(|v| Vec3::from(v.position).as_dvec3())
-            .sum::<DVec3>()
-            / ring as f64;
-        let error = (Vec3::from(centroid.position).as_dvec3() - mean).length();
+            .collect();
+        let (mut weighted, mut area) = (DVec3::ZERO, 0.0);
+        for i in 1..ring - 1 {
+            let twice = signed_twice_area(corners[0], corners[i], corners[i + 1], normal);
+            weighted += twice * (corners[0] + corners[i] + corners[i + 1]) / 3.0;
+            area += twice;
+        }
+        let expected = weighted / area;
+        let error = (Vec3::from(centroid.position).as_dvec3() - expected).length();
         assert!(
-            error <= 1.0e-6 * (1.0 + mean.length()),
+            error <= 1.0e-6 * (1.0 + expected.length()),
             "centroid off by {error}"
         );
         assert_eq!(centroid.normal, mesh.vertices[0].normal);
@@ -456,16 +463,17 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
 }
 
 #[test]
-fn packing_gives_an_added_centroid_the_faces_mean_uv() {
-    // UV is affine in position, so the mean of the corners' UVs is exact.
+fn packing_gives_an_added_centroid_the_uv_at_the_faces_area_centroid() {
+    // UV is affine in position, so the area-weighted UV is the centroid's. An
+    // inserted vertex adds no area, so the apex stays at the square's centre.
     let mut face = top_face(0, [0.0; 3], 1.0);
     face.vertices
         .insert(1, vertex([0.0, 1.0, 0.25], [0.0, 8.0]));
     let mesh = pack_fluid_surfaces(&[volume(vec![face])], &[[64, 32]], 1, None);
     assert_eq!(mesh.vertices.len(), 5 + 1);
     let centroid = mesh.vertices[5];
-    assert_eq!(centroid.position, [0.4, 1.0, 0.45]);
-    assert_eq!(centroid.uv, [0.4, 0.45]);
+    assert_eq!(centroid.position, [0.5, 1.0, 0.5]);
+    assert_eq!(centroid.uv, [0.5, 0.5]);
 }
 
 #[test]

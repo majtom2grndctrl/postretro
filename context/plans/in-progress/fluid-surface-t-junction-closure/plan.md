@@ -52,6 +52,6 @@ Rows in Acceptance order.
 | 5 | Determinism on a level that welds and inserts; id-54 cache hit | integrating executor | 2 | |
 | 6 | End to end through the renderer's packing on a lattice | integrating executor | 2 | |
 | 7 | Grid cut as one sweep per axis (P24); every-plane install bound | integrating executor | 1 | |
-| 8 | Drift sample point shared from render-cpu; P13 | integrating executor | 1 | |
+| 8 | Drift sample point shared from render-cpu; P13 | integrating executor | 1 | done: `face_area_centroid` in render-cpu is the runtime drift sample and the centroid-fan apex; P13 `a_piece_clear_of_a_push_drifts_as_without_thousands_of_inserts_on_its_boundary_edge` (300 m out, 4000 inserts) passes |
 | 9 | Context docs: build_pipeline §Fluid surfaces, rendering_pipeline §7.3a | integrating executor | 2 | |
 | 10 | Preflight, review panel, fixes; manual timings | integrating executor | 1–9 | |

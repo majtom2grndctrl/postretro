@@ -186,9 +186,10 @@ export const playerEntity = defineEntity({
           // Weighted by the climb: eases in over the first third, holds, and
           // levels out over the last third as the pawn steps onto the top.
           vault: {
-            // Pull the view toward the landing spot: 70% of the way from the
-            // aim at entry down to the ledge line, never more than 30°.
-            ledgeFocus: { strength: 0.7, maxPitch: 30 },
+            // Pull the view toward the landing spot: 55% of the way from the
+            // aim at entry down to the ledge line, never more than 45°. A cap
+            // much below the pull would hold every ledge at the same angle.
+            ledgeFocus: { strength: 0.55, maxPitch: 45 },
             roll: 10, // degrees
             fov: -30, // horizontal degrees added to the base FOV
             easeIn: 0.33, // share of the climb spent easing in

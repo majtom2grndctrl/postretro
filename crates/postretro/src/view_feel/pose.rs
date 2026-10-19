@@ -138,8 +138,7 @@ pub(crate) fn evaluate(
     }
 
     let vault_drop = vault.map_or(0.0, |(row, weights)| {
-        let (weight, eye_drop) =
-            vault_row::eye_drop(weights, row.channels.eye_drop, &state.vault);
+        let (weight, eye_drop) = vault_row::eye_drop(weights, row.channels.eye_drop, &state.vault);
         eye_drop * (weight * scale)
     });
     // The floor bounds the sum, not each row: two rows easing through a
@@ -148,10 +147,9 @@ pub(crate) fn evaluate(
 
     let vault = vault.map_or(PoseValues::default(), |(row, weights)| {
         let mut live = PoseValues::from(row.channels);
-        if let (Some(focus), Some(landing)) = (
-            row.ledge_focus,
-            frame.vault.and_then(|input| input.landing),
-        ) {
+        if let (Some(focus), Some(landing)) =
+            (row.ledge_focus, frame.vault.and_then(|input| input.landing))
+        {
             let eye = frame.eye - Vec3::Y * eye_drop;
             live.pitch += vault_row::ledge_focus(
                 &focus,

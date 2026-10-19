@@ -196,8 +196,14 @@ fn pose_slide_reproduces_the_shipped_slide_frame_for_frame_floor_included() {
         for scale in [1.0, 0.5] {
             let mut old = Rig::new();
             let mut new = Rig::new();
-            let old: Vec<FrameEye> = steps.iter().map(|s| old.frame(&shipped, *s, scale)).collect();
-            let new: Vec<FrameEye> = steps.iter().map(|s| new.frame(&migrated, *s, scale)).collect();
+            let old: Vec<FrameEye> = steps
+                .iter()
+                .map(|s| old.frame(&shipped, *s, scale))
+                .collect();
+            let new: Vec<FrameEye> = steps
+                .iter()
+                .map(|s| new.frame(&migrated, *s, scale))
+                .collect();
             assert_same_frames(&old, &new, &format!("clearance {clearance}, scale {scale}"));
         }
     }
@@ -229,16 +235,36 @@ fn pose_vault_reproduces_the_shipped_vault_pose_frame_for_frame() {
     let climb = |from: f32, to: f32, frame_dt: f32| -> Vec<Step> {
         let frames = ((to - from) * PATH_S / frame_dt).ceil() as usize;
         (0..=frames)
-            .map(|index| vault_step((from + index as f32 * frame_dt / PATH_S).min(to), None, frame_dt))
+            .map(|index| {
+                vault_step(
+                    (from + index as f32 * frame_dt / PATH_S).min(to),
+                    None,
+                    frame_dt,
+                )
+            })
             .collect()
     };
     let released = |frames: usize| -> Vec<Step> {
-        (0..frames).map(|_| step(MovementStateKind::Normal, DT)).collect()
+        (0..frames)
+            .map(|_| step(MovementStateKind::Normal, DT))
+            .collect()
     };
     let scenarios: Vec<(&str, f32, Vec<Step>)> = vec![
-        ("a full climb", 0.33, [climb(0.0, 1.0, DT), released(10)].concat()),
-        ("an early end", 0.33, [climb(0.0, 0.5, DT), released(30)].concat()),
-        ("a mid-climb join", 0.33, [climb(0.5, 1.0, 1.0 / 144.0), released(5)].concat()),
+        (
+            "a full climb",
+            0.33,
+            [climb(0.0, 1.0, DT), released(10)].concat(),
+        ),
+        (
+            "an early end",
+            0.33,
+            [climb(0.0, 0.5, DT), released(30)].concat(),
+        ),
+        (
+            "a mid-climb join",
+            0.33,
+            [climb(0.5, 1.0, 1.0 / 144.0), released(5)].concat(),
+        ),
         (
             "a vault during a release",
             0.33,
@@ -249,7 +275,11 @@ fn pose_vault_reproduces_the_shipped_vault_pose_frame_for_frame() {
             0.33,
             [climb(0.0, 0.6, DT), climb(0.2, 1.0, DT), released(5)].concat(),
         ),
-        ("a zero easeOut", 0.0, [climb(0.0, 1.0, DT), released(20)].concat()),
+        (
+            "a zero easeOut",
+            0.0,
+            [climb(0.0, 1.0, DT), released(20)].concat(),
+        ),
         (
             "a zero-length frame on a vault's end",
             0.33,
@@ -352,7 +382,10 @@ fn row_angles_turn_the_camera_only_and_eye_drop_moves_eye_listener_and_viewmodel
         (0.0, 0.0, 0.0),
         "the viewmodel re-applies no row pitch or roll"
     );
-    assert!((eye.eye_offset.y + 0.2).abs() < 1.0e-5, "the viewmodel follows the drop");
+    assert!(
+        (eye.eye_offset.y + 0.2).abs() < 1.0e-5,
+        "the viewmodel follows the drop"
+    );
     assert_eq!(
         listener_for(&eye.camera, None).position,
         eye.camera.eye_position.to_array(),
@@ -480,7 +513,8 @@ fn ledge_focus_never_turns_the_rendered_yaw() {
                 }),
             }),
         );
-        let landing = Vec3::new(1.0, 2.0, 3.0) + glam::Quat::from_rotation_y(bearing) * Vec3::new(0.6, -0.5, 0.0);
+        let landing = Vec3::new(1.0, 2.0, 3.0)
+            + glam::Quat::from_rotation_y(bearing) * Vec3::new(0.6, -0.5, 0.0);
         let mut rig = Rig::new();
         let mut eye = None;
         for index in 0..=12 {
@@ -499,7 +533,10 @@ fn ledge_focus_never_turns_the_rendered_yaw() {
         assert!((level_yaw(on) - level_yaw(off)).abs() < 1.0e-5, "{bearing}");
         assert!(on.y < off.y - 0.1, "{bearing}: focus pitched the view down");
         let ahead = with_focus(1.0, 0.0);
-        assert!((on.y - ahead.y).abs() < 1.0e-5, "{bearing}: same pitch at any bearing");
+        assert!(
+            (on.y - ahead.y).abs() < 1.0e-5,
+            "{bearing}: same pitch at any bearing"
+        );
     }
 }
 
@@ -523,7 +560,14 @@ fn a_descriptor_refresh_snaps_every_row_to_neutral_on_the_first_frame() {
         }),
     );
     let mut refreshed = params.clone();
-    refreshed.pose.as_mut().unwrap().vault.as_mut().unwrap().ease_out = 0.25;
+    refreshed
+        .pose
+        .as_mut()
+        .unwrap()
+        .vault
+        .as_mut()
+        .unwrap()
+        .ease_out = 0.25;
     for (label, steps) in [
         ("mid-slide", vec![step(MovementStateKind::Slide, DT); 60]),
         (
@@ -546,7 +590,10 @@ fn a_descriptor_refresh_snaps_every_row_to_neutral_on_the_first_frame() {
             held = Some(rig.frame(&params, *s, 1.0));
         }
         let held = held.unwrap();
-        assert!(held.eye_offset.y < -0.01 || horizontal_fov_deg(&held.camera) < 99.0, "{label}");
+        assert!(
+            held.eye_offset.y < -0.01 || horizontal_fov_deg(&held.camera) < 99.0,
+            "{label}"
+        );
         // Hot reload drops the movement state to `Normal` in the same commit.
         let first = rig.frame(&refreshed, step(MovementStateKind::Normal, DT), 1.0);
         let neutral = Rig::new().frame(&no_view_feel(), step(MovementStateKind::Normal, DT), 1.0);
@@ -559,10 +606,10 @@ fn a_descriptor_refresh_snaps_every_row_to_neutral_on_the_first_frame() {
 mod driver {
     use super::*;
     use glam::{Quat, Vec2};
+    use postretro_entities::Transform;
     use postretro_entities::components::kinematic_mover::{
         KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
     };
-    use postretro_entities::Transform;
     use postretro_foundation::{MovementState, VaultEntry, VaultParams, VaultTrigger};
     use postretro_physics::collision::CollisionWorld;
     use postretro_physics::movement::{MovementInput, tick_with_immersion_and_armed};
@@ -674,9 +721,12 @@ mod driver {
                 eye = Some(assemble(driver, Vec3::new(0.0, 1.3, 0.0), 0.0, &mut rig));
             }
             let eye = eye.unwrap();
-            let neutral = Rig::new().frame(&no_view_feel(), step(MovementStateKind::Normal, DT), 1.0);
+            let neutral =
+                Rig::new().frame(&no_view_feel(), step(MovementStateKind::Normal, DT), 1.0);
             assert_eq!(eye.eye_offset, Vec3::ZERO);
-            assert!((eye.camera.forward - Vec3::new(-YAW.sin(), 0.0, -YAW.cos())).length() < 1.0e-5);
+            assert!(
+                (eye.camera.forward - Vec3::new(-YAW.sin(), 0.0, -YAW.cos())).length() < 1.0e-5
+            );
             let _ = neutral;
         }
     }
@@ -698,7 +748,14 @@ mod driver {
             Vec3::new(60.0, top_y, 50.0),
             Vec3::new(5.0, top_y, 50.0),
         ];
-        let triangles = vec![[0, 2, 1], [0, 3, 2], [4, 6, 5], [4, 7, 6], [8, 10, 9], [8, 11, 10]];
+        let triangles = vec![
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 6, 5],
+            [4, 7, 6],
+            [8, 10, 9],
+            [8, 11, 10],
+        ];
         CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
@@ -761,7 +818,12 @@ mod driver {
             let landing = driver.vault.unwrap().landing.unwrap();
             assert!((landing.y - top_y).abs() < 0.02, "{landing}");
             let mut rig = Rig::new();
-            let with = assemble(Some(driver), Vec3::new(center.x, eye_y, center.z), 0.0, &mut rig);
+            let with = assemble(
+                Some(driver),
+                Vec3::new(center.x, eye_y, center.z),
+                0.0,
+                &mut rig,
+            );
             let id = registry.local_player_movement_pawn().unwrap();
             let mut component = registry
                 .get_component::<PlayerMovementComponent>(id)
@@ -781,8 +843,14 @@ mod driver {
             registry.set_component(id, component).unwrap();
             let driver = view_feel_driver(&registry, eye_y, eye_y, DT, 1.0).unwrap();
             let mut rig = Rig::new();
-            let without = assemble(Some(driver), Vec3::new(center.x, eye_y, center.z), 0.0, &mut rig);
-            let focus = (with.camera.forward.y.asin() - without.camera.forward.y.asin()).to_degrees();
+            let without = assemble(
+                Some(driver),
+                Vec3::new(center.x, eye_y, center.z),
+                0.0,
+                &mut rig,
+            );
+            let focus =
+                (with.camera.forward.y.asin() - without.camera.forward.y.asin()).to_degrees();
             assert!(focus < -0.5, "{top_y} m: {focus}");
             focus_by_height.push(focus);
         }
@@ -844,10 +912,16 @@ mod driver {
             let driver = view_feel_driver(&registry, eye.y, eye.y, DT, alpha).unwrap();
             let landing = driver.vault.unwrap().landing.unwrap();
             let presented = registry
-                .interpolated_transform(crate::sound_events::mover_entity(&registry, 7).unwrap(), alpha)
+                .interpolated_transform(
+                    crate::sound_events::mover_entity(&registry, 7).unwrap(),
+                    alpha,
+                )
                 .unwrap();
             let expected = presented.position + presented.rotation.normalize() * local_target;
-            assert!((landing - expected).length() < 1.0e-5, "alpha {alpha}: {landing}");
+            assert!(
+                (landing - expected).length() < 1.0e-5,
+                "alpha {alpha}: {landing}"
+            );
             if index > 0 {
                 let previous = view_feel_driver(&registry, eye.y, eye.y, DT, alpha - 0.25)
                     .unwrap()
@@ -893,14 +967,24 @@ mod driver {
                         eye_current: 0.0,
                     }
                 } else {
-                    vault_state((index - 24) as f32 * 1000.0 * DT, Vec3::new(0.6, 0.2, 0.0), None)
+                    vault_state(
+                        (index - 24) as f32 * 1000.0 * DT,
+                        Vec3::new(0.6, 0.2, 0.0),
+                        None,
+                    )
                 };
                 registry.set_component(local, component.clone()).unwrap();
                 camera.rotate(0.01 * (index as f32 * 0.3).sin(), -0.004);
-                let driver = view_feel_driver(&registry, camera.position.y, camera.position.y, DT, 1.0);
+                let driver =
+                    view_feel_driver(&registry, camera.position.y, camera.position.y, DT, 1.0);
                 let eye = assemble(driver, camera.position, camera.pitch, &mut rig);
                 let shot = crate::build_post_movement_command(&camera);
-                aims.push((camera.pitch, camera.yaw, shot.aim_origin, shot.aim_direction));
+                aims.push((
+                    camera.pitch,
+                    camera.yaw,
+                    shot.aim_origin,
+                    shot.aim_direction,
+                ));
                 rendered.push(eye.camera.forward);
             }
             (aims, rendered)

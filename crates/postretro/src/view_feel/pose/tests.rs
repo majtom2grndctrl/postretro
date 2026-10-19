@@ -387,7 +387,10 @@ fn the_vault_row_reaches_neutral_on_the_tick_the_path_reaches_the_top() {
         let ticks = vault_path_ticks(420.0, step_ms);
         let at_top =
             VaultViewInput::presented(vault_clock(ticks, step_ms), 420.0, tick_s, 1.0, None);
-        assert_eq!(at_top.progress, 1.0, "{hz} Hz: neutral as the top is reached");
+        assert_eq!(
+            at_top.progress, 1.0,
+            "{hz} Hz: neutral as the top is reached"
+        );
         assert_eq!(vault_row::envelope(&row, at_top.progress), 0.0);
         let before =
             VaultViewInput::presented(vault_clock(ticks - 1, step_ms), 420.0, tick_s, 1.0, None);
@@ -434,7 +437,10 @@ fn an_early_end_releases_the_last_presented_pose_focus_included_monotonically() 
     let release_s = (PATH_S * 0.2).max(MIN_RELEASE_S);
     let release_frames = (release_s / DT).ceil() as usize;
     for (label, channel) in [
-        ("pitch", (|o: &PoseOutput| o.pitch) as fn(&PoseOutput) -> f32),
+        (
+            "pitch",
+            (|o: &PoseOutput| o.pitch) as fn(&PoseOutput) -> f32,
+        ),
         ("roll", |o: &PoseOutput| o.roll),
         ("fov", |o: &PoseOutput| o.fov),
     ] {
@@ -446,7 +452,10 @@ fn an_early_end_releases_the_last_presented_pose_focus_included_monotonically() 
             (series[1] - series[0]).abs() < 0.5 * steepest(&series),
             "{label}: no step on the end frame"
         );
-        assert!(series[release_frames + 1].abs() < 1.0e-6, "{label}: neutral");
+        assert!(
+            series[release_frames + 1].abs() < 1.0e-6,
+            "{label}: neutral"
+        );
         assert!(
             series[release_frames / 2].abs() > 0.2 * series[0].abs(),
             "{label}: a release, not a snap"
@@ -572,7 +581,10 @@ fn back_to_back_vaults_at_different_ledges_and_a_rewind_never_step() {
     b_ease_in.extend(b_frames(&mut alone, 0.0, high));
     let b_held = *b_ease_in.last().unwrap();
     let allowed = steepest(&a_release) + steepest(&b_ease_in) + 1.0e-3;
-    assert!((a_held - b_held).abs() > 5.0, "the ledges differ: {a_held} vs {b_held}");
+    assert!(
+        (a_held - b_held).abs() > 5.0,
+        "the ledges differ: {a_held} vs {b_held}"
+    );
 
     // A at its hold, then B with no `Normal` frame between them: B shows only
     // as a progress drop.
@@ -697,7 +709,9 @@ fn ledge_focus_pulls_strength_of_the_gap_only_toward_a_line_below_the_reference(
     let held = *climb(&params, &mut state, DT, 0.5, 0.0).last().unwrap();
     assert!((held.pitch - 0.5 * line).abs() < EPS, "{held:?}");
     let mut state = PoseState::default();
-    let below = *climb(&params, &mut state, DT, 0.5, line - 5.0).last().unwrap();
+    let below = *climb(&params, &mut state, DT, 0.5, line - 5.0)
+        .last()
+        .unwrap();
     assert!(below.pitch.abs() < EPS, "{below:?}");
 }
 
@@ -718,7 +732,10 @@ fn a_literal_pitch_counts_toward_the_reference_and_focus_never_passes_the_line()
             .unwrap()
             .pitch
             + 5.0;
-        assert!(view >= line - EPS && view < -10.0 + 5.0, "{strength}: {view}");
+        assert!(
+            view >= line - EPS && view < -10.0 + 5.0,
+            "{strength}: {view}"
+        );
         if strength == 1.0 {
             assert!((view - line).abs() < EPS);
         }
@@ -800,7 +817,10 @@ fn mouse_pitch_maps_one_to_one_after_the_reference_through_the_climb_and_release
     let (flicked, after) = view_at(10.0, 10.0);
     assert!((flicked - still - 5.0).abs() < EPS, "{still} → {flicked}");
     let (_, next_flick) = view_at(10.0, 20.0);
-    assert!((next_flick - after - 10.0).abs() < EPS, "{after} → {next_flick}");
+    assert!(
+        (next_flick - after - 10.0).abs() < EPS,
+        "{after} → {next_flick}"
+    );
 
     // A new vault, or a rewind past 5%, takes a new reference.
     let params = only_vault(vault_row(0.0, focus(1.0, 80.0)));
@@ -876,7 +896,10 @@ fn a_progress_drop_under_the_restart_share_keeps_the_reference_and_re_aims() {
         1.0,
     );
     let expected = line_deg(EYE, moved) - 20.0;
-    assert!((output.pitch - expected).abs() < EPS, "{output:?} vs {expected}");
+    assert!(
+        (output.pitch - expected).abs() < EPS,
+        "{output:?} vs {expected}"
+    );
 }
 
 // Focus is pitch-only: the bearing to the landing spot never enters it.
@@ -888,10 +911,12 @@ fn ledge_focus_is_the_same_at_any_bearing_to_the_landing_spot() {
     };
     let ahead = vault_row::ledge_focus(&row_focus, EYE, LANDING, 0.0);
     for bearing in [0.5_f32, 1.6, 3.1, -2.2] {
-        let landing = EYE
-            + glam::Quat::from_rotation_y(bearing) * (LANDING - EYE);
+        let landing = EYE + glam::Quat::from_rotation_y(bearing) * (LANDING - EYE);
         let offset = vault_row::ledge_focus(&row_focus, EYE, landing, 0.0);
-        assert!((offset - ahead).abs() < EPS, "{bearing}: {offset} vs {ahead}");
+        assert!(
+            (offset - ahead).abs() < EPS,
+            "{bearing}: {offset} vs {ahead}"
+        );
     }
 }
 
@@ -1006,19 +1031,16 @@ fn the_view_feel_scale_scales_every_row_without_freezing_it() {
     }
     let a = evaluate(Some(&vault_only), normal_frame(0.0), &mut hidden, DT, 1.0);
     let b = evaluate(Some(&vault_only), normal_frame(0.0), &mut shown, DT, 1.0);
-    assert!(a.pitch < -1.0 && (a.pitch - b.pitch).abs() < EPS, "{a:?} vs {b:?}");
+    assert!(
+        a.pitch < -1.0 && (a.pitch - b.pitch).abs() < EPS,
+        "{a:?} vs {b:?}"
+    );
 }
 
 #[test]
 fn a_missing_block_or_row_presents_nothing_and_keeps_no_state() {
     let mut state = PoseState::default();
-    climb(
-        &only_vault(vault_row(-6.0, None)),
-        &mut state,
-        DT,
-        0.5,
-        0.0,
-    );
+    climb(&only_vault(vault_row(-6.0, None)), &mut state, DT, 0.5, 0.0);
     assert_eq!(
         evaluate(None, vault_frame(0.5, 0.0), &mut state, DT, 1.0),
         PoseOutput::default()

@@ -242,14 +242,7 @@ pub(crate) fn assemble_frame_eye(
                 tracking.descriptor,
                 None,
             );
-            (
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                Vec3::ZERO,
-                HeldPose::default(),
-            )
+            (0.0, 0.0, 0.0, 0.0, Vec3::ZERO, HeldPose::default())
         }
     };
 

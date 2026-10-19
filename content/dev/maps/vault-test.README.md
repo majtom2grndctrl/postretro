@@ -18,7 +18,7 @@ The tuning is content/dev's player (`scripts/player.ts`):
 - `vault.maxHeight` 1.6 m, `vault.swimMaxHeight` 0.9 m, `durationMs` 800;
 - `from: { air: "auto", swim: "auto" }` and `allowFire: false`;
 - `viewFeel.pose.vault` focuses the view on the ledge (`ledgeFocus` strength
-  0.7, capped at 30°), rolls 10° and narrows the FOV by 30°, easing in over the
+  0.55, capped at 45°), rolls 10° and narrows the FOV by 30°, easing in over the
   first 33% of the climb and back over the last 33%.
 
 The expectations below follow from those numbers. If you retune the player,

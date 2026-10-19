@@ -1,9 +1,9 @@
 // Camera pose held while vaulting, weighted by the vault's own progress.
 // See: context/lib/movement.md §1
 
-use postretro_foundation::VaultViewParams;
 use super::ViewFeelState;
 pub(crate) use super::pose::VaultViewInput;
+use postretro_foundation::VaultViewParams;
 
 /// Shortest ease back to neutral, seconds, after a vault ends with weight
 /// left: an early end, or the end of a vault whose `easeOut` is 0. A longer
@@ -398,14 +398,20 @@ mod tests {
             let tick_s = 1.0 / hz;
             let step_ms = tick_s * 1000.0;
             let ticks = vault_path_ticks(420.0, step_ms);
-            let at_top = VaultViewInput::presented(vault_clock(ticks, step_ms), 420.0, tick_s, 1.0, None);
+            let at_top =
+                VaultViewInput::presented(vault_clock(ticks, step_ms), 420.0, tick_s, 1.0, None);
             assert_eq!(
                 at_top.progress, 1.0,
                 "{hz} Hz: neutral as the top is reached"
             );
             assert_eq!(envelope(&params(), at_top.progress), 0.0);
-            let before =
-                VaultViewInput::presented(vault_clock(ticks - 1, step_ms), 420.0, tick_s, 1.0, None);
+            let before = VaultViewInput::presented(
+                vault_clock(ticks - 1, step_ms),
+                420.0,
+                tick_s,
+                1.0,
+                None,
+            );
             assert!(
                 envelope(&params(), before.progress) > 0.0,
                 "{hz} Hz: still easing out a tick before the top"

@@ -179,8 +179,8 @@ fn the_dev_player_authors_a_pose_and_no_vault_kick() {
                 ease_in: 0.33,
                 ease_out: 0.33,
                 ledge_focus: Some(LedgeFocus {
-                    strength: 0.7,
-                    max_pitch: 30.0,
+                    strength: 0.55,
+                    max_pitch: 45.0,
                 }),
             }),
         })
@@ -224,9 +224,11 @@ fn graded_ledge_world(top_y: f32) -> CollisionWorld {
 }
 
 /// The deepest ledge focus, degrees, the dev player's `pose.vault` presents
-/// over a jump-vault onto a `top_y` ledge, aiming level at entry: the rendered
-/// pitch with focus less the same frames without it.
-fn peak_dev_focus(movement: &PlayerMovementDescriptor, top_y: f32) -> f32 {
+/// over a running jump-vault onto a `top_y` ledge, aiming level at entry: the
+/// rendered pitch with focus less the same frames without it. The jump leaves
+/// the ground `gap` metres short of the riser; `None` when that jump does not
+/// vault (it clears the ledge or falls short of its reach).
+fn peak_dev_focus(movement: &PlayerMovementDescriptor, top_y: f32, gap: f32) -> Option<f32> {
     use crate::frame_eye::{
         FrameEyeInputs, ViewFeelTracking, assemble_frame_eye, view_feel_driver,
     };
@@ -245,7 +247,8 @@ fn peak_dev_focus(movement: &PlayerMovementDescriptor, top_y: f32) -> f32 {
     }
     let mut component = PlayerMovementComponent::from_descriptor(movement);
     let reach = movement.capsule.half_height + movement.capsule.radius;
-    let mut position = Vec3::new(5.0 - movement.capsule.radius - 0.3, reach, 0.0);
+    let mut position = Vec3::new(5.0 - movement.capsule.radius - gap, reach, 0.0);
+    component.velocity = Vec3::X * movement.ground.speed.run;
     let mut tracked: [(crate::view_feel::ViewFeelState, Option<_>, Option<_>); 2] =
         Default::default();
     let mut deepest = 0.0_f32;
@@ -308,8 +311,7 @@ fn peak_dev_focus(movement: &PlayerMovementDescriptor, top_y: f32) -> f32 {
         }
         deepest = deepest.min(pitches[0] - pitches[1]);
     }
-    assert!(vaulted, "the dev player vaults the {top_y} m ledge");
-    deepest
+    vaulted.then_some(deepest)
 }
 
 // The dev player's ledge focus reads the ledge: the vault-test graded ledges
@@ -327,9 +329,14 @@ fn the_dev_players_ledge_focus_differs_across_the_graded_ledges() {
             .is_some(),
         "the dev player authors ledge focus"
     );
+    // The first running jump, nearest the riser, that vaults each ledge.
     let peaks: Vec<f32> = [0.6, 1.0, 1.5, 2.2]
         .into_iter()
-        .map(|top_y| peak_dev_focus(&movement, top_y))
+        .map(|top_y| {
+            (1..=60)
+                .find_map(|step| peak_dev_focus(&movement, top_y, step as f32 * 0.1))
+                .unwrap_or_else(|| panic!("a running jump vaults the {top_y} m ledge"))
+        })
         .collect();
     let mut distinct: Vec<f32> = Vec::new();
     for peak in &peaks {

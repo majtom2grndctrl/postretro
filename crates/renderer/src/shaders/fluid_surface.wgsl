@@ -1,8 +1,9 @@
 // Fluid surface pass: translucent, two-sided fluid faces moving in whole texels,
 // lit by baked SH indirect and baked direct SH per grid vertex and by dynamic
 // lights per fragment, and mirroring their room through distance-corrected
-// box-projected reflection probes (fluid_reflection.wgsl). Motion lives in
-// fluid_motion.wgsl.
+// box-projected reflection probes (fluid_reflection.wgsl) under the
+// screen-space layer the reflection pass resolves first
+// (fluid_reflection_pass.wgsl). Motion lives in fluid_motion.wgsl.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // --- Group 0: camera uniforms (shared with forward and billboard) ---
@@ -156,7 +157,7 @@ struct FluidProbeTable {
 // it saw nothing. Sampled at level 0 through the same sampler.
 @group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;
 
-// --- Group 5: fluid scene inputs, rebuilt only with the scene targets ---
+// --- Group 5: fluid scene inputs, rebuilt with the scene targets and the reflection target ---
 // Scene depth, loaded under the pass's read-only depth attachment.
 @group(5) @binding(0) var scene_depth: texture_depth_2d;
 struct FluidSceneInputs {
@@ -164,9 +165,16 @@ struct FluidSceneInputs {
     fog_weight: f32,
     // The mod's reflection style: FLUID_REFLECTION_STYLE_SMOOTH, else pixel.
     reflection_style: u32,
-    spare: vec2<f32>,
+    // The reflection target's extent over the scene's, per axis; 0 while
+    // only its 1x1 placeholder is bound.
+    ssr_scale: vec2<f32>,
 };
 @group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;
+// The screen-space reflection layer, premultiplied (c x SSR, c), written this
+// frame by the reflection pass, which clears it to c = 0 first. Only
+// fs_main_reflecting reads it, so the reflection-free entry declares nothing
+// new.
+@group(5) @binding(2) var reflection_target: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -484,6 +492,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return fluid_shade(in).surface;
 }
 
+// The screen-space layer this fragment composites. Smooth reads the target
+// bilinearly at its own screen position; pixel reads it nearest at its water
+// texel cell's centre projected to the screen, so a reduced target never lays
+// a screen-aligned grid over the cell's block, and a centre off screen reads
+// c = 0. Level-0 reads only: this runs past the reflecting gate.
+fn fluid_reflection_screen_layer(style: u32, frag_xy: vec2<f32>, texel_uv: vec2<f32>,
+                                 world_position: vec3<f32>, axes: FluidTexelAxes) -> vec4<f32> {
+    let extent = vec2<f32>(textureDimensions(scene_depth));
+    if style == FLUID_REFLECTION_STYLE_SMOOTH {
+        return textureSampleLevel(reflection_target, sh_atlas_sampler, frag_xy / extent, 0.0);
+    }
+    let centre = fluid_reflection_cell_centre(texel_uv, world_position, axes);
+    let clip = uniforms.view_proj * vec4<f32>(centre, 1.0);
+    if !(clip.w > 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let ndc = clip.xy / clip.w;
+    let pixel = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * extent;
+    if any(pixel < vec2<f32>(0.0)) || any(pixel >= extent) {
+        return vec4<f32>(0.0);
+    }
+    let last = textureDimensions(reflection_target) - vec2<u32>(1u);
+    return textureLoad(reflection_target, min(vec2<u32>(pixel * fluid_scene.ssr_scale), last), 0);
+}
+
 @fragment
 fn fs_main_reflecting(in: VertexOutput) -> @location(0) vec4<f32> {
     // The world position's derivatives, for the pixel reflection style's
@@ -497,22 +530,32 @@ fn fs_main_reflecting(in: VertexOutput) -> @location(0) vec4<f32> {
     let dims = shaded.dims;
     let texels_per_pixel = shaded.texels_per_pixel;
     // A probe-bound face seen from above under the all-terms mask mirrors its
-    // probe over that at union coverage; every other fragment is unchanged.
-    // The reflection starts from the style's point and sees the eye from there.
+    // probe, with the screen-space layer over it, at union coverage; every
+    // other fragment is unchanged. The reflection starts from the style's
+    // point and sees the eye from there.
     let reflectivity = shaded.reflectivity;
     if !fluid_reflection_gate(in.probe, outward, V, uniforms.light_term_mask, reflectivity) {
         return surface;
     }
     let axes = fluid_reflection_texel_axes(shaded.uv_dx_texels, shaded.uv_dy_texels, ddx_world, ddy_world);
-    let point = fluid_reflection_point(fluid_scene.reflection_style, in.uv * dims, in.world_position,
+    // One style for both layers: the probe's cell point and the target read.
+    let style = fluid_scene.reflection_style;
+    let point = fluid_reflection_point(style, in.uv * dims, in.world_position,
         outward, axes, uniforms.time, texels_per_pixel, fluid_probes.probes[in.probe].box_min,
         fluid_probes.probes[in.probe].box_max, fluid_probes.probes[in.probe].capture_point);
     let view = normalize(uniforms.camera_position - point.position);
+    // IP rule (owner review to change, rendering_pipeline.md §7.3a): the probe
+    // lookup is keyed to its own search from this fragment or cell point, never
+    // to the screen-space hit, its depth or its screen position.
     let reflection = fluid_reflection_sample(in.probe, point.position, view, point.normal);
-    let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity) * reflection.weight;
     // From above, an eye within the fog's band of the plane scales the term
     // by its height through the band, the fog's own proximity, reaching 0 at
-    // the plane: an eye bobbing there never flips the mirror.
+    // the plane: an eye bobbing there never flips the mirror. F is unshadowed;
+    // the capture shadow scales the probe's share alone.
     let band = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
-    return fluid_reflection_composite(surface, reflection.capture, fresnel * band);
+    let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity) * band;
+    let screen = fluid_reflection_screen_layer(style, in.clip_position.xy, in.uv * dims,
+        in.world_position, axes);
+    return fluid_reflection_layered_composite(surface, reflection.capture, reflection.weight, screen,
+        fresnel);
 }

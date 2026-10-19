@@ -652,15 +652,27 @@ impl Renderer {
         if render_world && self.full().fluid_surface.has_draws() {
             let _fluid_scope = cpu.scope(RenderStage::FluidSurface);
             // Only a drawing frame reads the scene inputs (fog weight,
-            // reflection style). The weight is stored every frame; both upload
-            // here lazily, only when changed; the batched write copies ahead
-            // of this frame's submission.
+            // reflection style, target scale). The weight is stored every
+            // frame; all upload here lazily, only when changed, before the
+            // reflection pass, so both passes draw this frame's style; the
+            // batched write copies ahead of this frame's submission.
             {
                 let Self { queue, full, .. } = self;
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
                 full.fluid_surface.upload_scene_inputs(queue);
+            }
+            // The screen-space reflection layer, resolved into its own target
+            // before the fluid pass samples it: the frame's reflecting draws,
+            // by the same mask snapshot the fluid pass picks variants by. A
+            // frame with no reflecting draw records none.
+            if self
+                .full()
+                .fluid_surface
+                .has_reflecting_draws(frame_light_term_mask)
+            {
+                self.record_fluid_reflection_pass(encoder, frame_light_term_mask);
             }
             let fluid_ts = self
                 .full()

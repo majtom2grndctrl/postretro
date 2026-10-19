@@ -1,6 +1,6 @@
-// Fluid pass group 5, the scene inputs: scene depth, the eye fog weight and
-// the mod's reflection style, built at full init and rebuilt only with the
-// scene targets.
+// Fluid pass group 5, the scene inputs: scene depth, the eye fog weight, the
+// mod's reflection style and the screen-space reflection target, built at full
+// init and rebuilt only with the scene targets and the reflection target.
 // See: context/lib/rendering_pipeline.md §7.3a, §10
 
 use std::num::NonZeroU64;
@@ -12,25 +12,29 @@ use wgpu::util::DeviceExt;
 /// Pipeline group of the fluid scene inputs.
 pub(crate) const FLUID_SCENE_INPUTS_GROUP: u32 = 5;
 
+/// Group 5 binding of the reflection target: the screen-space layer, or its
+/// 1×1 placeholder.
+pub(crate) const FLUID_REFLECTION_TARGET_BINDING: u32 = 2;
+
 /// The fluid scene uniform (binding 1), the shader's `FluidSceneInputs`
 /// member for member: the eye fog weight, the reflection style
-/// (`FluidReflectionStyle::uniform_value`), and two spares for later
-/// scene-wide fluid inputs, such as screen-space reflections'.
+/// (`FluidReflectionStyle::uniform_value`), and the reflection target's
+/// extent over the scene's per axis, 0 while only its placeholder is bound.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub(crate) struct FluidSceneUniform {
     pub fog_weight: f32,
     pub reflection_style: u32,
-    pub spare: [f32; 2],
+    pub ssr_scale: [f32; 2],
 }
 pub(crate) const FLUID_SCENE_UNIFORM_BYTES: u64 = std::mem::size_of::<FluidSceneUniform>() as u64;
 
 impl FluidSceneUniform {
-    fn from_inputs(fog_weight: f32, style: FluidReflectionStyle) -> Self {
+    fn from_inputs(fog_weight: f32, style: FluidReflectionStyle, ssr_scale: [f32; 2]) -> Self {
         Self {
             fog_weight,
             reflection_style: style.uniform_value(),
-            spare: [0.0; 2],
+            ssr_scale,
         }
     }
 }
@@ -39,10 +43,11 @@ impl FluidSceneUniform {
 /// mid-level draws fog on its first frame.
 const DEFAULT_FLUID_FOG_WEIGHT: f32 = 1.0;
 
-/// Scene depth, loaded under the pass's read-only depth attachment, and the
-/// scene uniform. A texture and a uniform, never storage: the shared groups
-/// already spend the whole FRAGMENT storage budget.
-pub(crate) fn fluid_scene_inputs_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 2] {
+/// Scene depth, loaded under the pass's read-only depth attachment, the
+/// scene uniform, and the reflection target, filtered through the shared
+/// linear-clamp sampler in smooth style. Textures and a uniform, never
+/// storage: the shared groups already spend the whole FRAGMENT storage budget.
+pub(crate) fn fluid_scene_inputs_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
     [
         wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -64,22 +69,35 @@ pub(crate) fn fluid_scene_inputs_bind_group_layout_entries() -> [wgpu::BindGroup
             },
             count: None,
         },
+        wgpu::BindGroupLayoutEntry {
+            binding: FLUID_REFLECTION_TARGET_BINDING,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
     ]
 }
 
-/// Group 5's layout, uniform and bind group. Level install and clear never
-/// touch it, so a level with no fluid, or none yet, still has it current.
+/// Group 5's layout, uniform and bind group. A level with no fluid, or none
+/// yet, still has it current: only the scene-target rebuild and a reflection
+/// target's creation or release rebuild it.
 pub(crate) struct FluidSceneInputs {
     layout: wgpu::BindGroupLayout,
-    /// Written only when the fog weight or the reflection style changes.
+    /// Written only when the fog weight, the reflection style or the target
+    /// scale changes.
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     fog_weight: f32,
     reflection_style: FluidReflectionStyle,
+    ssr_scale: [f32; 2],
     /// The uniform as last written.
     uploaded: FluidSceneUniform,
-    /// The scene depth the bind group was last built over; tests read it.
-    #[cfg(test)]
+    /// The scene depth the bind group was last built over, kept so a
+    /// reflection target change rebinds the current one.
     scene_depth: wgpu::TextureView,
     /// Bind group builds so far, init included; tests read it.
     #[cfg(test)]
@@ -91,6 +109,7 @@ fn create_bind_group(
     layout: &wgpu::BindGroupLayout,
     scene_depth: &wgpu::TextureView,
     uniform_buffer: &wgpu::Buffer,
+    reflection_target: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fluid Surface Scene Inputs Bind Group (group 5)"),
@@ -104,13 +123,22 @@ fn create_bind_group(
                 binding: 1,
                 resource: uniform_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: FLUID_REFLECTION_TARGET_BINDING,
+                resource: wgpu::BindingResource::TextureView(reflection_target),
+            },
         ],
     })
 }
 
 impl FluidSceneInputs {
-    /// Build group 5 over the current scene depth, at full init.
-    pub fn new(device: &wgpu::Device, scene_depth: &wgpu::TextureView) -> Self {
+    /// Build group 5 over the current scene depth and the reflection
+    /// target's placeholder, at full init.
+    pub fn new(
+        device: &wgpu::Device,
+        scene_depth: &wgpu::TextureView,
+        reflection_target: &wgpu::TextureView,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Fluid Surface Scene Inputs BGL (group 5)"),
             entries: &fluid_scene_inputs_bind_group_layout_entries(),
@@ -120,21 +148,28 @@ impl FluidSceneInputs {
         let initial = FluidSceneUniform::from_inputs(
             DEFAULT_FLUID_FOG_WEIGHT,
             FluidReflectionStyle::default(),
+            [0.0; 2],
         );
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Scene Uniform"),
             contents: bytemuck::bytes_of(&initial),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bind_group = create_bind_group(device, &layout, scene_depth, &uniform_buffer);
+        let bind_group = create_bind_group(
+            device,
+            &layout,
+            scene_depth,
+            &uniform_buffer,
+            reflection_target,
+        );
         Self {
             layout,
             uniform_buffer,
             bind_group,
             fog_weight: DEFAULT_FLUID_FOG_WEIGHT,
             reflection_style: FluidReflectionStyle::default(),
+            ssr_scale: [0.0; 2],
             uploaded: initial,
-            #[cfg(test)]
             scene_depth: scene_depth.clone(),
             #[cfg(test)]
             builds: 1,
@@ -149,16 +184,32 @@ impl FluidSceneInputs {
         &self.bind_group
     }
 
-    /// Rebuild over a recreated scene depth. The scene-target rebuild is the
-    /// only caller: the frame never builds a bind group.
-    pub fn rebuild(&mut self, device: &wgpu::Device, scene_depth: &wgpu::TextureView) {
-        self.bind_group =
-            create_bind_group(device, &self.layout, scene_depth, &self.uniform_buffer);
+    /// Rebuild over `scene_depth` and `reflection_target`, the target or its
+    /// placeholder. Only the scene-target rebuild and a reflection target's
+    /// creation or release call it: the frame never builds a bind group.
+    pub fn rebuild(
+        &mut self,
+        device: &wgpu::Device,
+        scene_depth: &wgpu::TextureView,
+        reflection_target: &wgpu::TextureView,
+    ) {
+        self.bind_group = create_bind_group(
+            device,
+            &self.layout,
+            scene_depth,
+            &self.uniform_buffer,
+            reflection_target,
+        );
+        self.scene_depth = scene_depth.clone();
         #[cfg(test)]
         {
-            self.scene_depth = scene_depth.clone();
             self.builds += 1;
         }
+    }
+
+    /// The scene depth group 5 is bound over.
+    pub fn bound_scene_depth(&self) -> &wgpu::TextureView {
+        &self.scene_depth
     }
 
     /// Store the frame's eye fog weight; it uploads before the next fluid pass.
@@ -176,13 +227,19 @@ impl FluidSceneInputs {
         self.reflection_style = style;
     }
 
-    /// The uniform as the next upload writes it.
-    pub fn pending(&self) -> FluidSceneUniform {
-        FluidSceneUniform::from_inputs(self.fog_weight, self.reflection_style)
+    /// Store the bound reflection target's scale; it uploads before the next
+    /// fluid pass. Set with every target creation, resize and release.
+    pub fn set_ssr_scale(&mut self, scale: [f32; 2]) {
+        self.ssr_scale = scale;
     }
 
-    /// Write the uniform if the fog weight or the reflection style changed
-    /// since it last uploaded.
+    /// The uniform as the next upload writes it.
+    pub fn pending(&self) -> FluidSceneUniform {
+        FluidSceneUniform::from_inputs(self.fog_weight, self.reflection_style, self.ssr_scale)
+    }
+
+    /// Write the uniform if the fog weight, the reflection style or the
+    /// target scale changed since it last uploaded.
     pub fn upload(&mut self, queue: &crate::render::uploads::UploadQueue) {
         let uniform = self.pending();
         if uniform == self.uploaded {

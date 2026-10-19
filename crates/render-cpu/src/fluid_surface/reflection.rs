@@ -1,5 +1,6 @@
 // Fluid reflection probes: probe table GPU layout, per-vertex probe index, and
-// the CPU reference for `fluid_reflection.wgsl`'s probe term (search: `reflection_search`).
+// the CPU reference for `fluid_reflection.wgsl`'s probe term and
+// `fluid_reflection_ray.wgsl`'s gate and ray (search: `reflection_search`).
 // See: context/lib/rendering_pipeline.md §7.3a · context/lib/resource_management.md §5
 
 use bytemuck::{Pod, Zeroable};

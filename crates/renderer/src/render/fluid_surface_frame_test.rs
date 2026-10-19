@@ -676,10 +676,12 @@ fn scene_inputs_extent(renderer: &Renderer) -> (Extent, u32) {
     (Extent::new(texture.width(), texture.height()), builds)
 }
 
-// Pin P4: group 5 exists from full init without a level, follows the scene
-// depth through every resize with or without a level installed, and level
-// install and release never rebuild it; the frame after a resize draws fog
-// over the new depth.
+// Pin P4: group 5 exists from full init without a level and follows the
+// scene depth through every resize with or without a level installed. A
+// level with no probe-bound face leaves it alone; one with a probe-bound face
+// creates the reflection target at the scene extent and rebinds group 5 to it
+// once; the target follows each resize; unload rebinds the placeholder and
+// drops the target. The frame after a resize draws fog over the new depth.
 #[test]
 fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_level() {
     let Some(mut renderer) = renderer() else {
@@ -704,8 +706,19 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
     assert_eq!(
         scene_inputs_extent(&renderer).1,
         built + 1,
-        "level install leaves group 5 alone"
+        "a level with no probe-bound face leaves group 5 alone"
     );
+    let target = |renderer: &Renderer| renderer.full().fluid_surface.reflection_target_extent();
+    assert_eq!(target(&renderer), None, "and allocates no target");
+
+    let probes = uniform_probe_section(8, &[0], &[[0, 0x3800, 0]], &[(0, 0)]);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
+    assert_eq!(
+        scene_inputs_extent(&renderer).1,
+        built + 2,
+        "a probe-bound level rebinds group 5 to its new target, once"
+    );
+    assert_eq!(target(&renderer), Some((40, 24)));
 
     renderer.set_render_resolution(RenderResolutionPolicy::Fixed { divisor: 2 });
     renderer.record_surface_size(64, 48);
@@ -714,9 +727,10 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
     assert_eq!(scene, Extent::new(32, 24));
     assert_eq!(
         scene_inputs_extent(&renderer),
-        (scene, built + 2),
+        (scene, built + 3),
         "resize with a level"
     );
+    assert_eq!(target(&renderer), Some((32, 24)), "the target follows");
 
     // Capture pins divisor 1, one more scene rebuild; the fogged frame after
     // it draws over the new depth.
@@ -736,24 +750,32 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
         .map(|px| f32::from(px[0]))
         .sum::<f32>()
         / (64.0 * 48.0);
-    assert_eq!(scene_inputs_extent(&renderer), (scene, built + 3));
+    assert_eq!(scene_inputs_extent(&renderer), (scene, built + 4));
+    assert_eq!(target(&renderer), Some((64, 48)));
     assert!(
         mean_red < 70.0,
         "fog draws after the resize, got {mean_red}"
     );
 
+    let target_builds = renderer.full().fluid_surface.reflection_target_builds();
     renderer.release_level_resources();
     assert_eq!(
         scene_inputs_extent(&renderer),
-        (scene, built + 3),
-        "level release leaves group 5 alone"
+        (scene, built + 5),
+        "unload rebinds group 5 to the placeholder"
+    );
+    assert_eq!(target(&renderer), None, "and releases the target");
+    assert_eq!(
+        renderer.full().fluid_surface.reflection_target_builds(),
+        target_builds,
+        "release builds no target"
     );
     eprintln!(
         "[FluidSurfaceProof] P4 scene-inputs GPU case ran: group 5 at {}x{} after {} builds, \
          mean red {mean_red}",
         scene.width,
         scene.height,
-        built + 3
+        built + 5
     );
 }
 
@@ -1846,5 +1868,275 @@ fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
     assert!(
         worst <= 2,
         "the GPU samples the texel the CPU search looks up: off by {worst} at {at:?}"
+    );
+}
+
+/// An opaque world quad standing upright in the pool: x ±1.5, y 0..2, at
+/// z = 4, wound both ways so it draws whichever side the forward pass culls.
+/// One cell, one BVH leaf under a root node, no cell draw index: the
+/// capture's draw-all frame walks the tree.
+fn install_standing_quad(renderer: &mut Renderer) {
+    use postretro_level_loader::CellData;
+    use postretro_render_data::geometry::{
+        BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode, BvhTree, WorldVertex,
+    };
+    let corners = [
+        Vec3::new(-1.5, 0.0, 4.0),
+        Vec3::new(1.5, 0.0, 4.0),
+        Vec3::new(1.5, 2.0, 4.0),
+        Vec3::new(-1.5, 2.0, 4.0),
+    ];
+    let vertices: Vec<WorldVertex> = corners
+        .iter()
+        .map(|corner| WorldVertex {
+            position: corner.to_array(),
+            base_uv: [0.0; 2],
+            normal_oct: [32768; 2],
+            tangent_packed: [0; 2],
+            lightmap_uv: [0; 2],
+            lightmap_block: 0,
+            animated_block: 0,
+        })
+        .collect();
+    let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2];
+    let (aabb_min, aabb_max) = ([-1.5, 0.0, 3.9], [1.5, 2.0, 4.1]);
+    let leaves = vec![BvhLeaf {
+        aabb_min,
+        aabb_max,
+        material_bucket_id: 0,
+        index_offset: 0,
+        index_count: indices.len() as u32,
+        cell_id: 0,
+        chunk_range_start: 0,
+        chunk_range_count: 0,
+    }];
+    let bvh = BvhTree {
+        nodes: vec![
+            BvhNode {
+                aabb_min,
+                skip_index: 2,
+                aabb_max,
+                left_child_or_leaf_index: 0,
+                flags: 0,
+            },
+            BvhNode {
+                aabb_min,
+                skip_index: 2,
+                aabb_max,
+                left_child_or_leaf_index: 0,
+                flags: BVH_NODE_FLAG_LEAF,
+            },
+        ],
+        leaves,
+        root_node_index: 0,
+    };
+    let cells = [CellData {
+        bounds_min: Vec3::from(aabb_min),
+        bounds_max: Vec3::from(aabb_max),
+        face_start: 0,
+        face_count: 1,
+        portal_ref_start: 0,
+        portal_ref_count: 0,
+        is_solid: false,
+        is_exterior: false,
+        is_drawable: true,
+    }];
+    renderer.install_level_geometry(
+        &super::LevelGeometry {
+            vertices: &vertices,
+            vertex_spec_owners: &[],
+            indices: &indices,
+            bvh: &bvh,
+            lights: &[],
+            light_influences: &[],
+            sh_volume: None,
+            sh_storage: super::LevelGeometryShStorage::Legacy,
+            lightmap: None,
+            lightmap_streaming: None,
+            chunk_light_list: None,
+            animated_light_chunks: None,
+            animated_light_weight_maps: None,
+            delta_sh_volumes: None,
+            direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: None,
+            billboard_direct_scatter_volume: None,
+            animated_billboard_direct_scatter_delta_volumes: None,
+            entity_shadow_lights: &[],
+            shadowmask_atlas: None,
+            sdf_atlas: None,
+            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
+            cell_draw_index: None,
+            kinematic_geometry: None,
+            cells: &cells,
+            texture_materials: &[],
+        },
+        Default::default(),
+    );
+}
+
+/// The capture pixel (`column`, `row`)'s RGB.
+fn rgb_at(pixels: &[u8], column: u32, row: u32) -> [u8; 3] {
+    let at = ((row * SIDE + column) * 4) as usize;
+    [pixels[at], pixels[at + 1], pixels[at + 2]]
+}
+
+fn max_channel_gap(a: [u8; 3], b: [u8; 3]) -> u8 {
+    (0..3)
+        .map(|channel| a[channel].abs_diff(b[channel]))
+        .max()
+        .unwrap_or(0)
+}
+
+// Acceptance row A14 at the hard-wired high tier, smooth style: a horizontal
+// pool bound to a probe whose capture is uniform green, seen from 1 m up and
+// looking ahead, with an opaque world quad standing in it at z = 4. Drawn as
+// a mirror at zero opacity, so each water pixel is its reflection alone:
+// probe-only water reads the probe's green, and water whose march hits the
+// quad at full confidence reads the quad's own scene colour (F = 1, c = 1).
+// The same frame without the quad has nothing to hit, so every water pixel
+// reads the probe there. The level creates a full-extent target; the face
+// seen from below reads the reflection-free frame byte for byte, with the
+// quad standing over it.
+#[test]
+fn a_standing_quad_reflects_in_a_probe_bound_pool_over_the_probe_term() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    let pool = horizontal_fluid(6.0);
+    let probes = uniform_probe_section(8, &[0], &[[0, 0x3800, 0]], &[(0, 0)]);
+    let mirror = FluidSurfaceLook {
+        surface_reflectivity: 50.0,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.0)
+    };
+    let projection =
+        glam::camera::rh::proj::directx::perspective(60f32.to_radians(), 1.0, 0.1, 100.0);
+    let above = Vec3::new(0.0, 1.0, 0.0);
+    let view_above =
+        projection * glam::camera::rh::view::look_at_mat4(above, Vec3::new(0.0, 0.3, 4.0), Vec3::Y);
+    let draw = |renderer: &mut Renderer, look: FluidSurfaceLook, view_proj: Mat4, camera: Vec3| {
+        renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&probes));
+        renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+        capture_through(renderer, view_proj, camera)
+    };
+
+    install_standing_quad(&mut renderer);
+    let with_quad = draw(&mut renderer, mirror, view_above, above);
+    assert_eq!(
+        renderer.full().fluid_surface.reflection_target_extent(),
+        Some((SIDE, SIDE)),
+        "a probe-bound level creates the target at the scene extent"
+    );
+    // Water from below: the gate shuts in both passes.
+    let below = Vec3::new(0.0, -1.0, 0.0);
+    let view_below = projection
+        * glam::camera::rh::view::look_at_mat4(below, Vec3::new(0.0, -0.3, 4.0), Vec3::Y);
+    let half = FluidSurfaceLook {
+        surface_reflectivity: 50.0,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.5)
+    };
+    let no_reflection = FluidSurfaceLook {
+        surface_reflectivity: 0.0,
+        ..half
+    };
+    let below_reflecting = draw(&mut renderer, half, view_below, below);
+    assert_eq!(
+        renderer
+            .full()
+            .fluid_surface
+            .frame_variants(LightTermMask::ALL),
+        [FluidShaderVariant::Reflecting],
+        "the from-below frame takes the reflecting variant"
+    );
+    let below_free = draw(&mut renderer, no_reflection, view_below, below);
+
+    renderer.release_level_resources();
+    assert_eq!(
+        renderer.full().fluid_surface.reflection_target_extent(),
+        None,
+        "unload releases the target"
+    );
+    let without_quad = draw(&mut renderer, mirror, view_above, above);
+
+    // The quad's own colour, mid-quad; the probe-only water colour, at the
+    // bottom row of the frame without the quad.
+    let quad = rgb_at(&with_quad, SIDE / 2, 5);
+    let probe_only = rgb_at(&without_quad, SIDE / 2, SIDE - 1);
+    assert!(
+        max_channel_gap(quad, probe_only) > 16,
+        "the quad and the probe read apart: quad {quad:?}, probe {probe_only:?}"
+    );
+    // Where the mirrored ray of each water pixel in front of the quad meets
+    // the quad's plane, inside the quad and away from the screen-edge fade:
+    // there the march hits at full confidence and the water reads the quad's
+    // scene colour at the hit, a pixel either way for the march's stride.
+    let mut hits = 0;
+    let mut worst = (0u8, (0, 0));
+    let mut probe_pixels = 0;
+    for row in 9..SIDE {
+        for column in 0..SIDE {
+            let plain = rgb_at(&without_quad, column, row);
+            if max_channel_gap(plain, probe_only) <= 2 {
+                probe_pixels += 1;
+            }
+            let origin = pixel_on_water(view_above, column, row);
+            let ray = reflection_mirror((above - origin).normalize(), Vec3::Y);
+            let hit = origin + ray * ((4.0 - origin.z) / ray.z);
+            if !(hit.x.abs() < 1.3 && hit.y > 0.2 && hit.y < 1.8) {
+                continue;
+            }
+            let clip = view_above * hit.extend(1.0);
+            let ndc = clip.truncate() / clip.w;
+            let at = (
+                ((ndc.x + 1.0) * 0.5 * SIDE as f32).floor() as i32,
+                ((1.0 - ndc.y) * 0.5 * SIDE as f32).floor() as i32,
+            );
+            let inner = 2..SIDE as i32 - 2;
+            if !(inner.contains(&at.0) && inner.contains(&at.1)) {
+                continue;
+            }
+            hits += 1;
+            let water = rgb_at(&with_quad, column, row);
+            let gap = (-1..=1)
+                .flat_map(|dy| (-1..=1).map(move |dx| (at.0 + dx, at.1 + dy)))
+                .map(|(x, y)| max_channel_gap(water, rgb_at(&with_quad, x as u32, y as u32)))
+                .min()
+                .unwrap_or(u8::MAX);
+            if gap > worst.0 {
+                worst = (gap, (column, row));
+            }
+            assert!(
+                max_channel_gap(water, plain) > 16,
+                "water ({column}, {row}) reads the quad, not the probe: {water:?} vs {plain:?}"
+            );
+        }
+    }
+    eprintln!(
+        "[FluidSurfaceProof] row A14 standing-quad SSR GPU case ran: quad {quad:?}, probe \
+         {probe_only:?}, {hits} water pixels reflect the quad (worst {} at {:?}), \
+         {probe_pixels} read the probe without it",
+        worst.0, worst.1
+    );
+    assert_eq!(
+        probe_pixels,
+        (SIDE - 9) * SIDE,
+        "without the quad every water pixel reads the probe alone"
+    );
+    assert!(
+        hits >= 8,
+        "the quad's reflection covers water: {hits} pixels"
+    );
+    assert!(
+        worst.0 <= 2,
+        "water reads the quad's colour at its hit: off by {} at {:?}",
+        worst.0,
+        worst.1
+    );
+    assert_eq!(
+        below_reflecting, below_free,
+        "a face seen from below reads the reflection-free frame"
     );
 }

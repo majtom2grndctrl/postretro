@@ -72,8 +72,6 @@ pub fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams
         tilt,
         sway,
         impulse,
-        slide: None,
-        vault: None,
         pose,
     })
 }

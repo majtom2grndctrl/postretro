@@ -31,8 +31,6 @@ pub fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, Descri
         tilt,
         sway,
         impulse,
-        slide: None,
-        vault: None,
         pose,
     })
 }

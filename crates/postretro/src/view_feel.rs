@@ -17,10 +17,8 @@ use postretro_foundation::{
 mod bob;
 mod impulse;
 pub(crate) mod pose;
-pub(crate) mod slide;
 mod sway;
 mod tilt;
-pub(crate) mod vault;
 
 #[cfg(test)]
 pub(crate) use bob::BOB_EASE_IN_BAND;
@@ -48,10 +46,6 @@ pub(crate) struct ViewFeelState {
     /// One critically-damped transient spring per closed movement-state key.
     /// The state remains app-owned and presentation-only, never replicated.
     impulse_springs: [impulse::ImpulseSpring; impulse::IMPULSE_STATE_COUNT],
-    /// Sustained slide presentation, independent of transition kicks.
-    slide_blend: f32,
-    /// Sustained vault pose, independent of transition kicks.
-    vault_view: vault::VaultViewState,
     /// Sustained state poses (`viewFeel.pose`), independent of transition kicks.
     pose: pose::PoseState,
 }
@@ -65,20 +59,16 @@ impl Default for ViewFeelState {
             bob_lateral_phase: 0.0,
             sway_clock: 0.0,
             impulse_springs: [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT],
-            slide_blend: 0.0,
-            vault_view: vault::VaultViewState::default(),
             pose: pose::PoseState::default(),
         }
     }
 }
 
 impl ViewFeelState {
-    /// Discard transition kicks and sustained slide and vault presentation for state that
+    /// Discard transition kicks and sustained state poses for state that
     /// no longer exists while preserving independent bob, tilt, and sway continuity.
     pub(crate) fn clear_state_effects(&mut self) {
         self.impulse_springs = [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT];
-        self.slide_blend = 0.0;
-        self.vault_view = vault::VaultViewState::default();
         self.pose = pose::PoseState::default();
     }
 
@@ -333,43 +323,36 @@ mod tests {
 
     fn bob_only(b: BobParams) -> ViewFeelParams {
         ViewFeelParams {
-            slide: None,
             bob: Some(b),
             tilt: None,
             sway: None,
             impulse: None,
-            vault: None,
             pose: None,
         }
     }
 
     fn tilt_only(t: TiltParams) -> ViewFeelParams {
         ViewFeelParams {
-            slide: None,
             bob: None,
             tilt: Some(t),
             sway: None,
             impulse: None,
-            vault: None,
             pose: None,
         }
     }
 
     fn sway_only(s: SwayParams) -> ViewFeelParams {
         ViewFeelParams {
-            slide: None,
             bob: None,
             tilt: None,
             sway: Some(s),
             impulse: None,
-            vault: None,
             pose: None,
         }
     }
 
     fn impulse_params(states: ImpulseStates) -> ViewFeelParams {
         ViewFeelParams {
-            slide: None,
             bob: None,
             tilt: None,
             sway: None,
@@ -382,7 +365,6 @@ mod tests {
                 },
                 states,
             }),
-            vault: None,
             pose: None,
         }
     }
@@ -781,12 +763,10 @@ mod tests {
     #[test]
     fn global_scale_zero_produces_zero_for_all_motions() {
         let params = ViewFeelParams {
-            slide: None,
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
             impulse: None,
-            vault: None,
             pose: None,
         };
         let mut state = ViewFeelState::default();
@@ -805,12 +785,10 @@ mod tests {
         // Compare scale = 1 against an independently scaled reference: scaling by
         // 2.0 must double every channel relative to scale = 1.
         let params = ViewFeelParams {
-            slide: None,
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
             impulse: None,
-            vault: None,
             pose: None,
         };
 
@@ -834,12 +812,10 @@ mod tests {
     #[test]
     fn zero_frame_dt_leaves_integrator_state_unchanged() {
         let params = ViewFeelParams {
-            slide: None,
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
             impulse: None,
-            vault: None,
             pose: None,
         };
         // Advance to a non-trivial state first.
@@ -867,12 +843,10 @@ mod tests {
     #[test]
     fn absent_bob_disables_only_bob() {
         let params = ViewFeelParams {
-            slide: None,
             bob: None,
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
             impulse: None,
-            vault: None,
             pose: None,
         };
         let mut state = ViewFeelState::default();
@@ -887,12 +861,10 @@ mod tests {
     #[test]
     fn absent_tilt_disables_only_tilt() {
         let params = ViewFeelParams {
-            slide: None,
             bob: Some(bob(false)),
             tilt: None,
             sway: Some(sway(0.5, false)),
             impulse: None,
-            vault: None,
             pose: None,
         };
         let mut state = ViewFeelState::default();
@@ -913,12 +885,10 @@ mod tests {
     #[test]
     fn absent_sway_disables_only_sway() {
         let params = ViewFeelParams {
-            slide: None,
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: None,
             impulse: None,
-            vault: None,
             pose: None,
         };
         let mut state = ViewFeelState::default();
@@ -1191,12 +1161,10 @@ mod tests {
         assert_eq!(eye, Vec3::ZERO);
 
         let no_impulse = ViewFeelParams {
-            slide: None,
             bob: None,
             tilt: None,
             sway: None,
             impulse: None,
-            vault: None,
             pose: None,
         };
         let cleared = evaluate_with_edges(&no_impulse, 0.0, 0.0, true, &[], &mut state, 0.0, 1.0);

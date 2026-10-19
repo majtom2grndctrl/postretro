@@ -28,8 +28,6 @@ const slideFocus: PoseParams = { slide: { enterRate: 18, exitRate: 12, ledgeFocu
 const normalRow: PoseParams = { normal: { pitch: -5 } };
 // @ts-expect-error Unknown row field.
 const typo: VaultPoseRow = { pich: -10 };
-// @ts-expect-error `fovIncrease` is now `fov`.
-const renamed: PoseRow = { fovIncrease: 5, enterRate: 18, exitRate: 12 };
 // @ts-expect-error Unknown ledge focus field.
 const focusTypo: LedgeFocus = { strength: 0.5, maxPitch: 30, max: 20 };
 // @ts-expect-error Ledge focus needs both fields.
@@ -40,4 +38,4 @@ const wordPitch: VaultPoseRow = { pitch: "down" };
 const leftoverSlide: ViewFeelParams = { slide: { eyeDrop: 0.15, enterRate: 18, exitRate: 12 } };
 // @ts-expect-error The vault block moved to `pose.vault`.
 const leftoverVault: ViewFeelParams = { vault: { pitch: -38.5 } };
-void [sparse, noPose, movementView, missingRate, vaultRate, slideShare, slideFocus, normalRow, typo, renamed, focusTypo, partialFocus, wordPitch, leftoverSlide, leftoverVault];
+void [sparse, noPose, movementView, missingRate, vaultRate, slideShare, slideFocus, normalRow, typo, focusTypo, partialFocus, wordPitch, leftoverSlide, leftoverVault];

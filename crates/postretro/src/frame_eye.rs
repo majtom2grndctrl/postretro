@@ -49,7 +49,7 @@ pub(crate) struct ViewFeelTracking<'a> {
 }
 
 /// One frame's evaluated eye, plus the view-feel offsets the first-person
-/// viewmodel re-applies in camera space. The vault pose is in `camera` but not
+/// viewmodel re-applies in camera space. Pose angles are in `camera` but not
 /// in these offsets (see [`assemble_frame_eye`]).
 pub(crate) struct FrameEye {
     pub(crate) camera: RenderCamera,
@@ -188,25 +188,8 @@ pub(crate) fn assemble_frame_eye(
             );
             let (roll, yaw, pitch, mut eye) =
                 view_feel::map_output_to_camera(&output, camera_right);
-            let slide = view_feel::slide::evaluate(
-                driver.params.slide.as_ref(),
-                driver.movement_state,
-                tracking.state,
-                inputs.frame_dt,
-                inputs.view_feel_scale,
-            );
-            // Bound the added dip after bob. Do not lift an already low baseline eye.
-            let available_drop = (driver.eye_height_above_feet + eye.y
-                - view_feel::slide::MIN_EYE_CLEARANCE)
-                .max(0.0);
-            eye.y -= slide.eye_drop.min(available_drop);
-            let vault = view_feel::vault::evaluate(
-                driver.params.vault.as_ref(),
-                driver.vault,
-                tracking.state,
-                inputs.frame_dt,
-                inputs.view_feel_scale,
-            );
+            // Every row's drop together is bounded after bob, so a row never
+            // lifts an already low baseline eye.
             let pose = view_feel::pose::evaluate(
                 driver.params.pose.as_ref(),
                 view_feel::pose::PoseFrame {
@@ -224,14 +207,14 @@ pub(crate) fn assemble_frame_eye(
             );
             eye.y -= pose.eye_drop;
             (
-                output.impulse_fov + slide.fov_increase + vault.fov + pose.fov,
+                output.impulse_fov + pose.fov,
                 roll,
                 yaw,
                 pitch,
                 eye,
                 HeldPose {
-                    pitch: vault.pitch + pose.pitch,
-                    roll: vault.roll + pose.roll,
+                    pitch: pose.pitch,
+                    roll: pose.roll,
                 },
             )
         }
@@ -246,11 +229,12 @@ pub(crate) fn assemble_frame_eye(
         }
     };
 
-    // The held vault pose turns the camera only. The viewmodel re-applies
+    // Pose angles turn the camera only. The viewmodel re-applies
     // `pitch_offset` and `roll` in camera space on top of the camera's own
-    // rotation, which it already follows; adding a held -6..-10° pose there
-    // would swing the weapon down out of its placement for the whole climb.
-    // Sway and impulses stay in both, as before.
+    // rotation, which it already follows; adding a held pose there would
+    // swing the weapon out of its placement for the whole state. Sway and
+    // impulses stay in both. Pose eye drop is in `eye_offset`, which the
+    // viewmodel and listener follow.
     FrameEye {
         camera: RenderCamera::new(
             inputs.presented_eye,
@@ -307,7 +291,6 @@ mod tests {
 
     fn bobbing() -> ViewFeelParams {
         ViewFeelParams {
-            slide: None,
             bob: Some(BobParams {
                 vertical_frequency: 1.0,
                 lateral_frequency: 0.5,
@@ -319,7 +302,6 @@ mod tests {
             tilt: None,
             sway: None,
             impulse: None,
-            vault: None,
             pose: None,
         }
     }
@@ -414,12 +396,19 @@ mod tests {
         assert_ne!(state, twice, "a second evaluation would be observable");
     }
 
-    fn slide_params() -> postretro_foundation::SlideViewParams {
-        postretro_foundation::SlideViewParams {
-            eye_drop: 0.15,
-            fov_increase: 5.0,
-            enter_rate: 18.0,
-            exit_rate: 12.0,
+    fn slide_pose(eye_drop: f32) -> postretro_foundation::PoseParams {
+        postretro_foundation::PoseParams {
+            slide: Some(postretro_foundation::PoseRow {
+                channels: postretro_foundation::PoseChannels {
+                    pitch: 0.0,
+                    roll: 0.0,
+                    eye_drop,
+                    fov: 5.0,
+                },
+                enter_rate: 18.0,
+                exit_rate: 12.0,
+            }),
+            vault: None,
         }
     }
 
@@ -432,7 +421,7 @@ mod tests {
             let mut input = inputs();
             let driver = input.driver.as_mut().unwrap();
             driver.params.bob = None;
-            driver.params.slide = Some(slide_params());
+            driver.params.pose = Some(slide_pose(0.15));
             driver.movement_state = kind;
             input.view_feel_scale = scale;
             input.frame_dt = dt;
@@ -484,12 +473,19 @@ mod tests {
             input.pitch = pitch;
             let driver = input.driver.as_mut().unwrap();
             driver.params.bob = None;
-            driver.params.vault = Some(postretro_foundation::VaultViewParams {
-                pitch: -10.0,
-                roll: 3.0,
-                fov: -4.0,
-                ease_in: 0.15,
-                ease_out: 0.2,
+            driver.params.pose = Some(postretro_foundation::PoseParams {
+                slide: None,
+                vault: Some(postretro_foundation::VaultPoseRow {
+                    channels: postretro_foundation::PoseChannels {
+                        pitch: -10.0,
+                        roll: 3.0,
+                        eye_drop: 0.0,
+                        fov: -4.0,
+                    },
+                    ease_in: 0.15,
+                    ease_out: 0.2,
+                    ledge_focus: None,
+                }),
             });
             driver.movement_state = MovementStateKind::Vault;
             driver.vault = Some(VaultViewInput {
@@ -559,10 +555,7 @@ mod tests {
         input.presented_eye.y = 0.9;
         let driver = input.driver.as_mut().unwrap();
         driver.params.bob = None;
-        driver.params.slide = Some(postretro_foundation::SlideViewParams {
-            eye_drop: 100.0,
-            ..slide_params()
-        });
+        driver.params.pose = Some(slide_pose(100.0));
         driver.eye_height_above_feet = presented_eye_clearance(0.9, 1.7, 1.7);
         driver.movement_state = MovementStateKind::Slide;
         let mut followed = None;
@@ -575,7 +568,7 @@ mod tests {
                 descriptor: &mut descriptor,
             },
         );
-        assert!((active.camera.eye_position.y - view_feel::slide::MIN_EYE_CLEARANCE).abs() < 1e-5);
+        assert!((active.camera.eye_position.y - view_feel::pose::MIN_EYE_CLEARANCE).abs() < 1e-5);
         let mut input = inputs();
         input.presented_eye.y = 0.9;
         let driver = input.driver.as_mut().unwrap();
@@ -590,7 +583,7 @@ mod tests {
                 descriptor: &mut descriptor,
             },
         );
-        assert!(exiting.camera.eye_position.y >= view_feel::slide::MIN_EYE_CLEARANCE - 1e-5);
+        assert!(exiting.camera.eye_position.y >= view_feel::pose::MIN_EYE_CLEARANCE - 1e-5);
     }
 
     #[test]
@@ -601,7 +594,7 @@ mod tests {
         let mut input = inputs();
         let driver = input.driver.as_mut().unwrap();
         driver.params.bob = None;
-        driver.params.slide = Some(slide_params());
+        driver.params.pose = Some(slide_pose(0.15));
         driver.movement_state = MovementStateKind::Slide;
         input.frame_dt = 1.0;
         let active = assemble_frame_eye(
@@ -617,7 +610,7 @@ mod tests {
             let mut input = inputs();
             let driver = input.driver.as_mut().unwrap();
             driver.params.bob = None;
-            driver.params.slide = Some(slide_params());
+            driver.params.pose = Some(slide_pose(0.15));
             driver.movement_state = MovementStateKind::Slide;
             // Seed a fresh held slide before each lifecycle change.
             input.frame_dt = 1.0;
@@ -632,13 +625,13 @@ mod tests {
             let mut input = inputs();
             let driver = input.driver.as_mut().unwrap();
             driver.params.bob = None;
-            driver.params.slide = Some(slide_params());
+            driver.params.pose = Some(slide_pose(0.15));
             driver.movement_state = MovementStateKind::Slide;
             match replacement {
                 Some(id) => {
                     driver.pawn = id;
                     if id == pawn() {
-                        driver.params.slide.as_mut().unwrap().eye_drop = 0.2;
+                        driver.params.pose = Some(slide_pose(0.2));
                     }
                 }
                 None => input.driver = None,
@@ -667,10 +660,7 @@ mod tests {
         let driver = input.driver.as_mut().unwrap();
         driver.movement_state = MovementStateKind::Slide;
         driver.eye_height_above_feet = 0.2;
-        driver.params.slide = Some(postretro_foundation::SlideViewParams {
-            eye_drop: 100.0,
-            ..slide_params()
-        });
+        driver.params.pose = Some(slide_pose(100.0));
         let eye = assemble_frame_eye(
             input,
             ViewFeelTracking {
@@ -681,7 +671,7 @@ mod tests {
         );
         assert!((eye.eye_offset.y + 0.15).abs() < 1e-5);
         assert!(
-            (eye.camera.eye_position.y - (2.0 - 0.2 + view_feel::slide::MIN_EYE_CLEARANCE)).abs()
+            (eye.camera.eye_position.y - (2.0 - 0.2 + view_feel::pose::MIN_EYE_CLEARANCE)).abs()
                 < 1e-5
         );
         assert_ne!(eye.eye_offset.x, 0.0, "lateral bob still composes");

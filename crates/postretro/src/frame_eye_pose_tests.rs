@@ -1,11 +1,10 @@
 // Tests: `viewFeel.pose` composed into the frame's eye — the eye-drop floor,
-// camera-only angles, clamps, and migration from the shipped slide and vault
-// blocks.
+// camera-only angles, clamps, refresh — and the frame's driver.
 
 use super::*;
 use postretro_foundation::{
-    BobParams, ImpulseChannels, ImpulseParams, ImpulseStateParams, ImpulseStates, LedgeFocus,
-    PoseChannels, PoseParams, PoseRow, SlideViewParams, VaultPoseRow, VaultViewParams,
+    ImpulseChannels, ImpulseParams, ImpulseStateParams, ImpulseStates, LedgeFocus, PoseChannels,
+    PoseParams, PoseRow, VaultPoseRow,
 };
 
 const YAW: f32 = 0.3;
@@ -18,20 +17,7 @@ fn no_view_feel() -> ViewFeelParams {
         tilt: None,
         sway: None,
         impulse: None,
-        slide: None,
-        vault: None,
         pose: None,
-    }
-}
-
-fn bob() -> BobParams {
-    BobParams {
-        vertical_frequency: 1.0,
-        lateral_frequency: 0.5,
-        vertical_amplitude: 0.1,
-        lateral_amplitude: 0.05,
-        speed_threshold: 0.5,
-        grounded_only: false,
     }
 }
 
@@ -150,162 +136,6 @@ fn assert_same_frames(old: &[FrameEye], new: &[FrameEye], label: &str) {
 fn horizontal_fov_deg(camera: &RenderCamera) -> f32 {
     let projection = camera.view_projection * camera.view_matrix.inverse();
     2.0 * (1.0 / projection.x_axis.x).atan().to_degrees()
-}
-
-// --- Migration: the shipped blocks, compared in one build before removal ------
-
-#[test]
-fn pose_slide_reproduces_the_shipped_slide_frame_for_frame_floor_included() {
-    let shipped = ViewFeelParams {
-        bob: Some(bob()),
-        slide: Some(SlideViewParams {
-            eye_drop: 0.15,
-            fov_increase: 5.0,
-            enter_rate: 18.0,
-            exit_rate: 12.0,
-        }),
-        ..no_view_feel()
-    };
-    let migrated = ViewFeelParams {
-        bob: Some(bob()),
-        ..pose(
-            Some(PoseRow {
-                channels: channels(0.0, 0.0, 0.15, 5.0),
-                enter_rate: 18.0,
-                exit_rate: 12.0,
-            }),
-            None,
-        )
-    };
-    let mut steps = Vec::new();
-    for (kind, frames, frame_dt) in [
-        (MovementStateKind::Slide, 90, DT),
-        (MovementStateKind::Crouch, 10, 1.0 / 144.0),
-        (MovementStateKind::Slide, 1, 0.0),
-        (MovementStateKind::Slide, 30, 1.0 / 30.0),
-        (MovementStateKind::Normal, 60, 1.0 / 240.0),
-    ] {
-        steps.extend((0..frames).map(|_| step(kind, frame_dt)));
-    }
-    // The floor binds: a low eye under bob's trough.
-    for clearance in [1.5, 0.2, 0.1] {
-        let steps: Vec<Step> = steps
-            .iter()
-            .map(|step| Step { clearance, ..*step })
-            .collect();
-        for scale in [1.0, 0.5] {
-            let mut old = Rig::new();
-            let mut new = Rig::new();
-            let old: Vec<FrameEye> = steps
-                .iter()
-                .map(|s| old.frame(&shipped, *s, scale))
-                .collect();
-            let new: Vec<FrameEye> = steps
-                .iter()
-                .map(|s| new.frame(&migrated, *s, scale))
-                .collect();
-            assert_same_frames(&old, &new, &format!("clearance {clearance}, scale {scale}"));
-        }
-    }
-}
-
-#[test]
-fn pose_vault_reproduces_the_shipped_vault_pose_frame_for_frame() {
-    let shipped = |ease_out: f32| ViewFeelParams {
-        vault: Some(VaultViewParams {
-            pitch: -38.5,
-            roll: 10.0,
-            fov: -30.0,
-            ease_in: 0.33,
-            ease_out,
-        }),
-        ..no_view_feel()
-    };
-    let migrated = |ease_out: f32| {
-        pose(
-            None,
-            Some(VaultPoseRow {
-                channels: channels(-38.5, 10.0, 0.0, -30.0),
-                ease_in: 0.33,
-                ease_out,
-                ledge_focus: None,
-            }),
-        )
-    };
-    let climb = |from: f32, to: f32, frame_dt: f32| -> Vec<Step> {
-        let frames = ((to - from) * PATH_S / frame_dt).ceil() as usize;
-        (0..=frames)
-            .map(|index| {
-                vault_step(
-                    (from + index as f32 * frame_dt / PATH_S).min(to),
-                    None,
-                    frame_dt,
-                )
-            })
-            .collect()
-    };
-    let released = |frames: usize| -> Vec<Step> {
-        (0..frames)
-            .map(|_| step(MovementStateKind::Normal, DT))
-            .collect()
-    };
-    let scenarios: Vec<(&str, f32, Vec<Step>)> = vec![
-        (
-            "a full climb",
-            0.33,
-            [climb(0.0, 1.0, DT), released(10)].concat(),
-        ),
-        (
-            "an early end",
-            0.33,
-            [climb(0.0, 0.5, DT), released(30)].concat(),
-        ),
-        (
-            "a mid-climb join",
-            0.33,
-            [climb(0.5, 1.0, 1.0 / 144.0), released(5)].concat(),
-        ),
-        (
-            "a vault during a release",
-            0.33,
-            [climb(0.0, 0.5, DT), released(3), climb(0.0, 1.0, DT)].concat(),
-        ),
-        (
-            "a rewind",
-            0.33,
-            [climb(0.0, 0.6, DT), climb(0.2, 1.0, DT), released(5)].concat(),
-        ),
-        (
-            "a zero easeOut",
-            0.0,
-            [climb(0.0, 1.0, DT), released(20)].concat(),
-        ),
-        (
-            "a zero-length frame on a vault's end",
-            0.33,
-            [
-                climb(0.0, 0.5, DT),
-                vec![step(MovementStateKind::Normal, 0.0)],
-                released(20),
-            ]
-            .concat(),
-        ),
-    ];
-    for (label, ease_out, steps) in scenarios {
-        for scale in [1.0, 0.5] {
-            let mut old = Rig::new();
-            let mut new = Rig::new();
-            let old: Vec<FrameEye> = steps
-                .iter()
-                .map(|s| old.frame(&shipped(ease_out), *s, scale))
-                .collect();
-            let new: Vec<FrameEye> = steps
-                .iter()
-                .map(|s| new.frame(&migrated(ease_out), *s, scale))
-                .collect();
-            assert_same_frames(&old, &new, label);
-        }
-    }
 }
 
 // --- Composition --------------------------------------------------------------

@@ -456,8 +456,6 @@ mod tests {
 
     fn lifecycle_view_feel(impulse_tension: f32) -> ViewFeelParams {
         ViewFeelParams {
-            slide: None,
-            vault: None,
             bob: Some(BobParams {
                 vertical_frequency: 1.0,
                 lateral_frequency: 0.5,
@@ -515,12 +513,37 @@ mod tests {
         let followed = postretro_entities::EntityId::from_raw(4);
         let remote = postretro_entities::EntityId::from_raw(8);
         let mut before = lifecycle_view_feel(12.0);
-        before.slide = Some(postretro_foundation::SlideViewParams {
-            eye_drop: 0.15,
-            fov_increase: 5.0,
-            enter_rate: 18.0,
-            exit_rate: 12.0,
+        before.pose = Some(postretro_foundation::PoseParams {
+            slide: Some(postretro_foundation::PoseRow {
+                channels: postretro_foundation::PoseChannels {
+                    pitch: 0.0,
+                    roll: 0.0,
+                    eye_drop: 0.15,
+                    fov: 5.0,
+                },
+                enter_rate: 18.0,
+                exit_rate: 12.0,
+            }),
+            vault: None,
         });
+        // The slide row's output on a sliding frame of `frame_dt`.
+        let slide_pose = |params: &ViewFeelParams,
+                          state: &mut crate::view_feel::ViewFeelState,
+                          frame_dt: f32| {
+            crate::view_feel::pose::evaluate(
+                params.pose.as_ref(),
+                crate::view_feel::pose::PoseFrame {
+                    movement_state: MovementStateKind::Slide,
+                    vault: None,
+                    aim_pitch_deg: 0.0,
+                    eye: glam::Vec3::ZERO,
+                    available_drop: 10.0,
+                },
+                state.pose_mut(),
+                frame_dt,
+                1.0,
+            )
+        };
         let mut after = before.clone();
         after.impulse.as_mut().unwrap().tension = 24.0;
         let edge = crate::view_feel::TimedMovementEdge {
@@ -560,13 +583,7 @@ mod tests {
                 || !approx_eq(kicked.sway_pitch, 0.0)
                 || !approx_eq(kicked.sway_roll, 0.0)
         );
-        let held_slide = crate::view_feel::slide::evaluate(
-            before.slide.as_ref(),
-            MovementStateKind::Slide,
-            &mut state,
-            1.0,
-            1.0,
-        );
+        let held_slide = slide_pose(&before, &mut state, 1.0);
         assert!(held_slide.eye_drop > 0.1);
         let continuous_state = state;
 
@@ -582,18 +599,9 @@ mod tests {
             Some(followed),
             &mut state,
         ));
-        let remote_slide = crate::view_feel::slide::evaluate(
-            before.slide.as_ref(),
-            MovementStateKind::Slide,
-            &mut state,
-            0.0,
-            1.0,
-        );
+        let remote_slide = slide_pose(&before, &mut state, 0.0);
         assert!(approx_eq(remote_slide.eye_drop, held_slide.eye_drop));
-        assert!(approx_eq(
-            remote_slide.fov_increase,
-            held_slide.fov_increase
-        ));
+        assert!(approx_eq(remote_slide.fov, held_slide.fov));
         let after_remote = crate::view_feel::evaluate_with_edges(
             &before,
             5.0,
@@ -620,15 +628,9 @@ mod tests {
             Some(followed),
             &mut state,
         ));
-        let refreshed_slide = crate::view_feel::slide::evaluate(
-            after.slide.as_ref(),
-            MovementStateKind::Slide,
-            &mut state,
-            0.0,
-            1.0,
-        );
+        let refreshed_slide = slide_pose(&after, &mut state, 0.0);
         assert!(approx_eq(refreshed_slide.eye_drop, 0.0));
-        assert!(approx_eq(refreshed_slide.fov_increase, 0.0));
+        assert!(approx_eq(refreshed_slide.fov, 0.0));
         crate::sync_view_feel_driver(
             &mut state,
             &mut cached_pawn,

@@ -33,10 +33,7 @@ fn view_pair(js_body: &str, lua_body: &str) -> [ViewFeelParams; 2] {
 /// The pose both runtimes parse from one body, asserted equal.
 #[track_caller]
 fn pose_of(js_body: &str, lua_body: &str) -> Option<PoseParams> {
-    let [js, lua] = view_pair(js_body, lua_body).map(|view| {
-        assert!(view.slide.is_none() && view.vault.is_none());
-        view.pose
-    });
+    let [js, lua] = view_pair(js_body, lua_body).map(|view| view.pose);
     assert_eq!(js, lua, "JS and Luau parse {js_body} differently");
     js
 }

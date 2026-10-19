@@ -64,6 +64,6 @@ read at: 8aa2f18
 |---|---|---|---|---|
 | 1 | Pose types in foundation beside the shipped blocks; `view_feel::pose` vault row with ledge focus, release value blend and reference capture; driver landing spot (mover at the eye's share); `frame_eye` composition. Migration tests against the shipped slide and vault evaluators in one build | integrating executor | — | done — `frame_eye::pose_tests::pose_{slide,vault}_reproduces_*` pass beside the shipped evaluators in this milestone's build |
 | 2 | Strict `pose` parsing (JS + Luau shared validator), leftover-key rejection, typedef registry, regenerated SDK typedefs, TS type test | worker (scripting surface) | 1 (types) | done — `movement_view_pose` 14 tests, scripting-core 896 + 2, sim typedef 44, `tsc -p sdk/type-tests` 0 errors |
-| 3 | Remove shipped `slide`/`vault` blocks, evaluators, parsers and their types; dev `player.ts`; docs; vault-test README; grep gate | integrating executor | 1, 2 | |
-| 4 | Remaining runtime ACs: graded-ledge dev proof, mover, aim bit-identity, remote pawn, lifecycle | integrating executor | 3 | |
+| 3 | Remove shipped `slide`/`vault` blocks, evaluators, parsers and their types; dev `player.ts`; docs; vault-test README; grep gate | integrating executor | 1, 2 | done — migration proof ran in `dcf91cf` before removal; grep gate clean; `tsc` 0 errors |
+| 4 | Remaining runtime ACs: graded-ledge dev proof, mover, aim bit-identity, remote pawn, lifecycle | integrating executor | 3 | done — `frame_eye::pose_tests::driver::*`, `startup::movement_vault_surface_tests::the_dev_players_ledge_focus_differs_across_the_graded_ledges` |
 | 5 | Preflight, review panel, fix loop, results | integrating executor | 4 | |

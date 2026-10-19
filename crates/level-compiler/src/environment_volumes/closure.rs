@@ -245,19 +245,24 @@ fn weld_keeps_shape(was: &[DVec3], welded: &[DVec3]) -> bool {
 /// Whether two edges of `ring` that share no corner meet, judged in the plane
 /// `normal` faces. A collinear or reflex corner can let a weld carry one
 /// vertex across the far side of a sliver that every corner test passes.
-/// Quadratic in the ring, which the weld judges before any insert, while it
-/// still holds only its piece's own corners.
+/// Projected onto the plane itself, not by dropping an axis: an oblique
+/// projection would turn a move along a sloped face's normal into one across
+/// it. Repeated positions count once, so a doubled vertex reads as no
+/// crossing. Quadratic in the ring, which the weld judges before any insert,
+/// while it holds only its piece's own corners; the candidate counts leave
+/// it out.
 fn crosses_itself(ring: &[DVec3], normal: DVec3) -> bool {
-    // Drop the axis the plane faces most nearly along.
-    let axis = normal.abs().max_position();
-    let flat: Vec<[f64; 2]> = ring
-        .iter()
-        .map(|point| match axis {
-            0 => [point.y, point.z],
-            1 => [point.z, point.x],
-            _ => [point.x, point.y],
-        })
-        .collect();
+    let (u, v) = normal.normalize_or_zero().any_orthonormal_pair();
+    let mut flat: Vec<[f64; 2]> = Vec::with_capacity(ring.len());
+    for point in ring {
+        let projected = [point.dot(u), point.dot(v)];
+        if flat.last() != Some(&projected) {
+            flat.push(projected);
+        }
+    }
+    while flat.len() > 1 && flat[0] == flat[flat.len() - 1] {
+        flat.pop();
+    }
     let count = flat.len();
     let side = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
         ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).signum()

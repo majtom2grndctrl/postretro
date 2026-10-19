@@ -1000,31 +1000,55 @@ fn a_corner_just_inside_a_thin_faces_long_edge_joins_that_edge() {
     assert_consecutive(&closed[0][0], &[top_left, p, top_right]);
 }
 
-// Regression (review round 2): a strip 0.05 mm across with a vertex mid-way
-// along each long side, collinear there. A neighbour's corner 0.09 mm off one
-// long side's midpoint lies beyond the other side, so welding that midpoint
-// to it would carry the vertex across the strip while every corner the ring
-// turns at still turns its way. The strip keeps its positions; inserts close
-// the seam instead.
+// Regression (review rounds 2 and 3): a strip 0.05 mm across with a vertex
+// mid-way along each long side, collinear there. A neighbour's corner within
+// 0.1 mm of one long side's midpoint lies beyond the other side, so welding
+// that midpoint to it would carry the vertex across the strip while every
+// corner the ring turns at still turns its way. The strip keeps its positions;
+// inserts close the seam instead. Once flat, once sloped 40° with the corner
+// partly off the strip's plane, where dropping an axis would hide the fold.
 #[test]
 fn a_weld_that_would_carry_a_vertex_across_a_sliver_is_refused() {
     let mm = MILLI;
-    let middle = DVec3::new(0.09 * mm, 0.0, 1.0);
-    let sliver = vec![
-        DVec3::new(0.09 * mm, 0.0, 0.0),
-        middle,
-        DVec3::new(0.09 * mm, 0.0, 2.0),
-        DVec3::new(0.04 * mm, 0.0, 2.0),
-        DVec3::new(0.04 * mm, 0.0, 1.0002),
-        DVec3::new(0.04 * mm, 0.0, 0.0),
-    ];
-    let corner = DVec3::new(0.0, 0.0, 1.0);
-    let closed = assert_polygons_close(&[vec![sliver], vec![standing_triangle(corner)]], TOLERANCE);
-    assert!(
-        closed[0][0].iter().any(|p| encoded(*p) == encoded(middle)),
-        "the weld moved the midpoint: {:?}",
-        closed[0][0]
-    );
+    let slope = 40f64.to_radians();
+    for (across, along, up) in [
+        (DVec3::X, DVec3::Z, DVec3::NEG_Y),
+        (
+            DVec3::new(slope.cos(), 0.0, -slope.sin()),
+            DVec3::Y,
+            DVec3::new(slope.sin(), 0.0, slope.cos()),
+        ),
+    ] {
+        let at = |a: f64, b: f64| across * a + along * b;
+        let middle = at(0.09 * mm, 1.0);
+        let sliver = vec![
+            at(0.09 * mm, 0.0),
+            middle,
+            at(0.09 * mm, 2.0),
+            at(0.04 * mm, 2.0),
+            at(0.04 * mm, 1.0002),
+            at(0.04 * mm, 0.0),
+        ];
+        // Flat: 0.09 mm across, onto the far side's line. Sloped: 0.07 mm
+        // across and 0.054 mm off the plane, 0.088 mm in all.
+        let corner = if up == DVec3::NEG_Y {
+            at(0.0, 1.0)
+        } else {
+            middle - across * (0.07 * mm) + up * (0.0536 * mm)
+        };
+        assert!(corner.distance(middle) <= TOLERANCE);
+        let neighbour = vec![
+            corner,
+            corner + up * 0.5 + along * 0.1,
+            corner + up * 0.5 - along * 0.1,
+        ];
+        let closed = assert_polygons_close(&[vec![sliver], vec![neighbour]], TOLERANCE);
+        assert!(
+            closed[0][0].iter().any(|p| encoded(*p) == encoded(middle)),
+            "the weld moved the midpoint: {:?}",
+            closed[0][0]
+        );
+    }
 }
 
 // Regression (review round 2): two corners of one face, which never weld,

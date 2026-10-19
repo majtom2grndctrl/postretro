@@ -314,17 +314,24 @@ fn packing_joins_a_duplicated_vertex_to_its_twin() {
     assert!(mesh.indices.contains(&0) && !mesh.indices.contains(&4));
 }
 
+/// How far inside its edge every other insert of [`inserted_top`] sits on a
+/// dented face, meters: within closure's 0.1 mm, so each such insert is a
+/// reflex dent and the ear clip's containment index holds thousands.
+const INSERT_DENT: f64 = 5.0e-5;
+
 /// A 2 m × 11 m level top 100 m out at height 1.1, CCW seen from +Y, whose
-/// x = 102 edge carries `inserts` collinear vertices from z 7.9 down to 1:
-/// what closure gives an ocean's edge beside many small pieces. Positions and
-/// texel UVs (one projection, about 39 texels per meter) are computed in f64
-/// and rounded to f32 separately, as the compiler stores them.
-fn inserted_top(inserts: usize) -> EnvironmentSurfaceFace {
+/// x = 102 edge carries `inserts` vertices from z 7.9 down to 1: what closure
+/// gives an ocean's edge beside many small pieces. Every other insert, from
+/// the first, sits `dent` meters inside the edge, the rest on it. Positions
+/// and texel UVs (one projection, about 39 texels per meter) are computed in
+/// f64 and rounded to f32 separately, as the compiler stores them.
+fn inserted_top(inserts: usize, dent: f64) -> EnvironmentSurfaceFace {
     let (x0, x1, z0, z1) = (100.0, 102.0, 1.0, 12.0);
     let mut points = vec![DVec2::new(x0, z0), DVec2::new(x0, z1), DVec2::new(x1, z1)];
-    points.extend(
-        (0..inserts).map(|i| DVec2::new(x1, 7.9 - 6.9 * (i as f64 + 0.5) / inserts as f64)),
-    );
+    points.extend((0..inserts).map(|i| {
+        let inside = if i % 2 == 0 { dent } else { 0.0 };
+        DVec2::new(x1 - inside, 7.9 - 6.9 * (i as f64 + 0.5) / inserts as f64)
+    }));
     points.push(DVec2::new(x1, z0));
     EnvironmentSurfaceFace {
         texture_index: 0,
@@ -416,12 +423,36 @@ impl InsertedGrid {
     }
 }
 
-// Closure can give one face thousands of collinear vertices. Such a face
-// packs whole, ungridded and gridded (one plane crossing it, so one part
-// holds every insert; and every plane along its inserted edge crossing it, so
-// the planes grow with the vertices), keeps the drift map of the same face
-// without them, and its install work, counted, grows within n log n of its
-// vertex count, the grid cut included.
+/// Reflex vertices of an up-facing face's ring: those turning clockwise seen
+/// from +Y past the ear clip's corner threshold.
+fn reflex_vertex_count(face: &EnvironmentSurfaceFace) -> usize {
+    let ring: Vec<DVec3> = face
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    let count = ring.len();
+    (0..count)
+        .filter(|&i| {
+            let (prev, at, next) = (
+                ring[(i + count - 1) % count],
+                ring[i],
+                ring[(i + 1) % count],
+            );
+            let (into, out) = (at - prev, next - at);
+            into.cross(out).dot(DVec3::Y) < -1.0e-12 * into.length() * out.length()
+        })
+        .count()
+}
+
+// Closure can give one face thousands of vertices on an edge, each within
+// 0.1 mm of it. Such a face, its inserts on the edge or every other one a
+// dent inside it, packs whole, ungridded and gridded (one plane crossing it,
+// so one part holds every insert; and every plane along its inserted edge
+// crossing it, so the planes grow with the vertices), keeps the drift map of
+// the same face without them, and its install work, counted, grows within
+// n log n of its vertex count, the grid cut and the ear clip's containment
+// index included.
 #[test]
 fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps() {
     let pack = |face: &EnvironmentSurfaceFace, lattice: Option<&FluidGridLattice>| {
@@ -429,23 +460,33 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
         let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[[64, 64]], 1, lattice);
         (mesh, INSTALL_STEPS.with(std::cell::Cell::get))
     };
-    let bare = inserted_top(0);
+    let bare = inserted_top(0, 0.0);
     let corners: Vec<DVec3> = bare
         .vertices
         .iter()
         .map(|v| Vec3::from(v.position).as_dvec3())
         .collect();
-    for grid in [
-        InsertedGrid::OnePlane,
-        InsertedGrid::EveryPlane,
-        InsertedGrid::None,
-    ] {
+    for (dent, grid) in [0.0, INSERT_DENT].into_iter().flat_map(|dent| {
+        [
+            InsertedGrid::OnePlane,
+            InsertedGrid::EveryPlane,
+            InsertedGrid::None,
+        ]
+        .map(|grid| (dent, grid))
+    }) {
         let mut counted = Vec::new();
         for inserts in [2000, 8000] {
             let lattice = grid.lattice(inserts);
             let (plain, _) = pack(&bare, lattice.as_ref());
             let plain_map = plain.face_drift_maps[0].expect("the face draws");
-            let face = inserted_top(inserts);
+            let face = inserted_top(inserts, dent);
+            if dent > 0.0 {
+                assert_eq!(
+                    reflex_vertex_count(&face),
+                    inserts / 2,
+                    "every other insert dents"
+                );
+            }
             let (mesh, steps) = pack(&face, lattice.as_ref());
             assert_eq!(mesh.grid.is_some(), lattice.is_some());
             match grid {
@@ -485,7 +526,7 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
                     let texels = gap.dot(delta).abs() * 64.0;
                     assert!(
                         texels <= drift::UV_TOLERANCE_TEXELS,
-                        "{inserts} inserts: map parts by {texels} texels at {corner}"
+                        "{inserts} inserts, dent {dent}: map parts by {texels} texels at {corner}"
                     );
                 }
             }
@@ -503,8 +544,8 @@ fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps
         let bound = n_log_n(large) / n_log_n(small);
         assert!(
             ratio <= bound,
-            "{grid:?}: {small_steps} steps at {small} vertices, {large_steps} at {large}: \
-             ratio {ratio}, n log n allows {bound}"
+            "{grid:?}, dent {dent}: {small_steps} steps at {small} vertices, {large_steps} at \
+             {large}: ratio {ratio}, n log n allows {bound}"
         );
     }
 }
@@ -632,6 +673,37 @@ fn a_thin_strip_with_an_insert_inside_its_long_edge_near_a_corner_packs_facing_u
     // order follows the ring, so each vertex leads once.
     for lead in 0..strip.vertices.len() {
         let mut rotated = strip.clone();
+        rotated.vertices.rotate_left(lead);
+        assert_tiles_face_without_t_junctions(&rotated);
+    }
+}
+
+// Regression (review round 3): the collinear tolerance shrank to 1% of the
+// face's extent under 2 cm across, so on a 6 mm square an insert 0.09 mm
+// inside an edge (over the 0.085 mm that left) was no collinear vertex. The
+// square took the plain fan from vertex 0, and with either corner of that
+// edge leading, the fan triangle over the insert wound backward: about
+// 0.27 mm² drawn inverted. The tolerance is absolute now, so the square
+// ear-clips facing up, its area whole, in every rotation.
+#[test]
+fn a_six_millimetre_square_with_an_insert_inside_an_edge_packs_facing_up() {
+    let square = level_face(&[
+        [0.0, 0.0],
+        [0.003, 0.00009],
+        [0.006, 0.0],
+        [0.006, 0.006],
+        [0.0, 0.006],
+    ]);
+    let ring: Vec<DVec3> = square
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    // The plain fan from the corner before the insert inverts: the premise
+    // this guards.
+    assert!(signed_twice_area(ring[0], ring[1], ring[2], DVec3::Y) < 0.0);
+    for lead in 0..square.vertices.len() {
+        let mut rotated = square.clone();
         rotated.vertices.rotate_left(lead);
         assert_tiles_face_without_t_junctions(&rotated);
     }

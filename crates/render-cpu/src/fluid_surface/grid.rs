@@ -9,6 +9,7 @@ use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentVolumeRecord,
 };
 
+use super::ear_index::ReflexIndex;
 use super::{COLLINEAR_DISTANCE, face_normal};
 
 /// Planes per probe cell along each axis at the finest spacing.
@@ -523,33 +524,54 @@ fn crossing(
     })
 }
 
-/// Triangulate a convex polygon over its own vertices: a grid part, or a
-/// whole face with a collinear vertex. Collinear vertices lie on its edges
-/// (the compiler's T-junction inserts, and planes passing near a corner);
-/// each stays a triangle corner. Each step clips the earliest corner in ring
-/// order beside a collinear vertex, which turns that vertex into a corner, so
-/// three corners always remain; with none left, the earliest corner. Corners
-/// are judged on the positions as packed, in f32, so a part keeps its drawn
-/// area however far from the origin, down to a final triangle judged at one
-/// vertex: area under about 1e-12 of its longer sides' product can be
-/// dropped. A part with no corner left has no area and draws nothing. A
-/// vertex repeating the one before it, as packed, joins the ring once, its
-/// twin covering the position: the repeat draws no triangle, and its
-/// zero-length edge turns nowhere, so it would block every clip beside it.
+/// Triangulate a polygon within about 0.1 mm of convex over its own
+/// vertices: a grid part, or a whole face with a collinear vertex. Collinear
+/// vertices lie on its edges (the compiler's T-junction inserts, and planes
+/// passing near a corner); each stays a triangle corner. Each step clips the
+/// earliest ear in ring order beside a vertex that is no corner, which turns
+/// that vertex into one, so three corners always remain; with none, the
+/// earliest ear. Corners are judged on the positions as packed, in f32, so a
+/// part keeps its drawn area however far from the origin, down to a final
+/// triangle judged at one vertex: area under about 1e-12 of its longer sides'
+/// product can be dropped. A part with no corner left has no area and draws
+/// nothing. A vertex repeating the one before it, as packed, joins the ring
+/// once, its twin covering the position: the repeat draws no triangle, and
+/// its zero-length edge turns nowhere, so it would block every clip beside
+/// it.
 ///
-/// No ear is tested for another vertex inside it. A convex ring holds none.
-/// A compiled face is simple and within about 0.1 mm of convex, so an insert
-/// a hair inside an edge is a reflex dent. A vertex can then lie inside an
-/// ear only at an acute corner whose clip reaches past its neighbour along
-/// the edge, and only within the dent's depth over the corner angle's tangent
-/// of that neighbour: under 0.1 mm at 45° or blunter, a spacing closure's
-/// weld leaves only on a sliver. Such a clip misdraws an area of that size;
-/// every triangle it emits still winds with the polygon.
+/// An ear is a corner whose triangle with its two live neighbours holds no
+/// reflex vertex (one turning against the polygon past the corner threshold),
+/// on its edges included. A compiled face is simple but need not be convex:
+/// an insert a hair inside an edge is a reflex dent, and at an acute corner
+/// a clip unchecked for it can reach past the dent, draw a strip as long as
+/// the clip's chord twice, and wind its last triangle backward. On a simple ring
+/// a corner whose triangle holds no reflex vertex holds no vertex at all, so
+/// the clips tile the polygon exactly. A ring that is not simple can leave no
+/// ear; the clip then takes the earliest corner beside a non-corner, else the
+/// earliest corner, as if every corner were an ear, so it still terminates.
 ///
-/// A clip changes the corner status of the two vertices beside the tip
-/// alone, so the ring keeps its candidates ordered and re-files only those
-/// near the tip: n log n in the part's vertices, which the compiler's
-/// T-junction inserts can number in thousands.
+/// Bounded in n log n of the part's vertices, which the compiler's T-junction
+/// inserts can number in thousands. A clip changes the turn of the two
+/// vertices beside the tip alone, so the ring keeps its candidates ordered and
+/// re-files only those near the tip. Clipping an ear narrows the polygon's
+/// angle at each neighbour by the ear's angle there, so in exact arithmetic a
+/// vertex's turn only grows: a reflex vertex can stop being reflex, and no
+/// vertex starts, collinear ones included. The live reflex vertices are kept
+/// in a static tree over the ring's packed positions ([`ReflexIndex`]), built
+/// once when the first appears, n log n; each change is a root-to-leaf walk,
+/// log n, at most once per vertex. A vertex that rounding at the threshold or
+/// a fallback clip turns reflex later joins the tree the same way. An ear is
+/// searched when it comes up to be clipped; one found blocked is set aside
+/// under the reflex vertex inside it until that vertex turns or the ear's
+/// neighbours change, so a fixed ear is searched again at most once per reflex
+/// vertex inside it, which on a compiled face is rarely more than one. A
+/// search skips every node holding no live reflex vertex, or whose box misses
+/// the ear. On a ring within 0.1 mm of convex the reflex vertices lie along
+/// its boundary, which an ear meets only near its corners and along its two
+/// ring edges, whose inner vertices are already clipped; a median tree over
+/// points along a curve has a bounded number of nodes per level near any one
+/// point, so a search visits order log n nodes. That is an argument for
+/// compiled faces, not a worst-case bound for any simple ring.
 pub(super) fn triangulate_convex(
     polygon: &[u32],
     positions: &[DVec3],
@@ -557,11 +579,6 @@ pub(super) fn triangulate_convex(
     triangles: &mut Vec<[u32; 3]>,
 ) {
     let packed = |i: u32| positions[i as usize].as_vec3().as_dvec3();
-    let turns = |prev: u32, at: u32, next: u32| {
-        super::count_install_steps(1);
-        let (into, out) = (packed(at) - packed(prev), packed(next) - packed(at));
-        into.cross(out).dot(normal) > CORNER_SINE * into.length() * out.length()
-    };
     super::count_install_steps(polygon.len());
     let mut vertices: Vec<u32> = Vec::with_capacity(polygon.len());
     for &vertex in polygon {
@@ -581,83 +598,214 @@ pub(super) fn triangulate_convex(
     if count < 3 {
         return;
     }
-    let mut ring = ClipRing {
-        prev: (0..count).map(|slot| (slot + count - 1) % count).collect(),
-        next: (0..count).map(|slot| (slot + 1) % count).collect(),
-        corner: Vec::with_capacity(count),
-        beside_collinear: BTreeSet::new(),
-        corners: BTreeSet::new(),
-    };
-    let turns_at = |ring: &ClipRing, slot: usize| {
-        turns(
-            vertices[ring.prev[slot]],
-            vertices[slot],
-            vertices[ring.next[slot]],
-        )
-    };
-    for slot in 0..count {
-        let corner = turns_at(&ring, slot);
-        ring.corner.push(corner);
-    }
-    for slot in 0..count {
-        ring.file(slot);
-    }
+    let mut ring = ClipRing::new(vertices.iter().map(|&v| packed(v)).collect(), normal);
     let (mut live, mut any_live) = (count, 0);
     while live > 3 {
-        let Some(&tip) = ring
-            .beside_collinear
+        let ear = ring
+            .ears_beside
             .first()
-            .or_else(|| ring.corners.first())
-        else {
-            return;
+            .or_else(|| ring.ears.first())
+            .copied();
+        let tip = match ear {
+            Some(tip) => {
+                if ring.blocked_by_reflex(tip) {
+                    continue;
+                }
+                tip
+            }
+            // No ear clear of reflex vertices: a ring that is not simple.
+            None => {
+                let corner = ring.corners_beside.first().or_else(|| ring.corners.first());
+                match corner.copied() {
+                    Some(tip) => tip,
+                    None => return,
+                }
+            }
         };
         let (before, after) = (ring.prev[tip], ring.next[tip]);
         triangles.push([vertices[before], vertices[tip], vertices[after]]);
         ring.next[before] = after;
         ring.prev[after] = before;
-        ring.corner[tip] = false;
+        ring.set_turn(tip, Turn::Collinear);
         ring.file(tip);
         live -= 1;
         any_live = after;
-        ring.corner[before] = turns_at(&ring, before);
-        ring.corner[after] = turns_at(&ring, after);
-        for slot in [ring.prev[before], before, after, ring.next[after]] {
+        for slot in [before, after] {
+            let turn = ring.turn_at(slot);
+            ring.set_turn(slot, turn);
+            ring.blocked[slot] = false;
+        }
+        let released = std::mem::take(&mut ring.released);
+        for &slot in &released {
+            ring.blocked[slot] = false;
+        }
+        for slot in [ring.prev[before], before, after, ring.next[after]]
+            .into_iter()
+            .chain(released.iter().copied())
+        {
             ring.file(slot);
         }
+        ring.released = released;
+        ring.released.clear();
     }
     // The last three in ring order, from the earliest slot.
     let second = ring.next[any_live];
     let mut last = [any_live, second, ring.next[second]];
     let first = (0..3).min_by_key(|&i| last[i]).expect("three slots");
     last.rotate_left(first);
-    let [a, b, c] = last.map(|slot| vertices[slot]);
-    if turns(a, b, c) {
-        triangles.push([a, b, c]);
+    let [a, b, c] = last;
+    if ring_turn(ring.points[a], ring.points[b], ring.points[c], normal) == Turn::Corner {
+        triangles.push([a, b, c].map(|slot| vertices[slot]));
+    }
+}
+
+/// How a ring turns at a vertex, about the polygon's normal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Turn {
+    /// Toward the polygon's inside, the turn's sine past [`CORNER_SINE`].
+    Corner,
+    /// Within [`CORNER_SINE`] either way: on the line through its
+    /// neighbours. A clipped slot reads this too.
+    Collinear,
+    /// Away from the inside past [`CORNER_SINE`]: a dent.
+    Reflex,
+}
+
+/// How the ring turns at `at`, entered from `prev` and left toward `next`.
+fn ring_turn(prev: DVec3, at: DVec3, next: DVec3, normal: DVec3) -> Turn {
+    super::count_install_steps(1);
+    let (into, out) = (at - prev, next - at);
+    let sine = into.cross(out).dot(normal);
+    let threshold = CORNER_SINE * into.length() * out.length();
+    if sine > threshold {
+        Turn::Corner
+    } else if sine < -threshold {
+        Turn::Reflex
+    } else {
+        Turn::Collinear
     }
 }
 
 /// A part's ring under ear clipping: each live slot linked to its live
 /// neighbours, and the slots a clip may take, ordered by slot.
 struct ClipRing {
+    /// Each slot's packed position.
+    points: Vec<DVec3>,
+    normal: DVec3,
     prev: Vec<usize>,
     next: Vec<usize>,
-    /// Whether the ring turns at each slot, judged on its live neighbours.
-    corner: Vec<bool>,
-    /// Corners beside a collinear slot: clipping one makes that slot a corner.
-    beside_collinear: BTreeSet<usize>,
+    /// How the ring turns at each slot, judged on its live neighbours.
+    turn: Vec<Turn>,
+    /// Corners whose ear a reflex vertex was found inside, until it turns or
+    /// the corner's neighbours change.
+    blocked: Vec<bool>,
+    /// The corners set aside under each reflex slot, by [`Self::blocked`].
+    waiting: Vec<Vec<usize>>,
+    /// Corners set aside under reflex slots that just turned, to re-file.
+    released: Vec<usize>,
+    /// The live reflex slots, from the first one onward.
+    reflex: Option<ReflexIndex>,
+    /// Corners not set aside, beside a slot that is no corner: clipping one
+    /// makes that slot a corner.
+    ears_beside: BTreeSet<usize>,
+    /// Corners not set aside.
+    ears: BTreeSet<usize>,
+    /// Every corner beside a slot that is no corner, and every corner: the
+    /// fallback when no ear is left.
+    corners_beside: BTreeSet<usize>,
     corners: BTreeSet<usize>,
 }
 
 impl ClipRing {
+    /// The ring over `points` in order, every slot judged and filed.
+    fn new(points: Vec<DVec3>, normal: DVec3) -> Self {
+        let count = points.len();
+        let mut ring = Self {
+            points,
+            normal,
+            prev: (0..count).map(|slot| (slot + count - 1) % count).collect(),
+            next: (0..count).map(|slot| (slot + 1) % count).collect(),
+            turn: vec![Turn::Collinear; count],
+            blocked: vec![false; count],
+            waiting: vec![Vec::new(); count],
+            released: Vec::new(),
+            reflex: None,
+            ears_beside: BTreeSet::new(),
+            ears: BTreeSet::new(),
+            corners_beside: BTreeSet::new(),
+            corners: BTreeSet::new(),
+        };
+        for slot in 0..count {
+            let turn = ring.turn_at(slot);
+            ring.set_turn(slot, turn);
+        }
+        for slot in 0..count {
+            ring.file(slot);
+        }
+        ring
+    }
+
+    fn turn_at(&self, slot: usize) -> Turn {
+        ring_turn(
+            self.points[self.prev[slot]],
+            self.points[slot],
+            self.points[self.next[slot]],
+            self.normal,
+        )
+    }
+
+    /// Records `slot`'s turn, keeping the reflex index to the live reflex
+    /// slots: a slot that stops being reflex releases the corners set aside
+    /// under it.
+    fn set_turn(&mut self, slot: usize, turn: Turn) {
+        let was = std::mem::replace(&mut self.turn[slot], turn);
+        if (was == Turn::Reflex) == (turn == Turn::Reflex) {
+            return;
+        }
+        if turn == Turn::Reflex {
+            let points = &self.points;
+            self.reflex
+                .get_or_insert_with(|| ReflexIndex::new(points))
+                .set_active(slot, true);
+        } else {
+            if let Some(reflex) = &mut self.reflex {
+                reflex.set_active(slot, false);
+            }
+            self.released.append(&mut self.waiting[slot]);
+        }
+    }
+
+    /// Whether a live reflex slot lies in `tip`'s ear; if so, sets the tip
+    /// aside under it and re-files it.
+    fn blocked_by_reflex(&mut self, tip: usize) -> bool {
+        super::count_install_steps(1);
+        let Some(reflex) = self.reflex.as_mut().filter(|reflex| reflex.any_active()) else {
+            return false;
+        };
+        let ear = [self.prev[tip], tip, self.next[tip]];
+        let Some(inside) = reflex.inside(ear, &self.points, self.normal) else {
+            return false;
+        };
+        self.blocked[tip] = true;
+        self.waiting[inside].push(tip);
+        self.file(tip);
+        true
+    }
+
     /// Re-file `slot` among the candidates from its and its neighbours'
-    /// corner status.
+    /// turns.
     fn file(&mut self, slot: usize) {
         super::count_install_steps(1);
-        let corner = self.corner[slot];
-        let beside = corner && !(self.corner[self.prev[slot]] && self.corner[self.next[slot]]);
+        let corner = self.turn[slot] == Turn::Corner;
+        let beside = corner
+            && !(self.turn[self.prev[slot]] == Turn::Corner
+                && self.turn[self.next[slot]] == Turn::Corner);
+        let ear = corner && !self.blocked[slot];
         for (set, member) in [
             (&mut self.corners, corner),
-            (&mut self.beside_collinear, beside),
+            (&mut self.corners_beside, beside),
+            (&mut self.ears, ear),
+            (&mut self.ears_beside, ear && beside),
         ] {
             if member {
                 set.insert(slot);

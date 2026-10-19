@@ -11,6 +11,7 @@ use postretro_level_format::geometry::NO_TEXTURE;
 
 mod cull;
 mod drift;
+mod ear_index;
 pub mod fog;
 pub mod grid;
 pub mod motion;
@@ -219,11 +220,11 @@ fn normalized_uv(
 /// it covers an insert judged against an edge that earlier inserts or welds
 /// bent, which can leave it a little over 0.1 mm from its final neighbours'
 /// chord. Absolute, as the compiler's vertex spacing is: vertices 0.1 mm
-/// apart are as near on a 10 m face as on a 10 cm one.
+/// apart are as near on a 10 m face as on a 10 cm one, and an insert 0.1 mm
+/// off its edge dents a 6 mm face as it does a 6 m one. A sliver, or a face
+/// under a millimetre across, can hold real corners within it; the ear clip
+/// tiles such a convex ring over the same vertices, as the fan would.
 const COLLINEAR_DISTANCE: f64 = 2.0e-4;
-/// A face under 2 cm across takes this fraction of its extent instead, so its
-/// real corners keep the plain fan.
-const COLLINEAR_EXTENT_FRACTION: f64 = 1.0e-2;
 
 fn world_position(vertex: &EnvironmentSurfaceVertex) -> DVec3 {
     Vec3::from(vertex.position).as_dvec3()
@@ -247,25 +248,19 @@ fn count_install_steps(steps: usize) {
 #[cfg(not(test))]
 fn count_install_steps(_steps: usize) {}
 
-/// Whether a convex face has a vertex on, or within [`COLLINEAR_DISTANCE`]
+/// Whether a face has a vertex on, or within [`COLLINEAR_DISTANCE`]
 /// of, the line through its ring neighbours, or one (nearly) repeating the
 /// vertex before it.
 fn has_collinear_vertex(vertices: &[EnvironmentSurfaceVertex]) -> bool {
     let count = vertices.len();
     let at = |i: usize| world_position(&vertices[i % count]);
-    let origin = at(0);
-    let extent = vertices
-        .iter()
-        .map(|vertex| world_position(vertex).distance(origin))
-        .fold(0.0, f64::max);
-    let tolerance = COLLINEAR_DISTANCE.min(COLLINEAR_EXTENT_FRACTION * extent);
     (0..count).any(|i| {
         let (a, p, c) = (at(i + count - 1), at(i), at(i + 1));
         let chord = c - a;
         let length = chord.length();
-        p.distance(a) <= tolerance
-            || length <= tolerance
-            || (p - a).cross(chord).length() / length <= tolerance
+        p.distance(a) <= COLLINEAR_DISTANCE
+            || length <= COLLINEAR_DISTANCE
+            || (p - a).cross(chord).length() / length <= COLLINEAR_DISTANCE
     })
 }
 
@@ -281,13 +276,15 @@ fn has_collinear_vertex(vertices: &[EnvironmentSurfaceVertex]) -> bool {
 /// 0.1 mm of convex, but need not be star-shaped about its centroid. On a
 /// thin strip, an insert a hair inside a long edge near a corner lies past
 /// the short edge's ray from the centroid, and the fan triangle beside it
-/// inverts. A face with a collinear vertex therefore ear-clips over its own
-/// vertices, as a grid part does ([`grid::triangulate_convex`]), adding none:
-/// each vertex stays a corner except one repeating the vertex before it, which
-/// joins the ring once, so each segment of non-zero length borders one
-/// triangle and the face keeps its area. Taking a near-flat real corner for
-/// collinear is harmless. Every other face keeps the fan from its first
-/// vertex: `n - 2` triangles.
+/// inverts. Nor can the plain fan honour an insert that dents its edge: the
+/// fan triangle from a neighbouring corner over it winds backward. A face with
+/// a collinear vertex therefore ear-clips over its own vertices, as a grid
+/// part does ([`grid::triangulate_convex`]), adding none: each vertex stays a
+/// corner except one repeating the vertex before it, which joins the ring
+/// once, so each segment of non-zero length borders one triangle; no ear
+/// holds a dent, so the face keeps its area exactly. Taking a near-flat real
+/// corner for collinear is harmless. Every other face keeps the fan from its
+/// first vertex: `n - 2` triangles.
 fn triangulate_convex_face(
     face: &EnvironmentSurfaceFace,
     normal: Vec3,

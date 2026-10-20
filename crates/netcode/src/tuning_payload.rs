@@ -89,9 +89,9 @@ mod tests {
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FluidRegistry,
-        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode,
-        SlideParams, SlideViewParams, SpeedParams, VaultEntry, VaultParams, VaultTrigger,
-        ViewFeelParams, WeaponPlacementDescriptor,
+        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, PoseChannels,
+        PoseParams, PoseRow, ResolutionMode, SlideParams, SpeedParams, VaultEntry, VaultParams,
+        VaultTrigger, ViewFeelParams, WeaponPlacementDescriptor,
     };
 
     use super::*;
@@ -175,13 +175,19 @@ mod tests {
                 tilt: None,
                 sway: None,
                 impulse: None,
-                slide: Some(SlideViewParams {
-                    eye_drop: 0.15,
-                    fov_increase: 5.0,
-                    enter_rate: 18.0,
-                    exit_rate: 12.0,
+                pose: Some(PoseParams {
+                    slide: Some(PoseRow {
+                        channels: PoseChannels {
+                            pitch: 0.0,
+                            roll: 0.0,
+                            eye_drop: 0.15,
+                            fov: 5.0,
+                        },
+                        enter_rate: 18.0,
+                        exit_rate: 12.0,
+                    }),
+                    vault: None,
                 }),
-                vault: None,
             }),
         }
     }
@@ -332,7 +338,7 @@ mod tests {
             entry_boost: 2.0,
             min_duration_ms: 120.0,
         });
-        assert!(descriptor.view_feel.as_ref().unwrap().slide.is_some());
+        assert!(descriptor.view_feel.as_ref().unwrap().pose.is_some());
         descriptor.sounds = Some(postretro_foundation::MovementSounds {
             land: Some("sfx/land".to_string()),
             jump: Some("sfx/jump".to_string()),

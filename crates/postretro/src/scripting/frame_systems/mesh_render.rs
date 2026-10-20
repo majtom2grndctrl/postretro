@@ -453,7 +453,7 @@ impl MeshRenderCollector {
 /// Pose split inputs are world-space: render the model root at lower-body heading,
 /// then let the modifier rotate the upper body by `aim_yaw - heading_yaw`. Gameplay
 /// and replicated transforms retain aim yaw; only mesh presentation receives this
-/// travel-facing root override.
+/// lower-body root override (travel, folded toward aim while backpedaling).
 fn presentation_body_rotation(
     transform_rotation: glam::Quat,
     heading_yaw: Option<f32>,

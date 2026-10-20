@@ -106,10 +106,11 @@ pub(super) fn compose_wieldable_inventory(
     }
 }
 
-/// Compose a local inventory from explicit slot identities. The connected-client
-/// tuning path uses this only when Control arrives before its pawn baseline: the
-/// host has already resolved the slot layout, including interior empty slots,
-/// and names the slot its own copy was composed active with
+/// Compose a local inventory from explicit slot identities. A connected client
+/// composes its pawn this way from the host's tuning payload, whichever of
+/// baseline and payload lands first: the host has already resolved the slot
+/// layout, including interior empty slots, and names the slot its own copy was
+/// composed active with
 /// (`requested_active_slot`, the payload's `spawn_active_slot`). Without that,
 /// a host that restored a carried selection would hold a different weapon than
 /// its owner from the first frame, and nothing would converge them. A requested

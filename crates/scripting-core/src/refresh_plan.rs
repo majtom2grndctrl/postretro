@@ -2196,6 +2196,7 @@ mod tests {
             fade_source: FadeSourceKind::Clip,
             interrupted_outgoing: None,
             speed_scale: true,
+            locomotion_direction: Default::default(),
         };
         let live = MeshComponent {
             model: "decraniated".into(),

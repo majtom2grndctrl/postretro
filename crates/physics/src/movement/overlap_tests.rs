@@ -937,6 +937,9 @@ fn a_rider_walking_into_a_chamfered_lip_while_its_platform_moves_ends_clear() {
 // Displacement is itself swept against static geometry, so no push here ends
 // inside the wall; the fixture pins that a squeeze never reaches the armed
 // check, not that an embedding push is exempt (none can be built).
+// Substrate only: displacement refuses a push static geometry blocks and leaves
+// the pawn where it is. In play the host pin test holds the mover first
+// (`kinematic_mover/pin_tests.rs`).
 #[test]
 fn a_pawn_pushed_out_of_a_mover_toward_a_static_wall_does_not_trip_the_assertion() {
     let desc = descriptor();
@@ -974,45 +977,6 @@ fn a_pawn_pushed_out_of_a_mover_toward_a_static_wall_does_not_trip_the_assertion
     assert!(
         position.x < 1.0,
         "the mover pushed the pawn toward the wall, at {position:?}"
-    );
-}
-
-#[test]
-fn a_pawn_carried_into_a_static_ceiling_rides_on_and_never_trips_the_assertion() {
-    let desc = descriptor();
-    let ceiling = 4.0;
-    let world = Geometry::default().ceiling((-50.0, 60.0), ceiling).build();
-    let movers = [platform(3.0)];
-    let mut poses = OnePose::default();
-    let lift = Vec3::new(0.0, 2.0, 0.0);
-    let mut platform_y = 0.0;
-    poses.place(PLATFORM, Vec3::new(0.0, platform_y, 0.0), Vec3::ZERO);
-    let mut component = PlayerMovementComponent::from_descriptor(&desc);
-    component.ground = GroundRef::Mover(PLATFORM);
-    let mut position = Vec3::new(0.0, rest_y(&desc, 0.0), 0.0);
-    for _ in 0..60 {
-        platform_y += lift.y * DT;
-        poses.place(PLATFORM, Vec3::new(0.0, platform_y, 0.0), lift);
-        let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
-        // Armed: the carry is mover policy, so the overlap it causes never
-        // reaches the assertion.
-        position = tick_combined(&mut component, &collision, &idle_input(), position);
-        assert_eq!(
-            component.ground,
-            GroundRef::Mover(PLATFORM),
-            "still riding at {position:?}"
-        );
-        assert!(
-            (position.y - rest_y(&desc, platform_y)).abs() < 0.05,
-            "the carry keeps the rider on its platform: {} against {}",
-            position.y,
-            rest_y(&desc, platform_y)
-        );
-    }
-    let head = position.y + desc.capsule.half_height + desc.capsule.radius;
-    assert!(
-        head > ceiling,
-        "the fixture carried the pawn into the ceiling"
     );
 }
 

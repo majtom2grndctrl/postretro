@@ -20,7 +20,6 @@ mod swim_transition;
 mod vault;
 mod vault_path;
 
-pub(crate) use mover_carry::mover_push_is_blocked_by_static;
 pub use push::steady_drift_velocity;
 pub use vault_path::{vault_clock, vault_path_ms, vault_path_ticks};
 
@@ -205,6 +204,16 @@ impl MovementCollisionSource for CombinedCollisionWorld<'_> {
     }
 }
 
+/// The ground mover carry moves a body with this tick: the vault target's
+/// mover while vaulting (none for a static ledge), else `previous_ground`. The
+/// host pin test reads the same rule to know which bodies a mover carries.
+pub(crate) fn carry_ground_for(state: &MovementState, previous_ground: GroundRef) -> GroundRef {
+    match state {
+        MovementState::Vault { mover, .. } => mover.map_or(GroundRef::Airborne, GroundRef::Mover),
+        _ => previous_ground,
+    }
+}
+
 /// Test convenience for [`tick_with_immersion_and_armed`]: one fixed tick that
 /// discards the immersion and arms every teleporter as its map spawned it
 /// (`enabled_on_spawn`). Production movement never calls it: host movement,
@@ -333,10 +342,7 @@ pub fn tick_with_immersion_and_armed(
     // never with any other (a static ledge carries nothing). Its path then
     // holds against a mover of any speed, steady or not. Any other pawn, and
     // the tick a vault starts, rides the ground it stood on.
-    let carry_ground = match component.movement_state {
-        MovementState::Vault { mover, .. } => mover.map_or(GroundRef::Airborne, GroundRef::Mover),
-        _ => previous_ground,
-    };
+    let carry_ground = carry_ground_for(&component.movement_state, previous_ground);
     // Vault entry runs next, from the same tick-start pose, unless the swim
     // seam already took an edge: a swim entry on the tick a land vault would
     // start wins. The entered vault owns this tick.
@@ -631,8 +637,7 @@ mod tests {
                 grounded_only: false,
             }),
             impulse: None,
-            slide: None,
-            vault: None,
+            pose: None,
         };
         desc.view_feel = Some(view_feel.clone());
         let comp = PlayerMovementComponent::from_descriptor(&desc);

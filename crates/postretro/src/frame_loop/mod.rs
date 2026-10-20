@@ -1540,34 +1540,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // read this one evaluated eye (`audio.md` §3). View feel only runs
     // when the camera-following pawn carries `view_feel`; another
     // pawn's preset must not leak onto the selected camera.
-    let view_feel_driver = {
-        let registry = script_ctx.registry.borrow();
-        followed_player_pawn(&registry).and_then(|pawn| {
-            registry
-                .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
-                .ok()
-                .and_then(|component| {
-                    component
-                        .view_feel
-                        .as_ref()
-                        .map(|params| frame_eye::ViewFeelDriver {
-                            pawn,
-                            params: params.clone(),
-                            velocity: component.velocity,
-                            is_grounded: component.is_grounded(),
-                            movement_state: component.movement_state.kind(),
-                            vault: presented_vault(component, tick_dt, frame_result.alpha),
-                            eye_height_above_feet: frame_eye::presented_eye_clearance(
-                                presented_eye.y,
-                                app.camera.position.y,
-                                component.capsule.eye_height
-                                    + component.capsule.half_height
-                                    + component.capsule.radius,
-                            ),
-                        })
-                })
-        })
-    };
+    let view_feel_driver = frame_eye::view_feel_driver(
+        &script_ctx.registry.borrow(),
+        presented_eye.y,
+        app.camera.position.y,
+        tick_dt,
+        frame_result.alpha,
+    );
     let view_feel_scale = app
         .session
         .as_ref()
@@ -2660,25 +2639,4 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(cpu_stages);
     app.cpu_timer.finish_frame(Instant::now());
     postretro_stage_timing::mark_frame();
-}
-
-/// The local pawn's vault as this frame presents it, for the held vault pose.
-/// `alpha` is the frame's interpolation share toward the latest tick, whose
-/// movement state `component` holds.
-fn presented_vault(
-    component: &postretro_foundation::PlayerMovementComponent,
-    tick_dt: f32,
-    alpha: f32,
-) -> Option<crate::view_feel::vault::VaultViewInput> {
-    let postretro_foundation::MovementState::Vault { elapsed_ms, .. } = component.movement_state
-    else {
-        return None;
-    };
-    let duration_ms = component.vault.as_ref()?.duration_ms;
-    Some(crate::view_feel::vault::VaultViewInput::presented(
-        elapsed_ms,
-        duration_ms,
-        tick_dt,
-        alpha,
-    ))
 }

@@ -506,16 +506,16 @@ pub enum VaultTrigger {
 }
 
 /// First-person view-feel tuning: a render-only camera effect bundle (head bob,
-/// strafe tilt, ambient sway, state-transition impulse, sustained slide and
-/// vault poses). OPTIONAL on [`PlayerMovementDescriptor`] — absent
+/// strafe tilt, ambient sway, state-transition impulse, sustained state
+/// poses). OPTIONAL on [`PlayerMovementDescriptor`] — absent
 /// disables view feel entirely (no `ViewFeelParams` materialized). When present,
 /// each motion is independently optional; an absent sub-object disables that
 /// motion. Present bob, tilt, and sway blocks require all tuning fields except
 /// the optional `groundedOnly` gate. A present impulse block requires its top-level
-/// fields while its per-state rows stay sparse. Slide requires all four fields;
-/// every vault field is optional.
+/// fields while its per-state rows stay sparse. Pose rows are sparse.
 /// View feel is consumed by the
-/// render-rate evaluator in `view_feel.rs`, called from `main.rs`; this is the data surface only.
+/// render-rate evaluators in `view_feel.rs` and `view_feel/pose.rs`, assembled
+/// in `frame_eye.rs`; this is the data surface only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewFeelParams {
     /// Optional head-bob tuning. Absent ⇒ no head bob.
@@ -527,69 +527,9 @@ pub struct ViewFeelParams {
     /// Optional state-transition impulse tuning. Absent ⇒ state edges produce
     /// no camera displacement while script reaction addresses remain available.
     pub impulse: Option<ImpulseParams>,
-    /// Optional sustained slide camera dip and FOV increase. Absent ⇒ no slide view.
+    /// Optional sustained camera poses keyed by movement state. Absent ⇒ none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slide: Option<SlideViewParams>,
-    /// Optional camera pose held while vaulting. Absent ⇒ no vault pose.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vault: Option<VaultViewParams>,
-}
-
-/// Sustained slide view tuning. All four fields are required when present.
-/// Presentation follows the current sliding state; it never changes collision
-/// or aim. Field names are camelCase in scripts and snake_case in Rust.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct SlideViewParams {
-    /// Downward eye displacement in metres. Must be finite and ≥ 0.
-    pub eye_drop: f32,
-    /// Horizontal FOV increase in degrees. Must be finite in [0, 90].
-    pub fov_increase: f32,
-    /// Exponential response rate while sliding, finite in [0.1, 240] 1/sec.
-    pub enter_rate: f32,
-    /// Exponential response rate after sliding, finite in [0.1, 240] 1/sec.
-    pub exit_rate: f32,
-}
-
-impl SlideViewParams {
-    /// Supported response-rate range, in 1/sec.
-    pub const MIN_RATE: f32 = 0.1;
-    pub const MAX_RATE: f32 = 240.0;
-    /// Maximum authored horizontal FOV increase, in degrees.
-    pub const MAX_FOV_INCREASE: f32 = 90.0;
-}
-
-/// Camera pose held while vaulting: pitch, roll and FOV offsets whose weight
-/// follows the vault's own progress. It eases in over the first `ease_in` share
-/// of `movement.vault.durationMs`, holds, and eases out over the last
-/// `ease_out` share, reaching neutral as the vault ends; a vault that ends
-/// early eases back from where it was. Presentation only: aim and collision are
-/// unchanged. Every field is optional. Field names are camelCase in scripts.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct VaultViewParams {
-    /// Held pitch offset in degrees, positive looking up. Finite in
-    /// `[-MAX_ANGLE, MAX_ANGLE]`; default 0.
-    pub pitch: f32,
-    /// Held roll offset in degrees. Finite in `[-MAX_ANGLE, MAX_ANGLE]`;
-    /// default 0.
-    pub roll: f32,
-    /// Held horizontal FOV offset in degrees, added to the base FOV. Finite in
-    /// `[-MAX_FOV, MAX_FOV]`; default 0.
-    pub fov: f32,
-    /// Share of the vault's duration spent easing in, in `[0, 1]`; default
-    /// [`Self::DEFAULT_EASE_IN`].
-    pub ease_in: f32,
-    /// Share of the vault's duration spent easing out at its end, in `[0, 1]`;
-    /// default [`Self::DEFAULT_EASE_OUT`]. `ease_in + ease_out` is at most 1.
-    pub ease_out: f32,
-}
-
-impl VaultViewParams {
-    /// Largest held pitch or roll magnitude, in degrees.
-    pub const MAX_ANGLE: f32 = 90.0;
-    /// Largest held FOV offset magnitude, in degrees (the slide's increase bound).
-    pub const MAX_FOV: f32 = SlideViewParams::MAX_FOV_INCREASE;
-    pub const DEFAULT_EASE_IN: f32 = 0.15;
-    pub const DEFAULT_EASE_OUT: f32 = 0.2;
+    pub pose: Option<super::view_pose::PoseParams>,
 }
 
 /// Render-rate state-transition impulse tuning. A present block requires a

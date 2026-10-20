@@ -249,7 +249,7 @@ pub fn pack_probe_table(section: Option<&ReflectionProbesSection>) -> Vec<u8> {
 /// Per-vertex probe indices for the mesh `face_maps` describe (one map per
 /// surface face of every volume, in record order, as
 /// [`super::FluidSurfaceMesh::face_drift_maps`]). Every vertex a bound face
-/// owns, grid crossings and any added centroid included, takes its binding's probe; every other
+/// owns, grid crossings included, takes its binding's probe; every other
 /// vertex takes [`FLUID_REFLECTION_NO_PROBE`]. A binding naming a face or
 /// probe that does not exist binds nothing.
 pub fn fill_probe_indices(

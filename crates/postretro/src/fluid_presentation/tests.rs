@@ -171,8 +171,7 @@ fn bob_offsets(bob: &BobParams, speed: f32, fps: f32, seconds: f32) -> Vec<f32> 
         tilt: None,
         sway: None,
         impulse: None,
-        slide: None,
-        vault: None,
+        pose: None,
     };
     let mut state = crate::view_feel::ViewFeelState::default();
     let dt = 1.0 / fps;

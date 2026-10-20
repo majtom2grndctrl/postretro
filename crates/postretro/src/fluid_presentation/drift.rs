@@ -6,7 +6,7 @@ use glam::Vec3;
 use postretro_collision::{EnvironmentView, EnvironmentVolumes, resolve_particle_acceleration};
 use postretro_combat_model::FluidMovementTable;
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
-use postretro_render_cpu::fluid_surface::face_normal;
+use postretro_render_cpu::fluid_surface::{face_area_centroid, face_normal};
 
 /// How far inside the fluid a face samples its push, meters, so a current
 /// flush with the waterline drifts the face it covers and a wind resting on
@@ -43,13 +43,9 @@ pub(crate) fn resolve_fluid_surface_drift(
         for face in &record.surface_faces {
             let drift = match (viscosity, face_normal(face)) {
                 (Some(viscosity), Some(normal)) => {
-                    let centroid = face
-                        .vertices
-                        .iter()
-                        .map(|vertex| Vec3::from(vertex.position))
-                        .sum::<Vec3>()
-                        / face.vertices.len() as f32;
-                    let inside = centroid - normal * FLUID_DRIFT_SAMPLE_DEPTH;
+                    let inside = (face_area_centroid(face, normal)
+                        - normal.as_dvec3() * f64::from(FLUID_DRIFT_SAMPLE_DEPTH))
+                    .as_vec3();
                     let (_, push) = resolve_particle_acceleration(view, inside);
                     postretro_physics::movement::steady_drift_velocity(
                         push,

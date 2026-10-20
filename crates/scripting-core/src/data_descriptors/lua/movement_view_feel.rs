@@ -20,115 +20,93 @@ pub fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, Descri
         Some(t) => Some(impulse_params_from_lua(&t)?),
         None => None,
     };
-    let slide = match read_optional_subtable_lua(table, "slide", "movement.viewFeel.slide")? {
-        Some(t) => Some(slide_view_params_from_lua(&t)?),
-        None => None,
-    };
-    // Read directly rather than through `read_optional_subtable_lua`, whose
-    // wording differs from the JS path: both runtimes say "an object".
-    let vault = match table.get::<LuaValue>("vault").map_err(lua_err)? {
-        LuaValue::Nil => None,
-        LuaValue::Table(t) => {
-            if !holds_only_named_fields(&t)? {
-                return Err(vault_view_not_an_object());
-            }
-            Some(vault_view_params_from_lua(&t)?)
+    for moved in ["slide", "vault"] {
+        if !table.get::<LuaValue>(moved).map_err(lua_err)?.is_nil() {
+            return Err(moved_view_block(moved));
         }
-        _ => return Err(vault_view_not_an_object()),
-    };
+    }
+    let pose = pose_params_from_value(pose_from_lua(table)?)?;
     Ok(ViewFeelParams {
         bob,
         tilt,
         sway,
         impulse,
-        slide,
-        vault,
+        pose,
     })
 }
 
-/// Whether `table` is a block of named fields: no array entries and no key
-/// but a string. JS rejects an array as the block, so a Luau table with array
-/// entries (`{ -6, 2 }`) is no block either, rather than all defaults.
-fn holds_only_named_fields(table: &Table) -> Result<bool, DescriptorError> {
-    if table.raw_len() > 0 {
-        return Ok(false);
-    }
-    for pair in table.clone().pairs::<LuaValue, LuaValue>() {
-        let (key, _) = pair.map_err(lua_err)?;
-        if !matches!(key, LuaValue::String(_)) {
-            return Ok(false);
+/// Read `viewFeel.pose` for the shared validator. Only a raw `pose` entry
+/// counts; one `viewFeel` reaches through `__index` is rejected rather than
+/// read.
+fn pose_from_lua(view_feel: &Table) -> Result<Option<PoseValue>, DescriptorError> {
+    let raw: LuaValue = view_feel.raw_get("pose").map_err(lua_err)?;
+    if raw.is_nil() {
+        if !view_feel.get::<LuaValue>("pose").map_err(lua_err)?.is_nil() {
+            return Err(inherited_pose_block());
         }
+        return Ok(None);
     }
-    Ok(true)
+    pose_value_from_lua(raw, POSE_BLOCK_DEPTH)
 }
 
-/// Mirror of the JS `vault_view_params_from_js` for Luau tables; errors are
-/// worded identically.
-pub fn vault_view_params_from_lua(table: &Table) -> Result<VaultViewParams, DescriptorError> {
-    vault_view_params_from_fields(|field| {
-        Ok(match table.get::<LuaValue>(field).map_err(lua_err)? {
-            LuaValue::Nil => RawViewNumber::Absent,
-            LuaValue::Integer(value) => RawViewNumber::Number(value as f64),
-            LuaValue::Number(value) => RawViewNumber::Number(value),
-            _ => RawViewNumber::Other,
-        })
-    })
-}
-
-pub fn slide_view_params_from_lua(table: &Table) -> Result<SlideViewParams, DescriptorError> {
-    Ok(SlideViewParams {
-        eye_drop: slide_view_number_from_lua(table, "eyeDrop", 0.0, f64::from(f32::MAX))?,
-        fov_increase: slide_view_number_from_lua(
-            table,
-            "fovIncrease",
-            0.0,
-            f64::from(SlideViewParams::MAX_FOV_INCREASE),
-        )?,
-        enter_rate: slide_view_number_from_lua(
-            table,
-            "enterRate",
-            0.1,
-            f64::from(SlideViewParams::MAX_RATE),
-        )?,
-        exit_rate: slide_view_number_from_lua(
-            table,
-            "exitRate",
-            0.1,
-            f64::from(SlideViewParams::MAX_RATE),
-        )?,
-    })
-}
-
-// Check the authored number before f32 narrowing can round an invalid value
-// onto a valid boundary (or a tiny negative eye drop to zero).
-fn slide_view_number_from_lua(
-    table: &Table,
-    field: &'static str,
-    min: f64,
-    max: f64,
-) -> Result<f32, DescriptorError> {
-    if !table.contains_key(field).map_err(lua_err)? {
-        return Err(DescriptorError::MissingField { field });
-    }
-    let raw: LuaValue = table.get(field).map_err(lua_err)?;
-    let value = match raw {
-        LuaValue::Nil => return Err(DescriptorError::MissingField { field }),
-        LuaValue::Integer(value) => value as f64,
-        LuaValue::Number(value) => value,
-        _ => {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!("`movement.viewFeel.slide.{field}` must be a number"),
-            });
-        }
+/// Classify one pose value, the twin of the JS `pose_value_from_js`.
+/// `blocks_left` counts the blocks that may still nest here; a table past it
+/// is not read.
+fn pose_value_from_lua(
+    raw: LuaValue,
+    blocks_left: u8,
+) -> Result<Option<PoseValue>, DescriptorError> {
+    let table = match raw {
+        LuaValue::Nil => return Ok(None),
+        LuaValue::Integer(value) => return Ok(Some(PoseValue::Number(value as f64))),
+        LuaValue::Number(value) => return Ok(Some(PoseValue::Number(value))),
+        LuaValue::Table(table) if blocks_left > 0 => table,
+        _ => return Ok(Some(PoseValue::Other)),
     };
-    if !value.is_finite() || !(min..=max).contains(&value) {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "`movement.viewFeel.slide.{field}` must be finite in [{min}, {max}], got {value}"
-            ),
-        });
+    let mut block = PoseBlock::default();
+    for pair in table.pairs::<LuaValue, LuaValue>() {
+        let (key, value) = pair.map_err(lua_err)?;
+        // JS rejects an array as a block, so a table with array entries, or
+        // any key but a string, is no block either.
+        let LuaValue::String(key) = key else {
+            return Ok(Some(PoseValue::Other));
+        };
+        let key = key.to_str().map_err(lua_err)?.to_string();
+        if let Some(value) = pose_value_from_lua(value, blocks_left - 1)? {
+            block.fields.insert(key, value);
+        }
     }
-    Ok(value as f32)
+    // Walk the `__index` tables a read would fall through to. A function or
+    // any other `__index` hides what it supplies, so it cannot be named.
+    let mut current = table;
+    let mut walked = 0;
+    loop {
+        let Some(metatable) = current.metatable() else {
+            break;
+        };
+        match metatable.raw_get::<LuaValue>("__index").map_err(lua_err)? {
+            LuaValue::Nil => break,
+            LuaValue::Table(index) if walked < MAX_INHERITANCE_WALK => {
+                for pair in index.pairs::<LuaValue, LuaValue>() {
+                    match pair.map_err(lua_err)?.0 {
+                        LuaValue::String(key) => {
+                            block
+                                .inherited
+                                .insert(key.to_str().map_err(lua_err)?.to_string());
+                        }
+                        _ => block.inherits_unnamed = true,
+                    }
+                }
+                current = index;
+                walked += 1;
+            }
+            _ => {
+                block.inherits_unnamed = true;
+                break;
+            }
+        }
+    }
+    Ok(Some(PoseValue::Block(block)))
 }
 
 pub fn impulse_params_from_lua(table: &Table) -> Result<ImpulseParams, DescriptorError> {

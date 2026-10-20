@@ -1,13 +1,16 @@
-// Per-frame eye assembly: view feel is evaluated once, into the one
-// `RenderCamera` that render and the audio listener both read.
-// See: context/lib/rendering_pipeline.md §11 · context/lib/audio.md §3
+// Per-frame eye assembly: builds the view-feel driver from the followed pawn and
+// evaluates view feel once, into the one `RenderCamera` that render and the
+// audio listener both read.
+// See: context/lib/rendering_pipeline.md §11 · context/lib/audio.md §3 · context/lib/movement.md §1
 
 use glam::Vec3;
-use postretro_entities::EntityId;
-use postretro_foundation::{MovementStateKind, ViewFeelParams};
+use postretro_entities::{EntityId, EntityRegistry};
+use postretro_foundation::{
+    MovementState, MovementStateKind, PlayerMovementComponent, ViewFeelParams,
+};
 
 use crate::camera::RenderCamera;
-use crate::view_feel::vault::VaultViewInput;
+use crate::view_feel::pose::VaultViewInput;
 use crate::view_feel::{self, TimedMovementEdge, ViewFeelState};
 
 /// The pawn driving view feel this frame, with the movement facts the
@@ -47,7 +50,7 @@ pub(crate) struct ViewFeelTracking<'a> {
 }
 
 /// One frame's evaluated eye, plus the view-feel offsets the first-person
-/// viewmodel re-applies in camera space. The vault pose is in `camera` but not
+/// viewmodel re-applies in camera space. Pose angles are in `camera` but not
 /// in these offsets (see [`assemble_frame_eye`]).
 pub(crate) struct FrameEye {
     pub(crate) camera: RenderCamera,
@@ -59,10 +62,86 @@ pub(crate) struct FrameEye {
     pub(crate) pitch_offset: f32,
 }
 
+/// The followed pawn's view-feel driver for this frame, or `None` when that
+/// pawn carries no `view_feel`. Only the local pawn drives view feel
+/// (`followed_player_pawn`), so a remote pawn's slide or vault never poses the
+/// local camera. `alpha` is the frame's interpolation share toward the latest
+/// tick, whose movement state the registry holds.
+pub(crate) fn view_feel_driver(
+    registry: &EntityRegistry,
+    presented_eye_y: f32,
+    latest_tick_eye_y: f32,
+    tick_dt: f32,
+    alpha: f32,
+) -> Option<ViewFeelDriver> {
+    let pawn = crate::followed_player_pawn(registry)?;
+    let component = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .ok()?;
+    let params = component.view_feel.as_ref()?;
+    Some(ViewFeelDriver {
+        pawn,
+        params: params.clone(),
+        velocity: component.velocity,
+        is_grounded: component.is_grounded(),
+        movement_state: component.movement_state.kind(),
+        vault: presented_vault(registry, component, tick_dt, alpha),
+        eye_height_above_feet: presented_eye_clearance(
+            presented_eye_y,
+            latest_tick_eye_y,
+            component.capsule.eye_height + component.capsule.half_height + component.capsule.radius,
+        ),
+    })
+}
+
+/// The local pawn's vault as this frame presents it.
+fn presented_vault(
+    registry: &EntityRegistry,
+    component: &PlayerMovementComponent,
+    tick_dt: f32,
+    alpha: f32,
+) -> Option<VaultViewInput> {
+    let MovementState::Vault {
+        elapsed_ms,
+        target,
+        mover,
+        ..
+    } = component.movement_state
+    else {
+        return None;
+    };
+    let duration_ms = component.vault.as_ref()?.duration_ms;
+    Some(VaultViewInput::presented(
+        elapsed_ms,
+        duration_ms,
+        tick_dt,
+        alpha,
+        presented_landing(registry, target, mover, alpha),
+    ))
+}
+
+/// The vault's landing spot in world space as this frame presents it. On a
+/// mover the target is mover-local, carried through the mover's pose at the
+/// eye's own interpolation share: the mover render collector runs after the
+/// eye, so its pose for this frame is not yet known there.
+fn presented_landing(
+    registry: &EntityRegistry,
+    target: Vec3,
+    mover: Option<u32>,
+    alpha: f32,
+) -> Option<Vec3> {
+    let Some(mover_id) = mover else {
+        return Some(target);
+    };
+    let entity = crate::runtime_movers::mover_entity(registry, mover_id)?;
+    let pose = registry.interpolated_transform(entity, alpha).ok()?;
+    Some(pose.position + pose.rotation.normalize() * target)
+}
+
 /// Eye clearance in the same presented space as the interpolated camera.
 /// The latest tick eye already includes client correction, so only its delta
 /// from the rendered eye is needed when capsule resize precedes interpolation.
-pub(crate) fn presented_eye_clearance(
+fn presented_eye_clearance(
     presented_eye_y: f32,
     latest_tick_eye_y: f32,
     latest_tick_clearance: f32,
@@ -110,32 +189,31 @@ pub(crate) fn assemble_frame_eye(
             );
             let (roll, yaw, pitch, mut eye) =
                 view_feel::map_output_to_camera(&output, camera_right);
-            let slide = view_feel::slide::evaluate(
-                driver.params.slide.as_ref(),
-                driver.movement_state,
-                tracking.state,
+            let pose = view_feel::pose::evaluate(
+                driver.params.pose.as_ref(),
+                view_feel::pose::PoseFrame {
+                    movement_state: driver.movement_state,
+                    vault: driver.vault,
+                    aim_pitch_deg: inputs.pitch.to_degrees(),
+                    presented_eye: inputs.presented_eye,
+                    eye_height_above_feet: driver.eye_height_above_feet,
+                    offset_y: eye.y,
+                },
+                tracking.state.pose_mut(),
                 inputs.frame_dt,
                 inputs.view_feel_scale,
             );
-            // Bound the added dip after bob. Do not lift an already low baseline eye.
-            let available_drop = (driver.eye_height_above_feet + eye.y
-                - view_feel::slide::MIN_EYE_CLEARANCE)
-                .max(0.0);
-            eye.y -= slide.eye_drop.min(available_drop);
-            let vault = view_feel::vault::evaluate(
-                driver.params.vault.as_ref(),
-                driver.vault,
-                tracking.state,
-                inputs.frame_dt,
-                inputs.view_feel_scale,
-            );
+            eye.y -= pose.eye_drop;
             (
-                output.impulse_fov + slide.fov_increase + vault.fov,
+                output.impulse_fov + pose.fov,
                 roll,
                 yaw,
                 pitch,
                 eye,
-                vault,
+                HeldPose {
+                    pitch: pose.pitch,
+                    roll: pose.roll,
+                },
             )
         }
         None => {
@@ -145,22 +223,16 @@ pub(crate) fn assemble_frame_eye(
                 tracking.descriptor,
                 None,
             );
-            (
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                Vec3::ZERO,
-                view_feel::vault::VaultViewOutput::default(),
-            )
+            (0.0, 0.0, 0.0, 0.0, Vec3::ZERO, HeldPose::default())
         }
     };
 
-    // The held vault pose turns the camera only. The viewmodel re-applies
+    // Pose angles turn the camera only. The viewmodel re-applies
     // `pitch_offset` and `roll` in camera space on top of the camera's own
-    // rotation, which it already follows; adding a held -6..-10° pose there
-    // would swing the weapon down out of its placement for the whole climb.
-    // Sway and impulses stay in both, as before.
+    // rotation, which it already follows; adding a held pose there would
+    // swing the weapon out of its placement for the whole state. Sway and
+    // impulses stay in both. Pose eye drop is in `eye_offset`, which the
+    // viewmodel and listener follow.
     FrameEye {
         camera: RenderCamera::new(
             inputs.presented_eye,
@@ -179,6 +251,13 @@ pub(crate) fn assemble_frame_eye(
     }
 }
 
+/// Held pitch and roll, degrees, that turn the render camera only.
+#[derive(Default)]
+struct HeldPose {
+    pitch: f32,
+    roll: f32,
+}
+
 /// The audio listener for a frame: the rendered eye and its look direction.
 /// `attached` names the pawn the listener rides, whose own sounds play
 /// unpositioned.
@@ -195,6 +274,10 @@ pub(crate) fn listener_for(
 }
 
 #[cfg(test)]
+#[path = "frame_eye_pose_tests.rs"]
+mod pose_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use postretro_foundation::BobParams;
@@ -206,7 +289,6 @@ mod tests {
 
     fn bobbing() -> ViewFeelParams {
         ViewFeelParams {
-            slide: None,
             bob: Some(BobParams {
                 vertical_frequency: 1.0,
                 lateral_frequency: 0.5,
@@ -218,7 +300,7 @@ mod tests {
             tilt: None,
             sway: None,
             impulse: None,
-            vault: None,
+            pose: None,
         }
     }
 
@@ -312,12 +394,19 @@ mod tests {
         assert_ne!(state, twice, "a second evaluation would be observable");
     }
 
-    fn slide_params() -> postretro_foundation::SlideViewParams {
-        postretro_foundation::SlideViewParams {
-            eye_drop: 0.15,
-            fov_increase: 5.0,
-            enter_rate: 18.0,
-            exit_rate: 12.0,
+    fn slide_pose(eye_drop: f32) -> postretro_foundation::PoseParams {
+        postretro_foundation::PoseParams {
+            slide: Some(postretro_foundation::PoseRow {
+                channels: postretro_foundation::PoseChannels {
+                    pitch: 0.0,
+                    roll: 0.0,
+                    eye_drop,
+                    fov: 5.0,
+                },
+                enter_rate: 18.0,
+                exit_rate: 12.0,
+            }),
+            vault: None,
         }
     }
 
@@ -330,7 +419,7 @@ mod tests {
             let mut input = inputs();
             let driver = input.driver.as_mut().unwrap();
             driver.params.bob = None;
-            driver.params.slide = Some(slide_params());
+            driver.params.pose = Some(slide_pose(0.15));
             driver.movement_state = kind;
             input.view_feel_scale = scale;
             input.frame_dt = dt;
@@ -382,17 +471,25 @@ mod tests {
             input.pitch = pitch;
             let driver = input.driver.as_mut().unwrap();
             driver.params.bob = None;
-            driver.params.vault = Some(postretro_foundation::VaultViewParams {
-                pitch: -10.0,
-                roll: 3.0,
-                fov: -4.0,
-                ease_in: 0.15,
-                ease_out: 0.2,
+            driver.params.pose = Some(postretro_foundation::PoseParams {
+                slide: None,
+                vault: Some(postretro_foundation::VaultPoseRow {
+                    channels: postretro_foundation::PoseChannels {
+                        pitch: -10.0,
+                        roll: 3.0,
+                        eye_drop: 0.0,
+                        fov: -4.0,
+                    },
+                    ease_in: 0.15,
+                    ease_out: 0.2,
+                    ledge_focus: None,
+                }),
             });
             driver.movement_state = MovementStateKind::Vault;
             driver.vault = Some(VaultViewInput {
                 progress: 0.5,
                 path_s: 0.42,
+                landing: None,
             });
             let mut state = ViewFeelState::default();
             let mut followed = None;
@@ -456,10 +553,7 @@ mod tests {
         input.presented_eye.y = 0.9;
         let driver = input.driver.as_mut().unwrap();
         driver.params.bob = None;
-        driver.params.slide = Some(postretro_foundation::SlideViewParams {
-            eye_drop: 100.0,
-            ..slide_params()
-        });
+        driver.params.pose = Some(slide_pose(100.0));
         driver.eye_height_above_feet = presented_eye_clearance(0.9, 1.7, 1.7);
         driver.movement_state = MovementStateKind::Slide;
         let mut followed = None;
@@ -472,7 +566,7 @@ mod tests {
                 descriptor: &mut descriptor,
             },
         );
-        assert!((active.camera.eye_position.y - view_feel::slide::MIN_EYE_CLEARANCE).abs() < 1e-5);
+        assert!((active.camera.eye_position.y - view_feel::pose::MIN_EYE_CLEARANCE).abs() < 1e-5);
         let mut input = inputs();
         input.presented_eye.y = 0.9;
         let driver = input.driver.as_mut().unwrap();
@@ -487,7 +581,7 @@ mod tests {
                 descriptor: &mut descriptor,
             },
         );
-        assert!(exiting.camera.eye_position.y >= view_feel::slide::MIN_EYE_CLEARANCE - 1e-5);
+        assert!(exiting.camera.eye_position.y >= view_feel::pose::MIN_EYE_CLEARANCE - 1e-5);
     }
 
     #[test]
@@ -498,7 +592,7 @@ mod tests {
         let mut input = inputs();
         let driver = input.driver.as_mut().unwrap();
         driver.params.bob = None;
-        driver.params.slide = Some(slide_params());
+        driver.params.pose = Some(slide_pose(0.15));
         driver.movement_state = MovementStateKind::Slide;
         input.frame_dt = 1.0;
         let active = assemble_frame_eye(
@@ -514,7 +608,7 @@ mod tests {
             let mut input = inputs();
             let driver = input.driver.as_mut().unwrap();
             driver.params.bob = None;
-            driver.params.slide = Some(slide_params());
+            driver.params.pose = Some(slide_pose(0.15));
             driver.movement_state = MovementStateKind::Slide;
             // Seed a fresh held slide before each lifecycle change.
             input.frame_dt = 1.0;
@@ -529,13 +623,13 @@ mod tests {
             let mut input = inputs();
             let driver = input.driver.as_mut().unwrap();
             driver.params.bob = None;
-            driver.params.slide = Some(slide_params());
+            driver.params.pose = Some(slide_pose(0.15));
             driver.movement_state = MovementStateKind::Slide;
             match replacement {
                 Some(id) => {
                     driver.pawn = id;
                     if id == pawn() {
-                        driver.params.slide.as_mut().unwrap().eye_drop = 0.2;
+                        driver.params.pose = Some(slide_pose(0.2));
                     }
                 }
                 None => input.driver = None,
@@ -564,10 +658,7 @@ mod tests {
         let driver = input.driver.as_mut().unwrap();
         driver.movement_state = MovementStateKind::Slide;
         driver.eye_height_above_feet = 0.2;
-        driver.params.slide = Some(postretro_foundation::SlideViewParams {
-            eye_drop: 100.0,
-            ..slide_params()
-        });
+        driver.params.pose = Some(slide_pose(100.0));
         let eye = assemble_frame_eye(
             input,
             ViewFeelTracking {
@@ -578,7 +669,7 @@ mod tests {
         );
         assert!((eye.eye_offset.y + 0.15).abs() < 1e-5);
         assert!(
-            (eye.camera.eye_position.y - (2.0 - 0.2 + view_feel::slide::MIN_EYE_CLEARANCE)).abs()
+            (eye.camera.eye_position.y - (2.0 - 0.2 + view_feel::pose::MIN_EYE_CLEARANCE)).abs()
                 < 1e-5
         );
         assert_ne!(eye.eye_offset.x, 0.0, "lateral bob still composes");

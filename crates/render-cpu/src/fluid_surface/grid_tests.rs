@@ -808,6 +808,33 @@ fn a_face_repeating_a_vertex_cuts_without_a_crack() {
     assert_eq!(edge(&ranges[0]), edge(&ranges[1]));
 }
 
+// Regression: a part whose every corner the compiler repeated had no vertex
+// the ring turned at, since a zero-length edge turns nowhere, so it dropped
+// most of its area.
+#[test]
+fn a_face_repeating_every_corner_cuts_without_losing_area() {
+    // The x = 0.75 plane cuts one corner off; the other part keeps four
+    // repeated corners.
+    let pentagon = face(&[
+        [0.3, 1.1, 0.2],
+        [0.3, 1.1, 0.2],
+        [0.3, 1.1, 0.5],
+        [0.3, 1.1, 0.5],
+        [0.5, 1.1, 0.6],
+        [0.5, 1.1, 0.6],
+        [0.76, 1.1, 0.5],
+        [0.76, 1.1, 0.5],
+        [0.7, 1.1, 0.2],
+        [0.7, 1.1, 0.2],
+    ]);
+    let mesh = pack(&[volume(vec![pentagon.clone()])]);
+    let range = assert_gridded_face(&mesh, 0, &pentagon, SPACING);
+    assert!(
+        range.len() > pentagon.vertices.len(),
+        "the plane cuts the face"
+    );
+}
+
 // Regression: a range the search gave up counting counted as no planes, so
 // the bound fell under the true count (P18).
 #[test]
@@ -917,4 +944,98 @@ fn a_vertex_at_the_plane_tolerance_boundary_is_judged_alike_by_both_faces() {
         crossed.push(from_wide.iter().any(|c| c[0] == 1.25));
     }
     assert_eq!(crossed, [false, true], "plane crossings of the shared edge");
+}
+
+/// A 1 m wedge with a `tip_degrees` tip, facing up in the y = 1.1 plane with
+/// its tip T at x 0.3, z 0.6. In-plane, CCW, in meters: T at the origin, Y on
+/// the bottom edge 1 mm out, S a dent 0.09 mm inside that edge 0.135 mm past
+/// Y, its far corners Z and X2 a meter out, and X1 on the long edge 0.9 m out.
+fn dented_wedge(tip_degrees: f64) -> EnvironmentSurfaceFace {
+    let (sin, cos) = tip_degrees.to_radians().sin_cos();
+    let ring = [
+        (0.0, 0.0),
+        (0.001, 0.0),
+        (0.0011, 0.00009),
+        (1.0, 0.0),
+        (cos, sin),
+        (0.9 * cos, 0.9 * sin),
+    ];
+    upward(
+        ring.iter()
+            .map(|&(u, v)| [(0.3 + u) as f32, 1.1, (0.6 - v) as f32])
+            .collect(),
+    )
+}
+
+/// Asserts the one face `mesh` packs tiles it: every triangle winds with it
+/// about +Y, their areas sum to its own within its rounding, and each of its
+/// own vertices, which lead the mesh, is a triangle corner.
+fn assert_tiles_exactly(mesh: &FluidSurfaceMesh, face: &EnvironmentSurfaceFace) {
+    let position = |i: u32| dvec(mesh.vertices[i as usize].position);
+    let mut tiled = 0.0;
+    for t in mesh.indices.as_chunks::<3>().0 {
+        let [p, q, r] = t.map(position);
+        let twice = (q - p).cross(r - p).dot(DVec3::Y);
+        assert!(twice > 0.0, "triangle {t:?} has twice-area {twice}");
+        tiled += twice;
+    }
+    let ring: Vec<DVec3> = face.vertices.iter().map(|v| dvec(v.position)).collect();
+    let count = ring.len();
+    let whole: f64 = (1..count - 1)
+        .map(|i| {
+            (ring[i] - ring[0])
+                .cross(ring[i + 1] - ring[0])
+                .dot(DVec3::Y)
+        })
+        .sum();
+    // Packing rounds a crossing off an oblique edge by up to half an f32 ulp.
+    let perimeter: f64 = (0..count)
+        .map(|i| ring[i].distance(ring[(i + 1) % count]))
+        .sum();
+    let magnitude = ring
+        .iter()
+        .fold(0.0f64, |m, p| m.max(p.abs().max_element()));
+    let rounding = f64::from(f32::EPSILON) / 2.0 * magnitude * perimeter;
+    assert!(
+        (whole - tiled).abs() <= 1.0e-6 * whole + rounding,
+        "face {whole}, triangles {tiled}"
+    );
+    for vertex in 0..count as u32 {
+        assert!(
+            mesh.indices.contains(&vertex),
+            "vertex {vertex} is no triangle corner"
+        );
+    }
+}
+
+// Regression (review round 3): the ear clip tested no ear for a vertex inside
+// it, and took a reflex vertex for a collinear one. On a 1 m wedge with a 10°
+// or 20° tip, the dent S lies inside the ear from X1 through the tip to Y. In
+// the ring rotations that clip it first, the last three vertices wound
+// backward and were dropped, and the triangles summed to 22 to 36 mm² more
+// than the face: a 0.09 mm strip as long as the ear's chord, drawn twice. An
+// ear now holds no reflex vertex, so every rotation tiles the wedge exactly,
+// ungridded and on a lattice whose one plane, x = 1.25, cuts off the far end
+// alone, leaving T, Y, S and X1 in one part.
+#[test]
+fn a_wedge_with_a_dent_beside_its_tip_tiles_exactly_in_every_rotation() {
+    let coarse = FluidGridLattice::new(ORIGIN, [2.0; 3]).expect("a 2 m lattice is usable");
+    for tip_degrees in [10.0, 20.0] {
+        let wedge = dented_wedge(tip_degrees);
+        for lead in 0..wedge.vertices.len() {
+            let mut rotated = wedge.clone();
+            rotated.vertices.rotate_left(lead);
+            for lattice in [None, Some(&coarse)] {
+                let mesh = pack_fluid_surfaces(&[volume(vec![rotated.clone()])], &[], 1, lattice);
+                assert_eq!(mesh.grid.is_some(), lattice.is_some());
+                if lattice.is_some() {
+                    assert!(
+                        mesh.vertices.iter().any(|v| v.position[0] == 1.25),
+                        "the x = 1.25 plane cuts the wedge"
+                    );
+                }
+                assert_tiles_exactly(&mesh, &rotated);
+            }
+        }
+    }
 }

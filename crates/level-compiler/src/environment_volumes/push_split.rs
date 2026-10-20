@@ -55,16 +55,11 @@ impl PushBrushes {
         Self { brushes }
     }
 
-    /// Split each exposed piece of `side` along every push brush over it, and
-    /// report whether any piece was cut. A piece wholly under a push, or
-    /// wholly clear of it, stays whole and untouched. `face_bounds` is the
-    /// side's vertex bounds grown by [`FLUSH_EPSILON`].
-    pub(super) fn split(
-        &self,
-        pieces: &mut Vec<Vec<DVec3>>,
-        side: &BrushSide,
-        face_bounds: &Aabb,
-    ) -> bool {
+    /// Split each exposed piece of `side` along every push brush over it. A
+    /// piece wholly under a push, or wholly clear of it, stays whole and
+    /// untouched. `face_bounds` is the side's vertex bounds grown by
+    /// [`FLUSH_EPSILON`].
+    pub(super) fn split(&self, pieces: &mut Vec<Vec<DVec3>>, side: &BrushSide, face_bounds: &Aabb) {
         // Every sample point lies on the side's plane moved inward by the
         // sample depth, inside the face's bounds grown by that depth: a push
         // missing either holds none of them.
@@ -73,7 +68,6 @@ impl PushBrushes {
             min: face_bounds.min - DVec3::splat(DRIFT_SAMPLE_DEPTH),
             max: face_bounds.max + DVec3::splat(DRIFT_SAMPLE_DEPTH),
         };
-        let mut cut = false;
         for push in &self.brushes {
             if pieces.is_empty() {
                 break;
@@ -89,7 +83,6 @@ impl PushBrushes {
             for piece in pieces.drain(..) {
                 match cut_by_push(&piece, side.normal, &push.planes) {
                     Some((inside, outside)) if !outside.is_empty() => {
-                        cut = true;
                         kept.push(inside);
                         kept.extend(outside);
                     }
@@ -98,7 +91,6 @@ impl PushBrushes {
             }
             *pieces = kept;
         }
-        cut
     }
 }
 

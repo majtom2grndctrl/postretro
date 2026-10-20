@@ -39,9 +39,9 @@ pub enum FluidReflectionQuality {
 pub struct FluidReflectionMarch {
     pub step_budget: u32,
     /// Scene rows per full-resolution pixel of march stride: the stride is
-    /// `max(1, scene_rows / rows_per_stride_pixel)`, so a ray's reach covers
-    /// about the same share of the screen at every resolution, and every
-    /// target extent marches the same stride.
+    /// `max(1.0, scene_rows / rows_per_stride_pixel)`, fractional, so a ray's
+    /// reach covers about the same share of the screen at every resolution,
+    /// and every target extent marches the same stride.
     pub rows_per_stride_pixel: u32,
     /// Metres the near end of a step's view-depth interval may lie behind the
     /// depth buffer for a hit. The band bounds the interval's nearer end: the
@@ -66,9 +66,11 @@ impl FluidReflectionMarch {
     }
 
     /// Full-resolution pixels per march step at `scene` extent: one per
-    /// `rows_per_stride_pixel` scene rows, at least one.
+    /// `rows_per_stride_pixel` scene rows, at least one. Fractional, never
+    /// floored: the march samples `mix(p0, p1, s)` and loads the pixel it
+    /// lands in, so a saturated tier reaches the full screen at every height.
     pub fn stride(self, scene: (u32, u32)) -> f32 {
-        (scene.1 / self.rows_per_stride_pixel.max(1)).max(1) as f32
+        (scene.1 as f32 / self.rows_per_stride_pixel.max(1) as f32).max(1.0)
     }
 }
 
@@ -109,8 +111,18 @@ impl FluidReflectionPreset {
 }
 
 /// Every screen-space tier's preset, lowest first: fraction, steps, stride
-/// divisor, thickness (m). Placeholders until perf data tunes them; a lower
-/// tier never reaches further than a higher one.
+/// divisor, thickness (m). A lower tier never reaches further than a higher
+/// one.
+///
+/// Sizing rule. A ray's reach is about steps / divisor screen heights,
+/// saturating near 1.07, where a missing ray has left the screen. High,
+/// very high and ultra are saturated at about 1.07 x divisor steps. Cost then
+/// grows with the divisor, so each tier above medium halves the stride. The
+/// stride is fractional (scene rows ÷ divisor, never floored) so that a
+/// saturated tier reaches the full screen at every height.
+/// Medium is deliberately unsaturated at 48 steps (owner choice). Thickness
+/// costs nothing; it is a quality choice.
+/// See: context/lib/rendering_pipeline.md §7.3a
 const FLUID_REFLECTION_PRESETS: [(FluidReflectionQuality, FluidReflectionPreset); 4] = [
     (
         FluidReflectionQuality::Medium,
@@ -118,15 +130,15 @@ const FLUID_REFLECTION_PRESETS: [(FluidReflectionQuality, FluidReflectionPreset)
     ),
     (
         FluidReflectionQuality::High,
-        FluidReflectionPreset::new(1.0, 96, 270, 1.0),
+        FluidReflectionPreset::new(1.0, 193, 180, 1.0),
     ),
     (
         FluidReflectionQuality::VeryHigh,
-        FluidReflectionPreset::new(1.0, 192, 180, 1.5),
+        FluidReflectionPreset::new(1.0, 386, 360, 1.5),
     ),
     (
         FluidReflectionQuality::Ultra,
-        FluidReflectionPreset::new(1.0, 256, 135, 2.5),
+        FluidReflectionPreset::new(1.0, 578, 540, 2.5),
     ),
 ];
 

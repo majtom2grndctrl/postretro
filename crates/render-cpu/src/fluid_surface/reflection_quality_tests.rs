@@ -56,9 +56,9 @@ fn every_fluid_reflection_tier_pins_its_preset() {
             None,
             None,
             Some((0.5, 48, 180, 1.0)),
-            Some((1.0, 96, 270, 1.0)),
-            Some((1.0, 192, 180, 1.5)),
-            Some((1.0, 256, 135, 2.5)),
+            Some((1.0, 193, 180, 1.0)),
+            Some((1.0, 386, 360, 1.5)),
+            Some((1.0, 578, 540, 2.5)),
         ]
     );
     // Each preset is already sanitized: the dev tuning's rules change none.
@@ -97,14 +97,15 @@ fn fluid_reflection_march_sanitizes_by_the_dev_tuning_rules() {
         ..current
     };
     assert_eq!(nan.sanitized(current).thickness, current.thickness);
-    // Stride: one full-resolution pixel per divisor's rows, at least one.
+    // Stride: one full-resolution pixel per divisor's rows, at least one, and
+    // fractional where the rows do not divide evenly.
     let march = FluidReflectionMarch {
         rows_per_stride_pixel: 270,
         ..current
     };
     assert_eq!(march.stride((3840, 2160)), 8.0);
     assert_eq!(march.stride((1920, 1080)), 4.0);
-    assert_eq!(march.stride((640, 360)), 1.0);
+    assert_eq!(march.stride((640, 360)), 360.0 / 270.0);
     assert_eq!(march.stride((64, 48)), 1.0);
 }
 

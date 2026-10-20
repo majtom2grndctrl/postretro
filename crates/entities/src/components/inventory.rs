@@ -25,8 +25,8 @@ pub struct Inventory {
     /// Slot this inventory was composed active with (0 for an inventory never
     /// composed). No switch, acquire or release moves it. The host's tuning
     /// payload carries it so a connected client composes its own copy with the
-    /// same selection, and adopts a later payload's slot while its selection
-    /// is untouched (`networking.md` §What gates, and what replicates instead).
+    /// same selection; a later payload never re-applies it to the selection
+    /// (`networking.md` §What gates, and what replicates instead).
     pub spawn_active_slot: usize,
 }
 

@@ -39,8 +39,8 @@ read at: 50ef6ea
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Extend `receive_alternate.rs` to install through the endpoint with distinct host/client descriptors and a held payload; write the late-join row against today's code (expect fail) | integrating executor | — | |
-| 2 | Remove the no-payload composition branch; re-seed `net_descriptor.rs` merge tests; sim unit rows 1–3 | integrating executor | 1 | |
-| 3 | Remove adoption: gate, adopt fn, `selection_declared_pawn`, `selection_idle`, main.rs handling, `is_idle_on`, their tests; netcode endpoint rows 4, 7–11, 13 | integrating executor | 2 | |
-| 4 | Slot-key-in-window conditioned row; doc comments; `networking.md` "not yet built" sentence held for landing | integrating executor | 3 | |
+| 1 | Extend `receive_alternate.rs` to install through the endpoint with distinct host/client descriptors and a held payload; write the late-join row against today's code (expect fail) | integrating executor | — | done — both late-join rows failed on the pre-change build ("the armed pawn composed before its payload"), pass after |
+| 2 | Remove the no-payload composition branch; re-seed `net_descriptor.rs` merge tests; sim unit rows 1–3 | integrating executor | 1 | done — `net_descriptor` 34/34 |
+| 3 | Remove adoption: gate, adopt fn, `selection_declared_pawn`, `selection_idle`, main.rs handling, `is_idle_on`, their tests; netcode endpoint rows 4, 7–11, 13 | integrating executor | 2 | done — `client_tuning_install_tests` 8/8, netcode endpoint/tuning filter 45/45 |
+| 4 | Slot-key-in-window conditioned row; doc comments; `networking.md` "not yet built" sentence held for landing | integrating executor | 3 | done — conditioned/selection/client_weapon/environment-install filter 138/138 |
 | 5 | Gates 15–17, preflight, review loop | integrating executor | 4 | |

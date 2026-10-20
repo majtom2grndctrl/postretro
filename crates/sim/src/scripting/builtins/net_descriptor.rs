@@ -198,12 +198,15 @@ pub fn materialize_net_local_movement_component_from_tuning(
 }
 
 /// Materialize a connected client's local wieldable inventory and merge the
-/// host's replicated weapon tuning. A local-player baseline normally arrives
-/// first, so descriptor defaults make the pawn responsive until Control arrives.
-/// If Control wins the race, its fixed slot array supplies the composition before
-/// the instances are created. Later payloads preserve and retune a same-canonical
-/// instance, including its magazine and live timers; a changed canonical name
-/// replaces the local instance at the host-named slot.
+/// host's replicated weapon tuning. The inventory composes once, from the first
+/// installed payload's fixed slot array and spawn active slot, whichever of the
+/// pawn baseline and the payload lands first; a pawn armed before its payload
+/// holds no inventory, as its movement already waits. It never composes from
+/// the client's own descriptor (`networking.md` §What gates, and what replicates
+/// instead). Later payloads preserve and retune a same-canonical instance,
+/// including its magazine and live timers; a changed canonical name replaces
+/// the local instance at the host-named slot. Returns whether the pawn holds an
+/// inventory.
 pub fn materialize_net_local_wieldable_inventory_from_tuning(
     entity_class: &str,
     descriptors: &[EntityTypeDescriptor],
@@ -216,6 +219,9 @@ pub fn materialize_net_local_wieldable_inventory_from_tuning(
         Ok(true)
     );
     if !has_inventory {
+        let Some(tuning) = tuning else {
+            return false;
+        };
         let placement = MapEntity {
             map_ordinal: None,
             classname: entity_class.to_string(),
@@ -226,36 +232,20 @@ pub fn materialize_net_local_wieldable_inventory_from_tuning(
             key_values: Default::default(),
             tags: vec![],
         };
-        if let Some(tuning) = tuning {
-            let slots = std::array::from_fn(|slot| {
-                tuning.wieldables[slot]
-                    .as_ref()
-                    .map(|weapon| weapon.canonical_name.clone())
-            });
-            let _ = compose_wieldable_inventory_from_slots(
-                registry,
-                id,
-                &placement,
-                descriptors,
-                &slots,
-                None,
-                Some(tuning.spawn_active_slot),
-            );
-        } else if let Some(descriptor) = find_descriptor(descriptors, entity_class) {
-            let _ = compose_wieldable_inventory(
-                registry,
-                id,
-                descriptor,
-                &placement,
-                descriptors,
-                None,
-            );
-        } else {
-            log::warn!(
-                "[Net] local pawn entity_class `{entity_class}` not registered; wieldable inventory stays inert"
-            );
-            return false;
-        }
+        let slots = std::array::from_fn(|slot| {
+            tuning.wieldables[slot]
+                .as_ref()
+                .map(|weapon| weapon.canonical_name.clone())
+        });
+        let _ = compose_wieldable_inventory_from_slots(
+            registry,
+            id,
+            &placement,
+            descriptors,
+            &slots,
+            None,
+            Some(tuning.spawn_active_slot),
+        );
     }
 
     if registry.get_component::<Inventory>(id).is_err() {
@@ -674,6 +664,7 @@ mod tests {
     use super::*;
     use glam::{Quat, Vec3};
     use log::Level;
+    use postretro_entities::AmmoReserve;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
@@ -1606,6 +1597,173 @@ mod tests {
         }
     }
 
+    fn ammo_weapon_descriptor_of(
+        classname: &str,
+        ammo_type: &str,
+        magazine: u32,
+        reserve: u32,
+    ) -> EntityTypeDescriptor {
+        let mut descriptor = weapon_descriptor(classname);
+        descriptor.weapon.as_mut().unwrap().resource = Some(WeaponResource::Ammo(AmmoResource {
+            ammo_type: ammo_type.to_string(),
+            magazine,
+            cost_per_shot: 1,
+            reserve,
+            reload_ms: 900,
+            reload_style: ReloadStyle::Magazine,
+        }));
+        descriptor
+    }
+
+    /// A host payload naming `slots`, each row carrying its descriptor's resource.
+    fn payload_for(
+        descriptors: &[EntityTypeDescriptor],
+        slots: &[(usize, &str)],
+        spawn_active_slot: usize,
+    ) -> TuningPayload {
+        let mut payload =
+            TuningPayload::new(None, std::array::from_fn(|_| None), test_environment());
+        for &(slot, name) in slots {
+            let mut row = tuning_for_slot(slot, name, 64.0, 100.0, 0, 0).wieldables[slot]
+                .take()
+                .unwrap();
+            row.resource = find_descriptor(descriptors, name)
+                .and_then(|descriptor| descriptor.weapon.as_ref())
+                .and_then(|weapon| weapon.resource.clone());
+            payload.wieldables[slot] = Some(row);
+        }
+        payload.with_spawn_active_slot(spawn_active_slot)
+    }
+
+    /// A client whose own player loadout is a shell weapon the host never
+    /// names, beside the host's two bullet weapons.
+    fn differing_loadout_descriptors() -> Vec<EntityTypeDescriptor> {
+        vec![
+            player_with_default_weapon("player", "local_shotgun"),
+            ammo_weapon_descriptor_of("local_shotgun", "shells.buck", 8, 32),
+            ammo_weapon_descriptor_of("host_pistol", "bullets.light", 12, 48),
+            ammo_weapon_descriptor_of("host_rifle", "bullets.rifle", 30, 120),
+        ]
+    }
+
+    const HOST_SLOTS: [(usize, &str); 2] = [(0, "host_pistol"), (1, "host_rifle")];
+
+    fn magazines(reg: &EntityRegistry, pawn: EntityId) -> Vec<Option<u32>> {
+        reg.get_component::<Inventory>(pawn)
+            .unwrap()
+            .wieldables
+            .iter()
+            .map(|weapon| {
+                weapon.map(|weapon| {
+                    reg.get_component::<WeaponComponent>(weapon)
+                        .unwrap()
+                        .magazine
+                })
+            })
+            .collect()
+    }
+
+    // Regression: a pawn baseline that armed before the host's payload composed
+    // from the client's own descriptor's loadout. It now composes nothing until
+    // the payload arrives, which composes the host's layout on its spawn slot.
+    #[test]
+    fn client_arm_before_the_payload_composes_nothing_then_the_payload_composes_the_host_layout() {
+        let descriptors = differing_loadout_descriptors();
+        let mut reg = EntityRegistry::new();
+        let pawn = reg.spawn(Transform::default());
+
+        assert!(!materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            None,
+        ));
+        assert_eq!(
+            reg.has_component_kind(pawn, ComponentKind::Inventory),
+            Ok(false)
+        );
+        assert_eq!(
+            reg.iter_with_kind(ComponentKind::Weapon).count(),
+            0,
+            "nothing from the client's own loadout"
+        );
+        assert!(reg.get_component::<AmmoReserve>(pawn).is_err());
+
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            Some(&payload_for(&descriptors, &HOST_SLOTS, 1)),
+        ));
+        let inventory = reg.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!((inventory.active_slot, inventory.spawn_active_slot), (1, 1));
+        let names: Vec<_> = inventory
+            .wieldables
+            .iter()
+            .map(|weapon| {
+                weapon.map(|weapon| {
+                    reg.get_component::<DescriptorProvenance>(weapon)
+                        .unwrap()
+                        .canonical_name
+                        .clone()
+                })
+            })
+            .collect();
+        let mut expected = vec![None; WIELDABLE_SLOT_CAPACITY];
+        expected[0] = Some("host_pistol".to_string());
+        expected[1] = Some("host_rifle".to_string());
+        assert_eq!(names, expected, "the host's slot layout");
+    }
+
+    // Regression: own-descriptor composition seeded reserve for the client's
+    // own loadout, and the late payload's merge never removed it. A late
+    // payload now composes exactly what the payload-first path does.
+    #[test]
+    fn late_payload_seeds_reserve_and_magazines_as_the_payload_first_path() {
+        let descriptors = differing_loadout_descriptors();
+        let payload = payload_for(&descriptors, &HOST_SLOTS, 1);
+
+        let mut first = EntityRegistry::new();
+        let first_pawn = first.spawn(Transform::default());
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut first,
+            first_pawn,
+            Some(&payload),
+        ));
+
+        let mut late = EntityRegistry::new();
+        let late_pawn = late.spawn(Transform::default());
+        materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut late,
+            late_pawn,
+            None,
+        );
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut late,
+            late_pawn,
+            Some(&payload),
+        ));
+
+        let reserve = late.get_component::<AmmoReserve>(late_pawn).unwrap();
+        assert_eq!(
+            reserve,
+            first.get_component::<AmmoReserve>(first_pawn).unwrap()
+        );
+        assert_eq!(reserve.available("bullets.light"), 48);
+        assert_eq!(reserve.available("bullets.rifle"), 120);
+        assert_eq!(reserve.available("shells.buck"), 0, "no own-loadout ammo");
+        assert_eq!(magazines(&late, late_pawn), magazines(&first, first_pawn));
+        assert_eq!(&magazines(&late, late_pawn)[..2], [Some(12), Some(30)]);
+    }
+
     fn tuning_for_slot(
         slot: usize,
         canonical_name: &str,
@@ -2092,12 +2250,26 @@ mod tests {
                 health_weapon("replacement_rifle"),
             ];
             let mut tuning = tuning_for_slot(0, "local_pistol", 220.0, 340.0, 55, 80);
+            if !control_first {
+                // The baseline arms first and composes nothing until Control.
+                assert!(!materialize_net_local_wieldable_inventory_from_tuning(
+                    "player",
+                    &descriptors,
+                    &mut registry,
+                    pawn,
+                    None
+                ));
+                assert_eq!(
+                    registry.has_component_kind(pawn, ComponentKind::Inventory),
+                    Ok(false)
+                );
+            }
             assert!(materialize_net_local_wieldable_inventory_from_tuning(
                 "player",
                 &descriptors,
                 &mut registry,
                 pawn,
-                if control_first { Some(&tuning) } else { None }
+                Some(&tuning)
             ));
             let item = registry
                 .get_component::<Inventory>(pawn)
@@ -2119,13 +2291,13 @@ mod tests {
             weapon.magazine = 3;
             weapon.cooldown_remaining_ms = 47.0;
             registry.set_component(item, weapon).unwrap();
-            // The other arrival must keep the already materialized instance and live state.
+            // A later re-arm must keep the already materialized instance and live state.
             assert!(materialize_net_local_wieldable_inventory_from_tuning(
                 "player",
                 &descriptors,
                 &mut registry,
                 pawn,
-                if control_first { None } else { Some(&tuning) }
+                None
             ));
             assert_eq!(
                 registry
@@ -2296,10 +2468,10 @@ mod tests {
             &descriptors,
             &mut reg,
             pawn,
-            None,
+            Some(&payload_for(&descriptors, &[(0, "local_pistol")], 0)),
         ));
         let original = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
-            .expect("descriptor inventory materializes its default wieldable");
+            .expect("the first payload composes slot 0");
 
         let mut tuning = tuning_for_slot(2, "host_ion_rifle", 220.0, 340.0, 55, 80);
         tuning.wieldables[0] = Some(WieldableTuningPayload {
@@ -2365,10 +2537,10 @@ mod tests {
             &descriptors,
             &mut reg,
             pawn,
-            None,
+            Some(&payload_for(&descriptors, &[(0, "reference_pistol")], 0)),
         ));
         let weapon_id = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
-            .expect("descriptor inventory materializes its default wieldable");
+            .expect("the first payload composes slot 0");
 
         let empty_tuning =
             TuningPayload::new(None, std::array::from_fn(|_| None), test_environment());
@@ -2404,10 +2576,10 @@ mod tests {
             &descriptors,
             &mut reg,
             pawn,
-            None,
+            Some(&payload_for(&descriptors, &[(0, "reference_pistol")], 0)),
         ));
         let weapon_id = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
-            .expect("descriptor inventory materializes its default wieldable");
+            .expect("the first payload composes slot 0");
         let mut live_weapon = reg
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
@@ -2482,10 +2654,10 @@ mod tests {
             &descriptors,
             &mut reg,
             pawn,
-            None,
+            Some(&payload_for(&descriptors, &[(0, "local_pistol")], 0)),
         ));
         let old_weapon = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
-            .expect("local descriptor inventory materializes");
+            .expect("the first payload composes slot 0");
 
         let tuning = tuning_for_slot(0, "host_ion_rifle", 220.0, 340.0, 55, 80);
         assert!(materialize_net_local_wieldable_inventory_from_tuning(
@@ -2536,7 +2708,7 @@ mod tests {
             &descriptors,
             &mut reg,
             pawn,
-            None,
+            Some(&payload_for(&descriptors, &[(0, "local_pistol")], 0)),
         ));
         let old_weapon = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0].unwrap();
 
@@ -2572,7 +2744,7 @@ mod tests {
             &descriptors,
             &mut reg,
             pawn,
-            None,
+            Some(&payload_for(&descriptors, &[(0, "reference_pistol")], 0)),
         ));
         let weapon_id = reg
             .get_component::<Inventory>(pawn)

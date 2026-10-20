@@ -8,7 +8,7 @@ use postretro_combat_model::TuningPayload;
 use postretro_entities::presentation_binding::{
     PresentationBindingKey, PresentationBindingResolver,
 };
-use postretro_entities::{ScriptCtx, SlotValue};
+use postretro_entities::{EntityTypeDescriptor, ScriptCtx, SlotValue};
 use postretro_foundation::{ActivationCursor, ActivationPhase};
 use postretro_sim::scripting_systems::ui_proxy::PlayerHudStatePublisher;
 
@@ -27,16 +27,23 @@ impl PresentationBindingResolver for NoBindings {
 }
 
 pub(super) struct SnapshotReceive {
-    pub(super) tuning: Option<TuningPayload>,
-    replication: netcode::ClientReplication,
-    state: netcode::ClientStateApply,
-    pub(super) prediction: netcode::ClientPrediction,
+    /// The production client endpoint: its replication, state apply,
+    /// prediction and tuning install. Its own transport is never polled; the
+    /// fixture's conditioned `NetClient` carries every packet.
+    pub(super) endpoint: netcode::NetEndpoint,
+    /// The client's own descriptor table. Admission gates on mod id, never on
+    /// content version, so it may differ from the host's.
+    client_descriptors: Vec<EntityTypeDescriptor>,
+    /// While set, Control tuning waits in `held_tuning` instead of installing,
+    /// as when its resend is still in flight on a lossy link.
+    hold_tuning: bool,
+    held_tuning: Vec<Vec<u8>>,
     set: netcode::ReplicableSet,
     last_snapshot_tick: Option<u32>,
     ctx: ScriptCtx,
     hud: PlayerHudStatePublisher,
-    control_installs: usize,
-    local_applies: usize,
+    pub(super) control_installs: usize,
+    pub(super) local_applies: usize,
     acknowledged_baseline: Option<u32>,
     /// Number of issued rounds when an ordinary local-pawn record applied
     /// during a live activation. This proves receive interleaves its waits.
@@ -48,48 +55,107 @@ pub(super) struct SnapshotReceive {
 }
 
 impl SnapshotReceive {
-    pub(super) fn control(&mut self, message: &wire::ServerControlMessage) {
+    pub(super) fn control(
+        &mut self,
+        message: &wire::ServerControlMessage,
+        registry: &mut EntityRegistry,
+    ) {
         if let wire::ServerControlMessage::Tuning(bytes) = message {
-            // The app's private Control installer is outside this test seam.
-            // Use the actual host-produced payload, validating its rows before
-            // passing it into the production snapshot materializer.
-            let payload: TuningPayload = serde_json::from_slice(bytes).unwrap();
-            for row in payload.wieldables.iter().flatten() {
-                row.validate().unwrap();
+            if self.hold_tuning {
+                self.held_tuning.push(bytes.clone());
+            } else {
+                self.install_tuning(bytes, registry);
             }
-            self.tuning = Some(payload);
-            self.control_installs += 1;
+        }
+    }
+
+    /// Install through the client endpoint, as the app's Control drain does,
+    /// after validating the host-produced rows.
+    fn install_tuning(&mut self, bytes: &[u8], registry: &mut EntityRegistry) {
+        let payload: TuningPayload = serde_json::from_slice(bytes).unwrap();
+        for row in payload.wieldables.iter().flatten() {
+            row.validate().unwrap();
+        }
+        self.endpoint
+            .install_tuning_payload(bytes, registry, &self.client_descriptors);
+        self.control_installs += 1;
+    }
+
+    fn replication(&self) -> &netcode::ClientReplication {
+        match &self.endpoint {
+            netcode::NetEndpoint::Client { replication, .. } => replication,
+            netcode::NetEndpoint::Host { .. } => unreachable!("the receive endpoint is a client"),
         }
     }
 }
 
+/// What the host and the client each hold when a received-snapshot fixture
+/// admits its pawn.
+pub(super) struct ReceiveSetup {
+    /// Composes the host's pawn and builds its tuning payload.
+    pub(super) host_descriptors: Vec<EntityTypeDescriptor>,
+    pub(super) client_descriptors: Vec<EntityTypeDescriptor>,
+    /// A selection the host restores, as after a level change.
+    pub(super) carried: Option<postretro_combat_model::CarriedState>,
+    /// The weapon the fixture's own actors are built with before admission
+    /// replaces them.
+    pub(super) weapon: WeaponDescriptor,
+    /// Hold Control tuning on the client until [`Fixture::release_tuning`].
+    pub(super) hold_tuning: bool,
+}
+
+/// The dev mod's script context and its registered entity descriptors.
+pub(super) fn dev_mod_descriptors() -> (ScriptCtx, Vec<EntityTypeDescriptor>) {
+    use crate::startup::lifecycle::tests::{script_ctx, test_app};
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+
+    let mut app = test_app();
+    let ctx = script_ctx(&app);
+    let mut primitives = PrimitiveRegistry::new();
+    crate::scripting::primitives::register_all(&mut primitives, ctx.clone());
+    let manifest = crate::coop_fixture_tests::initialize_dev_mod(&mut app, &primitives);
+    (ctx, manifest.entities)
+}
+
+pub(super) fn descriptor_named(
+    descriptors: &[EntityTypeDescriptor],
+    canonical: &str,
+) -> EntityTypeDescriptor {
+    descriptors
+        .iter()
+        .find(|entity| entity.canonical_name.as_deref() == Some(canonical))
+        .unwrap_or_else(|| panic!("dev mod registers `{canonical}`"))
+        .clone()
+}
+
 impl Fixture {
     fn with_received_dev_weapon(canonical: &str) -> Self {
-        use crate::startup::lifecycle::tests::{script_ctx, test_app};
-        use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
-
-        let mut app = test_app();
-        let mut ctx = script_ctx(&app);
-        let mut primitives = PrimitiveRegistry::new();
-        crate::scripting::primitives::register_all(&mut primitives, ctx.clone());
-        let manifest = crate::coop_fixture_tests::initialize_dev_mod(&mut app, &primitives);
-        let weapon = manifest
-            .entities
-            .iter()
-            .find(|entity| entity.canonical_name.as_deref() == Some(canonical))
-            .unwrap()
-            .clone();
-        let mut player = manifest
-            .entities
-            .iter()
-            .find(|entity| entity.canonical_name.as_deref() == Some("player"))
-            .unwrap()
-            .clone();
+        let (ctx, entities) = dev_mod_descriptors();
+        let weapon = descriptor_named(&entities, canonical);
+        let mut player = descriptor_named(&entities, "player");
         // Only loadout breadth changes; weapon actions, charge expressions,
         // resources, accuracy, muzzle offset and presentation stay authored.
         player.inventory.as_mut().unwrap().loadout = vec![canonical.into()];
-        let mut fixture = Self::new(LinkConfig::perfect(), weapon.weapon.clone().unwrap());
-        fixture.descriptors = vec![player, weapon];
+        let descriptors = vec![player, weapon.clone()];
+        let mut fixture = Self::with_snapshot_receive(
+            ctx,
+            ReceiveSetup {
+                host_descriptors: descriptors.clone(),
+                client_descriptors: descriptors,
+                carried: None,
+                weapon: weapon.weapon.unwrap(),
+                hold_tuning: false,
+            },
+        );
+        fixture.idle(0, 20);
+        fixture
+    }
+
+    /// Admit the client's pawn through real slot admission, send its tuning
+    /// and finish the initial baseline's acknowledgement round trip.
+    pub(super) fn with_snapshot_receive(mut ctx: ScriptCtx, setup: ReceiveSetup) -> Self {
+        let mut fixture = Self::new(LinkConfig::perfect(), setup.weapon);
+        fixture.descriptors = setup.host_descriptors;
         fixture
             .host
             .borrow_mut()
@@ -127,7 +193,7 @@ impl Fixture {
             0,
             &fixture.descriptors,
             None,
-            None,
+            setup.carried.as_ref(),
         )
         .expect("real slot admission composes the remote player's loadout");
         fixture.host_actors.pawn = pawn;
@@ -155,11 +221,19 @@ impl Fixture {
             CLIENT,
             tuning,
         );
+        let endpoint = netcode::NetEndpoint::from_role(
+            &netcode::NetRole::Connect {
+                addr: std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint");
         fixture.receive = Some(SnapshotReceive {
-            tuning: None,
-            replication: Default::default(),
-            state: Default::default(),
-            prediction: Default::default(),
+            endpoint,
+            client_descriptors: setup.client_descriptors,
+            hold_tuning: setup.hold_tuning,
+            held_tuning: Vec::new(),
             set,
             last_snapshot_tick: None,
             hud: PlayerHudStatePublisher::new(ctx.clone()),
@@ -189,8 +263,14 @@ impl Fixture {
                 u64::from(fixture.tick) * 16_667,
             );
         }
-        assert_eq!(fixture.receive.as_ref().unwrap().control_installs, 1);
-        assert!(fixture.receive.as_ref().unwrap().local_applies > 0);
+        let receive = fixture.receive.as_ref().unwrap();
+        if setup.hold_tuning {
+            assert_eq!(receive.control_installs, 0);
+            assert_eq!(receive.held_tuning.len(), 1, "the payload is in flight");
+        } else {
+            assert_eq!(receive.control_installs, 1);
+        }
+        assert!(receive.local_applies > 0);
         assert!(
             fixture.pawn_baseline_acked(),
             "initial pawn baseline {:?} for network {} must be acknowledged; applies={}, latest_received_tick={:?}, host/client participating={}/{}",
@@ -203,7 +283,7 @@ impl Fixture {
                 .receive
                 .as_ref()
                 .unwrap()
-                .replication
+                .replication()
                 .latest_server_tick(),
             fixture.server.is_participating(CLIENT),
             fixture.client.is_participating(),
@@ -211,8 +291,17 @@ impl Fixture {
         fixture.receive.as_mut().unwrap().acknowledged_baseline = fixture
             .replication
             .current_baseline_id(fixture.pawn_network());
-        fixture.idle(0, 20);
         fixture
+    }
+
+    /// Install every held tuning payload through the client endpoint, as the
+    /// Control drain does at the top of a frame once the resend lands.
+    pub(super) fn release_tuning(&mut self) {
+        let receive = self.receive.as_mut().unwrap();
+        receive.hold_tuning = false;
+        for bytes in std::mem::take(&mut receive.held_tuning) {
+            receive.install_tuning(&bytes, &mut self.local.borrow_mut());
+        }
     }
 
     fn pawn_baseline_acked(&self) -> bool {
@@ -249,7 +338,18 @@ impl Fixture {
         let Some(receive) = self.receive.as_mut() else {
             return;
         };
-        let tuning = receive.tuning.as_ref();
+        let netcode::NetEndpoint::Client {
+            replication,
+            state_slots,
+            prediction,
+            tuning,
+            tuning_generation,
+            applied_movement_tuning_generation,
+            ..
+        } = &mut receive.endpoint
+        else {
+            unreachable!("the receive endpoint is a client");
+        };
         let no_volumes = postretro_collision::EnvironmentVolumes::empty();
         let outcome = netcode::client_receive_and_apply(
             &mut self.local.borrow_mut(),
@@ -258,10 +358,10 @@ impl Fixture {
             &Default::default(),
             &Default::default(),
             &mut self.client,
-            &mut receive.replication,
-            &mut receive.state,
-            &mut receive.prediction,
-            &self.descriptors,
+            replication,
+            state_slots,
+            prediction,
+            &receive.client_descriptors,
             &self.zones,
             None,
             &self.world,
@@ -269,23 +369,37 @@ impl Fixture {
             DT,
             Duration::from_secs_f32(DT),
             None,
-            tuning.and_then(|payload| payload.movement.as_ref()),
-            tuning,
-            false,
+            tuning
+                .as_deref()
+                .and_then(|payload| payload.movement.as_ref()),
+            tuning.as_deref(),
+            *applied_movement_tuning_generation != *tuning_generation,
             &mut NoBindings,
             f64::from(self.tick) * f64::from(DT),
             Some(0.0),
         );
+        // As the app's client frame does once an arm met movement tuning.
+        if outcome.armed_local_pawn.is_some()
+            && tuning
+                .as_deref()
+                .and_then(|payload| payload.movement.as_ref())
+                .is_some()
+        {
+            *applied_movement_tuning_generation = *tuning_generation;
+        }
         if let Some(armed) = outcome.armed_local_pawn {
             receive.local_applies += 1;
             self.local_actors.pawn = armed.entity_id;
-            self.local_actors.weapon = self
+            // A pawn armed before its payload installs holds no inventory.
+            if let Some(weapon) = self
                 .local
                 .borrow()
                 .get_component::<Inventory>(armed.entity_id)
-                .unwrap()
-                .active_wieldable()
-                .unwrap();
+                .ok()
+                .and_then(Inventory::active_wieldable)
+            {
+                self.local_actors.weapon = weapon;
+            }
             if before.is_some() {
                 receive.active_applies.push(self.snapshots.len());
                 // Setup has acknowledged the pawn baseline; subsequent ordinary

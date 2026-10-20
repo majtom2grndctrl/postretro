@@ -18,7 +18,7 @@ use postretro_foundation::{
 
 use super::{
     MoverAutoCloseTimers, MoverEventKind, MoverTickStateTable, apply_mover_command,
-    run_kinematic_mover_tick, run_mover_blocking_pass,
+    run_kinematic_mover_tick, run_mover_blocking_pass, run_mover_pin_pretest,
 };
 use crate::collision::moving::{
     CombinedCollisionWorld, MoverCollider, deepest_mover_penetration, point_inside_mover,
@@ -443,6 +443,18 @@ impl Rig {
         let mut events = Vec::new();
         let mut impacts = 0usize;
 
+        {
+            let (poses, blocking_state) = self.table.split_for_blocking();
+            run_mover_pin_pretest(
+                &mut self.registry,
+                &self.world,
+                &self.colliders,
+                &poses,
+                blocking_state,
+                DT,
+                &mut events,
+            );
+        }
         run_kinematic_mover_tick(&mut self.registry, &mut self.table, DT);
         events.extend(self.table.terminus_events());
         if let Some(auto_close) = self.auto_close.as_ref() {

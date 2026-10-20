@@ -124,10 +124,9 @@ fn unblocked_mover_displacement(
 
 /// Whether the static world prevents the mover-overlap recovery push.
 ///
-/// The host blocking pass also evaluates this definition so later pin-sensitive
-/// policies share this geometry, while the predicted displacement path retains
-/// its existing response unchanged.
-pub(crate) fn mover_push_is_blocked_by_static(
+/// The host pin test (`kinematic_mover/pin.rs`) runs this same cast, widened to
+/// other movers; the predicted displacement path keeps its static-only test.
+fn mover_push_is_blocked_by_static(
     static_world: &CollisionWorld,
     position: Vec3,
     capsule: &Capsule,

@@ -16,6 +16,7 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 mod auto_close;
 mod blocking;
 mod command;
+mod pin;
 #[cfg(test)]
 mod pin_test_fixtures;
 #[cfg(test)]
@@ -24,6 +25,7 @@ mod pin_tests;
 pub use auto_close::MoverAutoCloseTimers;
 pub use blocking::{MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
 pub use command::apply_mover_command;
+pub use pin::run_mover_pin_pretest;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoverTickState {
@@ -548,7 +550,7 @@ fn advance_mover(
             endpoint_arrivals.opened |= mover.direction_sign > 0 && to_index == last;
             endpoint_arrivals.closed |= mover.direction_sign < 0 && to_index == 0;
             handle_arrival_at_waypoint(mover);
-            if mover.completed {
+            if mover.completed || !mover.started {
                 break;
             }
         }
@@ -611,6 +613,13 @@ fn handle_arrival_at_waypoint(mover: &mut KinematicMoverComponent) {
         return;
     }
     match mover.mode {
+        // A reversal that brings a `once` mover back to its start ends the run
+        // unstarted, so its trigger can run it again.
+        KinematicMoverMode::Once if current == 0 && mover.direction_sign < 0 => {
+            mover.started = false;
+            mover.direction_sign = 1;
+            mover.target_segment = None;
+        }
         KinematicMoverMode::Once if current == last => {
             if mover.wait_ms.is_finite() && mover.wait_ms > 0.0 {
                 mover.wait_remaining_ms = mover.wait_ms;

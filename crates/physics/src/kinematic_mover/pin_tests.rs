@@ -67,13 +67,12 @@ fn door_leaf(mover_id: u32) -> crate::collision::moving::MoverCollider {
     )
 }
 
-// --- Reproduce first -------------------------------------------------------------
+// --- Pinned bodies, first reproduced -------------------------------------------------------------
 
-// Bug: an unswept carry under `displace` lifts a rider into a too-low ceiling,
+// Regression: an unswept carry under `displace` lifts a rider into a too-low ceiling,
 // and nothing frees it once the lift stops.
 #[test]
-#[should_panic(expected = "pinned-rider bug")]
-fn repro_default_lift_carries_rider_into_ceiling() {
+fn default_lift_never_carries_its_rider_into_a_low_ceiling() {
     let (mut rig, lift, rider) = low_ceiling_lift(BlockPolicy::Displace, 3.0, 4.6);
     rig.start(lift);
     for tick in 0..240 {
@@ -81,16 +80,15 @@ fn repro_default_lift_carries_rider_into_ceiling() {
         let depth = rig.static_overlap(rider);
         assert!(
             depth <= OVERLAP_TOLERANCE,
-            "pinned-rider bug: tick {tick} left the rider {depth} m inside the ceiling"
+            "tick {tick} left the rider {depth} m inside the ceiling"
         );
     }
 }
 
-// Bug: a default door closing on a pawn at a static jamb refuses the push and
+// Regression: a default door closing on a pawn at a static jamb refuses the push and
 // keeps closing, leaving the pawn inside its hull.
 #[test]
-#[should_panic(expected = "pinned-body bug")]
-fn repro_default_door_closes_into_pawn_at_jamb() {
+fn default_door_never_closes_into_a_pawn_at_its_jamb() {
     let world = static_boxes(&[
         floor(),
         (Vec3::new(-2.0, 0.0, -2.0), Vec3::new(-1.0, 3.0, 2.0)),
@@ -110,17 +108,16 @@ fn repro_default_door_closes_into_pawn_at_jamb() {
         rig.tick();
         assert!(
             !rig.inside_mover_hull(pawn),
-            "pinned-body bug: tick {tick} left the pawn inside the door at {:?}",
+            "tick {tick} left the pawn inside the door at {:?}",
             rig.position(pawn)
         );
     }
 }
 
-// Bug: two default leaves meeting on a pawn push it back and forth and leave it
+// Regression: two default leaves meeting on a pawn push it back and forth and leave it
 // inside one leaf; another mover never counts as a pin blocker.
 #[test]
-#[should_panic(expected = "pinned-body bug")]
-fn repro_default_double_door_traps_pawn_in_a_leaf() {
+fn default_double_door_never_traps_a_pawn_in_a_leaf() {
     let mut rig = Rig::new(static_boxes(&[floor()]));
     let right = rig.add_mover(
         box_collider(
@@ -150,7 +147,7 @@ fn repro_default_double_door_traps_pawn_in_a_leaf() {
         rig.tick();
         assert!(
             !rig.inside_mover_hull(pawn),
-            "pinned-body bug: tick {tick} left the pawn inside a leaf at {:?}",
+            "tick {tick} left the pawn inside a leaf at {:?}",
             rig.position(pawn)
         );
     }
@@ -219,11 +216,10 @@ fn two_mover_crusher_rig(damage: f32) -> (Rig, EntityId, EntityId) {
     (rig, crusher, pawn)
 }
 
-// Bug: crush's pin test reads only its own push against static geometry, so a
+// Regression: crush's pin test reads only its own push against static geometry, so a
 // rider carried sideways into a wall is never crushed.
 #[test]
-#[should_panic(expected = "pinned-body bug")]
-fn repro_crusher_misses_sideways_rider() {
+fn crusher_crushes_a_rider_carried_sideways_into_a_wall() {
     let (mut rig, platform, rider) = sideways_crusher_rig(10.0);
     rig.start(platform);
     for _ in 0..120 {
@@ -231,16 +227,15 @@ fn repro_crusher_misses_sideways_rider() {
     }
     assert!(
         health(&rig, rider) < 100.0,
-        "pinned-body bug: the crusher carried its rider into the wall unharmed at {:?}",
+        "the crusher carried its rider into the wall unharmed at {:?}",
         rig.position(rider)
     );
 }
 
-// Bug: crush never counts another mover as a pin blocker, so a body squeezed
+// Regression: crush never counts another mover as a pin blocker, so a body squeezed
 // between the crusher and a second mover is never crushed.
 #[test]
-#[should_panic(expected = "pinned-body bug")]
-fn repro_crusher_misses_two_mover_squeeze() {
+fn crusher_crushes_a_pawn_squeezed_against_another_mover() {
     let (mut rig, crusher, pawn) = two_mover_crusher_rig(10.0);
     rig.start(crusher);
     for _ in 0..120 {
@@ -248,16 +243,15 @@ fn repro_crusher_misses_two_mover_squeeze() {
     }
     assert!(
         health(&rig, pawn) < 100.0,
-        "pinned-body bug: the crusher squeezed the pawn against a mover unharmed at {:?}",
+        "the crusher squeezed the pawn against a mover unharmed at {:?}",
         rig.position(pawn)
     );
 }
 
-// Bug: a reversal that brings a `once` mover back to its start leaves it
+// Regression: a reversal that brings a `once` mover back to its start leaves it
 // started, so every later start no-ops.
 #[test]
-#[should_panic(expected = "reversed-once bug")]
-fn repro_reversed_once_door_ignores_next_start() {
+fn reversed_once_door_runs_again_on_its_next_start() {
     let mut rig = Rig::new(static_boxes(&[floor()]));
     let door = rig.add_mover(
         door_leaf(DOOR),
@@ -284,7 +278,7 @@ fn repro_reversed_once_door_ignores_next_start() {
     }
     assert!(
         (rig.mover_position(door) - Vec3::new(-1.0, 0.0, 0.0)).length() < 1.0e-3,
-        "reversed-once bug: the trigger's next start left the door at {:?}",
+        "the trigger's next start left the door at {:?}",
         rig.mover_position(door)
     );
 }

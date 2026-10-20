@@ -169,6 +169,12 @@ impl MoverCollider {
         })
     }
 
+    /// Farthest collider point from the mover origin: no rotation about the
+    /// origin carries any point further.
+    pub(crate) fn reach(&self) -> f32 {
+        self.local_radius
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn mover_id(&self) -> u32 {
         self.mover_id

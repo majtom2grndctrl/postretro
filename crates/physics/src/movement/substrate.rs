@@ -67,7 +67,8 @@ const SLIDE_REMAINING_EPSILON_SQ: f32 = 1.0e-10;
 /// Quake-derived projection-capped acceleration: only adds speed along
 /// `wish_dir_3d` until `wish_speed` is reached. Bunny-hopping emerges
 /// naturally because perpendicular speed (built up earlier) is never bled
-/// off by this function.
+/// off by this function. On the ground, `intents::ground_locomotion` runs
+/// friction before it and caps the speed it adds.
 pub(super) fn pm_accelerate(
     velocity: &mut Vec3,
     wish_dir_3d: Vec3,

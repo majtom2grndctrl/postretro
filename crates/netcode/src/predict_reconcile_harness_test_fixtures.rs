@@ -1399,7 +1399,9 @@ impl LoopbackHarness {
                         .canonical_name();
                 // Installed host tuning with no movement leaves the pawn inert, as
                 // production's `materialize_armed_local_pawn` does; every owner
-                // record re-arms, so the shared-descriptor shortcut must not revive it.
+                // record re-arms, so the shared-descriptor shortcut must not revive
+                // it. Before any tuning installs, the harness still materializes
+                // from the shared descriptors, where production stays inert.
                 let inert = self
                     .client_tuning
                     .as_deref()

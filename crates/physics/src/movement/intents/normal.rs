@@ -91,6 +91,9 @@ pub(crate) fn normal_intent(
         component.ground_params.speed.walk
     };
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
+    // A slide banks the speed the pawn arrived with, before this tick's ground
+    // friction trims it (the slide gate below reads it).
+    let arrival = component.velocity;
     if component.is_grounded() {
         ground_locomotion(component, input_dir_3d, ground_speed, control, dt);
     } else if input_dir_3d.length_squared() > 0.0 {
@@ -153,10 +156,14 @@ pub(crate) fn normal_intent(
     // tick begins the descent. The carry is `KEEP_ALL`: crouch is a resize, not a
     // velocity reset, so momentum is preserved unchanged (the §6 parity no-op).
     if input.crouch_intent {
-        if component.is_grounded()
-            && let Some(transition) = try_enter_slide(component, collision, position)
-        {
-            return Some(transition);
+        if component.is_grounded() {
+            let moved = component.velocity;
+            component.velocity.x = arrival.x;
+            component.velocity.z = arrival.z;
+            if let Some(transition) = try_enter_slide(component, collision, position) {
+                return Some(transition);
+            }
+            component.velocity = moved;
         }
         if let Some(crouch) = component.crouch.as_ref() {
             let target_half_height = crouch.half_height;

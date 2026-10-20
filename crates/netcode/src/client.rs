@@ -2096,7 +2096,7 @@ impl ClientReplication {
     /// Until the armed local pawn's first record has merged, keep a full baseline
     /// of it requested. A record that arrives before the host tuning installs
     /// cannot merge, since reconcile replays with that tuning, and an idle pawn's
-    /// later deltas carry no movement; without a fresh baseline the client would
+    /// later records arrive only while its resolved cursor advances; without a fresh baseline the client would
     /// predict from no teleport record at all.
     ///
     /// `wanted` is false once the record has merged, and while no merge could

@@ -160,8 +160,8 @@ pub(crate) fn try_enter_dash(
         }
     };
 
-    // Layered velocity (D4). The retained term is the BASE (keeps decaying under
-    // `Normal`'s friction during the dash); `dash_direction × boost_speed` is the
+    // Layered velocity (D4). The retained term is the BASE (decaying by ground
+    // friction during the dash while no input is held); `dash_direction × boost_speed` is the
     // additive BOOST layer that `dash_drag` decays. Entry horizontal velocity =
     // base + boost. At `momentum_retention = 0` the dash replaces prior
     // horizontal velocity; at `1` it is fully additive.
@@ -204,8 +204,8 @@ pub(crate) fn try_enter_dash(
 /// for its duration; full jump access returns on exit to `Normal`. Input
 /// steering (`pm_accelerate`) is scaled by
 /// `steer_control` — omitted entirely at 0 (committed dash). Horizontal decay
-/// acts on the BOOST layer (D4); the retained base keeps decaying under
-/// `Normal`'s contextual friction throughout. Exits into `Normal` when total
+/// acts on the BOOST layer (D4); the retained base decays by ground friction
+/// while no input is held, and airborne by the horizontal cap. Exits into `Normal` when total
 /// horizontal speed falls back into the steady band, or when the `DASH_MAX_MS`
 /// elapsed guard fires, whichever is first.
 ///
@@ -332,9 +332,9 @@ pub(crate) fn dash_intent(
     }
 
     // Decay. The base is the composite horizontal velocity minus the tracked
-    // boost; only the boost is `dash_drag`-decayed, while the base always decays
-    // under `Normal`'s contextual friction/cap so it never lingers above the
-    // steady band.
+    // boost; only the boost is `dash_drag`-decayed, while the base decays by
+    // ground friction with no input held (airborne: the horizontal cap) so an
+    // idle dash never lingers above the steady band.
     let mut base = Vec3::new(
         component.velocity.x - boost.x,
         0.0,

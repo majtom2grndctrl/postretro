@@ -101,7 +101,8 @@ pub(crate) fn crouching_intent(
         jumped_this_tick = true;
     }
 
-    // 3. Locomotion: ground vs air branch, mirroring `Normal` steps 4/5 but with
+    // 3. Locomotion: ground (friction, then capped acceleration) vs air branch,
+    // mirroring `Normal` steps 4/5 but with
     // the crouch speed tier as the target (and airborne cap). Crouch is
     // omnidirectional like walk/run — the tier just sits below them.
     let ground_speed = component.ground_params.speed.crouch;
@@ -140,7 +141,7 @@ pub(crate) fn crouching_intent(
         }
     }
 
-    // 5. Eye smoothing (D3). Ease `eye_current` toward the crouched eye target
+    // 4. Eye smoothing (D3). Ease `eye_current` toward the crouched eye target
     // with a framerate-independent exponential approach and write it into the
     // live capsule for the camera follow. `crouch` is `Some` here — the state was
     // only entered when it was — but fall back gracefully (no eye change) if a
@@ -153,7 +154,7 @@ pub(crate) fn crouching_intent(
         component.capsule.eye_height = *eye_current;
     }
 
-    // 6. Stand-up decision. The `Dash` transition stays available from
+    // 5. Stand-up decision. The `Dash` transition stays available from
     // `Crouching` (D10) — check it first so a dash press exits crouch into the
     // dash burst regardless of crouch/jump state.
     if input.dash_pressed

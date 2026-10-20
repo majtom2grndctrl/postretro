@@ -13,7 +13,8 @@
 // entity. A dirty entity with an acked baseline emits a `Delta`; one needing a
 // `FullBaseline` waits for the pending-byte budget, then stays in flight until a
 // qualifying snapshot ack. An entity whose acked baseline matches the current one
-// is omitted. Despawn tombstones resend until acked. Acks advance per-client state
+// is omitted, except an owner's movement pawn whose resolved cursor advanced: the
+// owner gets it again at the held baseline, to reconcile a still pawn. Despawn tombstones resend until acked. Acks advance per-client state
 // monotonically: newer baseline ids advance, older ones are ignored, and omitted
 // entries leave prior state unchanged. Stale or malformed ack/refresh ids are
 // ignored without panicking.
@@ -117,8 +118,9 @@ pub type DespawnReason = u8;
 /// the baseline, since the resolved cursor advances each tick a command resolves
 /// while the pose may not have moved. The owner still needs each advanced cursor
 /// to reconcile a still pawn, so the encoder resends the owner's pawn at its held
-/// baseline when the cursor moves (a metadata-only resend); every other recipient
-/// keeps the omission.
+/// baseline when the cursor moves; every other recipient keeps the omission. The
+/// resend is metadata-only to the client, which re-applies nothing, but it carries
+/// the full record on the wire, as a moving pawn's delta does.
 #[derive(Debug, Clone)]
 struct EntityState {
     baseline_id: u32,
@@ -385,7 +387,9 @@ impl ServerReplication {
                         && existing.presentation_binding == snap.presentation_binding =>
                 {
                     // Unchanged pose/movement mirrors: keep the baseline id so acked
-                    // clients are omitted. The authority metadata still refreshes —
+                    // clients are omitted (the owner's pawn is still resent when its
+                    // cursor advances, `encode::own_cursor_advanced`). The authority
+                    // metadata still refreshes —
                     // the resolved cursor advances every tick a command resolves even
                     // when the pawn did not visibly move, and the metadata rides the
                     // record without bumping the baseline. Active-weapon identity is
@@ -581,7 +585,8 @@ impl ServerReplication {
     /// `None` for an unregistered client. Allocates and stamps a fresh `sequence`.
     ///
     /// Per entity: omit if the client's acked baseline already matches the current
-    /// one; emit a `FullBaseline` if the client holds no acked baseline (or a refresh
+    /// one, unless it is this client's movement pawn and its resolved cursor moved
+    /// past the last one stamped for it (then resend at the held baseline); emit a `FullBaseline` if the client holds no acked baseline (or a refresh
     /// was requested for it); otherwise emit a `Delta` from the client's acked
     /// baseline to the current one. Active despawn tombstones the client has not
     /// acked go first as `Despawn` records and resend until acked. Pending full
@@ -1767,8 +1772,8 @@ mod tests {
 
     // The authority metadata is excluded from dirty detection: a tick that only
     // advances the resolved cursor (pose/movement mirrors unchanged) does NOT bump
-    // the baseline, so an acked recipient stays omitted — but the refreshed cursor is
-    // still echoed when the pawn IS re-sent (here forced via a refresh request).
+    // the baseline. The owner gets a metadata-only resend at the held baseline
+    // carrying the new cursor, and a forced refresh echoes it too.
     #[test]
     fn resolved_cursor_advance_does_not_bump_baseline() {
         let mut server = ServerReplication::new();
@@ -1821,8 +1826,8 @@ mod tests {
         }
     }
 
-    // A cursor advance resends a still pawn only to its owner: another recipient
-    // gets no cursor on the record, so it has nothing new to read.
+    // A cursor advance resends a still pawn only to its owner: other recipients do
+    // not reconcile it, so they keep the omission.
     #[test]
     fn cursor_advance_resends_a_still_pawn_only_to_its_owner() {
         let mut server = ServerReplication::new();

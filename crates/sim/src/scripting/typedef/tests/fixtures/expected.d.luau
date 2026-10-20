@@ -859,15 +859,15 @@ export type CapsuleParams = {
 export type GroundParams = {
   --- Horizontal walk, run, and crouch target speeds in metres/sec.
   speed: SpeedParams,
-  --- Ground acceleration in metres/sec²: how quickly the player reaches speed and changes direction. Acceleration turns velocity but never lifts ground speed past the current speed target. Must be finite and ≥ 0.
+  --- Ground acceleration rate per second: how quickly the player reaches speed and changes direction. Each second adds up to `accel` times the speed target. While walking, running or crouching it turns velocity but never lifts ground speed past the speed target. Must be finite and ≥ 0.
   accel: number,
   --- Maximum automatic step-up height in metres. Must be finite and ≥ 0; 0 disables stepping.
   stepHeight: number,
   --- Steepest walkable surface angle in degrees. Must be finite and lie in [0, 90].
   maxSlope: number,
-  --- Ground friction rate per second, applied every grounded tick before acceleration: how quickly the player stops, and how fast speed banked above the target (a dash or slide exit) bleeds away. With `accel` at or below `friction`, ground speed settles at `accel / friction` of the target instead of reaching it. Grounded wind drift settles at push / friction. Defaults to 8. Must be finite and ≥ 0.
+  --- Ground friction rate per second, applied each tick the player walks, runs or crouches on ground (not while sliding or dashing), before acceleration: how quickly the player stops, and how fast speed banked above the target (a dash or slide exit) bleeds away. With `accel` below `friction`, ground speed settles at `accel / friction` of the target instead of reaching it; knockback `control` scales `accel` the same way while a shove lasts. Grounded wind drift settles at push / friction, and grows to terminal velocity at 0. At 60 or more (the tick rate) every tick stops ground motion dead. Defaults to 8. Must be finite and ≥ 0.
   friction: number?,
-  --- Speed in metres/sec below which friction brakes as if moving at this speed, so a stop ends at exactly zero instead of creeping. 0 leaves pure exponential decay. Defaults to 2.5. Must be finite and ≥ 0.
+  --- Speed in metres/sec below which friction, with no movement input, brakes as if moving at this speed, so a stop ends at exactly zero instead of creeping. 0 leaves pure exponential decay. Defaults to 2.5. Must be finite and ≥ 0.
   stopSpeed: number?,
 }
 

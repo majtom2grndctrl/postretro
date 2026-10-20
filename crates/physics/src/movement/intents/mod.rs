@@ -30,7 +30,9 @@ pub(super) use vault::vault_intent;
 /// above `stop_speed`, then a constant deceleration that ends at exactly zero.
 /// A `stop_speed` of zero is pure exponential decay. Uses:
 ///   - [`ground_locomotion`]: every grounded tick of `Normal` and `Crouching`,
-///     with the descriptor's stop speed.
+///     with the descriptor's stop speed when no input is held and none otherwise.
+///   - [`apply_normal_horizontal_decay`]: the dash's retained base with no input
+///     held, with the descriptor's stop speed.
 ///   - `dash_intent`'s `dash_drag == 0` grounded boost bleed and the push drift
 ///     layer's grounded decay (`push::decay_drift`), both with no stop speed:
 ///     the boost is above the cap, and a gentle steady drift must survive as
@@ -48,7 +50,8 @@ pub(super) fn apply_ground_friction(velocity: &mut Vec3, friction: f32, stop_spe
 /// Grounded locomotion for `Normal` and `Crouching`: friction, then
 /// acceleration toward the wish (Quake's `PM_Friction` then `PM_Accelerate`).
 /// Friction runs whether or not input is held, so a turn sheds the old heading's
-/// momentum. Acceleration may turn the velocity but never lift ground speed past
+/// momentum; the stop speed applies only with no input, when the pawn is
+/// stopping. Acceleration may turn the velocity but never lift ground speed past
 /// `wish_speed`, or past the speed friction left when that was already higher:
 /// ground speed cannot climb by sweeping the aim, and speed banked above the cap
 /// (a dash or slide exit) only bleeds. The airborne path is untouched, so
@@ -62,10 +65,14 @@ pub(super) fn ground_locomotion(
 ) {
     let ground = &component.ground_params;
     let (friction, stop_speed, accel) = (ground.friction, ground.stop_speed, ground.accel);
-    apply_ground_friction(&mut component.velocity, friction, stop_speed, dt);
     if wish_dir_3d.length_squared() == 0.0 {
+        apply_ground_friction(&mut component.velocity, friction, stop_speed, dt);
         return;
     }
+    // The stop speed ends a stop; with input held it would brake a slow tier (or
+    // a pawn whose acceleration knockback control scales down) below its target
+    // every tick, pinning it at a creep instead of `accel / friction` of it.
+    apply_ground_friction(&mut component.velocity, friction, 0.0, dt);
     let limit = Vec2::new(component.velocity.x, component.velocity.z)
         .length()
         .max(wish_speed);

@@ -207,6 +207,10 @@ impl ServerReplication {
 /// record. The baseline id tracks wire state only, so a pawn standing still holds
 /// it while its cursor advances; without this resend the owner would never learn
 /// the newly resolved tick and could not correct a misprediction made at rest.
+///
+/// A cursor counts as sent once encoded, even if its snapshot is lost. That
+/// heals because the host's command queue advances the cursor every tick it
+/// resolves a command, held or neutral ones included, so the next one resends.
 fn own_cursor_advanced(
     client: &ClientReplicationState,
     network_id: u32,

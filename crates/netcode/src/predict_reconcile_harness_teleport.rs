@@ -1153,7 +1153,7 @@ fn rig_idle_input() -> crate::movement::MovementInput {
 // The joiner's host tuning installs after its arming baseline: the reliable
 // Control payload was lost and retransmitted, and lands in a frame that
 // carries no snapshot. The arming record could not merge without tuning, and
-// the idle pawn's later deltas carry no movement. The pawn stands where a
+// the idle pawn's later records arrive only while its cursor advances. The pawn stands where a
 // teleport before the join left it, latched in a second armed region. The
 // client must neither predict from its empty record (which would fire that
 // region and then cut back) nor wait for movement to change: it asks for a

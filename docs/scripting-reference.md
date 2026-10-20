@@ -210,25 +210,29 @@ moves on foot. Three fields shape how movement feels:
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `accel` | required | How quickly the player reaches speed and turns onto a new heading, in metres/sec². |
-| `friction` | `8` | How quickly the player stops, per second. Applied every tick the player stands on ground, before acceleration. |
-| `stopSpeed` | `2.5` | Below this speed, in metres/sec, friction brakes at a constant rate, so a stop ends at exactly zero instead of creeping. `0` leaves a pure exponential slow-down. |
+| `accel` | required | How quickly the player reaches speed and turns onto a new heading, per second: each second adds up to `accel` times the speed target. |
+| `friction` | `8` | How quickly the player stops, per second. Applied every tick the player walks, runs or crouches on ground, before acceleration. Sliding and dashing use their own drag. |
+| `stopSpeed` | `2.5` | When no movement key is held, friction brakes as if the player moved at least this fast, in metres/sec, so a stop ends at exactly zero instead of creeping. `0` leaves a pure exponential slow-down. |
 
 All three must be finite and at least `0`. Because friction acts while a
 movement key is held too, turning sheds the old heading's momentum. Acceleration
 turns the player but never pushes ground speed past `speed.walk`, `speed.run` or
 `speed.crouch`, so sweeping the aim does not make the player faster. Speed
 carried above those targets, out of a dash or a slide, bleeds away at the
-`friction` rate.
+`friction` rate. A slide starts from the speed the player arrived with, so
+landing just above `slide.minSpeed` still slides.
 
-Keep `accel` above `friction`. When `accel` is at or below `friction`, the player
-never reaches the authored speeds and settles at `accel / friction` of them: a
-deliberate way to make a class feel sluggish. To make a class slower instead,
-lower its `speed` values.
+Keep `accel` at or above `friction`. Below it, the player never reaches the
+authored speeds and settles at `accel / friction` of them: a deliberate way to
+make a class feel sluggish. To make a class slower instead, lower its `speed`
+values. While a knockback shove lasts, its `control` scales `accel` the same way,
+so a low `control` also slows a player who keeps running. A `friction` of `60` or
+more, the engine's tick rate, stops ground motion dead every tick.
 
 Wind from push volumes is slowed by the same `friction` while the player stands on
 ground, so a steady wind carries a standing player at push / `friction`. A
-low-friction class is blown further.
+low-friction class is blown further; at `0` a wind keeps pushing up to terminal
+velocity.
 
 ```typescript
 movement: {

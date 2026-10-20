@@ -290,3 +290,30 @@ fn a_jump_skips_ground_friction_and_a_grounded_tick_applies_it() {
         }
     }
 }
+
+// With input held, friction has no stop speed: a tier whose settled speed sits
+// below the stop speed still settles at accel / friction of it (or reaches it),
+// rather than being braked to a tick-rate creep every tick.
+#[test]
+fn held_input_below_the_stop_speed_settles_without_a_creep() {
+    let world = floor_world();
+    for (walk, accel, expected) in [(1.0_f32, 15.0_f32, 1.0_f32), (7.0, 2.0, 7.0 * 2.0 / 8.0)] {
+        let mut desc = descriptor();
+        desc.ground.speed.walk = walk;
+        desc.ground.accel = accel;
+        desc.ground.friction = 8.0;
+        assert!(
+            expected < desc.ground.stop_speed,
+            "fixture: below the stop speed"
+        );
+        let (mut component, mut position) = grounded_pawn(&desc, &world);
+        for _ in 0..300 {
+            step(&mut component, &world, &forward(0.0, false), &mut position);
+        }
+        let speed = horizontal(component.velocity).length();
+        assert!(
+            (speed - expected).abs() < 0.05,
+            "walk {walk}, accel {accel}: settled at {speed}, expected {expected}"
+        );
+    }
+}

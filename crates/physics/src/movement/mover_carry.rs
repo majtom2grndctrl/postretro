@@ -124,7 +124,7 @@ fn unblocked_mover_displacement(
 
 /// Whether the static world prevents the mover-overlap recovery push.
 ///
-/// The host pin test (`kinematic_mover/pin.rs`) runs this same cast, widened to
+/// The host pin test (`kinematic_mover/pin.rs`) mirrors this skin cast, widened to
 /// other movers; the predicted displacement path keeps its static-only test.
 fn mover_push_is_blocked_by_static(
     static_world: &CollisionWorld,

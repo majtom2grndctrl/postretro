@@ -366,7 +366,7 @@
         0 : "Off"
         1 : "On"
     ]
-    block_policy(choices) : "Response when this mover meets a player or enemy: displace pushes, stop holds on contact, reverse backs off. A player it would press into geometry or another mover holds it until clear, except under crush, which keeps moving and damages them" : "displace" =
+    block_policy(choices) : "Response to a player or enemy in its way: displace pushes, stop holds, reverse backs off. A player it would press into geometry or another mover makes it hold (reverse backs off if it can); crush keeps moving and deals crush_damage" : "displace" =
     [
         "displace" : "Displace"
         "reverse" : "Reverse"
@@ -378,11 +378,11 @@
     auto_close_ms(float) : "Milliseconds before automatic close; blank inherits the mod default, 0 disables" : ""
     open_event(string) : "Named event when the mover reaches its open terminus" : ""
     close_event(string) : "Named event when the mover reaches its closed terminus" : ""
-    blocked_event(string) : "Named event when a blocking mover reacts to contact, or a displace mover holds for a pinned player; fires once when it first reacts, not every held tick" : ""
+    blocked_event(string) : "Named event when a blocking mover reacts to contact, or when any non-crush mover first holds or backs off for a pinned player; once per hold" : ""
     crush_event(string) : "Named event when a crusher deals damage" : ""
     open_sound(string) : "Sound key played when the mover reaches its open terminus" : ""
     close_sound(string) : "Sound key played when the mover reaches its closed terminus" : ""
-    blocked_sound(string) : "Sound key played when a blocking mover reacts to contact, or a displace mover holds for a pinned player; plays once when it first reacts, not every held tick" : ""
+    blocked_sound(string) : "Sound key played when a blocking mover reacts to contact, or when any non-crush mover first holds or backs off for a pinned player; once per hold" : ""
     crush_sound(string) : "Sound key played when a crusher deals damage" : ""
     move_mode(choices) : "Move mode" : "once" =
     [

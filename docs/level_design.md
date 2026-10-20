@@ -387,17 +387,22 @@ A mover never presses a player into the world or into another mover, unless its 
 | `crush` | Pushes them along. | Keeps moving and deals `crush_damage` every `crush_interval_ms`. Never yields. |
 
 - **Holding** stops the mover's travel and its spin together.
-- **A rider on a `stop` or `reverse` mover** never stops or reverses it while there is room above them. A pinned rider does.
-- **`reverse` holds instead of backing off** when the mover has no path to back along, when its spin causes the pin, or when backing off would pin someone else.
-- **A held mover keeps its plan.** A `once` door finishes its run once the player is clear. A mover sent to a path node by a script still goes there. An expiring `auto_close_ms` still sends a held door closed, and the closing door holds for the player the same way.
-- **A `once` mover that backs off to its start** ends unstarted, so its trigger runs it again.
+- **A rider on a `stop` or `reverse` mover** (or just after jumping off it) is not an obstruction to it. A rider the mover would carry into a ceiling, wall or another mover, in any direction, is pinned. A rider may stand right up to a ceiling; a move that would carry them into it pins.
+- **`reverse` holds instead of backing off** when the mover has no path to back along, when its spin causes the pin, when the pin is off its heading (such as a player pressed sideways to the path), when it is still at its start, or when backing off would pin someone else.
+- **A hold keeps its plan.** A `once` door finishes its run once the player is clear. A mover sent to a path node by a script still goes there. An expiring `auto_close_ms` still sends a held door closed, and the closing door holds for the player the same way.
+- **A `reverse` back-off is a new course.** It drops a scripted `goToPathNode` target and heads for the other end.
+- **A `once` mover that backs off to its start** ends unstarted: its trigger's `start` runs it again, and a `reverse` command on it at its start sends it out along its path (opens it). An `auto_close_ms` countdown that expires on such a parked mover does nothing.
+- **Dead players' bodies count.** A body left under a default `once` lift holds it until the body is gone.
 - **`crush` never yields**, even at `crush_damage` `0`: then it moves through the player and leaves them inside it, unharmed. It also crushes a rider carried sideways into a wall and a player squeezed between it and another mover.
 
-Enemies are never carried or pushed, so none of this applies to them: a `displace` mover ignores them, and the other policies react to an enemy they touch.
+Enemies are never carried or pushed, so none of this applies to them: a `displace` mover ignores them, and a `stop` or `reverse` mover reacts to an enemy on its heading (and fires the blocked event) as it does to a player.
 
 ### Blocked event and sound
 
-`blocked_event` names a reaction to fire, and `blocked_sound` a sound to play, when the mover first reacts to a player: a `stop` or `reverse` mover touching one, or any mover, `displace` included, starting to hold for a pinned one. Neither repeats while the mover holds. Once the hold ends (a script stops the mover, it finishes its run, or the player moves clear), the next pin fires them again.
+`blocked_event` names a reaction to fire, and `blocked_sound` a sound to play, when the mover first reacts: a `stop` or `reverse` mover meeting a player or enemy on its heading, or any non-`crush` mover first holding or backing off for a pinned player. A hold fires once for as long as it lasts, even if its cause changes from a contact to a pin. Once the hold ends (a script stops the mover, it finishes its run, or the player moves clear), the next one fires again.
+
+- A `reverse` mover fires on every back-off, since a back-off is not a hold. A ping-pong `reverse` mover that keeps meeting a player fires each time.
+- A script command that restarts a `stop` mover held by an unpinned contact (a `blocked_event` reaction calling `start()`) fires the event again on the next tick. A mover held for a pinned player does not.
 
 ### Choosing a response
 
@@ -410,7 +415,7 @@ Outside `crush`, the engine guarantees only that a mover never leaves a player s
 
 **Co-op.** Any player can hold a default door open by standing in it. A door that must close, such as one sealing an arena, needs `crush`. On a remote player's screen a held mover may move for a moment, then settle back where the host holds it.
 
-**Headroom.** A lift whose rider is too tall for the gap above its stop just waits, with the rider under the ceiling. A rider who crouches or steps off lets it carry on. The first time a mover holds for a pinned rider, the engine logs one warning giving the mover's position in TrenchBroom coordinates; it does not repeat for that mover until the level loads again. Raise the ceiling, lower the stop, or use `crush`.
+**Headroom.** A lift whose rider is too tall for the gap above its stop just waits, with the rider under the ceiling. A rider who crouches or steps off lets it carry on. The first time a mover holds or backs off for a pinned rider (a rider carried sideways into a wall included), the engine logs one `[Mover]` warning giving the mover's numeric id and its current position in TrenchBroom coordinates; it does not repeat for that mover until the level loads again. Raise the ceiling, lower the stop, or use `crush`.
 
 ---
 

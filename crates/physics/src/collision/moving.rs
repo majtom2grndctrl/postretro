@@ -275,6 +275,44 @@ fn cast_capsule_combined_targeted<const BROAD_PHASE: bool>(
     let mut nearest =
         cast_capsule_parry_to(static_world, pos, capsule, dir, max_toi, target_distance)
             .map(static_shape_hit);
+    choose_nearest(
+        &mut nearest,
+        cast_capsule_movers_targeted::<BROAD_PHASE>(
+            movers,
+            poses,
+            pos,
+            capsule,
+            dir,
+            max_toi,
+            target_distance,
+        ),
+    );
+    nearest
+}
+
+/// [`cast_capsule_combined_to`] against movers alone.
+pub(crate) fn cast_capsule_against_movers(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<CombinedCastHit> {
+    cast_capsule_movers_targeted::<true>(movers, poses, pos, capsule, dir, max_toi, target_distance)
+}
+
+fn cast_capsule_movers_targeted<const BROAD_PHASE: bool>(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<CombinedCastHit> {
+    let mut nearest = None;
     let (capsule_center, capsule_radius) = capsule_bounding_sphere(capsule);
     let sweep_start = pos + capsule_center;
     let sweep_motion = dir * max_toi;

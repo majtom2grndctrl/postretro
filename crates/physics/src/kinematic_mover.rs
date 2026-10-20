@@ -732,7 +732,10 @@ fn reanchor_direction(mover: &mut KinematicMoverComponent, direction: i8) {
 /// index zero. The resulting phase is replicated; the timer that chose it is
 /// deliberately not.
 fn travel_toward_closed_terminus(mover: &mut KinematicMoverComponent) {
-    if mover.waypoints.len() < 2 {
+    // Already home and unstarted (a `once` mover a reversal brought back): an
+    // expiring countdown has nothing to close, and must not complete the run
+    // its trigger can still start.
+    if mover.waypoints.len() < 2 || (!mover.started && mover_is_at_closed_terminus(mover)) {
         return;
     }
     reanchor_direction(mover, -1);

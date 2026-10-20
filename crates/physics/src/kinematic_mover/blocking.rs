@@ -1,5 +1,5 @@
 //! Host-authoritative kinematic-mover blocking decisions.
-//! See: context/lib/entity_model.md §5 · context/lib/networking.md
+//! See: context/lib/entity_model.md §5 · context/lib/movement.md §6 · context/lib/networking.md
 
 use std::collections::{HashMap, HashSet};
 
@@ -302,20 +302,22 @@ pub fn run_mover_blocking_pass(
                     // A rider whose next carry sweeps into a blocker, or that
                     // the crusher still carries while embedded, is pinned
                     // whatever this tick's push did: a carry makes no push on
-                    // its own rider.
-                    let carried = mover.prospective_pose.is_some()
-                        && body.carry_ground == GroundRef::Mover(mover.mover_id);
-                    if carried
-                        && mover.policy_active
-                        && (course_pins.iter().any(|(pinned_index, pawn, pin)| {
+                    // its own rider. An embedded rider of a crusher that paused
+                    // or arrived mid-cadence stays pinned too: nothing frees it.
+                    let maintains_cadence =
+                        blocking_state.has_crush_cadence(mover.entity, player_entity);
+                    let rides = body.carry_ground == GroundRef::Mover(mover.mover_id);
+                    let carried = rides && mover.prospective_pose.is_some() && mover.policy_active;
+                    if (carried
+                        && course_pins.iter().any(|(pinned_index, pawn, pin)| {
                             *pinned_index == index && *pawn == player_entity && pin.rider
-                        }) || pin_world.is_embedded(body))
+                        }))
+                        || ((carried || (rides && maintains_cadence))
+                            && pin_world.is_embedded(body))
                     {
                         pinned_crush_contacts.insert((mover.entity, player_entity));
                         continue;
                     }
-                    let maintains_cadence =
-                        blocking_state.has_crush_cadence(mover.entity, player_entity);
                     // A body already being crushed stays pinned while the next
                     // course still drives it into a blocker, even on a tick
                     // displacement shuffled it off this crusher's face.
@@ -446,7 +448,9 @@ pub fn run_mover_blocking_pass(
                 &pins,
                 &player_bodies,
             );
-            let onset = !previously_pinned.contains(&snapshot.entity);
+            // A mover already held, for a pin or an unpinned contact, has
+            // not been released, so a pin there is no new onset.
+            let onset = !previously_pinned.contains(&snapshot.entity) && !snapshot.blocked;
             blocking_state.note_pinned(snapshot.entity);
             if let Ok(ComponentValue::KinematicMover(mover)) =
                 registry.get_component_value_mut(snapshot.entity, ComponentKind::KinematicMover)
@@ -508,6 +512,7 @@ pub fn run_mover_blocking_pass(
                 mover.blocked = true;
                 if blocking_state.note_pinned(snapshot.entity)
                     && !previously_pinned.contains(&snapshot.entity)
+                    && !snapshot.blocked
                 {
                     events.push((MoverEventKind::Blocked, mover.mover_id));
                 }
@@ -778,7 +783,7 @@ fn leading_mover_contact_penetration(
         let mut latest_contact = None;
         for leg in legs {
             let leg_pose = mover_pose_for_translation_leg(base_pose, *leg);
-            let leg_source = ProspectiveMoverPose {
+            let leg_source = pin::OneMoverPose {
                 mover_id: collider.mover_id,
                 pose: leg_pose,
             };
@@ -807,7 +812,7 @@ fn leading_mover_contact_penetration(
     }
 
     let prospective_pose = prospective_pose.filter(|pose| pose_has_motion(*pose))?;
-    let prospective_source = ProspectiveMoverPose {
+    let prospective_source = pin::OneMoverPose {
         mover_id: collider.mover_id,
         pose: prospective_pose,
     };
@@ -817,17 +822,6 @@ fn leading_mover_contact_penetration(
         position,
         capsule,
     )
-}
-
-struct ProspectiveMoverPose {
-    mover_id: u32,
-    pose: crate::collision::moving::MoverPose,
-}
-
-impl MoverPoseSource for ProspectiveMoverPose {
-    fn pose(&self, mover_id: u32) -> Option<crate::collision::moving::MoverPose> {
-        (mover_id == self.mover_id).then_some(self.pose)
-    }
 }
 
 #[cfg(test)]

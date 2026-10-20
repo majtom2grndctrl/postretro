@@ -1,6 +1,6 @@
 # Mover Pins Fixture
 
-Manual QA map for `movement--mover-pinned-rider`. It has one mover bay per pin case in that brief, with policy variants side by side. Use it for the brief's Manual rows: single player, co-op client under the mandated link profile, and the mapper-prediction read.
+Manual QA map for pinned-player mover behaviour. It has one mover bay per pin case, with policy variants side by side. Use it for single-player checks, co-op client checks under a latency profile, and the mapper-prediction read.
 
 Build a local artifact on demand:
 
@@ -21,8 +21,6 @@ Every mover is grey metal. Consoles are metal `switch` pedestals 16×16×40 unit
 Headroom is sized from the dev player capsule (`content/dev/scripts/player.ts`): 0.2 m radius, 1.6 m standing (63 u), 0.8 m crouched (31.5 u). Every "too low" gap in this map is 48–52 u, so **standing pins and crouching clears**. Crouching is the easy way to release a hold without stepping off.
 
 ## Bays
-
-"Expect" is the behaviour after the brief lands. Before it lands, every non-crush case below embeds the player.
 
 ### Row A, low-ceiling lifts (y ≈ 320). Ping-pong lift, 64 u travel, 1.5 m/s, 1.5 s wait. A static slab sits 48 u above the top stop.
 
@@ -51,10 +49,10 @@ Stand in the doorway against the east jamb. The pedestals sit just south-east of
 |---|---|---|---|---|
 | c1 | 224–288 | displace, once | CLOSE, OPEN (go to node) | Stops at you and holds. The blocked sound plays once per pin. Step out and it finishes closing. |
 | c2 | 544–608 | stop, once | CLOSE, OPEN | Stops at you and holds, then closes once you step out. |
-| c3 | 864–928 | reverse, once | START, RESET (reverse) | **Case 10.** It backs off to fully open and ends unstarted, so START runs it again. RESET reverses its direction, so pressing it on an open door closes it. |
+| c3 | 864–928 | reverse, once | START, RESET (reverse) | Backs off from you toward its start (the open waypoint) and ends unstarted. START closes it again. RESET (`reverse`) on the door at its start also sends it closed along its path; RESET mid-travel reverses it. |
 | c4 | 1184–1248 | crush, 15 dmg, once | CLOSE, OPEN | Closes through you and damages you on its cadence. |
 | c5 | 1504–1568 | crush, 0 dmg, once | CLOSE, OPEN | Closes through you with no damage. It never yields. |
-| c6 | 1824–1888 | displace, auto-close 2 s | OPEN | Press OPEN, then stand in the doorway. The auto-close never moves the door into you (pin Q1). Step out and it closes. |
+| c6 | 1824–1888 | displace, auto-close 2 s | OPEN | Press OPEN, then stand in the doorway. The auto-close never moves the door into you. Step out and it closes. |
 | c7 | 2144–2208 | displace, ping-pong 1.5 s wait | START, STOP | It cycles. Every close onto you holds, then carries on. |
 
 ### Row D (y ≈ 1856)
@@ -64,7 +62,7 @@ Stand in the doorway against the east jamb. The pedestals sit just south-east of
 | d1 double door | doorway x 240–336 | displace | Two 48-wide leaves close toward the centre. Stand in the middle. The south console is four pedestals: the west pair is CLOSE (left leaf, right leaf) and the east pair is OPEN. One use press standing in front of a pair drives both leaves. Expect the leaves to hold on you, never leaving you inside a leaf, and finish once you leave. |
 | d2 double door | doorway x 624–720 | reverse | Same controls. The leaves back off you. |
 | d3 swing door | hinge x 992, wall south of it | displace | Press SWING (pedestal to the north-east) and the leaf swings 90° clockwise, from pointing north to lying along the wall. Stand against the wall east of the hinge and it holds on you. Step away and it finishes. **It runs once: reload the map to reset it.** |
-| d4 swing door | hinge x 1312 | reverse | Same as d3. A spin pin holds rather than reverses (pin Q6). |
+| d4 swing door | hinge x 1312 | reverse | Same as d3. A spin pin holds rather than reverses. |
 | d5 revolving arm | pivot x 1728 | displace | A hanging arm at z 36–120 spins counter-clockwise over a 32-tall waist wall on its east radius. Stand against the wall's **south** face and the arm holds on you. Crouch under it or step away and it resumes. START and STOP are the pedestals to the west. |
 
 ### Row E (y ≈ 2368)
@@ -83,11 +81,11 @@ Stand in the doorway against the east jamb. The pedestals sit just south-east of
 | Bay | Pivot x | Policy | Expect |
 |---|---|---|---|
 | e5 | 2088 | displace | The spin holds while a corner rider is against the beam. Step inward or crouch and it resumes. |
-| e6 | 2440 | reverse | The spin holds. It does not reverse (pin Q6). |
+| e6 | 2440 | reverse | The spin holds. It does not reverse. |
 | e7 | 2792 | crush, 15 dmg | Keeps spinning and damages a corner rider on its cadence. |
 
 ## Notes
 
-- A yield to a pinned rider logs one `[Mover] mover <id> yielded to a rider pinned …` warning per mover per level load. It names the numeric mover id and the mover's TrenchBroom position, not its authored name; match the position to the bay.
+- The first hold or back-off for a pinned rider logs one `[Mover]` headroom warning per mover per level load. It names the numeric mover id and the mover's TrenchBroom position, not its authored name; match the position to the bay.
 - Don't `reverse` the swing doors (d3, d4) from a script. Spin does not follow path direction, so a reverse would swing them a further 90° into the wall.
 - Map compilation proves only that the content is valid. Every expectation above is a manual, in-engine check.

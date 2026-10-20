@@ -14,10 +14,12 @@ use postretro_foundation::{GroundRef, PlayerMovementComponent};
 use super::MoverEventKind;
 use super::blocking::{MoverBlockingState, effective_block_policy, pose_has_motion};
 use crate::collision::moving::{
-    MoverCollider, MoverPose, MoverPoseSource, cast_capsule_combined_parry,
+    MoverCollider, MoverPose, MoverPoseSource, cast_capsule_against_movers,
     deepest_mover_push_penetration,
 };
-use crate::collision::{CollisionCapsule, CollisionWorld, MAP_UNIT_METRES, SKIN_DISTANCE};
+use crate::collision::{
+    CollisionCapsule, CollisionWorld, MAP_UNIT_METRES, SKIN_DISTANCE, cast_capsule_parry_to,
+};
 use crate::movement::carry_ground_for;
 
 /// A player pawn as the pin test reads it.
@@ -64,24 +66,10 @@ pub(super) fn pawn_bodies(registry: &EntityRegistry) -> Vec<PawnBody> {
         .collect()
 }
 
-/// Mover poses with one mover left out: the blockers a body is pinned
-/// against never include the mover pinning it.
-struct WithoutMover<'a> {
-    poses: &'a dyn MoverPoseSource,
-    excluded: u32,
-}
-
-impl MoverPoseSource for WithoutMover<'_> {
-    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
-        (mover_id != self.excluded)
-            .then(|| self.poses.pose(mover_id))
-            .flatten()
-    }
-}
-
-struct OneMoverPose {
-    mover_id: u32,
-    pose: MoverPose,
+/// One mover at one pose: a previewed course tested alone.
+pub(super) struct OneMoverPose {
+    pub(super) mover_id: u32,
+    pub(super) pose: MoverPose,
 }
 
 impl MoverPoseSource for OneMoverPose {
@@ -100,32 +88,55 @@ pub(super) struct PinWorld<'a> {
 
 impl PinWorld<'_> {
     /// Whether moving `capsule` from `position` by `motion` meets static
-    /// geometry or a mover other than `mover_id`.
+    /// geometry or a mover other than `mover_id`, stopping `target_distance`
+    /// short of surfaces. Each other mover is swept against by the motion
+    /// relative to its last tick of travel, so parts of one machine moving
+    /// together never pin a rider between them.
     fn sweep_is_blocked(
         &self,
         mover_id: u32,
         position: Vec3,
         capsule: &Capsule,
         motion: Vec3,
+        target_distance: f32,
     ) -> bool {
-        let distance = motion.length();
-        if !distance.is_finite() || distance <= f32::EPSILON {
-            return false;
+        if let Some((dir, distance)) = direction_and_length(motion)
+            && cast_capsule_parry_to(
+                self.static_world,
+                position,
+                capsule,
+                dir,
+                distance,
+                target_distance,
+            )
+            .is_some()
+        {
+            return true;
         }
-        let others = WithoutMover {
-            poses: self.mover_poses,
-            excluded: mover_id,
-        };
-        cast_capsule_combined_parry(
-            self.static_world,
-            self.mover_colliders,
-            &others,
-            position,
-            capsule,
-            motion / distance,
-            distance,
-        )
-        .is_some()
+        self.mover_colliders
+            .iter()
+            .filter(|other| other.mover_id != mover_id)
+            .any(|other| {
+                let Some(pose) = self.mover_poses.pose(other.mover_id) else {
+                    return false;
+                };
+                let Some((dir, distance)) = direction_and_length(motion - pose.tick_delta) else {
+                    return false;
+                };
+                cast_capsule_against_movers(
+                    std::slice::from_ref(other),
+                    &OneMoverPose {
+                        mover_id: other.mover_id,
+                        pose,
+                    },
+                    position,
+                    capsule,
+                    dir,
+                    distance,
+                    target_distance,
+                )
+                .is_some()
+            })
     }
 
     /// The pin a mover's pose `preview` (the tick it would run next) makes on
@@ -145,8 +156,12 @@ impl PinWorld<'_> {
             let carried =
                 pivot + preview.tick_rotation_delta * (body.position - pivot) + preview.tick_delta;
             let carry = carried - body.position;
+            // One skin width short, as the push test: a contact-only sweep
+            // would leave the rider touching a ceiling mover, which then reads
+            // that contact as a push when it slides. A rider left under one
+            // skin of headroom holds one tick short of its stop, and warns.
             return self
-                .sweep_is_blocked(mover_id, body.position, &body.capsule, carry)
+                .sweep_is_blocked(mover_id, body.position, &body.capsule, carry, SKIN_DISTANCE)
                 .then(|| PinnedBody {
                     direction: carry.normalize_or_zero(),
                     rider: true,
@@ -179,8 +194,8 @@ impl PinWorld<'_> {
     }
 
     /// Whether a mover's push on `body` along `normal` for `depth` is blocked
-    /// by static geometry or another mover. The static half is the
-    /// substrate's own `mover_push_is_blocked_by_static` cast.
+    /// by static geometry or another mover. The static half mirrors the
+    /// substrate's `mover_push_is_blocked_by_static` skin cast.
     pub(super) fn push_is_blocked(
         &self,
         mover_id: u32,
@@ -188,8 +203,19 @@ impl PinWorld<'_> {
         normal: Vec3,
         depth: f32,
     ) -> bool {
-        self.sweep_is_blocked(mover_id, body.position, &body.capsule, normal * depth)
+        self.sweep_is_blocked(
+            mover_id,
+            body.position,
+            &body.capsule,
+            normal * depth,
+            SKIN_DISTANCE,
+        )
     }
+}
+
+fn direction_and_length(motion: Vec3) -> Option<(Vec3, f32)> {
+    let distance = motion.length();
+    (distance.is_finite() && distance > f32::EPSILON).then(|| (motion / distance, distance))
 }
 
 /// Whether any body could reach the mover within one tick of travel: a cheap
@@ -211,9 +237,9 @@ pub(super) fn any_body_in_reach(
     bodies.iter().any(|body| {
         let body_reach = body.capsule.half_height() + body.capsule.radius;
         let limit = reach + body_reach;
+        let distance_squared = body.position.distance_squared(origin);
         // NaN positions fall through to the narrow phase.
-        body.position.distance_squared(origin) <= limit * limit
-            || !body.position.distance_squared(origin).is_finite()
+        distance_squared <= limit * limit || !distance_squared.is_finite()
     })
 }
 
@@ -235,8 +261,9 @@ pub(super) fn reverse_course(mover: &mut KinematicMoverComponent) {
     mover.wait_remaining_ms = 0.0;
 }
 
-/// Whether reversing `mover` gives a course that pins none of `bodies`. A
-/// reversal never commits a course no test previewed.
+/// Whether reversing `mover` gives a course that moves and pins none of
+/// `bodies`. A reversal never commits a course no test previewed, and one
+/// that goes nowhere (a mover still at its start) is no back-off: it holds.
 pub(super) fn reversed_course_is_clear(
     world: &PinWorld<'_>,
     collider: &MoverCollider,
@@ -248,8 +275,8 @@ pub(super) fn reversed_course_is_clear(
     let mut reversed = mover.clone();
     reverse_course(&mut reversed);
     let preview = super::preview_next_mover_pose(&reversed, transform, tick_dt, false);
-    !pose_has_motion(preview)
-        || bodies
+    pose_has_motion(preview)
+        && bodies
             .iter()
             .all(|body| world.pin(collider, preview, body).is_none())
 }
@@ -388,7 +415,8 @@ pub fn run_mover_pin_pretest(
             continue;
         }
         let response = choose_yield(&world, collider, mover, transform, tick_dt, &pins, &bodies);
-        let onset = blocking_state.note_pinned(entity);
+        // A mover already held has not been released: no new onset.
+        let onset = blocking_state.note_pinned(entity) && !mover.blocked;
         apply_yield(
             mover,
             entity,

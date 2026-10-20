@@ -1,9 +1,11 @@
 //! Deterministic application of the closed mover-command vocabulary.
 
 use glam::Vec3;
-use postretro_entities::{KinematicMoverComponent, MoverCommand};
+use postretro_entities::{KinematicMoverComponent, KinematicMoverMode, MoverCommand};
 
-use super::{mover_is_at_waypoint, path_coordinate, reanchor_direction};
+use super::{
+    mover_is_at_closed_terminus, mover_is_at_waypoint, path_coordinate, reanchor_direction,
+};
 
 /// Apply one command to mover phase without consulting a registry or clock.
 pub fn apply_mover_command(mover: &mut KinematicMoverComponent, command: &MoverCommand) {
@@ -27,7 +29,17 @@ pub fn apply_mover_command(mover: &mut KinematicMoverComponent, command: &MoverC
             if mover.waypoints.len() < 2 {
                 return;
             }
-            reanchor_direction(mover, if mover.direction_sign >= 0 { -1 } else { 1 });
+            // Parked at its start, the only way to go is out: a `once` mover a
+            // reversal brought home must open again on the next reverse.
+            let direction = if (mover.mode == KinematicMoverMode::Once
+                && mover_is_at_closed_terminus(mover))
+                || mover.direction_sign < 0
+            {
+                1
+            } else {
+                -1
+            };
+            reanchor_direction(mover, direction);
             mover.started = true;
             mover.completed = false;
             mover.wait_remaining_ms = 0.0;

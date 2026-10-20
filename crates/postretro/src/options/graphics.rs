@@ -115,6 +115,43 @@ impl SurfaceDepthQuality {
     }
 }
 
+/// Fluid reflection cost tier. Applies live. `Off` removes both reflection
+/// layers, the probe term included; lower tiers resolve the screen-space layer
+/// at a coarser fraction of the scene extent with the same march.
+///
+/// A cost lever only: the reflection *style* (pixelated or smooth) is the game
+/// author's `render.reflections.style`, never a player option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReflectionQuality {
+    Off,
+    Low,
+    Medium,
+    #[default]
+    High,
+}
+
+impl ReflectionQuality {
+    pub(super) fn slot_value(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub(super) fn from_slot_value(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
 /// Scene render resolution: an integer divisor of the surface, or Auto. Applies
 /// live and persists; never a per-map key. The render-profile chokepoint
 /// translates it, Auto's row cap included, into renderer vocabulary.
@@ -161,16 +198,16 @@ mod tests {
     use super::*;
     use postretro_entities::{EngineStateValueType, engine_state_catalog};
 
-    fn catalog_render_resolution_values() -> Vec<&'static str> {
+    fn catalog_enum_values(wire_name: &str) -> Vec<&'static str> {
         let catalog = engine_state_catalog().expect("built-in catalog is valid");
         let entry = catalog
             .entries()
             .iter()
-            .find(|entry| entry.wire_name == "options.renderResolution")
-            .expect("catalog declares options.renderResolution");
+            .find(|entry| entry.wire_name == wire_name)
+            .unwrap_or_else(|| panic!("catalog declares {wire_name}"));
         match entry.value_type {
             EngineStateValueType::Enum { values } => values.to_vec(),
-            other => panic!("options.renderResolution must be an enum, got {other:?}"),
+            other => panic!("{wire_name} must be an enum, got {other:?}"),
         }
     }
 
@@ -178,7 +215,7 @@ mod tests {
     // hand-written lists; each must name exactly the other's set.
     #[test]
     fn render_resolution_catalog_values_round_trip_through_slot_parser() {
-        let values = catalog_render_resolution_values();
+        let values = catalog_enum_values("options.renderResolution");
         for value in &values {
             assert_eq!(
                 RenderResolution::from_slot_value(value).map(RenderResolution::slot_value),
@@ -202,6 +239,42 @@ mod tests {
                 | RenderResolution::Half
                 | RenderResolution::Third
                 | RenderResolution::Quarter => {}
+            }
+            assert!(
+                values.contains(&variant.slot_value()),
+                "variant {variant:?} (`{}`) missing from the catalog's allowed values",
+                variant.slot_value()
+            );
+        }
+        assert_eq!(values.len(), variants.len(), "catalog has extra values");
+    }
+
+    // The same drift guard for the reflection tier, whose catalog list and
+    // slot parser are hand-written too.
+    #[test]
+    fn reflection_quality_catalog_values_round_trip_through_slot_parser() {
+        let values = catalog_enum_values("options.reflectionQuality");
+        for value in &values {
+            assert_eq!(
+                ReflectionQuality::from_slot_value(value).map(ReflectionQuality::slot_value),
+                Some(*value),
+                "catalog value `{value}` must parse and round-trip"
+            );
+        }
+        // Exhaustive match (no `_`): adding a variant fails to compile here
+        // until it is also checked against the catalog list.
+        let variants = [
+            ReflectionQuality::Off,
+            ReflectionQuality::Low,
+            ReflectionQuality::Medium,
+            ReflectionQuality::High,
+        ];
+        for variant in variants {
+            match variant {
+                ReflectionQuality::Off
+                | ReflectionQuality::Low
+                | ReflectionQuality::Medium
+                | ReflectionQuality::High => {}
             }
             assert!(
                 values.contains(&variant.slot_value()),

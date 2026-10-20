@@ -5,8 +5,8 @@
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
 use super::super::{
-    CrouchMode, FogQuality, PlayerOptions, RenderResolution, ShadowQuality, SprintMode,
-    SurfaceDepthQuality, keys,
+    CrouchMode, FogQuality, PlayerOptions, ReflectionQuality, RenderResolution, ShadowQuality,
+    SprintMode, SurfaceDepthQuality, keys,
 };
 use super::{OptionsApplyEffects, changed_value, seed_slot};
 use crate::input::InputSystem;
@@ -18,6 +18,7 @@ pub(crate) const CROUCH_MODE_SLOT: &str = "options.crouchMode";
 pub(crate) const SHADOW_QUALITY_SLOT: &str = "options.shadowQuality";
 pub(crate) const FOG_QUALITY_SLOT: &str = "options.fogQuality";
 pub(crate) const SURFACE_DEPTH_QUALITY_SLOT: &str = "options.surfaceDepthQuality";
+pub(crate) const REFLECTION_QUALITY_SLOT: &str = "options.reflectionQuality";
 pub(crate) const RENDER_RESOLUTION_SLOT: &str = "options.renderResolution";
 pub(crate) const SPRINT_MODE_SLOT: &str = "options.sprintMode";
 pub(crate) const GAMEPAD_LOOK_SENSITIVITY_SLOT: &str = "options.gamepadLookSensitivity";
@@ -33,6 +34,7 @@ struct ObservedGenerations {
     shadow_quality: u64,
     fog_quality: u64,
     surface_depth_quality: u64,
+    reflection_quality: u64,
     render_resolution: u64,
     window_mode: u64,
     sprint_mode: u64,
@@ -89,6 +91,11 @@ impl TopLevelSync {
             table,
             SURFACE_DEPTH_QUALITY_SLOT,
             SlotValue::Enum(options.surface_depth_quality.slot_value().to_string()),
+        );
+        self.observed.reflection_quality = seed_slot(
+            table,
+            REFLECTION_QUALITY_SLOT,
+            SlotValue::Enum(options.reflection_quality.slot_value().to_string()),
         );
         self.observed.render_resolution = seed_slot(
             table,
@@ -222,6 +229,22 @@ impl TopLevelSync {
                 }
             }
             self.observed.surface_depth_quality = generation;
+        }
+
+        if let Some((generation, SlotValue::Enum(value))) = changed_value(
+            table,
+            REFLECTION_QUALITY_SLOT,
+            &mut self.observed.reflection_quality,
+        ) {
+            if let Some(quality) = ReflectionQuality::from_slot_value(value) {
+                options.mark_written(keys::REFLECTION_QUALITY);
+                if options.reflection_quality != quality {
+                    options.reflection_quality = quality;
+                    effects.reflection_quality = Some(quality);
+                    changed = true;
+                }
+            }
+            self.observed.reflection_quality = generation;
         }
 
         if let Some((generation, SlotValue::Enum(value))) = changed_value(

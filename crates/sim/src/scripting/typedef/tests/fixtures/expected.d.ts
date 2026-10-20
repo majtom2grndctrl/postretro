@@ -1664,6 +1664,7 @@ declare module "postretro" {
       readonly mouseSensitivity: Ref<number>;
       readonly musicVolume: Ref<number>;
       readonly reduceMotion: Ref<boolean>;
+      readonly reflectionQuality: Ref<"off" | "low" | "medium" | "high">;
       readonly renderResolution: Ref<"auto" | "native" | "half" | "third" | "quarter">;
       readonly screenShakeScale: Ref<number>;
       readonly sfxVolume: Ref<number>;

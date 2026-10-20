@@ -26,6 +26,7 @@ fn opening_options_seeds_every_slot_from_player_options() {
         shadow_quality: ShadowQuality::Low,
         fog_quality: FogQuality::High,
         surface_depth_quality: SurfaceDepthQuality::Off,
+        reflection_quality: ReflectionQuality::Low,
         render_resolution: RenderResolution::Quarter,
         ..PlayerOptions::default()
     };
@@ -60,6 +61,10 @@ fn opening_options_seeds_every_slot_from_player_options() {
     assert_eq!(
         table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
         Some(SlotValue::Enum("off".into()))
+    );
+    assert_eq!(
+        table.get(REFLECTION_QUALITY_SLOT).unwrap().value,
+        Some(SlotValue::Enum("low".into()))
     );
     assert_eq!(
         table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
@@ -104,6 +109,13 @@ fn engine_option_slot_defaults_match_player_options() {
         "the slot default must agree with PlayerOptions' default (High)",
     );
     assert_eq!(
+        table.get(REFLECTION_QUALITY_SLOT).unwrap().value,
+        Some(SlotValue::Enum(
+            options.reflection_quality.slot_value().into()
+        )),
+        "the slot default must agree with PlayerOptions' default (High)",
+    );
+    assert_eq!(
         table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
         Some(SlotValue::Enum(
             options.render_resolution.slot_value().into()
@@ -123,6 +135,7 @@ fn write_state_slot_json_validates_every_option_slot() {
     write(&ctx, SHADOW_QUALITY_SLOT, json!("low"));
     write(&ctx, FOG_QUALITY_SLOT, json!("high"));
     write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("off"));
+    write(&ctx, REFLECTION_QUALITY_SLOT, json!("medium"));
     write(&ctx, RENDER_RESOLUTION_SLOT, json!("third"));
 
     let table = ctx.slot_table.borrow();
@@ -154,6 +167,10 @@ fn write_state_slot_json_validates_every_option_slot() {
         Some(SlotValue::Enum("off".into()))
     );
     assert_eq!(
+        table.get(REFLECTION_QUALITY_SLOT).unwrap().value,
+        Some(SlotValue::Enum("medium".into()))
+    );
+    assert_eq!(
         table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
         Some(SlotValue::Enum("third".into()))
     );
@@ -170,6 +187,9 @@ fn write_state_slot_json_validates_every_option_slot() {
     assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("high")).is_err());
     assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("low")).is_err());
     assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("medium")).is_err());
+    assert!(write_state_slot_json(&ctx, REFLECTION_QUALITY_SLOT, &json!("ultra")).is_err());
+    // The player owns cost, never style: a style name is no tier.
+    assert!(write_state_slot_json(&ctx, REFLECTION_QUALITY_SLOT, &json!("smooth")).is_err());
     assert!(write_state_slot_json(&ctx, RENDER_RESOLUTION_SLOT, &json!("eighth")).is_err());
     assert!(write_state_slot_json(&ctx, RENDER_RESOLUTION_SLOT, &json!(2)).is_err());
     assert!(write_state_slot_json(&ctx, INVERT_Y_SLOT, &json!(1)).is_err());
@@ -207,6 +227,8 @@ fn one_slot_change_updates_only_matching_field_and_applies_input() {
     assert_eq!(effects.fog_quality, None);
     assert_eq!(options.surface_depth_quality, before.surface_depth_quality);
     assert_eq!(effects.surface_depth_quality, None);
+    assert_eq!(options.reflection_quality, before.reflection_quality);
+    assert_eq!(effects.reflection_quality, None);
     assert_eq!(options.render_resolution, before.render_resolution);
     assert_eq!(effects.render_resolution, None);
 }
@@ -348,6 +370,40 @@ fn every_remaining_option_slot_updates_its_matching_field() {
         None,
     );
     assert_eq!(effects.render_resolution, None);
+
+    // Every reflection tier reports so the app can apply it live, Off
+    // included; the default (High) comes last, so each write is a change.
+    for (value, quality) in [
+        ("off", ReflectionQuality::Off),
+        ("low", ReflectionQuality::Low),
+        ("medium", ReflectionQuality::Medium),
+        ("high", ReflectionQuality::High),
+    ] {
+        write(&ctx, REFLECTION_QUALITY_SLOT, json!(value));
+        let effects = bridge.update(
+            0.0,
+            &mut ctx.slot_table.borrow_mut(),
+            &mut options,
+            &mut input,
+            None,
+        );
+        assert_eq!(options.reflection_quality, quality);
+        assert_eq!(effects.reflection_quality, Some(quality), "`{value}`");
+        assert_eq!(effects.render_resolution, None);
+        assert_eq!(effects.fog_quality, None);
+        assert_eq!(options.render_resolution, RenderResolution::Half);
+        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::On);
+    }
+
+    write(&ctx, REFLECTION_QUALITY_SLOT, json!("high"));
+    let effects = bridge.update(
+        0.0,
+        &mut ctx.slot_table.borrow_mut(),
+        &mut options,
+        &mut input,
+        None,
+    );
+    assert_eq!(effects.reflection_quality, None);
 }
 
 #[test]

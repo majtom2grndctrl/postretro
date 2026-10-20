@@ -936,6 +936,7 @@ pub const MIRRORED_GAME_STATE_LEAVES: &[(&str, &str, bool)] = &[
     ("options.shadowQuality", "enum", false),
     ("options.fogQuality", "enum", false),
     ("options.surfaceDepthQuality", "enum", false),
+    ("options.reflectionQuality", "enum", false),
     ("options.windowMode", "enum", false),
     ("window.displayModeCanApply", "boolean", false),
     ("window.displayModeWidth", "number", false),

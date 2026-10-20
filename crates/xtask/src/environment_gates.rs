@@ -1,8 +1,9 @@
 // Repository grep gates for environment volumes: projectile flight makes no
-// environment query, no volume FGD key authors swim tuning, and the audio
-// crate's public API (the muffle included) names no kira type. Run by
+// environment query, no volume FGD key authors swim tuning, the audio crate's
+// public API (the muffle included) names no kira type, and fluid reflections
+// take no player style option and no material, FGD or texture input. Run by
 // preflight's `cargo test`, beside the scripting surface gates.
-// See: context/lib/entity_model.md §7 (Environment Volumes) · context/lib/build_pipeline.md §Custom FGD · context/lib/audio.md §1
+// See: context/lib/entity_model.md §7 (Environment Volumes) · context/lib/build_pipeline.md §Custom FGD · context/lib/audio.md §1 · context/lib/player_options.md §4
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +36,43 @@ const SWIM_FIELDS: &[&str] = &[
     "exitDepth",
     "fluidJumpVelocity",
 ];
+
+/// Where every player-option name is declared: the options module's settings
+/// keys and slot names (its `const` strings), the store's fields, and the
+/// engine-state catalog's wire names.
+const OPTIONS_DIR: &str = "crates/postretro/src/options";
+const PLAYER_OPTIONS_STRUCTS: &[(&str, &str)] = &[
+    ("crates/postretro/src/options/mod.rs", "PlayerOptions"),
+    (
+        "crates/postretro/src/options/accessibility.rs",
+        "AccessibilityOptions",
+    ),
+];
+const ENGINE_STATE_CATALOG: &str = "crates/entities/src/engine_state_catalog.rs";
+
+/// The only reflection option: the player's cost tier, as settings key and
+/// field (`reflection_quality`) and as slot (`options.reflectionQuality`). The
+/// style is the author's `render.reflections.style`, never the player's.
+const ALLOWED_REFLECTION_OPTION_NAMES: &[&str] =
+    &["reflection_quality", "options.reflectionQuality"];
+
+/// Words that make a name a reflection setting, matched against the start of
+/// each of its snake_case, dotted or camelCase words.
+const REFLECTION_WORDS: &[&str] = &["reflect", "ssr", "mirror"];
+
+/// Material vocabulary and texture-name rules: the material enum, its prefix
+/// table and per-material properties, and the sibling-suffix rules that bind
+/// surface maps to a face. None takes a reflection input.
+const MATERIAL_RULE_FILES: &[&str] = &[
+    "crates/render-data/src/material.rs",
+    "crates/level-compiler/src/texture_mips/resolution.rs",
+    "crates/level-compiler/src/texture_validation.rs",
+];
+
+/// The one FGD class that authors reflection, and its exact keys: an authored
+/// probe box. A new key here is a new reflection input.
+const REFLECTION_VOLUME_CLASS: &str = "reflection_volume";
+const REFLECTION_VOLUME_KEYS: &[&str] = &["_capture_offset"];
 
 /// The audio crate's sources. Its public API carries primitives only, so the
 /// muffle and every other control cross the boundary without kira.
@@ -92,7 +130,9 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
 
 /// The key names declared directly in an FGD class body: the first token of
 /// each line at bracket depth 1, followed by `(`. Help strings (with `\"`
-/// escapes) and nested `choices` blocks are skipped, so only key names count.
+/// escapes), `//` comments (whose brackets need not balance) and nested
+/// `choices` blocks are skipped, so only key names count.
+/// A `@BaseClass` has no title, so its body follows the name directly.
 /// `None` when `class` has no body in `fgd`.
 fn fgd_class_keys(fgd: &str, class: &str) -> Option<Vec<String>> {
     let declaration = fgd.match_indices(class).find_map(|(at, _)| {
@@ -100,7 +140,7 @@ fn fgd_class_keys(fgd: &str, class: &str) -> Option<Vec<String>> {
         let after = &fgd[at + class.len()..];
         (before.ends_with('=')
             && !after.chars().next().is_some_and(is_identifier_char)
-            && after.trim_start().starts_with(':'))
+            && after.trim_start().starts_with([':', '[']))
         .then_some(at)
     })?;
     // The body opens at the first `[` outside the class's quoted title.
@@ -132,6 +172,10 @@ fn fgd_class_keys(fgd: &str, class: &str) -> Option<Vec<String>> {
         }
         match c {
             '"' => in_string = true,
+            '/' if fgd[open + offset..].starts_with("//") => {
+                while chars.next_if(|&(_, c)| c != '\n').is_some() {}
+                continue;
+            }
             '[' => depth += 1,
             ']' => {
                 depth -= 1;
@@ -160,6 +204,155 @@ fn fgd_class_keys(fgd: &str, class: &str) -> Option<Vec<String>> {
         }
         if !c.is_whitespace() {
             line_start = false;
+        }
+    }
+    None
+}
+
+/// Every class an FGD declares (`@…Class … = name : "Title"`), in file order.
+fn fgd_class_names(fgd: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for (at, _) in fgd.match_indices('@') {
+        if at != 0 && !fgd[..at].ends_with('\n') {
+            continue;
+        }
+        // The header runs to the body's `[`; its first `=` outside quotes
+        // and attribute parentheses (`model({ … [radius, …] })`) precedes
+        // the class name.
+        let mut quoted = false;
+        let mut parens = 0usize;
+        let mut equals = None;
+        for (offset, c) in fgd[at..].char_indices() {
+            match c {
+                '"' => quoted = !quoted,
+                _ if quoted => {}
+                '(' => parens += 1,
+                ')' => parens = parens.saturating_sub(1),
+                '=' if parens == 0 => {
+                    equals = Some(at + offset + 1);
+                    break;
+                }
+                '[' if parens == 0 => break,
+                _ => {}
+            }
+        }
+        let Some(equals) = equals else {
+            continue;
+        };
+        let name: String = fgd[equals..]
+            .trim_start()
+            .chars()
+            .take_while(|&c| is_identifier_char(c))
+            .collect();
+        if !name.is_empty() {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The lowercase words of a name spelled in snake_case, dotted or camelCase.
+fn name_words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut previous_lower = false;
+    for c in name.chars() {
+        if !c.is_alphanumeric() {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            previous_lower = false;
+            continue;
+        }
+        if c.is_uppercase() && previous_lower {
+            words.push(std::mem::take(&mut word));
+        }
+        previous_lower = c.is_lowercase() || c.is_ascii_digit();
+        word.extend(c.to_lowercase());
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Whether a name names a reflection setting: one of its words starts with a
+/// reflection word.
+fn names_reflection(name: &str) -> bool {
+    name_words(name).iter().any(|word| {
+        REFLECTION_WORDS
+            .iter()
+            .any(|reflection| word.starts_with(reflection))
+    })
+}
+
+/// Every string literal in each `const` declaration typed over `str` (a
+/// `&str`, or an array of them) in `code`.
+fn const_string_literals(code: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    for (at, _) in code.match_indices("const ") {
+        if code[..at]
+            .chars()
+            .next_back()
+            .is_some_and(is_identifier_char)
+        {
+            continue;
+        }
+        // The type may hold a `;` (`[&str; 5]`), so the value starts at the
+        // first `=` and ends at the next `;`. A `const fn` body opens first.
+        let rest = &code[at..];
+        let Some(equals) = rest.find('=') else {
+            continue;
+        };
+        let ty = &rest[..equals];
+        if ty.contains('{') || !ty.contains("str") {
+            continue;
+        }
+        let value = &rest[equals + 1..];
+        let value = &value[..value.find(';').unwrap_or(value.len())];
+        literals.extend(value.split('"').skip(1).step_by(2).map(str::to_string));
+    }
+    literals
+}
+
+/// The field names in `struct name`'s body in `code`: each line at brace
+/// depth 1 spelled `[pub[(…)]] field: Type`.
+fn struct_fields(code: &str, name: &str) -> Option<Vec<String>> {
+    let open = code.find(&format!("struct {name} {{"))?;
+    let mut fields = Vec::new();
+    let mut depth = 0usize;
+    for line in code[open..].lines() {
+        if depth == 1 {
+            let mut field = line.trim();
+            if let Some(rest) = field.strip_prefix("pub") {
+                field = rest.trim_start();
+                if field.starts_with('(') {
+                    field = field
+                        .split_once(')')
+                        .map_or("", |(_, rest)| rest)
+                        .trim_start();
+                }
+            }
+            let ident: String = field
+                .chars()
+                .take_while(|&c| is_identifier_char(c))
+                .collect();
+            let rest = &field[ident.len()..];
+            if !ident.is_empty() && rest.starts_with(':') && !rest.starts_with("::") {
+                fields.push(ident);
+            }
+        }
+        for c in line.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(fields);
+                    }
+                }
+                _ => {}
+            }
         }
     }
     None
@@ -261,6 +454,148 @@ fn volume_fgd_keys_name_no_swim_field() {
     );
 }
 
+// The player owns reflection cost, never style: the only reflection name
+// among the settings keys, option slots and `PlayerOptions` fields is the
+// cost tier, so no option can name the author's `render.reflections.style`.
+#[test]
+fn player_options_name_no_reflection_style() {
+    let root = workspace_root();
+    let mut names = Vec::new();
+    for path in rust_files(&root.join(OPTIONS_DIR)) {
+        // Test files spell rejected names on purpose.
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().ends_with("tests.rs"))
+        {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("options source reads");
+        let file = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for literal in const_string_literals(&strip_line_comments(&source)) {
+            names.push((file.clone(), literal));
+        }
+    }
+    for (file, struct_name) in PLAYER_OPTIONS_STRUCTS {
+        let source = std::fs::read_to_string(root.join(file)).expect("options source reads");
+        let fields = struct_fields(&strip_line_comments(&source), struct_name)
+            .unwrap_or_else(|| panic!("{file} declares no `struct {struct_name}`"));
+        assert!(
+            fields.len() >= 5,
+            "`{struct_name}` parsed with too few fields: {fields:?}"
+        );
+        names.extend(
+            fields
+                .into_iter()
+                .map(|field| (format!("{struct_name} field"), field)),
+        );
+    }
+    let catalog = std::fs::read_to_string(root.join(ENGINE_STATE_CATALOG)).expect("catalog reads");
+    for line in strip_line_comments(&catalog).lines() {
+        if let Some(wire) = line.trim().strip_prefix("wire_name: \"") {
+            let wire = wire.split('"').next().unwrap_or_default();
+            if wire.starts_with("options.") {
+                names.push((ENGINE_STATE_CATALOG.to_string(), wire.to_string()));
+            }
+        }
+    }
+
+    // The scan reads what it claims: the tier is found as settings key, slot,
+    // catalog wire name and field.
+    for (source, expected) in [
+        ("crates/postretro/src/options/mod.rs", "reflection_quality"),
+        (
+            "crates/postretro/src/options/bridge/top_level.rs",
+            "options.reflectionQuality",
+        ),
+        (ENGINE_STATE_CATALOG, "options.reflectionQuality"),
+        ("PlayerOptions field", "reflection_quality"),
+    ] {
+        assert!(
+            names
+                .iter()
+                .any(|(file, name)| file == source && name == expected),
+            "the scan found no `{expected}` in {source}; point this gate at the option's new home"
+        );
+    }
+
+    let violations: Vec<String> = names
+        .iter()
+        .filter(|(_, name)| {
+            names_reflection(name) && !ALLOWED_REFLECTION_OPTION_NAMES.contains(&name.as_str())
+        })
+        .map(|(file, name)| format!("{file}: `{name}`"))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "a player option names a reflection setting other than the cost tier; the \
+         reflection style is the author's `render.reflections.style`:\n{}",
+        violations.join("\n")
+    );
+}
+
+// Reflections take no world-material input: no material, material property,
+// texture prefix or surface-map suffix rule names one, and the FGD's only
+// reflection authoring is `reflection_volume`'s probe box.
+#[test]
+fn no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input() {
+    let root = workspace_root();
+    let mut violations = Vec::new();
+    for file in MATERIAL_RULE_FILES {
+        let source = std::fs::read_to_string(root.join(file))
+            .unwrap_or_else(|_| panic!("{file} moved; point this gate at the material rules"));
+        let code = strip_line_comments(&source).to_lowercase();
+        for word in REFLECTION_WORDS {
+            for (at, _) in code.match_indices(word) {
+                // Only at a word start: `ssr` inside `glassrender` is not one.
+                let before = code[..at].chars().next_back();
+                if before.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+                    continue;
+                }
+                let line = code[..at].matches('\n').count() + 1;
+                violations.push(format!("{file}:{line}: `{word}`"));
+            }
+        }
+    }
+
+    let fgd = std::fs::read_to_string(root.join(FGD_FILE)).expect("FGD reads");
+    let classes = fgd_class_names(&fgd);
+    assert!(
+        classes.len() >= 20 && classes.iter().any(|class| class == "worldspawn"),
+        "{FGD_FILE} parsed with too few classes: {classes:?}"
+    );
+    assert!(
+        classes.iter().any(|class| class == REFLECTION_VOLUME_CLASS),
+        "{FGD_FILE} no longer declares `{REFLECTION_VOLUME_CLASS}`; update this gate"
+    );
+    for class in &classes {
+        let keys = fgd_class_keys(&fgd, class)
+            .unwrap_or_else(|| panic!("{FGD_FILE} declares no `{class}` body"));
+        if class == REFLECTION_VOLUME_CLASS {
+            if keys != REFLECTION_VOLUME_KEYS {
+                violations.push(format!(
+                    "{FGD_FILE}: `{class}` keys are {keys:?}, not {REFLECTION_VOLUME_KEYS:?}"
+                ));
+            }
+            continue;
+        }
+        if names_reflection(class) {
+            violations.push(format!("{FGD_FILE}: class `{class}`"));
+        }
+        for key in keys.iter().filter(|key| names_reflection(key)) {
+            violations.push(format!("{FGD_FILE}: `{class}` key `{key}`"));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "a world material, texture rule or FGD key takes a reflection input:\n{}",
+        violations.join("\n")
+    );
+}
+
 // The audio crate is the only crate that names kira, and its public API
 // carries primitives only: `Audio` is concrete over the default backend.
 #[test]
@@ -330,6 +665,11 @@ fn fgd_key_parser_reads_key_names_not_help_text() {
     sinkSpeed(float) : "Sink" : "" : "flagged"
 ]
 @SolidClass = gravity_volume : "Gravity" [ gravity(float) : "g" ]
+@BaseClass = Spawn
+[
+    // A comment's brackets need not balance: phase is [0, 1) of the cycle.
+    tag(string) : "Tag"
+]
 "#;
     assert_eq!(
         fgd_class_keys(fgd, "fluid_volume"),
@@ -340,6 +680,66 @@ fn fgd_key_parser_reads_key_names_not_help_text() {
         ])
     );
     assert_eq!(fgd_class_keys(fgd, "push_volume"), None);
+    assert_eq!(fgd_class_keys(fgd, "Spawn"), Some(vec!["tag".to_string()]));
+}
+
+#[test]
+fn reflection_gate_reads_every_spelling_of_a_reflection_name() {
+    for name in [
+        "reflection_style",
+        "reflectionStyle",
+        "options.reflections.style",
+        "reflection_smooth",
+        "pixel_reflections",
+        "ssrQuality",
+        "mirror_mode",
+    ] {
+        assert!(names_reflection(name), "{name}");
+    }
+    for name in ["fog_quality", "options.surfaceDepthQuality", "glassRender"] {
+        assert!(!names_reflection(name), "{name}");
+    }
+    assert_eq!(
+        name_words("options.reflectionQuality"),
+        ["options", "reflection", "quality"]
+    );
+
+    let code = "pub(crate) const A: &str = \"options.a\";\n\
+                pub(super) const KEYS: [&str; 2] = [\n    \"b_key\",\n    \"c_key\",\n];\n\
+                const N: f32 = 1.0;\n\
+                let s = \"not a const\";\n";
+    assert_eq!(const_string_literals(code), ["options.a", "b_key", "c_key"]);
+
+    let code = "pub struct Opts {\n    pub a: f32,\n    pub(crate) b: Mode,\n    \
+                c: Option<[u8; 16]>,\n    #[serde(default)]\n    d: crate::X,\n}\n\
+                impl Opts { fn e(&self) {} }\n";
+    assert_eq!(
+        struct_fields(code, "Opts"),
+        Some(vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string()
+        ])
+    );
+
+    let fgd = r#"@SolidClass = worldspawn : "World" [ ]
+@PointClass base(Light)
+    color(1 2 3)
+    = light_spot : "Spot = cone"
+[
+]
+@PointClass
+    model({ "path": "lamp.obj", "scale": [radius, radius, radius] })
+    = fog_lamp : "Lamp"
+[
+]
+// @SolidClass = commented : "no"
+"#;
+    assert_eq!(
+        fgd_class_names(fgd),
+        ["worldspawn", "light_spot", "fog_lamp"]
+    );
 }
 
 #[test]

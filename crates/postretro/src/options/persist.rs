@@ -108,6 +108,9 @@ impl PlayerOptions {
             surface_depth_quality: reader
                 .read(keys::SURFACE_DEPTH_QUALITY)
                 .unwrap_or(defaults.surface_depth_quality),
+            reflection_quality: reader
+                .read(keys::REFLECTION_QUALITY)
+                .unwrap_or(defaults.reflection_quality),
             window_mode: reader.read(keys::WINDOW_MODE).unwrap_or_default(),
             display_mode: DisplayMode::read(&mut reader),
             render_resolution: reader
@@ -153,6 +156,7 @@ impl PlayerOptions {
             keys::SURFACE_DEPTH_QUALITY,
             Some(&self.surface_depth_quality),
         );
+        writer.put(keys::REFLECTION_QUALITY, Some(&self.reflection_quality));
         writer.put(keys::RENDER_RESOLUTION, Some(&self.render_resolution));
         writer.put(keys::WINDOW_MODE, Some(&self.window_mode));
         if let Some(mode) = &self.display_mode {

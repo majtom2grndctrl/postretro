@@ -319,7 +319,13 @@ impl App {
     /// the surface was recreated — the renderer's `ensure_full_ready` no-ops when
     /// already full-ready, so the steady boot path pays nothing on re-entry.
     fn finish_renderer_full_init(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        let (shadow_quality, fog_quality, surface_depth_quality, render_resolution) = self
+        let (
+            shadow_quality,
+            fog_quality,
+            surface_depth_quality,
+            reflection_quality,
+            render_resolution,
+        ) = self
             .session
             .as_ref()
             .map(|session| {
@@ -327,6 +333,7 @@ impl App {
                     session.player_options.shadow_quality,
                     session.player_options.fog_quality,
                     session.player_options.surface_depth_quality,
+                    session.player_options.reflection_quality,
                     session.player_options.render_resolution,
                 )
             })
@@ -336,6 +343,10 @@ impl App {
         // placeholder material this build creates already carries the player's
         // tier and no rewrite is needed to catch it up.
         self.apply_player_surface_depth_quality(surface_depth_quality);
+        // Kept in renderer boot state BEFORE `ensure_full_ready` for the same
+        // reason: full init and the first fluid install read the stored tier,
+        // so Off allocates no reflection target at all.
+        self.apply_player_reflection_quality(reflection_quality);
         // Recorded BEFORE `ensure_full_ready`, which commits recorded extents
         // before building the scene targets: the first full-ready frame is
         // already at the saved resolution, with no rebuild after full init.

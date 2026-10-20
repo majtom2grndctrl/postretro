@@ -1,14 +1,17 @@
 // App-boundary mappings from player/mod options to renderer-owned settings.
-// See: context/lib/rendering_pipeline.md §7.3a, §7.8
+// See: context/lib/rendering_pipeline.md §7.3a, §7.8 · context/lib/player_options.md §4
 
 use postretro_scripting_core::runtime::{ModBloomResolution, ModReflectionStyle, ModRenderProfile};
 
+use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::render_extent::RenderResolutionPolicy;
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality as RendererSurfaceDepthQuality;
 
 use crate::App;
-use crate::options::{FogQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality};
+use crate::options::{
+    FogQuality, ReflectionQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality,
+};
 use crate::render::{BloomRenderProfile, BloomResolution};
 
 /// Translate the persisted shadow tier into the spot-shadow allocation used by
@@ -45,6 +48,21 @@ pub(crate) const fn renderer_surface_depth_quality(
     match quality {
         SurfaceDepthQuality::Off => RendererSurfaceDepthQuality::Off,
         SurfaceDepthQuality::On => RendererSurfaceDepthQuality::On,
+    }
+}
+
+/// Translate the persisted reflection tier into the renderer's own vocabulary.
+/// The `match` is exhaustive with no `_` arm: a new tier must fail to compile
+/// here rather than silently pick a target fraction. The two enums are
+/// separate for Surface Depth's reason: render-cpu carries no serde.
+pub(crate) const fn renderer_reflection_quality(
+    quality: ReflectionQuality,
+) -> FluidReflectionQuality {
+    match quality {
+        ReflectionQuality::Off => FluidReflectionQuality::Off,
+        ReflectionQuality::Low => FluidReflectionQuality::Low,
+        ReflectionQuality::Medium => FluidReflectionQuality::Medium,
+        ReflectionQuality::High => FluidReflectionQuality::High,
     }
 }
 
@@ -132,6 +150,19 @@ impl App {
     pub(crate) fn apply_player_surface_depth_quality(&mut self, quality: SurfaceDepthQuality) {
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_surface_depth_quality(renderer_surface_depth_quality(quality));
+        }
+    }
+
+    /// Apply the player's fluid reflection tier. Live, and safe before full init
+    /// and with no level loaded: the renderer keeps the tier in boot state, and
+    /// full init and each fluid install consult it. Setting the tier it already
+    /// holds builds nothing, so the install-time re-apply is free.
+    ///
+    /// A `None` renderer (pre-window boot, or suspended) is a no-op; resume
+    /// replays full init, which re-applies the tier from `PlayerOptions`.
+    pub(crate) fn apply_player_reflection_quality(&mut self, quality: ReflectionQuality) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_reflection_quality(renderer_reflection_quality(quality));
         }
     }
 
@@ -268,6 +299,73 @@ mod tests {
         }
     }
 
+    // The kept tier reaches the renderer before anything sizes a reflection
+    // target from it: before full init builds, before each level's fluid
+    // install, and live from the options bridge. Frame capture reads no
+    // player options, so it draws at the renderer's default tier (high).
+    #[test]
+    fn the_reflection_tier_is_applied_before_full_init_and_each_fluid_install() {
+        let splash = include_str!("splash_lifecycle.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("splash_lifecycle test module marker remains present")
+            .0;
+        let full_init = splash
+            .split("fn finish_renderer_full_init(")
+            .nth(1)
+            .expect("finish_renderer_full_init exists");
+        let apply = full_init
+            .find("self.apply_player_reflection_quality(reflection_quality);")
+            .expect("full init applies the saved reflection tier");
+        let full_ready = full_init
+            .find(".ensure_full_ready()")
+            .expect("full init calls ensure_full_ready");
+        assert!(apply < full_ready, "applied before full init builds");
+
+        let lifecycle = include_str!("lifecycle.rs")
+            .split("#[cfg(test)]\npub(crate) mod tests")
+            .next()
+            .unwrap();
+        let install = lifecycle
+            .split("fn install_level_payload(")
+            .nth(1)
+            .expect("install_level_payload exists")
+            .split("\n    fn ")
+            .next()
+            .unwrap();
+        let apply = install
+            .find("self.apply_player_reflection_quality(reflection_quality);")
+            .expect("level install re-applies the kept reflection tier");
+        let fluid = install
+            .find("renderer.install_fluid_surfaces(")
+            .expect("level install installs fluid surfaces");
+        assert!(
+            apply < fluid,
+            "applied before the fluid install sizes the target"
+        );
+        assert_eq!(
+            install.matches("apply_player_reflection_quality").count(),
+            1,
+            "once per install"
+        );
+
+        assert!(
+            include_str!("../app/options_menu.rs")
+                .contains("self.apply_player_reflection_quality(quality);"),
+            "an accepted menu change applies live"
+        );
+
+        for capture in [
+            include_str!("../capture/mod.rs"),
+            include_str!("../capture/prepared.rs"),
+            include_str!("../capture/driver.rs"),
+            include_str!("../capture/setup.rs"),
+            include_str!("../capture/scene.rs"),
+        ] {
+            assert!(!capture.contains("set_reflection_quality"));
+            assert!(!capture.contains("apply_player_reflection_quality"));
+        }
+    }
+
     #[test]
     fn each_authored_resolution_maps_to_its_renderer_resolution() {
         for (authored_resolution, expected) in [
@@ -360,6 +458,44 @@ mod tests {
         assert_eq!(
             RendererSurfaceDepthQuality::default(),
             RendererSurfaceDepthQuality::On,
+        );
+    }
+
+    #[test]
+    fn every_reflection_tier_maps_to_its_renderer_tier() {
+        for (persisted, expected) in [
+            (ReflectionQuality::Off, FluidReflectionQuality::Off),
+            (ReflectionQuality::Low, FluidReflectionQuality::Low),
+            (ReflectionQuality::Medium, FluidReflectionQuality::Medium),
+            (ReflectionQuality::High, FluidReflectionQuality::High),
+        ] {
+            assert_eq!(renderer_reflection_quality(persisted), expected);
+        }
+        // Drift guard both ways: walk the renderer's own `ALL` back to the
+        // persisted enum through an exhaustive match (no `_` arm), so a tier
+        // added to either side without the other fails to compile here.
+        for renderer_tier in FluidReflectionQuality::ALL {
+            let persisted = match renderer_tier {
+                FluidReflectionQuality::Off => ReflectionQuality::Off,
+                FluidReflectionQuality::Low => ReflectionQuality::Low,
+                FluidReflectionQuality::Medium => ReflectionQuality::Medium,
+                FluidReflectionQuality::High => ReflectionQuality::High,
+            };
+            assert_eq!(renderer_reflection_quality(persisted), renderer_tier);
+        }
+    }
+
+    #[test]
+    fn reflection_quality_defaults_to_the_top_tier_on_both_sides() {
+        // A player who never opens the menu draws what a renderer no option
+        // has spoken to draws (frame capture's): high.
+        assert_eq!(
+            renderer_reflection_quality(ReflectionQuality::default()),
+            FluidReflectionQuality::High,
+        );
+        assert_eq!(
+            FluidReflectionQuality::default(),
+            FluidReflectionQuality::High,
         );
     }
 

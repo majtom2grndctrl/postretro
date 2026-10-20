@@ -286,6 +286,15 @@ const RENDER_RESOLUTION_CHOICES = [
   { value: "quarter", id: "optionsRenderResolutionQuarter", label: "1/4" },
 ] as const;
 
+/// Fluid reflection tiers, cheapest first. A cost choice only: the reflection
+/// style is the game's, never the player's.
+const REFLECTION_QUALITY_CHOICES = [
+  { value: "off", id: "optionsReflectionOff", label: "OFF" },
+  { value: "low", id: "optionsReflectionLow", label: "LOW" },
+  { value: "medium", id: "optionsReflectionMedium", label: "MEDIUM" },
+  { value: "high", id: "optionsReflectionHigh", label: "HIGH" },
+] as const;
+
 const optionReactions: NamedReactionDescriptor[] = [
   ...WINDOW_MODE_CHOICES.map(({ value }) =>
     defineReaction(`frontend.options.windowMode.${value}`, updateState(options.windowMode, value)),
@@ -325,6 +334,12 @@ const optionReactions: NamedReactionDescriptor[] = [
   defineReaction(
     "frontend.options.surfaceDepthQuality.on",
     updateState(options.surfaceDepthQuality, "on"),
+  ),
+  ...REFLECTION_QUALITY_CHOICES.map(({ value }) =>
+    defineReaction(
+      `frontend.options.reflectionQuality.${value}`,
+      updateState(options.reflectionQuality, value),
+    ),
   ),
   ...RENDER_RESOLUTION_CHOICES.map(({ value }) =>
     defineReaction(
@@ -662,6 +677,17 @@ const graphicsPanel = optionsPanel("optionsPanelGraphics", [
         "frontend.options.surfaceDepthQuality.on",
       ),
     ]),
+    optionLabel("optionsReflectionQualityLabel", "REFLECTIONS"),
+    optionChoices(
+      REFLECTION_QUALITY_CHOICES.map(({ value, id, label }) =>
+        radioChoice(
+          id,
+          label,
+          stateEquals(options.reflectionQuality, value),
+          `frontend.options.reflectionQuality.${value}`,
+        ),
+      ),
+    ),
     optionLabel("optionsRenderResolutionLabel", "RENDER RESOLUTION"),
     optionChoices(
       RENDER_RESOLUTION_CHOICES.map(({ value, id, label }) =>

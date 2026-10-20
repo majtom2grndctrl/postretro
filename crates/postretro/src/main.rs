@@ -10405,7 +10405,7 @@ mod tests {
                 "optionsTabGraphics",
                 "graphics",
                 "optionsPanelGraphics",
-                12,
+                14,
                 &[
                     "optionsWindowed",
                     "optionsBorderless",
@@ -10420,6 +10420,10 @@ mod tests {
                     "optionsFogHigh",
                     "optionsSurfaceDepthOff",
                     "optionsSurfaceDepthOn",
+                    "optionsReflectionOff",
+                    "optionsReflectionLow",
+                    "optionsReflectionMedium",
+                    "optionsReflectionHigh",
                     "optionsRenderResolutionAuto",
                     "optionsRenderResolutionNative",
                     "optionsRenderResolutionHalf",
@@ -10642,30 +10646,30 @@ mod tests {
 
         let graphics_panel = find_by_id(&options_tree.root, "optionsPanelGraphics")
             .expect("graphics panel is in the options tree");
-        for (id, value) in [
-            ("optionsWindowed", "windowed"),
-            ("optionsBorderless", "borderless"),
-            ("optionsExclusive", "exclusive"),
+        for (id, slot, value) in [
+            ("optionsWindowed", "options.windowMode", "windowed"),
+            ("optionsBorderless", "options.windowMode", "borderless"),
+            ("optionsExclusive", "options.windowMode", "exclusive"),
+            ("optionsReflectionOff", "options.reflectionQuality", "off"),
+            ("optionsReflectionLow", "options.reflectionQuality", "low"),
+            (
+                "optionsReflectionMedium",
+                "options.reflectionQuality",
+                "medium",
+            ),
+            ("optionsReflectionHigh", "options.reflectionQuality", "high"),
         ] {
-            let button = find_button(graphics_panel, id)
-                .unwrap_or_else(|| panic!("{id} is a window-mode radio button"));
+            let button =
+                find_button(graphics_panel, id).unwrap_or_else(|| panic!("{id} is a radio button"));
             assert_eq!(button.role, Some(Role::Radio));
             let checked = button
                 .checked
                 .as_ref()
                 .expect("radio exposes checked state");
             assert_eq!(button.bind.as_ref(), Some(checked));
-            assert_eq!(
-                checked.source,
-                BindSource::Slot {
-                    slot: "options.windowMode".into()
-                }
-            );
+            assert_eq!(checked.source, BindSource::Slot { slot: slot.into() });
             assert_eq!(checked.equals, Some(PredicateValue::String(value.into())));
-            assert_eq!(
-                button.on_press,
-                format!("frontend.options.windowMode.{value}")
-            );
+            assert_eq!(button.on_press, format!("frontend.{slot}.{value}"));
             let reaction = manifest
                 .reactions
                 .iter()
@@ -10677,7 +10681,7 @@ mod tests {
             assert_eq!(primitive.primitive, "setState");
             assert_eq!(
                 primitive.args,
-                serde_json::json!({ "slot": "options.windowMode", "value": value })
+                serde_json::json!({ "slot": slot, "value": value })
             );
         }
         for (id, action) in [

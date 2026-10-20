@@ -48,6 +48,10 @@ use postretro_foundation::{
 };
 use std::collections::VecDeque;
 
+// Co-op proof: a default lift holding for a rider pinned under a low ceiling.
+#[path = "predict_reconcile_harness_pinned_lift.rs"]
+mod pinned_lift;
+
 /// Plain loopback at ~zero latency: no delay, jitter, or loss. The host playout
 /// buffer still warms up (a few ticks), but once armed the host resolves the
 /// client's commands the same tick they arrive, so reconcile corrections are ~0 and

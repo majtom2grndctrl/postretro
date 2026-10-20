@@ -41,7 +41,9 @@ use super::reconcile::reconcile_local_pawn_with_mover_history;
 use super::replication::{ReplicableSet, host_register_loaded_movers, produce_owned_snapshots};
 use crate::collision::CollisionWorld;
 use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
-use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
+use crate::kinematic_mover::{
+    MoverTickStateTable, run_kinematic_mover_tick, run_mover_blocking_pass, run_mover_pin_pretest,
+};
 use crate::movement::{MovementEvents, MovementInput};
 use crate::netcode::{
     ClientPredictionTickContext, NetworkIdAllocator, apply_installed_movement_tuning_to_armed_pawn,
@@ -990,6 +992,43 @@ impl LoopbackHarness {
         h
     }
 
+    /// An unstarted default (`displace`) `once` lift with `collider`, travelling
+    /// `waypoints` at `speed_mps`, in `world` on both peers. The pawn spawns at
+    /// [`START`], over the lift's origin.
+    pub(crate) fn with_lift(
+        link: LinkConfig,
+        world: CollisionWorld,
+        collider: MoverCollider,
+        waypoints: Vec<Vec3>,
+        speed_mps: f32,
+    ) -> Self {
+        let mut h = Self::new(link);
+        h.world = world;
+        let spawn = |registry: &mut EntityRegistry| {
+            spawn_mover(
+                registry,
+                collider.mover_id(),
+                waypoints.clone(),
+                speed_mps,
+                KinematicMoverMode::Once,
+                false,
+            )
+        };
+        let host_mover = spawn(&mut h.host_registry);
+        let client_mover = spawn(&mut h.client_registry);
+        h.mover_colliders.push(collider);
+        host_register_loaded_movers(
+            &h.host_registry,
+            &mut h.allocator,
+            &mut h.replicable,
+            &mut h.host_loaded_movers,
+        );
+        h.mover_network_id = Some(h.allocator.stamp(host_mover));
+        h.host_mover = Some(host_mover);
+        h.client_mover = Some(client_mover);
+        h
+    }
+
     /// A pure rotator with a rider planted one metre from its pivot. The static
     /// axis/acceleration remain local on both peers; only the phase replicates.
     pub(crate) fn with_rotating_platform(link: LinkConfig) -> Self {
@@ -1161,6 +1200,22 @@ impl LoopbackHarness {
         //    lagging by the (prediction-compensated) playout delay.
         self.host_ticks_elapsed = self.host_ticks_elapsed.wrapping_add(1);
         self.host_registry.snapshot_transforms();
+        // Production mover order (`simulate_tick_with_presentation_aim`): the pin
+        // pretest, the driver, then movement and triggers, then the blocking
+        // pass. The harness has no consumer for mover events or crush impacts.
+        let mut mover_events = Vec::new();
+        {
+            let (mover_poses, blocking_state) = self.host_mover_states.split_for_blocking();
+            run_mover_pin_pretest(
+                &mut self.host_registry,
+                &self.world,
+                &self.mover_colliders,
+                &mover_poses,
+                blocking_state,
+                DT,
+                &mut mover_events,
+            );
+        }
         run_kinematic_mover_tick(&mut self.host_registry, &mut self.host_mover_states, DT);
         let mut trigger_use_edges = HashMap::new();
         if self.host_ticks_elapsed > PLAYOUT_WARMUP_TICKS {
@@ -1211,6 +1266,17 @@ impl LoopbackHarness {
             }],
             &trigger_use_edges,
             DT,
+        );
+        let (mover_poses, blocking_state) = self.host_mover_states.split_for_blocking();
+        run_mover_blocking_pass(
+            &mut self.host_registry,
+            &self.world,
+            &self.mover_colliders,
+            &mover_poses,
+            blocking_state,
+            DT,
+            &mut mover_events,
+            &mut |_| {},
         );
         self.server_tick = self.server_tick.wrapping_add(1);
     }
@@ -1833,6 +1899,37 @@ fn spawn_path_mover(registry: &mut EntityRegistry, waypoints: Vec<Vec3>) -> Enti
             wait_ms: 0.0,
             mode: KinematicMoverMode::PingPong,
             started: true,
+            spin_axis: Vec3::ZERO,
+            initial_spin_rate_rad_s: 0.0,
+            spin_accel_rad_s2: 0.0,
+            carry_yaw: false,
+        },
+    );
+    registry.set_component(id, mover).unwrap();
+    id
+}
+
+fn spawn_mover(
+    registry: &mut EntityRegistry,
+    mover_id: u32,
+    waypoints: Vec<Vec3>,
+    speed_mps: f32,
+    mode: KinematicMoverMode,
+    started: bool,
+) -> EntityId {
+    let id = registry.spawn(Transform {
+        position: waypoints[0],
+        ..Transform::default()
+    });
+    let mover = KinematicMoverComponent::new(
+        mover_id,
+        postretro_entities::KinematicMoverConfig {
+            waypoint_names: (0..waypoints.len()).map(|i| format!("node{i}")).collect(),
+            waypoints,
+            speed_mps,
+            wait_ms: 0.0,
+            mode,
+            started,
             spin_axis: Vec3::ZERO,
             initial_spin_rate_rad_s: 0.0,
             spin_accel_rad_s2: 0.0,

@@ -1,7 +1,7 @@
 # movement--mover-pinned-rider — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 411d3fb
 
 ## Corrections

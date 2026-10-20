@@ -219,15 +219,16 @@ the engine picks one each tick from the player's speed and direction.
 
 Travel more than 105° from where the player aims counts as backpedalling; travel
 within 75° counts as forward, and anything in between keeps the previous choice.
-While backpedalling the legs keep facing the aim direction and the backward state
-plays, so the upper body never twists more than 105° from the legs. If a backward
-state is missing, or names a clip the model lacks, the same tier's forward state
-plays instead: the player backpedals with a forward stride, a visible reminder that
-the backward clip is still owed. Without a run state, or with one whose clip the
-model lacks, the walk states cover every speed. The switch to the run states happens halfway between
-`movement.ground.speed.walk` and `movement.ground.speed.run`, with a margin either
-side so a player hovering near that speed does not flicker between clips. Each
-state scales its playback rate against its own `travelSpeed`.
+While backpedalling the legs turn to face against travel, toward the aim, and the
+backward state plays, so the upper body never twists more than 105° from the legs.
+If a backward state is missing, or names a clip the model lacks, the same tier's
+forward state plays instead: the player backpedals with a forward stride, a
+visible reminder that the backward clip is still owed. Without a run state, or
+with one whose clip the model lacks, the walk states cover every speed. The switch
+to the run states happens halfway between `movement.ground.speed.walk` and
+`movement.ground.speed.run`, with a margin either side so a player hovering near
+that speed does not flicker between clips. Each state scales its playback rate
+against its own `travelSpeed`.
 
 ```typescript
 defineEntity({

@@ -48,11 +48,10 @@ pub(super) fn materialize_remote_entities(
             let player_locomotion = descriptor.and_then(|descriptor| {
                 let movement = descriptor.movement.as_ref()?;
                 let mesh = descriptor.mesh.as_ref()?;
-                let idle_state = mesh.default_state.as_deref()?;
-                let states =
-                    crate::sim::PlayerLocomotionStates::from_declared(idle_state, |state| {
-                        mesh.animations.contains_key(state)
-                    })?;
+                let idle_state = mesh.default_state.clone()?;
+                let states = crate::sim::PlayerLocomotionStates::from_declared(|state| {
+                    mesh.animations.contains_key(state)
+                })?;
                 let model =
                     hit_zone_store.get(&postretro_model::ModelHandle::from(mesh.model.clone()));
                 let derived_travel_speeds = states
@@ -68,6 +67,7 @@ pub(super) fn materialize_remote_entities(
                     })
                     .collect();
                 Some(client::RemotePlayerLocomotionReference {
+                    idle_state,
                     states,
                     walk_speed: movement.ground.speed.walk,
                     run_speed: movement.ground.speed.run,

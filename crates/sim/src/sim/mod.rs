@@ -1116,6 +1116,7 @@ pub fn update_player_animation_locomotion(
                 run_speed,
                 direction,
                 current_state: &animation.current_state,
+                idle_state: &animation.default_state,
             };
             let selection = PlayerLocomotionStates::from_animation(animation).map(|states| {
                 let (state, tier) = states.select(&input, |state| animation.is_state_usable(state));

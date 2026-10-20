@@ -183,6 +183,7 @@ struct RemotePlayerLocomotion {
 /// available; the replication state owns the resulting per-network-id cache.
 #[derive(Debug, Clone)]
 pub(crate) struct RemotePlayerLocomotionReference {
+    pub(crate) idle_state: String,
     pub(crate) states: crate::sim::PlayerLocomotionStates,
     pub(crate) walk_speed: f32,
     pub(crate) run_speed: f32,
@@ -200,7 +201,8 @@ impl RemotePlayerLocomotionReference {
 
     pub(crate) fn declaring(states: &[&str], walk_speed: f32, run_speed: f32) -> Self {
         Self {
-            states: crate::sim::PlayerLocomotionStates::from_declared("idle", |state| {
+            idle_state: "idle".to_string(),
+            states: crate::sim::PlayerLocomotionStates::from_declared(|state| {
                 states.contains(&state)
             })
             .expect("a walk state is declared"),
@@ -2571,6 +2573,7 @@ impl ClientReplication {
                 run_speed: reference.run_speed,
                 direction,
                 current_state: &current_state,
+                idle_state: &reference.idle_state,
             },
             usable,
         );

@@ -112,6 +112,8 @@ pub struct LocomotionInput<'a> {
     pub direction: LocomotionDirection,
     /// The active animation state: the tier hysteresis memory.
     pub current_state: &'a str,
+    /// The descriptor's `defaultState`, played while still.
+    pub idle_state: &'a str,
 }
 
 /// Whether the run tier plays: speed is nearer run pace than walk pace, past a
@@ -119,8 +121,7 @@ pub struct LocomotionInput<'a> {
 fn run_tier_holds(run: &LocomotionTier, input: &LocomotionInput<'_>) -> bool {
     let midpoint = (input.walk_speed + input.run_speed) * 0.5;
     let margin = (input.run_speed - input.walk_speed).abs() * RUN_TIER_BAND;
-    let running =
-        input.current_state == run.forward || run.backward.as_deref() == Some(input.current_state);
+    let running = input.current_state == run.forward || run.backward == Some(input.current_state);
     if running {
         input.speed_xz >= midpoint - margin
     } else {
@@ -128,11 +129,31 @@ fn run_tier_holds(run: &LocomotionTier, input: &LocomotionInput<'_>) -> bool {
     }
 }
 
-/// One speed tier's declared state names.
-#[derive(Debug, Clone, PartialEq)]
+/// One speed tier's declared state names. Names are the engine's own constants,
+/// so selecting from them allocates nothing on the per-tick and per-frame paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocomotionTier {
-    pub forward: String,
-    pub backward: Option<String>,
+    pub forward: &'static str,
+    pub backward: Option<&'static str>,
+}
+
+impl LocomotionTier {
+    /// The direction `state` commits the body to within this tier: decided only
+    /// when the tier has a usable backward state to tell the two apart.
+    fn direction_of(
+        self,
+        state: &str,
+        is_usable: impl Fn(&str) -> bool,
+    ) -> Option<LocomotionDirection> {
+        let backward = self.backward.filter(|name| is_usable(name))?;
+        if state == backward {
+            Some(LocomotionDirection::Backward)
+        } else if state == self.forward {
+            Some(LocomotionDirection::Forward)
+        } else {
+            None
+        }
+    }
 }
 
 /// Which tier a selection landed in; callers pick the tier's reference speed.
@@ -143,13 +164,12 @@ pub enum LocomotionTierKind {
     Run,
 }
 
-/// The engine-selected player locomotion states a descriptor declares. Names are
-/// recognized by convention; a missing or unusable backward state falls back to
-/// its tier's forward state, so the forward clip shows where a backward clip is
-/// still owed.
-#[derive(Debug, Clone, PartialEq)]
+/// The engine-selected player locomotion states a descriptor declares, beside
+/// its `defaultState` for idle. Names are recognized by convention; a missing or
+/// unusable backward state falls back to its tier's forward state, so the forward
+/// clip shows where a backward clip is still owed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerLocomotionStates {
-    pub idle: String,
     pub walk: LocomotionTier,
     pub run: Option<LocomotionTier>,
 }
@@ -157,16 +177,15 @@ pub struct PlayerLocomotionStates {
 impl PlayerLocomotionStates {
     /// `None` when no walk-forward state is declared: the engine then drives no
     /// locomotion states for this player.
-    pub fn from_declared(idle: &str, is_declared: impl Fn(&str) -> bool) -> Option<Self> {
-        let tier = |forward_names: [&str; 2], backward: &str| {
+    pub fn from_declared(is_declared: impl Fn(&str) -> bool) -> Option<Self> {
+        let tier = |forward_names: [&'static str; 2], backward: &'static str| {
             let forward = forward_names.into_iter().find(|name| is_declared(name))?;
             Some(LocomotionTier {
-                forward: forward.to_string(),
-                backward: is_declared(backward).then(|| backward.to_string()),
+                forward,
+                backward: is_declared(backward).then_some(backward),
             })
         };
         Some(Self {
-            idle: idle.to_string(),
             walk: tier(WALK_FORWARD_STATES, WALK_BACKWARD_STATE)?,
             run: tier(RUN_FORWARD_STATES, RUN_BACKWARD_STATE),
         })
@@ -174,43 +193,39 @@ impl PlayerLocomotionStates {
 
     /// Read the declared states off a live animation.
     pub fn from_animation(animation: &MeshAnimation) -> Option<Self> {
-        Self::from_declared(&animation.default_state, |state| {
-            animation.states.contains_key(state)
-        })
+        Self::from_declared(|state| animation.states.contains_key(state))
     }
 
-    /// Every locomotion state name, for callers that precompute per-state data.
-    pub fn state_names(&self) -> impl Iterator<Item = &str> {
-        let tiers = std::iter::once(&self.walk).chain(self.run.as_ref());
-        std::iter::once(self.idle.as_str()).chain(tiers.flat_map(|tier| {
-            std::iter::once(tier.forward.as_str()).chain(tier.backward.as_deref())
-        }))
+    /// Every walk and run state name, for callers that precompute per-state data.
+    pub fn state_names(self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.walk)
+            .chain(self.run)
+            .flat_map(|tier| std::iter::once(tier.forward).chain(tier.backward))
     }
 
     /// Pick the target state. `is_usable` reports whether a state's clip
     /// resolved; an unusable backward state yields the tier's forward state.
-    pub fn select(
+    pub fn select<'a>(
         &self,
-        input: &LocomotionInput<'_>,
+        input: &LocomotionInput<'a>,
         is_usable: impl Fn(&str) -> bool,
-    ) -> (&str, LocomotionTierKind) {
+    ) -> (&'a str, LocomotionTierKind) {
         let speed = input.speed_xz;
         if !speed.is_finite() || speed <= MOVING_SPEED_EPSILON {
-            return (&self.idle, LocomotionTierKind::Idle);
+            return (input.idle_state, LocomotionTierKind::Idle);
         }
         // A run state whose clip did not resolve leaves the walk tier covering
         // every speed, as if no run state were declared.
-        let (tier, kind) = match self.run.as_ref() {
-            Some(run) if is_usable(&run.forward) && run_tier_holds(run, input) => {
+        let (tier, kind) = match self.run {
+            Some(run) if is_usable(run.forward) && run_tier_holds(&run, input) => {
                 (run, LocomotionTierKind::Run)
             }
-            _ => (&self.walk, LocomotionTierKind::Walk),
+            _ => (self.walk, LocomotionTierKind::Walk),
         };
         let backward = tier
             .backward
-            .as_deref()
             .filter(|state| input.direction == LocomotionDirection::Backward && is_usable(state));
-        (backward.unwrap_or(&tier.forward), kind)
+        (backward.unwrap_or(tier.forward), kind)
     }
 
     /// The direction an entered state commits the body to, when it decides one: a
@@ -222,18 +237,9 @@ impl PlayerLocomotionStates {
         state: &str,
         is_usable: impl Fn(&str) -> bool,
     ) -> Option<LocomotionDirection> {
-        std::iter::once(&self.walk)
-            .chain(self.run.as_ref())
-            .find_map(|tier| {
-                let backward = tier.backward.as_deref().filter(|name| is_usable(name))?;
-                if state == backward {
-                    Some(LocomotionDirection::Backward)
-                } else if state == tier.forward {
-                    Some(LocomotionDirection::Forward)
-                } else {
-                    None
-                }
-            })
+        std::iter::once(self.walk)
+            .chain(self.run)
+            .find_map(|tier| tier.direction_of(state, &is_usable))
     }
 }
 
@@ -375,7 +381,7 @@ mod tests {
     }
 
     fn states(declared: &[&str]) -> PlayerLocomotionStates {
-        PlayerLocomotionStates::from_declared("idle", |state| declared.contains(&state))
+        PlayerLocomotionStates::from_declared(|state| declared.contains(&state))
             .expect("walk state declared")
     }
 
@@ -391,6 +397,7 @@ mod tests {
             run_speed: 11.0,
             direction,
             current_state,
+            idle_state: "idle",
         }
     }
 
@@ -493,6 +500,7 @@ mod tests {
             run_speed: 7.0,
             direction: LocomotionDirection::Forward,
             current_state: "walk_forward",
+            idle_state: "idle",
         };
         assert_eq!(all.select(&flat(7.0), usable).1, LocomotionTierKind::Walk);
         assert_eq!(all.select(&flat(7.1), usable).1, LocomotionTierKind::Run);
@@ -500,9 +508,7 @@ mod tests {
 
     #[test]
     fn no_walk_state_means_no_engine_locomotion() {
-        assert!(
-            PlayerLocomotionStates::from_declared("idle", |state| state == "run_forward").is_none()
-        );
+        assert!(PlayerLocomotionStates::from_declared(|state| state == "run_forward").is_none());
     }
 
     #[test]

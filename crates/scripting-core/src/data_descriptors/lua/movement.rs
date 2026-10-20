@@ -59,6 +59,14 @@ pub fn movement_descriptor_from_lua(
             90.0,
             "movement.ground.maxSlope",
         )?,
+        friction: match get_optional_f32_lua(&ground_table, "friction")? {
+            Some(v) => validate_non_negative_finite(v, "movement.ground.friction")?,
+            None => GroundParams::DEFAULT_FRICTION,
+        },
+        stop_speed: match get_optional_f32_lua(&ground_table, "stopSpeed")? {
+            Some(v) => validate_non_negative_finite(v, "movement.ground.stopSpeed")?,
+            None => GroundParams::DEFAULT_STOP_SPEED,
+        },
     };
 
     let air_table = get_required_table_lua(table, "air")?;

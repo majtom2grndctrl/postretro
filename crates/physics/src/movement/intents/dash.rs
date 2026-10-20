@@ -11,7 +11,7 @@ use postretro_foundation::{
     PlayerMovementComponent, eval_value,
 };
 
-use super::{GROUND_STOP_FRICTION, apply_normal_horizontal_decay};
+use super::{apply_ground_friction, apply_normal_horizontal_decay};
 
 /// Hard upper bound on how long the `Dash` state can persist, in milliseconds.
 /// A seamed engine constant (not a descriptor field): it bounds the state so a
@@ -345,18 +345,11 @@ pub(crate) fn dash_intent(
     if dash_drag <= 0.0 {
         // `dash_drag == 0`: the boost bleeds off as `Normal` momentum would —
         // fast on the ground, slow in air. On the ground, decay the boost toward
-        // zero with ground friction *regardless of input*: `Normal`'s
-        // stop-friction is no-input-only (because `pm_accelerate` caps grounded
-        // speed), but the boost is deliberately above that cap, so a held stick
-        // must not freeze it. Airborne, fold into `Normal`'s contextual cap.
+        // zero with ground friction *regardless of input*, so a held stick never
+        // freezes it; no stop speed, since the boost sits above the cap.
+        // Airborne, fold into `Normal`'s contextual cap.
         if component.is_grounded() {
-            let bspeed = Vec2::new(boost.x, boost.z).length();
-            if bspeed > 0.0 {
-                let drop = bspeed * GROUND_STOP_FRICTION * dt;
-                let scale = (bspeed - drop).max(0.0) / bspeed;
-                boost.x *= scale;
-                boost.z *= scale;
-            }
+            apply_ground_friction(boost, component.ground_params.friction, 0.0, dt);
         } else {
             apply_normal_horizontal_decay(boost, component, input, ground_speed, dt);
         }

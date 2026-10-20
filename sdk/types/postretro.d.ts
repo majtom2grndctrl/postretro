@@ -860,12 +860,16 @@ declare module "postretro" {
   export type GroundParams = {
     /** Horizontal walk, run, and crouch target speeds in metres/sec. */
     speed: SpeedParams;
-    /** Ground acceleration in metres/sec². Must be finite and ≥ 0. */
+    /** Ground acceleration in metres/sec²: how quickly the player reaches speed and changes direction. Acceleration turns velocity but never lifts ground speed past the current speed target. Must be finite and ≥ 0. */
     accel: number;
     /** Maximum automatic step-up height in metres. Must be finite and ≥ 0; 0 disables stepping. */
     stepHeight: number;
     /** Steepest walkable surface angle in degrees. Must be finite and lie in [0, 90]. */
     maxSlope: number;
+    /** Ground friction rate per second, applied every grounded tick before acceleration: how quickly the player stops, and how fast speed banked above the target (a dash or slide exit) bleeds away. With `accel` at or below `friction`, ground speed settles at `accel / friction` of the target instead of reaching it. Grounded wind drift settles at push / friction. Defaults to 8. Must be finite and ≥ 0. */
+    friction?: number;
+    /** Speed in metres/sec below which friction brakes as if moving at this speed, so a stop ends at exactly zero instead of creeping. 0 leaves pure exponential decay. Defaults to 2.5. Must be finite and ≥ 0. */
+    stopSpeed?: number;
   };
 
   /** Walk, run, and crouch ground speeds in metres/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0. */

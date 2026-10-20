@@ -804,9 +804,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_type("GroundParams")
         .doc("On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization.")
         .field("speed", "SpeedParams", "Horizontal walk, run, and crouch target speeds in metres/sec.")
-        .field("accel", "f32", "Ground acceleration in metres/sec². Must be finite and ≥ 0.")
+        .field("accel", "f32", "Ground acceleration in metres/sec²: how quickly the player reaches speed and changes direction. Acceleration turns velocity but never lifts ground speed past the current speed target. Must be finite and ≥ 0.")
         .field("stepHeight", "f32", "Maximum automatic step-up height in metres. Must be finite and ≥ 0; 0 disables stepping.")
         .field("maxSlope", "f32", "Steepest walkable surface angle in degrees. Must be finite and lie in [0, 90].")
+        .field("friction?", "f32", "Ground friction rate per second, applied every grounded tick before acceleration: how quickly the player stops, and how fast speed banked above the target (a dash or slide exit) bleeds away. With `accel` at or below `friction`, ground speed settles at `accel / friction` of the target instead of reaching it. Grounded wind drift settles at push / friction. Defaults to 8. Must be finite and ≥ 0.")
+        .field("stopSpeed?", "f32", "Speed in metres/sec below which friction brakes as if moving at this speed, so a stop ends at exactly zero instead of creeping. 0 leaves pure exponential decay. Defaults to 2.5. Must be finite and ≥ 0.")
         .finish();
     registry
         .register_type("SpeedParams")

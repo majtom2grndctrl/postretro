@@ -203,6 +203,49 @@ defineEntity({
 });
 ```
 
+### Player ground movement
+
+A player descriptor's `components.movement.ground` block sets how the player
+moves on foot. Three fields shape how movement feels:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `accel` | required | How quickly the player reaches speed and turns onto a new heading, in metres/sec². |
+| `friction` | `8` | How quickly the player stops, per second. Applied every tick the player stands on ground, before acceleration. |
+| `stopSpeed` | `2.5` | Below this speed, in metres/sec, friction brakes at a constant rate, so a stop ends at exactly zero instead of creeping. `0` leaves a pure exponential slow-down. |
+
+All three must be finite and at least `0`. Because friction acts while a
+movement key is held too, turning sheds the old heading's momentum. Acceleration
+turns the player but never pushes ground speed past `speed.walk`, `speed.run` or
+`speed.crouch`, so sweeping the aim does not make the player faster. Speed
+carried above those targets, out of a dash or a slide, bleeds away at the
+`friction` rate.
+
+Keep `accel` above `friction`. When `accel` is at or below `friction`, the player
+never reaches the authored speeds and settles at `accel / friction` of them: a
+deliberate way to make a class feel sluggish. To make a class slower instead,
+lower its `speed` values.
+
+Wind from push volumes is slowed by the same `friction` while the player stands on
+ground, so a steady wind carries a standing player at push / `friction`. A
+low-friction class is blown further.
+
+```typescript
+movement: {
+  ground: {
+    speed: { walk: 7.0, run: 11.0, crouch: 3.0 },
+    accel: 15.0,
+    friction: 8.0, // omit for the default
+    stopSpeed: 2.5, // omit for the default
+    stepHeight: 0.5,
+    maxSlope: 45.0,
+  },
+  // ...capsule / air / fall...
+},
+```
+
+The same keys work in Luau tables.
+
 ### Player locomotion animation states
 
 A player descriptor's `components.mesh.animations` drives its third-person body

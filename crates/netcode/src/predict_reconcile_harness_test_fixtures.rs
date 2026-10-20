@@ -249,6 +249,8 @@ pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
             accel: 10.0,
             step_height: 0.3,
             max_slope: 45.0,
+            friction: GroundParams::DEFAULT_FRICTION,
+            stop_speed: GroundParams::DEFAULT_STOP_SPEED,
         },
         air: AirParams {
             forward_steer: 0.0,
@@ -820,6 +822,28 @@ impl LoopbackHarness {
         for descriptor in &mut self.descriptors {
             if let Some(movement) = descriptor.movement.as_mut() {
                 movement.swim = Some(swim.clone());
+            }
+        }
+        let movement = self.descriptors[0]
+            .movement
+            .as_ref()
+            .expect("the shared player descriptor has movement");
+        self.host_registry
+            .set_component(
+                self.host_pawn,
+                PlayerMovementComponent::from_descriptor(movement),
+            )
+            .unwrap();
+        self
+    }
+
+    /// Give both peers' shared player descriptor ground friction tuning and
+    /// rematerialize the host pawn from it, as [`Self::with_player_swim`] does.
+    pub(crate) fn with_player_ground_friction(mut self, friction: f32, stop_speed: f32) -> Self {
+        for descriptor in &mut self.descriptors {
+            if let Some(movement) = descriptor.movement.as_mut() {
+                movement.ground.friction = friction;
+                movement.ground.stop_speed = stop_speed;
             }
         }
         let movement = self.descriptors[0]

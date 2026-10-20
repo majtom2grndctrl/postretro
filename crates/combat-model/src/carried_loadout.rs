@@ -63,8 +63,11 @@ pub fn restore_carried_health(
 /// gains `spawn_active_slot`, the slot the host composed the pawn active with,
 /// which the client's install composition selects. An epoch-13 reader rejects
 /// the payload on the epoch check; without the bump it would silently drop the
-/// field and start on the first populated slot.
-pub const TUNING_PAYLOAD_EPOCH: u32 = 14;
+/// field and start on the first populated slot. 15: the movement descriptor's
+/// `ground` gains `friction` and `stop_speed`, and ground friction runs every
+/// grounded tick. An epoch-14 client would predict the old friction model
+/// against a host running the new one; the epoch check rejects it instead.
+pub const TUNING_PAYLOAD_EPOCH: u32 = 15;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///

@@ -92,6 +92,15 @@ The movement tick splits into two halves with a clean seam between them.
 
 Walk/run/jump/air-control is the baseline `Normal` state. `Dash`, `Crouch`, `Slide`, `Swim` and `Vault` sit behind the same seam; wall-run will too. Ability budgets (air-jump, air-dash) refresh through one landing-refresh point so they reset uniformly.
 
+### Ground friction
+
+`Normal` and `Crouching` share one grounded step: friction, then acceleration (Quake's `PM_Friction` then `PM_Accelerate`). Friction runs every grounded tick, input held or not, removing `max(speed, stopSpeed) × friction × dt`: exponential above `stopSpeed`, then a constant deceleration that ends at exactly zero. Acceleration turns velocity toward the wish but never lifts horizontal speed past the higher of the tier's target and the speed friction left. So a turn sheds the old heading's momentum, sweeping the aim never raises ground speed, and speed banked above the target (a dash or slide exit) only bleeds, at the friction rate.
+
+- **Descriptor-owned.** `ground.friction` (default 8 per second) and `ground.stopSpeed` (default 2.5 m/s) are per-class tuning, carried to clients in the tuning payload. `accel` at or below `friction` is allowed: ground speed then settles at `accel / friction` of the target.
+- **Airborne untouched.** A grounded jump clears grounded before the step, so the jump tick skips friction and a bunny-hop keeps its speed.
+- **Other users.** The dash's base decays by friction (with the stop speed) only with no input, since the dash steers with its own acceleration; its zero-drag boost decays by friction with no stop speed. The push drift layer decays by friction with no stop speed (§6). Slide, swim and vault keep their own drag. Knockback keeps `groundDrag`.
+- **Surface friction is a future door.** Nothing per-surface reaches movement yet. Ice would arrive as a static, environment-resolved scale on the class's friction and acceleration, like fluid viscosity; it needs §7's map allow-list extended.
+
 ### Environment resolution
 
 The tick resolves the pawn's environment once, at its tick-start position, before the state intent: gravity (signed vertical), push (a vector), the winning fluid, its viscosity, immersion, and whether the tick eye is inside that fluid. Resolution is one pure function of position, capsule, the level's static environment volumes and the level gravity (`entity_model.md` §7, Environment Volumes). Host movement, client prediction and reconcile replay all call it through the tick, so they agree by construction. Intents receive the resolved value and never query it. The forward-contact rule above does not govern it: environment is a function of position and static data, not of a collision result.
@@ -191,7 +200,7 @@ A push volume adds an acceleration in any direction. Its optional `force` (defau
 
 - **Horizontal on land.** Outside water, horizontal push accrues in the drift layer. Intent speed caps and steering act on locomotion only, so an air cap never re-clips a wind. Vertical push joins locomotion directly; no intent caps vertical speed, and while grounded the floor bears it.
 - **3D while swimming.** In `Swim` the whole push accrues in the layer, so a current settles at about push / viscosity in every direction (exactly, below) and swim steering never fights it. The layer's speed is capped at terminal velocity by magnitude. On every edge out of `Swim` its vertical part folds into vertical velocity, and the layer is horizontal again.
-- **Decay by medium.** Ground friction while grounded (steady drift ≈ push / ground stop friction), the fluid's viscosity while swimming, nothing airborne: momentum carries out of a wind until landing.
+- **Decay by medium.** The class's ground friction while grounded, with no stop speed, so a gentle current still moves a body (steady drift ≈ push / friction); the fluid's viscosity while swimming; nothing airborne: momentum carries out of a wind until landing.
 - **Collision.** The layer rejoins before the one collision sweep, which projects it like knockback, so walls absorb it. While swimming, floors and ceilings never absorb its vertical part, so a downward current presses a swimmer into the floor and an upward one lifts it off once total vertical motion points up.
 - **Lift-off.** A grounded dry body leaves the ground when the push points up harder than gravity pulls down, as a knockback launch does: grounded clears before the intent, and the substrate skips the upward clamp and ground-stick. Only gravity's downward part resists.
 - **Terminal speed.** Speed along the push direction is capped at the descriptor's terminal fall velocity, so an updraft never accelerates a body forever. The excess comes from the drift layer first, then knockback, then locomotion, as the fall clamp does.

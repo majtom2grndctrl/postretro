@@ -523,6 +523,8 @@ pub fn tick_with_immersion_and_armed(
 #[cfg(test)]
 mod environment_tests;
 #[cfg(test)]
+mod friction_tests;
+#[cfg(test)]
 mod overlap_baseline_tests;
 #[cfg(test)]
 mod overlap_baseline_tracks;
@@ -577,6 +579,8 @@ mod tests {
                 accel: 10.0,
                 step_height: 0.3,
                 max_slope: 45.0,
+                friction: GroundParams::DEFAULT_FRICTION,
+                stop_speed: GroundParams::DEFAULT_STOP_SPEED,
             },
             air: AirParams {
                 forward_steer: 0.0,
@@ -5650,9 +5654,12 @@ mod tests {
         else {
             panic!("grounded crouch above the slide threshold must enter Sliding");
         };
+        // The entry tick's ground friction runs before the slide banks speed.
+        let banked = 12.0 * (1.0 - desc.ground.friction * DT);
         assert!(
-            boost.x > 12.0,
-            "entry boost adds to banked horizontal velocity"
+            boost.x > banked,
+            "entry boost adds to banked horizontal velocity: {} <= {banked}",
+            boost.x
         );
         assert!(
             approx_eq(boost.y, 0.0, VEL_EPS),

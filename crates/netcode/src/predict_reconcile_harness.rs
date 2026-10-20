@@ -1733,6 +1733,81 @@ fn client_joining_host_with_different_level_gravity_predicts_host_value_without_
     );
 }
 
+struct GroundFrictionRun {
+    corrections: Vec<f32>,
+    final_host_position: Vec3,
+    client_friction: Option<(f32, f32)>,
+}
+
+/// Run, turn 90° at speed, release to a stop, then walk off again: every edge
+/// of the ground friction model, driven from the client.
+fn run_ground_friction(mut h: LoopbackHarness) -> GroundFrictionRun {
+    h.step_until_armed(&idle_command());
+    let mut corrections = Vec::new();
+    for step in 0..240_u32 {
+        let mut command = forward_command(false);
+        match step {
+            0..60 => {}
+            60..120 => command.movement.facing_yaw = std::f32::consts::FRAC_PI_2,
+            120..180 => command.movement.wish_dir = Vec2::ZERO,
+            _ => command.movement.running = false,
+        }
+        h.step(&command);
+        corrections.extend(h.latest_local_corrections.iter().copied());
+    }
+    let client_friction = h.client_pawn.and_then(|pawn| {
+        h.client_registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .ok()
+            .map(|movement| {
+                (
+                    movement.ground_params.friction,
+                    movement.ground_params.stop_speed,
+                )
+            })
+    });
+    GroundFrictionRun {
+        corrections,
+        final_host_position: h.host_position(),
+        client_friction,
+    }
+}
+
+// A class's ground friction reaches the client through the tuning payload, so
+// it predicts the host's stops and turns with the host's values and takes no
+// correction.
+#[test]
+fn class_ground_friction_predicts_without_correction_through_turns_and_stops() {
+    let tuned = run_ground_friction(
+        LoopbackHarness::new(light_link()).with_player_ground_friction(14.0, 4.0),
+    );
+    let default = run_ground_friction(LoopbackHarness::new(light_link()));
+
+    assert!(
+        (tuned.final_host_position - default.final_host_position).length() > 0.05,
+        "fixture: the class friction must change the host trajectory: {:?} vs {:?}",
+        tuned.final_host_position,
+        default.final_host_position
+    );
+    assert_eq!(
+        tuned.client_friction,
+        Some((14.0, 4.0)),
+        "the client pawn runs the host's class friction"
+    );
+    for (name, run) in [("tuned", &tuned), ("default", &default)] {
+        assert!(
+            run.corrections.len() > 30,
+            "{name}: reconciles must run throughout; saw {}",
+            run.corrections.len()
+        );
+        let worst = run.corrections.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            worst <= NO_CORRECTION_M,
+            "{name}: every correction must be at most {NO_CORRECTION_M} m; worst {worst}"
+        );
+    }
+}
+
 // A host `setGravity` mid-level, while the client hops, reaches the joined
 // client through a resent tuning payload; the client applies it on arrival and
 // takes at most one correction for the change.

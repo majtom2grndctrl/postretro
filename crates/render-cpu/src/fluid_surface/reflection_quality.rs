@@ -68,7 +68,8 @@ impl FluidReflectionMarch {
     /// Full-resolution pixels per march step at `scene` extent: one per
     /// `rows_per_stride_pixel` scene rows, at least one. Fractional, never
     /// floored: the march samples `mix(p0, p1, s)` and loads the pixel it
-    /// lands in, so a saturated tier reaches the full screen at every height.
+    /// lands in, so a tier reaches the same share of the screen at every
+    /// height.
     pub fn stride(self, scene: (u32, u32)) -> f32 {
         (scene.1 as f32 / self.rows_per_stride_pixel.max(1) as f32).max(1.0)
     }
@@ -114,14 +115,15 @@ impl FluidReflectionPreset {
 /// divisor, thickness (m). A lower tier never reaches further than a higher
 /// one.
 ///
-/// Sizing rule. A ray's reach is about steps / divisor screen heights,
-/// saturating near 1.07, where a missing ray has left the screen. High,
-/// very high and ultra are saturated at about 1.07 x divisor steps. Cost then
-/// grows with the divisor, so each tier above medium halves the stride. The
-/// stride is fractional (scene rows ÷ divisor, never floored) so that a
-/// saturated tier reaches the full screen at every height.
-/// Medium is deliberately unsaturated at 48 steps (owner choice). Thickness
-/// costs nothing; it is a quality choice.
+/// Sizing rule. A ray's reach is about steps / divisor screen heights. High,
+/// very high and ultra all reach half a screen height (steps = divisor / 2,
+/// owner choice): past that, the baked probe term shows where a longer march
+/// would replace it with whatever surface the ray found on screen. A finer
+/// stride is the quality step, so each tier above medium shrinks the stride
+/// at the same reach, and cost grows with the divisor. The stride is
+/// fractional (scene rows ÷ divisor, never floored), so reach is the same at
+/// every height. Medium reaches about a quarter of a screen height at 48
+/// steps (owner choice). Thickness costs nothing; it is a quality choice.
 /// See: context/lib/rendering_pipeline.md §7.3a
 const FLUID_REFLECTION_PRESETS: [(FluidReflectionQuality, FluidReflectionPreset); 4] = [
     (
@@ -130,15 +132,15 @@ const FLUID_REFLECTION_PRESETS: [(FluidReflectionQuality, FluidReflectionPreset)
     ),
     (
         FluidReflectionQuality::High,
-        FluidReflectionPreset::new(1.0, 193, 180, 1.0),
+        FluidReflectionPreset::new(1.0, 90, 180, 1.0),
     ),
     (
         FluidReflectionQuality::VeryHigh,
-        FluidReflectionPreset::new(1.0, 386, 360, 1.5),
+        FluidReflectionPreset::new(1.0, 180, 360, 1.5),
     ),
     (
         FluidReflectionQuality::Ultra,
-        FluidReflectionPreset::new(1.0, 578, 540, 2.5),
+        FluidReflectionPreset::new(1.0, 270, 540, 2.5),
     ),
 ];
 

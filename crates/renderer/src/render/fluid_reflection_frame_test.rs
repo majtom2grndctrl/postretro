@@ -1079,7 +1079,7 @@ fn reflection_march_tuning_writes_only_the_reflection_uniform() {
         renderer.reflection_march_rows_per_stride_pixel(),
     );
     // High's preset.
-    assert_eq!((budget, thickness, rows), (193, 1.0, 180));
+    assert_eq!((budget, thickness, rows), (90, 1.0, 180));
     let (targets, group_5) = (target_builds(&renderer), group_5_builds(&renderer));
     let uploads = |renderer: &Renderer| {
         renderer

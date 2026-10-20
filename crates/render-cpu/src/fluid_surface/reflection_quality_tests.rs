@@ -56,9 +56,9 @@ fn every_fluid_reflection_tier_pins_its_preset() {
             None,
             None,
             Some((0.5, 48, 180, 1.0)),
-            Some((1.0, 193, 180, 1.0)),
-            Some((1.0, 386, 360, 1.5)),
-            Some((1.0, 578, 540, 2.5)),
+            Some((1.0, 90, 180, 1.0)),
+            Some((1.0, 180, 360, 1.5)),
+            Some((1.0, 270, 540, 2.5)),
         ]
     );
     // Each preset is already sanitized: the dev tuning's rules change none.

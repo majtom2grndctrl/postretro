@@ -47,7 +47,10 @@
      * A nonzero rate requires the mover to author a nonzero `spin_axis` in its map entity.
      */
     setSpinRate(rate: number): SequenceStep[];
-    /** Set the host-authoritative response when the mover contacts an entity. */
+    /**
+     * Set the host-authoritative response when the mover contacts an entity.
+     * Under every policy but `"crush"`, a player the mover would press into geometry or another mover holds it until the player is clear; `"reverse"` backs off instead when its way back is clear.
+     */
     setBlockPolicy(policy: "displace" | "reverse" | "stop" | "crush"): SequenceStep[];
   }
 

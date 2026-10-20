@@ -364,6 +364,56 @@ When the fitted box is wrong, draw a `reflection_volume` brush around the room. 
 
 ---
 
+## Movers
+
+A `kinematic_mover` is a brush entity that slides along a path of `kinematic_waypoint` points, spins, or both: doors, lifts, platforms, carousels. This section covers what a mover does to a player in its way.
+
+### Pinned players
+
+A mover never presses a player into the world or into another mover, unless its `block_policy` is `crush`. A player is **pinned** when the mover's next move would do that:
+
+- **A rider**, standing on the mover or vaulting onto it, whom the mover would carry into a ceiling, a wall or another mover.
+- **Any other player** the mover pushes, with a wall, a door jamb or another mover behind them.
+
+### Block policy
+
+`block_policy` picks what the mover does to a player in its way:
+
+| `block_policy` | Player in its path | Player pinned |
+|----------------|--------------------|---------------|
+| `displace` (default) | Pushes them along. | Holds, then carries on the tick the player is clear. |
+| `stop` | Holds while it touches them, then carries on. | Holds, then carries on. |
+| `reverse` | Backs off along its path. | Backs off if its path heads into the player and the way back is clear. Otherwise holds. |
+| `crush` | Pushes them along. | Keeps moving and deals `crush_damage` every `crush_interval_ms`. Never yields. |
+
+- **Holding** stops the mover's travel and its spin together.
+- **A rider on a `stop` or `reverse` mover** never stops or reverses it while there is room above them. A pinned rider does.
+- **`reverse` holds instead of backing off** when the mover has no path to back along, when its spin causes the pin, or when backing off would pin someone else.
+- **A held mover keeps its plan.** A `once` door finishes its run once the player is clear. A mover sent to a path node by a script still goes there. An expiring `auto_close_ms` still sends a held door closed, and the closing door holds for the player the same way.
+- **A `once` mover that backs off to its start** ends unstarted, so its trigger runs it again.
+- **`crush` never yields**, even at `crush_damage` `0`: then it moves through the player and leaves them inside it, unharmed. It also crushes a rider carried sideways into a wall and a player squeezed between it and another mover.
+
+Enemies are never carried or pushed, so none of this applies to them: a `displace` mover ignores them, and the other policies react to an enemy they touch.
+
+### Blocked event and sound
+
+`blocked_event` names a reaction to fire, and `blocked_sound` a sound to play, when the mover first reacts to a player: a `stop` or `reverse` mover touching one, or any mover, `displace` included, starting to hold for a pinned one. Neither repeats while the mover holds. Once the hold ends (a script stops the mover, it finishes its run, or the player moves clear), the next pin fires them again.
+
+### Choosing a response
+
+Outside `crush`, the engine guarantees only that a mover never leaves a player stuck inside it or the world. How the mover responds is yours to author:
+
+- **Wait for the player.** The default: `displace` holds, then carries on.
+- **Back off.** Use `reverse`.
+- **Anything a script can do.** Name a reaction in `blocked_event`. It can run the door's `reverse()` to back it off the player, play a sound or show a message. A command never moves a held mover into the player: a course back into them holds again.
+- **Close no matter what.** Use `crush`.
+
+**Co-op.** Any player can hold a default door open by standing in it. A door that must close, such as one sealing an arena, needs `crush`. On a remote player's screen a held mover may move for a moment, then settle back where the host holds it.
+
+**Headroom.** A lift whose rider is too tall for the gap above its stop just waits, with the rider under the ceiling. A rider who crouches or steps off lets it carry on. The first time a mover holds for a pinned rider, the engine logs one warning giving the mover's position in TrenchBroom coordinates; it does not repeat for that mover until the level loads again. Raise the ceiling, lower the stop, or use `crush`.
+
+---
+
 ## Teleporters
 
 A `trigger_teleport` brush sends a player who walks into it to a

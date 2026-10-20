@@ -88,6 +88,6 @@ Stand in the doorway against the east jamb. The pedestals sit just south-east of
 
 ## Notes
 
-- A yield to a pinned rider logs one warning per mover per level load. Watch the log for each bay's mover name, for example `mp_a1_lift`.
+- A yield to a pinned rider logs one `[Mover] mover <id> yielded to a rider pinned …` warning per mover per level load. It names the numeric mover id and the mover's TrenchBroom position, not its authored name; match the position to the bay.
 - Don't `reverse` the swing doors (d3, d4) from a script. Spin does not follow path direction, so a reverse would swing them a further 90° into the wall.
 - Map compilation proves only that the content is valid. Every expectation above is a manual, in-engine check.

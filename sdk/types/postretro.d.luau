@@ -1821,6 +1821,9 @@ export type MoverEntityHandle = {
   --- on the mover's authored map entity.
   setSpinRate: (self: MoverEntityHandle, rate: number) -> {MoverSetSpinRateStep},
   --- Sets the host-authoritative response when the mover contacts an entity.
+  --- Under every policy but `"crush"`, a player the mover would press into
+  --- geometry or another mover holds it until the player is clear; `"reverse"`
+  --- backs off instead when its way back is clear.
   setBlockPolicy: (self: MoverEntityHandle, policy: "displace" | "reverse" | "stop" | "crush") -> {MoverSetBlockPolicyStep},
 }
 

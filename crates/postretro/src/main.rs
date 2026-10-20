@@ -299,28 +299,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     && let Some(endpoint) = session.net_endpoint.as_mut()
                 {
                     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-                    // A choice in progress (cursor moved, dwell running, commit
-                    // queued) skips adoption: the queued commit would switch
-                    // away from the adopted slot.
-                    let selection_idle = session
-                        .gameplay_input_latch
-                        .wieldable_selection()
-                        .is_idle_on(local_wieldable_occupancy(&registry).1);
-                    let adopted = endpoint.install_tuning_payload(
-                        &bytes,
-                        &mut registry,
-                        &descriptors,
-                        selection_idle,
-                    );
-                    drop(registry);
-                    // A late payload moved the untouched selection onto the
-                    // slot the host composed: point the cursor there too, so
-                    // the HUD's pending weapon never names the old slot.
-                    if let Some(slot) = adopted {
-                        let selection = session.gameplay_input_latch.wieldable_selection_mut();
-                        let last_weapon_slot = selection.last_weapon_slot();
-                        selection.reset_to_active_with_last(Some(slot), last_weapon_slot);
-                    }
+                    endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
                 }
                 // The host's fluid table rides this payload. Re-resolve the
                 // installed volumes against it before any prediction or replay

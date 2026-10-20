@@ -570,7 +570,7 @@ impl Fixture {
         }
         for message in self.client.drain_control() {
             if let Some(receive) = self.receive.as_mut() {
-                receive.control(&message);
+                receive.control(&message, &mut self.local.borrow_mut());
             }
             match message {
                 wire::ServerControlMessage::SwitchAccepted(accepted) => self
@@ -689,15 +689,21 @@ impl Fixture {
             // stamps it there.
             let mut command = command.clone();
             command.movement.facing_pitch = self.aim_pitch;
+            let netcode::NetEndpoint::Client {
+                prediction, tuning, ..
+            } = &mut receive.endpoint
+            else {
+                unreachable!("the receive endpoint is a client");
+            };
             let result = netcode::client_predict_tick(
                 &mut self.local.borrow_mut(),
                 &mut self.client,
-                &mut receive.prediction,
+                prediction,
                 netcode::ClientPredictionTickContext {
                     command: &command,
                     collision: &self.world,
                     environment_volumes: &no_volumes,
-                    host_tuning: receive.tuning.as_ref(),
+                    host_tuning: tuning.as_deref(),
                     tick_dt: DT,
                 },
             );
@@ -3499,8 +3505,10 @@ fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall(
     assert_host_fires_what_the_client_fired(&fixture);
 }
 
-// Weapon-switch declarations ordered by client tick with starts and presses.
+// Late tuning payloads on join: composition waits, then lands on the host slot.
+mod late_join;
 mod receive_alternate;
+// Weapon-switch declarations ordered by client tick with starts and presses.
 mod switch_order;
 
 // --- Vault fire gate on the host's remote path ---------------------------------

@@ -244,13 +244,23 @@ pub(crate) fn create_depth_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | DEPTH_TEST_COPY_USAGE,
         view_formats: &[],
     });
 
     let view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
     (depth_texture, view)
 }
+
+/// Tests read the frame's depth back to run the screen-space march's CPU
+/// reference on it; the production attachment carries no copy usage.
+const DEPTH_TEST_COPY_USAGE: wgpu::TextureUsages = if cfg!(test) {
+    wgpu::TextureUsages::COPY_SRC
+} else {
+    wgpu::TextureUsages::empty()
+};
 
 // Group 0: per-frame uniforms (view/proj/time). One buffer entry, no textures.
 // COMPUTE required: animated-lightmap compose reuses this BGL (same buffer;

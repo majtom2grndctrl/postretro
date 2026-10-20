@@ -4038,7 +4038,8 @@ fn the_reflection_target_sizes_by_the_render_cpu_tier_rule_alone() {
 // renderer's setter and every helper it reaches (the pass's setter, the
 // wanted extent, the target change, the target's creation and group 5's
 // rebind and scale) create no pipeline, shader module or pipeline layout;
-// those exist only in the full-init constructors, built at every tier.
+// those exist only in the full-init constructors, built at every tier. The
+// march's dev tuning setters compile and rebuild nothing either.
 #[test]
 fn raising_the_reflection_tier_compiles_nothing() {
     const COMPILES: [&str; 3] = [
@@ -4096,6 +4097,41 @@ fn raising_the_reflection_tier_compiles_nothing() {
             assert!(!body.contains(compile), "{name} calls `{compile}`");
         }
     }
+    // The march's dev tuning writes the reflection uniform alone, on its
+    // next change-driven upload: neither the pass's setter and sanitizer nor
+    // the renderer's setters compile, build a bind group or target, or write
+    // a buffer themselves.
+    let state = include_str!("renderer_state.rs");
+    let mut tuning: Vec<(&str, String)> = [
+        "reflection_march_tuning",
+        "set_reflection_march_tuning",
+        "sanitized",
+    ]
+    .into_iter()
+    .map(|helper| (helper, code_only(wgsl_fn(reflection_source, helper))))
+    .collect();
+    for setter in [
+        "set_reflection_march_step_budget",
+        "set_reflection_march_thickness",
+        "set_reflection_march_rows_per_stride_pixel",
+    ] {
+        tuning.push((setter, code_only(wgsl_fn(state, setter))));
+    }
+    for (name, body) in &tuning {
+        for forbidden in COMPILES.into_iter().chain([
+            "create_bind_group(",
+            "create_target(",
+            "set_reflection_target(",
+            "rebuild(",
+            "write_buffer(",
+        ]) {
+            assert!(!body.contains(forbidden), "{name} reaches `{forbidden}`");
+        }
+    }
+    assert!(
+        code_only(wgsl_fn(reflection_source, "set_reflection_march_tuning"))
+            .contains("self.reflection.tuning=tuning.sanitized(self.reflection.tuning);")
+    );
     // The setter's call graph is closed over that list.
     let pass_setter = &bodies
         .iter()

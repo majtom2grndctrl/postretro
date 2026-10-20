@@ -33,6 +33,7 @@ use super::*;
 // The reflection pass reaches the installed level's buffers, so it lives
 // beneath this module.
 mod reflection_pass;
+pub(crate) use reflection_pass::FluidReflectionMarchTuning;
 #[cfg(test)]
 pub(crate) use reflection_pass::{
     FLUID_REFLECTION_BIND_GROUP_COUNT, FLUID_REFLECTION_TARGET_FORMAT,

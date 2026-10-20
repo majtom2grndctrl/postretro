@@ -40,14 +40,52 @@ pub(crate) const FLUID_REFLECTION_BIND_GROUP_COUNT: usize = 4;
 pub(crate) const FLUID_REFLECTION_TARGET_FORMAT: wgpu::TextureFormat =
     wgpu::TextureFormat::Rgba16Float;
 /// March steps per ray, and metres of view depth a hit may lie behind the
-/// depth buffer, until dev tuning replaces them.
+/// depth buffer. Dev tuning may override both for the session.
 const FLUID_REFLECTION_DEFAULT_STEP_BUDGET: u32 = 64;
 const FLUID_REFLECTION_DEFAULT_THICKNESS: f32 = 0.5;
 /// Scene rows per full-resolution pixel of march stride: 1 below 1080 rows,
 /// 2 at 1080p, 4 at 2160p, so a ray's reach covers about the same share of
 /// the screen at every resolution, and every target extent marches the same
-/// stride.
+/// stride. Dev tuning may override it for the session.
 const FLUID_REFLECTION_ROWS_PER_STRIDE_PIXEL: u32 = 540;
+
+/// The march's dev tuning (the diagnostics panel's "SDF / Fog Quality"
+/// section), never player-facing: steps per ray, the thickness a hit may lie
+/// behind the depth buffer, and scene rows per pixel of stride. Every tier
+/// marches the same values. Changing one writes the reflection uniform on
+/// its next upload and nothing else: no bind group, target or pipeline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FluidReflectionMarchTuning {
+    pub step_budget: u32,
+    pub thickness: f32,
+    pub rows_per_stride_pixel: u32,
+}
+
+impl Default for FluidReflectionMarchTuning {
+    fn default() -> Self {
+        Self {
+            step_budget: FLUID_REFLECTION_DEFAULT_STEP_BUDGET,
+            thickness: FLUID_REFLECTION_DEFAULT_THICKNESS,
+            rows_per_stride_pixel: FLUID_REFLECTION_ROWS_PER_STRIDE_PIXEL,
+        }
+    }
+}
+
+impl FluidReflectionMarchTuning {
+    /// At least one step and one row per stride pixel, and a finite,
+    /// non-negative thickness; a non-finite thickness keeps `current`'s.
+    fn sanitized(self, current: Self) -> Self {
+        Self {
+            step_budget: self.step_budget.max(1),
+            thickness: if self.thickness.is_finite() {
+                self.thickness.max(0.0)
+            } else {
+                current.thickness
+            },
+            rows_per_stride_pixel: self.rows_per_stride_pixel.max(1),
+        }
+    }
+}
 
 /// The reflection uniform (group 2 binding 2), the shader's
 /// `FluidReflectionInputs` member for member.
@@ -125,6 +163,14 @@ pub(crate) fn fluid_reflection_pipeline_bind_group_layout_entries()
     ]
 }
 
+/// Tests read the target back to see which texels a frame wrote; the
+/// production target carries no copy usage.
+const TARGET_TEST_COPY_USAGE: wgpu::TextureUsages = if cfg!(test) {
+    wgpu::TextureUsages::COPY_SRC
+} else {
+    wgpu::TextureUsages::empty()
+};
+
 /// The reflection target and the pass's own depth, at the target's extent.
 /// The depth orders fluid against fluid, so the nearest surface owns a texel;
 /// scene depth never occludes, so water hidden behind an object standing in
@@ -151,7 +197,9 @@ impl FluidReflectionTarget {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: FLUID_REFLECTION_TARGET_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | TARGET_TEST_COPY_USAGE,
             view_formats: &[],
         });
         let depth = device.create_texture(&wgpu::TextureDescriptor {
@@ -186,8 +234,7 @@ pub(crate) struct FluidReflectionPass {
     uniform_buffer: wgpu::Buffer,
     inputs_bind_group: wgpu::BindGroup,
     reflection_style: FluidReflectionStyle,
-    step_budget: u32,
-    thickness: f32,
+    tuning: FluidReflectionMarchTuning,
     /// The scene extent the inputs were last built over.
     scene_extent: (u32, u32),
     /// The player's tier: whether a target may exist, and its fraction of
@@ -203,6 +250,9 @@ pub(crate) struct FluidReflectionPass {
     /// Target creations so far; tests read it.
     #[cfg(test)]
     target_builds: u32,
+    /// Uniform writes so far; tests read it.
+    #[cfg(test)]
+    uploads: u32,
     /// Reflection passes recorded so far; tests read it. A cell, because the
     /// pass records through a shared borrow of the renderer.
     #[cfg(test)]
@@ -320,11 +370,12 @@ impl FluidReflectionPass {
         });
         let placeholder_view = placeholder.create_view(&wgpu::TextureViewDescriptor::default());
         let scene_extent = texture_extent(scene_color);
+        let tuning = FluidReflectionMarchTuning::default();
         let initial = FluidReflectionUniform {
             reflection_style: FluidReflectionStyle::default().uniform_value(),
-            step_budget: FLUID_REFLECTION_DEFAULT_STEP_BUDGET,
-            thickness: FLUID_REFLECTION_DEFAULT_THICKNESS,
-            stride: march_stride(scene_extent),
+            step_budget: tuning.step_budget,
+            thickness: tuning.thickness,
+            stride: march_stride(scene_extent, tuning.rows_per_stride_pixel),
             target_scale: [0.0; 2],
             spare: [0.0; 2],
         };
@@ -347,8 +398,7 @@ impl FluidReflectionPass {
             uniform_buffer,
             inputs_bind_group,
             reflection_style: FluidReflectionStyle::default(),
-            step_budget: FLUID_REFLECTION_DEFAULT_STEP_BUDGET,
-            thickness: FLUID_REFLECTION_DEFAULT_THICKNESS,
+            tuning,
             scene_extent,
             quality: FluidReflectionQuality::default(),
             uploaded: initial,
@@ -357,6 +407,8 @@ impl FluidReflectionPass {
             target: None,
             #[cfg(test)]
             target_builds: 0,
+            #[cfg(test)]
+            uploads: 0,
             #[cfg(test)]
             pass_records: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -433,9 +485,9 @@ impl FluidReflectionPass {
     fn pending(&self) -> FluidReflectionUniform {
         FluidReflectionUniform {
             reflection_style: self.reflection_style.uniform_value(),
-            step_budget: self.step_budget,
-            thickness: self.thickness,
-            stride: march_stride(self.scene_extent),
+            step_budget: self.tuning.step_budget,
+            thickness: self.tuning.thickness,
+            stride: march_stride(self.scene_extent, self.tuning.rows_per_stride_pixel),
             target_scale: self.target_scale(),
             spare: [0.0; 2],
         }
@@ -450,6 +502,10 @@ impl FluidReflectionPass {
         }
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
         self.uploaded = uniform;
+        #[cfg(test)]
+        {
+            self.uploads += 1;
+        }
     }
 
     /// Group 3 over one level's parameter window and probe table, built at
@@ -478,9 +534,10 @@ impl FluidReflectionPass {
     }
 }
 
-/// Full-resolution pixels per march step at `scene` extent.
-fn march_stride(scene: (u32, u32)) -> f32 {
-    (scene.1 / FLUID_REFLECTION_ROWS_PER_STRIDE_PIXEL).max(1) as f32
+/// Full-resolution pixels per march step at `scene` extent: one per
+/// `rows_per_stride_pixel` scene rows, at least one.
+fn march_stride(scene: (u32, u32), rows_per_stride_pixel: u32) -> f32 {
+    (scene.1 / rows_per_stride_pixel.max(1)).max(1) as f32
 }
 
 /// Depth tested and written against the pass's own depth, never scene depth:
@@ -593,6 +650,19 @@ impl FluidSurfacePass {
     /// Forward the mod's reflection style to the reflection pass's uniform.
     pub(super) fn set_reflection_pass_style(&mut self, style: FluidReflectionStyle) {
         self.reflection.reflection_style = style;
+    }
+
+    /// The march's dev tuning as the next upload writes it.
+    pub fn reflection_march_tuning(&self) -> FluidReflectionMarchTuning {
+        self.reflection.tuning
+    }
+
+    /// Replace the march's dev tuning (sanitized: at least one step and one
+    /// row per stride pixel, a finite non-negative thickness). It reaches
+    /// the reflection uniform on the next upload, and only if it changed;
+    /// it builds no bind group, target or pipeline.
+    pub fn set_reflection_march_tuning(&mut self, tuning: FluidReflectionMarchTuning) {
+        self.reflection.tuning = tuning.sanitized(self.reflection.tuning);
     }
 
     /// Write the reflection uniform if it changed; beside group 5's, so both
@@ -733,6 +803,12 @@ impl FluidSurfacePass {
     #[cfg(test)]
     pub(crate) fn reflection_pending_uniform(&self) -> FluidReflectionUniform {
         self.reflection.pending()
+    }
+
+    /// The reflection uniform as last written, and the writes so far.
+    #[cfg(test)]
+    pub(crate) fn reflection_uploaded_uniform(&self) -> (FluidReflectionUniform, u32) {
+        (self.reflection.uploaded, self.reflection.uploads)
     }
 }
 

@@ -41,7 +41,9 @@ struct FluidReflectionInputs {
     // March steps per ray.
     step_budget: u32,
     // Metres of view depth the near end of a step's view-depth interval may
-    // lie behind the depth buffer for a hit; not the current sample's.
+    // lie behind the depth buffer for a hit. The band bounds the interval's
+    // nearer end: the previous sample for a receding ray, the current one for
+    // an approaching ray.
     thickness: f32,
     // Full-resolution pixels per march step.
     stride: f32,
@@ -147,10 +149,12 @@ fn fs_reflection(in: ReflectionVertexOutput) -> @location(0) vec4<f32> {
     let ray = fluid_reflection_above_horizon(fluid_reflection_mirror(view, point.normal));
     let march = screen_march(point.position, ray, uniforms.view_proj, scene_depth,
         reflection_inputs.stride, reflection_inputs.step_budget, reflection_inputs.thickness);
-    let colour = textureLoad(scene_color, vec2<i32>(march.pixel), 0).rgb;
-    // A miss, or a stop with no confidence, writes a literal 0: the texel it
-    // loaded may hold Inf (Rgba16Float saturates), and Inf x 0 is a NaN that
-    // smooth bilinear sampling would spread across the water.
+    // The loaded texel may hold Inf (an Rgba16Float overflow stores Inf).
+    // Clamping to the f16 maximum keeps a hit's premultiplied colour finite,
+    // and a miss, or a stop with no confidence, writes a literal 0, so smooth
+    // bilinear sampling never meets Inf x 0, a NaN it would spread across the
+    // water.
+    let colour = min(textureLoad(scene_color, vec2<i32>(march.pixel), 0).rgb, vec3<f32>(65504.0));
     let premultiplied = vec4<f32>(colour * march.confidence, march.confidence);
     return select(vec4<f32>(0.0), premultiplied, march.confidence > 0.0);
 }

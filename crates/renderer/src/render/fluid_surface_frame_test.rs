@@ -680,7 +680,7 @@ fn scene_inputs_extent(renderer: &Renderer) -> (Extent, u32) {
     (Extent::new(texture.width(), texture.height()), builds)
 }
 
-// Pin P4, widened (acceptance row 20), the adapter twin of
+// Pin P4, widened (fluid-ssr-reflections row 20), the adapter twin of
 // `fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets`.
 // Group 5 is built at exactly these points and no others:
 //   - full init, with no level, over the placeholder;
@@ -2006,7 +2006,7 @@ fn assert_placeholder_only(renderer: &Renderer, context: &str) {
     assert_reflection_bindings_current(renderer, context);
 }
 
-// Acceptance row 19, placeholder cases and Off ↔ tier (P5, P6). With no
+// fluid-ssr-reflections row 19, placeholder cases and Off ↔ tier (P5, P6). With no
 // level, a level with no fluid volumes, and a fluid level with no
 // probe-bound face, every tier allocates only the 1×1 placeholder and
 // builds no group 5, even drawing; a probe-bound level installed at Off
@@ -2126,7 +2126,7 @@ fn the_reflection_target_exists_only_on_a_probe_bound_level_above_off() {
     );
 }
 
-// Acceptance row 19, P3 and P4. Raising the tier with no level, then on a
+// fluid-ssr-reflections row 19, P3 and P4. Raising the tier with no level, then on a
 // level with no fluid volumes, allocates nothing; the probe-bound level that
 // then installs creates its target at the current tier and rebuilds group 5
 // once. Level A at medium draws; unload rebinds the placeholder and drops
@@ -2208,7 +2208,7 @@ fn raising_the_tier_with_no_fluid_level_allocates_nothing_until_one_installs() {
     );
 }
 
-// Acceptance row 19, resume with Off stored: the tier is kept in boot state,
+// fluid-ssr-reflections row 19, resume with Off stored: the tier is kept in boot state,
 // so a full init with Off kept hands the rebuilt pass Off, and the first
 // fluid install, probe-bound, allocates only the placeholder and records no
 // reflection pass. Raising the tier afterwards creates the target.
@@ -2251,7 +2251,7 @@ fn full_init_with_off_stored_allocates_only_the_placeholder_at_the_first_fluid_i
     );
 }
 
-// Acceptance row 21 on an adapter, P1 and P2. Each tier resolves at its
+// fluid-ssr-reflections row 21 on an adapter, P1 and P2. Each tier resolves at its
 // per-axis fraction of the scene extent, rounded up and at least 1×1, with
 // group 5 and the reflection inputs bound over the current target at the
 // matching scale. A tier and a render resolution changed on one tick: the
@@ -2317,7 +2317,7 @@ fn each_tier_resolves_at_its_fraction_and_one_tick_tier_and_resolution_bind_one_
     );
 }
 
-// Acceptance row 1. The reflection pass records only on a frame with a
+// fluid-ssr-reflections row 1. The reflection pass records only on a frame with a
 // reflecting draw at low, medium or high, exactly once per frame. No level, a
 // level with no fluid volumes, a fluid level with no probe-bound face, Off,
 // a frame whose draw does not reflect (reflectivity 0), a frame with no fluid

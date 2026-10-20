@@ -75,20 +75,32 @@ const MATERIAL_RULE_FILES: &[&str] = &[
     "crates/level-compiler/src/texture_validation.rs",
 ];
 
-// The material prefix table and the sibling-suffix list, with the exact sets
-// they hold today. The word scan misses a new input spelled `_r` or `rough`, so
-// a new prefix or suffix is a new material input and needs a deliberate edit
-// here (owner review).
+// What the material-input gate pins, with the exact sets each holds today. The
+// word scan misses a new input spelled `_r` or `rough`, so each of these is
+// pinned and a change to one needs a deliberate edit here (owner review):
+//   - the material prefix table (`MATERIAL_PREFIXES`) in its file;
+//   - the sibling-suffix list (`BUNDLE_SUFFIXES`), which only chooses the base
+//     name a bundle resolves to;
+//   - the suffix literals of the `format!("{resolved_base}_X")` lookups in the
+//     same file, which are what actually bind each sibling map to a face.
+// `texture_validation.rs`'s `ends_with("_n")` chain only picks which files get
+// a color-space check; it binds nothing, so it is word-scanned but not pinned.
 
-/// Where the material prefix table lives, and the prefixes it holds.
+// The material prefix table: its file, const name and the prefixes it holds.
 const MATERIAL_PREFIXES_FILE: &str = "crates/render-data/src/material.rs";
 const MATERIAL_PREFIXES_CONST: &str = "MATERIAL_PREFIXES";
 const MATERIAL_PREFIX_NAMES: &[&str] = &["metal", "concrete", "grate", "neon", "glass", "wood"];
-/// Where the sibling-suffix list lives, and the suffixes it holds (the bare
-/// diffuse is `""`).
+// The sibling-suffix list: its file, const name and the suffixes it holds (the
+// bare diffuse is `""`).
 const BUNDLE_SUFFIXES_FILE: &str = "crates/level-compiler/src/texture_mips/resolution.rs";
 const BUNDLE_SUFFIXES_CONST: &str = "BUNDLE_SUFFIXES";
 const BUNDLE_SUFFIX_NAMES: &[&str] = &["", "_s", "_n", "_e", "_h"];
+
+// The sibling lookups: the base identifier the `format!` literals in
+// `BUNDLE_SUFFIXES_FILE` start from, and the suffixes they bind today, in
+// source order.
+const BUNDLE_BINDING_BASE: &str = "resolved_base";
+const BUNDLE_BINDING_SUFFIX_NAMES: &[&str] = &["_s", "_n", "_e", "_h"];
 
 /// The one FGD class that authors reflection, and its exact keys: an authored
 /// probe box. A new key here is a new reflection input.
@@ -365,6 +377,22 @@ fn const_named_literals(code: &str, name: &str) -> Option<Vec<String>> {
     )
 }
 
+/// The suffixes in each `format!("{base}...")` literal in `code`, in order: the
+/// text between the `{base}` placeholder and the closing quote. A literal that
+/// starts from another placeholder, or that follows the base with another
+/// placeholder (`"{base}{suffix}"`), is not a fixed suffix and is skipped.
+/// Shares the `//` limit of [`const_string_literals`].
+fn format_suffix_literals(code: &str, base: &str) -> Vec<String> {
+    let opening = format!("format!(\"{{{base}}}");
+    code.match_indices(&opening)
+        .filter_map(|(at, _)| {
+            let rest = &code[at + opening.len()..];
+            let suffix = &rest[..rest.find('"')?];
+            (!suffix.contains('{')).then(|| suffix.to_string())
+        })
+        .collect()
+}
+
 /// The field names in `struct name`'s body in `code`: each line at brace
 /// depth 1 spelled `[pub[(…)]] field: Type`.
 fn struct_fields(code: &str, name: &str) -> Option<Vec<String>> {
@@ -637,6 +665,22 @@ fn no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input() {
         }
     }
 
+    // `BUNDLE_SUFFIXES` only chooses the base name; the sibling maps are bound
+    // by the `format!("{resolved_base}_X")` literals beside it, so pin those.
+    {
+        let file = BUNDLE_SUFFIXES_FILE;
+        let source = std::fs::read_to_string(root.join(file))
+            .unwrap_or_else(|_| panic!("{file} moved; point this gate at the material rules"));
+        let found = format_suffix_literals(&strip_line_comments(&source), BUNDLE_BINDING_BASE);
+        if found != BUNDLE_BINDING_SUFFIX_NAMES {
+            violations.push(format!(
+                "{file}: the `format!(\"{{{BUNDLE_BINDING_BASE}}}...\")` lookups bind {found:?}, \
+                 not {BUNDLE_BINDING_SUFFIX_NAMES:?}; a new suffix or prefix is a new sibling \
+                 map, a new material input, and needs a deliberate edit to this gate (owner review)"
+            ));
+        }
+    }
+
     // One class per FGD line that opens with `@` (the FGD uses no other `@`
     // directive), so a class the parser skips fails here instead of escaping
     // the key scan below.
@@ -807,21 +851,6 @@ fn reflection_gate_reads_every_spelling_of_a_reflection_name() {
         ])
     );
 
-    let code = strip_line_comments(
-        "pub(crate) const SUFFIXES: [&str; 2] = [\"\", \"_s\"]; // \"_x\"\n\
-         const OTHER: [&str; 1] = [\"o\"];\n\
-         pub const TABLE: [(&str, M); 2] = [(\"a\", M::A), (\"b\", M::B)];\n",
-    );
-    assert_eq!(
-        const_named_literals(&code, "SUFFIXES"),
-        Some(vec![String::new(), "_s".to_string()])
-    );
-    assert_eq!(
-        const_named_literals(&code, "TABLE"),
-        Some(vec!["a".to_string(), "b".to_string()])
-    );
-    assert_eq!(const_named_literals(&code, "SUFF"), None);
-
     let fgd = r#"@SolidClass = worldspawn : "World" [ ]
 @PointClass base(Light)
     color(1 2 3)
@@ -839,6 +868,43 @@ fn reflection_gate_reads_every_spelling_of_a_reflection_name() {
         fgd_class_names(fgd),
         ["worldspawn", "light_spot", "fog_lamp"]
     );
+}
+
+#[test]
+fn const_named_literals_reads_one_constants_string_values() {
+    let code = strip_line_comments(
+        "pub(crate) const SUFFIXES: [&str; 2] = [\"\", \"_s\"]; // \"_x\"\n\
+         const OTHER: [&str; 1] = [\"o\"];\n\
+         pub const TABLE: [(&str, M); 2] = [(\"a\", M::A), (\"b\", M::B)];\n",
+    );
+    assert_eq!(
+        const_named_literals(&code, "SUFFIXES"),
+        Some(vec![String::new(), "_s".to_string()])
+    );
+    assert_eq!(
+        const_named_literals(&code, "TABLE"),
+        Some(vec!["a".to_string(), "b".to_string()])
+    );
+    assert_eq!(const_named_literals(&code, "SUFF"), None);
+}
+
+#[test]
+fn format_suffix_literals_reads_the_suffixes_bound_to_one_base() {
+    let code = strip_line_comments(
+        "let any = name_to_path.contains_key(&format!(\"{normalized}{suffix}\"));\n\
+         specular: name_to_path.get(&format!(\"{resolved_base}_s\")).cloned(),\n\
+         normal: name_to_path.get(&format!(\"{resolved_base}_n\")).cloned(),\n\
+         rough: name_to_path.get(&format!(\"{resolved_base}_r\")).cloned(),\n\
+         both: name_to_path.get(&format!(\"{resolved_base}{other}\")).cloned(),\n\
+         // name_to_path.get(&format!(\"{resolved_base}_x\"))\n\
+         other: name_to_path.get(&format!(\"{normalized}_h\")).cloned(),\n",
+    );
+    assert_eq!(
+        format_suffix_literals(&code, "resolved_base"),
+        ["_s", "_n", "_r"]
+    );
+    assert_eq!(format_suffix_literals(&code, "normalized"), ["_h"]);
+    assert!(format_suffix_literals(&code, "missing").is_empty());
 }
 
 #[test]

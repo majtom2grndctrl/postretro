@@ -161,8 +161,8 @@ pub struct DiagnosticsState {
     pub direct_sh_override_weight: f32,
     pub animated_direct_sh_override_enabled: bool,
     pub animated_direct_sh_override_light_index: u32,
-    // SDF and fog controls are seeded from live renderer values on first draw;
-    // see the `seeded` flag below.
+    // SDF, fog and reflection-march controls are seeded from live renderer
+    // values on first draw; see the `seeded` flag below.
     pub sdf_max_march_steps: u32,
     pub sdf_open_space_skip_threshold: f32,
     pub sdf_penumbra_k: f32,
@@ -331,8 +331,8 @@ pub fn draw_diagnostics_panel(
         let animated_direct_override = renderer.animated_direct_sh_debug_override();
         state.animated_direct_sh_override_enabled = animated_direct_override.enabled;
         state.animated_direct_sh_override_light_index = animated_direct_override.light_index;
-        // Pull live SDF and fog tuning so sliders open at the engine's current
-        // values, not the struct-default placeholders.
+        // Pull live SDF, fog and reflection-march tuning so sliders open at the
+        // engine's current values, not the struct-default placeholders.
         state.sdf_max_march_steps = renderer.sdf_max_march_steps();
         state.sdf_open_space_skip_threshold = renderer.sdf_open_space_skip_threshold();
         state.sdf_penumbra_k = renderer.sdf_penumbra_k();

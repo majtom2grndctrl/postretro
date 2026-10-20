@@ -594,7 +594,7 @@ pub struct FluidReflectionFragment {
 /// before the search. `sample(layer, uv)`
 /// reads the colour tile and `distance(layer, uv)` the distance tile, both
 /// at level 0. The layer comes from the face's probe index alone.
-// Mirrors the shader entry's inputs statement for statement.
+// Mirrors `fs_main_reflecting`'s tail, so its inputs stay the shader's own.
 #[allow(clippy::too_many_arguments)]
 pub fn reflection_fragment(
     surface: Vec4,

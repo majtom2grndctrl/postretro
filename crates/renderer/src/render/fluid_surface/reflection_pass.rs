@@ -59,8 +59,9 @@ const FLUID_REFLECTION_ROWS_PER_STRIDE_PIXEL: u32 = 540;
 pub(crate) struct FluidReflectionMarchTuning {
     pub step_budget: u32,
     /// Metres the near end of a step's view-depth interval may lie behind the
-    /// depth buffer for a hit; the band bounds that end, not the current
-    /// sample.
+    /// depth buffer for a hit. The band bounds the interval's nearer end: the
+    /// previous sample for a receding ray, the current one for an approaching
+    /// ray.
     pub thickness: f32,
     pub rows_per_stride_pixel: u32,
 }

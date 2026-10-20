@@ -3928,10 +3928,13 @@ fn fluid_reflection_pass_structs_match_the_fluid_shader_and_the_cpu() {
     );
 }
 
-/// `fs_reflection`'s tail, code only: premultiplied (c·SSR, c), or a literal
-/// 0 wherever c is not above 0, so a miss never writes the texel it loaded
-/// (Inf × 0 is a NaN that smooth bilinear sampling would spread).
-const FS_REFLECTION_TAIL: &str = "letcolour=textureLoad(scene_color,vec2<i32>(march.pixel),0).rgb;\
+/// `fs_reflection`'s tail, code only: the loaded colour clamped to the f16
+/// maximum, so an Inf or huge texel stays finite, then premultiplied
+/// (c·SSR, c), or a literal 0 wherever c is not above 0, so a miss never
+/// writes the texel it loaded (Inf × 0 is a NaN that smooth bilinear sampling
+/// would spread).
+const FS_REFLECTION_TAIL: &str = "letcolour=min(textureLoad(scene_color,vec2<i32>(march.pixel),0).rgb,\
+     vec3<f32>(65504.0));\
      letpremultiplied=vec4<f32>(colour*march.confidence,march.confidence);\
      returnselect(vec4<f32>(0.0),premultiplied,march.confidence>0.0);}";
 
@@ -4223,6 +4226,94 @@ fn screen_march_shader_constants_match_the_cpu_reference() {
     );
 }
 
+/// `screen_march`, code only, as WGSL: the transcription pin and the IP gate
+/// below both hold the march to this text.
+const SCREEN_MARCH_WGSL_BODY: &str = "fnscreen_march(origin:vec3<f32>,direction:vec3<f32>,view_proj:mat4x4<f32>,\
+     depth:texture_depth_2d,stride:f32,budget:u32,thickness:f32)->ScreenMarch{\
+     letextent=vec2<f32>(textureDimensions(depth));\
+     letmiss=ScreenMarch(vec2<f32>(0.0),0.0);\
+     letrow_z=vec4<f32>(view_proj[0].z,view_proj[1].z,view_proj[2].z,view_proj[3].z);\
+     letrow_w=vec4<f32>(view_proj[0].w,view_proj[1].w,view_proj[2].w,view_proj[3].w);\
+     letw_axis=dot(row_w.xyz,row_w.xyz);\
+     if!(w_axis>0.0){returnmiss;}\
+     letdepth_a=dot(row_z.xyz,row_w.xyz)/w_axis;\
+     letdepth_b=row_z.w-depth_a*row_w.w;\
+     letclip_origin=view_proj*vec4<f32>(origin,1.0);\
+     if!(clip_origin.z>SCREEN_MARCH_NEAR_EPSILON&&clip_origin.w>0.0){returnmiss;}\
+     varclip_far=view_proj*vec4<f32>(origin+direction*SCREEN_MARCH_RAY_LENGTH,1.0);\
+     ifclip_far.z<SCREEN_MARCH_NEAR_EPSILON{\
+     lett=(clip_origin.z-SCREEN_MARCH_NEAR_EPSILON)/(clip_origin.z-clip_far.z);\
+     clip_far=clip_origin+(clip_far-clip_origin)*t;}\
+     letp0=screen_march_pixel(clip_origin,extent);\
+     letp1=screen_march_pixel(clip_far,extent);\
+     letd0=clip_origin.z/clip_origin.w;letd1=clip_far.z/clip_far.w;\
+     letk0=1.0/clip_origin.w;letk1=1.0/clip_far.w;\
+     letspan=max(length(p1-p0),1.0e-6);\
+     lets_step=stride/span;\
+     varin_front=false;\
+     varlast_w=1.0/k0;\
+     for(vartaken:u32=0u;taken<budget;taken=taken+1u){\
+     lets=f32(taken)*s_step;\
+     ifs>1.0{returnmiss;}\
+     letpixel=mix(p0,p1,s);\
+     ifany(pixel<vec2<f32>(0.0))||any(pixel>=extent){returnmiss;}\
+     letray_depth=mix(d0,d1,s);\
+     if!(ray_depth>=0.0&&ray_depth<=1.0){returnmiss;}\
+     letray_w=1.0/mix(k0,k1,s);\
+     letspan_near=min(ray_w,last_w);\
+     last_w=ray_w;\
+     letscene=textureLoad(depth,vec2<i32>(pixel),0);\
+     ifscene>=1.0||ray_depth<=scene{in_front=true;continue;}\
+     letscene_w=depth_b/(scene-depth_a);\
+     ifin_front&&span_near<=scene_w+thickness{\
+     returnScreenMarch(pixel,screen_march_confidence(pixel,extent,taken,budget));}}\
+     returnmiss;}";
+
+/// `screen_march`'s CPU reference, code only.
+const SCREEN_MARCH_CPU_BODY: &str = "fnscreen_march(origin:Vec3,direction:Vec3,view_proj:Mat4,\
+     depth:&implScreenMarchDepth,stride:f32,budget:u32,thickness:f32,)->ScreenMarch{\
+     letextent=depth.dimensions().as_vec2();\
+     letmiss=ScreenMarch{pixel:Vec2::ZERO,confidence:0.0,};\
+     letrow_z=Vec4::new(view_proj.col(0).z,view_proj.col(1).z,view_proj.col(2).z,\
+     view_proj.col(3).z,);\
+     letrow_w=Vec4::new(view_proj.col(0).w,view_proj.col(1).w,view_proj.col(2).w,\
+     view_proj.col(3).w,);\
+     letw_axis=row_w.truncate().dot(row_w.truncate());\
+     if!(w_axis>0.0){returnmiss;}\
+     letdepth_a=row_z.truncate().dot(row_w.truncate())/w_axis;\
+     letdepth_b=row_z.w-depth_a*row_w.w;\
+     letclip_origin=view_proj*origin.extend(1.0);\
+     if!(clip_origin.z>SCREEN_MARCH_NEAR_EPSILON&&clip_origin.w>0.0){returnmiss;}\
+     letmutclip_far=view_proj*(origin+direction*SCREEN_MARCH_RAY_LENGTH).extend(1.0);\
+     ifclip_far.z<SCREEN_MARCH_NEAR_EPSILON{\
+     lett=(clip_origin.z-SCREEN_MARCH_NEAR_EPSILON)/(clip_origin.z-clip_far.z);\
+     clip_far=clip_origin+(clip_far-clip_origin)*t;}\
+     letp0=screen_march_pixel(clip_origin,extent);\
+     letp1=screen_march_pixel(clip_far,extent);\
+     letd0=clip_origin.z/clip_origin.w;letd1=clip_far.z/clip_far.w;\
+     letk0=1.0/clip_origin.w;letk1=1.0/clip_far.w;\
+     letspan=(p1-p0).length().max(1.0e-6);\
+     lets_step=stride/span;\
+     letmutin_front=false;\
+     letmutlast_w=1.0/k0;\
+     fortakenin0..budget{\
+     lets=takenasf32*s_step;\
+     ifs>1.0{returnmiss;}\
+     letpixel=p0.lerp(p1,s);\
+     ifpixel.cmplt(Vec2::ZERO).any()||pixel.cmpge(extent).any(){returnmiss;}\
+     letray_depth=mix(d0,d1,s);\
+     if!(0.0..=1.0).contains(&ray_depth){returnmiss;}\
+     letray_w=1.0/mix(k0,k1,s);\
+     letspan_near=ray_w.min(last_w);\
+     last_w=ray_w;\
+     letscene=depth.load(pixel);\
+     ifscene>=1.0||ray_depth<=scene{in_front=true;continue;}\
+     letscene_w=depth_b/(scene-depth_a);\
+     ifin_front&&span_near<=scene_w+thickness{\
+     returnScreenMarch{pixel,confidence:screen_march_confidence(pixel,extent,taken,\
+     budget),};}}\
+     miss}";
+
 // The march's pixel projection, confidence and march are the CPU
 // `screen_march` reference in WGSL, pinned on both sides. The CPU's depth is
 // a stand-in for the texture: `dimensions()` is `textureDimensions`, and
@@ -4259,89 +4350,8 @@ fn screen_march_wgsl_bodies_match_the_cpu_reference() {
         ),
         (
             "screen_march",
-            "fnscreen_march(origin:vec3<f32>,direction:vec3<f32>,view_proj:mat4x4<f32>,\
-             depth:texture_depth_2d,stride:f32,budget:u32,thickness:f32)->ScreenMarch{\
-             letextent=vec2<f32>(textureDimensions(depth));\
-             letmiss=ScreenMarch(vec2<f32>(0.0),0.0);\
-             letrow_z=vec4<f32>(view_proj[0].z,view_proj[1].z,view_proj[2].z,view_proj[3].z);\
-             letrow_w=vec4<f32>(view_proj[0].w,view_proj[1].w,view_proj[2].w,view_proj[3].w);\
-             letw_axis=dot(row_w.xyz,row_w.xyz);\
-             if!(w_axis>0.0){returnmiss;}\
-             letdepth_a=dot(row_z.xyz,row_w.xyz)/w_axis;\
-             letdepth_b=row_z.w-depth_a*row_w.w;\
-             letclip_origin=view_proj*vec4<f32>(origin,1.0);\
-             if!(clip_origin.z>SCREEN_MARCH_NEAR_EPSILON&&clip_origin.w>0.0){returnmiss;}\
-             varclip_far=view_proj*vec4<f32>(origin+direction*SCREEN_MARCH_RAY_LENGTH,1.0);\
-             ifclip_far.z<SCREEN_MARCH_NEAR_EPSILON{\
-             lett=(clip_origin.z-SCREEN_MARCH_NEAR_EPSILON)/(clip_origin.z-clip_far.z);\
-             clip_far=clip_origin+(clip_far-clip_origin)*t;}\
-             letp0=screen_march_pixel(clip_origin,extent);\
-             letp1=screen_march_pixel(clip_far,extent);\
-             letd0=clip_origin.z/clip_origin.w;letd1=clip_far.z/clip_far.w;\
-             letk0=1.0/clip_origin.w;letk1=1.0/clip_far.w;\
-             letspan=max(length(p1-p0),1.0e-6);\
-             lets_step=stride/span;\
-             varin_front=false;\
-             varlast_w=1.0/k0;\
-             for(vartaken:u32=0u;taken<budget;taken=taken+1u){\
-             lets=f32(taken)*s_step;\
-             ifs>1.0{returnmiss;}\
-             letpixel=mix(p0,p1,s);\
-             ifany(pixel<vec2<f32>(0.0))||any(pixel>=extent){returnmiss;}\
-             letray_depth=mix(d0,d1,s);\
-             if!(ray_depth>=0.0&&ray_depth<=1.0){returnmiss;}\
-             letray_w=1.0/mix(k0,k1,s);\
-             letspan_near=min(ray_w,last_w);\
-             last_w=ray_w;\
-             letscene=textureLoad(depth,vec2<i32>(pixel),0);\
-             ifscene>=1.0||ray_depth<=scene{in_front=true;continue;}\
-             letscene_w=depth_b/(scene-depth_a);\
-             ifin_front&&span_near<=scene_w+thickness{\
-             returnScreenMarch(pixel,screen_march_confidence(pixel,extent,taken,budget));}}\
-             returnmiss;}",
-            "fnscreen_march(origin:Vec3,direction:Vec3,view_proj:Mat4,\
-             depth:&implScreenMarchDepth,stride:f32,budget:u32,thickness:f32,)->ScreenMarch{\
-             letextent=depth.dimensions().as_vec2();\
-             letmiss=ScreenMarch{pixel:Vec2::ZERO,confidence:0.0,};\
-             letrow_z=Vec4::new(view_proj.col(0).z,view_proj.col(1).z,view_proj.col(2).z,\
-             view_proj.col(3).z,);\
-             letrow_w=Vec4::new(view_proj.col(0).w,view_proj.col(1).w,view_proj.col(2).w,\
-             view_proj.col(3).w,);\
-             letw_axis=row_w.truncate().dot(row_w.truncate());\
-             if!(w_axis>0.0){returnmiss;}\
-             letdepth_a=row_z.truncate().dot(row_w.truncate())/w_axis;\
-             letdepth_b=row_z.w-depth_a*row_w.w;\
-             letclip_origin=view_proj*origin.extend(1.0);\
-             if!(clip_origin.z>SCREEN_MARCH_NEAR_EPSILON&&clip_origin.w>0.0){returnmiss;}\
-             letmutclip_far=view_proj*(origin+direction*SCREEN_MARCH_RAY_LENGTH).extend(1.0);\
-             ifclip_far.z<SCREEN_MARCH_NEAR_EPSILON{\
-             lett=(clip_origin.z-SCREEN_MARCH_NEAR_EPSILON)/(clip_origin.z-clip_far.z);\
-             clip_far=clip_origin+(clip_far-clip_origin)*t;}\
-             letp0=screen_march_pixel(clip_origin,extent);\
-             letp1=screen_march_pixel(clip_far,extent);\
-             letd0=clip_origin.z/clip_origin.w;letd1=clip_far.z/clip_far.w;\
-             letk0=1.0/clip_origin.w;letk1=1.0/clip_far.w;\
-             letspan=(p1-p0).length().max(1.0e-6);\
-             lets_step=stride/span;\
-             letmutin_front=false;\
-             letmutlast_w=1.0/k0;\
-             fortakenin0..budget{\
-             lets=takenasf32*s_step;\
-             ifs>1.0{returnmiss;}\
-             letpixel=p0.lerp(p1,s);\
-             ifpixel.cmplt(Vec2::ZERO).any()||pixel.cmpge(extent).any(){returnmiss;}\
-             letray_depth=mix(d0,d1,s);\
-             if!(0.0..=1.0).contains(&ray_depth){returnmiss;}\
-             letray_w=1.0/mix(k0,k1,s);\
-             letspan_near=ray_w.min(last_w);\
-             last_w=ray_w;\
-             letscene=depth.load(pixel);\
-             ifscene>=1.0||ray_depth<=scene{in_front=true;continue;}\
-             letscene_w=depth_b/(scene-depth_a);\
-             ifin_front&&span_near<=scene_w+thickness{\
-             returnScreenMarch{pixel,confidence:screen_march_confidence(pixel,extent,taken,\
-             budget),};}}\
-             miss}",
+            SCREEN_MARCH_WGSL_BODY,
+            SCREEN_MARCH_CPU_BODY,
         ),
     ];
     for (name, wgsl_body, cpu_body) in pinned {
@@ -4394,10 +4404,11 @@ const DIRECTION_READS: [&str; 10] = [
 // confidence read no ray- or view-direction quantity. Confidence takes the
 // stop's pixel, the extent, the step index and the budget, and nothing else.
 // In the march, `direction` is read once, where the far end is placed; no
-// other statement, the step length and every exit test included, names a
-// direction, the camera or the view, or tests a sign. Both the WGSL and its
-// CPU reference are scanned, so an edit adding a direction read to either
-// fails here.
+// other statement names a direction, the camera or the view, or tests a
+// sign. A name scan cannot see a direction gate written as data flow (a flag
+// set from `k1 <= k0`, a mix weight, a shadowed thickness, a loop bound), so
+// the march's whole body is also pinned, in both the WGSL and its CPU
+// reference: any edit to the march fails here and needs owner IP review.
 #[test]
 fn the_march_and_its_confidence_read_no_direction() {
     for (source, signature, far_end) in [
@@ -4466,9 +4477,9 @@ fn the_march_and_its_confidence_read_no_direction() {
         );
     }
 
-    // The march's exits, weights and step chain are allowlisted exactly, so
-    // a new early exit, a re-weighted hit or a step factor fails here even
-    // when it reads no name the scan above knows.
+    // The march's `if` conditions, returns and step chain are allowlisted
+    // exactly. These finer checks name where a change landed; the whole-body
+    // pin after them is what allowlists every statement and the loop header.
     let rule = "march exits/weights/steps must read no direction (owner IP review to change)";
     let shared_conditions = |pixel: &str, depth_range: &str| {
         [
@@ -4489,9 +4500,10 @@ fn the_march_and_its_confidence_read_no_direction() {
             .map(str::to_owned)
             .to_vec()
     };
-    for (source, conditions, exits, step_chain) in [
+    for (source, body, conditions, exits, step_chain) in [
         (
             SCREEN_MARCH_WGSL,
+            SCREEN_MARCH_WGSL_BODY,
             shared_conditions(
                 "any(pixel<vec2<f32>(0.0))||any(pixel>=extent)",
                 "!(ray_depth>=0.0&&ray_depth<=1.0)",
@@ -4506,6 +4518,7 @@ fn the_march_and_its_confidence_read_no_direction() {
         ),
         (
             SCREEN_MARCH_CPU,
+            SCREEN_MARCH_CPU_BODY,
             shared_conditions(
                 "pixel.cmplt(Vec2::ZERO).any()||pixel.cmpge(extent).any()",
                 "!(0.0..=1.0).contains(&ray_depth)",
@@ -4544,6 +4557,13 @@ fn the_march_and_its_confidence_read_no_direction() {
                 .collect();
             assert_eq!(found, [step], "{rule}: the step chain");
         }
+        // The transcription pin holds the march to the same text; this
+        // duplicate exists to carry the IP rule's message.
+        assert_eq!(
+            code_only(wgsl_fn(source, "screen_march")),
+            body,
+            "{rule}: the march body"
+        );
     }
 }
 

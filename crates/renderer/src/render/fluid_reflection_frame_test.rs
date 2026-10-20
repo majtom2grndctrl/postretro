@@ -68,7 +68,7 @@ fn smooth_through_target(reference: &Reference<'_>, pixel: UVec2, extent: UVec2)
         .sum()
 }
 
-// Acceptance row 14, P12. A horizontal pool bound to a probe whose capture
+// fluid-ssr-reflections row 14, P12. A horizontal pool bound to a probe whose capture
 // is uniform green, with an opaque magenta quad standing in it and a black
 // wall behind, drawn as a zero-opacity mirror (F = 1) in smooth style. The
 // CPU march runs on the frame's own depth, read back from the GPU after the
@@ -178,7 +178,8 @@ fn a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflecti
         }
     }
     eprintln!(
-        "[FluidSurfaceProof] row 14 standing-quad SSR GPU case ran: CPU march on read-back depth \
+        "[FluidSurfaceProof] fluid-ssr-reflections row 14 standing-quad SSR GPU case ran: CPU \
+         march on read-back depth \
          hits the quad at {} water pixels ({faded} in a fade band), high worst {} at {}, {} \
          within 16/255 of Off; every water pixel worst {} at {} ({fading} with 0 < c < 1); \
          low worst {} at {}, {interior} with a whole-quad footprint",
@@ -293,7 +294,8 @@ fn a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflecti
         }
     }
     eprintln!(
-        "[FluidSurfaceProof] row 14 refused-face GPU case ran: below and isolating frames \
+        "[FluidSurfaceProof] fluid-ssr-reflections row 14 refused-face GPU case ran: below and \
+         isolating frames \
          byte-equal, {unbound} unbound-face pixels byte-equal ({unbound_would_hit} would reflect \
          the quad if bound), {bound_moved} bound-face pixels reflect"
     );
@@ -337,7 +339,7 @@ fn on_screen(at: Vec2) -> bool {
     at.cmpge(Vec2::ZERO).all() && at.cmplt(Vec2::splat(FRAME as f32)).all()
 }
 
-// Acceptance row 15, P15. Pixel style, the frame capture's default, over the
+// fluid-ssr-reflections row 15, P15. Pixel style, the frame capture's default, over the
 // base level with 1 m water texel cells and SSR hitting in view. At low,
 // medium and high every visible fragment of each cell reads one value, and
 // every cell whose CPU march (from its centre, about its tilted normal, on
@@ -397,7 +399,8 @@ fn pixel_style_reads_one_reflection_per_cell_and_hidden_or_lost_centres_read_the
             }
         }
         eprintln!(
-            "[FluidSurfaceProof] row 15 pixel-cell GPU case ran at {quality:?}: {} cells, worst \
+            "[FluidSurfaceProof] fluid-ssr-reflections row 15 pixel-cell GPU case ran at \
+             {quality:?}: {} cells, worst \
              spread {} in {:?}, {hit_cells} hit cells differ from Off",
             cells.len(),
             worst_spread.0,
@@ -475,7 +478,8 @@ fn pixel_style_reads_one_reflection_per_cell_and_hidden_or_lost_centres_read_the
         }
     }
     eprintln!(
-        "[FluidSurfaceProof] row 15 pixel-centre GPU case ran: {matched} cells against the CPU, \
+        "[FluidSurfaceProof] fluid-ssr-reflections row 15 pixel-centre GPU case ran: {matched} \
+         cells against the CPU, \
          worst {} in {:?}; {hidden} hidden-centre cells ({hidden_hits} hitting), {off_screen} \
          off-screen-centre cells, {past_edge} past-edge cells ({past_edge_wrote} whose own \
          fragments wrote hits)",
@@ -509,7 +513,7 @@ fn smooth_worst(frame: &[u8], reference: &Reference<'_>) -> ((u8, UVec2), usize)
     (worst, quad)
 }
 
-// Acceptance row 16, P16. Two reflecting pools share target texels: the
+// fluid-ssr-reflections row 16, P16. Two reflecting pools share target texels: the
 // visible one at height 0 and a hidden one 0.5 m beneath it, under an opaque
 // floor between them, both bound to the probe, in smooth style at high.
 // Drawn visible first, then hidden (the order a far-to-near sort by box
@@ -569,7 +573,8 @@ fn overlapping_reflecting_surfaces_each_read_their_own_reflection_in_either_draw
         })
         .count();
     eprintln!(
-        "[FluidSurfaceProof] row 16 overlapping-surfaces GPU case ran: visible-first worst {} at \
+        "[FluidSurfaceProof] fluid-ssr-reflections row 16 overlapping-surfaces GPU case ran: \
+         visible-first worst {} at \
          {} ({quad} quad hits), {apart} pixels where the hidden pool's SSR reads apart, orders \
          byte-equal: {}",
         worst.0,
@@ -591,7 +596,7 @@ fn overlapping_reflecting_surfaces_each_read_their_own_reflection_in_either_draw
     renderer.release_level_resources();
 }
 
-// Acceptance row 17, P17. On the base level at high, smooth style, the
+// fluid-ssr-reflections row 17, P17. On the base level at high, smooth style, the
 // probe-bound pool drawn at reflectivity 0 takes the reflection-free variant
 // and records no reflection pass. Raising its reflectivity through
 // `set_fluid_surface_draws`, the per-frame collect a staged reload or tuning
@@ -638,7 +643,8 @@ fn raising_reflectivity_from_zero_shows_ssr_next_frame_without_a_rebuild() {
     let lowered = capture_checked(&mut renderer, view);
     assert_eq!(variants(&renderer), [FluidShaderVariant::ReflectionFree]);
     eprintln!(
-        "[FluidSurfaceProof] row 17 live-reflectivity GPU case ran: raised frame worst {} at {} \
+        "[FluidSurfaceProof] fluid-ssr-reflections row 17 live-reflectivity GPU case ran: raised \
+         frame worst {} at {} \
          ({quad} quad hits), lowered frame byte-equal: {}, target builds {} → {}, group 5 \
          builds {} → {}",
         worst.0,
@@ -667,7 +673,7 @@ fn fresh_base_level(style: FluidReflectionStyle) -> Option<Renderer> {
     Some(renderer)
 }
 
-// Acceptance row 18, P7, first half. In each style, a frame of the base
+// fluid-ssr-reflections row 18, P7, first half. In each style, a frame of the base
 // level whose hits reach the pool's right edge: the target texels there hold
 // c > 0.5. Then the camera moves 1 m right, so those texels lie off the
 // water: the next frame's target holds c = 0 at every one of them, and the
@@ -714,7 +720,8 @@ fn a_texel_no_reflecting_draw_wrote_this_frame_reads_no_earlier_hit() {
             capture_checked(&mut fresh, moved)
         };
         eprintln!(
-            "[FluidSurfaceProof] row 18 unwritten-texel GPU case ran ({style:?}): {} edge texels \
+            "[FluidSurfaceProof] fluid-ssr-reflections row 18 unwritten-texel GPU case ran \
+             ({style:?}): {} edge texels \
              held hits, then lay off the water and read c = 0; equals a fresh renderer: {}",
             edge.len(),
             after == fresh
@@ -724,7 +731,7 @@ fn a_texel_no_reflecting_draw_wrote_this_frame_reads_no_earlier_hit() {
     }
 }
 
-// Acceptance row 18, second half. Smooth style at medium, the back wall
+// fluid-ssr-reflections row 18, second half. Smooth style at medium, the back wall
 // magenta so the pool's edge reflects a colour: the target is half the scene
 // extent, so a water fragment at the pool's right edge reads a bilinear
 // footprint straddling texels the pass wrote with hits and texels past the
@@ -802,7 +809,8 @@ fn a_footprint_straddling_written_and_unwritten_texels_reads_between_probe_and_s
         outside += usize::from(!between);
     }
     eprintln!(
-        "[FluidSurfaceProof] row 18 bilinear-straddle GPU case ran: {straddling} edge fragments \
+        "[FluidSurfaceProof] fluid-ssr-reflections row 18 bilinear-straddle GPU case ran: \
+         {straddling} edge fragments \
          straddle written and unwritten texels, worst {} at {} against the CPU mix, {outside} \
          outside the probe-to-SSR range",
         worst.0, worst.1
@@ -821,7 +829,7 @@ fn a_footprint_straddling_written_and_unwritten_texels_reads_between_probe_and_s
     );
 }
 
-// Acceptance row 22, P8. With SSR hitting at high, a style switch between
+// fluid-ssr-reflections row 22, P8. With SSR hitting at high, a style switch between
 // two frames draws the new style whole on the first frame after it: that
 // frame equals the next (steady) frame of the new style, and a fresh
 // renderer's frame in that style, byte for byte, both ways. The scene and
@@ -875,7 +883,8 @@ fn a_style_switch_draws_the_new_style_whole_on_its_first_frame() {
         (FLUID_REFLECTION_STYLE_PIXEL, FLUID_REFLECTION_STYLE_PIXEL)
     );
     eprintln!(
-        "[FluidSurfaceProof] row 22 style-switch GPU case ran: {pixel_hits} pixel and \
+        "[FluidSurfaceProof] fluid-ssr-reflections row 22 style-switch GPU case ran: {pixel_hits} \
+         pixel and \
          {smooth_hits} smooth target texels hit; pixel → smooth first frame equals steady: {}, \
          fresh: {}; smooth → pixel first frame equals steady: {}",
         smooth_first == smooth_steady,
@@ -892,7 +901,7 @@ fn a_style_switch_draws_the_new_style_whole_on_its_first_frame() {
     renderer.release_level_resources();
 }
 
-// Acceptance row 23, P10. In each style, the base level at high through a
+// fluid-ssr-reflections row 23, P10. In each style, the base level at high through a
 // 2° view along the water, down the middle of a column of water texel
 // cells: from 1 mm above the plane, the water within half a degree under
 // the horizon reflects the standing quad's base, so the target holds SSR
@@ -924,7 +933,8 @@ fn the_camera_a_millimetre_below_the_plane_draws_the_off_frame() {
         let over_off = capture_checked(&mut renderer, above);
         let off = capture_checked(&mut renderer, below);
         eprintln!(
-            "[FluidSurfaceProof] row 23 below-plane GPU case ran ({style:?}): {hits} target \
+            "[FluidSurfaceProof] fluid-ssr-reflections row 23 below-plane GPU case ran \
+             ({style:?}): {hits} target \
              texels hit from 1 mm above, that frame differs from Off: {}; 1 mm below equals \
              Off: {}",
             over != over_off,

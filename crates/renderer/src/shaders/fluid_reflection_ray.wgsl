@@ -12,7 +12,8 @@ const FLUID_REFLECTION_ALL_TERMS: u32 = 0x17Fu;
 const FLUID_REFLECTION_RAY_MIN_Y: f32 = 1.0e-3;
 
 // The capture bakes every lighting term together, so any isolating mask
-// omits the probe term.
+// omits both reflection layers: the probe term and the screen-space layer
+// share this gate.
 fn fluid_reflection_mask_on(mask: u32) -> bool {
     return (mask & FLUID_REFLECTION_ALL_TERMS) == FLUID_REFLECTION_ALL_TERMS;
 }

@@ -172,3 +172,46 @@ All configurations run at HEAD `5be267241`, one release `capture,dev-tools` bina
 - **The fluid pass alone** costs +0.27 ms over before in pixel style, from the target read and the cell projection. In smooth style it costs 0.3–0.4 ms less than before.
 - **Low smooth's pass costs 2.3× Low pixel's.** At ¼ resolution, neighbouring smooth target pixels march rays 4 scene pixels apart, so depth reads lose cache coherence. Pixel rays are shared per water cell. Medium and High show no such gap. This is not a defect.
 - **The 5300M is outstanding** (AC 28, owner run).
+
+## Ladder sweep: GTX 1660 Super, af8bfef61 (placeholder presets)
+
+One release `capture,dev-tools` binary, tiers and overrides set through the capture scene fields. Method as task 7 (sync-proof SH, 120 + 360 frames, ABBA over 2 rounds). 276 runs, all valid; every run's logged settings matched the request. Spreads ≤ ±0.06 ms, except one at ±0.24 ms.
+
+Poses, engine metres, fov 100:
+
+| pose | map | position | yaw | pitch |
+|---|---|---|---|---|
+| near | e24 | (−4.8768, 1.6, −44.2976) | — | −89 |
+| probes | probes map | (−6.5024, 1.6, −6.5024) | — | −89 |
+| A, pillar basin | reflection-probes-test | (−2.6416, 1.6, −25.4) | 40 | −20 |
+| B, largest water | vault-test (348 m²) | (−35.052, 4.394, −75.1332) | −125 | −20 |
+| C, e24 oblique | e24 | (−1.016, 1.6, −44.2976) | 90 | −20 |
+
+GPU frame in ms, with `fluid_reflection` in brackets, pixel style:
+
+| pose | res | off | low | medium | high | very_high | ultra |
+|---|---|---|---|---|---|---|---|
+| near | 1080p | 2.68 | 3.36 | 3.79 [0.40] | 5.74 [2.34] | 5.52 [2.12] | 5.07 [1.67] |
+| A | 1080p | 2.68 | 3.16 | 3.43 [0.26] | 4.70 [1.52] | 5.13 [1.95] | 4.70 [1.53] |
+| B | 1080p | 2.40 | 2.74 | 3.04 [0.29] | 4.37 [1.62] | 4.82 [2.06] | 4.37 [1.61] |
+| near | 4K | 9.92 | 12.57 | 14.20 [1.59] | 21.88 [9.18] | 20.80 [8.16] | 19.09 [6.49] |
+| A | 4K | 9.42 | 11.21 | 12.22 [0.94] | 17.22 [5.95] | 18.83 [7.58] | 17.17 [5.90] |
+| B | 4K | 8.40 | 9.66 | 10.73 [1.03] | 15.99 [6.27] | 18.03 [8.30] | 16.18 [6.45] |
+
+- **Reach saturates.** Reach is about steps ÷ divisor screen heights. Past about 1.0 a missed ray has already left the screen, so extra steps cost nothing. 128 to 384 steps at divisor 135 measure identical.
+- **The divisor sets the cost.** Once saturated, the pass is linear in the divisor: about 0.8 + 0.038 × divisor ms at 4K pose A. Size steps at about 1.07 × the divisor.
+- **Thickness costs nothing.** It is a quality choice only.
+- **The placeholders are not monotone.** `ultra` (256/135) costs less than `very_high` (192/180), and its steps past saturation are dead weight.
+
+Candidate presets (thickness 1.5 m for VH, 2.5 m for ultra):
+
+| candidate | steps / divisor | 1080p GPU frame | 4K GPU frame | note |
+|---|---|---|---|---|
+| VH | 192 / 180 | 4.8–5.6 ms | 18.0–21.3 ms | |
+| VH fine | 288 / 270 | 5.7–6.5 ms | 21.8–24.7 ms | |
+| | 384 / 360 | 6.6–7.3 ms | 25.4–28.0 ms | |
+| ultra | 576 / 540 | 8.4–9.0 ms | 31.5–34.1 ms | ≈ 2× the 16.7 ms budget, the owner's RTX 30x0 aim |
+
+At 1080p every config measured stays at or under 9.1 ms at every pose. At 4K only `off`, `low` and `medium` hold 16.7 ms everywhere; the 4K base frame alone is 8.4–9.9 ms. Smooth style costs 0.1–0.2 ms less than pixel.
+
+Raw data: session scratchpad `results3/`. Final presets wait on the 5300M sweep (Mac session, branch `claude/fluid-ssr-reflections-mac-perf`).

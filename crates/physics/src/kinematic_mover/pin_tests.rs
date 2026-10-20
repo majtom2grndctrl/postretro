@@ -1867,3 +1867,66 @@ fn crusher_damages_sideways_rider_and_two_mover_squeeze_on_cadence() {
         );
     }
 }
+
+#[test]
+fn stacked_cage_held_by_its_top_rider_fires_once_per_part() {
+    // The co-moving cage again, with a second pawn standing on the roof
+    // under a static ceiling half a metre over its head. The roof holds for
+    // its pinned rider; the floor then pins its own rider against the held
+    // roof and holds too. The pass, judging the floor against the roof's
+    // released course, must not free the floor only for the next pre-tick
+    // test to re-hold it as a fresh onset every tick.
+    let headroom = 0.04;
+    let roof_y = 2.0 * (HALF_HEIGHT + RADIUS) + SKIN_DISTANCE + headroom;
+    let roof_top = roof_y + 0.3;
+    let ceiling = rest_y(roof_top) + HALF_HEIGHT + RADIUS + 0.5;
+    let mut rig = Rig::new(static_boxes(&[(
+        Vec3::new(-10.0, ceiling, -10.0),
+        Vec3::new(10.0, ceiling + 1.0, 10.0),
+    )]));
+    let path = vec![Vec3::ZERO, Vec3::new(0.0, 3.0, 0.0)];
+    let lift = rig.add_mover(
+        deck(LIFT, 1.5),
+        path.clone(),
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Displace,
+    );
+    let roof = rig.add_mover(
+        box_collider(
+            LEAF,
+            &[(Vec3::new(-1.5, roof_y, -1.5), Vec3::new(1.5, roof_top, 1.5))],
+        ),
+        path,
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Displace,
+    );
+    let rider = rig.add_pawn(Vec3::new(0.0, rest_y(0.0), 0.0));
+    let top_rider = rig.add_pawn(Vec3::new(0.0, rest_y(roof_top), 0.0));
+    rig.settle(20);
+    rig.assert_rides(rider, LIFT);
+    rig.assert_rides(top_rider, LEAF);
+    rig.start(lift);
+    rig.start(roof);
+    let (mut floor_fired, mut roof_fired) = (0, 0);
+    for tick in 0..120 {
+        let report = rig.tick();
+        floor_fired += report.blocked_events(LIFT);
+        roof_fired += report.blocked_events(LEAF);
+        assert!(
+            rig.mover_overlap(rider) <= OVERLAP_TOLERANCE,
+            "tick {tick}: the floor's rider stays out of the roof"
+        );
+        assert!(
+            rig.static_overlap(top_rider) <= OVERLAP_TOLERANCE,
+            "tick {tick}: the roof's rider stays out of the ceiling"
+        );
+    }
+    assert!(
+        rig.mover(lift).blocked && rig.mover(roof).blocked,
+        "both parts hold under the pinned top rider"
+    );
+    assert_eq!(roof_fired, 1, "the roof fires once for its pin");
+    assert_eq!(floor_fired, 1, "the floor fires once for its pin");
+}

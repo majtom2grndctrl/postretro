@@ -178,6 +178,13 @@ pub fn run_mover_blocking_pass(
     }
 
     let player_bodies = pin::pawn_bodies(registry);
+    let held_at_start: HashSet<EntityId> = registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .filter_map(|(entity, value)| match value {
+            ComponentValue::KinematicMover(mover) if mover.blocked => Some(entity),
+            _ => None,
+        })
+        .collect();
     let movers: Vec<MoverPolicySnapshot> = registry
         .iter_with_kind(ComponentKind::KinematicMover)
         .filter_map(|(entity, value)| {
@@ -422,6 +429,7 @@ pub fn run_mover_blocking_pass(
     }
 
     let mut pins = Vec::new();
+    let mut reversed_here = HashSet::new();
     for (index, snapshot) in movers.into_iter().enumerate() {
         let collider = mover_colliders
             .iter()
@@ -510,6 +518,7 @@ pub fn run_mover_blocking_pass(
             mover.blocked = stop_contact;
             if reversal_is_clear {
                 pin::reverse_course(mover);
+                reversed_here.insert(snapshot.entity);
                 events.push((MoverEventKind::Blocked, mover.mover_id));
             } else if reversal {
                 mover.blocked = true;
@@ -551,6 +560,22 @@ pub fn run_mover_blocking_pass(
             }
         }
     }
+
+    pin::hold_movers_pinned_by_held_neighbours(
+        registry,
+        static_world,
+        mover_colliders,
+        mover_poses,
+        &player_bodies,
+        blocking_state,
+        tick_dt,
+        events,
+        |entity| {
+            previously_pinned.contains(&entity)
+                || held_at_start.contains(&entity)
+                || reversed_here.contains(&entity)
+        },
+    );
 
     blocking_state
         .crush_elapsed_ms

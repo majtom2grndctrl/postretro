@@ -299,6 +299,98 @@ pub(super) fn next_mover_travel(
     travel
 }
 
+/// The pass's last step: hold any mover it left free whose next course pins
+/// a body against the travel the next pre-tick test will see, with movers
+/// still held parked. The pass judges each mover against the others' released
+/// courses, so a mover it frees beside one that stays held would otherwise be
+/// re-held next tick as a fresh onset. `no_onset` names the movers whose hold
+/// here continues one already answered.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn hold_movers_pinned_by_held_neighbours(
+    registry: &mut EntityRegistry,
+    static_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    bodies: &[PawnBody],
+    blocking_state: &mut MoverBlockingState,
+    tick_dt: f32,
+    events: &mut Vec<(MoverEventKind, u32)>,
+    no_onset: impl Fn(EntityId) -> bool,
+) {
+    if bodies.is_empty() {
+        return;
+    }
+    let movers: Vec<EntityId> = registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .map(|(entity, _)| entity)
+        .collect();
+    let mut pins = Vec::new();
+    loop {
+        let travel = next_mover_travel(registry, mover_colliders, bodies, tick_dt, false);
+        let mut any_hold = false;
+        for &entity in &movers {
+            let Ok(transform) = registry.get_component::<Transform>(entity).copied() else {
+                continue;
+            };
+            let Ok(ComponentValue::KinematicMover(mover)) =
+                registry.get_component_value_mut(entity, ComponentKind::KinematicMover)
+            else {
+                continue;
+            };
+            if effective_block_policy(mover) == BlockPolicy::Crush
+                || mover.blocked
+                || !mover.started
+                || mover.completed
+            {
+                continue;
+            }
+            let Some(collider) = mover_colliders
+                .iter()
+                .find(|collider| collider.mover_id == mover.mover_id)
+            else {
+                continue;
+            };
+            if !any_body_in_reach(collider, mover, transform.position, tick_dt, bodies) {
+                continue;
+            }
+            let preview = super::preview_next_mover_pose(mover, transform, tick_dt, false);
+            if !pose_has_motion(preview) {
+                continue;
+            }
+            let world = PinWorld {
+                static_world,
+                mover_colliders,
+                mover_poses,
+                next_travel: &travel,
+            };
+            pins.clear();
+            pins.extend(
+                bodies
+                    .iter()
+                    .filter_map(|body| world.pin(collider, preview, body)),
+            );
+            if pins.is_empty() {
+                continue;
+            }
+            let onset = blocking_state.note_pinned(entity) && !no_onset(entity);
+            apply_yield(
+                mover,
+                entity,
+                transform.position,
+                PinYield::Hold,
+                onset,
+                &pins,
+                blocking_state,
+                events,
+            );
+            any_hold = true;
+        }
+        if !any_hold {
+            break;
+        }
+    }
+}
+
 /// What a non-crush mover does about a pin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PinYield {
@@ -424,15 +516,32 @@ pub fn run_mover_pin_pretest(
         return;
     }
     let bodies = pawn_bodies(registry);
+    // A crusher never holds; a hold left from a policy switched to `crush`
+    // after the pass releases before this tick moves it, and before its
+    // travel is previewed.
+    for &entity in &movers {
+        if let Ok(ComponentValue::KinematicMover(mover)) =
+            registry.get_component_value_mut(entity, ComponentKind::KinematicMover)
+            && effective_block_policy(mover) == BlockPolicy::Crush
+        {
+            mover.blocked = false;
+        }
+    }
+    if bodies.is_empty() {
+        return;
+    }
     let mut travel = next_mover_travel(registry, mover_colliders, &bodies, tick_dt, false);
-    let mut yielded = HashSet::new();
+    let mut held = HashSet::new();
+    let mut reversed = HashSet::new();
     let mut pins = Vec::new();
     // A yield changes that mover's travel, which can pin a body another
-    // mover's course had cleared: repeat until no mover newly yields.
+    // mover's course had cleared, a reversed course included: repeat until
+    // no mover newly yields. A mover reverses at most once here; pinned again,
+    // it holds.
     loop {
         let mut any_yield = false;
         for &entity in &movers {
-            if yielded.contains(&entity) {
+            if held.contains(&entity) {
                 continue;
             }
             let Ok(transform) = registry.get_component::<Transform>(entity).copied() else {
@@ -443,13 +552,10 @@ pub fn run_mover_pin_pretest(
             else {
                 continue;
             };
-            // A crusher never holds; a hold left from a policy switched to
-            // `crush` after the pass releases before this tick moves it.
-            if effective_block_policy(mover) == BlockPolicy::Crush {
-                mover.blocked = false;
-                continue;
-            }
-            if !mover.started || mover.completed || bodies.is_empty() {
+            if effective_block_policy(mover) == BlockPolicy::Crush
+                || !mover.started
+                || mover.completed
+            {
                 continue;
             }
             let Some(collider) = mover_colliders
@@ -480,9 +586,13 @@ pub fn run_mover_pin_pretest(
             if pins.is_empty() {
                 continue;
             }
-            let response =
-                choose_yield(&world, collider, mover, transform, tick_dt, &pins, &bodies);
-            // A mover already held has not been released: no new onset.
+            let response = if reversed.contains(&entity) {
+                PinYield::Hold
+            } else {
+                choose_yield(&world, collider, mover, transform, tick_dt, &pins, &bodies)
+            };
+            // A mover already held, or already yielded here, has not been
+            // released: no new onset.
             let onset = blocking_state.note_pinned(entity) && !mover.blocked;
             apply_yield(
                 mover,
@@ -495,13 +605,16 @@ pub fn run_mover_pin_pretest(
                 events,
             );
             let next = match response {
-                PinYield::Hold => Vec3::ZERO,
+                PinYield::Hold => {
+                    held.insert(entity);
+                    Vec3::ZERO
+                }
                 PinYield::Reverse => {
+                    reversed.insert(entity);
                     super::preview_next_mover_pose(mover, transform, tick_dt, false).tick_delta
                 }
             };
             travel.insert(mover.mover_id, next);
-            yielded.insert(entity);
             any_yield = true;
         }
         if !any_yield {

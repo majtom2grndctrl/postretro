@@ -1796,6 +1796,8 @@ pub(crate) mod determinism_tests;
 #[cfg(test)]
 mod divergence_spike_tests;
 #[cfg(test)]
+mod mover_pin_tick_tests;
+#[cfg(test)]
 pub(crate) mod predict_reconcile;
 #[cfg(test)]
 mod teleport_tick_tests;

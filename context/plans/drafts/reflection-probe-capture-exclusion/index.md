@@ -11,7 +11,7 @@ The owner requested this capability as a follow-up to `fluid-ssr-reflections`. A
 - **Water width W = √(`PlacedProbe::bound_area`), per probe.** Each probe has its own excluded set. One brush can be kept by one probe and excluded by another; the seams that follow are the ones `reflection-probes` already accepts.
 - **Threshold t = p(W)·W.** p = 0.85 for W ≤ 10 m. Above 10 m, p = 0.85·(W/10)^−a, with a = ln(0.85/0.33)/ln 5, from the owner's anchors (85% up to 10 m, 33% at 50 m). These are initial values; the owner tunes them visually after the build. A curve linear in p was rejected because its t peaks near 38 m and then shrinks.
 - **Object size is the brush's longest extent in the reflector's plane** (where W is measured), written against the reflector normal. Water: longest horizontal side of the hull bounds. Future vertical reflector: longest of vertical and along-wall, ignoring depth. Rival rejected: vertical extent only for walls, which would drop floors and ceilings, the room-scale structure the rule keeps, while keeping tall thin poles.
-- **Thin-brush floor.** Exclusion happens only where SSR shows a brush better. A brush whose smallest in-plane extent is below f(W) stays in the probe, even below t. So a brush is excluded when its thinness ≥ f and its size < t, unless overridden.
+- **Thin-brush floor.** Exclusion happens only where SSR shows a brush better. A brush whose extent along the reflector normal is below f(W) stays in the probe, even below t. So a brush is excluded when its thinness ≥ f and its size < t, unless overridden. For water, thinness is height: horizontal bars and slabs seen edge-on stay in the probe, and thin vertical poles go to SSR, which samples them along their length (`research.md` §Thin-brush floor). Rival rejected: smallest in-plane extent, which kept poles in the probe and sent the bars the march can step over to SSR.
   - **[SSR]** f(W) = W · 2·tan(θv/2) / D_min: the extent one march stride spans at view distance W.
     - D_min is the smallest `rows_per_stride_pixel` among tiers that run SSR, which is the coarsest stride (`FluidReflectionMarch::stride`, `FLUID_REFLECTION_PRESETS`, the `screen_march` sample loop).
     - θv is the vertical FOV at the default HFOV 100° and 16:9.
@@ -48,8 +48,8 @@ Threshold and size:
 - [ ] t(W) at 2, 10, 50 and 100 m is within 1e-3 of 1.7, 8.5, 16.5 and 21.956. It is continuous at 10 m and strictly increasing over 0.5–500 m.
 - [ ] W from bound area: an L-shaped pool fixture and a 10 × 2.4 m canal fixture each give √area.
 - [ ] Predicate, both sides of t: a brush with in-plane extent t − ε is excluded and t + ε is kept, at W = 5 m and at W = 50 m.
-- [ ] Floor, both sides, at W = 5 m and 50 m: a brush whose smallest in-plane extent is just below f is kept, and one just above f (and below t) is excluded. f follows the SSR tiers' coarsest stride. f < t over 0.5–500 m.
-- [ ] Given a vertical reflector normal, size and thinness come from the vertical and along-wall extents, and depth along the normal is ignored.
+- [ ] Floor, both sides, at W = 5 m and 50 m: a brush whose extent along the normal is just below f is kept, and one just above f (and below t) is excluded. A post thinner than f in plane but taller than f is excluded. f follows the SSR tiers' coarsest stride. f < t over 0.5–500 m.
+- [ ] Given a vertical reflector normal, size comes from the vertical and along-wall extents, and thinness from depth along the normal.
 
 Capture, on a pillar in a pool touching the ceiling:
 - [ ] Directions through the pillar's body read the wall behind it, in colour and distance.

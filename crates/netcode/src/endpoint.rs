@@ -903,9 +903,9 @@ impl NetEndpoint {
     }
 
     /// Install a host tuning payload. A pawn tuning change rematerializes the
-    /// armed local pawn: the first payload composes its inventory, which waits
-    /// for it, and a later one merges into the live inventory without moving
-    /// the selection (`networking.md` §What gates, and what replicates instead).
+    /// armed local pawn: the first payload composes its inventory (a pawn armed
+    /// before it holds none), and a later one merges into the live inventory
+    /// without moving the selection (`networking.md` §What gates, and what replicates instead).
     pub fn install_tuning_payload(
         &mut self,
         bytes: &[u8],

@@ -295,7 +295,8 @@ impl Fixture {
     }
 
     /// Install every held tuning payload through the client endpoint, as the
-    /// Control drain does at the top of a frame once the resend lands.
+    /// Control drain does once the resend lands: after the frame's selection
+    /// advance, before its fixed tick.
     pub(super) fn release_tuning(&mut self) {
         let receive = self.receive.as_mut().unwrap();
         receive.hold_tuning = false;

@@ -2297,7 +2297,7 @@ mod tests {
                 &descriptors,
                 &mut registry,
                 pawn,
-                None
+                Some(&tuning)
             ));
             assert_eq!(
                 registry

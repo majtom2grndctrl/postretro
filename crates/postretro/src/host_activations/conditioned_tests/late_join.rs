@@ -129,7 +129,9 @@ impl Fixture {
     /// the selection latch on the input-phase occupancy, drain Control (here,
     /// install the late payload when `install`), take the queued commit, run
     /// the wieldable tick on the local movement pawn and declare an accepted
-    /// switch, then observe the re-sync. Returns whether this frame sent any
+    /// switch, then observe the re-sync. The frame's snapshot apply runs in
+    /// `host_tick`'s transport, after the client tick rather than before it;
+    /// one apply per frame either way. Returns whether this frame sent any
     /// switch declaration.
     fn join_frame(
         &mut self,
@@ -175,7 +177,12 @@ impl Fixture {
             0.0,
             DT,
         );
-        let mut declared = command.select_slot.filter(|_| switch_accepted);
+        let switched = command.select_slot.filter(|_| switch_accepted);
+        if let Some(slot) = switched {
+            self.declare_switch(slot, tick);
+        }
+        // Observed after this frame's declaration, as production's re-sync
+        // runs after `client_declare_switch`.
         let observation = pawn.and_then(|pawn| {
             crate::client_weapon::ActiveSlotResyncObservation::read(
                 &self.local.borrow(),
@@ -184,27 +191,30 @@ impl Fixture {
                 self.projection.agreed_slot(),
             )
         });
-        match observation {
-            Some(observation) => {
-                if let Some(slot) = input.resync.observe(observation, DT) {
-                    input.resync_declarations.push(slot);
-                    declared.get_or_insert(slot);
-                }
+        let resynced = match observation {
+            Some(observation) => input.resync.observe(observation, DT),
+            None => {
+                input.resync.reset();
+                None
             }
-            None => input.resync.reset(),
-        }
-        if let Some(slot) = declared {
-            self.client
-                .send_switch_declaration(wire::ClientSwitchDeclaration {
-                    declaration_id: self.next_switch_id,
-                    slot: u8::try_from(slot).unwrap(),
-                    client_tick: tick,
-                });
-            self.next_switch_id += 1;
+        };
+        if let Some(slot) = resynced {
+            input.resync_declarations.push(slot);
+            self.declare_switch(slot, tick);
         }
         self.send_input(tick, &command);
         self.host_tick();
-        declared.is_some()
+        switched.is_some() || resynced.is_some()
+    }
+
+    fn declare_switch(&mut self, slot: usize, tick: u32) {
+        self.client
+            .send_switch_declaration(wire::ClientSwitchDeclaration {
+                declaration_id: self.next_switch_id,
+                slot: u8::try_from(slot).unwrap(),
+                client_tick: tick,
+            });
+        self.next_switch_id += 1;
     }
 
     fn join_tick(&mut self, input: &mut JoinInput, tick: u32, press: Option<Action>) -> bool {
@@ -251,6 +261,11 @@ impl Fixture {
         assert_eq!(inventory.active_slot, CARRIED_SLOT, "the carried slot");
         assert_eq!(inventory.spawn_active_slot, CARRIED_SLOT);
         assert_eq!(inventory.active_slot, self.host_active_slot());
+        assert_eq!(
+            self.local.borrow().local_player_movement_pawn(),
+            Some(self.local_actors.pawn),
+            "the payload's movement makes the pawn the selection gates' pawn"
+        );
         self.assert_no_client_own_loadout("after the payload");
     }
 }
@@ -283,7 +298,8 @@ fn conditioned_late_payload_join_composes_the_carried_slot_once_from_the_host_la
     assert_eq!(
         fixture.projection.agreed_slot(),
         Some(CARRIED_SLOT),
-        "the host's projection names the client's slot within a round trip"
+        "the host's projection names the client's slot, so the re-sync below \
+         watches a populated projection"
     );
     fixture.join_idle(
         &mut input,

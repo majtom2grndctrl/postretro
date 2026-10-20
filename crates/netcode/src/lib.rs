@@ -80,12 +80,13 @@ mod state_slots;
 mod tuning_payload;
 pub mod wire_convert;
 
-// M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
-// its shared test scaffolding. Both are test-only — they drive the real Task 1-5 seams
-// end to end over the dev `PacketConditioner` but introduce no production runtime state.
 // A connected client's inventory composes only from the host's tuning payload.
 #[cfg(test)]
 mod client_tuning_install_tests;
+
+// M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
+// its shared test scaffolding. Both are test-only — they drive the real Task 1-5 seams
+// end to end over the dev `PacketConditioner` but introduce no production runtime state.
 #[cfg(test)]
 mod predict_reconcile_harness;
 #[cfg(test)]

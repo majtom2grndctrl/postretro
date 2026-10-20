@@ -134,7 +134,8 @@ pub(super) fn update_active_weapon_attachment(
 /// Materialize the descriptor-backed presentation for a `local_player` baseline this
 /// snapshot armed. `apply_snapshot` spawned the pawn
 /// Transform-only; host movement tuning arrives independently on Control, so this
-/// materializes or clears the `PlayerMovementComponent` when both halves meet.
+/// materializes or clears the `PlayerMovementComponent`, and composes the wieldable
+/// inventory from the payload alone, when both halves meet.
 ///
 /// Defaults to the `"player"` class when the host stamped none (defensive). Must run
 /// BEFORE reconcile (which merges onto the existing component); the underlying helper is

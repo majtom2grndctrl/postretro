@@ -3505,10 +3505,10 @@ fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall(
     assert_host_fires_what_the_client_fired(&fixture);
 }
 
-// Weapon-switch declarations ordered by client tick with starts and presses.
 // Late tuning payloads on join: composition waits, then lands on the host slot.
 mod late_join;
 mod receive_alternate;
+// Weapon-switch declarations ordered by client tick with starts and presses.
 mod switch_order;
 
 // --- Vault fire gate on the host's remote path ---------------------------------

@@ -288,7 +288,7 @@ fn late_tuning_install_with_an_empty_spawn_slot_composes_on_the_first_populated_
 
 // P9: an all-empty payload composes an empty inventory; a later payload that
 // adds a weapon fills that slot through the merge and makes it active, while
-// the spawn slot composition set stays.
+// `spawn_active_slot` keeps its composed value.
 #[test]
 fn late_empty_payload_composes_every_slot_empty_and_a_later_fill_activates_it() {
     let mut registry = EntityRegistry::new();
@@ -498,4 +498,34 @@ fn client_demotion_or_unload_before_the_payload_composes_nothing_until_the_next(
         assert_eq!(layout(&registry, pawn), expected_layout(&HOST_SLOTS));
         assert_eq!(inventory(&registry, pawn).unwrap().active_slot, 2);
     }
+}
+
+// With adoption gone, a host that drops its active weapon and the client agree
+// only because the merge's release repoints to the first populated slot, the
+// same rule the host's drop applies.
+#[test]
+fn later_payload_dropping_the_active_weapon_lands_where_the_host_does() {
+    let three = [(0, "shotgun"), (1, "rifle"), (2, "plasma")];
+    let mut registry = EntityRegistry::new();
+    let mut endpoint = client_endpoint();
+    let pawn = arm(&mut endpoint, &mut registry);
+    install(
+        &mut endpoint,
+        &mut registry,
+        &bytes(&host_payload(&three, 2, 96.0)),
+    );
+    let plasma = inventory(&registry, pawn).unwrap().wieldables[2].unwrap();
+
+    // The host dropped the plasma: its slot empties and the host repoints to
+    // the first populated slot, 0.
+    let mut dropped = host_payload(&three, 2, 96.0);
+    dropped.wieldables[2] = None;
+    install(&mut endpoint, &mut registry, &bytes(&dropped));
+
+    assert_eq!(layout(&registry, pawn), expected_layout(&three[..2]));
+    assert_eq!(inventory(&registry, pawn).unwrap().active_slot, 0);
+    assert!(
+        !registry.exists(plasma),
+        "the released instance is despawned"
+    );
 }

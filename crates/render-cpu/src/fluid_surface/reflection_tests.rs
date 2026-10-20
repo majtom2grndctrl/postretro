@@ -236,13 +236,13 @@ fn probe_indices_cover_every_grid_vertex_of_a_bound_face() {
     assert_eq!(ranges[1].end, mesh.vertices.len());
 }
 
-// Every vertex a bound face owns takes its binding's probe, the centroid its
-// triangulation adds included; faces no binding names, and every face of a
-// level without probes, take the no-probe index.
+// Every vertex a bound face owns takes its binding's probe, an inserted one
+// included; faces no binding names, and every face of a level without
+// probes, take the no-probe index.
 #[test]
 fn probe_indices_cover_each_bound_faces_vertices_and_nothing_else() {
-    // Volume 0: two faces, the second with a collinear vertex (an added
-    // centroid). Volume 1 is dry. Volume 2: one face, unbound.
+    // Volume 0: two faces, the second with a collinear vertex, which packs
+    // no added vertex. Volume 1 is dry. Volume 2: one face, unbound.
     let mut inserted = level_top(2.0, 0.0, 1.0);
     inserted.vertices.insert(
         1,
@@ -260,7 +260,7 @@ fn probe_indices_cover_each_bound_faces_vertices_and_nothing_else() {
         fluid(vec![level_top(5.0, 0.0, 1.0)]),
     ];
     let mesh = pack_fluid_surfaces(&volumes, &[], 1, None);
-    assert_eq!(mesh.vertices.len(), 4 + 6 + 4, "the insert adds a centroid");
+    assert_eq!(mesh.vertices.len(), 4 + 5 + 4, "the insert adds no vertex");
     let probes = vec![
         room_probe([0.0, 0.002, 0.0], 0),
         room_probe([2.0, 0.002, 0.0], 1),
@@ -269,7 +269,7 @@ fn probe_indices_cover_each_bound_faces_vertices_and_nothing_else() {
     let mut indices = vec![7; mesh.vertices.len()];
     fill_probe_indices(&volumes, &mesh.face_drift_maps, Some(&bound), &mut indices);
     let mut expected = vec![1; 4];
-    expected.extend([0; 6]);
+    expected.extend([0; 5]);
     expected.extend([FLUID_REFLECTION_NO_PROBE; 4]);
     assert_eq!(indices, expected);
 

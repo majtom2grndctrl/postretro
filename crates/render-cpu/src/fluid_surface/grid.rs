@@ -9,7 +9,8 @@ use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentVolumeRecord,
 };
 
-use super::{COLLINEAR_DISTANCE, face_normal, has_collinear_vertex};
+use super::ear_clip::triangulate_convex;
+use super::{COLLINEAR_DISTANCE, face_normal};
 
 /// Planes per probe cell along each axis at the finest spacing.
 pub const FLUID_GRID_DIVISIONS: f64 = 2.0;
@@ -21,7 +22,8 @@ pub const FLUID_GRID_VERTEX_CAP: u64 = 1 << 18;
 const FLUID_GRID_MAX_COARSENING: u32 = 20;
 /// A vertex within this distance of a plane, along the plane's axis, lies on
 /// it: the plane passes through the vertex and adds none beside it. The
-/// compiler's collinear tolerance, so a plane never adds a vertex nearer an
+/// renderer's collinear tolerance (`COLLINEAR_DISTANCE`, derived from the
+/// compiler's split epsilon), so a plane never adds a vertex nearer an
 /// existing one than the compiler would.
 const PLANE_TOLERANCE: f64 = COLLINEAR_DISTANCE;
 /// Plane counts past this saturate: the bound only has to exceed the cap.
@@ -32,11 +34,6 @@ const PLANE_INDEX_LIMIT: f64 = (1u64 << 53) as f64;
 /// Steps the plane range search may take from its estimate. More means the
 /// spacing is below the precision of the planes' formula.
 const PLANE_SEARCH_STEPS: u32 = 4;
-/// A ring turns at a vertex when the turn's sine exceeds this. f64 rounding
-/// of the turn stays far below it. A vertex whose turn falls under it, such
-/// as an f32 position off a long edge by an ulp near the origin, is treated
-/// as collinear and later clipped into a corner, so nothing is lost.
-const CORNER_SINE: f64 = 1.0e-12;
 
 /// The SH probe lattice the fluid grid aligns to: the one the sampler reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,7 +84,7 @@ impl FluidGridPlanes {
 
     /// The planes on `axis` splitting a polygon whose extent on it is
     /// `min..max`: those with a vertex below and one above, by [`side`], as
-    /// [`split`] judges them.
+    /// [`level`] and [`cut_axis`] judge each vertex.
     fn splitting(&self, axis: usize, min: f64, max: f64) -> Splitting {
         let (origin, spacing) = (self.origin[axis], self.spacing[axis]);
         let first = ((min + PLANE_TOLERANCE - origin) / spacing).floor() + 1.0;
@@ -179,9 +176,9 @@ fn face_extent(face: &EnvironmentSurfaceFace) -> (DVec3, DVec3) {
 }
 
 /// Mesh vertices a drawable face packs into under the ungridded
-/// triangulation (`triangulate_convex_face`).
+/// triangulation (`triangulate_convex_face`), which adds none.
 fn ungridded_vertex_count(face: &EnvironmentSurfaceFace) -> u64 {
-    face.vertices.len() as u64 + u64::from(has_collinear_vertex(&face.vertices))
+    face.vertices.len() as u64
 }
 
 /// An upper bound on the mesh vertices `face` packs into under `planes`,
@@ -280,8 +277,9 @@ pub(super) struct GridCut {
 /// edge's lexicographically lower endpoint, and whether a vertex lies on a
 /// plane is a function of that vertex alone. Two faces sharing an edge
 /// therefore cut it at the same points, so the grid adds no T-junction.
-/// Axes cut in order, planes ascending, so a shared edge's sub-segments
-/// match too.
+/// Axes cut in order. Within an axis each crossing is keyed by its edge and
+/// plane, so the order planes are walked in cannot change where a shared
+/// edge is cut.
 pub(super) fn cut_face(
     face: &EnvironmentSurfaceFace,
     normal: Vec3,
@@ -320,21 +318,15 @@ pub(super) fn cut_face(
                 next.push(polygon);
                 continue;
             };
-            let mut rest = polygon;
-            for k in first..=last {
-                if let Some((below, above)) = split(
-                    &rest,
-                    axis,
-                    k,
-                    planes.plane(axis, k),
-                    &mut cut,
-                    &mut crossings,
-                ) {
-                    next.push(below);
-                    rest = above;
-                }
-            }
-            next.push(rest);
+            next.extend(cut_axis(
+                &polygon,
+                axis,
+                first,
+                last,
+                planes,
+                &mut cut,
+                &mut crossings,
+            ));
         }
         polygons = next;
     }
@@ -345,57 +337,158 @@ pub(super) fn cut_face(
     Some(cut)
 }
 
-/// Split a convex polygon at plane `k` (`axis` = `plane`) into the parts
-/// below and above it; `None` unless vertices lie on both sides beyond the
-/// plane tolerance. An edge from one side to the other gains a crossing. A
-/// run of vertices on the plane joins the side before it, except where the
-/// ring passes on to the other side: there the run's last vertex is the cut
-/// and joins both. So the parts partition the polygon, and no vertex is added
-/// within the tolerance of one on the plane.
-fn split(
+/// Cut a convex polygon along planes `first..=last` on `axis` in one walk of
+/// its ring, returning its parts from below the first plane up, each wound as
+/// the polygon.
+///
+/// Each vertex lies in one slab between planes, or on one plane within the
+/// plane tolerance. An edge gains a crossing at each plane strictly between
+/// its ends, computed from that edge alone. A run of vertices on a plane
+/// joins the slab on the side the ring came from, except where the ring
+/// passes on to the other side: there the run's last vertex is the cut and
+/// joins both. So the parts partition the polygon, as successive splits at
+/// each plane would, and no vertex is added within the tolerance of one on a
+/// plane. Linear in the polygon's vertices and crossings, however many
+/// planes cross it.
+fn cut_axis(
     polygon: &[u32],
     axis: usize,
-    k: i64,
-    plane: f64,
+    first: i64,
+    last: i64,
+    planes: &FluidGridPlanes,
     cut: &mut GridCut,
     crossings: &mut HashMap<(i64, u32, u32), u32>,
-) -> Option<(Vec<u32>, Vec<u32>)> {
-    let sides: Vec<Side> = polygon
-        .iter()
-        .map(|&i| side(cut.positions[i as usize][axis], plane))
-        .collect();
-    if !sides.contains(&Side::Below) || !sides.contains(&Side::Above) {
-        return None;
-    }
+) -> Vec<Vec<u32>> {
     let count = polygon.len();
-    // The side the ring is on at vertex 0: its own, or the side before the
-    // run on the plane that holds it.
-    let mut current = (0..count)
-        .map(|n| sides[(count - n) % count])
-        .find(|&side| side != Side::On)
-        .expect("a vertex lies below the plane");
-    let (mut below, mut above) = (Vec::new(), Vec::new());
-    for (n, &vertex) in polygon.iter().enumerate() {
-        let following = (n + 1) % count;
-        let onward = sides[following] != Side::On && sides[following] != current;
-        if onward && sides[n] == Side::On {
-            below.push(vertex);
-            above.push(vertex);
-        } else if current == Side::Below {
-            below.push(vertex);
+    super::count_install_steps(count);
+    // A vertex's level: 2s in slab s (below plane `first + s`, above the one
+    // before), 2j + 1 on plane `first + j`.
+    let levels: Vec<i64> = polygon
+        .iter()
+        .map(|&vertex| {
+            level(
+                cut.positions[vertex as usize][axis],
+                axis,
+                first,
+                last,
+                planes,
+            )
+        })
+        .collect();
+    let runs = on_plane_runs(&levels);
+    let slabs = (last - first + 2) as usize;
+    let mut parts: Vec<Vec<u32>> = vec![Vec::new(); slabs];
+    for n in 0..count {
+        let vertex = polygon[n];
+        let here = levels[n];
+        if here % 2 == 0 {
+            parts[(here / 2) as usize].push(vertex);
         } else {
-            above.push(vertex);
+            let (from, onward, last_of_run) = runs[n];
+            let (below, above) = ((here / 2) as usize, (here / 2 + 1) as usize);
+            match (from < here, onward < here) {
+                (true, true) => parts[below].push(vertex),
+                (false, false) => parts[above].push(vertex),
+                (true, false) => {
+                    parts[below].push(vertex);
+                    if last_of_run {
+                        parts[above].push(vertex);
+                    }
+                }
+                (false, true) => {
+                    parts[above].push(vertex);
+                    if last_of_run {
+                        parts[below].push(vertex);
+                    }
+                }
+            }
         }
-        if onward && sides[n] != Side::On {
-            let crossing = crossing(vertex, polygon[following], axis, k, plane, cut, crossings);
-            below.push(crossing);
-            above.push(crossing);
+        let following = (n + 1) % count;
+        let there = levels[following];
+        // Planes strictly between the edge's ends, in ring order.
+        let (low, high) = (here.min(there), here.max(there));
+        super::count_install_steps((high - low) as usize);
+        let mut between: Vec<i64> = (low + 1..high).filter(|height| height % 2 == 1).collect();
+        if there < here {
+            between.reverse();
         }
-        if onward {
-            current = sides[following];
+        for plane_level in between {
+            let j = plane_level / 2;
+            let k = first + j;
+            let point = crossing(
+                vertex,
+                polygon[following],
+                axis,
+                k,
+                planes.plane(axis, k),
+                cut,
+                crossings,
+            );
+            parts[j as usize].push(point);
+            parts[j as usize + 1].push(point);
         }
     }
-    Some((below, above))
+    parts.retain(|part| !part.is_empty());
+    parts
+}
+
+/// The level of a vertex at `position` on `axis` among planes
+/// `first..=last` (see [`cut_axis`]), judged by [`side`] against each
+/// plane's own formula, so every face agrees.
+fn level(position: f64, axis: usize, first: i64, last: i64, planes: &FluidGridPlanes) -> i64 {
+    let (origin, spacing) = (planes.origin[axis], planes.spacing[axis]);
+    // The first plane the position is not above: estimated, then settled.
+    let estimate = ((position - PLANE_TOLERANCE - origin) / spacing).ceil();
+    let mut k = if estimate.is_finite() {
+        (estimate as i64).clamp(first, last + 1)
+    } else {
+        first
+    };
+    while k > first && side(position, planes.plane(axis, k - 1)) != Side::Above {
+        super::count_install_steps(1);
+        k -= 1;
+    }
+    while k <= last && side(position, planes.plane(axis, k)) == Side::Above {
+        super::count_install_steps(1);
+        k += 1;
+    }
+    let slab = 2 * (k - first);
+    if k <= last && side(position, planes.plane(axis, k)) == Side::On {
+        slab + 1
+    } else {
+        slab
+    }
+}
+
+/// For each ring position on a plane, the levels of the vertices before and
+/// after its run of vertices on that plane, and whether it ends the run; one
+/// walk of the ring. Other positions read their own level and `false`.
+fn on_plane_runs(levels: &[i64]) -> Vec<(i64, i64, bool)> {
+    let count = levels.len();
+    let mut runs: Vec<(i64, i64, bool)> =
+        levels.iter().map(|&level| (level, level, false)).collect();
+    // Start where a run begins, so no run wraps past the walk's end.
+    let Some(start) = (0..count).find(|&n| levels[n] != levels[(n + count - 1) % count]) else {
+        return runs;
+    };
+    let mut offset = 0;
+    while offset < count {
+        let begin = (start + offset) % count;
+        let run_level = levels[begin];
+        let mut length = 1;
+        while length < count && levels[(begin + length) % count] == run_level {
+            length += 1;
+        }
+        if run_level % 2 == 1 {
+            let before = levels[(begin + count - 1) % count];
+            let after = levels[(begin + length) % count];
+            for i in 0..length {
+                runs[(begin + i) % count] = (before, after, i + 1 == length);
+            }
+        }
+        offset += length;
+    }
+    runs
 }
 
 /// The vertex where plane `k` crosses edge `a`–`b`, shared by both polygons
@@ -424,58 +517,6 @@ fn crossing(
         cut.uvs.push(lo_uv + (hi_uv - lo_uv) * t);
         cut.positions.len() as u32 - 1
     })
-}
-
-/// Triangulate a convex polygon over its own vertices. A grid cut leaves
-/// collinear vertices on a part's edges (the compiler's T-junction inserts,
-/// and planes passing near a corner); each stays a triangle corner. Each step
-/// clips a corner beside a collinear vertex, which turns that vertex into a
-/// corner, so three corners always remain; with none left, any corner.
-/// Corners are judged on the positions as packed, in f32, so a part keeps its
-/// drawn area however far from the origin, down to a final triangle judged at
-/// one vertex: area under about 1e-12 of its longer sides' product can be
-/// dropped. A part with no corner left has no area and draws nothing.
-fn triangulate_convex(
-    polygon: &[u32],
-    positions: &[DVec3],
-    normal: DVec3,
-    triangles: &mut Vec<[u32; 3]>,
-) {
-    let packed = |i: u32| positions[i as usize].as_vec3().as_dvec3();
-    let turns = |prev: u32, at: u32, next: u32| {
-        let (into, out) = (packed(at) - packed(prev), packed(next) - packed(at));
-        into.cross(out).dot(normal) > CORNER_SINE * into.length() * out.length()
-    };
-    let mut ring = polygon.to_vec();
-    let mut corner = Vec::with_capacity(ring.len());
-    while ring.len() > 3 {
-        let count = ring.len();
-        corner.clear();
-        corner.extend((0..count).map(|i| {
-            turns(
-                ring[(i + count - 1) % count],
-                ring[i],
-                ring[(i + 1) % count],
-            )
-        }));
-        let beside_collinear =
-            |i: usize| corner[i] && (!corner[(i + count - 1) % count] || !corner[(i + 1) % count]);
-        let Some(tip) = (0..count)
-            .find(|&i| beside_collinear(i))
-            .or_else(|| (0..count).find(|&i| corner[i]))
-        else {
-            return;
-        };
-        triangles.push([
-            ring[(tip + count - 1) % count],
-            ring[tip],
-            ring[(tip + 1) % count],
-        ]);
-        ring.remove(tip);
-    }
-    if ring.len() == 3 && turns(ring[0], ring[1], ring[2]) {
-        triangles.push([ring[0], ring[1], ring[2]]);
-    }
 }
 
 #[cfg(test)]

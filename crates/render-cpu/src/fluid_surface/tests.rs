@@ -63,37 +63,25 @@ fn signed_twice_area(a: DVec3, b: DVec3, c: DVec3, normal: DVec3) -> f64 {
 }
 
 /// Packs `face` alone and asserts the triangles tile it with no T-junction:
-/// the mesh holds the face's vertices in order, plus at most one centroid
-/// vertex after them; every triangle winds with the face and has area; every
-/// face vertex is a corner; every face edge segment of non-zero length
-/// borders exactly one triangle; no triangle edge passes through a face
-/// vertex; and the triangles' areas sum to the face's. Returns the mesh.
+/// the mesh holds exactly the face's vertices, in order; every triangle winds
+/// with the face and has area; every face vertex is a corner, except one
+/// repeating a ring neighbour's position, which may leave that twin to be;
+/// every face edge segment of non-zero length borders exactly one triangle;
+/// no triangle edge passes through a face vertex; and the triangles' areas
+/// sum to the face's. Returns the mesh.
 fn assert_tiles_face_without_t_junctions(face: &EnvironmentSurfaceFace) -> FluidSurfaceMesh {
     let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[], 1, None);
     let ring = face.vertices.len();
     let position = |i: u32| Vec3::from(mesh.vertices[i as usize].position).as_dvec3();
     let normal = Vec3::from(mesh.vertices[0].normal).as_dvec3();
-    assert!(
-        mesh.vertices.len() == ring || mesh.vertices.len() == ring + 1,
+    assert_eq!(
+        mesh.vertices.len(),
+        ring,
         "{} mesh vertices for a {ring}-vertex face",
         mesh.vertices.len()
     );
     for (packed, source) in mesh.vertices.iter().zip(&face.vertices) {
         assert_eq!(packed.position, source.position);
-    }
-    if let Some(centroid) = mesh.vertices.get(ring) {
-        let mean = face
-            .vertices
-            .iter()
-            .map(|v| Vec3::from(v.position).as_dvec3())
-            .sum::<DVec3>()
-            / ring as f64;
-        let error = (Vec3::from(centroid.position).as_dvec3() - mean).length();
-        assert!(
-            error <= 1.0e-6 * (1.0 + mean.length()),
-            "centroid off by {error}"
-        );
-        assert_eq!(centroid.normal, mesh.vertices[0].normal);
     }
     let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
     assert_eq!(mesh.indices.len(), triangles.len() * 3);
@@ -102,20 +90,36 @@ fn assert_tiles_face_without_t_junctions(face: &EnvironmentSurfaceFace) -> Fluid
         let twice = signed_twice_area(position(a), position(b), position(c), normal);
         assert!(twice > 0.0, "triangle {a} {b} {c} has twice-area {twice}");
     }
-    for vertex in 0..mesh.vertices.len() as u32 {
-        assert!(
-            mesh.indices.contains(&vertex),
-            "vertex {vertex} is no triangle corner"
-        );
+    // The corner that stands for each face vertex: itself, or a twin in its
+    // run of ring neighbours at the same position.
+    let ring_step = |i: u32, step: u32| (i + step) % ring as u32;
+    let stand_in = |vertex: u32| {
+        for step in [1, ring as u32 - 1] {
+            let mut i = vertex;
+            for _ in 0..ring {
+                if position(i) != position(vertex) {
+                    break;
+                }
+                if mesh.indices.contains(&i) {
+                    return i;
+                }
+                i = ring_step(i, step);
+            }
+        }
+        panic!("vertex {vertex} is no triangle corner");
+    };
+    for vertex in 0..ring as u32 {
+        stand_in(vertex);
     }
-    for edge in 0..ring as u32 {
-        let next = (edge + 1) % ring as u32;
+    // A zero-length segment borders nothing.
+    for edge in (0..ring as u32).filter(|&i| position(i) != position(ring_step(i, 1))) {
+        let next = ring_step(edge, 1);
+        let (from, to) = (stand_in(edge), stand_in(next));
         let bordering = triangles
             .iter()
-            .filter(|t| t.contains(&edge) && t.contains(&next))
+            .filter(|t| t.contains(&from) && t.contains(&to))
             .count();
-        let expected = usize::from(position(edge) != position(next));
-        assert_eq!(bordering, expected, "edge {edge}-{next}");
+        assert_eq!(bordering, 1, "edge {edge}-{next}");
     }
     for t in &triangles {
         for side in 0..3 {
@@ -191,11 +195,10 @@ fn packing_keeps_collinear_vertices_on_opposite_edges_as_triangle_corners() {
         [0.0, 64.0],
     ]);
     let mesh = assert_tiles_face_without_t_junctions(&face);
-    assert_eq!(mesh.vertices.len(), 8 + 1);
     assert_eq!(mesh.vertices[0].normal, [0.0, 1.0, 0.0]);
-    // One triangle per edge segment, from the centroid.
-    assert_eq!(mesh.indices.len(), 8 * 3);
-    assert_eq!(mesh.volumes[0].material_ranges[0].index_count, 8 * 3);
+    // Ear clipping over the face's own vertices: n - 2 triangles.
+    assert_eq!(mesh.indices.len(), 6 * 3);
+    assert_eq!(mesh.volumes[0].material_ranges[0].index_count, 6 * 3);
 }
 
 #[test]
@@ -203,7 +206,7 @@ fn packing_keeps_a_single_collinear_vertex_as_a_triangle_corner() {
     // A triangle with one collinear vertex on its closing edge.
     let closing_edge = level_face(&[[0.0, 0.0], [64.0, 0.0], [32.0, 64.0], [16.0, 32.0]]);
     let mesh = assert_tiles_face_without_t_junctions(&closing_edge);
-    assert_eq!(mesh.indices.len(), 4 * 3);
+    assert_eq!(mesh.indices.len(), 2 * 3);
 
     // A quad with one collinear vertex beside the first corner.
     let first_edge = level_face(&[
@@ -214,7 +217,7 @@ fn packing_keeps_a_single_collinear_vertex_as_a_triangle_corner() {
         [0.0, 32.0],
     ]);
     let mesh = assert_tiles_face_without_t_junctions(&first_edge);
-    assert_eq!(mesh.indices.len(), 5 * 3);
+    assert_eq!(mesh.indices.len(), 3 * 3);
 }
 
 // The collinear tolerance is absolute, because the compiler's vertex spacing
@@ -229,8 +232,7 @@ fn packing_tiles_large_faces_whose_vertices_sit_half_a_millimeter_apart() {
         [10.0, 10.0],
         [0.0, 10.0],
     ]);
-    let mesh = assert_tiles_face_without_t_junctions(&corner_insert);
-    assert_eq!(mesh.vertices.len(), 5 + 1);
+    assert_tiles_face_without_t_junctions(&corner_insert);
 
     // A corner chamfered by burial, with no insert.
     assert_tiles_face_without_t_junctions(&level_face(&[
@@ -283,8 +285,11 @@ fn packing_tiles_a_thin_long_strip_with_and_without_an_insert() {
     ]));
 }
 
+// A vertex repeating its predecessor joins the ring once: its slot packs but
+// no triangle reads it, its twin standing for the position, and the face
+// still tiles whole.
 #[test]
-fn packing_skips_only_the_zero_length_segment_of_a_duplicated_vertex() {
+fn packing_joins_a_duplicated_vertex_to_its_twin() {
     let mid_ring = level_face(&[
         [0.0, 0.0],
         [10.0, 0.0],
@@ -293,7 +298,8 @@ fn packing_skips_only_the_zero_length_segment_of_a_duplicated_vertex() {
         [0.0, 10.0],
     ]);
     let mesh = assert_tiles_face_without_t_junctions(&mid_ring);
-    assert_eq!(mesh.indices.len(), 4 * 3);
+    assert_eq!(mesh.indices.len(), 2 * 3);
+    assert!(mesh.indices.contains(&1) && !mesh.indices.contains(&2));
 
     // The duplicate closes the ring.
     let closing = level_face(&[
@@ -304,20 +310,634 @@ fn packing_skips_only_the_zero_length_segment_of_a_duplicated_vertex() {
         [0.0, 0.0],
     ]);
     let mesh = assert_tiles_face_without_t_junctions(&closing);
-    assert_eq!(mesh.indices.len(), 4 * 3);
+    assert_eq!(mesh.indices.len(), 2 * 3);
+    assert!(mesh.indices.contains(&0) && !mesh.indices.contains(&4));
 }
 
+/// How far inside its edge every other insert of [`inserted_top`] sits on a
+/// dented face, meters: within closure's 0.1 mm, so each such insert is a
+/// reflex dent and the ear clip's containment index holds thousands.
+const INSERT_DENT: f64 = 5.0e-5;
+
+/// A 2 m × 11 m level top 100 m out at height 1.1, CCW seen from +Y, whose
+/// x = 102 edge carries `inserts` vertices from z 7.9 down to 1: what closure
+/// gives an ocean's edge beside many small pieces. Every other insert, from
+/// the first, sits `dent` meters inside the edge, the rest on it. Positions
+/// and texel UVs (one projection, about 39 texels per meter) are computed in
+/// f64 and rounded to f32 separately, as the compiler stores them.
+fn inserted_top(inserts: usize, dent: f64) -> EnvironmentSurfaceFace {
+    let (x0, x1, z0, z1) = (100.0, 102.0, 1.0, 12.0);
+    let mut points = vec![DVec2::new(x0, z0), DVec2::new(x0, z1), DVec2::new(x1, z1)];
+    points.extend((0..inserts).map(|i| {
+        let inside = if i % 2 == 0 { dent } else { 0.0 };
+        DVec2::new(x1 - inside, 7.9 - 6.9 * (i as f64 + 0.5) / inserts as f64)
+    }));
+    points.push(DVec2::new(x1, z0));
+    EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: points
+            .iter()
+            .map(|p| {
+                vertex(
+                    [p.x as f32, 1.1, p.y as f32],
+                    (*p / 0.0254).as_vec2().to_array(),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Asserts the mesh of one up-facing face, its own vertices leading, tiles
+/// it: every triangle winds with the face and has area, their areas sum to
+/// the face's, every mesh vertex is a triangle corner, and each face segment
+/// in `segments` (from ring vertex `i` to `i + 1`) is the edge of exactly one
+/// triangle, so no triangle edge spans a vertex there. Linear in the mesh, so
+/// it holds at thousands of vertices.
+fn assert_tiles_up_facing_face(
+    mesh: &FluidSurfaceMesh,
+    face: &EnvironmentSurfaceFace,
+    segments: std::ops::Range<u32>,
+) {
+    let position = |i: u32| Vec3::from(mesh.vertices[i as usize].position).as_dvec3();
+    let mut corner = vec![false; mesh.vertices.len()];
+    let mut edges = std::collections::HashMap::new();
+    let mut tiled = 0.0;
+    for &[a, b, c] in mesh.indices.as_chunks::<3>().0 {
+        let twice = signed_twice_area(position(a), position(b), position(c), DVec3::Y);
+        assert!(twice > 0.0, "triangle {a} {b} {c} has twice-area {twice}");
+        tiled += twice;
+        for (from, to) in [(a, b), (b, c), (c, a)] {
+            corner[from as usize] = true;
+            *edges.entry((from, to)).or_insert(0) += 1;
+        }
+    }
+    for i in segments {
+        assert_eq!(
+            edges.get(&(i, i + 1)),
+            Some(&1),
+            "face segment {i}-{}",
+            i + 1
+        );
+    }
+    let ring: Vec<DVec3> = face
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    let whole: f64 = (1..ring.len() - 1)
+        .map(|i| signed_twice_area(ring[0], ring[i], ring[i + 1], DVec3::Y))
+        .sum();
+    assert!(
+        (whole - tiled).abs() <= 1.0e-6 * whole,
+        "face {whole}, triangles {tiled}"
+    );
+    if let Some(vertex) = corner.iter().position(|&is_corner| !is_corner) {
+        panic!("vertex {vertex} is no triangle corner");
+    }
+}
+
+/// How [`a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps`]
+/// grids its face.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum InsertedGrid {
+    /// No lattice.
+    None,
+    /// Planes every 8 m: only z = 8 crosses the face, so one part holds every
+    /// insert.
+    OnePlane,
+    /// z planes spaced so about one crosses the inserted edge per four
+    /// inserts: the plane count grows with the vertex count (P24).
+    EveryPlane,
+}
+
+impl InsertedGrid {
+    fn lattice(self, inserts: usize) -> Option<FluidGridLattice> {
+        match self {
+            Self::None => None,
+            Self::OnePlane => FluidGridLattice::new([0.0; 3], [16.0; 3]),
+            Self::EveryPlane => {
+                let spacing = 6.9 / (inserts.max(4) / 4) as f32;
+                FluidGridLattice::new([0.0; 3], [16.0, 16.0, 2.0 * spacing])
+            }
+        }
+    }
+}
+
+/// Reflex vertices of an up-facing face's ring: those turning clockwise seen
+/// from +Y past the ear clip's corner threshold.
+fn reflex_vertex_count(face: &EnvironmentSurfaceFace) -> usize {
+    let ring: Vec<DVec3> = face
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    let count = ring.len();
+    (0..count)
+        .filter(|&i| {
+            let (prev, at, next) = (
+                ring[(i + count - 1) % count],
+                ring[i],
+                ring[(i + 1) % count],
+            );
+            let (into, out) = (at - prev, next - at);
+            into.cross(out).dot(DVec3::Y) < -1.0e-12 * into.length() * out.length()
+        })
+        .count()
+}
+
+// Closure can give one face thousands of vertices on an edge, each within
+// 0.1 mm of it. Such a face, its inserts on the edge or every other one a
+// dent inside it, packs whole, ungridded and gridded (one plane crossing it,
+// so one part holds every insert; and every plane along its inserted edge
+// crossing it, so the planes grow with the vertices), keeps the drift map of
+// the same face without them, and its install work, counted, grows within
+// n log n of its vertex count, the grid cut and the ear clip's containment
+// index included.
 #[test]
-fn packing_gives_an_added_centroid_the_faces_mean_uv() {
-    // UV is affine in position, so the mean of the corners' UVs is exact.
+fn a_face_with_thousands_of_inserted_vertices_packs_within_n_log_n_install_steps() {
+    let pack = |face: &EnvironmentSurfaceFace, lattice: Option<&FluidGridLattice>| {
+        INSTALL_STEPS.with(|steps| steps.set(0));
+        let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[[64, 64]], 1, lattice);
+        (mesh, INSTALL_STEPS.with(std::cell::Cell::get))
+    };
+    let bare = inserted_top(0, 0.0);
+    let corners: Vec<DVec3> = bare
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    for (dent, grid) in [0.0, INSERT_DENT].into_iter().flat_map(|dent| {
+        [
+            InsertedGrid::OnePlane,
+            InsertedGrid::EveryPlane,
+            InsertedGrid::None,
+        ]
+        .map(|grid| (dent, grid))
+    }) {
+        let mut counted = Vec::new();
+        for inserts in [2000, 8000] {
+            let lattice = grid.lattice(inserts);
+            let (plain, _) = pack(&bare, lattice.as_ref());
+            let plain_map = plain.face_drift_maps[0].expect("the face draws");
+            let face = inserted_top(inserts, dent);
+            if dent > 0.0 {
+                assert_eq!(
+                    reflex_vertex_count(&face),
+                    inserts / 2,
+                    "every other insert dents"
+                );
+            }
+            let (mesh, steps) = pack(&face, lattice.as_ref());
+            assert_eq!(mesh.grid.is_some(), lattice.is_some());
+            match grid {
+                InsertedGrid::OnePlane => {
+                    assert!(
+                        mesh.vertices.iter().any(|v| v.position[2] == 8.0),
+                        "the z = 8 plane cuts the face"
+                    );
+                    // From the first insert to the corner after the last; no
+                    // plane crosses there.
+                    assert_tiles_up_facing_face(&mesh, &face, 3..3 + inserts as u32);
+                }
+                InsertedGrid::EveryPlane => {
+                    let spacing = mesh.grid.expect("gridded").spacing().z;
+                    let planes = (6.9 / spacing) as usize;
+                    assert!(
+                        planes >= inserts / 5,
+                        "{planes} planes cross the inserted edge"
+                    );
+                    // Planes cut the inserted edge's segments, so only the
+                    // tiling's area and winding are checked.
+                    assert_tiles_up_facing_face(&mesh, &face, 3..3);
+                }
+                InsertedGrid::None => {
+                    assert_tiles_up_facing_face(&mesh, &face, 3..3 + inserts as u32);
+                }
+            }
+
+            // Within the fit tolerance of the bare face's map at its corners.
+            let map = mesh.face_drift_maps[0].expect("the face draws");
+            assert_eq!(map.vertex_count as usize, mesh.vertices.len());
+            for corner in &corners {
+                let delta = *corner - corners[0];
+                for axis in 0..2 {
+                    let gap =
+                        map.uv_gradient[axis].as_dvec3() - plain_map.uv_gradient[axis].as_dvec3();
+                    let texels = gap.dot(delta).abs() * 64.0;
+                    assert!(
+                        texels <= drift::UV_TOLERANCE_TEXELS,
+                        "{inserts} inserts, dent {dent}: map parts by {texels} texels at {corner}"
+                    );
+                }
+            }
+            counted.push((face.vertices.len(), steps));
+        }
+        let [(small, small_steps), (large, large_steps)] = counted[..] else {
+            unreachable!("two sizes");
+        };
+        assert!(
+            small_steps >= small as u64,
+            "the count reaches the fit and the triangulation"
+        );
+        let n_log_n = |n: usize| n as f64 * (n as f64).log2();
+        let ratio = large_steps as f64 / small_steps as f64;
+        let bound = n_log_n(large) / n_log_n(small);
+        assert!(
+            ratio <= bound,
+            "{grid:?}, dent {dent}: {small_steps} steps at {small} vertices, {large_steps} at \
+             {large}: ratio {ratio}, n log n allows {bound}"
+        );
+    }
+}
+
+/// An up-facing wedge with a 5° tip T at x 0.3, z 0.6 and long edges a metre
+/// long, each carrying `inserts` vertices from 2.5 mm out from T, 0.12 mm
+/// apart: past closure's 0.1 mm, so closure would leave them. Every other one,
+/// from the first, is a dent inside its edge, alternately 0.05 and 0.09 mm
+/// deep; the rest lie on it. The dented run grows with `inserts`. In-plane, CCW
+/// with v up, in meters: T at the origin, edge A along u, its far corner, edge
+/// B's far corner at 5°, then B's inserts back toward T. Positions are
+/// computed in f64 and rounded to f32, as the compiler stores them.
+fn dented_tip_wedge(inserts: usize) -> EnvironmentSurfaceFace {
+    let (sin, cos) = 5.0f64.to_radians().sin_cos();
+    let depth = |k: usize| match (k % 2, k / 2 % 2) {
+        (1, _) => 0.0,
+        (_, 0) => 5.0e-5,
+        _ => 9.0e-5,
+    };
+    let along = |k: usize| 2.5e-3 + 1.2e-4 * k as f64;
+    let mut ring = vec![DVec2::ZERO];
+    ring.extend((0..inserts).map(|k| DVec2::new(along(k), depth(k))));
+    ring.extend([DVec2::new(1.0, 0.0), DVec2::new(cos, sin)]);
+    ring.extend(
+        (0..inserts)
+            .rev()
+            .map(|k| along(k) * DVec2::new(cos, sin) + depth(k) * DVec2::new(sin, -cos)),
+    );
+    up_facing_face(&ring)
+}
+
+/// An up-facing sliver 0.15 mm wide at x 0.3, z 0.6 whose long edges carry
+/// dents that interleave across it, vertices 0.12 mm apart along it: past
+/// closure's 0.1 mm. In-plane, CCW with v up, in meters: from the origin, the
+/// bottom edge carries `pairs` on-edge vertices at odd multiples of 0.12 mm,
+/// each followed by a dent 0.09 mm inside it at the next even multiple. Back
+/// from the far end, the top edge carries a dent 0.09 mm inside it over every
+/// other bottom on-edge vertex from the first, with an on-edge vertex between.
+/// A top dent then lies 0.06 mm above the bottom edge, inside the ear at the
+/// on-edge vertex below it, whose chord joins the two bottom dents 0.09 mm up.
+/// `pairs` is even; positions as [`dented_tip_wedge`]'s.
+fn interleaved_sliver(pairs: usize) -> EnvironmentSurfaceFace {
+    let (step, depth, width) = (1.2e-4, 9.0e-5, 1.5e-4);
+    let mut ring = vec![DVec2::ZERO];
+    for k in 0..pairs {
+        ring.push(DVec2::new(step * (2 * k + 1) as f64, 0.0));
+        ring.push(DVec2::new(step * (2 * k + 2) as f64, depth));
+    }
+    let length = step * (2 * pairs + 2) as f64;
+    ring.extend([DVec2::new(length, 0.0), DVec2::new(length, width)]);
+    for j in (0..pairs / 2).rev() {
+        ring.push(DVec2::new(step * (4 * j + 3) as f64, width));
+        ring.push(DVec2::new(step * (4 * j + 1) as f64, width - depth));
+    }
+    ring.push(DVec2::new(0.0, width));
+    up_facing_face(&ring)
+}
+
+/// A face facing up in the y = 1.1 plane through in-plane `ring` points
+/// (CCW with v up, meters), placed with the origin at x 0.3, z 0.6. Positions
+/// and texel UVs are computed in f64 and rounded to f32 separately.
+fn up_facing_face(ring: &[DVec2]) -> EnvironmentSurfaceFace {
+    EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: ring
+            .iter()
+            .map(|&DVec2 { x: u, y: v }| {
+                let (x, z) = (0.3 + u, 0.6 - v);
+                vertex(
+                    [x as f32, 1.1, z as f32],
+                    (DVec2::new(x, z) / 0.0254).as_vec2().to_array(),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Packs a dented up-facing face alone and asserts it tiles exactly: its own
+/// vertices alone, each ring segment one triangle's edge, and the triangles'
+/// areas summing to the face's within 1e-9, tighter than
+/// [`assert_tiles_up_facing_face`]'s 1e-6: one dent's notch drawn over is
+/// about 1e-8 of [`dented_tip_wedge`]'s twice-area, and f64 rounding stays
+/// far under 1e-12 of either fixture's. Returns its install steps and blocked
+/// ears, counted.
+fn pack_dented_face(face: &EnvironmentSurfaceFace, context: &str) -> (u64, u64) {
+    INSTALL_STEPS.with(|steps| steps.set(0));
+    BLOCKED_EARS.with(|blocked| blocked.set(0));
+    let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[[64, 64]], 1, None);
+    let counted = (
+        INSTALL_STEPS.with(std::cell::Cell::get),
+        BLOCKED_EARS.with(std::cell::Cell::get),
+    );
+    let count = face.vertices.len();
+    assert!(mesh.grid.is_none());
+    assert_eq!(
+        mesh.vertices.len(),
+        count,
+        "{context}: the face packs its own vertices"
+    );
+    assert_tiles_up_facing_face(&mesh, face, 0..count as u32 - 1);
+    let position = |i: u32| Vec3::from(mesh.vertices[i as usize].position).as_dvec3();
+    let tiled: f64 = mesh
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|&[a, b, c]| signed_twice_area(position(a), position(b), position(c), DVec3::Y))
+        .sum();
+    let whole: f64 = (1..count as u32 - 1)
+        .map(|i| signed_twice_area(position(0), position(i), position(i + 1), DVec3::Y))
+        .sum();
+    assert!(
+        (whole - tiled).abs() <= 1.0e-9 * whole,
+        "{context}: face {whole}, triangles {tiled}"
+    );
+    counted
+}
+
+/// Asserts install steps counted at two vertex counts, `(vertices, steps)`
+/// small then large, reach the fit and the triangulation and grow within
+/// n log n.
+fn assert_steps_within_n_log_n(counted: [(usize, u64); 2], context: &str) {
+    let [(small, small_steps), (large, large_steps)] = counted;
+    assert!(
+        small_steps >= small as u64,
+        "the count reaches the fit and the triangulation"
+    );
+    let n_log_n = |n: usize| n as f64 * (n as f64).log2();
+    let ratio = large_steps as f64 / small_steps as f64;
+    let bound = n_log_n(large) / n_log_n(small);
+    assert!(
+        ratio <= bound,
+        "{context}: {small_steps} steps at {small} vertices, {large_steps} at {large}: \
+         ratio {ratio}, n log n allows {bound}"
+    );
+}
+
+// Regression (review): on an acute wedge whose long edges carry dents near
+// its tip, the ear clip took the earliest slot first and built fans from a
+// pivot near the tip to vertices tens of millimetres out. Each fan triangle
+// ran within a dent's depth of live dents along its whole length, so the
+// containment index's boxes could not separate them and each search grew with
+// the dented run: from the tip, 2113 steps at 51 vertices and 12717 at 195, a
+// ratio of 6.0 where n log n allows 5.1. Clipping the shortest chord first
+// keeps each ear local. Run in rotations leading at the tip, along each edge
+// and at each far corner, at two sizes whose dented runs differ fourfold, the
+// face tiles exactly and its install work grows within n log n of its vertex
+// count. No ear blocks here under that order;
+// `a_sliver_with_interleaved_dents_blocks_ears_and_packs_within_n_log_n_install_steps`
+// runs the blocked-ear path.
+#[test]
+fn a_wedge_dented_near_its_tip_packs_within_n_log_n_install_steps() {
+    // The ring slot each rotation leads at, from the edge's insert count: T,
+    // A's first insert, A's middle, A's far corner, B's far corner, B's
+    // middle, B's insert beside T.
+    let leads: [fn(usize) -> usize; 7] = [
+        |_| 0,
+        |_| 1,
+        |inserts| inserts / 2,
+        |inserts| inserts + 1,
+        |inserts| inserts + 2,
+        |inserts| inserts + 2 + inserts / 2,
+        |inserts| 2 * inserts + 2,
+    ];
+    for (rotation, lead) in leads.iter().enumerate() {
+        let counted = [24, 96].map(|inserts| {
+            let mut face = dented_tip_wedge(inserts);
+            face.vertices.rotate_left(lead(inserts));
+            let normal = face_normal(&face).expect("the wedge has area");
+            assert!(normal.abs_diff_eq(Vec3::Y, 1.0e-6), "{normal:?}");
+            assert_eq!(reflex_vertex_count(&face), inserts, "every dent is reflex");
+            let context = format!("rotation {rotation}, {inserts} inserts");
+            let (steps, _) = pack_dented_face(&face, &context);
+            (face.vertices.len(), steps)
+        });
+        assert_steps_within_n_log_n(counted, &format!("rotation {rotation}"));
+    }
+}
+
+// Regression (review): no count test reached the ear clip's blocked-ear path,
+// where an ear holding a reflex vertex is set aside under it and searched
+// again once that vertex turns, so its bound rested on argument alone. On a
+// sliver whose two long edges carry dents that interleave across it, the ear
+// at each bottom on-edge vertex under a top dent holds that dent. Those ears'
+// chords, two vertex spacings along the bottom edge, are shorter than any
+// top-edge ear's at the start, so the bottom ears come up first: those clear
+// of a top dent clip, and those under one block, about once per top dent,
+// until a clip across the sliver turns that dent and releases them. Run in
+// rotations leading at each corner and along each edge, at two sizes whose
+// dented runs differ fourfold, the face tiles exactly, ears block at both
+// sizes and more at the larger, and the install work, retries included, grows
+// within n log n of the vertex count.
+#[test]
+fn a_sliver_with_interleaved_dents_blocks_ears_and_packs_within_n_log_n_install_steps() {
+    // The ring slot each rotation leads at, from the bottom edge's pairs: the
+    // bottom edge's first corner, its first on-edge vertex, its middle, its
+    // far corner, the top edge's far corner, its middle, its last corner.
+    let leads: [fn(usize) -> usize; 7] = [
+        |_| 0,
+        |_| 1,
+        |pairs| pairs,
+        |pairs| 2 * pairs + 1,
+        |pairs| 2 * pairs + 2,
+        |pairs| 2 * pairs + 3 + pairs / 2,
+        |pairs| 3 * pairs + 3,
+    ];
+    for (rotation, lead) in leads.iter().enumerate() {
+        let counted = [24, 96].map(|pairs| {
+            let mut face = interleaved_sliver(pairs);
+            face.vertices.rotate_left(lead(pairs));
+            let normal = face_normal(&face).expect("the sliver has area");
+            assert!(normal.abs_diff_eq(Vec3::Y, 1.0e-6), "{normal:?}");
+            assert_eq!(
+                reflex_vertex_count(&face),
+                3 * pairs / 2,
+                "every dent is reflex"
+            );
+            let context = format!("rotation {rotation}, {pairs} pairs");
+            let (steps, blocked) = pack_dented_face(&face, &context);
+            assert!(blocked > 0, "{context}: no ear blocked");
+            (face.vertices.len(), steps, blocked)
+        });
+        let [(small, _, small_blocked), (large, _, large_blocked)] = counted;
+        assert!(
+            large_blocked > small_blocked,
+            "rotation {rotation}: {small_blocked} ears blocked at {small} vertices, \
+             {large_blocked} at {large}"
+        );
+        assert_steps_within_n_log_n(
+            counted.map(|(vertices, steps, _)| (vertices, steps)),
+            &format!("rotation {rotation}"),
+        );
+    }
+}
+
+// Regression (review): the face normal was a Newell sum in f32 on absolute
+// positions. On a narrow strip far from the origin with thousands of inserts
+// on one long edge, its rounding outgrew twice the strip's area and flipped
+// the normal down: the strip's ear clip, gridded or not, then clips nothing,
+// and its area centroid falls back to the vertex mean.
+#[test]
+fn a_narrow_strip_far_out_with_thousands_of_inserts_packs_facing_up() {
+    // 2 cm × 50 m at x ≈ 1000.37, CCW seen from +Y, whose x = x1 edge
+    // carries the inserts from z 51 down to 1. Positions and texel UVs are
+    // computed in f64 and rounded to f32 separately, as `inserted_top`'s are.
+    let inserts: usize = 4000;
+    let (x0, x1, z0, z1) = (1000.37, 1000.39, 1.0, 51.0);
+    let mut points = vec![DVec2::new(x0, z0), DVec2::new(x0, z1), DVec2::new(x1, z1)];
+    points.extend(
+        (0..inserts).map(|i| DVec2::new(x1, z1 - (z1 - z0) * (i as f64 + 0.5) / inserts as f64)),
+    );
+    points.push(DVec2::new(x1, z0));
+    let face = EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: points
+            .iter()
+            .map(|p| {
+                vertex(
+                    [p.x as f32, 1.1, p.y as f32],
+                    (*p / 0.0254).as_vec2().to_array(),
+                )
+            })
+            .collect(),
+    };
+    let normal = face_normal(&face).expect("the strip has area");
+    assert!(normal.abs_diff_eq(Vec3::Y, 1.0e-6), "{normal:?}");
+
+    // Planes every 8 m: z = 8 to 48 cross the strip, its inserted edge too.
+    for lattice in [None, FluidGridLattice::new([0.0; 3], [16.0; 3])] {
+        let mesh = pack_fluid_surfaces(
+            &[volume(vec![face.clone()])],
+            &[[64, 64]],
+            1,
+            lattice.as_ref(),
+        );
+        assert_eq!(mesh.grid.is_some(), lattice.is_some());
+        for packed in &mesh.vertices {
+            let packed = Vec3::from(packed.normal);
+            assert!(packed.abs_diff_eq(Vec3::Y, 1.0e-6), "{packed:?}");
+        }
+        if lattice.is_some() {
+            assert!(
+                mesh.vertices.iter().any(|v| v.position[2] == 8.0),
+                "the z = 8 plane cuts the strip"
+            );
+            // Planes cut the inserted edge's segments, so only the tiling's
+            // area and winding are checked.
+            assert_tiles_up_facing_face(&mesh, &face, 3..3);
+        } else {
+            assert_tiles_up_facing_face(&mesh, &face, 3..3 + inserts as u32);
+        }
+        assert!(
+            mesh.face_drift_maps[0].is_some(),
+            "the strip takes a drift map"
+        );
+    }
+}
+
+// A face with an inserted vertex packs its own vertices alone, each with its
+// own normalized UV, and the drift map covers exactly them. Its area
+// centroid, the drift sample, stays at the square's centre: the insert adds
+// no area.
+#[test]
+fn packing_a_face_with_an_inserted_vertex_adds_no_vertex() {
     let mut face = top_face(0, [0.0; 3], 1.0);
     face.vertices
         .insert(1, vertex([0.0, 1.0, 0.25], [0.0, 8.0]));
-    let mesh = pack_fluid_surfaces(&[volume(vec![face])], &[[64, 32]], 1, None);
-    assert_eq!(mesh.vertices.len(), 5 + 1);
-    let centroid = mesh.vertices[5];
-    assert_eq!(centroid.position, [0.4, 1.0, 0.45]);
-    assert_eq!(centroid.uv, [0.4, 0.45]);
+    let mesh = pack_fluid_surfaces(&[volume(vec![face.clone()])], &[[64, 32]], 1, None);
+    let uvs: Vec<[f32; 2]> = mesh.vertices.iter().map(|v| v.uv).collect();
+    assert_eq!(
+        uvs,
+        [[0.0, 0.0], [0.0, 0.25], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]
+    );
+    assert_eq!(mesh.indices.len(), 3 * 3);
+    assert_eq!(mesh.face_drift_maps[0].expect("draws").vertex_count, 5);
+    let centroid = face_area_centroid(&face, Vec3::Y);
+    assert!(
+        centroid.abs_diff_eq(DVec3::new(0.5, 1.0, 0.5), 1.0e-12),
+        "{centroid:?}"
+    );
+}
+
+// Regression (review round 2): a 1 m × 10 mm strip whose top edge holds an
+// insert 0.08 mm inside it, 5 mm from a corner, is simple and within 0.1 mm
+// of convex but not star-shaped about its area centroid (0.5 m, 5 mm). The
+// insert lies past the ray from the centroid c through the near corner: in
+// the short edge's angular sector. The centroid fan's triangle over insert →
+// corner then winds backward, twice-area (insert − c) × (corner − c) =
+// (−0.495, 0.00492) × (−0.5, 0.005) ≈ −1.5e-5 m²: about 7.5 mm² drawn
+// inverted over its neighbour, a hairline double blend half a metre long.
+// Ear clipping over the strip's own vertices draws every triangle facing up.
+#[test]
+fn a_thin_strip_with_an_insert_inside_its_long_edge_near_a_corner_packs_facing_up() {
+    // CCW seen from +Y, in-plane (x, v) with v up; the insert at (0.005,
+    // 0.00992) on the top edge from (1, 0.01) back to (0, 0.01).
+    let strip = level_face(&[
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 0.01],
+        [0.005, 0.00992],
+        [0.0, 0.01],
+    ]);
+    let normal = face_normal(&strip).expect("the strip has area");
+    assert!(normal.abs_diff_eq(Vec3::Y, 1.0e-6), "{normal:?}");
+    let ring: Vec<DVec3> = strip
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    // The old fan's triangle inverts: the premise this guards.
+    let centroid = face_area_centroid(&strip, normal);
+    assert!(signed_twice_area(centroid, ring[3], ring[4], DVec3::Y) < 0.0);
+
+    // Packed ungridded, every triangle winds up and the areas sum to the
+    // strip's, over its own vertices alone: no triangle inverts. Clip order
+    // ties fall to the earliest slot, so each vertex leads once.
+    for lead in 0..strip.vertices.len() {
+        let mut rotated = strip.clone();
+        rotated.vertices.rotate_left(lead);
+        assert_tiles_face_without_t_junctions(&rotated);
+    }
+}
+
+// Regression (review round 3): the collinear tolerance shrank to 1% of the
+// face's extent under 2 cm across, so on a 6 mm square an insert 0.09 mm
+// inside an edge (over the 0.085 mm that left) was no collinear vertex. The
+// square took the plain fan from vertex 0, and with either corner of that
+// edge leading, the fan triangle over the insert wound backward: about
+// 0.27 mm² drawn inverted. The tolerance is absolute now, so the square
+// ear-clips facing up, its area whole, in every rotation.
+#[test]
+fn a_six_millimetre_square_with_an_insert_inside_an_edge_packs_facing_up() {
+    let square = level_face(&[
+        [0.0, 0.0],
+        [0.003, 0.00009],
+        [0.006, 0.0],
+        [0.006, 0.006],
+        [0.0, 0.006],
+    ]);
+    let ring: Vec<DVec3> = square
+        .vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).as_dvec3())
+        .collect();
+    // The plain fan from the corner before the insert inverts: the premise
+    // this guards.
+    assert!(signed_twice_area(ring[0], ring[1], ring[2], DVec3::Y) < 0.0);
+    for lead in 0..square.vertices.len() {
+        let mut rotated = square.clone();
+        rotated.vertices.rotate_left(lead);
+        assert_tiles_face_without_t_junctions(&rotated);
+    }
 }
 
 #[test]

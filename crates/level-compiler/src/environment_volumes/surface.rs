@@ -1,5 +1,5 @@
 // Fluid surface faces: each brush side minus solid world and siblings, split
-// along push brushes, with T-junctions closed where a push cut.
+// along push brushes. Seams between them close level-wide (`closure.rs`).
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use glam::DVec3;
@@ -25,9 +25,6 @@ pub(super) const SPLIT_EPSILON: f64 = 1e-4;
 pub(super) const MIN_PIECE_AREA: f64 = 1e-6;
 /// Consecutive vertices closer than this collapse into one.
 const WELD_EPSILON: f64 = 1e-6;
-/// A piece's vertex within this distance of another piece's edge lies on it:
-/// the split epsilon, so a corner one cut left on a neighbour's edge counts.
-const T_JUNCTION_EPSILON: f64 = SPLIT_EPSILON;
 
 /// One exposed convex piece of a fluid brush side, wound like its side:
 /// counter-clockwise seen from outside the fluid, around the outward normal.
@@ -106,9 +103,8 @@ impl<'a> SolidWorld<'a> {
 }
 
 /// Exposed surface pieces of one volume, in brush then side order, each cut
-/// along every push brush over it. A volume a push cut has no T-junction
-/// between its pieces. A dry volume, or a fluid volume whose brushes carry no
-/// sides, has none.
+/// along every push brush over it. A dry volume, or a fluid volume whose
+/// brushes carry no sides, has none.
 pub(super) fn fluid_surface_pieces<'a>(
     volume: &'a MapEnvironmentVolume,
     solid: &SolidWorld<'_>,
@@ -120,7 +116,6 @@ pub(super) fn fluid_surface_pieces<'a>(
     let brushes: Vec<FluidBrush<'a>> = volume.brushes.iter().map(FluidBrush::new).collect();
     let mut candidates = Vec::new();
     let mut pieces = Vec::new();
-    let mut push_cut = false;
     for (own, brush) in brushes.iter().enumerate() {
         for side in brush.sides {
             let mut exposed = vec![side.vertices.clone()];
@@ -154,7 +149,7 @@ pub(super) fn fluid_surface_pieces<'a>(
             }
             // After burial, so only exposed area is cut and buried area never
             // splits.
-            push_cut |= pushes.split(&mut exposed, side, &face_bounds);
+            pushes.split(&mut exposed, side, &face_bounds);
 
             pieces.extend(
                 exposed
@@ -163,91 +158,7 @@ pub(super) fn fluid_surface_pieces<'a>(
             );
         }
     }
-    // Only where a push cut: a volume no push cut keeps its subtraction output
-    // exactly, so its encoded bytes do not depend on push splitting. Burial's
-    // own T-junctions stay open there.
-    if push_cut {
-        close_t_junctions(&mut pieces);
-    }
     pieces
-}
-
-/// Give every piece each vertex of the volume's other pieces that lies inside
-/// one of its edges.
-///
-/// Cuts leave one piece's corner on a neighbour's edge: along a split line on
-/// one side, or along the edge where a split side meets another side. Each
-/// face draws as its own triangles of a translucent surface, so a corner
-/// meeting a straight edge rasterizes as gaps and double blends along the
-/// seam. The inserted vertex is the neighbour's own position, so both sides
-/// of the seam share it; it is collinear, so the piece keeps its shape,
-/// winding and vertex order. The renderer fans a face that holds such a
-/// vertex from an added centroid, so every inserted vertex stays a triangle
-/// corner and the seam's edges belong to real triangles. A piece with no
-/// vertex on its edges is left exactly as it was.
-fn close_t_junctions(pieces: &mut [SurfacePiece<'_>]) {
-    if pieces.len() < 2 {
-        return;
-    }
-    let bounds: Vec<Aabb> = pieces
-        .iter()
-        .map(|piece| expanded_bounds(&piece.vertices, T_JUNCTION_EPSILON))
-        .collect();
-    // Found against every piece's original vertices, then inserted, so the
-    // result does not depend on piece order.
-    let mut found: Vec<Vec<(usize, f64, DVec3)>> = vec![Vec::new(); pieces.len()];
-    for (own, piece) in pieces.iter().enumerate() {
-        for (other, neighbour) in pieces.iter().enumerate() {
-            if other == own || !bounds[own].intersects(&bounds[other]) {
-                continue;
-            }
-            for &vertex in &neighbour.vertices {
-                if let Some((edge, along)) = edge_holding(&piece.vertices, vertex) {
-                    found[own].push((edge, along, vertex));
-                }
-            }
-        }
-    }
-    for (piece, mut inserts) in pieces.iter_mut().zip(found) {
-        if inserts.is_empty() {
-            continue;
-        }
-        inserts.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-        let mut inserts = inserts.into_iter().peekable();
-        let mut vertices = Vec::with_capacity(piece.vertices.len() + inserts.len());
-        for (edge, &corner) in piece.vertices.iter().enumerate() {
-            vertices.push(corner);
-            while let Some((_, _, vertex)) = inserts.next_if(|insert| insert.0 == edge) {
-                // Two neighbours sharing one corner insert it once.
-                if vertices
-                    .last()
-                    .is_none_or(|last| last.distance(vertex) > T_JUNCTION_EPSILON)
-                {
-                    vertices.push(vertex);
-                }
-            }
-        }
-        piece.vertices = vertices;
-    }
-}
-
-/// The edge of convex `polygon` whose interior holds `vertex`, with the
-/// vertex's position along it (0 at the edge's start, 1 at its end). A vertex
-/// on or near a corner is on no edge's interior.
-fn edge_holding(polygon: &[DVec3], vertex: DVec3) -> Option<(usize, f64)> {
-    (0..polygon.len()).find_map(|edge| {
-        let start = polygon[edge];
-        let end = polygon[(edge + 1) % polygon.len()];
-        if vertex.distance(start) <= T_JUNCTION_EPSILON
-            || vertex.distance(end) <= T_JUNCTION_EPSILON
-        {
-            return None;
-        }
-        let direction = end - start;
-        let along = (vertex - start).dot(direction) / direction.length_squared();
-        let on_line = vertex.distance(start + direction * along) <= T_JUNCTION_EPSILON;
-        (on_line && along > 0.0 && along < 1.0).then_some((edge, along))
-    })
 }
 
 /// Replace every piece with its part outside `remover`.

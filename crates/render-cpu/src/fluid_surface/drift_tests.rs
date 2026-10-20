@@ -192,8 +192,8 @@ fn every_part_of_a_split_face_drifts_identically_however_thin() {
 #[test]
 fn drift_rates_fill_every_vertex_a_face_owns_and_a_mismatched_slice_leaves_all_still() {
     let basis = projection(1.0, 0.0);
-    // The second face's collinear vertex gains it a centroid vertex, which
-    // must scroll with the face: the shader reads the rate flat.
+    // The second face's collinear vertex must scroll with the face: the
+    // shader reads the rate flat.
     let mut with_insert = rect(1.0, 2.0, 0.0, 1.0);
     with_insert.insert(1, [1.5, 1.0]);
     let mesh = pack_fluid_surfaces(
@@ -205,13 +205,11 @@ fn drift_rates_fill_every_vertex_a_face_owns_and_a_mismatched_slice_leaves_all_s
         1,
         None,
     );
-    assert_eq!(mesh.vertices.len(), 4 + 5 + 1);
+    assert_eq!(mesh.vertices.len(), 4 + 5);
     assert_eq!(mesh.face_drift_maps[0].unwrap().vertex_count, 4);
     let second = mesh.face_drift_maps[1].unwrap();
-    assert_eq!(second.vertex_count, 5 + 1);
+    assert_eq!(second.vertex_count, 5);
     let start = second.vertex_start as usize;
-    let centroid = mesh.vertices[start + 5].position;
-    assert!(with_insert.iter().all(|&[x, z]| [x, 0.0, z] != centroid));
 
     let mut rates = vec![[9.0; 2]; mesh.vertices.len()];
     fill_drift_rates(
@@ -222,7 +220,7 @@ fn drift_rates_fill_every_vertex_a_face_owns_and_a_mismatched_slice_leaves_all_s
     let rate = second.scroll_rate(Vec3::new(3.0, 0.0, 0.0)).to_array();
     assert_ne!(rate, [0.0; 2]);
     for (index, vertex_rate) in rates.iter().enumerate() {
-        if (start..start + 6).contains(&index) {
+        if (start..start + 5).contains(&index) {
             assert_eq!(*vertex_rate, rate, "vertex {index}");
         } else {
             assert_eq!(*vertex_rate, [0.0; 2], "vertex {index}");

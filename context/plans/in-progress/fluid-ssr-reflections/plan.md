@@ -83,7 +83,7 @@ Every source symbol that Decisions and Path cite was re-read at `db0f270d3`. No 
 | 4 | Correctness adapter tests and fixes: pixel cells and hidden centres, overlapping surfaces, live reflectivity, unwritten texels and bilinear, style switch, below plane (AC 14 full, 15–18, 22, 23) | integrating executor | 2, 3 || done: 9 GPU cases in `fluid_reflection_frame_test.rs` (all ran; CPU march on read-back depth; P12 via validation error scope); no renderer bug found; four mutation runs each fail their test. Weaker than written: AC 14 quad hits are all c = 1 (fade band checked on a black wall); AC 15 low/medium check per-cell uniformity, CPU match at high; AC 17/22 drive renderer setters, not an app staged reload; AC 23 uses a 2° grazing view |
 | 5 | Player option end to end, following `fog_quality`'s touch list: `PlayerOptions` field and enum, persist, bridge, catalog (`["off","low","medium","high"]`), slot table, `MIRRORED_GAME_STATE_LEAVES`, regenerated SDK typedefs plus the two snapshot fixtures, frontend menu, `main.rs` graphics-tab test, `render_profile` mapping and drift guard, live apply in `options_menu.rs`, splash and lifecycle apply; the xtask grep gate (AC 10, 11) | delegated worker (owns `crates/postretro/src/options/**`, `startup/**`, `app/options_menu.rs`, `main.rs` test, `crates/entities/src/{engine_state_catalog,slot_table}.rs`, `crates/script-compiler/src/light_membership.rs`, `sdk/types/**`, typedef fixtures, `content/dev/scripts/frontend-menu.ts`, `crates/xtask/src/environment_gates.rs`); consumes task 3's `Renderer::set_reflection_quality` and the render-cpu enum | 3 || done: option, persist, bridge, catalog, slot table, mirror, SDK typedefs (regen byte-identical), menu radios, startup/live/install apply (capture untouched, renders High); xtask gates `player_options_name_no_reflection_style` and `no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input` (planted violations fail them). postretro 101, entities 34, sim typedef 44, script-compiler 51, xtask gates 9, clippy clean |
 | 6 | Dev tuning: step budget and thickness sliders in the "SDF / Fog Quality" section of `debug_ui/mod.rs` (dev-tools only) | integrating executor | 3 || done: steps, thickness and rows-per-stride-pixel sliders; uniform-only, upload on change; resets on a full-init rebuild like the SDF tuning |
-| 7 | DX12 FXC run (`cargo test -p postretro-renderer --lib dx12_fxc -- --ignored`) and the in-engine 1660 perf table across every tier and style (AC 13, 28 on the 1660) | integrating executor | 4, 5, 6 | |
+| 7 | DX12 FXC run (`cargo test -p postretro-renderer --lib dx12_fxc -- --ignored`) and the in-engine 1660 perf table across every tier and style (AC 13, 28 on the 1660) | integrating executor | 4, 5, 6 || done: DX12 FXC `dx12_fxc_compiles_every_full_init_pipeline` ran (every full-init pipeline compiled); 1660 table below |
 | 8 | Preflight, then review-panel and fix-review-findings loop, then the full gate including `--features postretro/dev-tools` | integrating executor | 7 | |
 
 **Hot-path constraints carried by every task:**
@@ -121,3 +121,24 @@ Here, BEFORE is `db0f270d3` and AFTER is `a89aca24b`, each a release `capture,de
 - **The reflection pass dominates the added cost.** Its cost scales with shaded target pixels × the step budget, not with what the water reflects. At these straight-down poses every reflected ray heads toward the camera and runs to the screen edge or the budget, with no hit. The IP rule (no exit by direction) makes this the worst case by design.
 - **1080p at high is a proxy for 4K at medium**, because both make the same number of full-resolution loads. That puts 4K medium at about 2.1 ms. 4K low (¼ per axis) projects to about 0.5 ms, though that is not measured.
 - **Reach is short.** A 64-step budget reaches about 12% of screen height. Longer reach costs proportionally more.
+
+## Task 7 measurement — GTX 1660 Super, every tier
+
+All configurations run at HEAD `5be267241`, one release `capture,dev-tools` binary each, with a local, reverted `#[default]` override for tier and style, because capture loads no options. The method is the same as task 1: 48/48 runs valid, ABBA over 2 rounds, and all spreads ≤ ±0.11 ms. "Before" is `db0f270d3`.
+
+**SSR added** is fluid_reflection + fluid_surface after the change, minus the before build's reflecting fluid_surface (ms).
+
+| config | near 4K | probes 4K | near 1080p | fluid_reflection near 4K |
+|---|---|---|---|---|
+| Low pixel | +0.93 | +0.91 | +0.25 | 0.66 |
+| Medium pixel | +2.53 | +2.52 | +0.65 | 2.27 |
+| High pixel | +8.57 | +8.43 | +2.14 | 8.30 |
+| Low smooth | +1.09 | +1.05 | — | 1.49 |
+| Medium smooth | +1.84 | +1.80 | — | 2.25 |
+| High smooth | +7.56 | +7.33 | — | 7.86 |
+| Off | −2.50 | −3.75 | — | — |
+
+- **Off.** fluid_surface is 0.830 near and 0.784 probes, against the before build's reflection-free 0.823 and 0.786. No reflection pass is recorded at Off. Like for like, the before build's reflecting frame with its fluid cost swapped for Off's is within 0.14 ms of Off's frame. The `0x13F` mask also drops forward light terms (≈1 ms), so a raw frame comparison against it is not like for like.
+- **The fluid pass alone** costs +0.27 ms over before in pixel style, from the target read and the cell projection. In smooth style it costs 0.3–0.4 ms less than before.
+- **Low smooth's pass costs 2.3× Low pixel's.** At ¼ resolution, neighbouring smooth target pixels march rays 4 scene pixels apart, so depth reads lose cache coherence. Pixel rays are shared per water cell. Medium and High show no such gap. This is not a defect.
+- **The 5300M is outstanding** (AC 28, owner run).

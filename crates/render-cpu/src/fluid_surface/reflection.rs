@@ -1,6 +1,7 @@
 // Fluid reflection probes: probe table GPU layout, per-vertex probe index, and
-// the CPU reference for `fluid_reflection.wgsl`'s probe term and
-// `fluid_reflection_ray.wgsl`'s gate and ray (search: `reflection_search`).
+// the CPU reference for `fluid_reflection.wgsl`'s probe term and layered
+// composite and `fluid_reflection_ray.wgsl`'s gate and ray (search:
+// `reflection_search`).
 // See: context/lib/rendering_pipeline.md §7.3a · context/lib/resource_management.md §5
 
 use bytemuck::{Pod, Zeroable};
@@ -412,13 +413,38 @@ pub fn reflection_fresnel(cos_theta: f32, reflectivity: f32) -> f32 {
     f0 + (1.0 - f0) * (m2 * m2 * m)
 }
 
-/// The reflection over the straight-alpha `surface` (surface over fog, or the
-/// surface alone) as one straight-alpha output: coverage `F + (1 − F)·a` and
-/// colour `(F·R + (1 − F)·a·c) / coverage`. Blended over a scene it equals
-/// `F·R + (1 − F)·(surface over scene)`, so opacity never dims the reflection.
-pub fn reflection_composite(surface: Vec4, reflection: Vec3, fresnel: f32) -> Vec4 {
-    let coverage = fresnel + (1.0 - fresnel) * surface.w;
-    let rgb = (reflection * fresnel + surface.truncate() * ((1.0 - fresnel) * surface.w))
+/// The screen sample of a miss, `(c·SSR, c)` at c = 0: what the reflection
+/// pass clears its target to and a texel no reflecting draw wrote reads, so
+/// the fragment draws the probe term alone. CPU-only: the shader writes it as
+/// a literal.
+pub const REFLECTION_SCREEN_MISS: Vec4 = Vec4::ZERO;
+
+/// The screen-space layer over the probe term, both over the straight-alpha
+/// `surface` (surface over fog, or the surface alone), as one straight-alpha
+/// output. `fresnel` is F unshadowed (Fresnel × the eye's band), `shadow` the
+/// probe's capture-shadow weight s, `screen` the reflection target's
+/// premultiplied `(c·SSR, c)`. The reflected colour is
+/// `F·[c·SSR + (1 − c)·s·Probe]` at weight `W = F·[c + (1 − c)·s]`, over the
+/// surface at coverage `W + (1 − W)·a`; blended over a scene it equals the
+/// reflected colour plus `(1 − W)·(surface over scene)`, so opacity never
+/// dims either layer. At c = 0 it is the probe term alone at weight `F·s`.
+///
+/// IP rule (owner review to change, rendering_pipeline.md §7.3a): s scales
+/// the probe's share alone and never gates, selects or weights the
+/// screen-space term, so its contribution `F·c·SSR` is the same at every s.
+pub fn reflection_layered_composite(
+    surface: Vec4,
+    probe: Vec3,
+    shadow: f32,
+    screen: Vec4,
+    fresnel: f32,
+) -> Vec4 {
+    let confidence = screen.w;
+    let probe_share = (1.0 - confidence) * shadow;
+    let reflected = fresnel * (screen.truncate() + probe * probe_share);
+    let weight = fresnel * (confidence + probe_share);
+    let coverage = weight + (1.0 - weight) * surface.w;
+    let rgb = (reflected + surface.truncate() * ((1.0 - weight) * surface.w))
         / coverage.max(FLUID_REFLECTION_COVERAGE_EPSILON);
     rgb.extend(coverage)
 }
@@ -545,15 +571,19 @@ pub struct FluidReflectionFragment {
 }
 
 /// The fragment's output as `fs_main_reflecting`'s tail computes it from
-/// `surface` (the fog reference's output): unchanged when the gate is off,
-/// else the probe's capture, sampled toward the distance search's lookup
-/// and scaled by the live-lighting ratio toward that same direction,
-/// composited over it at the Fresnel weight times the search's (0 in the
-/// capture shadow, fading in over the pinned capture texels of angle beside
-/// it) times the eye's band: an eye within [`super::fog::FLUID_FOG_BAND`]
-/// above the plane scales the term by its height through the band, the fog's
-/// own proximity ([`fog_proximity`]), reaching 0 at the plane, so an eye
-/// bobbing there never flips the mirror.
+/// `surface` (the fog reference's output) and `screen`, the reflection
+/// target's premultiplied `(c·SSR, c)` at this fragment
+/// ([`REFLECTION_SCREEN_MISS`] for the probe term alone): unchanged when the
+/// gate is off, else the probe's capture, sampled toward the distance
+/// search's lookup and scaled by the live-lighting ratio toward that same
+/// direction, with the screen-space layer over it
+/// ([`reflection_layered_composite`]), composited over the surface. F is the
+/// Fresnel weight times the eye's band, unshadowed: an eye within
+/// [`super::fog::FLUID_FOG_BAND`] above the plane scales both layers by its
+/// height through the band, the fog's own proximity ([`fog_proximity`]),
+/// reaching 0 at the plane, so an eye bobbing there never flips the mirror.
+/// The search's weight s (0 in the capture shadow, fading in over the pinned
+/// capture texels of angle beside it) scales the probe's share alone.
 /// The reflection starts from the style's point (the fragment, or its texel
 /// cell's centre, held to the probe's box at a wall rim, about the cell's
 /// tilted normal) and sees the eye from there, so every fragment of a
@@ -562,8 +592,10 @@ pub struct FluidReflectionFragment {
 /// before the search. `sample(layer, uv)`
 /// reads the colour tile and `distance(layer, uv)` the distance tile, both
 /// at level 0. The layer comes from the face's probe index alone.
+#[allow(clippy::too_many_arguments)]
 pub fn reflection_fragment(
     surface: Vec4,
+    screen: Vec4,
     fragment: &FluidReflectionFragment,
     probes: &[ReflectionProbeRecord],
     tile: [u32; 2],
@@ -597,6 +629,10 @@ pub fn reflection_fragment(
     );
     let view = (fragment.camera - point.position).normalize_or_zero();
     let ray = reflection_above_horizon(reflection_mirror(view, point.normal));
+    // IP rule (owner review to change, rendering_pipeline.md §7.3a): the probe
+    // lookup is keyed to its own search from this fragment or cell point,
+    // never to the screen-space hit, its depth or its screen position;
+    // `screen` reaches the composite alone.
     let search = reflection_search(
         point.position,
         ray,
@@ -610,9 +646,9 @@ pub fn reflection_fragment(
         probe.layer,
         reflection_tile_uv(search.lookup, tile[0], tile[1]),
     ) * reflection_ratio(&FluidProbeGpu::pack(probe).lights, search.lookup, lights);
-    let fresnel = reflection_fresnel(view.dot(outward), fragment.reflectivity) * search.weight;
     let band = fog_proximity(fragment.camera, fragment.world_position, outward);
-    reflection_composite(surface, capture, fresnel * band)
+    let fresnel = reflection_fresnel(view.dot(outward), fragment.reflectivity) * band;
+    reflection_layered_composite(surface, capture, search.weight, screen, fresnel)
 }
 
 #[cfg(test)]

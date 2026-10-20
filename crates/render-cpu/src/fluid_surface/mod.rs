@@ -1,5 +1,6 @@
 // Fluid surface data logic: the shared surface mesh, drift, draws and slots,
-// the reflection probe table, and the warp, fog and reflection CPU references.
+// the reflection probe table, and the warp, fog, reflection and screen-march
+// CPU references.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use bytemuck::{Pod, Zeroable};
@@ -17,6 +18,7 @@ pub mod motion;
 pub mod reflection;
 pub mod reflection_search;
 pub mod reflection_style;
+pub mod screen_march;
 mod slots;
 
 pub use cull::FluidSurfaceRenderCollector;

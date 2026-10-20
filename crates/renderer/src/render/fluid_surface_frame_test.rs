@@ -15,8 +15,8 @@ use postretro_level_format::sh_volume::AnimationDescriptor;
 use postretro_level_loader::ShDrainBatch;
 use postretro_render_cpu::fluid_surface::reflection::{
     FLUID_REFLECTION_ALL_TERMS, FLUID_REFLECTION_NO_PROBE, FluidReflectionFragment,
-    FluidReflectionLights, reflection_box_hit, reflection_fragment, reflection_lookup,
-    reflection_mirror,
+    FluidReflectionLights, REFLECTION_SCREEN_MISS, reflection_box_hit, reflection_fragment,
+    reflection_lookup, reflection_mirror,
 };
 use postretro_render_cpu::fluid_surface::reflection_search::{
     FluidReflectionSearchStatus, reflection_distance_sample, reflection_search,
@@ -266,8 +266,9 @@ impl<'a> ReferenceProbes<'a> {
 /// What the capture reads at (`column`, `row`) from the CPU references alone:
 /// a smooth-style [`fluid_quad`] fragment drawing the straight-alpha
 /// `surface`, its probe term (`reflection_fragment`, with no animated
-/// lights, its distance search reading the section's own distance tiles)
-/// when `probe` names one, blended straight-alpha over the white clear, then
+/// lights, its distance search reading the section's own distance tiles) when
+/// `probe` names one, with no screen-space hit (c = 0: a probe-only
+/// expectation), blended straight-alpha over the white clear, then
 /// [`capture_encode`]d.
 pub(super) fn expected_pixel(
     camera: Vec3,
@@ -292,6 +293,7 @@ pub(super) fn expected_pixel(
     };
     let out = reflection_fragment(
         surface,
+        REFLECTION_SCREEN_MISS,
         &fragment,
         &probes.section.probes,
         [probes.section.tile_dimension, probes.section.tile_border],
@@ -840,6 +842,7 @@ fn reference_linear(
     let distances = distance_tiles(section);
     let out = reflection_fragment(
         UNLIT_HALF,
+        REFLECTION_SCREEN_MISS,
         &fragment,
         &section.probes,
         [section.tile_dimension, section.tile_border],
@@ -1772,6 +1775,7 @@ fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
         };
         let out = reflection_fragment(
             Vec4::ZERO,
+            REFLECTION_SCREEN_MISS,
             &fragment,
             &section.probes,
             tile,

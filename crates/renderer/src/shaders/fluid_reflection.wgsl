@@ -60,15 +60,6 @@ fn fluid_reflection_fresnel(cos_theta: f32, reflectivity: f32) -> f32 {
     return f0 + (1.0 - f0) * (m2 * m2 * m);
 }
 
-// The reflection over the straight-alpha surface (over fog) at union
-// coverage, still straight alpha: opacity never dims the reflection.
-fn fluid_reflection_composite(surface: vec4<f32>, reflection: vec3<f32>, fresnel: f32) -> vec4<f32> {
-    let coverage = fresnel + (1.0 - fresnel) * surface.a;
-    let rgb = (reflection * fresnel + surface.rgb * ((1.0 - fresnel) * surface.a))
-        / max(coverage, FLUID_REFLECTION_COVERAGE_EPSILON);
-    return vec4<f32>(rgb, coverage);
-}
-
 // The screen-space layer over the probe term, both over the surface (over
 // fog) at union coverage, still straight alpha. `fresnel` is F unshadowed
 // (Fresnel x the fog band), `shadow` the probe's capture-shadow weight s,
@@ -77,7 +68,8 @@ fn fluid_reflection_composite(surface: vec4<f32>, reflection: vec3<f32>, fresnel
 // share alone, so the screen-space contribution F x c x SSR is the same at
 // every s. IP rule (owner review to change, rendering_pipeline.md §7.3a): s
 // never gates, selects or weights the screen-space term. At c = 0 this is
-// `fluid_reflection_composite(surface, probe, fresnel * shadow)`.
+// the probe term alone at weight F x s, over the surface at union coverage:
+// opacity never dims either layer.
 fn fluid_reflection_layered_composite(surface: vec4<f32>, probe: vec3<f32>, shadow: f32,
                                       screen: vec4<f32>, fresnel: f32) -> vec4<f32> {
     let confidence = screen.a;

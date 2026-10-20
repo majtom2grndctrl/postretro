@@ -506,6 +506,8 @@ record. A pawn's first sample, a stale record and a forgotten pawn report nothin
 plays the last teleporter's `arrival_sound` at that point (`audio.md` §4); no cue message
 carries it.
 
+**Lower-body direction is derived per peer.** No heading or forward/backward classification crosses the wire; each peer folds travel against aim from the velocity it presents (`entity_model.md` §7b). The host's fixed tick owns its pawns' classification and the state it replicates. A connected client classifies each remote avatar from interpolated intrinsic velocity and the presented aim, selecting the matching state locally. A host state correction that names a backward state, or a forward state with a usable backward counterpart, overrides the client's classification for the correction's crossfade, so clip and legs agree. The host seat classifies the delayed sample against the tick's memory without writing it back. Inside the 75–105° band the two can disagree for one delay window; that is the same live-versus-delayed split the avatar's state already has.
+
 **Host-seat presentation follows the delayed sample.** The fixed tick's pose pass reads the
 live, already-teleported pawn, so after presenting, the host rewrites each client avatar's
 aim, body heading and pitch from the same delayed sample as its pose and re-probes its feet

@@ -39,8 +39,8 @@ use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::{
-    AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
-    RATE_MIN,
+    AnimationState, InterruptPolicy, LocomotionDirection, MeshAnimation, MeshComponent,
+    RATE_CHANGE_EPSILON, RATE_MAX, RATE_MIN,
 };
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::data_descriptors::{
@@ -2531,30 +2531,40 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
 }
 
 #[test]
-fn local_player_pose_inputs_use_camera_aim_and_movement_heading() {
+fn local_player_pose_inputs_use_camera_aim_and_folded_movement_heading() {
     let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, -0.4);
-    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
-    movement.velocity = Vec3::X * 3.0;
-    registry.set_component(pawn, movement).unwrap();
     registry.mark_local_player_pawn(pawn).unwrap();
+    let run = |registry: &mut EntityRegistry, velocity: Vec3| {
+        let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+        movement.velocity = velocity;
+        registry.set_component(pawn, movement).unwrap();
+        super::update_pose_inputs(
+            registry,
+            (-0.35, 1.1),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let mesh = registry.get_component::<MeshComponent>(pawn).unwrap();
+        (
+            mesh.pose_inputs.unwrap(),
+            mesh.animation.as_ref().unwrap().locomotion_direction,
+        )
+    };
 
-    super::update_pose_inputs(
-        &mut registry,
-        (-0.35, 1.1),
-        &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-    );
-
-    let inputs = registry
-        .get_component::<MeshComponent>(pawn)
-        .unwrap()
-        .pose_inputs
-        .unwrap();
+    // -X travel is yaw +π/2, about 27° off the camera aim: legs face travel.
+    let (inputs, direction) = run(&mut registry, Vec3::NEG_X * 3.0);
     assert!((inputs.aim_pitch + 0.35).abs() <= 1.0e-6);
     assert!((inputs.aim_yaw - 1.1).abs() <= 1.0e-6);
-    assert!((inputs.heading_yaw + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+    assert_eq!(direction, LocomotionDirection::Forward);
+
+    // +X travel backpedals: the legs keep facing +π/2 instead of turning to
+    // travel, and the pawn's direction memory records the backpedal.
+    let (inputs, direction) = run(&mut registry, Vec3::X * 3.0);
+    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5);
+    assert_eq!(direction, LocomotionDirection::Backward);
 }
 
 #[test]
@@ -2622,7 +2632,7 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
         .unwrap();
     registry.mark_local_player_pawn(local_pawn).unwrap();
     let mut remote_player_aims = HashMap::new();
-    remote_player_aims.insert(pawn, (-0.4, 1.2));
+    remote_player_aims.insert(pawn, (-0.4, -1.2));
 
     super::update_pose_inputs(
         &mut registry,
@@ -2639,8 +2649,26 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
         .pose_inputs
         .unwrap();
     assert!((inputs.aim_pitch + 0.4).abs() <= 1.0e-6);
-    assert!((inputs.aim_yaw - 1.2).abs() <= 1.0e-6);
+    assert!((inputs.aim_yaw + 1.2).abs() <= 1.0e-6);
     assert!((inputs.heading_yaw + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+
+    // The client turns to aim +1.2 while still travelling +X: a backpedal, so
+    // the legs face against travel rather than twisting the torso 160°.
+    remote_player_aims.insert(pawn, (-0.4, 1.2));
+    super::update_pose_inputs(
+        &mut registry,
+        (0.0, 0.0),
+        &remote_player_aims,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let inputs = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5);
 }
 
 /// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),

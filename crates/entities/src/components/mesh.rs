@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 
 pub use super::animation::{
     AnimStamp, AnimationState, DEFAULT_CROSSFADE_MS, FadeSourceKind, InterruptPolicy,
-    InterruptedOutgoing, MeshAnimation, RATE_CHANGE_EPSILON, RATE_MAX, RATE_MIN, RestartResult,
-    SwitchResult, resolve_pending_animation_stamps, restart_animation_clip, switch_animation_state,
+    InterruptedOutgoing, LocomotionDirection, MeshAnimation, RATE_CHANGE_EPSILON, RATE_MAX,
+    RATE_MIN, RestartResult, SwitchResult, resolve_pending_animation_stamps,
+    restart_animation_clip, switch_animation_state,
 };
 
 /// Load-resolved location of a descriptor-authored attachment socket on this

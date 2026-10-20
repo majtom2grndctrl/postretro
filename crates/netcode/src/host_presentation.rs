@@ -221,22 +221,31 @@ pub fn probe_presented_client_pawn_feet(
 /// pose pass reads the live command aim and velocity, which lead the delayed pose
 /// and would turn the body at the source before a teleport's cut reaches it. The
 /// pawn's transform yaw is its aim, and travel heading comes from the sample's
-/// player velocity, as a connected client presents a remote player.
+/// player velocity, as a connected client presents a remote player. The sample is
+/// classified forward or backward against the tick's stored direction without
+/// overwriting it: the fixed tick owns that memory and the state it selects.
 fn present_avatar_pose_inputs(registry: &mut EntityRegistry, pawn: EntityId, pose: &PresentedPose) {
     let (aim_yaw, _, _) = pose.transform.rotation.to_euler(glam::EulerRot::YXZ);
     if !aim_yaw.is_finite() {
         return;
     }
-    let heading_yaw = pose
-        .intrinsic_velocity
-        .filter(|velocity| velocity.is_finite())
-        .map_or(aim_yaw, |velocity| {
-            crate::sim::player_travel_heading_yaw(velocity, aim_yaw)
-        });
     if let Ok(ComponentValue::Mesh(mesh)) =
         registry.get_component_value_mut(pawn, ComponentKind::Mesh)
         && let Some(inputs) = mesh.pose_inputs.as_mut()
     {
+        let stored = mesh
+            .animation
+            .as_ref()
+            .map(|animation| animation.locomotion_direction)
+            .unwrap_or_default();
+        let heading_yaw = pose
+            .intrinsic_velocity
+            .filter(|velocity| velocity.is_finite())
+            .map_or(aim_yaw, |velocity| {
+                let direction =
+                    crate::sim::classify_locomotion_direction(velocity, aim_yaw, stored);
+                crate::sim::player_travel_heading_yaw(velocity, direction, aim_yaw)
+            });
         inputs.aim_yaw = aim_yaw;
         inputs.heading_yaw = heading_yaw;
         if pose.aim_pitch.is_finite() {
@@ -262,6 +271,7 @@ mod tests {
     use super::*;
     use glam::{Quat, Vec3};
     use postretro_entities::EntityId;
+    use postretro_entities::components::mesh::LocomotionDirection;
     use postretro_net::wire::NetworkId;
 
     const POS_EPS: f32 = 1e-4;
@@ -272,6 +282,65 @@ mod tests {
             rotation: Quat::from_rotation_y(yaw),
             scale: Vec3::ONE,
         }
+    }
+
+    #[test]
+    fn host_avatar_heading_folds_a_delayed_backpedal_against_the_stored_direction() {
+        use postretro_foundation::PoseInputs;
+        use std::f32::consts::FRAC_PI_2;
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(pose_at(0.0, 0.0));
+        let mut mesh = MeshComponent::animated(
+            "avatar".into(),
+            postretro_entities::components::mesh::MeshAnimation::new(
+                Default::default(),
+                "idle".into(),
+            ),
+        );
+        mesh.pose_inputs = Some(PoseInputs::default());
+        registry.set_component(pawn, mesh).unwrap();
+        let present = |registry: &mut EntityRegistry, velocity: Vec3| {
+            let pose = PresentedPose {
+                transform: pose_at(0.0, 0.0),
+                source: crate::interpolation::PoseSource::Interpolated,
+                holds_newest: false,
+                speed_xz: velocity.length(),
+                horizontal_velocity: velocity,
+                intrinsic_velocity: Some(velocity),
+                aim_pitch: 0.0,
+            };
+            present_avatar_pose_inputs(registry, pawn, &pose);
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .pose_inputs
+                .unwrap()
+                .heading_yaw
+        };
+
+        // +Z travel against a -Z aim: the legs face aim.
+        assert!(present(&mut registry, Vec3::Z * 5.0).abs() < 1.0e-5);
+        // A 90° strafe takes the fixed tick's stored direction: forward faces
+        // travel, a stored backpedal folds it. Presenting never rewrites memory.
+        assert!((present(&mut registry, Vec3::X * 5.0) + FRAC_PI_2).abs() < 1.0e-5);
+        let mut mesh = registry
+            .get_component::<MeshComponent>(pawn)
+            .unwrap()
+            .clone();
+        mesh.animation.as_mut().unwrap().locomotion_direction = LocomotionDirection::Backward;
+        registry.set_component(pawn, mesh).unwrap();
+        assert!((present(&mut registry, Vec3::X * 5.0) - FRAC_PI_2).abs() < 1.0e-5);
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .locomotion_direction,
+            LocomotionDirection::Backward
+        );
     }
 
     /// Spawn a registered, owned client pawn at `pose` and return its ids.
@@ -414,7 +483,11 @@ mod tests {
             mesh.pose_inputs = Some(PoseInputs {
                 aim_pitch: 0.1 * f32::from(generation + 1),
                 aim_yaw: yaw,
-                heading_yaw: crate::sim::player_travel_heading_yaw(travel, yaw),
+                heading_yaw: crate::sim::player_travel_heading_yaw(
+                    travel,
+                    LocomotionDirection::Forward,
+                    yaw,
+                ),
                 ..PoseInputs::default()
             });
             registry.set_component(pawn, mesh).unwrap();
@@ -433,9 +506,11 @@ mod tests {
                 .pose_inputs
                 .unwrap()
         };
-        let source_heading = crate::sim::player_travel_heading_yaw(Vec3::NEG_Z, 0.0);
+        let source_heading =
+            crate::sim::player_travel_heading_yaw(Vec3::NEG_Z, LocomotionDirection::Forward, 0.0);
         let arrival_heading = crate::sim::player_travel_heading_yaw(
             Quat::from_rotation_y(FRAC_PI_2) * Vec3::NEG_Z,
+            LocomotionDirection::Forward,
             0.0,
         );
         // current_tick 5: the delayed target spans ticks 2..3, still the source.

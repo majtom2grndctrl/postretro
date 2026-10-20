@@ -108,7 +108,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "animations?",
             "MeshAnimationStates",
-            "Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh.",
+            "Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. On a player descriptor the engine selects locomotion by state name: `defaultState` when still; `walk_forward` (or `walk`) and `walk_backward` at walking speed; `run_forward` (or `run`) and `run_backward` once speed passes the midpoint between `movement.ground.speed.walk` and `.run`, with a band either side so the clip does not flicker. Backward states play when travel points behind the aim, with the legs kept facing forward; a missing or unresolved backward state plays its tier's forward state instead.",
         )
         .field(
             "defaultState?",

@@ -203,6 +203,52 @@ defineEntity({
 });
 ```
 
+### Player locomotion animation states
+
+A player descriptor's `components.mesh.animations` drives its third-person body
+through state names the engine recognizes. You do not switch these states yourself;
+the engine picks one each tick from the player's speed and direction.
+
+| State | Plays when |
+|-------|------------|
+| `defaultState` | The player stands still. |
+| `walk_forward` (or `walk`) | Moving forward at walking speed. Required for any engine-driven locomotion. |
+| `walk_backward` | Backpedalling at walking speed. |
+| `run_forward` (or `run`) | Moving forward nearer run pace than walk pace, e.g. while sprinting. |
+| `run_backward` | Backpedalling nearer run pace than walk pace. |
+
+Travel more than 105° from where the player aims counts as backpedalling; travel
+within 75° counts as forward, and anything in between keeps the previous choice.
+While backpedalling the legs keep facing forward and the backward state plays, so
+the upper body never twists more than 105° from the legs. If a backward state is
+missing, or names a clip the model lacks, the same tier's forward state plays
+instead: the player backpedals with a forward stride, a visible reminder that the
+backward clip is still owed. Without a run state, the walk states cover every
+speed. The switch to the run states happens halfway between
+`movement.ground.speed.walk` and `movement.ground.speed.run`, with a margin either
+side so a player hovering near that speed does not flicker between clips. Each
+state scales its playback rate against its own `travelSpeed`.
+
+```typescript
+defineEntity({
+  canonicalName: "player",
+  components: {
+    mesh: {
+      model: "models/exo_red/model.gltf",
+      animations: {
+        idle: { clip: "idle", loop: true },
+        walk_forward: { clip: "walk_forward", loop: true, travelSpeed: 7 },
+        walk_backward: { clip: "walk_backward", loop: true, travelSpeed: 7 },
+        run_forward: { clip: "run_forward", loop: true, travelSpeed: 11 },
+        run_backward: { clip: "run_backward", loop: true, travelSpeed: 11 },
+      },
+      defaultState: "idle",
+    },
+    // movement, health, ...
+  },
+});
+```
+
 ---
 
 ## `components.health`

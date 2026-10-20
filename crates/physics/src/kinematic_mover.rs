@@ -16,6 +16,10 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 mod auto_close;
 mod blocking;
 mod command;
+#[cfg(test)]
+mod pin_test_fixtures;
+#[cfg(test)]
+mod pin_tests;
 
 pub use auto_close::MoverAutoCloseTimers;
 pub use blocking::{MoverBlockingState, MoverEventKind, run_mover_blocking_pass};

@@ -1,7 +1,7 @@
 # movement--state-view-pose — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 8aa2f18
 
 ## Corrections
@@ -76,5 +76,6 @@ read at: 8aa2f18
 - Preflight: `cargo fmt --check` ✓; `cargo clippy -- -D warnings` ✓ (plus `--all-targets` on postretro, scripting-core, sim, netcode, foundation ✓); `cargo test --no-fail-fast` 11,760 passed, 1 failed — `postretro-ui` `text::tests::runtime_loaded_font_bytes_register_family`, which asserts JetBrains Mono is not a system font; this container installs it in `/usr/share/fonts`. Untouched by this branch; environmental. `cargo check --release` ✓; `crate-graph --check` ✓.
 - Review panel (2 slices: correctness tracer, adversarial tester, contract verifier on opus; hygiene + drift ×2 on sonnet): no 🔴. Acted on: focus held while a mover landing is missing; focus line decoupled from the view-feel scale; three tests that could not fail strengthened or removed; P18 same-frame clear-and-join test; real impulse kick under the clamps; `mover_entity` moved to `runtime_movers`; comment, docs and typedef drift. One loop; the fixes were retested focused and in the full gate.
 - Left as nits: a JS class getter (non-enumerable, inherited) on a pose row is skipped where Luau `__index` rejects; numeric-like JS keys report an unknown field where Luau reports "must be an object"; the `eyeDrop` range error names its f32 ceiling.
-- Durable context: `context/lib/movement.md` §1 and `player_options.md` §5 still describe the channel as decided, not built — rewritten at landing.
+- After merging `origin/main` (27 commits, no conflicts, none touching this branch's files): `cargo test --no-fail-fast` 11,799 passed, 2 failed — the environmental `postretro-ui` font test above, and `scripting-core` `sounds::the_positional_sound_fixture_is_identical_in_both_authorings`, a temp-directory race in a test this branch does not touch (3/3 green on rerun; follow-up task queued).
+- Durable context: `context/lib/movement.md` §1 rewritten for the built channel, `player_options.md` §5 and the `index.md` router updated (`2e18f5f`).
 

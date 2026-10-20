@@ -176,11 +176,11 @@ fn the_dev_player_authors_a_pose_and_no_vault_kick() {
                     eye_drop: 0.0,
                     fov: -30.0,
                 },
-                ease_in: 0.33,
-                ease_out: 0.33,
+                ease_in: 0.5,
+                ease_out: 0.3,
                 ledge_focus: Some(LedgeFocus {
-                    strength: 0.55,
-                    max_pitch: 45.0,
+                    strength: 0.95,
+                    max_pitch: 89.0,
                 }),
             }),
         })

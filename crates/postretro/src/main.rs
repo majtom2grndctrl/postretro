@@ -10385,7 +10385,7 @@ mod tests {
                 "optionsTabGraphics",
                 "graphics",
                 "optionsPanelGraphics",
-                12,
+                14,
                 &[
                     "optionsWindowed",
                     "optionsBorderless",
@@ -10400,6 +10400,12 @@ mod tests {
                     "optionsFogHigh",
                     "optionsSurfaceDepthOff",
                     "optionsSurfaceDepthOn",
+                    "optionsReflectionOff",
+                    "optionsReflectionLow",
+                    "optionsReflectionMedium",
+                    "optionsReflectionHigh",
+                    "optionsReflectionVeryHigh",
+                    "optionsReflectionUltra",
                     "optionsRenderResolutionAuto",
                     "optionsRenderResolutionNative",
                     "optionsRenderResolutionHalf",
@@ -10622,30 +10628,40 @@ mod tests {
 
         let graphics_panel = find_by_id(&options_tree.root, "optionsPanelGraphics")
             .expect("graphics panel is in the options tree");
-        for (id, value) in [
-            ("optionsWindowed", "windowed"),
-            ("optionsBorderless", "borderless"),
-            ("optionsExclusive", "exclusive"),
+        for (id, slot, value) in [
+            ("optionsWindowed", "options.windowMode", "windowed"),
+            ("optionsBorderless", "options.windowMode", "borderless"),
+            ("optionsExclusive", "options.windowMode", "exclusive"),
+            ("optionsReflectionOff", "options.reflectionQuality", "off"),
+            ("optionsReflectionLow", "options.reflectionQuality", "low"),
+            (
+                "optionsReflectionMedium",
+                "options.reflectionQuality",
+                "medium",
+            ),
+            ("optionsReflectionHigh", "options.reflectionQuality", "high"),
+            (
+                "optionsReflectionVeryHigh",
+                "options.reflectionQuality",
+                "very_high",
+            ),
+            (
+                "optionsReflectionUltra",
+                "options.reflectionQuality",
+                "ultra",
+            ),
         ] {
-            let button = find_button(graphics_panel, id)
-                .unwrap_or_else(|| panic!("{id} is a window-mode radio button"));
+            let button =
+                find_button(graphics_panel, id).unwrap_or_else(|| panic!("{id} is a radio button"));
             assert_eq!(button.role, Some(Role::Radio));
             let checked = button
                 .checked
                 .as_ref()
                 .expect("radio exposes checked state");
             assert_eq!(button.bind.as_ref(), Some(checked));
-            assert_eq!(
-                checked.source,
-                BindSource::Slot {
-                    slot: "options.windowMode".into()
-                }
-            );
+            assert_eq!(checked.source, BindSource::Slot { slot: slot.into() });
             assert_eq!(checked.equals, Some(PredicateValue::String(value.into())));
-            assert_eq!(
-                button.on_press,
-                format!("frontend.options.windowMode.{value}")
-            );
+            assert_eq!(button.on_press, format!("frontend.{slot}.{value}"));
             let reaction = manifest
                 .reactions
                 .iter()
@@ -10657,7 +10673,7 @@ mod tests {
             assert_eq!(primitive.primitive, "setState");
             assert_eq!(
                 primitive.args,
-                serde_json::json!({ "slot": "options.windowMode", "value": value })
+                serde_json::json!({ "slot": slot, "value": value })
             );
         }
         for (id, action) in [
@@ -12118,6 +12134,11 @@ mod tests {
             Some(&SlotValue::Enum("windowed".to_string())),
             "window-mode working copy defaults to the windowed enum",
         );
+        assert_eq!(
+            snapshot.get("options.reflectionQuality"),
+            Some(&SlotValue::Enum("high".to_string())),
+            "reflection-quality working copy defaults to the high enum",
+        );
         for slot in [
             "window.displayModeWidth",
             "window.displayModeHeight",
@@ -12211,7 +12232,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            62,
+            63,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

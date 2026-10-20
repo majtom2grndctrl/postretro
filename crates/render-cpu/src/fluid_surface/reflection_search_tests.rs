@@ -19,8 +19,8 @@ use super::fixtures::{
 use super::*;
 use crate::fluid_surface::reflection::{
     FLUID_REFLECTION_RAY_MIN_Y, FluidReflectionFragment, FluidReflectionLights,
-    reflection_above_horizon, reflection_box_hit, reflection_fragment, reflection_fresnel,
-    reflection_lookup, reflection_mirror,
+    REFLECTION_SCREEN_MISS, reflection_above_horizon, reflection_box_hit, reflection_fragment,
+    reflection_fresnel, reflection_lookup, reflection_mirror,
 };
 use crate::fluid_surface::reflection_style::{
     FLUID_REFLECTION_RIM_INSET, FLUID_REFLECTION_RIM_INSET_MIN, FLUID_REFLECTION_STYLE_PIXEL,
@@ -418,6 +418,7 @@ fn water_outside_an_authored_box_hidden_behind_an_occluder_draws_no_term() {
         assert_eq!(result.weight, 0.0, "eye {eye}");
         let out = reflection_fragment(
             surface,
+            REFLECTION_SCREEN_MISS,
             &smooth_fragment(eye, fragment),
             &[probe],
             TILE,
@@ -502,6 +503,7 @@ fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
     // is the cell's Fresnel weight at the search's weight.
     let out = reflection_fragment(
         Vec4::new(0.1, 0.2, 0.3, 0.0),
+        REFLECTION_SCREEN_MISS,
         &fragment,
         &[probe],
         TILE,
@@ -873,6 +875,7 @@ fn a_pixel_cell_tilted_past_a_grazing_view_searches_above_the_horizon() {
     let taps = RefCell::new(Vec::new());
     reflection_fragment(
         Vec4::new(0.1, 0.2, 0.3, 0.6),
+        REFLECTION_SCREEN_MISS,
         &fragment,
         &[probe],
         TILE,
@@ -1028,6 +1031,7 @@ fn a_fragment_behind_the_pillar_draws_no_probe_term() {
         let surface = Vec4::new(0.1, 0.2, 0.3, 0.6);
         let out = reflection_fragment(
             surface,
+            REFLECTION_SCREEN_MISS,
             &smooth_fragment(eye, fragment),
             &[probe],
             TILE,
@@ -1270,6 +1274,7 @@ fn every_fragment_of_a_pixel_cell_reads_one_search() {
         fragment.style = FLUID_REFLECTION_STYLE_PIXEL;
         reflection_fragment(
             Vec4::new(0.1, 0.2, 0.3, 0.6),
+            REFLECTION_SCREEN_MISS,
             &fragment,
             &[probe],
             TILE,

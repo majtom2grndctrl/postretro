@@ -1,7 +1,9 @@
-// Tests: the reflection style reference. Acceptance row 26: every fragment
-// of one pixel-style water texel cell reads one reflection sample, cells with
-// different displayed offsets read different directions, smooth varies per
-// fragment, and drift and a declared wave move no cell's reflection.
+// Tests: the reflection style reference. Every fragment of one pixel-style
+// water texel cell reads one reflection sample, cells with different displayed
+// offsets read different directions, smooth varies per fragment, drift and a
+// declared wave move no cell's reflection, and the reflection pass marches one
+// ray per pixel cell and one per smooth fragment.
+// See: context/lib/testing_guide.md
 
 use std::cell::Cell;
 
@@ -13,7 +15,8 @@ use postretro_level_format::reflection_probes::{
 use super::*;
 use crate::fluid_surface::motion::{FluidWaveParams, displayed_offset, warped_texel_uv};
 use crate::fluid_surface::reflection::{
-    FluidReflectionFragment, FluidReflectionLights, reflection_fragment,
+    FluidReflectionFragment, FluidReflectionLights, REFLECTION_SCREEN_MISS,
+    reflection_above_horizon, reflection_fragment, reflection_mirror,
 };
 use crate::frame_uniforms::LightTermMask;
 
@@ -99,6 +102,7 @@ fn sampled(fragment: &FluidReflectionFragment) -> (Vec2, Vec4) {
     let seen = Cell::new(None);
     let out = reflection_fragment(
         Vec4::new(0.2, 0.3, 0.4, 0.6),
+        REFLECTION_SCREEN_MISS,
         fragment,
         &[room_probe()],
         TILE,
@@ -209,6 +213,80 @@ fn smooth_style_varies_per_fragment_within_one_cell() {
         );
         assert_eq!(point.position, fragment.world_position);
         assert_eq!(point.normal, Vec3::Y);
+    }
+}
+
+/// The ray the reflection pass marches for `fragment`, as `fs_reflection`
+/// builds it: from the style's point (`reflection_point`, the probe term's
+/// own), the eye seen from there mirrored about the point's normal and kept
+/// above the horizon, as the probe term's sample mirrors it.
+fn marched_ray(fragment: &FluidReflectionFragment) -> (Vec3, Vec3) {
+    let (box_min, box_max) = probe_box();
+    let point = reflection_point(
+        fragment.style,
+        fragment.texel_uv,
+        fragment.world_position,
+        fragment.outward.normalize(),
+        fragment.axes,
+        fragment.time,
+        fragment.texels_per_pixel,
+        box_min,
+        box_max,
+        capture(),
+    );
+    let view = (fragment.camera - point.position).normalize();
+    (
+        point.position,
+        reflection_above_horizon(reflection_mirror(view, point.normal)),
+    )
+}
+
+// The reflection pass's ray: pixel style marches one ray per water texel
+// cell, every fragment of the cell starting at the cell point about the
+// cell's normal, whatever its own position or perspective footprint; smooth
+// marches one per fragment, from the fragment about the flat normal.
+#[test]
+fn the_reflection_pass_marches_one_ray_per_pixel_cell_and_one_per_smooth_fragment() {
+    let time = 3.3;
+    for wanted in [
+        (|offset: IVec2| offset == IVec2::ZERO) as fn(IVec2) -> bool,
+        |offset| offset.x != 0 && offset.y != 0,
+    ] {
+        let cell = cell_where(time, wanted);
+        let fragments = cell_fragments(FLUID_REFLECTION_STYLE_PIXEL, cell, time);
+        let (origin, direction) = marched_ray(&fragments[0]);
+        for fragment in &fragments[1..] {
+            assert_eq!(motion_cell(fragment), cell);
+            let (other_origin, other_direction) = marched_ray(fragment);
+            assert!(
+                other_origin.abs_diff_eq(origin, 1.0e-5),
+                "cell {cell}: origin {other_origin} vs {origin}"
+            );
+            assert!(
+                other_direction.abs_diff_eq(direction, 1.0e-5),
+                "cell {cell}: direction {other_direction} vs {direction}"
+            );
+        }
+
+        let smooth = cell_fragments(FLUID_REFLECTION_STYLE_SMOOTH, cell, time);
+        let rays: Vec<(Vec3, Vec3)> = smooth.iter().map(marched_ray).collect();
+        for (fragment, (origin, _)) in smooth.iter().zip(&rays) {
+            assert!(
+                origin.abs_diff_eq(fragment.world_position, 1.0e-5),
+                "smooth ray starts at the fragment: {origin} vs {}",
+                fragment.world_position
+            );
+        }
+        for (i, (origin, direction)) in rays.iter().enumerate() {
+            for (other_origin, other_direction) in &rays[i + 1..] {
+                assert!(
+                    origin.distance(*other_origin) > 1.0e-3
+                        && direction.distance(*other_direction) > 1.0e-4,
+                    "smooth marches per fragment: {origin} {direction} vs \
+                     {other_origin} {other_direction}"
+                );
+            }
+        }
     }
 }
 

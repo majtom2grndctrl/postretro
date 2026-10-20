@@ -13,7 +13,7 @@ use std::path::Path;
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
 use super::resolved::{OsPreferences, ResolvedAccessibility};
-use super::{FogQuality, PlayerOptions, RenderResolution, SurfaceDepthQuality};
+use super::{FogQuality, PlayerOptions, ReflectionQuality, RenderResolution, SurfaceDepthQuality};
 use crate::input::InputSystem;
 use accessibility::AccessibilitySync;
 use save_schedule::SaveSchedule;
@@ -22,21 +22,23 @@ pub(crate) use top_level::VIEW_FEEL_SCALE_SLOT;
 #[cfg(test)]
 use top_level::{
     CROUCH_MODE_SLOT, FOG_QUALITY_SLOT, INVERT_Y_SLOT, MOUSE_SENSITIVITY_SLOT,
-    RENDER_RESOLUTION_SLOT, SHADOW_QUALITY_SLOT, SURFACE_DEPTH_QUALITY_SLOT,
+    REFLECTION_QUALITY_SLOT, RENDER_RESOLUTION_SLOT, SHADOW_QUALITY_SLOT,
+    SURFACE_DEPTH_QUALITY_SLOT,
 };
 
 /// Live subsystem effects produced by accepted option-slot changes.
 ///
 /// Input effects are applied by the bridge before this report is returned.
-/// Fog, Surface Depth and render resolution stay typed until the app-side
-/// render-profile chokepoint translates them into renderer parameters. Shadow
-/// intentionally has no live effect.
+/// Fog, Surface Depth, reflections and render resolution stay typed until the
+/// app-side render-profile chokepoint translates them into renderer
+/// parameters. Shadow intentionally has no live effect.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct OptionsApplyEffects {
     pub(crate) mouse_sensitivity: Option<f32>,
     pub(crate) invert_y: Option<bool>,
     pub(crate) fog_quality: Option<FogQuality>,
     pub(crate) surface_depth_quality: Option<SurfaceDepthQuality>,
+    pub(crate) reflection_quality: Option<ReflectionQuality>,
     pub(crate) render_resolution: Option<RenderResolution>,
     pub(crate) window_mode: Option<super::WindowMode>,
     /// The confirm/cancel swap, when the player changed it: the binding table

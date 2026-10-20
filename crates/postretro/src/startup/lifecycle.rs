@@ -682,19 +682,26 @@ impl App {
             animated_baked_descriptor_indices,
             fgd_sample_float_count,
         ) = {
-            let (shadow_quality, surface_depth_quality) = {
+            let (shadow_quality, surface_depth_quality, reflection_quality) = {
                 let options = &self
                     .session
                     .as_ref()
                     .expect("session installed before level install")
                     .player_options;
-                (options.shadow_quality, options.surface_depth_quality)
+                (
+                    options.shadow_quality,
+                    options.surface_depth_quality,
+                    options.reflection_quality,
+                )
             };
             self.configure_player_shadow_quality(shadow_quality);
             // Before `install_textures`, so every material this level builds is
             // packed at the player's tier rather than built at the default and
             // rewritten.
             self.apply_player_surface_depth_quality(surface_depth_quality);
+            // Before the fluid install, which sizes the reflection target from
+            // the kept tier. The tier the renderer already holds is a no-op.
+            self.apply_player_reflection_quality(reflection_quality);
             let renderer = match self.renderer.as_mut() {
                 Some(r) => r,
                 None => {

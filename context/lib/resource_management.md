@@ -377,7 +377,7 @@ Renderer uses handles to bind textures and buffers during draw calls. If a handl
 
 - **Import-time model normalization.** Models render at their authored glTF scale — no fit-to-size, unit conversion, or auto-rescale at load. Author geometry at final world size (§7).
 - **WAD file support.** All textures are PNGs. No Quake/Half-Life WAD import or export.
-- **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras. Reflection probes capture at compile time (§5).
+- **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras. Reflection probes capture at compile time (§5). Fluid screen-space reflections march the frame already drawn and render no second view (`rendering_pipeline.md` §7.3a).
 - **GPU asset hot-reload.** Textures and models are loaded once per level. Descriptor tuning may refresh, but visual asset path changes wait for the next level install.
 - **Procedural textures.** No noise-based or shader-generated textures. All surfaces use authored PNGs.
 - **Material texture streaming / virtual textures.** All material textures for a level load upfront, with no partial or on-demand loading. Baked lighting (SH clusters, lightmap and shadowmask cell blocks) does stream; see §8.2.

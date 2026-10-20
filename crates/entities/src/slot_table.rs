@@ -812,6 +812,7 @@ mod tests {
             "options.shadowQuality",
             "options.fogQuality",
             "options.surfaceDepthQuality",
+            "options.reflectionQuality",
             "options.renderResolution",
         ] {
             let slot = table.get(name).expect("engine option slot exists");
@@ -849,6 +850,30 @@ mod tests {
             table.get("options.surfaceDepthQuality").unwrap().value,
             Some(SlotValue::Enum("on".into())),
             "the feature ships on; the switch is an escape hatch",
+        );
+        // Reflections put Off and the probe-only Low below the screen-space
+        // tiers and default to High; the player picks cost, never the
+        // author's style.
+        assert_eq!(
+            table
+                .get("options.reflectionQuality")
+                .unwrap()
+                .schema
+                .slot_type,
+            SlotType::Enum {
+                values: vec![
+                    "off".into(),
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                    "very_high".into(),
+                    "ultra".into(),
+                ]
+            }
+        );
+        assert_eq!(
+            table.get("options.reflectionQuality").unwrap().value,
+            Some(SlotValue::Enum("high".into())),
         );
         assert_eq!(
             table

@@ -89,6 +89,10 @@ mod fluid_baked_frame_test;
 #[cfg(test)]
 mod fluid_baked_frame_test_fixtures;
 #[cfg(test)]
+mod fluid_reflection_frame_test;
+#[cfg(test)]
+mod fluid_reflection_frame_test_fixtures;
+#[cfg(test)]
 mod fluid_surface_frame_test;
 mod geometry_install_marks;
 mod geometry_ranges;

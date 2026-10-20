@@ -1,0 +1,24 @@
+{
+  "map": "content/dev/maps/reflection-probes-test.prl",
+  "camera": {
+    "position": [
+      -2.6416,
+      1.6,
+      -25.4
+    ],
+    "yaw_deg": 40.0,
+    "pitch_deg": -20.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    1536,
+    960
+  ],
+  "output": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-ssr-reflections/metal/runs/oblique-probes-auto-high.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-ssr-reflections/metal/runs/quick-oblique-probes-auto-high-r1.report.json",
+    "warmup_frames": 120,
+    "sample_frames": 360
+  },
+  "reflection_quality": "high"
+}

@@ -1,0 +1,8 @@
+# Gzipped xctrace exports (re-reducible, large) and per-run byproducts.
+raw/
+runs/*.png
+runs/*.log
+runs/*.trace-status.txt
+*.trace/
+*-gpu.xml
+__pycache__/

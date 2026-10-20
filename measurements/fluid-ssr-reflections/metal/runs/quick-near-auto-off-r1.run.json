@@ -1,0 +1,340 @@
+{
+  "label": "quick-near-auto-off-r1",
+  "arm": "near-auto-off",
+  "spec": "near-auto:off",
+  "round": 1,
+  "pose": "near",
+  "res": "auto",
+  "config": "off",
+  "quality": "off",
+  "style": null,
+  "march": null,
+  "reflection_expected": 0,
+  "map": "content/dev/maps/e24-environment-test.prl",
+  "camera": {
+    "position": [
+      -4.8768,
+      1.6,
+      -44.2976
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": -89.0,
+    "fov_deg": 100.0
+  },
+  "warmup_frames": 120,
+  "sample_frames": 360,
+  "resolution": [
+    1536,
+    960
+  ],
+  "command": [
+    "xcrun",
+    "xctrace",
+    "record",
+    "--template",
+    "Metal System Trace",
+    "--output",
+    "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/fluid-ssr-reflections-traces/quick-near-auto-off-r1.trace",
+    "--no-prompt",
+    "--target-stdout",
+    "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-ssr-reflections/metal/runs/quick-near-auto-off-r1.log",
+    "--env",
+    "RUST_LOG=info",
+    "--env",
+    "POSTRETRO_SH_STREAMING=sync-proof",
+    "--launch",
+    "--",
+    "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/7c4738f3-5c98-40f7-a76f-fe5b9b27ed9f/scratchpad/bin/postretro",
+    "--capture",
+    "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-ssr-reflections/metal/runs/quick-near-auto-off-r1.scene.json"
+  ],
+  "started_utc": "2026-10-20T17:26:27Z",
+  "problems": [
+    "xctrace export failed: "
+  ],
+  "anomalies": [],
+  "pre_launch": {
+    "Core Clock(MHz)": 0,
+    "Memory Clock(MHz)": 190,
+    "Temperature(C)": 70,
+    "Total Power(W)": 5,
+    "GPU Activity(%)": 0,
+    "Fan Speed(RPM)": 0,
+    "vramFreeBytes": 1557245952,
+    "inUseVidMemoryBytes": 1405292544
+  },
+  "xctrace_exit": 0,
+  "elapsed_s": 49.2,
+  "clock": {
+    "basis": "busy",
+    "samples": 9,
+    "samples_total": 19,
+    "clock_mhz": {
+      "min": 528,
+      "median": 839,
+      "max": 1044
+    },
+    "temp_c": {
+      "min": 76,
+      "median": 78,
+      "max": 78
+    },
+    "power_w": {
+      "min": 21,
+      "median": 25,
+      "max": 31
+    },
+    "activity_pct": {
+      "min": 64,
+      "median": 77,
+      "max": 85
+    },
+    "vram_free_mb": {
+      "min": 900,
+      "median": 1485,
+      "max": 1485
+    }
+  },
+  "gpu_state_samples": [
+    {
+      "t": 0.0,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 71,
+      "Total Power(W)": 5,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1405292544
+    },
+    {
+      "t": 0.7,
+      "Core Clock(MHz)": 67,
+      "Memory Clock(MHz)": 450,
+      "Temperature(C)": 71,
+      "Total Power(W)": 9,
+      "GPU Activity(%)": 11,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1285636096
+    },
+    {
+      "t": 1.23,
+      "Core Clock(MHz)": 58,
+      "Memory Clock(MHz)": 706,
+      "Temperature(C)": 72,
+      "Total Power(W)": 12,
+      "GPU Activity(%)": 10,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1285443584
+    },
+    {
+      "t": 1.76,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 200,
+      "Temperature(C)": 72,
+      "Total Power(W)": 5,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1283342336
+    },
+    {
+      "t": 2.38,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 192,
+      "Temperature(C)": 71,
+      "Total Power(W)": 5,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1282596864
+    },
+    {
+      "t": 3.04,
+      "Core Clock(MHz)": 13,
+      "Memory Clock(MHz)": 332,
+      "Temperature(C)": 72,
+      "Total Power(W)": 6,
+      "GPU Activity(%)": 2,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1277657088
+    },
+    {
+      "t": 3.57,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 192,
+      "Temperature(C)": 71,
+      "Total Power(W)": 5,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1279873024
+    },
+    {
+      "t": 4.1,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 192,
+      "Temperature(C)": 72,
+      "Total Power(W)": 5,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1279496192
+    },
+    {
+      "t": 4.63,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 192,
+      "Temperature(C)": 71,
+      "Total Power(W)": 5,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557245952,
+      "inUseVidMemoryBytes": 1279954944
+    },
+    {
+      "t": 5.33,
+      "Core Clock(MHz)": 15,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 72,
+      "Total Power(W)": 6,
+      "GPU Activity(%)": 1,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 1557237760,
+      "inUseVidMemoryBytes": 1287909376
+    },
+    {
+      "t": 5.86,
+      "Core Clock(MHz)": 839,
+      "Memory Clock(MHz)": 992,
+      "Temperature(C)": 76,
+      "Total Power(W)": 25,
+      "GPU Activity(%)": 69,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1898778624
+    },
+    {
+      "t": 6.4,
+      "Core Clock(MHz)": 787,
+      "Memory Clock(MHz)": 994,
+      "Temperature(C)": 77,
+      "Total Power(W)": 24,
+      "GPU Activity(%)": 64,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1895522304
+    },
+    {
+      "t": 6.93,
+      "Core Clock(MHz)": 1044,
+      "Memory Clock(MHz)": 1244,
+      "Temperature(C)": 77,
+      "Total Power(W)": 31,
+      "GPU Activity(%)": 84,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1895018496
+    },
+    {
+      "t": 7.65,
+      "Core Clock(MHz)": 612,
+      "Memory Clock(MHz)": 994,
+      "Temperature(C)": 78,
+      "Total Power(W)": 22,
+      "GPU Activity(%)": 80,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1892569088
+    },
+    {
+      "t": 8.18,
+      "Core Clock(MHz)": 528,
+      "Memory Clock(MHz)": 994,
+      "Temperature(C)": 78,
+      "Total Power(W)": 21,
+      "GPU Activity(%)": 85,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1893183488
+    },
+    {
+      "t": 8.72,
+      "Core Clock(MHz)": 855,
+      "Memory Clock(MHz)": 994,
+      "Temperature(C)": 78,
+      "Total Power(W)": 25,
+      "GPU Activity(%)": 66,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1893183488
+    },
+    {
+      "t": 9.26,
+      "Core Clock(MHz)": 646,
+      "Memory Clock(MHz)": 994,
+      "Temperature(C)": 77,
+      "Total Power(W)": 22,
+      "GPU Activity(%)": 77,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1894490112
+    },
+    {
+      "t": 9.97,
+      "Core Clock(MHz)": 930,
+      "Memory Clock(MHz)": 994,
+      "Temperature(C)": 78,
+      "Total Power(W)": 27,
+      "GPU Activity(%)": 70,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1894490112
+    },
+    {
+      "t": 10.51,
+      "Core Clock(MHz)": 934,
+      "Memory Clock(MHz)": 994,
+      "Temperature(C)": 78,
+      "Total Power(W)": 28,
+      "GPU Activity(%)": 78,
+      "Fan Speed(RPM)": 0,
+      "vramFreeBytes": 944410624,
+      "inUseVidMemoryBytes": 1893638144
+    }
+  ],
+  "locked_seen": false,
+  "screensaver_seen": false,
+  "foreign_processes_seen": [],
+  "adapter": {
+    "name": "AMD Radeon Pro 5300M",
+    "backend": "Metal",
+    "device_type": "DiscreteGpu"
+  },
+  "cpu_completion_median_ms": 8.640686,
+  "capture": {
+    "output": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-ssr-reflections/metal/runs/near-auto-off.png",
+    "resolution": [
+      1536,
+      960
+    ],
+    "camera": {
+      "position": [
+        -4.8768,
+        1.6,
+        -44.2976
+      ],
+      "yaw_deg": 0.0,
+      "pitch_deg": -89.0,
+      "fov_deg": 100.0
+    },
+    "force_full_resident_sh_compose": false,
+    "animation_time_seconds": 8.0
+  },
+  "engine_revision": "af8bfef61c643c48802a3f9569577581816fbfc8",
+  "machine_state_ok": true,
+  "valid": false
+}

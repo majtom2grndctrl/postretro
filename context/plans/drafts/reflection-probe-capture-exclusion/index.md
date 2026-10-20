@@ -3,45 +3,35 @@
 Brief · resumable · reads: `context/lib/resource_management.md` §5 · `rendering_pipeline.md` §7.3a · `build_pipeline.md` §Source-format neutrality, §Custom FGD, §Compiler pipeline, §PRL section IDs, §Build Cache · `plans/done/reflection-probes/` · `plans/in-progress/fluid-ssr-reflections/` · read at 9add6bb (main) and af8bfef (`origin/claude/fluid-ssr-reflections-0b3212`; facts marked **[SSR]** are not on main yet) · builds after `fluid-ssr-reflections` lands on main
 
 ## Problem
-The owner requested this capability as a follow-up to `fluid-ssr-reflections`. A probe captures every static brush from one point 2 mm above its water (`resource_management.md` §5.1). Small decorative geometry near the water, such as pillars, posts, trim, crates and steps, is either too small to resolve in a 128² tile or shows the wrong parallax from that single point. Once fluid SSR lands, SSR shows that geometry better: at screen resolution, with true parallax. The composite is `F·[c·SSR + (1−c)·s·Probe]`, so where SSR is confident (c = 1) it already replaces the probe's misplaced copy, and exclusion changes only pixels with c < 1. There it makes a deliberate trade: a small object's wrong-parallax copy, its capture shadow on the water and the double image in SSR's screen-edge fade band go away, and the object is absent wherever SSR misses. When this is done, each probe's bake leaves out static brushes that are small relative to that probe's water, so they reflect only through SSR. Room-scale walls, floors and ceilings stay in the probe, and so does anything whose underside the water reflects, which the camera cannot see and SSR cannot show. The size threshold scales with the water. A mapper can force a brush in or out with a `func_group` brush entity or a `switch`. The runtime is unchanged.
+The owner requested this capability as a follow-up to `fluid-ssr-reflections`. A probe captures every static brush from one point 2 mm above its water (`resource_management.md` §5.1). Small decorative geometry near the water, such as pillars, posts, trim, crates and steps, is either too small to resolve in a 128² tile or shows the wrong parallax from that single point. Once fluid SSR lands, SSR shows that geometry better: at screen resolution, with true parallax. Exclusion changes only pixels where SSR is not fully confident, trading the object's misplaced copy for its absence wherever SSR misses (`research.md` §Composite). When this is done, each probe's bake leaves out static brushes that are small relative to that probe's water, so they reflect only through SSR. Room-scale walls, floors and ceilings stay in the probe, and so does anything whose underside the water reflects, which the camera cannot see and SSR cannot show. The size threshold scales with the water. A mapper can force a brush in or out with a `func_group` brush entity or a `switch`.
 
 ## Decisions
-- **Bake time, primary rays only.** The filter skips excluded brushes' faces in capture primary rays only; the colour tile, distance tile and light share follow. Shadow rays (`SceneTracer::segment_clear`) and `fit_box` see the whole world, so captured walls keep excluded brushes' shadows and placement is unchanged. The filter is a per-call option on `SceneTracer`, never global.
-- **The runtime never knows.** No exclusion data reaches id 54, the renderer or render-cpu, and the id 54 format and version are unchanged. The exclusion changes only what the offline capture holds. The readings in both IP checks stand: Tencent claim 15 (no completion) and Microsoft US10586375B2 (no per-pixel technique choice) (`research.md` §IP).
+- **Bake time, primary rays only.** The filter skips excluded brushes' faces in capture primary rays only; the colour tile, distance tile and light share follow. Shadow rays (`SceneTracer::segment_clear`) and `fit_box` see the whole world, so captured walls keep excluded brushes' shadows and placement is unchanged.
+- **The runtime never knows.** No exclusion data reaches id 54, the renderer or render-cpu, and the id 54 format and version are unchanged. The readings in the `reflection-probes` and `fluid-ssr-reflections` IP checks stand: Tencent claim 15 (no completion) and Microsoft US10586375B2 (no reflected-toward-camera determination) (`research.md` §IP).
 - **Water width W = √(`PlacedProbe::bound_area`), per probe.** Each probe has its own excluded set. One brush can be kept by one probe and excluded by another; the seams that follow are the ones `reflection-probes` already accepts.
-- **Threshold t = p(W)·W.** p = 0.85 for W ≤ 10 m. Above 10 m, p = 0.85·(W/10)^−a, with a = ln(0.85/0.33)/ln 5, from the owner's anchors (85% up to 10 m, 33% at 50 m). These are initial values; the owner tunes them visually after the build. A curve linear in p was rejected because its t peaks near 38 m and then shrinks.
-- **Object size is the brush's longest extent in the reflector's plane** (where W is measured), written against the reflector normal. Water: longest horizontal side of the hull bounds. Future vertical reflector: longest of vertical and along-wall, ignoring depth. Rival rejected: vertical extent only for walls, which would drop floors and ceilings, the room-scale structure the rule keeps, while keeping tall thin poles.
-- **Thin-brush floor.** Exclusion happens only where SSR shows a brush better. A brush whose extent along the reflector normal is below f(W) stays in the probe, even below t. So a brush is excluded when its thinness ≥ f, its size < t and it has no underside over the water (below), unless overridden. For water, thinness is height: horizontal bars and slabs seen edge-on stay in the probe, and thin vertical poles go to SSR, which samples them along their length (`research.md` §Thin-brush floor). Rival rejected: smallest in-plane extent, which kept poles in the probe and sent the bars the march can step over to SSR.
-  - **[SSR]** f(W) = W · 2·tan(θv/2) / D_min: the extent one march stride spans at view distance W.
-    - D_min is the smallest `rows_per_stride_pixel` among tiers that run SSR, which is the coarsest stride (`FluidReflectionMarch::stride`, `FLUID_REFLECTION_PRESETS`, the `screen_march` sample loop).
-    - θv is the vertical FOV at the default HFOV 100° and 16:9.
-  - At af8bfef, D_min = 135 (ultra), so f ≈ 0.0099·W: 5 cm at 5 m, 0.5 m at 50 m.
-  - f's ratio is a compiler constant, not a live read of the presets, because the presets are placeholders until perf data and a live read would re-key every fluid map's capture on each retune. A test derives the ratio from render-cpu's presets and the pinned default FOV and fails when they drift apart, so a preset change updates the constant deliberately. Re-derive the value at build time if the presets changed before SSR lands.
-  - f is the same at every tier.
-- **Undersides stay in the probe.** A brush is never excluded by the size rule when any of its surviving faces (post-CSG, through the face → brush table) faces down against the reflector normal, lies above the water plane, and overlaps the probe's bound water in horizontal projection. Docks, footbridges, decks, lintels and beams over the water keep their undersides in the probe. The camera never sees those faces, so SSR can never return them (`rendering_pipeline.md` §7.3a Limits; `fluid-ssr-reflections` Non-goals), and an authored `_capture_offset` beneath a deck keeps working. `never` still excludes such a brush. Pillars and posts standing in the water, and walls beside it, follow the size rule.
+- **Threshold t = p(W)·W.** p = 0.85 for W ≤ 10 m. Above 10 m, p = 0.85·(W/10)^−a, with a = ln(0.85/0.33)/ln 5, from the owner's anchors (85% up to 10 m, 33% at 50 m). Initial values; the owner tunes them visually after the build. Rejected: a curve linear in p, whose t peaks near 38 m and then shrinks.
+- **Object size is the brush's longest extent in the reflector's plane**, written against the reflector normal. Water: longest horizontal side of the hull bounds. Future vertical reflector: longest of vertical and along-wall, ignoring depth. Rival rejected: vertical extent only for walls, which would drop floors and ceilings while keeping tall thin poles.
+- **The rule.** A brush is excluded from a probe when its size < t, its thinness ≥ f and it has no underside over that probe's water. `always` and `never` override all three.
+- **Thin-brush floor.** A brush whose extent along the reflector normal is below f(W) stays in the probe, since exclusion happens only where SSR shows a brush better. For water, thinness is height: horizontal bars and slabs seen edge-on stay, and thin vertical poles go to SSR, which samples them along their length (`research.md` §Thin-brush floor). Beyond the underside rule, the floor covers thin decor outside the water's horizontal projection, such as shore rails and bars. Rival rejected: smallest in-plane extent, which kept poles in the probe and sent the bars the march can step over to SSR.
+  - **[SSR]** f(W) = W · 2·tan(θv/2) / D_min: the extent one march stride spans at view distance W. D_min is the coarsest stride among tiers that run SSR, so f is the same at every tier. θv is the vertical FOV at the default HFOV 100° and 16:9.
+  - f's ratio is a compiler constant, not a live read of the placeholder presets, so a retune never re-keys every fluid map's capture. A test fails when the presets or the pinned default FOV drift from it.
+- **Undersides stay in the probe.** A brush has an underside over a probe's water when a surviving (post-CSG) face of it points down, n·N ≤ −sin(1°) as in placement's 1° up-facing cone, and overlaps a bound water face of the probe in projection with positive area while lying above that face's plane. Edge-only contact does not count. The camera never sees those faces, so SSR can never return them (`rendering_pipeline.md` §7.3a Limits; `fluid-ssr-reflections` Non-goals), and an authored `_capture_offset` beneath a deck keeps working.
 - **Rivals weighed.** Excluding nothing and letting SSR's confidence cover the object keeps the wrong-parallax copies and capture shadows wherever c < 1. Authored opt-out only, with every brush kept by default, was rejected because the owner asked for an automatic default; the override covers what the rule gets wrong.
-- **Contact holes: fill first, leak guard as the fallback.** CSG removes kept faces where an excluded brush touched them (`research.md` §Contact holes).
-  - **Fill.** A ray that skips an excluded brush, then leaves its hull through a side coplanar with and covered by a kept brush's side, records a hit at the exit point. It shades as that kept surface:
-    - material and UV from the kept side's texture and projection;
-    - lighting from the nearest lightmap texel of the coplanar kept face, clamped to that face;
-    - SH and SDF lights at the exit point.
-  - **Leak guard.** Where no coplanar kept face exists, such as a brush embedded in a kept brush, the ray records the excluded brush's own hit.
-  - A capture ray from a closed room never reaches the void or another room through an excluded brush.
-  - Rival rejected: accepting the leak, which shows wherever SSR misses and always at `low`.
-- **Accepted limit: `low` shows no excluded decor.** **[SSR]** `low` is the probe term alone (`FluidReflectionQuality::runs_screen_space`), so excluded brushes never reflect there. This is a regression against today's probe-only picture, which shows that decor, and Low is the likely tier on the Mac perf floor. The owner accepted it (2026-10-20) over baking a second, unfiltered capture for Low, which doubles probe memory and capture time.
-- **Override: `_reflection_capture` = `auto` | `always` | `never`** on `func_group` and `switch`, for every brush of that entity: `always` keeps, `never` excludes, `auto` follows the rule. Worldspawn brushes are always `auto`. A bad value warns once, naming the entity, and acts as `auto`.
-- **Authoring through a `func_group` brush entity, not a TrenchBroom group.** TrenchBroom keeps only a group's name, id, link id and transform, and drops any other key on load and save (`research.md` §TrenchBroom). The FGD gains a `func_group` brush entity carrying `_reflection_capture`, and `switch` gains the key. `docs/` tells mappers to use Create Brush Entity → `func_group` to override, and names no `cargo run -p xtask` command. The parser keeps handling both kinds through `is_editor_group_classname`.
-- **Layers.** The Quake adapter reads the key and hands shared stages a canonical per-brush value, so `_reflection_capture` never crosses `format/` (`build_pipeline.md` §Source-format neutrality). Classification, filtering and fill live in the reflection-probe stage.
-- **Cache.** The stage key covers each probe's exclusion as the capture applies it, so an edit to an override, a curve constant or the floor constant re-keys the stage. `STAGE_VERSION` → 10.
-- **Sequencing.** This builds after `fluid-ssr-reflections` lands on main.
+- **Contact holes and seals: one exit rule.** CSG removes kept faces where an excluded brush touched them, and a brush that seals the room opens onto the exterior or another room (`research.md` §Contact holes). A ray that leaves a skipped excluded brush's hull classifies the exit point in order: inside another excluded brush, repeat from its exit; inside kept solid on a covering kept side with a surviving coplanar face, fill; inside kept solid otherwise, leak guard; in empty space, trace on under the same mask (`research.md` §Orderings O3). A ray that has skipped an excluded brush and then misses, or ends on a hit outside the probe's projection box, takes the leak guard: it records the first excluded surface it skipped.
+  - No capture ray that crosses an excluded brush misses or ends outside the probe's projection box. A brush that seals the room, such as a wall stub between openings or an outer wall set to `never`, shows itself in those directions, so `never` cannot open a room.
+  - **Fill.** Material and UV come from the covering kept side at the exit point. Lightmap, SH and sdf direct, with its shadow rays, come from the nearest point on the coplanar kept face, so all lighting reads one surviving surface point.
+  - Rivals rejected: accepting the leak, which shows wherever SSR misses and always at `low`; the leak guard everywhere, which shows pillar stubs in the ceiling-patch directions; keep-on-contact, which keeps ceiling pillars, the commonest decor. If the first slice shows the fill infeasible, the leak guard applies everywhere and the owner is told.
+- **Accepted limit: `low` shows no excluded decor.** **[SSR]** `low` is the probe term alone (`FluidReflectionQuality::runs_screen_space`), so excluded brushes never reflect there. This is a regression against today's probe-only picture, which shows that decor. The owner accepted it (2026-10-20) over baking a second, unfiltered capture for Low, which doubles probe memory and capture time.
+- **Override: `_reflection_capture` = `auto` | `always` | `never`** on `func_group` and `switch`, for every brush of that entity: `always` keeps, `never` excludes, `auto` follows the rule. Worldspawn brushes are always `auto`. A bad value warns once per entity, naming it, and acts as `auto`.
+- **Authoring through a `func_group` brush entity, not a TrenchBroom group.** TrenchBroom drops every group key but name, id, link id and transform on load and save (`research.md` §TrenchBroom). The FGD gains a `func_group` brush entity carrying `_reflection_capture`, and `switch` gains the key. `docs/` tells mappers to override with Create Brush Entity → `func_group`, and names no `cargo run -p xtask` command.
+- **Layers.** Shared compiler stages see only a canonical per-brush value (`build_pipeline.md` §Source-format neutrality). The raw key is read at the entity-parse layer, beside `_capture_offset` (`parse/reflection_volumes.rs`). Classification, filtering and fill live in the reflection-probe stage.
+- **Cache.** Every edit to an override value, a curve constant or the floor constant misses the capture stage. The key hashes the canonical override table, the curve and floor constants, each probe's excluded set, and the hull planes of excluded brushes plus their contact candidates' sides.
 - **IP pre-ship line.** Add to the owner's pre-ship check: "size-based capture exclusion: compare with UE Visible in Reflection Captures / Cull Distance Volumes, Unity Reflection Probe Static / culling mask / near clip; read Perfect World WO2022227553A1." Engineering triage, not legal advice.
 - **Non-goals.**
   - Runtime or view-dependent exclusion: probe content tied to the camera is Tencent claims 4–14 and breaks `resource_management.md` §9.
-  - Probes on non-fluid surfaces. The rule is defined for them; nothing builds them.
-  - Cross-probe threshold agreement: seams are accepted.
+  - Probes on non-fluid surfaces. Size and thinness are written against the reflector normal; the underside rule and the floor's derivation assume water.
   - Excluding props. `prop_mesh` never enters the BVH, so this is already true.
-  - A detail brush class, and per-brush keys on worldspawn.
-  - Excluding brushes from shadow rays or from the box fit.
+  - A detail brush class, and per-brush keys on worldspawn: worldspawn brushes carry no per-brush keys in the map format, and a mapper wraps a brush in a `func_group` to override it.
 
 ## Acceptance
 
@@ -54,36 +44,49 @@ Threshold and size:
 - [ ] Given a vertical reflector normal, size comes from the vertical and along-wall extents, and thinness from depth along the normal.
 - [ ] The floor-ratio test fails when render-cpu's coarsest SSR stride or the pinned default FOV changes, and passes at the shipped presets.
 
-Undersides, both sides of the rule:
-- [ ] On a 50 m lake, a 10 m × 0.3 m dock over the water (below t, above f) is kept, and so is a beam spanning the water.
+Undersides, both sides of the rule (fixtures below t and above f):
+- [ ] On a 50 m lake (t = 16.5 m, f ≈ 0.50 m), a dock 10 m long and 1 m thick over the water, and a beam 12 m long and 0.6 m deep over the water, are kept. Moved off the water's horizontal projection, the same two brushes are excluded.
 - [ ] A pillar standing in the water and a post beside it, with no downward face over the water above the plane, are excluded.
-- [ ] A brush whose downward face lies above the plane but outside the bound water's horizontal projection follows the size rule.
-- [ ] A deck under an authored `reflection_volume` whose `_capture_offset` sits beneath it stays in that probe's capture.
+- [ ] A brush below t and above f, whose downward face lies above the plane but outside the bound water's horizontal projection, is excluded.
+- [ ] A deck below t and above f, under an authored `reflection_volume` whose `_capture_offset` sits beneath it, stays in that probe's capture.
+- [ ] A crate sunk 5 cm into a dock over the water, below t and above f, is excluded: CSG removes its bottom face, and its hull's bottom side does not count as an underside.
+- [ ] In one map with two pools, a footbridge 0.6 m deep over pool A only, below both probes' t, is kept by A's probe and excluded by B's.
+- [ ] On an authored box binding water at two heights, a deck set between the two planes and over the lower water is kept. The same deck moved over the upper water, below that water's plane, is excluded.
+- [ ] A wedge whose only face over the water slopes down at 45° is kept.
 
 Capture, on a pillar in a pool touching the ceiling:
 - [ ] Directions through the pillar's body read the wall behind it, in colour and distance.
-- [ ] Directions through the filled ceiling patch read the ceiling's material, at the distance of the ceiling plane, lit by the nearest texel of the kept ceiling face.
-- [ ] The wall behind keeps the pillar's shadow in the colour tile, because the shadow ray still sees the pillar.
-- [ ] Texels the pillar never covered are bit-identical to the unfiltered build.
+- [ ] Directions through the filled ceiling patch read the ceiling's material, at the distance of the ceiling plane, lit from the kept ceiling face's lightmap at the nearest point on that face. The ceiling's texture differs from the pillar's and the wall's, and its lightmap texels vary across the face.
+- [ ] With an sdf light below the ceiling, the filled ceiling patch's sdf direct is within 5% of the adjacent kept ceiling's.
+- [ ] The wall behind keeps the pillar's shadow from an sdf light in the colour tile, because the capture's shadow ray still sees the pillar. No lightmap shadow of the pillar exists for the wall to read instead.
+- [ ] Texels no supersample of the unfiltered build sent into the pillar are bit-identical in the pre-encode capture rows, colour and distance. Every BC6H block holding none of the pillar's texels is byte-identical.
 
 Capture, other cases:
-- [ ] Leak-guard fixture: a small brush embedded in a kept brush, with no coplanar kept face, reads its own surface in the directions where it is the first hit.
-- [ ] Closed-room fixture with excluded brushes against walls, under the ceiling and embedded: no capture ray misses, and none lands outside the room.
-- [ ] The placed probe set (boxes, points, bindings) is identical with the filter on and off.
+- [ ] Leak-guard fixture: a small brush embedded in a kept brush, with no coplanar kept face, is in the probe's excluded set and reads its own surface in the directions where it is the first hit.
+- [ ] Closed-room fixture: every brush placed against walls, under the ceiling and embedded is in the probe's excluded set. No capture ray misses, and none lands outside the room.
+- [ ] Chained closed room (research.md O3): three excluded pillars stand in a row between the capture point and a wall, and the farthest touches the wall and the ceiling. Two touching excluded crates are stacked against the wall, and the upper one touches the ceiling. No ray through any of them misses or lands outside the room. Rays reaching the farthest pillar's wall and ceiling patches, and the upper crate's ceiling patch, read the fill.
+- [ ] Seal fixture (research.md O3): a 2 m wall stub between two openings and an outer wall set to `never`, built once with the exterior behind them and once with a second room behind. Rays through them read their own surfaces; none misses or lands outside the probe's projection box.
+- [ ] The placed probe set (boxes, points, bindings) is identical with the filter on and off, on a fixture whose derived box changes when the excluded brush is deleted from the map.
 - [ ] In one map, one brush is excluded from a small probe's capture and kept by a large probe's.
-- [ ] A map whose brushes are all ≥ t emits id 54 byte-identical to the pre-change compiler (cache aside).
+- [ ] A map whose brushes are all ≥ every probe's t emits id 54 byte-identical to the same build with every probe's excluded set forced empty (cache aside). The capture tests that predate this change pass unchanged.
+- [ ] With the oversize cut forced by a small pool edge (research.md O2), every post-cut face maps to its parent's brush and a face the cut emptied maps to none. When a cut kept face precedes the pillar's faces in output order, the mask skips exactly the pillar's post-cut faces.
 
 Override:
 - [ ] `never` excludes a brush ≥ t, `always` keeps a brush < t, and `auto` follows the rule, on a `func_group` brush entity and on a `switch`.
-- [ ] An invalid value warns once, naming the entity, and acts as `auto`.
+- [ ] `never` excludes a dock the underside rule keeps and a slab thinner than f. `always` keeps a post the rule excludes.
+- [ ] A `func_group` set to `never` whose first brush is degenerate excludes its other brushes. The next entity's brushes keep their own values (research.md O4).
+- [ ] An invalid value on a three-brush `func_group`, in a map with two probes, warns exactly once, naming the entity, on a cold build, on a warm build and in a map with no water, and acts as `auto` (research.md O5).
+- [ ] `_reflection_capture` `never` on worldspawn changes no probe's excluded set.
 
 Cache and determinism:
-- [ ] Changing a `_reflection_capture` value or a curve constant misses the capture stage. An unchanged rebuild hits.
+- [ ] Changing a `_reflection_capture` value or a curve constant misses the capture stage. An edit that moves no brush also misses. An unchanged rebuild hits.
+- [ ] Two builds differ only in an excluded pillar's hull where CSG hides it: flush with the ceiling in one, sunk 0.5 m into it in the other. They key the capture stage differently, or emit byte-identical id 54 cold.
 - [ ] `--no-cache` at `--jobs 1` and at `--jobs 4` gives byte-identical id 54.
 
 Gates:
-- [ ] Source gate: no exclusion symbol appears in renderer or render-cpu, and the id 54 version constant is unchanged. In the compiler, `_reflection_capture` appears only on the Quake adapter's side of the canonical map data.
-- [ ] The FGD's `func_group` and `switch` entries offer the three values. `docs/` documents the key through a `func_group` brush entity and contains no `cargo run -p xtask`.
+- [ ] Source gate (grep): `_reflection_capture` and the canonical override type's name appear in no file under the renderer, render-cpu, level-format or level-loader crates, and the id 54 section module in level-format is unchanged from main. In the compiler, `_reflection_capture` appears only in the entity-parse layer, on its side of the canonical map data. Outside `#[cfg(test)]`, the compiler names no `FluidReflectionQuality`.
+- [ ] The FGD's `func_group` and `switch` entries offer `auto`, `always` and `never`. `docs/` documents the key through a `func_group` brush entity and contains no `cargo run -p xtask`.
+- [ ] The `fluid-ssr-reflections` ip-check §9 pre-ship list, or its successor, carries the exclusion line.
 
 ### Manual
 - [ ] Visual check on `reflection-probes-test.map`, e24 and a new lake fixture at least 50 m across, with posts, a dock, a boathouse and shore walls:
@@ -97,19 +100,14 @@ Gates:
 - [ ] Cold and warm probe-stage time on e24, before and after.
 
 ## Path
-- **Filter seam.** `SceneTracer::closest_hit` (hit.rs) loops over `bvh.traverse_iterator`. Each primitive is one face (`face_by_offset`), so a per-probe face mask skips a primitive whole. For the fill it also reports the nearest skipped hit. Pass the mask through `capture_section` → `capture_row` → `CaptureScene::radiance`. `fit_box` and `segment_clear` call the tracer without it.
-- **Face → brush.** `extract_geometry` drops `Face::brush_index`. Carry a compiler-side table in output face order (the `ordered_faces` walk). The oversize cut renumbers faces (`plan_cut_charts` `face_remap`, `rebuild_face_identity`), so remap the table there, each sub-face taking its parent's brush (`build_pipeline.md` §Compiler pipeline step 10). Keep it out of level-format `FaceMeta`.
+- **Filter seam.** `SceneTracer::closest_hit` (hit.rs) loops over `bvh.traverse_iterator`. Each primitive is one face (`face_by_offset`), so a per-probe face mask skips a primitive whole. For the exit rule it also reports the nearest skipped hit; an exit into empty space re-traces from there. Pass the mask per call through `capture_section` → `capture_row` → `CaptureScene::radiance`, never as tracer state. `fit_box` and `segment_clear` call the tracer without it.
+- **Face → brush.** `extract_geometry` drops `Face::brush_index`. Carry a compiler-side table in output face order (the `ordered_faces` walk). The oversize cut renumbers faces (`plan_cut_charts` `face_remap`, `rebuild_face_identity`), so remap the table there (`research.md` §Orderings O2; `build_pipeline.md` §Compiler pipeline step 10). Keep it out of level-format `FaceMeta`.
 - **Sizes.** Use `BrushVolume::aabb`, the unclipped hull in engine metres.
-- **Fill seams.** All reachable at capture time; `map_data` is in scope at the probe stage call in pipeline.rs (`research.md` §Contact holes).
-  - Hull exit from `BrushVolume::planes`; a covering side from `BrushVolume::sides` (`BrushSide::texture`, `tex_projection`, `vertices`).
-  - UV from `geometry::compute_texel_uv` with `engine_to_quake` (both private today).
-  - The coplanar kept face from the face → brush table plus a plane match. Its nearest point comes from `capture_point::nearest_point_on_polygon` (2D: project into the plane's basis). Its vertices' `lightmap_block`, `lightmap_uv` and `animated_block` feed `LightmapSampler::irradiance` and the animated samplers.
-  - Split `CaptureScene::radiance` into trace and shade, so a synthesized `SurfacePoint` shades like a traced one.
-  - Precompute contact candidates per excluded brush: kept brushes whose bounds touch its own.
-- **Override table.** `MapAssembly` will not carry it: `switch` brushes have no assembly, and a `func_group` brush entity without `_tb_id` matches none. Read the key in the `func_group` and `switch` branches of parse.rs with `collect_entity_properties`, and translate it at the retained-hull seam `brush_assembly_for_retained_hulls` uses. A brush takes its own entity's value.
-- **Floor inputs.** level-compiler already depends on render-cpu, so the drift test reads `FluidReflectionQuality::ALL` and `preset()`; the bake reads only the compiler constant. The default FOV lives in the binary (`camera::HFOV`): pin a compiler copy with a test.
+- **Fill seams.** `research.md` §Contact holes maps each need to its source. Split `CaptureScene::radiance` into trace and shade, so a synthesized `SurfacePoint` shades like a traced one, and precompute contact candidates per excluded brush: kept brushes whose bounds touch its own.
+- **Override table.** `MapAssembly` will not carry it: `switch` brushes have no assembly, and a `func_group` brush entity without `_tb_id` matches none. Read the key in the `func_group` and `switch` branches of parse.rs with `collect_entity_properties`, warn there (`research.md` §Orderings O5), and translate it at the retained-hull seam `brush_assembly_for_retained_hulls` uses (O4). A brush takes its own entity's value. `is_editor_group_classname` already matches groups, layers and authored `func_group` brush entities, so no parser branch is new.
+- **Floor inputs.** render-cpu is a dev-dependency of level-compiler, so only the drift test reads `FluidReflectionQuality::ALL` and `preset()`; the bake reads the compiler constant. D_min is 135 (ultra) at af8bfef (`research.md` §Thin-brush floor); re-derive the constant if the presets change before SSR lands. The default FOV lives in the binary (`camera::HFOV`): pin a compiler copy with a test.
 - **Underside test.** The face → brush table gives each brush's surviving faces. Whether a crate sitting flush on a deck keeps a bottom face after CSG is unverified; if it does, the crate is kept, which is the conservative outcome.
-- **Cache key.** Hashing each probe's excluded faces (post-cut indices) subsumes overrides, curve, floor and the face → brush table.
+- **Cache key.** Hash the override table and constants directly, as `stage_key` hashes shaping constants today; excluded sets in post-cut indices. `STAGE_VERSION` → 10.
 - **Docs.** `docs/level_design.md` §Fluid reflections; `sdk/TrenchBroom/postretro.fgd` `switch`, plus a new `func_group` entry.
 - **Large files.** parse.rs and pipeline.rs are past ~800 lines. Put new logic in its own module and keep their edits to call sites.
 - **Shape.** Chosen: a per-call face mask over the one shared BVH, with exit tests against hull planes. Rival: one BVH per distinct excluded set, which costs a build and its memory per probe and still leaks.
@@ -122,4 +120,4 @@ Gates:
 | Capture override | canonical per-brush enum on `MapData` (name the executor's) | n/a; never in PRL | n/a | n/a | `_reflection_capture`: `auto` / `always` / `never`, default `auto`, on `func_group` (brush entity) and `switch` |
 
 ## Open questions
-- Rays crossing several excluded brushes, or an excluded brush partly sunk into a kept one, whose exit lies inside kept solid off any kept side — **delegated**: chain the exit test per excluded brush. Off-side exits take the leak guard by the rule. Report the trace strategy in the plan of record.
+None.

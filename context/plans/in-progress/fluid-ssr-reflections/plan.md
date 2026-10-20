@@ -42,6 +42,18 @@ Every source symbol that Decisions and Path cite was re-read at `db0f270d3`. No 
 
 - **Task 1 checkpoint (owner, 2026-10-19):** the tier fractions stay at quarter, half and full per axis. Tasks 2 and 3 proceed now. The 5300M timing waits for the owner's Mac run.
 
+- **Owner decision (2026-10-20): a probes-only tier.** The ladder becomes `off` / `probes` / `low` / `medium` / `high`, default `high`. This supersedes the brief's four-tier ladder; "Off turns off both layers" still holds for `off`.
+  - At `probes`, every probe-bound draw takes the reflecting variant and the probe term draws unchanged.
+  - No screen-space target is allocated (the placeholder reads c = 0), and no reflection pass is recorded. That is the landed probe-only picture and cost.
+  - The menu shows OFF, PROBES, LOW, MEDIUM, HIGH.
+  - AC rows read accordingly:
+    - **AC 1:** `probes` records no pass.
+    - **AC 2:** `probes` takes the reflecting variant.
+    - **AC 10:** round-trips five values.
+    - **AC 19:** `probes` allocates only the placeholder.
+    - **AC 26:** stepping to `probes` removes SSR and keeps the probe term.
+- **Pillar reflection (owner report, 2026-10-20): in scope.** Manual row 24 and the Decision "SSR owns … the camera-facing sides of objects standing in the water" both cover it. Under investigation as a defect or reach limit, not a follow-up brief.
+
 ## AC-to-proof
 
 | AC | Row (short) | Proof | Status | Result |

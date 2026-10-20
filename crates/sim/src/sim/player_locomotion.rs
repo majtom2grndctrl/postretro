@@ -22,17 +22,19 @@ const RUN_FORWARD_STATES: [&str; 2] = ["run_forward", "run"];
 const RUN_BACKWARD_STATE: &str = "run_backward";
 
 /// Classify a player's travel against its aim. Stationary or non-finite input
-/// resets to `Forward`, so motion from a standstill starts from the nearer side.
+/// holds `previous`: a stopped body faces aim whatever the memory says, and a
+/// delayed presentation still drawing the last of the motion must keep the fold
+/// the moving body had.
 pub fn classify_locomotion_direction(
     velocity: Vec3,
     aim_yaw: f32,
     previous: LocomotionDirection,
 ) -> LocomotionDirection {
     let Some(travel_yaw) = travel_yaw(velocity) else {
-        return LocomotionDirection::Forward;
+        return previous;
     };
     if !aim_yaw.is_finite() {
-        return LocomotionDirection::Forward;
+        return previous;
     }
     let off_aim = wrapped_angle(travel_yaw - aim_yaw).abs();
     if off_aim > BACKWARD_ENTER_ANGLE {
@@ -196,8 +198,12 @@ impl PlayerLocomotionStates {
         if !speed.is_finite() || speed <= MOVING_SPEED_EPSILON {
             return (&self.idle, LocomotionTierKind::Idle);
         }
+        // A run state whose clip did not resolve leaves the walk tier covering
+        // every speed, as if no run state were declared.
         let (tier, kind) = match self.run.as_ref() {
-            Some(run) if run_tier_holds(run, input) => (run, LocomotionTierKind::Run),
+            Some(run) if is_usable(&run.forward) && run_tier_holds(run, input) => {
+                (run, LocomotionTierKind::Run)
+            }
             _ => (&self.walk, LocomotionTierKind::Walk),
         };
         let backward = tier
@@ -326,22 +332,24 @@ mod tests {
     }
 
     #[test]
-    fn stationary_or_non_finite_motion_falls_back() {
+    fn stationary_or_non_finite_motion_holds_direction_and_faces_fallback() {
         for velocity in [
             Vec3::ZERO,
             Vec3::new(0.0, -3.0, 0.0),
             Vec3::new(f32::NAN, 0.0, 1.0),
         ] {
-            assert_eq!(
-                classify_locomotion_direction(velocity, 0.2, LocomotionDirection::Backward),
-                LocomotionDirection::Forward
-            );
+            for previous in [LocomotionDirection::Forward, LocomotionDirection::Backward] {
+                assert_eq!(
+                    classify_locomotion_direction(velocity, 0.2, previous),
+                    previous
+                );
+            }
             for direction in [LocomotionDirection::Forward, LocomotionDirection::Backward] {
                 assert_eq!(player_travel_heading_yaw(velocity, direction, 0.7), 0.7);
             }
         }
         assert_eq!(
-            classify_locomotion_direction(travel(0.0, PI), f32::NAN, LocomotionDirection::Backward),
+            classify_locomotion_direction(travel(0.0, PI), f32::NAN, LocomotionDirection::Forward),
             LocomotionDirection::Forward
         );
     }
@@ -468,6 +476,15 @@ mod tests {
                 )
                 .0,
             "run_backward"
+        );
+        // A run state whose clip did not resolve leaves sprinting on walk.
+        let unresolved_run = |state: &str| state != "run_forward";
+        assert_eq!(
+            all.select(
+                &input(11.0, LocomotionDirection::Forward, "walk_forward"),
+                unresolved_run
+            ),
+            ("walk_forward", LocomotionTierKind::Walk)
         );
         // Equal walk and run speeds degenerate to the plain threshold.
         let flat = |speed| LocomotionInput {

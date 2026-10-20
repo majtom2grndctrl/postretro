@@ -2545,15 +2545,32 @@ impl ClientReplication {
         let reference = &locomotion.reference;
         let usable = |state: &str| animation.is_state_usable(state);
         let stored_direction = animation.locomotion_direction;
-        let classified =
-            crate::sim::classify_locomotion_direction(velocity, aim_yaw, stored_direction);
+        let current_state = animation.current_state.clone();
+        let fading = animation.entered_at.is_none() || animation.previous_state.is_some();
+        let correction_in_flight = locomotion
+            .authoritative_correction_state
+            .as_deref()
+            .is_some_and(|authoritative| authoritative == current_state && fading);
+        // A host correction leads the interpolated velocity, so it seeds the
+        // classification rather than overriding it: inside the dead zone the legs
+        // fold with the corrected clip, and outside it travel still decides,
+        // keeping the twist bounded while the presented motion catches up.
+        let previous = if correction_in_flight {
+            reference
+                .states
+                .direction_of(&current_state, usable)
+                .unwrap_or(stored_direction)
+        } else {
+            stored_direction
+        };
+        let direction = crate::sim::classify_locomotion_direction(velocity, aim_yaw, previous);
         let (target_state, tier) = reference.states.select(
             &crate::sim::LocomotionInput {
                 speed_xz,
                 walk_speed: reference.walk_speed,
                 run_speed: reference.run_speed,
-                direction: classified,
-                current_state: &animation.current_state,
+                direction,
+                current_state: &current_state,
             },
             usable,
         );
@@ -2567,30 +2584,14 @@ impl ClientReplication {
         let derived_travel_speed =
             tier_speed.and_then(|_| reference.derived_travel_speeds.get(&target_state).copied());
         let fallback_speed = tier_speed.unwrap_or(1.0);
-        let current_direction = reference
-            .states
-            .direction_of(&animation.current_state, usable);
-        let current_state = animation.current_state.clone();
-        let fading = animation.entered_at.is_none() || animation.previous_state.is_some();
 
         locomotion.client_derived_state = Some(target_state.clone());
-        let correction_in_flight = locomotion
-            .authoritative_correction_state
-            .as_deref()
-            .is_some_and(|authoritative| authoritative == current_state && fading);
         if !correction_in_flight {
             locomotion.authoritative_correction_state = None;
         }
         if !correction_in_flight && current_state != target_state {
             let _ = switch_animation_state(registry, entity_id, &target_state);
         }
-        // While a host correction holds its state, the legs follow that state
-        // where it decides a direction, so clip and facing agree.
-        let direction = if correction_in_flight {
-            current_direction.unwrap_or(classified)
-        } else {
-            classified
-        };
         if direction != stored_direction {
             crate::sim::store_locomotion_direction(registry, entity_id, direction);
         }
@@ -5331,7 +5332,8 @@ mod tests {
         for (velocity, expected) in [
             ([0.0, 0.0, 5.0], "walk_backward"),
             ([0.0, 0.0, 10.0], "run_backward"),
-            // 8.5 m/s sits below the walk/run band (8.4..9.6 from rest).
+            // 8.5 m/s sits inside the walk/run band; from rest it stays walk
+            // (the run tier enters above 9.6).
             ([6.0, 0.0, 6.0], "walk_backward"),
             ([8.0, 0.0, 8.0], "run_backward"),
             ([0.0, 0.0, -10.0], "run_forward"),
@@ -5388,6 +5390,39 @@ mod tests {
                 "the host state at {velocity:?} needs no correction"
             );
         }
+    }
+
+    #[test]
+    fn remote_player_correction_leading_forward_travel_keeps_legs_toward_travel() {
+        // The host has already reversed into a backpedal while the interpolated
+        // velocity still runs forward along aim (-Z).
+        let (mut registry, mut client, id) = present_remote_player(
+            remote_player_backpedal_mesh(),
+            &["idle", "walk_forward", "walk_backward"],
+            [0.0, 0.0, -60.0],
+            (60.0, 60.0),
+        );
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![mesh_animation_payload("walk_backward")],
+                )],
+            ),
+        );
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward", "the correction's clip holds");
+        assert!(
+            heading.abs() <= EPSILON,
+            "legs face forward travel, not 180° behind aim: {heading}"
+        );
     }
 
     #[test]

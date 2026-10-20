@@ -2500,6 +2500,7 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
         registry
             .get_component::<MeshComponent>(entity)
@@ -2545,6 +2546,7 @@ fn local_player_pose_inputs_use_camera_aim_and_folded_movement_heading() {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            true,
         );
         let mesh = registry.get_component::<MeshComponent>(pawn).unwrap();
         (
@@ -2568,6 +2570,72 @@ fn local_player_pose_inputs_use_camera_aim_and_folded_movement_heading() {
 }
 
 #[test]
+fn connected_client_own_pawn_shadow_folds_with_the_host_sent_backward_clip() {
+    let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, 0.0);
+    registry.mark_local_player_pawn(pawn).unwrap();
+    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+    // +X travel is 90° off the camera aim (yaw 0): inside the dead zone.
+    movement.velocity = Vec3::X * 3.0;
+    registry.set_component(pawn, movement).unwrap();
+    // The host's state arrived as `walk_backward`; this peer selects no state.
+    let mut mesh = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .clone();
+    let animation = mesh.animation.as_mut().unwrap();
+    let declared = |clip: &str, clip_index| AnimationState {
+        clip: clip.to_string(),
+        looping: true,
+        crossfade_ms: 50.0,
+        interrupt: InterruptPolicy::Smooth,
+        travel_speed: None,
+        clip_index: Some(clip_index),
+    };
+    animation
+        .states
+        .insert("walk_forward".to_string(), declared("walk_forward", 1));
+    animation
+        .states
+        .insert("walk_backward".to_string(), declared("walk_backward", 2));
+    animation.current_state = "walk_backward".to_string();
+    registry.set_component(pawn, mesh).unwrap();
+
+    let present = |registry: &mut EntityRegistry, owns_direction: bool| {
+        super::update_pose_inputs(
+            registry,
+            (0.0, 0.0),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            owns_direction,
+        );
+        let mesh = registry.get_component::<MeshComponent>(pawn).unwrap();
+        (
+            mesh.pose_inputs.unwrap().heading_yaw,
+            mesh.animation.as_ref().unwrap().locomotion_direction,
+        )
+    };
+
+    // The host-sent backward clip folds the legs either way; travel -π/2
+    // folded faces +π/2.
+    let (heading, direction) = present(&mut registry, false);
+    assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5);
+    assert_eq!(
+        direction,
+        LocomotionDirection::Forward,
+        "where the fixed tick's selector owns the memory, the pose pass only reads"
+    );
+    let (heading, direction) = present(&mut registry, true);
+    assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5);
+    assert_eq!(
+        direction,
+        LocomotionDirection::Backward,
+        "a connected client keeps its own pawn's memory"
+    );
+}
+
+#[test]
 fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback() {
     let transform_yaw = 0.6;
     let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, transform_yaw);
@@ -2586,6 +2654,7 @@ fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback(
         &remote_aim_pitches,
         &remote_heading_yaws,
         &remote_network_ids,
+        false,
     );
     let moving = registry
         .get_component::<MeshComponent>(pawn)
@@ -2603,6 +2672,7 @@ fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback(
         &remote_aim_pitches,
         &HashMap::new(),
         &remote_network_ids,
+        false,
     );
     let stationary = registry
         .get_component::<MeshComponent>(pawn)
@@ -2641,6 +2711,7 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
         &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
+        false,
     );
 
     let inputs = registry
@@ -2662,6 +2733,7 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
         &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
+        false,
     );
     let inputs = registry
         .get_component::<MeshComponent>(pawn)
@@ -2757,6 +2829,7 @@ fn probe_leg_entity_in(
             remote_aim_pitches: &HashMap::new(),
             remote_heading_yaws: &HashMap::new(),
             remote_network_ids: &HashMap::new(),
+            local_pawn_owns_direction: false,
         },
     );
 
@@ -2892,6 +2965,7 @@ fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
             remote_aim_pitches: &HashMap::new(),
             remote_heading_yaws: &HashMap::new(),
             remote_network_ids: &HashMap::new(),
+            local_pawn_owns_direction: false,
         },
     );
 
@@ -2927,6 +3001,7 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
                 remote_aim_pitches: &HashMap::new(),
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),
+                local_pawn_owns_direction: false,
             },
         );
     };

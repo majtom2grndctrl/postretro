@@ -900,6 +900,7 @@ where
                 remote_aim_pitches: &HashMap::new(),
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),
+                local_pawn_owns_direction: false,
             },
         );
         drop(substage);
@@ -1075,7 +1076,8 @@ fn trigger_fire_context(
 /// State selection and rate calibration intentionally match the client presentation
 /// path; ordinary switches use the authored crossfade, preserving no-snap correction.
 /// The forward/backward classification compares travel to the pawn's transform yaw,
-/// which is its aim, and is stored for the pose-input pass that follows.
+/// which is its aim. This pass is the sole writer of that memory on a peer that
+/// runs it; the pose-input pass and the host seat's delayed presentation read it.
 pub fn update_player_animation_locomotion(
     registry: &mut EntityRegistry,
     hit_zone_store: &HitZoneStore,
@@ -1275,6 +1277,11 @@ pub struct PresentationPoseInputs<'a> {
     pub remote_aim_pitches: &'a HashMap<NetworkId, f32>,
     pub remote_heading_yaws: &'a HashMap<NetworkId, f32>,
     pub remote_network_ids: &'a HashMap<EntityId, NetworkId>,
+    /// The local pawn has no locomotion state selector on this peer (a connected
+    /// client takes its own pawn's state from the host), so this pass keeps the
+    /// pawn's forward/backward memory. Elsewhere the fixed tick's selector owns
+    /// that memory and this pass only reads it.
+    pub local_pawn_owns_direction: bool,
 }
 
 pub fn update_presentation_pose_inputs(
@@ -1292,6 +1299,7 @@ pub fn update_presentation_pose_inputs(
         remote_aim_pitches,
         remote_heading_yaws,
         remote_network_ids,
+        local_pawn_owns_direction,
     } = presentation;
     update_pose_inputs(
         registry,
@@ -1300,6 +1308,7 @@ pub fn update_presentation_pose_inputs(
         remote_aim_pitches,
         remote_heading_yaws,
         remote_network_ids,
+        local_pawn_owns_direction,
     );
     update_foot_ground_probes(
         registry,
@@ -1314,7 +1323,9 @@ pub fn update_presentation_pose_inputs(
 /// Write same-tick presentation inputs after AI and steering have settled the
 /// entity's target and body rotation. Every animated mesh receives a finite
 /// value; entities without a live acquired target hold their body heading with
-/// zero pitch, making pose modifiers a visual no-op.
+/// zero pitch, making pose modifiers a visual no-op. Player pawns fold their
+/// travel heading by the forward/backward classification; see
+/// [`presented_player_heading`].
 fn update_pose_inputs(
     registry: &mut EntityRegistry,
     camera_aim: (f32, f32),
@@ -1322,6 +1333,7 @@ fn update_pose_inputs(
     remote_aim_pitches: &HashMap<NetworkId, f32>,
     remote_heading_yaws: &HashMap<NetworkId, f32>,
     remote_network_ids: &HashMap<EntityId, NetworkId>,
+    local_pawn_owns_direction: bool,
 ) {
     const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
 
@@ -1397,9 +1409,13 @@ fn update_pose_inputs(
             } else {
                 heading_yaw
             };
-            // A connected client selects no state for its own pawn, so this pass
-            // keeps the pawn's direction memory current for its shadow.
-            let player_heading = presented_player_heading(registry, id, aim_yaw, heading_yaw);
+            let player_heading = presented_player_heading(
+                registry,
+                id,
+                aim_yaw,
+                heading_yaw,
+                local_pawn_owns_direction,
+            );
             (
                 if aim_pitch.is_finite() {
                     aim_pitch
@@ -1415,7 +1431,8 @@ fn update_pose_inputs(
             } else {
                 heading_yaw
             };
-            let player_heading = presented_player_heading(registry, id, aim_yaw, heading_yaw);
+            let player_heading =
+                presented_player_heading(registry, id, aim_yaw, heading_yaw, false);
             (
                 if aim_pitch.is_finite() {
                     aim_pitch.clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2)
@@ -1473,14 +1490,18 @@ fn update_pose_inputs(
     }
 }
 
-/// The lower-body heading a host or local pawn presents this tick: travel folded
-/// by the forward/backward classification against `aim_yaw`, with the result
-/// stored as the pawn's direction memory. Stationary pawns hold `fallback`.
+/// The lower-body heading a host or local pawn presents: travel folded by the
+/// forward/backward classification against `aim_yaw`. The active state seeds the
+/// classification where it decides a direction, so a backward clip received from
+/// the host folds the legs with it; outside the dead zone travel still decides,
+/// keeping the twist bounded. Only `owns_direction` writes the result back as the
+/// pawn's memory. Stationary pawns face `fallback`.
 fn presented_player_heading(
     registry: &mut EntityRegistry,
     id: EntityId,
     aim_yaw: f32,
     fallback: f32,
+    owns_direction: bool,
 ) -> f32 {
     let Some(velocity) = registry
         .get_component::<PlayerMovementComponent>(id)
@@ -1490,14 +1511,23 @@ fn presented_player_heading(
     else {
         return fallback;
     };
-    let stored = registry
+    let Some(animation) = registry
         .get_component::<MeshComponent>(id)
         .ok()
         .and_then(|mesh| mesh.animation.as_ref())
-        .map(|animation| animation.locomotion_direction)
-        .unwrap_or_default();
-    let direction = classify_locomotion_direction(velocity, aim_yaw, stored);
-    if direction != stored {
+    else {
+        return fallback;
+    };
+    let stored = animation.locomotion_direction;
+    let previous = PlayerLocomotionStates::from_animation(animation)
+        .and_then(|states| {
+            states.direction_of(&animation.current_state, |state| {
+                animation.is_state_usable(state)
+            })
+        })
+        .unwrap_or(stored);
+    let direction = classify_locomotion_direction(velocity, aim_yaw, previous);
+    if owns_direction && direction != stored {
         store_locomotion_direction(registry, id, direction);
     }
     player_travel_heading_yaw(velocity, direction, fallback)
@@ -2590,7 +2620,7 @@ mod tests {
             (rate - 1.0).abs() < 1.0e-5,
             "rate-scaled by walk_backward's own travelSpeed"
         );
-        // Sprint speed (> ground walk 7.0) moves to the run tier.
+        // 10 m/s clears the run tier's entry (walk/run midpoint 9 plus the band, 9.6).
         let (state_name, direction, _) = step(&mut registry, Vec3::Z * 10.0);
         assert_eq!((state_name.as_str(), direction), ("run_backward", backward));
         // Pure strafe sits in the dead zone: the backpedal holds.
@@ -2599,6 +2629,10 @@ mod tests {
             (state_name.as_str(), direction),
             ("walk_backward", backward)
         );
+        // Stopping keeps the memory, so a delayed presentation still drawing the
+        // last of the strafe keeps its fold.
+        let (state_name, direction, _) = step(&mut registry, Vec3::ZERO);
+        assert_eq!((state_name.as_str(), direction), ("idle", backward));
         let (state_name, direction, _) = step(&mut registry, Vec3::NEG_Z * 10.0);
         assert_eq!((state_name.as_str(), direction), ("run_forward", forward));
         let (state_name, direction, rate) = step(&mut registry, Vec3::NEG_Z * 5.0);

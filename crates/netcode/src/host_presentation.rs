@@ -856,6 +856,7 @@ mod tests {
                 remote_aim_pitches: &empty,
                 remote_heading_yaws: &empty,
                 remote_network_ids: &HashMap::new(),
+                local_pawn_owns_direction: false,
             },
         );
         let foot = |registry: &EntityRegistry| {

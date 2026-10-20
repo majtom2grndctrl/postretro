@@ -438,8 +438,20 @@ impl Rig {
         }
     }
 
+    /// Pawns added from now on use `desc`.
+    pub(super) fn use_descriptor(&mut self, desc: PlayerMovementDescriptor) {
+        self.desc = desc;
+    }
+
     /// One host fixed tick.
     pub(super) fn tick(&mut self) -> TickReport {
+        self.tick_with(|_| {})
+    }
+
+    /// One host fixed tick, running `trigger_stage` after player movement and
+    /// before auto-close and the blocking pass, where the trigger tick's
+    /// commands land.
+    pub(super) fn tick_with(&mut self, trigger_stage: impl FnOnce(&mut Rig)) -> TickReport {
         let mut events = Vec::new();
         let mut impacts = 0usize;
 
@@ -486,6 +498,7 @@ impl Rig {
                 .expect("pawn updates");
         }
 
+        trigger_stage(self);
         if let Some(auto_close) = self.auto_close.as_ref() {
             auto_close.tick(&mut self.registry, DT);
         }

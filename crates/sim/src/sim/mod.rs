@@ -561,11 +561,25 @@ where
         .as_ref()
         .and_then(|context| context.auto_close_timers.clone());
     let stage = cpu.scope(SimStage::Movers);
+    // Commands applied since the last blocking pass (the frame-end script
+    // drain, player-event fire lists) reach the driver only along a course
+    // the pin test has seen (`movement.md` §6, Pinned bodies).
+    let mut mover_events = Vec::new();
     {
         let mut registry = registry.borrow_mut();
+        let (mover_poses, blocking_state) = mover_tick_states.split_for_blocking();
+        kinematic_mover::run_mover_pin_pretest(
+            &mut registry,
+            collision_world,
+            mover_colliders,
+            &mover_poses,
+            blocking_state,
+            tick_dt,
+            &mut mover_events,
+        );
         kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
     }
-    let mut mover_events: Vec<_> = mover_tick_states.terminus_events().collect();
+    mover_events.extend(mover_tick_states.terminus_events());
     if let Some(auto_close_timers) = auto_close_timers.as_ref() {
         auto_close_timers.arm_opened_termini(&mut registry.borrow_mut(), &mover_events);
     }

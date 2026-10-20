@@ -75,7 +75,7 @@ Every source symbol that Decisions and Path cite was re-read at `db0f270d3`. No 
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Perf slice.** Build the march WGSL module, the reflection pass (own layout, full-resolution target plus own depth, created at install when a probe-bound face exists, cleared each frame), group 5 binding 2, the new composite in `fs_main_reflecting`, and the `fluid_reflection` timing pair, all at a hard-wired high tier with no option. One adapter smoke test (AC 14 at high). Time the reflection and fluid passes on the 1660 at 4K near under both styles, against the pre-change build, and hand the 5300M trace run to the owner. **Checkpoint: report the numbers before task 3**, since they may move the tier fractions. | integrating executor | — | built; renderer lib 968 passed, render-cpu fluid 155, clippy clean; smoke `a_standing_quad_reflects_in_a_probe_bound_pool_over_the_probe_term` GPU case ran. Timing pending |
+| 1 | **Perf slice.** Build the march WGSL module, the reflection pass (own layout, full-resolution target plus own depth, created at install when a probe-bound face exists, cleared each frame), group 5 binding 2, the new composite in `fs_main_reflecting`, and the `fluid_reflection` timing pair, all at a hard-wired high tier with no option. One adapter smoke test (AC 14 at high). Time the reflection and fluid passes on the 1660 at 4K near under both styles, against the pre-change build, and hand the 5300M trace run to the owner. **Checkpoint: report the numbers before task 3**, since they may move the tier fractions. | integrating executor | — | built; renderer lib 968 passed, render-cpu fluid 155, clippy clean; smoke `a_standing_quad_reflects_in_a_probe_bound_pool_over_the_probe_term` GPU case ran. 1660 timed (see Task 1 measurement); 5300M and owner checkpoint outstanding |
 | 2 | CPU references for the march and the composite (render-cpu, beside the probe references), GPU-free tests, transcription pins, IP comments beside the march, composite and probe lookup, and the IP source scans (AC 4, 5, 6, 7, 9) | integrating executor | 1 | |
 | 3 | Tier and lifecycle: render-cpu `ReflectionQuality` with `ALL` and extent fractions; a tier argument on `shader_variant`; `Renderer::set_reflection_quality` (boot-state kept, early-out when unchanged); target create, resize and release; the widened group 5 rebuild set; scene-target rebuild order (P2); P4 pins; the pass-record gate; budget and inventory tests (AC 1, 2, 3, 8, 12, 19, 20, 21) | integrating executor | 1 | |
 | 4 | Correctness adapter tests and fixes: pixel cells and hidden centres, overlapping surfaces, live reflectivity, unwritten texels and bilinear, style switch, below plane (AC 14 full, 15–18, 22, 23) | integrating executor | 2, 3 | |
@@ -99,3 +99,23 @@ Every source symbol that Decisions and Path cite was re-read at `db0f270d3`. No 
   - §12: the `fluid_reflection` timing label.
 - `player_options.md` §4: the reflection quality row.
 - `ui.md` options list.
+
+## Task 1 measurement — GTX 1660 Super (Vulkan, driver 617.14)
+
+Here, BEFORE is `db0f270d3` and AFTER is `a89aca24b`, each a release `capture,dev-tools` binary. Runs used `POSTRETRO_GPU_TIMING=1`, `POSTRETRO_SH_STREAMING=sync-proof`, 120 warmup + 360 samples, and ABBA over 2 rounds, with 26/26 runs valid. Poses are the fluid-base-pass-cost precedent's: e24 `near` and the probes-map pool, both straight down from 1.6 m. Smooth used a third binary with a local, reverted default-style override, because capture cannot select a style. The march ran at a 64-step budget, with stride `max(1, rows/540)` and the target at full resolution. Values are ms, the mean of 2 runs. All spreads are ≤ 0.1 ms.
+
+| view | mask / style | fluid_surface before → after | fluid_reflection | GPU frame before → after | SSR added |
+|---|---|---|---|---|---|
+| near 4K | reflection-free | 0.827 → 0.825 | — | 8.966 → 8.958 | 0 |
+| near 4K | reflecting pixel | 3.324 → 3.612 | 8.309 | 12.528 → 21.193 | +8.60 |
+| near 4K | reflecting smooth | 3.324 → 3.031 | 7.852 | 12.528 → 20.123 | +7.56 |
+| probes 4K | reflection-free | 0.787 → 0.787 | — | 8.418 → 8.436 | 0 |
+| probes 4K | reflecting pixel | 4.614 → 4.886 | 8.277 | 13.227 → 21.758 | +8.55 |
+| probes 4K | reflecting smooth | 4.614 → 4.222 | 7.807 | 13.227 → 20.623 | +7.42 |
+| near 1080p | reflecting pixel | 0.893 → 0.982 | 2.096 | 3.352 → 5.538 | +2.19 |
+| near 1080p | reflecting smooth | 0.893 → 0.818 | 1.976 | 3.352 → 5.243 | +1.90 |
+
+- **Off matches pre-change.** The reflection-free pass was unchanged within spread, and no reflection pass was recorded.
+- **The reflection pass dominates the added cost.** Its cost scales with shaded target pixels × the step budget, not with what the water reflects. At these straight-down poses every reflected ray heads toward the camera and runs to the screen edge or the budget, with no hit. The IP rule (no exit by direction) makes this the worst case by design.
+- **1080p at high is a proxy for 4K at medium**, because both make the same number of full-resolution loads. That puts 4K medium at about 2.1 ms. 4K low (¼ per axis) projects to about 0.5 ms, though that is not measured.
+- **Reach is short.** A 64-step budget reaches about 12% of screen height. Longer reach costs proportionally more.

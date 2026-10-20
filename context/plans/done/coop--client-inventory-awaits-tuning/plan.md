@@ -1,7 +1,7 @@
 # coop--client-inventory-awaits-tuning — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 50ef6ea
 
 ## Corrections
@@ -33,7 +33,7 @@ read at: 50ef6ea
 | 15 grep gate | `rg` over crates for adoption symbols and `selection_idle` | achievable as stated | pass — no match |
 | 16 diff gate | `git diff main` over host composition, carried restore, payload build | achievable as stated | pass — host side changes only in a doc comment on `compose_wieldable_inventory_from_slots` |
 | 17 wire, epoch, snapshot versions | `cargo test -p xtask -- --ignored wire_version_matches_main`; `TUNING_PAYLOAD_EPOCH == 14`, `SNAPSHOT_VERSION == 21` unchanged in diff | achievable as stated | pass — `wire_version_matches_main` ok; epoch 14, snapshot 21, wire 32 untouched |
-| M1 conditioned-link co-op join | owner, in-engine | manual | outstanding — owner, in-engine |
+| M1 conditioned-link co-op join | owner, in-engine | manual | outstanding at landing — owner, in-engine |
 
 ## Tasks
 
@@ -57,6 +57,7 @@ read at: 50ef6ea
 
 One `/review-panel` round: 2 correctness tracers + adversarial tester (opus), hygiene/drift (sonnet). No 🔴 or 🟡 code findings. Acted on: two 🟡 mod-comment placements (`netcode/src/lib.rs`, `conditioned_tests.rs`); doc wording on `install_tuning_payload` and `materialize_armed_local_pawn`; harness fidelity (re-sync observed after the frame's declaration, movement pawn asserted after install, projection message, frame-order docs); a re-arm step relabelled to pass the payload; a new row pinning host-drop agreement through the merge (`later_payload_dropping_the_active_weapon_lands_where_the_host_does`). Not acted on, out of scope and present on main: a same-tick drop-and-pickup merge-order divergence (release repoints mid-merge), the per-snapshot "no host movement tuning" warning while a payload is in flight, and a narrow stale-cursor HUD case. Second round not run: the fixes were comment, harness and one added test, with no new behaviour to review.
 
-## Landing notes
+## Landing
 
-- Drop the "Payload-only composition is decided, not yet built…" sentence from `networking.md` §What gates at landing.
+- Dropped the "Payload-only composition is decided, not yet built…" sentence from `networking.md` §What gates; the rest of that section and §Combat authority already state the built contract.
+- Roadmap: `coop--pre-arm-fire-resolves-slot-zero` now points at this brief's `research.md` under `done/`.

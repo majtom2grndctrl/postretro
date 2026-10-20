@@ -12142,6 +12142,11 @@ mod tests {
             Some(&SlotValue::Enum("windowed".to_string())),
             "window-mode working copy defaults to the windowed enum",
         );
+        assert_eq!(
+            snapshot.get("options.reflectionQuality"),
+            Some(&SlotValue::Enum("high".to_string())),
+            "reflection-quality working copy defaults to the high enum",
+        );
         for slot in [
             "window.displayModeWidth",
             "window.displayModeHeight",
@@ -12235,7 +12240,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            62,
+            63,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

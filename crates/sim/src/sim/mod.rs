@@ -7,6 +7,7 @@ pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;
 pub mod frame_timing;
 mod mesh_bindings;
+mod player_locomotion;
 pub mod presentation_pool;
 pub mod presentation_projection;
 mod projectile_stage;
@@ -44,13 +45,19 @@ use crate::weapon;
 use crate::weapon::FireButtonState;
 pub use descriptor_health::install_descriptor_player_health_range;
 pub use mesh_bindings::{resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities};
+pub use player_locomotion::{
+    LocomotionInput, LocomotionTier, LocomotionTierKind, PlayerLocomotionStates,
+    classify_locomotion_direction, player_travel_heading_yaw, store_locomotion_direction,
+};
 use postretro_collision::EnvironmentView;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::components::mesh::{MeshAnimation, MeshComponent, switch_animation_state};
+use postretro_entities::components::mesh::{
+    MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
+};
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
 use postretro_entities::components::weapon::WeaponComponent;
@@ -909,6 +916,7 @@ where
                 remote_aim_pitches: &HashMap::new(),
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),
+                local_pawn_owns_direction: false,
             },
         );
         drop(substage);
@@ -1083,13 +1091,14 @@ fn trigger_fire_context(
 /// be serialized forever and repeatedly correct the client's velocity prediction.
 /// State selection and rate calibration intentionally match the client presentation
 /// path; ordinary switches use the authored crossfade, preserving no-snap correction.
+/// The forward/backward classification compares travel to the pawn's transform yaw,
+/// which is its aim. This pass is the sole writer of that memory on a peer that
+/// runs it; the pose-input pass and the host seat's delayed presentation read it.
 pub fn update_player_animation_locomotion(
     registry: &mut EntityRegistry,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
 ) {
-    const MOVING_SPEED_EPSILON: f32 = 1.0e-4;
-
     let players: Vec<EntityId> = registry
         .iter_with_kind(ComponentKind::PlayerMovement)
         .map(|(id, _)| id)
@@ -1098,52 +1107,67 @@ pub fn update_player_animation_locomotion(
         let Ok(movement) = registry.get_component::<PlayerMovementComponent>(id) else {
             continue;
         };
-        let speed_xz = Vec3::new(movement.velocity.x, 0.0, movement.velocity.z).length();
+        let velocity = movement.velocity;
+        let speed_xz = Vec3::new(velocity.x, 0.0, velocity.z).length();
         let walk_speed = movement.ground_params.speed.walk;
         let run_speed = movement.ground_params.speed.run;
+        let Ok(&transform) = registry.get_component::<postretro_entities::Transform>(id) else {
+            continue;
+        };
+        let (aim_yaw, _, _) = transform.rotation.to_euler(EulerRot::YXZ);
 
-        let (idle_state, walk_state, run_state, current_state) = {
-            let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+        let (stored_direction, direction, selection) = {
+            let Some(animation) = registry
+                .get_component::<MeshComponent>(id)
+                .ok()
+                .and_then(|mesh| mesh.animation.as_ref())
+            else {
                 continue;
             };
-            let Some(animation) = mesh.animation.as_ref() else {
-                continue;
+            let direction =
+                classify_locomotion_direction(velocity, aim_yaw, animation.locomotion_direction);
+            let input = LocomotionInput {
+                speed_xz,
+                walk_speed,
+                run_speed,
+                direction,
+                current_state: &animation.current_state,
             };
-            let walk_state = ["walk_forward", "walk"]
-                .into_iter()
-                .find(|state| animation.states.contains_key(*state))
-                .map(str::to_string);
-            let Some(walk_state) = walk_state else {
-                continue;
-            };
-            (
-                animation.default_state.clone(),
-                walk_state,
-                animation
-                    .states
-                    .contains_key("run")
-                    .then(|| "run".to_string()),
-                animation.current_state.clone(),
-            )
+            let selection = PlayerLocomotionStates::from_animation(animation).map(|states| {
+                let (state, tier) = states.select(&input, |state| animation.is_state_usable(state));
+                let target = state.unwrap_or(&animation.default_state);
+                // Only an actual switch needs an owned name.
+                let switch_to = (animation.current_state != target).then(|| target.to_string());
+                (switch_to, tier)
+            });
+            (animation.locomotion_direction, direction, selection)
         };
-        let moving = speed_xz.is_finite() && speed_xz > MOVING_SPEED_EPSILON;
-        let (target_state, fallback_speed) = if !moving {
-            (idle_state, 1.0)
-        } else if speed_xz > walk_speed && run_state.is_some() {
-            (run_state.expect("checked above"), run_speed)
-        } else {
-            (walk_state, walk_speed)
-        };
-        if current_state != target_state {
-            let _ = switch_animation_state(registry, id, &target_state);
+        if direction != stored_direction {
+            store_locomotion_direction(registry, id, direction);
         }
+        let Some((switch_to, tier)) = selection else {
+            continue;
+        };
+        // A refused switch (an unresolved clip) leaves another state playing,
+        // which rests at its authored rate.
+        let target_reached = switch_to.is_none_or(|target| {
+            matches!(
+                switch_animation_state(registry, id, &target),
+                SwitchResult::Switched | SwitchResult::AlreadyInState
+            )
+        });
+        let (moving, fallback_speed) = match tier {
+            LocomotionTierKind::Idle => (false, 1.0),
+            LocomotionTierKind::Walk => (true, walk_speed),
+            LocomotionTierKind::Run => (true, run_speed),
+        };
 
         let rate_input = registry
             .get_component::<MeshComponent>(id)
             .ok()
             .and_then(|mesh| {
                 let animation = mesh.animation.as_ref()?;
-                if !moving || animation.current_state != target_state || !animation.speed_scale {
+                if !moving || !target_reached || !animation.speed_scale {
                     return Some(1.0);
                 }
                 let effective = effective_travel_speed(animation, mesh, hit_zone_store);
@@ -1277,6 +1301,11 @@ pub struct PresentationPoseInputs<'a> {
     pub remote_aim_pitches: &'a HashMap<NetworkId, f32>,
     pub remote_heading_yaws: &'a HashMap<NetworkId, f32>,
     pub remote_network_ids: &'a HashMap<EntityId, NetworkId>,
+    /// The local pawn has no locomotion state selector on this peer (a connected
+    /// client takes its own pawn's state from the host), so this pass keeps the
+    /// pawn's forward/backward memory. Elsewhere the fixed tick's selector owns
+    /// that memory and this pass only reads it.
+    pub local_pawn_owns_direction: bool,
 }
 
 pub fn update_presentation_pose_inputs(
@@ -1294,6 +1323,7 @@ pub fn update_presentation_pose_inputs(
         remote_aim_pitches,
         remote_heading_yaws,
         remote_network_ids,
+        local_pawn_owns_direction,
     } = presentation;
     update_pose_inputs(
         registry,
@@ -1302,6 +1332,7 @@ pub fn update_presentation_pose_inputs(
         remote_aim_pitches,
         remote_heading_yaws,
         remote_network_ids,
+        local_pawn_owns_direction,
     );
     update_foot_ground_probes(
         registry,
@@ -1316,7 +1347,10 @@ pub fn update_presentation_pose_inputs(
 /// Write same-tick presentation inputs after AI and steering have settled the
 /// entity's target and body rotation. Every animated mesh receives a finite
 /// value; entities without a live acquired target hold their body heading with
-/// zero pitch, making pose modifiers a visual no-op.
+/// zero pitch, making pose modifiers a visual no-op. Player pawns fold their
+/// travel heading by the forward/backward classification; see
+/// [`presented_player_heading`]. With `local_pawn_owns_direction` this pass is
+/// also the local pawn's direction-memory writer.
 fn update_pose_inputs(
     registry: &mut EntityRegistry,
     camera_aim: (f32, f32),
@@ -1324,6 +1358,7 @@ fn update_pose_inputs(
     remote_aim_pitches: &HashMap<NetworkId, f32>,
     remote_heading_yaws: &HashMap<NetworkId, f32>,
     remote_network_ids: &HashMap<EntityId, NetworkId>,
+    local_pawn_owns_direction: bool,
 ) {
     const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
 
@@ -1391,49 +1426,45 @@ fn update_pose_inputs(
 
         let (aim_pitch, aim_yaw, heading_yaw) = if registry.local_player_movement_pawn() == Some(id)
         {
-            let player_heading = registry
-                .get_component::<PlayerMovementComponent>(id)
-                .ok()
-                .map(|movement| movement.velocity)
-                .filter(|velocity| velocity.is_finite())
-                .map(|velocity| player_travel_heading_yaw(velocity, heading_yaw))
-                .unwrap_or(heading_yaw);
             let aim_pitch = camera_aim
                 .0
                 .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
-            let aim_yaw = camera_aim.1;
+            let aim_yaw = if camera_aim.1.is_finite() {
+                camera_aim.1
+            } else {
+                heading_yaw
+            };
+            let player_heading = presented_player_heading(
+                registry,
+                id,
+                aim_yaw,
+                heading_yaw,
+                local_pawn_owns_direction,
+            );
             (
                 if aim_pitch.is_finite() {
                     aim_pitch
                 } else {
                     0.0
                 },
-                if aim_yaw.is_finite() {
-                    aim_yaw
-                } else {
-                    player_heading
-                },
+                aim_yaw,
                 player_heading,
             )
         } else if let Some(&(aim_pitch, aim_yaw)) = remote_player_aims.get(&id) {
-            let player_heading = registry
-                .get_component::<PlayerMovementComponent>(id)
-                .ok()
-                .map(|movement| movement.velocity)
-                .filter(|velocity| velocity.is_finite())
-                .map(|velocity| player_travel_heading_yaw(velocity, heading_yaw))
-                .unwrap_or(heading_yaw);
+            let aim_yaw = if aim_yaw.is_finite() {
+                aim_yaw
+            } else {
+                heading_yaw
+            };
+            let player_heading =
+                presented_player_heading(registry, id, aim_yaw, heading_yaw, false);
             (
                 if aim_pitch.is_finite() {
                     aim_pitch.clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2)
                 } else {
                     0.0
                 },
-                if aim_yaw.is_finite() {
-                    aim_yaw
-                } else {
-                    heading_yaw
-                },
+                aim_yaw,
                 player_heading,
             )
         } else if let Some(network_id) = remote_network_ids.get(&id)
@@ -1484,18 +1515,54 @@ fn update_pose_inputs(
     }
 }
 
-/// Convert player travel velocity to the engine's yaw convention, where yaw zero
-/// faces `-Z`. Stationary or non-finite input retains the supplied body heading.
-pub fn player_travel_heading_yaw(velocity: Vec3, fallback: f32) -> f32 {
-    const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
-    let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
-    if velocity.is_finite() && horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ {
-        let yaw = (-velocity.x).atan2(-velocity.z);
-        if yaw.is_finite() {
-            return yaw;
-        }
+/// The lower-body heading a host or local pawn presents: travel folded by the
+/// forward/backward classification against `aim_yaw`. A freshly entered state
+/// seeds the classification where it decides a direction, so a backward clip
+/// received from the host folds the legs with it; outside the dead zone travel
+/// still decides, keeping the twist bounded. Only `owns_direction` writes the
+/// result back as the pawn's memory. Stationary pawns face `fallback`.
+fn presented_player_heading(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    aim_yaw: f32,
+    fallback: f32,
+    owns_direction: bool,
+) -> f32 {
+    let Some(velocity) = registry
+        .get_component::<PlayerMovementComponent>(id)
+        .ok()
+        .map(|movement| movement.velocity)
+        .filter(|velocity| velocity.is_finite())
+    else {
+        return fallback;
+    };
+    let Some(animation) = registry
+        .get_component::<MeshComponent>(id)
+        .ok()
+        .and_then(|mesh| mesh.animation.as_ref())
+    else {
+        return fallback;
+    };
+    let stored = animation.locomotion_direction;
+    // Only a freshly entered state seeds the classification. The state can lag
+    // this pass (a connected client's own pawn takes it from the host a round
+    // trip late), so seeding from it every frame would undo a band crossing the
+    // state has not caught up with yet.
+    let entering = animation.entered_at.is_none() || animation.previous_state.is_some();
+    let previous = entering
+        .then(|| PlayerLocomotionStates::from_animation(animation))
+        .flatten()
+        .and_then(|states| {
+            states.direction_of(&animation.current_state, |state| {
+                animation.is_state_usable(state)
+            })
+        })
+        .unwrap_or(stored);
+    let direction = classify_locomotion_direction(velocity, aim_yaw, previous);
+    if owns_direction && direction != stored {
+        store_locomotion_direction(registry, id, direction);
     }
-    fallback
+    player_travel_heading_yaw(velocity, direction, fallback)
 }
 
 /// Model-space downward reach of each foot ground probe, in model units. Ground
@@ -1889,8 +1956,8 @@ mod tests {
     use postretro_entities::components::agent::AgentComponent;
     use postretro_entities::components::inventory::Inventory;
     use postretro_entities::components::mesh::{
-        AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
-        resolve_pending_animation_stamps,
+        AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, LocomotionDirection, MeshAnimation,
+        MeshComponent, resolve_pending_animation_stamps,
     };
     use postretro_entities::components::touchable::TouchableComponent;
     use postretro_entities::data_descriptors::{
@@ -2458,11 +2525,13 @@ mod tests {
     #[test]
     fn player_travel_heading_uses_negative_z_as_yaw_zero() {
         let epsilon = 1.0e-5;
-        assert!(player_travel_heading_yaw(Vec3::NEG_Z, 9.0).abs() < epsilon);
+        let forward = LocomotionDirection::Forward;
+        assert!(player_travel_heading_yaw(Vec3::NEG_Z, forward, 9.0).abs() < epsilon);
         assert!(
-            (player_travel_heading_yaw(Vec3::X, 9.0) + std::f32::consts::FRAC_PI_2).abs() < epsilon
+            (player_travel_heading_yaw(Vec3::X, forward, 9.0) + std::f32::consts::FRAC_PI_2).abs()
+                < epsilon
         );
-        assert_eq!(player_travel_heading_yaw(Vec3::ZERO, 0.75), 0.75);
+        assert_eq!(player_travel_heading_yaw(Vec3::ZERO, forward, 0.75), 0.75);
     }
 
     // Regression: host locomotion hard-coded an `idle` state while connected clients
@@ -2516,6 +2585,111 @@ mod tests {
                 .current_state,
             "stand"
         );
+    }
+
+    #[test]
+    fn player_locomotion_backpedal_selects_backward_states_per_tier() {
+        let mut registry = EntityRegistry::new();
+        // Identity transform: aim yaw zero faces -Z, so +Z travel is a backpedal.
+        let pawn = registry.spawn(Transform::default());
+        let state = |clip: &str, clip_index: Option<usize>, travel_speed| AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed,
+            clip_index,
+        };
+        let set_states = |registry: &mut EntityRegistry, states: Vec<(&str, AnimationState)>| {
+            let states = states
+                .into_iter()
+                .map(|(name, state)| (name.to_string(), state))
+                .collect();
+            registry
+                .set_component(
+                    pawn,
+                    MeshComponent::animated(
+                        "player".to_string(),
+                        MeshAnimation::new(states, "idle".to_string()),
+                    ),
+                )
+                .unwrap();
+        };
+        let step = |registry: &mut EntityRegistry, velocity: Vec3| {
+            let mut movement = trigger_movement();
+            movement.velocity = velocity;
+            registry.set_component(pawn, movement).unwrap();
+            update_player_animation_locomotion(registry, &HitZoneStore::new(), 0.0);
+            let animation = registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            (
+                animation.current_state.clone(),
+                animation.locomotion_direction,
+                animation.rate,
+            )
+        };
+        let backward = LocomotionDirection::Backward;
+        let forward = LocomotionDirection::Forward;
+
+        set_states(
+            &mut registry,
+            vec![
+                ("idle", state("idle", Some(0), None)),
+                ("walk_forward", state("walk_forward", Some(1), Some(4.0))),
+                ("walk_backward", state("walk_backward", Some(2), Some(5.0))),
+                ("run_forward", state("run_forward", Some(3), None)),
+                ("run_backward", state("run_backward", Some(4), None)),
+            ],
+        );
+        let (state_name, direction, rate) = step(&mut registry, Vec3::Z * 5.0);
+        assert_eq!(
+            (state_name.as_str(), direction),
+            ("walk_backward", backward)
+        );
+        assert!(
+            (rate - 1.0).abs() < 1.0e-5,
+            "rate-scaled by walk_backward's own travelSpeed"
+        );
+        // 10 m/s clears the run tier's entry (walk/run midpoint 9 plus the band, 9.6).
+        let (state_name, direction, _) = step(&mut registry, Vec3::Z * 10.0);
+        assert_eq!((state_name.as_str(), direction), ("run_backward", backward));
+        // Pure strafe sits in the dead zone: the backpedal holds.
+        let (state_name, direction, _) = step(&mut registry, Vec3::X * 5.0);
+        assert_eq!(
+            (state_name.as_str(), direction),
+            ("walk_backward", backward)
+        );
+        // Stopping keeps the memory, so a delayed presentation still drawing the
+        // last of the strafe keeps its fold.
+        let (state_name, direction, _) = step(&mut registry, Vec3::ZERO);
+        assert_eq!((state_name.as_str(), direction), ("idle", backward));
+        let (state_name, direction, _) = step(&mut registry, Vec3::NEG_Z * 10.0);
+        assert_eq!((state_name.as_str(), direction), ("run_forward", forward));
+        let (state_name, direction, rate) = step(&mut registry, Vec3::NEG_Z * 5.0);
+        assert_eq!((state_name.as_str(), direction), ("walk_forward", forward));
+        assert!(
+            (rate - 1.25).abs() < 1.0e-5,
+            "rate-scaled by walk_forward's own travelSpeed"
+        );
+        let (state_name, direction, _) = step(&mut registry, Vec3::ZERO);
+        assert_eq!((state_name.as_str(), direction), ("idle", forward));
+
+        // A backward state whose clip did not resolve plays the forward clip, and
+        // the legs still backpedal.
+        set_states(
+            &mut registry,
+            vec![
+                ("idle", state("idle", Some(0), None)),
+                ("walk_forward", state("walk_forward", Some(1), None)),
+                ("walk_backward", state("walk_backward", None, None)),
+            ],
+        );
+        let (state_name, direction, _) = step(&mut registry, Vec3::Z * 5.0);
+        assert_eq!((state_name.as_str(), direction), ("walk_forward", backward));
     }
 
     fn trigger_component(on_fire: &str, armed: bool) -> TriggerVolumeComponent {

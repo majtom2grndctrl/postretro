@@ -30,7 +30,7 @@ impl MeshAnimation {
 
     /// A state is usable for switching only when it is declared *and* its clip
     /// resolved at level load (`clip_index.is_some()`).
-    fn is_state_usable(&self, state: &str) -> bool {
+    pub fn is_state_usable(&self, state: &str) -> bool {
         self.states
             .get(state)
             .is_some_and(|s| s.clip_index.is_some())

@@ -4925,6 +4925,7 @@ impl App {
                 remote_aim_pitches: &self.remote_player_presentation.aim_pitches,
                 remote_heading_yaws: &self.remote_player_presentation.heading_yaws,
                 remote_network_ids: &remote_network_ids,
+                local_pawn_owns_direction: true,
             },
         );
     }

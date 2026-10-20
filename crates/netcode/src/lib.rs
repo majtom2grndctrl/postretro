@@ -7549,15 +7549,7 @@ mod tests {
         );
         replication.cache_remote_player_locomotion(
             NetworkId(7),
-            Some(client::RemotePlayerLocomotionReference {
-                idle_state: "idle".to_string(),
-                walk_state: "walk_forward".to_string(),
-                run_state: None,
-                walk_speed: 60.0,
-                run_speed: 60.0,
-                walk_derived_travel_speed: None,
-                run_derived_travel_speed: None,
-            }),
+            Some(client::RemotePlayerLocomotionReference::idle_and_walk_forward(60.0)),
         );
 
         let inputs = client_sample_interpolation(

@@ -49,34 +49,29 @@ pub(super) fn materialize_remote_entities(
                 let movement = descriptor.movement.as_ref()?;
                 let mesh = descriptor.mesh.as_ref()?;
                 let idle_state = mesh.default_state.clone()?;
-                let walk_state = ["walk_forward", "walk"]
-                    .into_iter()
-                    .find(|state| mesh.animations.contains_key(*state))?
-                    .to_string();
-                let run_state = mesh
-                    .animations
-                    .contains_key("run")
-                    .then(|| "run".to_string());
-                let derived_travel_speed = |state_name: &str| {
-                    let state = mesh.animations.get(state_name)?;
-                    hit_zone_store
-                        .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
-                        .and_then(|model| {
-                            model
-                                .clips
-                                .iter()
-                                .find(|clip| clip.name == state.clip)
-                                .and_then(|clip| clip.travel_speed)
-                        })
-                };
+                let states = crate::sim::PlayerLocomotionStates::from_declared(|state| {
+                    mesh.animations.contains_key(state)
+                })?;
+                let model =
+                    hit_zone_store.get(&postretro_model::ModelHandle::from(mesh.model.clone()));
+                let derived_travel_speeds = states
+                    .state_names()
+                    .filter_map(|state_name| {
+                        let state = mesh.animations.get(state_name)?;
+                        let speed = model?
+                            .clips
+                            .iter()
+                            .find(|clip| clip.name == state.clip)?
+                            .travel_speed?;
+                        Some((state_name.to_string(), speed))
+                    })
+                    .collect();
                 Some(client::RemotePlayerLocomotionReference {
                     idle_state,
-                    walk_derived_travel_speed: derived_travel_speed(&walk_state),
-                    run_derived_travel_speed: run_state.as_deref().and_then(derived_travel_speed),
-                    walk_state,
-                    run_state,
+                    states,
                     walk_speed: movement.ground.speed.walk,
                     run_speed: movement.ground.speed.run,
+                    derived_travel_speeds,
                 })
             });
             replication.cache_remote_player_locomotion(remote.network_id, player_locomotion);
@@ -134,6 +129,12 @@ pub(super) fn materialize_remote_entities(
         replication.cache_remote_presentation_complete(remote.network_id, complete);
         if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
             client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
+            replication.seed_remote_player_direction(
+                registry,
+                remote.network_id,
+                remote.entity_id,
+                state,
+            );
         }
         let attachment_changed = remote.weapon_attachment_changed
             && remote_materialize::update_active_weapon_attachment(

@@ -631,8 +631,7 @@ mod tests {
                 grounded_only: false,
             }),
             impulse: None,
-            slide: None,
-            vault: None,
+            pose: None,
         };
         desc.view_feel = Some(view_feel.clone());
         let comp = PlayerMovementComponent::from_descriptor(&desc);

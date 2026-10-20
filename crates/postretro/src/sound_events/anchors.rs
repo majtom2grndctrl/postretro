@@ -5,10 +5,7 @@
 
 use glam::Vec3;
 use postretro_audio::SoundAnchor;
-use postretro_entities::{
-    ComponentKind, ComponentValue, Emitter, EntityId, EntityRegistry, KinematicMoverComponent,
-    Transform,
-};
+use postretro_entities::{Emitter, EntityId, EntityRegistry, KinematicMoverComponent, Transform};
 use postretro_foundation::PlayerMovementComponent;
 use postretro_level_loader::LevelWorld;
 
@@ -83,14 +80,4 @@ impl AnchorScene<'_> {
         }
         Some(pose.position)
     }
-}
-
-/// Find a mover's entity by its level-stable mover id.
-pub(super) fn mover_entity(registry: &EntityRegistry, mover_id: u32) -> Option<EntityId> {
-    registry
-        .iter_with_kind(ComponentKind::KinematicMover)
-        .find_map(|(id, value)| match value {
-            ComponentValue::KinematicMover(mover) if mover.mover_id == mover_id => Some(id),
-            _ => None,
-        })
 }

@@ -342,8 +342,7 @@ mod tests {
                 tilt: None,
                 sway: None,
                 impulse: None,
-                slide: None,
-                vault: None,
+                pose: None,
             }),
         }
     }

@@ -233,5 +233,28 @@ fn command_between_two_simulate_ticks_is_pin_tested_before_the_mover_tick() {
         (rig.lift().1 - held_at).length() < 1.0e-6,
         "the second tick's driver never ran the course into the rider"
     );
+    assert!(rig.lift().0.blocked, "the course into the pin held again");
     assert!(!rig.rider_overlaps_ceiling());
+
+    // The next frame's fire list reverses it between its two ticks: a course
+    // away from the pin moves on the second tick and never embeds the rider
+    // on the way back down.
+    rig.tick();
+    rig.command(MoverCommand::Reverse);
+    rig.tick();
+    let (lift, position) = rig.lift();
+    assert!(
+        !lift.blocked && position.y < held_at.y,
+        "the reversed lift backs off on the second tick: {position:?}"
+    );
+    assert!(!rig.rider_overlaps_ceiling());
+    for _ in 0..120 {
+        rig.tick();
+        assert!(!rig.rider_overlaps_ceiling(), "the descent never embeds");
+    }
+    let (lift, position) = rig.lift();
+    assert!(
+        !lift.started && position.y.abs() < 1.0e-3,
+        "the reversed lift came home unstarted: {position:?}"
+    );
 }

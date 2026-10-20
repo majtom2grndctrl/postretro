@@ -1,5 +1,5 @@
-// Host tick-order rig for mover pin tests: driver, player movement and the
-// blocking pass in `simulate_tick`'s order, over box geometry.
+// Host tick-order rig for mover pin tests: pre-tick pin test, driver, player
+// movement, trigger stage, auto-close and blocking pass in `simulate_tick`'s order.
 // See: context/lib/movement.md §6 · context/lib/entity_model.md §5
 
 use std::collections::HashMap;
@@ -297,8 +297,8 @@ impl Rig {
         entity
     }
 
-    /// Add a pawn standing at `position` (capsule centre) and settle it with
-    /// every mover still unstarted.
+    /// Add an idle pawn at `position` (capsule centre). It settles over the
+    /// caller's next ticks.
     pub(super) fn add_pawn(&mut self, position: Vec3) -> EntityId {
         let pawn = self.registry.spawn(Transform {
             position,
@@ -516,7 +516,8 @@ impl Rig {
         TickReport { events, impacts }
     }
 
-    /// Ground the pawn on `mover_id`, as a rider that settled on it would be.
+    /// Assert the pawn is grounded on `mover_id`, as a rider settled on its
+    /// deck is.
     pub(super) fn assert_rides(&self, pawn: EntityId, mover_id: u32) {
         assert_eq!(
             self.pawn(pawn).ground,

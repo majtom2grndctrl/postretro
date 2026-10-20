@@ -236,10 +236,13 @@ pub fn run_mover_blocking_pass(
         return;
     }
 
+    let next_travel =
+        pin::next_mover_travel(registry, mover_colliders, &player_bodies, tick_dt, true);
     let pin_world = pin::PinWorld {
         static_world,
         mover_colliders,
         mover_poses,
+        next_travel: &next_travel,
     };
     let agent_capsules = agent_capsules(registry);
     let mut contacted_stop_movers = HashSet::new();

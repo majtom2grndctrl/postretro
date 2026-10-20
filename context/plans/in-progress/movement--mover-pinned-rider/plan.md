@@ -20,6 +20,9 @@ read at: 411d3fb
 - **Crush widening.** Crush keeps today's this-tick push test, now blocked by static or another mover, and adds the previewed rider-carry test plus a carried rider already embedded in static geometry (the sweep misses once it starts inside). A body with a running cadence also stays pinned while the previewed course still pins it, so displacement shuffling it between two movers does not restart the cadence. Crush never holds. In real tick order the old own-push test never caught a carried rider at all; the rider tests are what crush a ceiling rider now.
 - **Held `displace` movers always enter the pass**, even with no pawn in reach, so a hold releases when its pawn despawns.
 - **Dead pawns** count as bodies, as they do for every reaction today.
+- **Other movers as blockers** are swept by the body's motion relative to each one's previewed next-tick translation (`pin::next_mover_travel`, movers within a tick of a pawn), so parts of one machine moving together never pin a rider between them. Last-tick travel was tried first and failed at every same-tick start and turnaround. A pre-tick yield changes that mover's travel, so the pre-tick test repeats until no mover newly yields. Another mover's spin is not part of the relative motion.
+- **Rider sweep margin.** The rider carry sweep stops one skin width short, as the push test does. A contact-only sweep left a rider touching a ceiling mover, which then read that contact as a push when it slid (the hatch case). A rider left under one skin (2 cm) of headroom at a stop holds one tick short and warns.
+- **Crusher with a running cadence** keeps pinning a rider embedded in static geometry while paused or completed.
 - **Warning text** names the mover id and its TrenchBroom position (`(-z, -x, y) / MAP_UNIT_METRES`); movers carry no authored name in the component.
 
 ## AC-to-proof
@@ -66,6 +69,10 @@ Physics tick-order rig (`kinematic_mover/pin_test_fixtures.rs`): pre-tick test â
 | M2 co-op client feel | owner, in-engine, lag preset 45/60/5 % | manual |
 | M3 mapper predicts from FGD help + docs | owner, reading | manual |
 
+## Review loop
+- Round 1 (`/review-panel` on the branch). Acted on: onset gated on the live hold (contactâ†’pin, reactive reverse, pretest); no-motion reversal holds; `reverse` on a parked `once` mover opens it; auto-close on a parked unstarted mover is a no-op; relative-motion mover blockers; paused/completed crusher keeps an embedded rider pinned; one pose source; FGD help, `docs/level_design.md`, dev-map README; test strengthening. Declined: contact-only rider sweep (see Delegated answers).
+- Accepted residuals: `blocking.rs` stays ~830 lines with the pin predicate and yields already split into `pin.rs`; the pass previews only movers within one tick of a pawn (`any_body_in_reach`), so the hot-path cost is bounded by movers near players.
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
@@ -76,6 +83,6 @@ Physics tick-order rig (`kinematic_mover/pin_test_fixtures.rs`): pre-tick test â
 | 4 | Sim wiring of the pre-tick test + sim tests (AC 20, 21) | integrating executor | 3 | done 5b4dc1c, 4b95760 |
 | 5 | Automated AC matrix in `pin_tests.rs` | integrating executor | 3 | done 5b4dc1c, 55d7edb |
 | 6 | Netcode loopback harness runs the pass; AC 28 | worker | 3 | done 55d7edb |
-| 7 | FGD help, SDK `setBlockPolicy` doc + typedef fixtures, `docs/level_design.md` movers section | worker | 3 | |
+| 7 | FGD help, SDK `setBlockPolicy` doc + typedef fixtures, `docs/level_design.md` movers section | worker | 3 | done fa1f334, 5bd68dc |
 | 8 | Dev map `content/dev/maps/mover-pins.map` holding every case | worker | â€” | done 5b313ec (compiles; in-engine untested) |
 | 9 | Diff gates (AC 29, 30) | integrating executor | 6, 7, 8 | |

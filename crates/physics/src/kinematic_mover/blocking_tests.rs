@@ -1,4 +1,5 @@
-// Host blocking-pass tests: stop, reverse and crush reactions to players and agents.
+// Host blocking-pass tests: each policy's reactions to player and agent contacts.
+// Pinned-body yields are proved in tick order in pin_tests.rs.
 // See: context/lib/movement.md §6 · context/lib/networking.md
 
 use super::*;

@@ -52,7 +52,7 @@ Every source symbol that Decisions and Path cite was re-read at `db0f270d3`. No 
     - **AC 10:** round-trips five values.
     - **AC 19:** `probes` allocates only the placeholder.
     - **AC 26:** stepping to `probes` removes SSR and keeps the probe term.
-- **Owner decision (2026-10-20, revised): tier presets and ULTRA.** This supersedes the probes-only entry above. The ladder is `off` / `low` / `medium` / `high` / `ultra`, default `high`.
+- **Owner decision (2026-10-20, revised twice): tier presets, VERY HIGH and ULTRA.** This supersedes the probes-only entry above. The ladder is `off` / `low` / `medium` / `high` / `very_high` / `ultra`, default `high`. `very_high` must run smoothly on the GTX 1660 Super; `ultra` may slow it down, and is aimed at RTX 30x0-class GPUs. Preset values are set from new perf data (Mac agent plus 1660 sweeps); until then the table holds placeholders.
   - `low` is the probe term only: no SSR target and no reflection pass.
   - `medium`, `high` and `ultra` run SSR. Each tier is a preset of resolution fraction, step budget, stride divisor and thickness. This supersedes the brief's "every tier marches the same stride and step budget".
   - Starting presets:

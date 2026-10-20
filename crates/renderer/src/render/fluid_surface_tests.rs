@@ -794,7 +794,7 @@ fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
         .find("label: Some(\"Skinned Mesh Pass\")")
         .expect("skinned mesh pass");
     let reflection = frame
-        .find("self.record_fluid_reflection_pass(encoder, frame_light_term_mask);")
+        .find("self.record_fluid_reflection_pass(")
         .expect("reflection pass");
     let fluid = frame
         .find("label: Some(\"Fluid Surface Pass\")")
@@ -809,8 +809,10 @@ fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
     );
     let reflection_gate = code_only(&frame[skinned..reflection]);
     assert!(
-        reflection_gate
-            .ends_with("ifself.full().fluid_surface.has_reflecting_draws(frame_light_term_mask){"),
+        reflection_gate.ends_with(
+            "ifself.full().fluid_surface.has_reflecting_draws(frame_light_term_mask,\
+             frame_reflection_quality){"
+        ),
         "{reflection_gate}"
     );
     let pass = include_str!("fluid_surface/reflection_pass.rs");
@@ -3016,31 +3018,84 @@ fn fluid_pass_block() -> &'static str {
 
 // Two fluid pipelines: the frame's fluid draws pick their shader variants by
 // the mask the frame's group-0 uniform carries, the one the reflecting
-// variant's per-fragment gate reads, never the live UI mask.
+// variant's per-fragment gate reads, never the live UI mask, and by the
+// reflection tier read once beside it. The reflection pass takes its draws
+// and its gate by the same two values, so both passes of a frame agree on
+// every draw's variant (acceptance row 3, P9, P13).
 #[test]
 fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
     let frame = code_only(include_str!("renderer_render_frame.rs"));
     let snapshot = frame
-        .find("letframe_light_term_mask=self.frame_light_term_mask();")
-        .expect("the frame snapshots its mask");
-    let record = frame
-        .find("fluid_surface.record_draws(&mutfluid_pass,&self.full().gpu_textures,frame_light_term_mask,);")
-        .expect("the fluid pass records with the frame's mask");
-    assert!(snapshot < record, "the mask is snapshotted before the pass");
-    // The reflection pass takes its draws by the same snapshot.
-    let reflection = frame
-        .find("self.record_fluid_reflection_pass(encoder,frame_light_term_mask);")
-        .expect("the reflection pass records with the frame's mask");
-    assert!(snapshot < reflection && reflection < record);
-    let pass = code_only(include_str!("fluid_surface/reflection_pass.rs"));
-    assert!(
-        pass.contains(
-            "fluid.record_reflection_draws(&mutpass,&full.gpu_textures,light_term_mask);"
+        .find(
+            "letframe_light_term_mask=self.frame_light_term_mask();\
+             letframe_reflection_quality=self.reflection_quality();",
         )
-    );
+        .expect("the frame snapshots its mask, then its tier beside it");
+    // The tier is read once per frame, and nothing else reads the kept one.
+    assert_eq!(frame.matches("reflection_quality()").count(), 1, "{frame}");
+    assert!(!frame.contains("kept_reflection_quality"));
+    assert!(!frame.contains("self.reflection_quality,"));
+    let record = frame
+        .find(
+            "fluid_surface.record_draws(&mutfluid_pass,&self.full().gpu_textures,\
+             frame_light_term_mask,frame_reflection_quality,);",
+        )
+        .expect("the fluid pass records with the frame's mask and tier");
+    assert!(snapshot < record, "the mask is snapshotted before the pass");
+    // The reflection pass takes its gate and its draws by the same snapshot.
+    let gate = frame
+        .find(
+            "fluid_surface.has_reflecting_draws(frame_light_term_mask,\
+             frame_reflection_quality)",
+        )
+        .expect("the reflection gate reads the frame's mask and tier");
+    let reflection = frame
+        .find(
+            "self.record_fluid_reflection_pass(encoder,frame_light_term_mask,\
+             frame_reflection_quality,);",
+        )
+        .expect("the reflection pass records with the frame's mask and tier");
+    assert!(snapshot < gate && gate < reflection && reflection < record);
+    assert_eq!(frame.matches("frame_reflection_quality").count(), 4);
+
+    let source = include_str!("fluid_surface.rs");
+    let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
+    let pass = code_only(reflection_source);
     assert!(pass.contains(
-        "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits()){if!variant.reflections(){continue;}"
+        "fluid.record_reflection_draws(&mutpass,&full.gpu_textures,light_term_mask,quality);"
     ));
+    assert!(pass.contains(
+        "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits(),quality){\
+         if!variant.reflections(){continue;}"
+    ));
+    assert!(code_only(wgsl_fn(source, "record_draws")).contains(
+        "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits(),quality){"
+    ));
+    let reflecting = code_only(wgsl_fn(reflection_source, "has_reflecting_draws"));
+    assert!(reflecting.contains("quality.reflects()&&"), "{reflecting}");
+    assert!(
+        reflecting.contains(".frame_draws(light_term_mask.bits(),quality)"),
+        "{reflecting}"
+    );
+    // Every per-frame reader takes the tier as its argument, never the kept
+    // tier, so one frame cannot see two.
+    for (file, name) in [
+        (source, "record_draws"),
+        (reflection_source, "record_reflection_draws"),
+        (reflection_source, "has_reflecting_draws"),
+        (reflection_source, "record_fluid_reflection_pass"),
+    ] {
+        let body = code_only(wgsl_fn(file, name));
+        assert!(body.contains("quality:FluidReflectionQuality"), "{name}");
+        assert!(
+            !body.contains("reflection.quality"),
+            "{name} reads the kept tier"
+        );
+        assert!(
+            !body.contains("reflection_quality"),
+            "{name} reads the kept tier"
+        );
+    }
 }
 
 // The pass opens depth read-only so group 5 can load the same texture; it
@@ -3061,11 +3116,18 @@ fn fluid_pass_opens_depth_read_only() {
     );
 }
 
-// Pin P4: group 5 is built at full init and rebuilt only where what it binds
-// changes: the scene-target rebuild, a fluid install that creates the
-// reflection target, and the clear (level change and unload) that drops it.
-// Never in the frame. The uniforms upload before the reflection pass, so both
-// passes of one frame draw one style (P8).
+// Pin P4, widened (acceptance row 20): group 5 is built at full init and
+// rebuilt at exactly these points, where what it binds changes:
+//   - full init (`FluidSurfacePass::new`), level or not, over the placeholder;
+//   - the scene-target rebuild (`rebuild_scene_inputs`);
+//   - a fluid install or a tier change that creates or drops the reflection
+//     target, or resizes it, since a resized target is a new view (medium to
+//     high, say): both reach `set_reflection_target`, the one rebinding path;
+//   - unload, through the clear, which rebinds the placeholder.
+// Setting the tier it already holds builds nothing, nor does an extent the
+// target already has. Never in the frame; never on a reflectivity change
+// (P17). The uniforms upload before the reflection pass, so both passes of
+// one frame draw one style (P8).
 #[test]
 fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets() {
     let block = fluid_pass_block();
@@ -3076,7 +3138,10 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         .find("fluid_surface.upload_scene_inputs(queue);")
         .expect("scene inputs upload in the fluid gate");
     let reflection = frame_block
-        .find("self.record_fluid_reflection_pass(encoder,frame_light_term_mask);")
+        .find(
+            "self.record_fluid_reflection_pass(encoder,frame_light_term_mask,\
+             frame_reflection_quality,);",
+        )
         .expect("reflection pass in the fluid gate");
     assert!(upload < reflection, "{frame_block}");
 
@@ -3131,28 +3196,47 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         .find("self.scene_inputs.rebuild(device,scene_depth,self.reflection.bound_view());")
         .expect("group 5 over the new depth and target");
     assert!(target_first < group_5, "{follow}");
+    // P2: the scene-target rebuild recreates a live target first, at the
+    // kept tier's fraction of the new extent, then the reflection inputs.
     let resize = code_only(wgsl_fn(reflection_source, "resize"));
+    let recreated = resize
+        .find(
+            "ifself.target.take().is_some()&&letSome(extent)=self.tier_target_extent(){\
+             self.create_target(device,extent);}",
+        )
+        .expect("target recreated at the tier's extent");
     assert!(
         resize
-            .find("self.create_target(device);")
-            .expect("target recreated")
-            < resize
-                .find("self.inputs_bind_group=")
-                .expect("inputs rebuilt"),
+            .find("self.scene_extent=texture_extent(scene_color);")
+            .unwrap()
+            < recreated
+            && recreated
+                < resize
+                    .find("self.inputs_bind_group=")
+                    .expect("inputs rebuilt"),
         "{resize}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(reflection_source, "tier_target_extent")),
+        "fntier_target_extent(&self)->Option<(u32,u32)>{\
+         self.quality.target_extent(self.scene_extent)}"
     );
     assert!(
         code_only(wgsl_fn(reflection_source, "rebind_reflection_target")).contains(
             "self.scene_inputs.rebuild(device,&scene_depth,self.reflection.bound_view());"
         )
     );
-    // A target change rebinds once; the same answer builds nothing; a released
-    // target drops only after group 5 holds the placeholder.
+    // A target change (create, resize or release) rebinds once; the extent it
+    // already has builds nothing; a replaced or released target drops only
+    // after group 5 holds its successor or the placeholder (P6).
     let change = code_only(wgsl_fn(reflection_source, "set_reflection_target"));
     assert!(change.starts_with(
-        "fnset_reflection_target(&mutself,device:&wgpu::Device,wanted:bool){\
-         ifwanted==self.reflection.target.is_some(){return;}"
+        "fnset_reflection_target(&mutself,device:&wgpu::Device,wanted:Option<(u32,u32)>,){\
+         ifwanted==self.reflection.live_target_extent(){return;}"
     ));
+    let created = change
+        .find("ifletSome(extent)=wanted{self.reflection.create_target(device,extent);}")
+        .expect("create at the wanted extent");
     let taken = change
         .find("letreleased=self.reflection.target.take();")
         .expect("take");
@@ -3160,29 +3244,90 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         .find("self.rebind_reflection_target(device);")
         .expect("rebind");
     let dropped = change.find("drop(released);").expect("drop");
-    assert!(taken < rebound && rebound < dropped, "{change}");
+    assert!(
+        taken < created && created < rebound && rebound < dropped,
+        "{change}"
+    );
     assert_eq!(
         pass_code
             .matches("self.rebind_reflection_target(device)")
             .count(),
         1
     );
-    // Only install and clear change the target: install keys it to a
-    // probe-bound face after starting from a clear, and clear drops it.
-    assert_eq!(
-        code_only(source).matches(".set_reflection_target(").count(),
-        2
-    );
+    // Exactly three callers change the target: install keys it to a
+    // probe-bound face and the kept tier after starting from a clear; clear
+    // (level change and unload) drops it; a tier change re-keys it.
+    assert_eq!(pass_code.matches(".set_reflection_target(").count(), 3);
     let install = code_only(wgsl_fn(source, "install"));
     assert!(install.starts_with(
         "fninstall(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
     ));
     assert!(install.contains("self.clear(device);"));
-    assert!(install.ends_with("self.set_reflection_target(device,has_probe_bound_face);}"));
+    assert!(
+        install.ends_with("self.set_reflection_target(device,self.wanted_reflection_target());}")
+    );
     assert!(
         code_only(wgsl_fn(source, "clear"))
-            .contains("self.installed=None;self.set_reflection_target(device,false);")
+            .contains("self.installed=None;self.set_reflection_target(device,None);")
     );
+    assert_eq!(
+        code_only(wgsl_fn(reflection_source, "set_reflection_quality")),
+        "fnset_reflection_quality(&mutself,device:&wgpu::Device,quality:FluidReflectionQuality,){\
+         ifself.reflection.quality==quality{return;}self.reflection.quality=quality;\
+         self.set_reflection_target(device,self.wanted_reflection_target());}",
+        "the tier it already holds builds nothing (P5)"
+    );
+    // The wanted target is keyed to probe binding and the tier alone, never
+    // reflectivity, which only switches variants per frame (P17).
+    let wanted = code_only(wgsl_fn(reflection_source, "wanted_reflection_target"));
+    assert!(wanted.contains("is_some_and(InstalledFluidSurfaces::has_probe_bound_face)"));
+    assert!(
+        wanted.ends_with("self.reflection.tier_target_extent()}"),
+        "{wanted}"
+    );
+    assert!(!wanted.contains("reflectivity"), "{wanted}");
+    let set_draws = code_only(wgsl_fn(source, "set_draws"));
+    for rebuild in ["set_reflection_target", "rebind", "scene_inputs", "create_"] {
+        assert!(
+            !set_draws.contains(rebuild),
+            "set_draws reaches `{rebuild}`"
+        );
+    }
+    // The renderer's setter keeps the tier in boot state, returns on the
+    // tier it holds, and reaches the pass only on a full renderer. Full init
+    // hands the rebuilt pass the kept tier; no other renderer file sets it.
+    let setter = code_only(wgsl_fn(source, "set_reflection_quality"));
+    assert!(
+        setter.starts_with(
+            "fnset_reflection_quality(&mutself,quality:FluidReflectionQuality){\
+             ifself.reflection_quality==quality{return;}self.reflection_quality=quality;"
+        ),
+        "{setter}"
+    );
+    assert!(setter.contains(
+        "ifletSome(full)=full.as_mut(){full.fluid_surface.set_reflection_quality(device,quality);}"
+    ));
+    let init = code_only(include_str!("renderer_init.rs"));
+    let full_init = code_only(wgsl_fn(
+        include_str!("renderer_init.rs"),
+        "finish_full_init",
+    ));
+    assert!(
+        full_init.find("letfull=build_full_renderer(").unwrap()
+            < full_init
+                .find(".fluid_surface.set_reflection_quality(device,quality);")
+                .expect("full init hands the pass the kept tier"),
+        "{full_init}"
+    );
+    assert_eq!(init.matches(".set_reflection_quality(").count(), 1);
+    for other in [
+        include_str!("renderer_render_frame.rs"),
+        include_str!("renderer_extent.rs"),
+        include_str!("renderer_resources.rs"),
+        include_str!("renderer_full_init.rs"),
+    ] {
+        assert!(!code_only(other).contains("set_reflection_quality("));
+    }
 
     // The scene-target rebuild: after the scene depth and colour are
     // recreated, and the fog pass rebinds the depth.
@@ -3202,7 +3347,7 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         )
         .expect("fluid group 5 rebuild");
     assert!(depth < colour && colour < fog && fog < fluid);
-    // Level release reaches group 5 only through the clear.
+    // Unload, and every level change, reaches group 5 only through the clear.
     let resources = code_only(include_str!("renderer_resources.rs"));
     assert!(!resources.contains("rebuild_scene_inputs"));
     assert!(resources.contains("full.fluid_surface.clear(device);"));
@@ -3869,20 +4014,130 @@ fn fluid_reflection_pass_clears_its_target_and_orders_fluid_by_its_own_depth() {
     assert!(labels.contains(line), "missing timing label `{line}`");
 }
 
-// The target extent per axis at a fraction of the scene's: rounded up, never
-// below one texel.
+// The target extent per axis at the tier's fraction of the scene's, rounded
+// up and never below one texel, is render-cpu's `FluidReflectionQuality`
+// rule alone (its tests pin the rule): the renderer sizes every target
+// through it and keeps no fraction or rounding of its own.
 #[test]
-fn fluid_reflection_target_extent_rounds_up_to_at_least_one_texel() {
+fn the_reflection_target_sizes_by_the_render_cpu_tier_rule_alone() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+    let pass = code_only(include_str!("fluid_surface/reflection_pass.rs"));
+    assert_eq!(pass.matches(".target_extent(").count(), 1);
+    assert!(pass.contains("self.quality.target_extent(self.scene_extent)"));
+    for copy in ["ceil(", "FRACTION", "fraction", "0.25", "0.5)"] {
+        assert!(!pass.contains(copy), "the pass keeps its own `{copy}`");
+    }
+    assert!(!code_only(include_str!("fluid_surface.rs")).contains("ceil("));
     assert_eq!(
-        fluid_reflection_target_extent((1920, 1080), 1.0),
-        (1920, 1080)
+        FluidReflectionQuality::Medium.target_extent((1921, 1081)),
+        Some((961, 541))
     );
-    assert_eq!(
-        fluid_reflection_target_extent((1921, 1081), 0.5),
-        (961, 541)
+}
+
+// P14, by source: raising or lowering the tier compiles nothing. The
+// renderer's setter and every helper it reaches (the pass's setter, the
+// wanted extent, the target change, the target's creation and group 5's
+// rebind and scale) create no pipeline, shader module or pipeline layout;
+// those exist only in the full-init constructors, built at every tier.
+#[test]
+fn raising_the_reflection_tier_compiles_nothing() {
+    const COMPILES: [&str; 3] = [
+        "create_render_pipeline(",
+        "create_shader_module(",
+        "create_pipeline_layout(",
+    ];
+    let source = include_str!("fluid_surface.rs");
+    let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
+    let inputs = include_str!("fluid_scene_inputs.rs");
+    let target_impl = {
+        let start = reflection_source
+            .find("impl FluidReflectionTarget {")
+            .expect("the target's impl");
+        wgsl_fn(&reflection_source[start..], "new")
+    };
+    let mut bodies: Vec<(&str, String)> = vec![
+        (
+            "Renderer::set_reflection_quality",
+            code_only(wgsl_fn(source, "set_reflection_quality")),
+        ),
+        (
+            "has_probe_bound_face",
+            code_only(wgsl_fn(source, "has_probe_bound_face")),
+        ),
+        ("FluidReflectionTarget::new", code_only(target_impl)),
+        (
+            "FluidSceneInputs::rebuild",
+            code_only(wgsl_fn(inputs, "rebuild")),
+        ),
+        (
+            "FluidSceneInputs::set_ssr_scale",
+            code_only(wgsl_fn(inputs, "set_ssr_scale")),
+        ),
+        (
+            "FluidSceneInputs::bound_scene_depth",
+            code_only(wgsl_fn(inputs, "bound_scene_depth")),
+        ),
+    ];
+    for helper in [
+        "set_reflection_quality",
+        "wanted_reflection_target",
+        "set_reflection_target",
+        "tier_target_extent",
+        "live_target_extent",
+        "create_target",
+        "rebind_reflection_target",
+        "bound_view",
+        "target_scale",
+    ] {
+        bodies.push((helper, code_only(wgsl_fn(reflection_source, helper))));
+    }
+    for (name, body) in &bodies {
+        for compile in COMPILES {
+            assert!(!body.contains(compile), "{name} calls `{compile}`");
+        }
+    }
+    // The setter's call graph is closed over that list.
+    let pass_setter = &bodies
+        .iter()
+        .find(|(name, _)| *name == "set_reflection_quality")
+        .unwrap()
+        .1;
+    assert!(
+        pass_setter.contains("self.set_reflection_target(device,self.wanted_reflection_target());")
     );
-    assert_eq!(fluid_reflection_target_extent((3, 2), 0.25), (1, 1));
-    assert_eq!(fluid_reflection_target_extent((1, 1), 0.25), (1, 1));
+    // The only compiles in these modules are the full-init constructors'.
+    let pass_new = code_only(wgsl_fn(
+        &reflection_source[reflection_source
+            .find("impl FluidReflectionPass {")
+            .unwrap()..],
+        "new",
+    ));
+    for compile in COMPILES {
+        assert_eq!(
+            code_only(reflection_source).matches(compile).count(),
+            1,
+            "{compile}"
+        );
+        assert!(pass_new.contains(compile), "{compile}");
+        assert!(!code_only(inputs).contains(compile), "{compile}");
+    }
+    let fluid_new = code_only(wgsl_fn(source, "new"));
+    let fluid_pipeline = code_only(wgsl_fn(source, "create_fluid_pipeline"));
+    for (compile, count) in [
+        ("create_render_pipeline(", 1),
+        ("create_shader_module(", 1),
+        ("create_pipeline_layout(", 1),
+    ] {
+        assert_eq!(
+            code_only(source).matches(compile).count(),
+            count,
+            "{compile}"
+        );
+        assert!(
+            fluid_new.contains(compile) || fluid_pipeline.contains(compile),
+            "{compile}"
+        );
+    }
 }
 
 /// The screen-space march's own module, composed into the reflection pass.

@@ -84,7 +84,8 @@ pub(crate) fn fluid_scene_inputs_bind_group_layout_entries() -> [wgpu::BindGroup
 
 /// Group 5's layout, uniform and bind group. A level with no fluid, or none
 /// yet, still has it current: only the scene-target rebuild and a reflection
-/// target's creation or release rebuild it.
+/// target's creation, resize or release (a fluid install, a tier change or
+/// unload) rebuild it.
 pub(crate) struct FluidSceneInputs {
     layout: wgpu::BindGroupLayout,
     /// Written only when the fog weight, the reflection style or the target
@@ -99,6 +100,10 @@ pub(crate) struct FluidSceneInputs {
     /// The scene depth the bind group was last built over, kept so a
     /// reflection target change rebinds the current one.
     scene_depth: wgpu::TextureView,
+    /// The reflection target or placeholder the bind group was last built
+    /// over; tests compare it with what the reflection pass holds.
+    #[cfg(test)]
+    reflection_target: wgpu::TextureView,
     /// Bind group builds so far, init included; tests read it.
     #[cfg(test)]
     builds: u32,
@@ -172,6 +177,8 @@ impl FluidSceneInputs {
             uploaded: initial,
             scene_depth: scene_depth.clone(),
             #[cfg(test)]
+            reflection_target: reflection_target.clone(),
+            #[cfg(test)]
             builds: 1,
         }
     }
@@ -186,7 +193,8 @@ impl FluidSceneInputs {
 
     /// Rebuild over `scene_depth` and `reflection_target`, the target or its
     /// placeholder. Only the scene-target rebuild and a reflection target's
-    /// creation or release call it: the frame never builds a bind group.
+    /// creation, resize or release call it: the frame never builds a bind
+    /// group.
     pub fn rebuild(
         &mut self,
         device: &wgpu::Device,
@@ -203,6 +211,7 @@ impl FluidSceneInputs {
         self.scene_depth = scene_depth.clone();
         #[cfg(test)]
         {
+            self.reflection_target = reflection_target.clone();
             self.builds += 1;
         }
     }
@@ -264,5 +273,12 @@ impl FluidSceneInputs {
     #[cfg(test)]
     pub fn scene_depth(&self) -> (&wgpu::TextureView, u32) {
         (&self.scene_depth, self.builds)
+    }
+
+    /// The reflection target or placeholder the bind group was last built
+    /// over.
+    #[cfg(test)]
+    pub fn bound_reflection_target(&self) -> &wgpu::TextureView {
+        &self.reflection_target
     }
 }

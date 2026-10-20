@@ -203,6 +203,10 @@ impl Renderer {
 
         self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
         let frame_light_term_mask = self.frame_light_term_mask();
+        // The frame's one reflection tier, read once beside its one mask
+        // snapshot: the reflection pass and the fluid pass both take their
+        // variants by these two values.
+        let frame_reflection_quality = self.reflection_quality();
         let mut compose_succeeded = true;
 
         // Whole-loaded diagnostics copy their atlas only after the submit's
@@ -665,14 +669,18 @@ impl Renderer {
             }
             // The screen-space reflection layer, resolved into its own target
             // before the fluid pass samples it: the frame's reflecting draws,
-            // by the same mask snapshot the fluid pass picks variants by. A
-            // frame with no reflecting draw records none.
+            // by the same mask snapshot and tier the fluid pass picks variants
+            // by. Off and a frame with no reflecting draw record none.
             if self
                 .full()
                 .fluid_surface
-                .has_reflecting_draws(frame_light_term_mask)
+                .has_reflecting_draws(frame_light_term_mask, frame_reflection_quality)
             {
-                self.record_fluid_reflection_pass(encoder, frame_light_term_mask);
+                self.record_fluid_reflection_pass(
+                    encoder,
+                    frame_light_term_mask,
+                    frame_reflection_quality,
+                );
             }
             let fluid_ts = self
                 .full()
@@ -703,11 +711,13 @@ impl Renderer {
             fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
             fluid_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
             fluid_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
-            // The frame's group-0 mask picks each draw's shader variant.
+            // The frame's group-0 mask and tier pick each draw's shader
+            // variant.
             self.full().fluid_surface.record_draws(
                 &mut fluid_pass,
                 &self.full().gpu_textures,
                 frame_light_term_mask,
+                frame_reflection_quality,
             );
         }
 

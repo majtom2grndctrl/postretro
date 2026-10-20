@@ -1170,11 +1170,15 @@ fn collector_keeps_a_zero_opacity_fog_free_fluid_only_when_a_bound_face_reflects
 }
 
 // Two fluid pipelines: a draw takes the reflecting shader variant only when
-// its volume has a probe-bound face, its reflectivity is above 0, and the
-// frame's lighting mask holds every bit of `LightTermMask::ALL`; every other
-// draw takes the reflection-free variant. Opacity and fog never choose it.
+// its volume has a probe-bound face, its reflectivity is above 0, the
+// frame's lighting mask holds every bit of `LightTermMask::ALL`, and the
+// reflection tier is not Off; every other draw takes the reflection-free
+// variant. Opacity and fog never choose it. Acceptance row 2: a probe-bound
+// volume at reflectivity 1 under the all-terms mask is reflection-free at Off
+// and reflecting at low, medium and high.
 #[test]
 fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every_term() {
+    use crate::fluid_surface::reflection_quality::FluidReflectionQuality;
     use crate::frame_uniforms::LightTermMask;
     let all = LightTermMask::ALL.bits();
     // Every isolating mask: each term off alone, and every term off.
@@ -1198,21 +1202,49 @@ fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every
                     }
                     .pack();
                     for &(mask, every_term) in &masks {
-                        let expected = if has_bound_face && reflectivity > 0.0 && every_term {
-                            FluidShaderVariant::Reflecting
-                        } else {
-                            FluidShaderVariant::ReflectionFree
-                        };
-                        assert_eq!(
-                            row.shader_variant(mask),
-                            expected,
-                            "bound {has_bound_face}, reflectivity {reflectivity}, opacity \
-                             {opacity}, fog {fog_distance:?}, mask {mask:#x}"
-                        );
+                        for quality in FluidReflectionQuality::ALL {
+                            let expected = if has_bound_face
+                                && reflectivity > 0.0
+                                && every_term
+                                && quality != FluidReflectionQuality::Off
+                            {
+                                FluidShaderVariant::Reflecting
+                            } else {
+                                FluidShaderVariant::ReflectionFree
+                            };
+                            assert_eq!(
+                                row.shader_variant(mask, quality),
+                                expected,
+                                "bound {has_bound_face}, reflectivity {reflectivity}, opacity \
+                                 {opacity}, fog {fog_distance:?}, mask {mask:#x}, {quality:?}"
+                            );
+                        }
                     }
                 }
             }
         }
+    }
+    // Acceptance row 2, stated directly.
+    let probe_bound = FluidSurfaceLook {
+        surface_reflectivity: 1.0,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.6)
+    }
+    .pack();
+    assert_eq!(
+        probe_bound.shader_variant(all, FluidReflectionQuality::Off),
+        FluidShaderVariant::ReflectionFree
+    );
+    for quality in [
+        FluidReflectionQuality::Low,
+        FluidReflectionQuality::Medium,
+        FluidReflectionQuality::High,
+    ] {
+        assert_eq!(
+            probe_bound.shader_variant(all, quality),
+            FluidShaderVariant::Reflecting,
+            "{quality:?}"
+        );
     }
     assert!(FluidShaderVariant::Reflecting.reflections());
     assert!(!FluidShaderVariant::ReflectionFree.reflections());
@@ -1220,9 +1252,11 @@ fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every
 
 // The frame's draws carry their variants in the collector's far-to-near
 // order, so the pass switches pipeline only where neighbours differ; an
-// isolating mask turns every draw reflection-free.
+// isolating mask, or the Off tier, turns every draw reflection-free, and no
+// tier changes the draw order.
 #[test]
 fn slots_pair_each_frame_draw_with_its_shader_variant_in_draw_order() {
+    use crate::fluid_surface::reflection_quality::FluidReflectionQuality;
     let volumes = vec![
         volume(vec![top_face(0, [0.0; 3], 0.0)]),
         volume(vec![top_face(0, [2.0, 0.0, 0.0], 0.0)]),
@@ -1247,7 +1281,9 @@ fn slots_pair_each_frame_draw_with_its_shader_variant_in_draw_order() {
         ),
     ]);
     let all = crate::frame_uniforms::LightTermMask::ALL.bits();
-    let variants: Vec<_> = slots.frame_draws(all).collect();
+    let variants: Vec<_> = slots
+        .frame_draws(all, FluidReflectionQuality::High)
+        .collect();
     assert_eq!(
         variants,
         [
@@ -1256,11 +1292,23 @@ fn slots_pair_each_frame_draw_with_its_shader_variant_in_draw_order() {
             (1, FluidShaderVariant::ReflectionFree),
         ]
     );
-    assert!(
-        slots
-            .frame_draws(0x13F)
-            .all(|(_, variant)| variant == FluidShaderVariant::ReflectionFree)
-    );
+    for quality in FluidReflectionQuality::ALL {
+        assert!(
+            slots
+                .frame_draws(0x13F, quality)
+                .all(|(_, variant)| variant == FluidShaderVariant::ReflectionFree)
+        );
+        let tiered: Vec<_> = slots.frame_draws(all, quality).collect();
+        let expected: Vec<_> = if quality.reflects() {
+            variants.clone()
+        } else {
+            variants
+                .iter()
+                .map(|&(slot, _)| (slot, FluidShaderVariant::ReflectionFree))
+                .collect()
+        };
+        assert_eq!(tiered, expected, "{quality:?}");
+    }
 }
 
 // Steady-state collection reuses its buffers: later frames of the same view

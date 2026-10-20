@@ -8,6 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use super::fog::{FLUID_FOG_EXTINCTION_MAX, FLUID_FOG_EXTINCTION_PER_DISTANCE};
 use super::motion::FluidWaveParams;
 use super::reflection::{FLUID_REFLECTIVITY_MAX, reflection_mask_on};
+use super::reflection_quality::FluidReflectionQuality;
 use super::{FLUID_SLOTS_PER_WINDOW, FluidSurfaceDraw, FluidSurfaceVolume};
 
 const NO_SLOT: u32 = u32::MAX;
@@ -163,13 +164,19 @@ impl FluidParamsRow {
     }
 
     /// The fluid shader variant a draw with this row takes under the frame's
-    /// lighting mask. Only a volume that can draw the probe term takes the
-    /// reflecting variant: a probe-bound face (reflectivity packs 0 without
-    /// one) at reflectivity above 0, with every lighting bit on. Every other
-    /// draw takes the reflection-free variant, whose fragments match what the
-    /// reflecting variant's gate leaves them, so it is chosen for cost alone.
-    pub fn shader_variant(&self, light_term_mask: u32) -> FluidShaderVariant {
-        if self.reflectivity() > 0.0 && reflection_mask_on(light_term_mask) {
+    /// lighting mask and reflection tier. Only a volume that can draw the
+    /// probe term takes the reflecting variant: a probe-bound face
+    /// (reflectivity packs 0 without one) at reflectivity above 0, with every
+    /// lighting bit on, at any tier but Off. Every other draw takes the
+    /// reflection-free variant, whose fragments match what the reflecting
+    /// variant's gate leaves them, so it is chosen for cost alone; at Off the
+    /// player recovers the probe term's cost too.
+    pub fn shader_variant(
+        &self,
+        light_term_mask: u32,
+        quality: FluidReflectionQuality,
+    ) -> FluidShaderVariant {
+        if quality.reflects() && self.reflectivity() > 0.0 && reflection_mask_on(light_term_mask) {
             FluidShaderVariant::Reflecting
         } else {
             FluidShaderVariant::ReflectionFree
@@ -195,7 +202,7 @@ impl FluidParamsRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FluidShaderVariant {
     /// No reflection code: a draw with no probe-bound face, reflectivity 0,
-    /// or an isolating lighting mask.
+    /// an isolating lighting mask, or the Off tier.
     ReflectionFree,
     /// The probe term, gated per fragment.
     Reflecting,
@@ -290,15 +297,17 @@ impl FluidSurfaceSlots {
     }
 
     /// This frame's slots in draw order, each with the shader variant its row
-    /// takes under `light_term_mask`. Allocation-free.
+    /// takes under `light_term_mask` and `quality`, the frame's one mask
+    /// snapshot and one tier value. Allocation-free.
     pub fn frame_draws(
         &self,
         light_term_mask: u32,
+        quality: FluidReflectionQuality,
     ) -> impl Iterator<Item = (u32, FluidShaderVariant)> + '_ {
         self.frame_slots.iter().map(move |&slot| {
             (
                 slot,
-                self.params[slot as usize].shader_variant(light_term_mask),
+                self.params[slot as usize].shader_variant(light_term_mask, quality),
             )
         })
     }

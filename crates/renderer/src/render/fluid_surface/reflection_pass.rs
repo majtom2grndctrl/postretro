@@ -4,6 +4,7 @@
 // See: context/lib/rendering_pipeline.md §7.3a, §10
 
 use bytemuck::{Pod, Zeroable};
+use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 
 // The parent's imports included: the reflection pass reads the installed
@@ -38,9 +39,6 @@ pub(crate) const FLUID_REFLECTION_BIND_GROUP_COUNT: usize = 4;
 /// cleared texel lands between the probe-only and the SSR composite.
 pub(crate) const FLUID_REFLECTION_TARGET_FORMAT: wgpu::TextureFormat =
     wgpu::TextureFormat::Rgba16Float;
-/// The target's extent per axis as a fraction of the scene's. One tier, the
-/// highest, until the player option lands.
-const FLUID_REFLECTION_TARGET_FRACTION: f32 = 1.0;
 /// March steps per ray, and metres of view depth a hit may lie behind the
 /// depth buffer, until dev tuning replaces them.
 const FLUID_REFLECTION_DEFAULT_STEP_BUDGET: u32 = 64;
@@ -50,13 +48,6 @@ const FLUID_REFLECTION_DEFAULT_THICKNESS: f32 = 0.5;
 /// the screen at every resolution, and every target extent marches the same
 /// stride.
 const FLUID_REFLECTION_ROWS_PER_STRIDE_PIXEL: u32 = 540;
-
-/// The target extent for a scene extent at a per-axis `fraction`: rounded
-/// up, at least 1×1.
-pub(crate) fn fluid_reflection_target_extent(scene: (u32, u32), fraction: f32) -> (u32, u32) {
-    let axis = |pixels: u32| ((pixels as f32 * fraction).ceil() as u32).max(1);
-    (axis(scene.0), axis(scene.1))
-}
 
 /// The reflection uniform (group 2 binding 2), the shader's
 /// `FluidReflectionInputs` member for member.
@@ -184,8 +175,9 @@ impl FluidReflectionTarget {
 }
 
 /// The reflection pipeline, its inputs, and the target with its placeholder.
-/// The pipeline and placeholder exist from full init; the target exists only
-/// while a level with a probe-bound fluid face is installed.
+/// The pipeline and placeholder exist from full init, at every tier; the
+/// target exists only while a level with a probe-bound fluid face is
+/// installed at a tier other than Off.
 pub(crate) struct FluidReflectionPass {
     pipeline: wgpu::RenderPipeline,
     inputs_layout: wgpu::BindGroupLayout,
@@ -198,6 +190,10 @@ pub(crate) struct FluidReflectionPass {
     thickness: f32,
     /// The scene extent the inputs were last built over.
     scene_extent: (u32, u32),
+    /// The player's tier: whether a target may exist, and its fraction of
+    /// the scene extent. Kept here so every target creation, the scene-target
+    /// rebuild's included, sizes by the current tier.
+    quality: FluidReflectionQuality,
     /// The uniform as last written.
     uploaded: FluidReflectionUniform,
     /// 1×1, zero-initialised: c = 0 wherever group 5 binds it.
@@ -207,6 +203,14 @@ pub(crate) struct FluidReflectionPass {
     /// Target creations so far; tests read it.
     #[cfg(test)]
     target_builds: u32,
+    /// Reflection passes recorded so far; tests read it. A cell, because the
+    /// pass records through a shared borrow of the renderer.
+    #[cfg(test)]
+    pass_records: std::cell::Cell<u32>,
+    /// The scene depth and colour the inputs were last built over; tests
+    /// compare them with the current scene targets.
+    #[cfg(test)]
+    inputs_views: (wgpu::TextureView, wgpu::TextureView),
 }
 
 fn create_inputs_bind_group(
@@ -346,18 +350,24 @@ impl FluidReflectionPass {
             step_budget: FLUID_REFLECTION_DEFAULT_STEP_BUDGET,
             thickness: FLUID_REFLECTION_DEFAULT_THICKNESS,
             scene_extent,
+            quality: FluidReflectionQuality::default(),
             uploaded: initial,
             _placeholder: placeholder,
             placeholder_view,
             target: None,
             #[cfg(test)]
             target_builds: 0,
+            #[cfg(test)]
+            pass_records: std::cell::Cell::new(0),
+            #[cfg(test)]
+            inputs_views: (scene_depth.clone(), scene_color.clone()),
         }
     }
 
-    /// Follow recreated scene targets: a live target is recreated at the new
-    /// extent first, then the inputs rebuild over the new depth and colour.
-    /// The caller rebuilds group 5 after this, over the new target.
+    /// Follow recreated scene targets: a live target is recreated first, at
+    /// the kept tier's fraction of the new extent, then the inputs rebuild
+    /// over the new depth and colour. The caller rebuilds group 5 after this,
+    /// over the new target.
     fn resize(
         &mut self,
         device: &wgpu::Device,
@@ -365,9 +375,10 @@ impl FluidReflectionPass {
         scene_color: &wgpu::TextureView,
     ) {
         self.scene_extent = texture_extent(scene_color);
-        if self.target.is_some() {
-            self.target = None;
-            self.create_target(device);
+        if self.target.take().is_some()
+            && let Some(extent) = self.tier_target_extent()
+        {
+            self.create_target(device, extent);
         }
         self.inputs_bind_group = create_inputs_bind_group(
             device,
@@ -376,11 +387,24 @@ impl FluidReflectionPass {
             scene_color,
             &self.uniform_buffer,
         );
+        #[cfg(test)]
+        {
+            self.inputs_views = (scene_depth.clone(), scene_color.clone());
+        }
     }
 
-    fn create_target(&mut self, device: &wgpu::Device) {
-        let extent =
-            fluid_reflection_target_extent(self.scene_extent, FLUID_REFLECTION_TARGET_FRACTION);
+    /// The target extent the kept tier calls for at the current scene
+    /// extent; `None` at Off.
+    fn tier_target_extent(&self) -> Option<(u32, u32)> {
+        self.quality.target_extent(self.scene_extent)
+    }
+
+    /// The live target's extent; `None` with only the placeholder.
+    fn live_target_extent(&self) -> Option<(u32, u32)> {
+        self.target.as_ref().map(|target| target.extent)
+    }
+
+    fn create_target(&mut self, device: &wgpu::Device, extent: (u32, u32)) {
         self.target = Some(FluidReflectionTarget::new(device, extent));
         #[cfg(test)]
         {
@@ -472,20 +496,59 @@ pub(crate) fn fluid_reflection_depth_stencil_state() -> wgpu::DepthStencilState 
 }
 
 impl FluidSurfacePass {
-    /// Create or release the reflection target to match `wanted`: whether
-    /// the installed level has a probe-bound fluid face. Group 5 rebuilds
-    /// around the change: over a new target once it exists, and over the
-    /// placeholder before a released target drops. No change builds nothing.
-    pub(super) fn set_reflection_target(&mut self, device: &wgpu::Device, wanted: bool) {
-        if wanted == self.reflection.target.is_some() {
+    /// The reflection target extent the installed level and the kept tier
+    /// call for: the tier's fraction of the scene extent on a level with a
+    /// probe-bound fluid face, else none. Probe binding is fixed at install;
+    /// reflectivity, retuned live, never enters it.
+    pub(super) fn wanted_reflection_target(&self) -> Option<(u32, u32)> {
+        let probe_bound = self
+            .installed
+            .as_ref()
+            .is_some_and(InstalledFluidSurfaces::has_probe_bound_face);
+        if !probe_bound {
+            return None;
+        }
+        self.reflection.tier_target_extent()
+    }
+
+    /// Create, resize or release the reflection target to match `wanted`,
+    /// its extent or none. Group 5 rebuilds around the change: over a new
+    /// target once it exists, and over the placeholder before a released
+    /// target drops, so no group 5 build references a dropped target. The
+    /// extent it already has builds nothing.
+    pub(super) fn set_reflection_target(
+        &mut self,
+        device: &wgpu::Device,
+        wanted: Option<(u32, u32)>,
+    ) {
+        if wanted == self.reflection.live_target_extent() {
             return;
         }
         let released = self.reflection.target.take();
-        if wanted {
-            self.reflection.create_target(device);
+        if let Some(extent) = wanted {
+            self.reflection.create_target(device, extent);
         }
         self.rebind_reflection_target(device);
         drop(released);
+    }
+
+    /// Apply the player's reflection tier. The tier it already holds builds
+    /// nothing. Otherwise the target follows: created on a level with a
+    /// probe-bound face when the tier leaves Off, resized when the fraction
+    /// changes, released at Off, with group 5 and its scale rebuilt around
+    /// it. With no such level it only keeps the tier for the next install.
+    /// Creates no pipeline and no shader module: those are built at full
+    /// init, at every tier.
+    pub fn set_reflection_quality(
+        &mut self,
+        device: &wgpu::Device,
+        quality: FluidReflectionQuality,
+    ) {
+        if self.reflection.quality == quality {
+            return;
+        }
+        self.reflection.quality = quality;
+        self.set_reflection_target(device, self.wanted_reflection_target());
     }
 
     /// Rebuild group 5 over the scene depth it holds and the current target
@@ -539,15 +602,22 @@ impl FluidSurfacePass {
     }
 
     /// Whether this frame records the reflection pass: a live target and a
-    /// draw taking the reflecting variant under `light_term_mask`, the
-    /// frame's group-0 mask, the one the fluid pass picks variants by.
-    pub fn has_reflecting_draws(&self, light_term_mask: LightTermMask) -> bool {
-        self.reflection.target.is_some()
+    /// draw taking the reflecting variant under `light_term_mask` and
+    /// `quality`, the frame's group-0 mask and tier, the ones the fluid pass
+    /// picks variants by. Off, a level with no fluid, a frame with no
+    /// reflecting draw and an isolating mask each record none.
+    pub fn has_reflecting_draws(
+        &self,
+        light_term_mask: LightTermMask,
+        quality: FluidReflectionQuality,
+    ) -> bool {
+        quality.reflects()
+            && self.reflection.target.is_some()
             && self.installed.as_ref().is_some_and(|installed| {
                 installed.reflection_probe_bind_group.is_some()
                     && installed
                         .slots
-                        .frame_draws(light_term_mask.bits())
+                        .frame_draws(light_term_mask.bits(), quality)
                         .any(|(_, variant)| variant.reflections())
             })
     }
@@ -561,6 +631,7 @@ impl FluidSurfacePass {
         pass: &mut wgpu::RenderPass<'_>,
         materials: &[GpuTexture],
         light_term_mask: LightTermMask,
+        quality: FluidReflectionQuality,
     ) {
         let Some(installed) = self.installed.as_ref() else {
             return;
@@ -581,7 +652,7 @@ impl FluidSurfacePass {
 
         let mut bound_window = None;
         let mut bound_material = None;
-        for (slot, variant) in installed.slots.frame_draws(light_term_mask.bits()) {
+        for (slot, variant) in installed.slots.frame_draws(light_term_mask.bits(), quality) {
             if !variant.reflections() {
                 continue;
             }
@@ -624,7 +695,7 @@ impl FluidSurfacePass {
     /// The live target's extent; `None` with only the placeholder.
     #[cfg(test)]
     pub(crate) fn reflection_target_extent(&self) -> Option<(u32, u32)> {
-        self.reflection.target.as_ref().map(|target| target.extent)
+        self.reflection.live_target_extent()
     }
 
     /// Target creations since full init.
@@ -632,23 +703,61 @@ impl FluidSurfacePass {
     pub(crate) fn reflection_target_builds(&self) -> u32 {
         self.reflection.target_builds
     }
+
+    /// Reflection passes recorded since full init.
+    #[cfg(test)]
+    pub(crate) fn reflection_pass_records(&self) -> u32 {
+        self.reflection.pass_records.get()
+    }
+
+    /// The tier the pass keeps.
+    #[cfg(test)]
+    pub(crate) fn kept_reflection_quality(&self) -> FluidReflectionQuality {
+        self.reflection.quality
+    }
+
+    /// What group 5's binding 2 should hold now: the live target's view, or
+    /// the placeholder's.
+    #[cfg(test)]
+    pub(crate) fn reflection_bound_view(&self) -> &wgpu::TextureView {
+        self.reflection.bound_view()
+    }
+
+    /// The reflection inputs' scene depth and colour as last built.
+    #[cfg(test)]
+    pub(crate) fn reflection_inputs_views(&self) -> &(wgpu::TextureView, wgpu::TextureView) {
+        &self.reflection.inputs_views
+    }
+
+    /// The reflection uniform as the next upload writes it.
+    #[cfg(test)]
+    pub(crate) fn reflection_pending_uniform(&self) -> FluidReflectionUniform {
+        self.reflection.pending()
+    }
 }
 
 impl Renderer {
     /// The reflection pass, between skinned meshes and the fluid pass: the
-    /// frame's reflecting fluid draws under `light_term_mask` marched into
+    /// frame's reflecting fluid draws under `light_term_mask` and `quality`,
+    /// the frame's one mask snapshot and one tier value, marched into
     /// the target, cleared to c = 0 first so a texel no draw writes reads as
     /// a miss. The frame records it only when `has_reflecting_draws`.
     pub(in crate::render) fn record_fluid_reflection_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         light_term_mask: LightTermMask,
+        quality: FluidReflectionQuality,
     ) {
         let full = self.full();
         let fluid = &full.fluid_surface;
         let Some((target, depth)) = fluid.reflection_attachments() else {
             return;
         };
+        #[cfg(test)]
+        fluid
+            .reflection
+            .pass_records
+            .set(fluid.reflection.pass_records.get() + 1);
         let timestamp_writes = full
             .frame_timing
             .as_ref()
@@ -676,7 +785,7 @@ impl Renderer {
             ..Default::default()
         });
         pass.set_bind_group(0, &full.uniform_bind_group, &[]);
-        fluid.record_reflection_draws(&mut pass, &full.gpu_textures, light_term_mask);
+        fluid.record_reflection_draws(&mut pass, &full.gpu_textures, light_term_mask, quality);
     }
 }
 

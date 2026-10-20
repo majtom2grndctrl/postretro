@@ -16,6 +16,7 @@ pub mod fog;
 pub mod grid;
 pub mod motion;
 pub mod reflection;
+pub mod reflection_quality;
 pub mod reflection_search;
 pub mod reflection_style;
 pub mod screen_march;

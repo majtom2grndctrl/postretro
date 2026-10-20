@@ -1,7 +1,7 @@
 # fluid-ssr-reflections — plan of record
 
 mode: resumable
-status: approved
+status: landed
 read at: db0f270d3
 
 Feature branch: `claude/fluid-ssr-reflections-0b3212` (worktree `.claude/worktrees/fluid-ssr-reflections-0b3212`), cut from the claim commit `db0f270d3`.
@@ -31,7 +31,7 @@ Every source symbol that Decisions and Path cite was re-read at `db0f270d3`. No 
 - **Timing pair.** `TIMING_PAIR_COUNT` is 16 and the fluid pair is 15. The reflection pass gets its own labelled pair (`fluid_reflection`) for the GPU-cost row.
 - **Fog is not re-applied at level install** (`lifecycle.rs:685-697`). The reflection setter follows `set_surface_depth_quality` instead: it keeps the value in boot state, so it works before full init and with no level, and install and full-init consult the kept tier.
 - **Shared ray code split out (task 1).** `fluid_reflection.wgsl` also references the probe arrays, so the gate, ray and style functions moved verbatim into `fluid_reflection_ray.wgsl`, which both shaders include. The march is `screen_march.wgsl`; the pass is `fluid_reflection_pass.wgsl` plus `render/fluid_surface/reflection_pass.rs`. Group 0, row and probe structs are duplicated in the pass shader, pinned member for member by a test.
-- **March hit test (task 1, for owner IP read).** A step hits when the ray is behind the depth buffer, has been in front of it before (hidden-origin latch), and the nearer of this and the previous sample's view depth lies within `thickness` of the buffer. That is a segment-overlap test over two sample positions, symmetric under min(), with no sign or direction read; step length and exits are unchanged. Without it, steep reflected rays near an object's base stepped past its thickness band and left a gap. Stride is in full-resolution pixels, `max(1, scene_rows / 540)`, so reach covers the same share of the screen at any resolution and every tier marches it; confidence = edge fade (10% band) × reach fade (last 25% of a 64-step budget).
+- **March hit test (task 1, for owner IP read; stride and budget superseded by rows 10–11).** A step hits when the ray is behind the depth buffer, has been in front of it before (hidden-origin latch), and the nearer of this and the previous sample's view depth lies within `thickness` of the buffer. That is a segment-overlap test over two sample positions, symmetric under min(), with no sign or direction read; step length and exits are unchanged. Without it, steep reflected rays near an object's base stepped past its thickness band and left a gap. Stride is in full-resolution pixels, `max(1, scene_rows / 540)`, so reach covers the same share of the screen at any resolution and every tier marches it; confidence = edge fade (10% band) × reach fade (last 25% of a 64-step budget).
 - **Confidence's hit-confidence factor is the reach fade (review round 1, clarification).** The Decision says "c = hit confidence × screen-edge fade, and nothing else". As built, hit confidence is the reach fade over the last quarter of the step budget: it reads the step index alone and is 1 elsewhere. Owner accepted 2026-10-20 (see the IP decision below); the docs will say it.
 - **Hit-test band, restated for the owner IP read (review round 1).** The band test asks whether the step's view-depth interval since the last sample reaches within `thickness` behind the buffer: `min(ray_w, last_w) ≤ scene_w + thickness`. It is one rule for every ray, with no direction read. Because view depth is monotonic along a ray, the interval's near end is the previous sample for a receding ray and the current sample for an approaching one. It decides acceptance only: no technique choice, exit, step or weight changes. The IP gate now allowlists the march's exact exits, returns and step chain.
 - **Owner IP decision (2026-10-20): both open calls accepted as built.** Engineering triage, not legal advice; counsel's pre-ship claims check is unchanged.
@@ -104,11 +104,11 @@ Every source symbol that Decisions and Path cite was re-read at `db0f270d3`. No 
 | 21 | Per-tier extent fraction (ceil, ≥1×1); tier and resolution on one tick → one coherent target (P1, P2) | pure extent-function test plus adapter case | achievable as stated | pass: extent rule tests + one-tick adapter case |
 | 22 | Style switch: first frame equals steady state byte for byte (P8) | adapter test | achievable as stated | pass: GPU ran; first frame equals steady state |
 | 23 | Camera 1 mm below plane equals Off byte for byte (P10) | adapter test | achievable as stated | pass: GPU ran; equals Off byte for byte |
-| 24 | Walls, lights, mover and pillar reflect; pixel blocks line up; smooth unblocked | owner, in-engine | manual | outstanding (owner). No dev map has a mover in view of a probe-bound pool; `reflection-probes-test.map` has the pillar |
-| 25 | Panning fade to probe or nothing, no hard line | owner, in-engine | manual | outstanding (owner) |
-| 26 | Tier stepping coarsens smooth only; pixel keeps blocks; Off removes both; live | owner, in-engine | manual | outstanding (owner) |
-| 27 | Camera at plane, underwater, through glass; sludge weaker | owner, in-engine | manual | outstanding (owner) |
-| 28 | GPU cost per tier and style, 1660 and 5300M, vs pre-change; Off matches | 1660: executor with `POSTRETRO_GPU_TIMING=1`; 5300M: owner via Metal System Trace | manual (owner judges) | 1660 measured (Task 7 table: High +8.6 ms, Medium +2.5, Low +0.9 at 4K; Off matches pre-change); 5300M outstanding (owner) |
+| 24 | Walls, lights, mover and pillar reflect; pixel blocks line up; smooth unblocked | owner, in-engine | manual | outstanding (owner). No dev map has a mover in view of a probe-bound pool; `reflection-probes-test.map` has the pillar. Not recorded per row: the owner playtested on the Mac (sliders, tiers, the probe-visibility report that led to the reach cap) and called landing on 2026-10-20 |
+| 25 | Panning fade to probe or nothing, no hard line | owner, in-engine | manual | not recorded per row; owner called landing 2026-10-20 |
+| 26 | Tier stepping coarsens smooth only; pixel keeps blocks; Off removes both; live | owner, in-engine | manual | not recorded per row; owner called landing 2026-10-20 |
+| 27 | Camera at plane, underwater, through glass; sludge weaker | owner, in-engine | manual | not recorded per row; owner called landing 2026-10-20 |
+| 28 | GPU cost per tier and style, 1660 and 5300M, vs pre-change; Off matches | 1660: executor with `POSTRETRO_GPU_TIMING=1`; 5300M: owner via Metal System Trace | manual (owner judges) | 1660 measured (Task 7 table: High +8.6 ms, Medium +2.5, Low +0.9 at 4K; Off matches pre-change); 5300M measured by the Mac session (5300M ladder sweep below). Both sweeps predate the reach cap, which roughly halves steps on high and above, so shipped tiers cost at most what was measured |
 
 ## Tasks
 

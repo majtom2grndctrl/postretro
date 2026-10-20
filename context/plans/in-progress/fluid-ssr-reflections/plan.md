@@ -215,3 +215,38 @@ Candidate presets (thickness 1.5 m for VH, 2.5 m for ultra):
 At 1080p every config measured stays at or under 9.1 ms at every pose. At 4K only `off`, `low` and `medium` hold 16.7 ms everywhere; the 4K base frame alone is 8.4–9.9 ms. Smooth style costs 0.1–0.2 ms less than pixel.
 
 Raw data: session scratchpad `results3/`. Final presets wait on the 5300M sweep (Mac session, branch `claude/fluid-ssr-reflections-mac-perf`).
+
+## Ladder sweep: RX 5300M (Metal), af8bfef61, Mac session
+
+Kit and raw results: `measurements/fluid-ssr-reflections/` (`5300m-notes.md`, `results-quick.*`, `results-pilot.*`, `metal/`).
+
+**Method.** Metal System Trace at 1536×960, the owner's binding Mac play extent (half the laptop panel). One round, 120 + 360 frames, pixel style, all terms, sync-proof SH. Every run's effective settings were confirmed in the log.
+
+Whole-frame GPU in ms, `fluid_reflection` in brackets:
+
+| config | near | B vault | A pillar |
+|---|---|---|---|
+| off | 6.03 | 6.51* | 6.66* |
+| medium 0.5/48/180 | 8.69 [0.61] | 7.61* [0.50] | — |
+| high 96/270 | 11.48 [3.42] | 8.72 [2.32] | 10.34 [2.25] |
+| very_high 192/180 | 11.29 [3.04] | — | — |
+
+Saturated divisor walk at near, steps = ⌈1.07·d⌉, thickness 1.5:
+
+| divisor | whole frame | `fluid_reflection` |
+|---|---|---|
+| 135 | 10.38 | [2.29] |
+| 270 | 12.55 | [4.49] |
+| 540 | 21.48 | [12.03] |
+
+Medium at near, 64 steps: fraction 0.375 gives 8.70 [0.45]; fraction 0.75 gives 9.84 [1.49].
+
+\* About 20% of frames were incomplete in these runs, so treat them as directional. The near-off figure is the pilot's valid run.
+
+Findings:
+- Everything holds 16.7 ms except d = 540 (about 46 fps). d = 360 is interpolated at about 14–15 ms (not measured).
+- The reflecting variant alone adds about 2 ms over off at near (`fluid_surface` 0.46 → 2.4 ms), and `low` pays this too.
+- Cost tracks screen fill, not pool area.
+- The busy-median clock varied 814–1134 MHz because capture does not saturate this extent, so these figures read high (conservative).
+
+**Not run:** the Samsung extent, which the owner plays at roughly ¼ to ⅓ render, no more pixels than 1536×960. Also not run: 4K, smooth, and `ultra`.

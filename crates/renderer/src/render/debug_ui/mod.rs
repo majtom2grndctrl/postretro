@@ -169,7 +169,9 @@ pub struct DiagnosticsState {
     pub sdf_surface_bias: f32,
     pub fog_step_size: f32,
     pub fog_pixel_scale: u32,
-    /// Fluid reflection march tuning, seeded with the SDF and fog sliders.
+    /// Mirrors the renderer's reflection-march tuning (step budget, thickness,
+    /// stride divisor), seeded from the renderer on first draw like the SDF and
+    /// fog fields above.
     pub reflection_march_step_budget: u32,
     pub reflection_march_thickness: f32,
     pub reflection_march_rows_per_stride_pixel: u32,

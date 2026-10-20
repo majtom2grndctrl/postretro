@@ -39,8 +39,9 @@ pub(crate) const FLUID_REFLECTION_BIND_GROUP_COUNT: usize = 4;
 /// cleared texel lands between the probe-only and the SSR composite.
 pub(crate) const FLUID_REFLECTION_TARGET_FORMAT: wgpu::TextureFormat =
     wgpu::TextureFormat::Rgba16Float;
-/// March steps per ray, and metres of view depth a hit may lie behind the
-/// depth buffer. Dev tuning may override both for the session.
+/// March steps per ray, and metres of view depth the near end of a step's
+/// view-depth interval may lie behind the depth buffer for a hit. Dev tuning
+/// may override both for the session.
 const FLUID_REFLECTION_DEFAULT_STEP_BUDGET: u32 = 64;
 const FLUID_REFLECTION_DEFAULT_THICKNESS: f32 = 0.5;
 /// Scene rows per full-resolution pixel of march stride: 1 below 1080 rows,
@@ -50,13 +51,16 @@ const FLUID_REFLECTION_DEFAULT_THICKNESS: f32 = 0.5;
 const FLUID_REFLECTION_ROWS_PER_STRIDE_PIXEL: u32 = 540;
 
 /// The march's dev tuning (the diagnostics panel's "SDF / Fog Quality"
-/// section), never player-facing: steps per ray, the thickness a hit may lie
-/// behind the depth buffer, and scene rows per pixel of stride. Every tier
-/// marches the same values. Changing one writes the reflection uniform on
-/// its next upload and nothing else: no bind group, target or pipeline.
+/// section), never player-facing: steps per ray, the hit band's thickness,
+/// and scene rows per pixel of stride. Every tier marches the same values.
+/// Changing one writes the reflection uniform on its next upload and nothing
+/// else: no bind group, target or pipeline.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FluidReflectionMarchTuning {
     pub step_budget: u32,
+    /// Metres the near end of a step's view-depth interval may lie behind the
+    /// depth buffer for a hit; the band bounds that end, not the current
+    /// sample.
     pub thickness: f32,
     pub rows_per_stride_pixel: u32,
 }
@@ -97,6 +101,7 @@ pub(crate) struct FluidReflectionUniform {
     pub thickness: f32,
     pub stride: f32,
     pub target_scale: [f32; 2],
+    /// Padding to the uniform's 32 bytes; carries nothing.
     pub spare: [f32; 2],
 }
 pub(crate) const FLUID_REFLECTION_UNIFORM_BYTES: u64 =
@@ -418,16 +423,19 @@ impl FluidReflectionPass {
 
     /// Follow recreated scene targets: a live target is recreated first, at
     /// the kept tier's fraction of the new extent, then the inputs rebuild
-    /// over the new depth and colour. The caller rebuilds group 5 after this,
-    /// over the new target.
+    /// over the new depth and colour. Returns the superseded target: the
+    /// caller rebuilds group 5 over the new one, then drops it, as
+    /// `set_reflection_target` does.
+    #[must_use]
     fn resize(
         &mut self,
         device: &wgpu::Device,
         scene_depth: &wgpu::TextureView,
         scene_color: &wgpu::TextureView,
-    ) {
+    ) -> Option<FluidReflectionTarget> {
         self.scene_extent = texture_extent(scene_color);
-        if self.target.take().is_some()
+        let superseded = self.target.take();
+        if superseded.is_some()
             && let Some(extent) = self.tier_target_extent()
         {
             self.create_target(device, extent);
@@ -443,6 +451,7 @@ impl FluidReflectionPass {
         {
             self.inputs_views = (scene_depth.clone(), scene_color.clone());
         }
+        superseded
     }
 
     /// The target extent the kept tier calls for at the current scene
@@ -557,6 +566,14 @@ impl FluidSurfacePass {
     /// call for: the tier's fraction of the scene extent on a level with a
     /// probe-bound fluid face, else none. Probe binding is fixed at install;
     /// reflectivity, retuned live, never enters it.
+    ///
+    /// The reflecting variant can still draw on a level with no target.
+    /// `has_probe_bound_face` comes from the per-vertex probe indices, while
+    /// render-cpu's `volume_has_bound_face`, which packs reflectivity and so
+    /// picks the variant, comes from the probe bindings, and the two can
+    /// disagree. That draw degrades safely: its vertices carry
+    /// `FLUID_REFLECTION_NO_PROBE`, so the gate shuts, and the placeholder
+    /// reads c = 0.
     pub(super) fn wanted_reflection_target(&self) -> Option<(u32, u32)> {
         let probe_bound = self
             .installed
@@ -621,6 +638,7 @@ impl FluidSurfacePass {
     /// Follow a recreated scene depth and colour, in order: a live target is
     /// recreated at the new extent, then the reflection inputs and group 5
     /// rebuild over the new resources, so none references a superseded one.
+    /// The superseded target drops only after group 5 holds its successor.
     /// The scene-target rebuild is the only caller: the frame never builds a
     /// bind group.
     pub fn rebuild_scene_inputs(
@@ -629,11 +647,12 @@ impl FluidSurfacePass {
         scene_depth: &wgpu::TextureView,
         scene_color: &wgpu::TextureView,
     ) {
-        self.reflection.resize(device, scene_depth, scene_color);
+        let superseded = self.reflection.resize(device, scene_depth, scene_color);
         self.scene_inputs
             .rebuild(device, scene_depth, self.reflection.bound_view());
         self.scene_inputs
             .set_ssr_scale(self.reflection.target_scale());
+        drop(superseded);
     }
 
     /// Group 3 of the reflection pass for a level being installed.

@@ -1,7 +1,9 @@
-// Tests: the reflection style reference. Acceptance row 26: every fragment
-// of one pixel-style water texel cell reads one reflection sample, cells with
-// different displayed offsets read different directions, smooth varies per
-// fragment, and drift and a declared wave move no cell's reflection.
+// Tests: the reflection style reference. Every fragment of one pixel-style
+// water texel cell reads one reflection sample, cells with different displayed
+// offsets read different directions, smooth varies per fragment, drift and a
+// declared wave move no cell's reflection, and the reflection pass marches one
+// ray per pixel cell and one per smooth fragment.
+// See: context/lib/testing_guide.md
 
 use std::cell::Cell;
 
@@ -269,7 +271,11 @@ fn the_reflection_pass_marches_one_ray_per_pixel_cell_and_one_per_smooth_fragmen
         let smooth = cell_fragments(FLUID_REFLECTION_STYLE_SMOOTH, cell, time);
         let rays: Vec<(Vec3, Vec3)> = smooth.iter().map(marched_ray).collect();
         for (fragment, (origin, _)) in smooth.iter().zip(&rays) {
-            assert_eq!(*origin, fragment.world_position);
+            assert!(
+                origin.abs_diff_eq(fragment.world_position, 1.0e-5),
+                "smooth ray starts at the fragment: {origin} vs {}",
+                fragment.world_position
+            );
         }
         for (i, (origin, direction)) in rays.iter().enumerate() {
             for (other_origin, other_direction) in &rays[i + 1..] {

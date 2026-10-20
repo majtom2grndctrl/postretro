@@ -53,7 +53,7 @@ impl FluidReflectionQuality {
 
 /// The reflection target extent for a `scene` extent at a per-axis
 /// `fraction`: rounded up, at least 1×1.
-pub fn reflection_target_extent(scene: (u32, u32), fraction: f32) -> (u32, u32) {
+pub(crate) fn reflection_target_extent(scene: (u32, u32), fraction: f32) -> (u32, u32) {
     let axis = |pixels: u32| ((pixels as f32 * fraction).ceil() as u32).max(1);
     (axis(scene.0), axis(scene.1))
 }

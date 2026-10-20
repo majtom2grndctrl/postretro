@@ -1,5 +1,6 @@
 // Fluid surface pass: environment-volume surface faces drawn translucent,
 // two-sided and moving in whole texels, after skinned meshes and before billboards.
+// The screen-space reflection pass lives in the submodule `fluid_surface/reflection_pass.rs`.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use std::num::NonZeroU64;
@@ -621,7 +622,8 @@ impl FluidSurfacePass {
     }
 
     /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
-    /// binds 1, 4 and the scene inputs built with the scene targets (5).
+    /// binds 1, 4 and the scene inputs (5), built with the scene targets and
+    /// the reflection target.
     /// Each draw takes its row's shader variant under `light_term_mask` and
     /// `quality`, the frame's group-0 mask and tier, the ones the reflection
     /// pass took its draws by; the pipeline is set only where it changes

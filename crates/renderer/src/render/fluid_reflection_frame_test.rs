@@ -941,7 +941,7 @@ fn the_camera_a_millimetre_below_the_plane_draws_the_off_frame() {
     }
 }
 
-// Task 6, dev tuning. The march's step budget, thickness and stride divisor
+// Dev tuning. The march's step budget, thickness and stride divisor
 // reach the reflection uniform alone: setting one changes the pending
 // uniform, which uploads once on the next frame and not again until another
 // change, and builds no target or group 5. A one-step budget marches no hit,
@@ -1020,7 +1020,7 @@ fn reflection_march_tuning_writes_only_the_reflection_uniform() {
     renderer.set_reflection_march_rows_per_stride_pixel(rows);
     let restored = capture_checked(&mut renderer, view);
     eprintln!(
-        "[FluidSurfaceProof] task 6 march-tuning GPU case ran: one-step frame worst {} at {} \
+        "[FluidSurfaceProof] dev-tuning GPU case ran: one-step frame worst {} at {} \
          against its CPU composite, restored frame byte-equal: {}, {} uniform writes",
         worst.0,
         worst.1,

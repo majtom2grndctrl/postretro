@@ -354,15 +354,35 @@ mod tests {
             "an accepted menu change applies live"
         );
 
-        for capture in [
-            include_str!("../capture/mod.rs"),
-            include_str!("../capture/prepared.rs"),
-            include_str!("../capture/driver.rs"),
-            include_str!("../capture/setup.rs"),
-            include_str!("../capture/scene.rs"),
-        ] {
-            assert!(!capture.contains("set_reflection_quality"));
-            assert!(!capture.contains("apply_player_reflection_quality"));
+        // Walk the directory so a new capture file is covered without an edit.
+        fn capture_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("capture directory is readable") {
+                let path = entry.expect("capture directory entry is readable").path();
+                if path.is_dir() {
+                    capture_sources(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut capture_files = Vec::new();
+        capture_sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capture"),
+            &mut capture_files,
+        );
+        assert!(!capture_files.is_empty(), "capture sources were found");
+        for path in capture_files {
+            let capture = std::fs::read_to_string(&path).expect("capture source is readable");
+            assert!(
+                !capture.contains("set_reflection_quality"),
+                "{} sets the reflection tier",
+                path.display()
+            );
+            assert!(
+                !capture.contains("apply_player_reflection_quality"),
+                "{} applies the player reflection tier",
+                path.display()
+            );
         }
     }
 

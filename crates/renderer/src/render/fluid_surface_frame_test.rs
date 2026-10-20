@@ -1,4 +1,6 @@
-//! Adapter-backed fluid surface draw through the production capture recorder.
+//! Adapter-backed fluid surface draw through the production capture recorder,
+//! plus the reflection-target lifecycle, tier and pass-count cases.
+//! Screen-space reflection correctness cases live in `fluid_reflection_frame_test.rs`.
 //! See: context/lib/rendering_pipeline.md §7.3a
 
 use super::{ClearColor, FluidSurfaceDraw, Renderer, ShSampleRegionSets};

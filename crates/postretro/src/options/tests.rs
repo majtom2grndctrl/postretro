@@ -241,8 +241,9 @@ fn reflection_quality_persists_each_tier_as_its_snake_case_name() {
 
 #[test]
 fn settings_without_reflection_quality_load_as_high() {
-    // A settings.toml written before the option shipped keeps both
-    // reflection layers at full cost, as the build that wrote it drew them.
+    // An absent key takes the default High, so a player with a settings.toml
+    // written before the option shipped gets the new screen-space layer at
+    // the top tier.
     let loaded = from_toml("invert_y = true\nfog_quality = \"low\"\n");
     assert_eq!(loaded.reflection_quality, ReflectionQuality::High);
     assert_eq!(

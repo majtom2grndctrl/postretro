@@ -1,6 +1,8 @@
 // Fluid reflection ray: the reflecting gate, the mirrored ray and the style's
 // start point. Binding-agnostic, so the probe term (fluid_reflection.wgsl) and
-// the screen-space reflection pass start every ray from one definition.
+// the screen-space reflection pass start every ray from one definition. Needs
+// fluid_motion.wgsl composed alongside it: `fluid_reflection_point` calls
+// `fluid_displayed_offset`.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // The gate and ray. Mirrors `postretro_render_cpu::fluid_surface::reflection`:

@@ -10,7 +10,9 @@ use glam::{Mat4, UVec2, Vec2, Vec3, Vec4};
 // and the only exits are a hit, leaving the screen, leaving the depth range
 // (the near plane included) and the budget. Nothing exits early, skips,
 // re-weights or changes step by direction, so a ray heading toward the camera
-// marches like any other. `render/fluid_surface_tests.rs` scans both texts.
+// marches like any other. The near-plane clip only places the segment's far
+// end on the frustum boundary, and is no direction decision.
+// `render/fluid_surface_tests.rs` scans both texts.
 
 /// The ray's far end before near-plane clipping, metres: past any room, so
 /// the segment's screen projection reaches its vanishing point.
@@ -28,7 +30,8 @@ pub const SCREEN_MARCH_REACH_FADE: f32 = 0.25;
 pub struct ScreenMarch {
     /// Full-resolution pixel the ray stopped on.
     pub pixel: Vec2,
-    /// Hit confidence × screen-edge fade; 0 on a miss.
+    /// Hit confidence (the reach fade over the budget's last quarter) ×
+    /// screen-edge fade; 0 on a miss.
     pub confidence: f32,
 }
 
@@ -88,14 +91,19 @@ pub fn screen_march_confidence(pixel: Vec2, extent: Vec2, taken: u32, budget: u3
 /// March `direction` (unit, world) from `origin` across `depth`, the frame's
 /// full-resolution scene depth, `stride` full-resolution pixels per step for
 /// at most `budget` steps. A step hits where the ray lies behind the depth
-/// buffer and the span of view depth it covered since the last sample reaches
-/// within `thickness` metres behind the buffer, so a ray that crosses a
-/// surface between two samples still hits it; but only once the ray has been
-/// in front of the buffer: an origin hidden behind an occluder never hits
-/// that occluder at its start. Depth is compared as view depth
-/// `w = b / (d − a)`, the projection's own a and b read off `view_proj`'s z
-/// and w rows; a projection with no perspective divide gets no hits. The
-/// negated comparisons send a NaN to the miss, as the shader's do.
+/// buffer and the step's view-depth interval, from the last sample to this
+/// one, reaches within `thickness` metres behind the buffer:
+/// `min(ray_w, last_w) <= scene_w + thickness`. A ray that crosses a surface
+/// between two samples still hits it. It is one interval test for every ray:
+/// it reads no direction, and `min()` of the two samples is order-free. The
+/// interval's near end is the previous sample for a ray receding from the
+/// camera, and the current sample for one approaching it. A hit counts only
+/// once the ray has been in front of the buffer: an origin hidden behind an
+/// occluder never hits that occluder at its start. Depth is compared as view
+/// depth `w = b / (d − a)`, the projection's own a and b read off
+/// `view_proj`'s z and w rows; a projection with no perspective divide gets
+/// no hits. The negated comparisons send a NaN to the miss, as the shader's
+/// do.
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn screen_march(
     origin: Vec3,
@@ -132,7 +140,9 @@ pub fn screen_march(
     let depth_b = row_z.w - depth_a * row_w.w;
 
     let clip_origin = view_proj * origin.extend(1.0);
-    if !(clip_origin.z > 0.0 && clip_origin.w > 0.0) {
+    // An origin within the epsilon of the near plane would put the clipped far
+    // end behind it (t < 0) and walk the march backwards.
+    if !(clip_origin.z > SCREEN_MARCH_NEAR_EPSILON && clip_origin.w > 0.0) {
         return miss;
     }
     // The far end, clipped just in front of the near plane: clip space is
@@ -153,7 +163,7 @@ pub fn screen_march(
     let s_step = stride / span;
 
     let mut in_front = false;
-    // The ray's view depth at the last sample: the near end of the span the
+    // The ray's view depth at the last sample: one end of the interval the
     // next step covers.
     let mut last_w = 1.0 / k0;
     for taken in 0..budget {

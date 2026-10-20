@@ -302,8 +302,9 @@ pub fn volume_has_bound_face(section: Option<&ReflectionProbesSection>, volume: 
         .is_some_and(|binding| binding.volume as usize == volume)
 }
 
-/// Whether the frame's lighting mask draws the probe term: every lighting
-/// bit on, since the capture bakes every term together.
+/// Whether the frame's lighting mask draws either reflection layer (the probe
+/// term and the screen-space layer share this gate): every lighting bit on,
+/// since the capture bakes every term together.
 pub fn reflection_mask_on(mask: u32) -> bool {
     (mask & FLUID_REFLECTION_ALL_TERMS) == FLUID_REFLECTION_ALL_TERMS
 }
@@ -314,8 +315,9 @@ pub fn reflection_seen_from_above(outward: Vec3, view: Vec3) -> bool {
     outward.dot(view) > 0.0
 }
 
-/// Whether a fragment draws the probe term at all; otherwise it renders
-/// exactly as without reflection.
+/// Whether a fragment draws either reflection layer (the probe term and the
+/// screen-space layer share this gate); otherwise it renders exactly as
+/// without reflection.
 pub fn reflection_gate(
     probe: u32,
     outward: Vec3,
@@ -592,6 +594,7 @@ pub struct FluidReflectionFragment {
 /// before the search. `sample(layer, uv)`
 /// reads the colour tile and `distance(layer, uv)` the distance tile, both
 /// at level 0. The layer comes from the face's probe index alone.
+// Mirrors the shader entry's inputs statement for statement.
 #[allow(clippy::too_many_arguments)]
 pub fn reflection_fragment(
     surface: Vec4,

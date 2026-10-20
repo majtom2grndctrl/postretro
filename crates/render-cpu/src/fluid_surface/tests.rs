@@ -1173,9 +1173,9 @@ fn collector_keeps_a_zero_opacity_fog_free_fluid_only_when_a_bound_face_reflects
 // its volume has a probe-bound face, its reflectivity is above 0, the
 // frame's lighting mask holds every bit of `LightTermMask::ALL`, and the
 // reflection tier is not Off; every other draw takes the reflection-free
-// variant. Opacity and fog never choose it. Acceptance row 2: a probe-bound
-// volume at reflectivity 1 under the all-terms mask is reflection-free at Off
-// and reflecting at low, medium and high.
+// variant. Opacity and fog never choose it. A probe-bound volume at
+// reflectivity 1 under the all-terms mask is reflection-free at Off and
+// reflecting at low, medium and high.
 #[test]
 fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every_term() {
     use crate::fluid_surface::reflection_quality::FluidReflectionQuality;
@@ -1224,7 +1224,6 @@ fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every
             }
         }
     }
-    // Acceptance row 2, stated directly.
     let probe_bound = FluidSurfaceLook {
         surface_reflectivity: 1.0,
         has_bound_face: true,

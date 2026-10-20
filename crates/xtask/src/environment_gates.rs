@@ -1,8 +1,10 @@
-// Repository grep gates for environment volumes: projectile flight makes no
-// environment query, no volume FGD key authors swim tuning, the audio crate's
-// public API (the muffle included) names no kira type, and fluid reflections
-// take no player style option and no material, FGD or texture input. Run by
-// preflight's `cargo test`, beside the scripting surface gates.
+// Repository grep gates over source and the FGD: environment volumes (projectile
+// flight makes no environment query, no volume FGD key authors swim tuning),
+// the audio crate's public API (the muffle included) names no kira type, player
+// option names (reflections take no style option, only the cost tier), and the
+// world material inputs (material prefixes, texture suffixes, FGD classes and
+// keys take no reflection input). Run by preflight's `cargo test`, beside the
+// scripting surface gates.
 // See: context/lib/entity_model.md §7 (Environment Volumes) · context/lib/build_pipeline.md §Custom FGD · context/lib/audio.md §1 · context/lib/player_options.md §4
 
 use std::path::{Path, PathBuf};
@@ -37,10 +39,13 @@ const SWIM_FIELDS: &[&str] = &[
     "fluidJumpVelocity",
 ];
 
-/// Where every player-option name is declared: the options module's settings
-/// keys and slot names (its `const` strings), the store's fields, and the
-/// engine-state catalog's wire names.
+// Where every player-option name is declared: the options module's settings
+// keys and slot names (its `const` strings), the store's fields, and the
+// engine-state catalog's wire names.
+
+/// The options module tree, whose `const` strings are the settings keys and slot names.
 const OPTIONS_DIR: &str = "crates/postretro/src/options";
+/// The store structs whose field names are option names, as (file, struct).
 const PLAYER_OPTIONS_STRUCTS: &[(&str, &str)] = &[
     ("crates/postretro/src/options/mod.rs", "PlayerOptions"),
     (
@@ -48,6 +53,7 @@ const PLAYER_OPTIONS_STRUCTS: &[(&str, &str)] = &[
         "AccessibilityOptions",
     ),
 ];
+/// The engine-state catalog, whose `options.*` wire names are option slots.
 const ENGINE_STATE_CATALOG: &str = "crates/entities/src/engine_state_catalog.rs";
 
 /// The only reflection option: the player's cost tier, as settings key and
@@ -64,10 +70,25 @@ const REFLECTION_WORDS: &[&str] = &["reflect", "ssr", "mirror"];
 /// table and per-material properties, and the sibling-suffix rules that bind
 /// surface maps to a face. None takes a reflection input.
 const MATERIAL_RULE_FILES: &[&str] = &[
-    "crates/render-data/src/material.rs",
-    "crates/level-compiler/src/texture_mips/resolution.rs",
+    MATERIAL_PREFIXES_FILE,
+    BUNDLE_SUFFIXES_FILE,
     "crates/level-compiler/src/texture_validation.rs",
 ];
+
+// The material prefix table and the sibling-suffix list, with the exact sets
+// they hold today. The word scan misses a new input spelled `_r` or `rough`, so
+// a new prefix or suffix is a new material input and needs a deliberate edit
+// here (owner review).
+
+/// Where the material prefix table lives, and the prefixes it holds.
+const MATERIAL_PREFIXES_FILE: &str = "crates/render-data/src/material.rs";
+const MATERIAL_PREFIXES_CONST: &str = "MATERIAL_PREFIXES";
+const MATERIAL_PREFIX_NAMES: &[&str] = &["metal", "concrete", "grate", "neon", "glass", "wood"];
+/// Where the sibling-suffix list lives, and the suffixes it holds (the bare
+/// diffuse is `""`).
+const BUNDLE_SUFFIXES_FILE: &str = "crates/level-compiler/src/texture_mips/resolution.rs";
+const BUNDLE_SUFFIXES_CONST: &str = "BUNDLE_SUFFIXES";
+const BUNDLE_SUFFIX_NAMES: &[&str] = &["", "_s", "_n", "_e", "_h"];
 
 /// The one FGD class that authors reflection, and its exact keys: an authored
 /// probe box. A new key here is a new reflection input.
@@ -209,7 +230,8 @@ fn fgd_class_keys(fgd: &str, class: &str) -> Option<Vec<String>> {
     None
 }
 
-/// Every class an FGD declares (`@…Class … = name : "Title"`), in file order.
+/// Every class an FGD declares (`@…Class … = name : "Title"`, or an untitled
+/// `@BaseClass = Name [`), in file order.
 fn fgd_class_names(fgd: &str) -> Vec<String> {
     let mut names = Vec::new();
     for (at, _) in fgd.match_indices('@') {
@@ -288,6 +310,10 @@ fn names_reflection(name: &str) -> bool {
 
 /// Every string literal in each `const` declaration typed over `str` (a
 /// `&str`, or an array of them) in `code`.
+///
+/// Known limit: callers pass [`strip_line_comments`] output, which cuts a line
+/// at any `//`, so a `//` inside a string literal (`"http://…"`) drops the rest
+/// of that line. No such constant exists today.
 fn const_string_literals(code: &str) -> Vec<String> {
     let mut literals = Vec::new();
     for (at, _) in code.match_indices("const ") {
@@ -313,6 +339,30 @@ fn const_string_literals(code: &str) -> Vec<String> {
         literals.extend(value.split('"').skip(1).step_by(2).map(str::to_string));
     }
     literals
+}
+
+/// The string literals in the value of `const name` in `code`, in order: the
+/// text between its first `=` (the type may hold a `;`) and the next `;`.
+/// `None` when `code` declares no such const. Shares the `//` limit of
+/// [`const_string_literals`].
+fn const_named_literals(code: &str, name: &str) -> Option<Vec<String>> {
+    let declaration = code
+        .match_indices(&format!("const {name}"))
+        .find_map(|(at, _)| {
+            let after = code[at + "const ".len() + name.len()..].chars().next();
+            (!after.is_some_and(is_identifier_char)).then_some(at)
+        })?;
+    let rest = &code[declaration..];
+    let value = &rest[rest.find('=')? + 1..];
+    let value = &value[..value.find(';').unwrap_or(value.len())];
+    Some(
+        value
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// The field names in `struct name`'s body in `code`: each line at brace
@@ -561,11 +611,45 @@ fn no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input() {
         }
     }
 
+    // The material prefix table and the sibling suffixes are pinned exactly: a
+    // new entry is a new material input, which the word scan cannot see.
+    for (file, name, expected) in [
+        (
+            MATERIAL_PREFIXES_FILE,
+            MATERIAL_PREFIXES_CONST,
+            MATERIAL_PREFIX_NAMES,
+        ),
+        (
+            BUNDLE_SUFFIXES_FILE,
+            BUNDLE_SUFFIXES_CONST,
+            BUNDLE_SUFFIX_NAMES,
+        ),
+    ] {
+        let source = std::fs::read_to_string(root.join(file))
+            .unwrap_or_else(|_| panic!("{file} moved; point this gate at the material rules"));
+        let found = const_named_literals(&strip_line_comments(&source), name)
+            .unwrap_or_else(|| panic!("{file} declares no `const {name}`; update this gate"));
+        if found != expected {
+            violations.push(format!(
+                "{file}: `{name}` is {found:?}, not {expected:?}; a new suffix or prefix is \
+                 a new material input and needs a deliberate edit to this gate (owner review)"
+            ));
+        }
+    }
+
+    // One class per FGD line that opens with `@` (the FGD uses no other `@`
+    // directive), so a class the parser skips fails here instead of escaping
+    // the key scan below.
     let fgd = std::fs::read_to_string(root.join(FGD_FILE)).expect("FGD reads");
     let classes = fgd_class_names(&fgd);
+    let declarations = fgd
+        .lines()
+        .filter(|line| line.trim_start().starts_with('@'))
+        .count();
     assert!(
-        classes.len() >= 20 && classes.iter().any(|class| class == "worldspawn"),
-        "{FGD_FILE} parsed with too few classes: {classes:?}"
+        classes.len() == declarations && classes.iter().any(|class| class == "worldspawn"),
+        "{FGD_FILE} has {declarations} `@` declarations but {} classes parsed: {classes:?}",
+        classes.len()
     );
     assert!(
         classes.iter().any(|class| class == REFLECTION_VOLUME_CLASS),
@@ -722,6 +806,21 @@ fn reflection_gate_reads_every_spelling_of_a_reflection_name() {
             "d".to_string()
         ])
     );
+
+    let code = strip_line_comments(
+        "pub(crate) const SUFFIXES: [&str; 2] = [\"\", \"_s\"]; // \"_x\"\n\
+         const OTHER: [&str; 1] = [\"o\"];\n\
+         pub const TABLE: [(&str, M); 2] = [(\"a\", M::A), (\"b\", M::B)];\n",
+    );
+    assert_eq!(
+        const_named_literals(&code, "SUFFIXES"),
+        Some(vec![String::new(), "_s".to_string()])
+    );
+    assert_eq!(
+        const_named_literals(&code, "TABLE"),
+        Some(vec!["a".to_string(), "b".to_string()])
+    );
+    assert_eq!(const_named_literals(&code, "SUFF"), None);
 
     let fgd = r#"@SolidClass = worldspawn : "World" [ ]
 @PointClass base(Light)

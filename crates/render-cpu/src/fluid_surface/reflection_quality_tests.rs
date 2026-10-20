@@ -1,5 +1,6 @@
-// Tests: the reflection tier's fractions and target extents (acceptance row
-// 21, the pure half).
+// Tests: the reflection tier's fractions and target extents, the pure half of
+// the tier-extent rule.
+// See: context/lib/testing_guide.md
 
 use super::*;
 

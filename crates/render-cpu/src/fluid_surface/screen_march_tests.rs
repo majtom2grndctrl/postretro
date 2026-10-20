@@ -447,7 +447,7 @@ proptest! {
     fn confidence_always_lies_in_zero_to_one(
         pixel in (0.5f32..63.5, 26.0f32..47.5),
         angles in (-std::f32::consts::PI..std::f32::consts::PI, -1.5f32..1.5),
-        texels in prop::collection::vec(0.9f32..=1.0, (EXTENT.x * EXTENT.y) as usize),
+        texels in prop::collection::vec(0.0f32..=1.0, (EXTENT.x * EXTENT.y) as usize),
         stride in 1.0f32..4.0,
         budget in 1u32..96,
     ) {

@@ -1,9 +1,9 @@
 // Fluid surface pass: translucent, two-sided fluid faces moving in whole texels,
 // lit by baked SH indirect and baked direct SH per grid vertex and by dynamic
 // lights per fragment, and mirroring their room through distance-corrected
-// box-projected reflection probes (fluid_reflection.wgsl) under the
-// screen-space layer the reflection pass resolves first
-// (fluid_reflection_pass.wgsl). Motion lives in fluid_motion.wgsl.
+// box-projected reflection probes (fluid_reflection.wgsl), with the screen-space
+// layer, which the reflection pass resolves first (fluid_reflection_pass.wgsl),
+// composited over them. Motion lives in fluid_motion.wgsl.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // --- Group 0: camera uniforms (shared with forward and billboard) ---

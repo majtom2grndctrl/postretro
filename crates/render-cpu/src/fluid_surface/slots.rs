@@ -165,12 +165,12 @@ impl FluidParamsRow {
 
     /// The fluid shader variant a draw with this row takes under the frame's
     /// lighting mask and reflection tier. Only a volume that can draw the
-    /// probe term takes the reflecting variant: a probe-bound face
-    /// (reflectivity packs 0 without one) at reflectivity above 0, with every
-    /// lighting bit on, at any tier but Off. Every other draw takes the
-    /// reflection-free variant, whose fragments match what the reflecting
-    /// variant's gate leaves them, so it is chosen for cost alone; at Off the
-    /// player recovers the probe term's cost too.
+    /// reflection layer (probe term or screen-space) takes the reflecting
+    /// variant: a probe-bound face (reflectivity packs 0 without one) at
+    /// reflectivity above 0, with every lighting bit on, at any tier but Off.
+    /// Every other draw takes the reflection-free variant, whose fragments
+    /// match what the reflecting variant's gate leaves them, so it is chosen
+    /// for cost alone; at Off the player recovers the reflection cost too.
     pub fn shader_variant(
         &self,
         light_term_mask: u32,
@@ -204,7 +204,7 @@ pub enum FluidShaderVariant {
     /// No reflection code: a draw with no probe-bound face, reflectivity 0,
     /// an isolating lighting mask, or the Off tier.
     ReflectionFree,
-    /// The probe term, gated per fragment.
+    /// The probe term and the screen-space layer, each gated per fragment.
     Reflecting,
 }
 

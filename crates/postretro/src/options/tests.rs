@@ -220,6 +220,8 @@ fn reflection_quality_persists_each_tier_as_its_snake_case_name() {
         (ReflectionQuality::Low, "low"),
         (ReflectionQuality::Medium, "medium"),
         (ReflectionQuality::High, "high"),
+        (ReflectionQuality::VeryHigh, "very_high"),
+        (ReflectionQuality::Ultra, "ultra"),
     ] {
         let options = PlayerOptions {
             reflection_quality: quality,
@@ -236,7 +238,15 @@ fn reflection_quality_persists_each_tier_as_its_snake_case_name() {
         assert_eq!(quality.slot_value(), wire);
         assert_eq!(ReflectionQuality::from_slot_value(wire), Some(quality));
     }
-    assert_eq!(ReflectionQuality::from_slot_value("ultra"), None);
+    // Neither the dropped probes tier nor a spaced or camel-cased spelling
+    // names a tier.
+    for unknown in ["probes", "very high", "veryHigh", "VERY_HIGH"] {
+        assert_eq!(
+            ReflectionQuality::from_slot_value(unknown),
+            None,
+            "{unknown}"
+        );
+    }
 }
 
 #[test]
@@ -257,7 +267,7 @@ fn an_unknown_reflection_quality_falls_back_to_high_alone_and_keeps_every_other_
     let capture = LogCapture::start();
     let dir = tempdir().unwrap();
     let path = dir.path().join("settings.toml");
-    let text = "invert_y = true\nreflection_quality = \"ultra\"\nfog_quality = \"low\"\n\
+    let text = "invert_y = true\nreflection_quality = \"probes\"\nfog_quality = \"low\"\n\
                 surface_depth_quality = \"off\"\n[accessibility]\nsfx_volume = 0.5\n";
     fs::write(&path, text).unwrap();
 

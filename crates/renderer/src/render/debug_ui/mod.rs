@@ -170,8 +170,8 @@ pub struct DiagnosticsState {
     pub fog_step_size: f32,
     pub fog_pixel_scale: u32,
     /// Mirrors the renderer's reflection-march tuning (step budget, thickness,
-    /// stride divisor), seeded from the renderer on first draw like the SDF and
-    /// fog fields above.
+    /// stride divisor): live overrides on the active tier's preset, re-read
+    /// from the renderer on every draw, since a tier change resets them.
     pub reflection_march_step_budget: u32,
     pub reflection_march_thickness: f32,
     pub reflection_march_rows_per_stride_pixel: u32,
@@ -331,7 +331,7 @@ pub fn draw_diagnostics_panel(
         let animated_direct_override = renderer.animated_direct_sh_debug_override();
         state.animated_direct_sh_override_enabled = animated_direct_override.enabled;
         state.animated_direct_sh_override_light_index = animated_direct_override.light_index;
-        // Pull live SDF, fog and reflection-march tuning so sliders open at the
+        // Pull live SDF and fog tuning so sliders open at the
         // engine's current values, not the struct-default placeholders.
         state.sdf_max_march_steps = renderer.sdf_max_march_steps();
         state.sdf_open_space_skip_threshold = renderer.sdf_open_space_skip_threshold();
@@ -339,10 +339,6 @@ pub fn draw_diagnostics_panel(
         state.sdf_surface_bias = renderer.sdf_surface_bias();
         state.fog_step_size = renderer.fog_step_size();
         state.fog_pixel_scale = renderer.fog_pixel_scale();
-        state.reflection_march_step_budget = renderer.reflection_march_step_budget();
-        state.reflection_march_thickness = renderer.reflection_march_thickness();
-        state.reflection_march_rows_per_stride_pixel =
-            renderer.reflection_march_rows_per_stride_pixel();
         state.spatial_wireframe_mode = renderer.world_wireframe_mode();
         let bvh_overlay = renderer.bvh_overlay_state();
         state.bvh_overlay_visible = bvh_overlay.visible;
@@ -358,6 +354,13 @@ pub fn draw_diagnostics_panel(
         state.seeded = true;
     }
     state.spatial_wireframe_mode = renderer.world_wireframe_mode();
+    // The reflection march re-reads the renderer every draw: a tier change
+    // resets it to the new tier's preset, and the renderer stays the source
+    // of truth, so the sliders always show the march the next frame runs.
+    state.reflection_march_step_budget = renderer.reflection_march_step_budget();
+    state.reflection_march_thickness = renderer.reflection_march_thickness();
+    state.reflection_march_rows_per_stride_pixel =
+        renderer.reflection_march_rows_per_stride_pixel();
 
     egui::Window::new("Diagnostics").show(ctx, |ui| {
         draw_tab_selector(ui, state);
@@ -752,8 +755,8 @@ fn draw_volumes_tab(
             ui.separator();
 
             // Fluid reflection march: uniform scalars like the SDF knobs,
-            // written on the next frame only when changed. Every tier
-            // marches these values.
+            // written on the next frame only when changed. Live overrides
+            // on the active tier's preset; a tier change resets them.
             ui.label("Reflection march steps per ray");
             if ui
                 .add(egui::Slider::new(

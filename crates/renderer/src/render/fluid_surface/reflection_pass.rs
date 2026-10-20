@@ -4,7 +4,10 @@
 // See: context/lib/rendering_pipeline.md §7.3a, §10
 
 use bytemuck::{Pod, Zeroable};
-use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+pub(crate) use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionMarch as FluidReflectionMarchTuning;
+use postretro_render_cpu::fluid_surface::reflection_quality::{
+    FluidReflectionQuality, reflection_target_extent,
+};
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 
 // The parent's imports included: the reflection pass reads the installed
@@ -39,58 +42,12 @@ pub(crate) const FLUID_REFLECTION_BIND_GROUP_COUNT: usize = 4;
 /// cleared texel lands between the probe-only and the SSR composite.
 pub(crate) const FLUID_REFLECTION_TARGET_FORMAT: wgpu::TextureFormat =
     wgpu::TextureFormat::Rgba16Float;
-/// March steps per ray, and metres of view depth the near end of a step's
-/// view-depth interval may lie behind the depth buffer for a hit. Dev tuning
-/// may override both for the session.
-const FLUID_REFLECTION_DEFAULT_STEP_BUDGET: u32 = 64;
-const FLUID_REFLECTION_DEFAULT_THICKNESS: f32 = 0.5;
-/// Scene rows per full-resolution pixel of march stride: 1 below 1080 rows,
-/// 2 at 1080p, 4 at 2160p, so a ray's reach covers about the same share of
-/// the screen at every resolution, and every target extent marches the same
-/// stride. Dev tuning may override it for the session.
-const FLUID_REFLECTION_ROWS_PER_STRIDE_PIXEL: u32 = 540;
-
-/// The march's dev tuning (the diagnostics panel's "SDF / Fog Quality"
-/// section), never player-facing: steps per ray, the hit band's thickness,
-/// and scene rows per pixel of stride. Every tier marches the same values.
-/// Changing one writes the reflection uniform on its next upload and nothing
-/// else: no bind group, target or pipeline.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct FluidReflectionMarchTuning {
-    pub step_budget: u32,
-    /// Metres the near end of a step's view-depth interval may lie behind the
-    /// depth buffer for a hit. The band bounds the interval's nearer end: the
-    /// previous sample for a receding ray, the current one for an approaching
-    /// ray.
-    pub thickness: f32,
-    pub rows_per_stride_pixel: u32,
-}
-
-impl Default for FluidReflectionMarchTuning {
-    fn default() -> Self {
-        Self {
-            step_budget: FLUID_REFLECTION_DEFAULT_STEP_BUDGET,
-            thickness: FLUID_REFLECTION_DEFAULT_THICKNESS,
-            rows_per_stride_pixel: FLUID_REFLECTION_ROWS_PER_STRIDE_PIXEL,
-        }
-    }
-}
-
-impl FluidReflectionMarchTuning {
-    /// At least one step and one row per stride pixel, and a finite,
-    /// non-negative thickness; a non-finite thickness keeps `current`'s.
-    fn sanitized(self, current: Self) -> Self {
-        Self {
-            step_budget: self.step_budget.max(1),
-            thickness: if self.thickness.is_finite() {
-                self.thickness.max(0.0)
-            } else {
-                current.thickness
-            },
-            rows_per_stride_pixel: self.rows_per_stride_pixel.max(1),
-        }
-    }
-}
+// The march's per-ray inputs (`FluidReflectionMarchTuning`, render-cpu's
+// `FluidReflectionMarch`): each screen-space tier's preset sets them, from
+// render-cpu's preset table, and the diagnostics panel's "SDF / Fog Quality"
+// section overrides them live on the active preset, never player-facing.
+// Changing one writes the reflection uniform on its next upload and nothing
+// else: no bind group, target or pipeline.
 
 /// The reflection uniform (group 2 binding 2), the shader's
 /// `FluidReflectionInputs` member for member.
@@ -231,7 +188,7 @@ impl FluidReflectionTarget {
 /// The reflection pipeline, its inputs, and the target with its placeholder.
 /// The pipeline and placeholder exist from full init, at every tier; the
 /// target exists only while a level with a probe-bound fluid face is
-/// installed at a tier other than Off.
+/// installed at a tier that runs the screen-space layer (medium and above).
 pub(crate) struct FluidReflectionPass {
     pipeline: wgpu::RenderPipeline,
     inputs_layout: wgpu::BindGroupLayout,
@@ -240,11 +197,17 @@ pub(crate) struct FluidReflectionPass {
     uniform_buffer: wgpu::Buffer,
     inputs_bind_group: wgpu::BindGroup,
     reflection_style: FluidReflectionStyle,
+    /// The active preset's march, with any dev override over it; a tier
+    /// change resets it to the new tier's preset.
     tuning: FluidReflectionMarchTuning,
+    /// The active preset's target fraction per axis, with any capture
+    /// override over it; `None` at a tier that runs no screen-space layer.
+    /// A tier change resets it to the new tier's preset.
+    fraction: Option<f32>,
     /// The scene extent the inputs were last built over.
     scene_extent: (u32, u32),
-    /// The player's tier: whether a target may exist, and its fraction of
-    /// the scene extent. Kept here so every target creation, the scene-target
+    /// The player's tier: whether a target may exist. Kept here, with its
+    /// preset's fraction, so every target creation, the scene-target
     /// rebuild's included, sizes by the current tier.
     quality: FluidReflectionQuality,
     /// The uniform as last written.
@@ -376,12 +339,15 @@ impl FluidReflectionPass {
         });
         let placeholder_view = placeholder.create_view(&wgpu::TextureViewDescriptor::default());
         let scene_extent = texture_extent(scene_color);
+        // The default tier's preset: its march is the default tuning.
+        let quality = FluidReflectionQuality::default();
+        let preset = quality.preset();
         let tuning = FluidReflectionMarchTuning::default();
         let initial = FluidReflectionUniform {
             reflection_style: FluidReflectionStyle::default().uniform_value(),
             step_budget: tuning.step_budget,
             thickness: tuning.thickness,
-            stride: march_stride(scene_extent, tuning.rows_per_stride_pixel),
+            stride: tuning.stride(scene_extent),
             target_scale: [0.0; 2],
             spare: [0.0; 2],
         };
@@ -405,8 +371,9 @@ impl FluidReflectionPass {
             inputs_bind_group,
             reflection_style: FluidReflectionStyle::default(),
             tuning,
+            fraction: preset.map(|preset| preset.fraction),
             scene_extent,
-            quality: FluidReflectionQuality::default(),
+            quality,
             uploaded: initial,
             _placeholder: placeholder,
             placeholder_view,
@@ -455,10 +422,23 @@ impl FluidReflectionPass {
         superseded
     }
 
-    /// The target extent the kept tier calls for at the current scene
-    /// extent; `None` at Off.
+    /// The target extent the active preset's fraction calls for at the
+    /// current scene extent; `None` at Off and Low.
     fn tier_target_extent(&self) -> Option<(u32, u32)> {
-        self.quality.target_extent(self.scene_extent)
+        self.fraction
+            .map(|fraction| reflection_target_extent(self.scene_extent, fraction))
+    }
+
+    /// Take `quality` and reset the active preset to its own: its march and
+    /// its fraction, or no fraction at a tier that runs no screen-space
+    /// layer, whose march stays as it was (no pass reads it).
+    fn apply_preset(&mut self, quality: FluidReflectionQuality) {
+        self.quality = quality;
+        let preset = quality.preset();
+        if let Some(preset) = preset {
+            self.tuning = preset.march;
+        }
+        self.fraction = preset.map(|preset| preset.fraction);
     }
 
     /// The live target's extent; `None` with only the placeholder.
@@ -497,7 +477,7 @@ impl FluidReflectionPass {
             reflection_style: self.reflection_style.uniform_value(),
             step_budget: self.tuning.step_budget,
             thickness: self.tuning.thickness,
-            stride: march_stride(self.scene_extent, self.tuning.rows_per_stride_pixel),
+            stride: self.tuning.stride(self.scene_extent),
             target_scale: self.target_scale(),
             spare: [0.0; 2],
         }
@@ -544,12 +524,6 @@ impl FluidReflectionPass {
     }
 }
 
-/// Full-resolution pixels per march step at `scene` extent: one per
-/// `rows_per_stride_pixel` scene rows, at least one.
-fn march_stride(scene: (u32, u32), rows_per_stride_pixel: u32) -> f32 {
-    (scene.1 / rows_per_stride_pixel.max(1)).max(1) as f32
-}
-
 /// Depth tested and written against the pass's own depth, never scene depth:
 /// the nearest fluid surface owns each texel, whatever order draws arrive in.
 pub(crate) fn fluid_reflection_depth_stencil_state() -> wgpu::DepthStencilState {
@@ -565,8 +539,11 @@ pub(crate) fn fluid_reflection_depth_stencil_state() -> wgpu::DepthStencilState 
 impl FluidSurfacePass {
     /// The reflection target extent the installed level and the kept tier
     /// call for: the tier's fraction of the scene extent on a level with a
-    /// probe-bound fluid face, else none. Probe binding is fixed at install;
-    /// reflectivity, retuned live, never enters it.
+    /// probe-bound fluid face at a tier that runs the screen-space layer,
+    /// else none. Off and Low want none: at Low the reflecting variant
+    /// draws the probe term over the placeholder, which reads c = 0. Probe
+    /// binding is fixed at install; reflectivity, retuned live, never enters
+    /// it.
     ///
     /// The reflecting variant can still draw on a level with no target.
     /// `has_probe_bound_face` comes from the per-vertex probe indices, while
@@ -580,7 +557,7 @@ impl FluidSurfacePass {
             .installed
             .as_ref()
             .is_some_and(InstalledFluidSurfaces::has_probe_bound_face);
-        if !probe_bound {
+        if !probe_bound || !self.reflection.quality.runs_screen_space() {
             return None;
         }
         self.reflection.tier_target_extent()
@@ -608,10 +585,15 @@ impl FluidSurfacePass {
     }
 
     /// Apply the player's reflection tier. The tier it already holds builds
-    /// nothing. Otherwise the target follows: created on a level with a
-    /// probe-bound face when the tier leaves Off, resized when the fraction
-    /// changes, released at Off, with group 5 and its scale rebuilt around
-    /// it. With no such level it only keeps the tier for the next install.
+    /// nothing and keeps any override. Otherwise the active preset resets to
+    /// the tier's: its march reaches the reflection uniform on the next
+    /// change-driven upload, and the target follows its fraction: created on
+    /// a level with a probe-bound face when the tier rises to medium or
+    /// above, resized when the fraction changes, released at Off or Low,
+    /// with group 5 and its scale rebuilt around it (over the placeholder
+    /// before a released target drops). Two screen-space tiers with one
+    /// fraction rebuild neither the target nor group 5, only the uniform.
+    /// With no such level it only keeps the tier for the next install.
     /// Creates no pipeline and no shader module: those are built at full
     /// init, at every tier.
     pub fn set_reflection_quality(
@@ -622,8 +604,29 @@ impl FluidSurfacePass {
         if self.reflection.quality == quality {
             return;
         }
-        self.reflection.quality = quality;
+        self.reflection.apply_preset(quality);
         self.set_reflection_target(device, self.wanted_reflection_target());
+    }
+
+    /// Override the active preset's target fraction per axis, until the next
+    /// tier change resets it: the target is created, resized or released as
+    /// a tier's would be, rounded up and at least 1×1. Only a tier that runs
+    /// the screen-space layer has a fraction to override; elsewhere, and for
+    /// a fraction outside (0, 1], it changes nothing and returns false.
+    /// Creates no pipeline and no shader module.
+    pub fn set_reflection_target_fraction(&mut self, device: &wgpu::Device, fraction: f32) -> bool {
+        if self.reflection.fraction.is_none() || !(fraction > 0.0 && fraction <= 1.0) {
+            return false;
+        }
+        self.reflection.fraction = Some(fraction);
+        self.set_reflection_target(device, self.wanted_reflection_target());
+        true
+    }
+
+    /// The active preset's target fraction per axis, with any override;
+    /// `None` at a tier that runs no screen-space layer.
+    pub fn reflection_target_fraction(&self) -> Option<f32> {
+        self.reflection.fraction
     }
 
     /// Rebuild group 5 over the scene depth it holds and the current target
@@ -672,13 +675,15 @@ impl FluidSurfacePass {
         self.reflection.reflection_style = style;
     }
 
-    /// The march's dev tuning as the next upload writes it.
+    /// The active preset's march, with any dev override, as the next upload
+    /// writes it.
     pub fn reflection_march_tuning(&self) -> FluidReflectionMarchTuning {
         self.reflection.tuning
     }
 
-    /// Replace the march's dev tuning (sanitized: at least one step and one
-    /// row per stride pixel, a finite non-negative thickness). It reaches
+    /// Override the active preset's march (sanitized: at least one step and
+    /// one row per stride pixel, a finite non-negative thickness) until the
+    /// next tier change resets it. It reaches
     /// the reflection uniform on the next upload, and only if it changed;
     /// it builds no bind group, target or pipeline.
     pub fn set_reflection_march_tuning(&mut self, tuning: FluidReflectionMarchTuning) {
@@ -694,14 +699,15 @@ impl FluidSurfacePass {
     /// Whether this frame records the reflection pass: a live target and a
     /// draw taking the reflecting variant under `light_term_mask` and
     /// `quality`, the frame's group-0 mask and tier, the ones the fluid pass
-    /// picks variants by. Off, a level with no fluid, a frame with no
-    /// reflecting draw and an isolating mask each record none.
+    /// picks variants by. Off, Low (whose reflecting draws read the
+    /// placeholder), a level with no fluid, a frame with no reflecting draw
+    /// and an isolating mask each record none.
     pub fn has_reflecting_draws(
         &self,
         light_term_mask: LightTermMask,
         quality: FluidReflectionQuality,
     ) -> bool {
-        quality.reflects()
+        quality.runs_screen_space()
             && self.reflection.target.is_some()
             && self.installed.as_ref().is_some_and(|installed| {
                 installed.reflection_probe_bind_group.is_some()

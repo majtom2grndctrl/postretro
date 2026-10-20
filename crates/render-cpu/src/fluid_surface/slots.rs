@@ -167,7 +167,9 @@ impl FluidParamsRow {
     /// lighting mask and reflection tier. Only a volume that can draw the
     /// reflection layer (probe term or screen-space) takes the reflecting
     /// variant: a probe-bound face (reflectivity packs 0 without one) at
-    /// reflectivity above 0, with every lighting bit on, at any tier but Off.
+    /// reflectivity above 0, with every lighting bit on, at a tier that draws
+    /// the probe term: every tier but Off, Low included, where no target
+    /// exists and the screen-space layer reads c = 0.
     /// Every other draw takes the reflection-free variant, whose fragments
     /// match what the reflecting variant's gate leaves them, so it is chosen
     /// for cost alone; at Off the player recovers the reflection cost too.
@@ -176,7 +178,10 @@ impl FluidParamsRow {
         light_term_mask: u32,
         quality: FluidReflectionQuality,
     ) -> FluidShaderVariant {
-        if quality.reflects() && self.reflectivity() > 0.0 && reflection_mask_on(light_term_mask) {
+        if quality.draws_probe_term()
+            && self.reflectivity() > 0.0
+            && reflection_mask_on(light_term_mask)
+        {
             FluidShaderVariant::Reflecting
         } else {
             FluidShaderVariant::ReflectionFree

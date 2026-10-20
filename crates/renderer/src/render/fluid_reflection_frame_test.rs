@@ -75,8 +75,9 @@ fn smooth_through_target(reference: &Reference<'_>, pixel: UVec2, extent: UVec2)
 // frame (not built analytically), and samples the read-back scene colour.
 // At high, every water fragment whose CPU march hits the quad reads the CPU
 // layered composite within 2/255 and differs from the same frame at Off. At
-// low each of those fragments reads the CPU composite of its bilinear
-// footprint of CPU-marched texels within 2/255, and wherever that whole
+// medium (a half-extent target, marched by medium's preset) each of those
+// fragments reads the CPU composite of its bilinear footprint of CPU-marched
+// texels within 2/255, and wherever that whole
 // footprint hits the quad, the quad's reflection. A face seen from below, a
 // face bound to no probe beside a bound one, and an isolating mask each draw
 // the reflection-free frame byte for byte. Every frame is captured inside a
@@ -139,16 +140,18 @@ fn a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflecti
         }
     }
 
-    // Low: a quarter-extent target, read bilinearly.
-    renderer.set_reflection_quality(FluidReflectionQuality::Low);
+    // Medium: a half-extent target, read bilinearly, marched by medium's
+    // own preset.
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
     let low = capture_checked(&mut renderer, view);
     let target = read_reflection_target(&renderer);
-    assert_eq!(target.extent, UVec2::splat(FRAME / 4));
+    assert_eq!(target.extent, UVec2::splat(FRAME / 2));
+    let medium = Reference::new(view, &scene, march_tuning(&renderer));
     let mut low_worst = (0u8, UVec2::ZERO);
     let mut interior = 0;
     for (pixel, water, _) in &quad_hits {
-        let screen = smooth_through_target(&reference, *pixel, target.extent);
-        let want = reference.composite(FLUID_REFLECTION_STYLE_SMOOTH, *water, Vec2::ZERO, screen);
+        let screen = smooth_through_target(&medium, *pixel, target.extent);
+        let want = medium.composite(FLUID_REFLECTION_STYLE_SMOOTH, *water, Vec2::ZERO, screen);
         let deviation = gap(rgb(&low, *pixel), want);
         if deviation > low_worst.0 {
             low_worst = (deviation, *pixel);
@@ -161,17 +164,16 @@ fn a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflecti
                 on_plane(view, at, 0.0)
                     .filter(|point| on_pool(*point, 0.0))
                     .is_some_and(|point| {
-                        let texel = reference.smooth(point);
+                        let texel = medium.smooth(point);
                         hits_quad(&scene, &texel) && texel.march.confidence >= 1.0
                     })
             });
         if whole {
             interior += 1;
-            let probe_only =
-                reference.probe_only(FLUID_REFLECTION_STYLE_SMOOTH, *water, Vec2::ZERO);
+            let probe_only = medium.probe_only(FLUID_REFLECTION_STYLE_SMOOTH, *water, Vec2::ZERO);
             assert!(
                 gap(rgb(&low, *pixel), probe_only) > 16,
-                "low water {pixel} whose footprint all hits the quad reads it, not the probe: \
+                "medium water {pixel} whose footprint all hits the quad reads it, not the probe: \
                  {:?} vs {probe_only:?}",
                 rgb(&low, *pixel),
             );
@@ -182,7 +184,7 @@ fn a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflecti
          march on read-back depth \
          hits the quad at {} water pixels ({faded} in a fade band), high worst {} at {}, {} \
          within 16/255 of Off; every water pixel worst {} at {} ({fading} with 0 < c < 1); \
-         low worst {} at {}, {interior} with a whole-quad footprint",
+         medium worst {} at {}, {interior} with a whole-quad footprint",
         quad_hits.len(),
         worst.0,
         worst.1,
@@ -209,13 +211,13 @@ fn a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflecti
     );
     assert!(
         low_worst.0 <= 2,
-        "low reads the CPU composite of its footprint: off by {} at {}",
+        "medium reads the CPU composite of its footprint: off by {} at {}",
         low_worst.0,
         low_worst.1
     );
     assert!(
         interior >= 10,
-        "low keeps whole-quad footprints: {interior}"
+        "medium keeps whole-quad footprints: {interior}"
     );
 
     // Refused faces, each against the same frame with reflectivity 0 (the
@@ -303,6 +305,102 @@ fn a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflecti
     renderer.release_level_resources();
 }
 
+// fluid-ssr-reflections rows 1, 2 and 19, the low tier, on the standing-quad
+// scene in smooth style. Stepping high → low releases the target and
+// records no reflection pass, yet the draw keeps the reflecting variant: every
+// visible water fragment reads the CPU probe-only composite (c = 0) within
+// 2/255, every fragment whose high march hits the quad differs from the high
+// frame, and the probe term still differs from Off.
+#[test]
+fn the_low_tier_draws_the_probe_only_composite_and_drops_the_ssr_layer() {
+    let Some(mut renderer) = ssr_renderer() else {
+        return;
+    };
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    install_base_level(&mut renderer);
+    let view = base_view();
+    let (off, scene) = off_frame(&mut renderer, view);
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    let high = capture_checked(&mut renderer, view);
+    let reference = Reference::new(view, &scene, march_tuning(&renderer));
+
+    renderer.set_reflection_quality(FluidReflectionQuality::Low);
+    let (records, targets) = (pass_records(&renderer), target_builds(&renderer));
+    let low = capture_checked(&mut renderer, view);
+    assert_eq!(pass_records(&renderer), records, "low records no pass");
+    assert_eq!(target_builds(&renderer), targets, "low creates nothing");
+    assert_eq!(
+        renderer.full().fluid_surface.reflection_target_extent(),
+        None,
+        "low keeps only the placeholder"
+    );
+    assert_eq!(
+        renderer
+            .full()
+            .fluid_surface
+            .scene_inputs()
+            .pending()
+            .ssr_scale,
+        [0.0; 2]
+    );
+    assert_eq!(
+        renderer
+            .full()
+            .fluid_surface
+            .frame_variants(LightTermMask::ALL),
+        [FluidShaderVariant::Reflecting]
+    );
+
+    let (mut water, mut quad_hits, mut differs_from_high, mut differs_from_off) = (0, 0, 0, 0);
+    let mut worst = (0u8, UVec2::ZERO);
+    for pixel in pixels() {
+        let Some(point) = visible_water(view, &scene, pixel, 0.0) else {
+            continue;
+        };
+        water += 1;
+        let probe_only = reference.probe_only(FLUID_REFLECTION_STYLE_SMOOTH, point, Vec2::ZERO);
+        let deviation = gap(rgb(&low, pixel), probe_only);
+        if deviation > worst.0 {
+            worst = (deviation, pixel);
+        }
+        if gap(rgb(&low, pixel), rgb(&off, pixel)) > 16 {
+            differs_from_off += 1;
+        }
+        if hits_quad(&scene, &reference.smooth(point)) {
+            quad_hits += 1;
+            if gap(rgb(&low, pixel), rgb(&high, pixel)) > 16 {
+                differs_from_high += 1;
+            }
+        }
+    }
+    eprintln!(
+        "[FluidSurfaceProof] fluid-ssr-reflections low-tier GPU case ran: {water} water \
+         pixels, probe-only worst {} at {}, {differs_from_off} differ from Off, \
+         {differs_from_high} of {quad_hits} quad hits differ from high",
+        worst.0, worst.1
+    );
+    assert!(water >= 100, "the pool covers the frame");
+    assert!(
+        worst.0 <= 2,
+        "low reads the CPU probe-only composite: off by {} at {}",
+        worst.0,
+        worst.1
+    );
+    assert!(
+        quad_hits >= 40,
+        "the quad's reflection covers water at high"
+    );
+    assert_eq!(
+        differs_from_high, quad_hits,
+        "every quad hit at high loses its SSR at low"
+    );
+    assert_eq!(
+        differs_from_off, water,
+        "the probe term draws at every water fragment at low"
+    );
+    renderer.release_level_resources();
+}
+
 /// The visible water fragments of each pixel-style cell through `view`,
 /// keyed by cell; fragments within a hundredth of a texel of a cell edge
 /// are left out, so the GPU's cell agrees.
@@ -340,10 +438,11 @@ fn on_screen(at: Vec2) -> bool {
 }
 
 // fluid-ssr-reflections row 15, P15. Pixel style, the frame capture's default, over the
-// base level with 1 m water texel cells and SSR hitting in view. At low,
-// medium and high every visible fragment of each cell reads one value, and
-// every cell whose CPU march (from its centre, about its tilted normal, on
-// the read-back depth) hits differs from the same frame at Off. At high
+// base level with 1 m water texel cells and SSR hitting in view. At every
+// screen-space tier every visible fragment of each cell reads one value, and
+// every cell whose CPU march at that tier's preset (from its centre, about
+// its tilted normal, on the read-back depth) hits differs from the same
+// frame at Off. At high
 // each cell reads its CPU composite within 2/255. A cell whose centre the
 // standing quad hides, with fragments visible beside the quad, reads its own
 // cell's SSR at every visible fragment: its march starts behind the quad,
@@ -364,17 +463,19 @@ fn pixel_style_reads_one_reflection_per_cell_and_hidden_or_lost_centres_read_the
     install_base_level(&mut renderer);
     let view = base_view();
     let (off, scene) = off_frame(&mut renderer, view);
-    let reference = Reference::new(view, &scene, march_tuning(&renderer));
     let cells = visible_cells(view, &scene);
     let cell_index = |cell: (i32, i32)| glam::IVec2::new(cell.0, cell.1);
 
     let mut hit_cells = 0;
     for quality in [
-        FluidReflectionQuality::Low,
         FluidReflectionQuality::Medium,
+        FluidReflectionQuality::VeryHigh,
+        FluidReflectionQuality::Ultra,
         FluidReflectionQuality::High,
     ] {
         renderer.set_reflection_quality(quality);
+        // Each tier marches its own preset.
+        let reference = Reference::new(view, &scene, march_tuning(&renderer));
         let frame = capture_checked(&mut renderer, view);
         let mut worst_spread = (0u8, (0, 0));
         hit_cells = 0;
@@ -415,6 +516,8 @@ fn pixel_style_reads_one_reflection_per_cell_and_hidden_or_lost_centres_read_the
 
     // High, the tier left set: each cell against the CPU references, by
     // where its centre lies.
+    assert_eq!(renderer.reflection_quality(), FluidReflectionQuality::High);
+    let reference = Reference::new(view, &scene, march_tuning(&renderer));
     let frame = capture_checked(&mut renderer, view);
     let target = read_reflection_target(&renderer);
     let (mut matched, mut worst) = (0, (0u8, (0, 0)));
@@ -975,7 +1078,8 @@ fn reflection_march_tuning_writes_only_the_reflection_uniform() {
         renderer.reflection_march_thickness(),
         renderer.reflection_march_rows_per_stride_pixel(),
     );
-    assert_eq!((budget, thickness, rows), (64, 0.5, 540));
+    // High's preset.
+    assert_eq!((budget, thickness, rows), (96, 1.0, 270));
     let (targets, group_5) = (target_builds(&renderer), group_5_builds(&renderer));
     let uploads = |renderer: &Renderer| {
         renderer
@@ -1038,6 +1142,108 @@ fn reflection_march_tuning_writes_only_the_reflection_uniform() {
         uploads(&renderer)
     );
     assert!(restored == defaults, "the defaults restore the frame");
+    assert_eq!(target_builds(&renderer), targets);
+    assert_eq!(group_5_builds(&renderer), group_5);
+    renderer.release_level_resources();
+}
+
+// Tier presets. High, very high and ultra share a fraction, so switching
+// between them builds no target and no group 5: the reflection uniform alone
+// changes, to the new tier's preset march, uploaded once on the next frame,
+// and each frame reads its CPU composite at that tier's preset. A tier change
+// resets a dev override to the new tier's preset; the tier it holds keeps it.
+// Returning to high restores high's frame byte for byte.
+#[test]
+fn switching_between_same_fraction_tiers_changes_only_the_reflection_uniform() {
+    let Some(mut renderer) = ssr_renderer() else {
+        return;
+    };
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    install_base_level(&mut renderer);
+    let view = base_view();
+    let (_, scene) = off_frame(&mut renderer, view);
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    let high = capture_checked(&mut renderer, view);
+    let (targets, group_5) = (target_builds(&renderer), group_5_builds(&renderer));
+    let target = renderer.full().fluid_surface.reflection_target_extent();
+    assert_eq!(target, Some((FRAME, FRAME)));
+    let uploads = |renderer: &Renderer| {
+        renderer
+            .full()
+            .fluid_surface
+            .reflection_uploaded_uniform()
+            .1
+    };
+    let tuning = |renderer: &Renderer| {
+        (
+            renderer.reflection_march_step_budget(),
+            renderer.reflection_march_rows_per_stride_pixel(),
+            renderer.reflection_march_thickness(),
+        )
+    };
+    let preset = |quality: FluidReflectionQuality| {
+        let march = quality.preset().expect("a screen-space tier").march;
+        (
+            march.step_budget,
+            march.rows_per_stride_pixel,
+            march.thickness,
+        )
+    };
+    assert_eq!(tuning(&renderer), preset(FluidReflectionQuality::High));
+
+    let mut worsts = Vec::new();
+    for quality in [
+        FluidReflectionQuality::VeryHigh,
+        FluidReflectionQuality::Ultra,
+    ] {
+        let settled = uploads(&renderer);
+        renderer.set_reflection_quality(quality);
+        assert_eq!(tuning(&renderer), preset(quality), "{quality:?}'s preset");
+        assert_eq!(uploads(&renderer), settled, "the setter writes nothing");
+        let frame = capture_checked(&mut renderer, view);
+        assert_eq!(
+            uploads(&renderer),
+            settled + 1,
+            "{quality:?}: the next frame writes the uniform once"
+        );
+        let reference = Reference::new(view, &scene, march_tuning(&renderer));
+        let (worst, quad) = smooth_worst(&frame, &reference);
+        assert!(
+            worst.0 <= 2 && quad >= 40,
+            "{quality:?} reads its CPU composite: {worst:?}, {quad} quad hits"
+        );
+        worsts.push((quality, worst.0, quad));
+        assert_eq!(target_builds(&renderer), targets, "{quality:?}: no target");
+        assert_eq!(
+            group_5_builds(&renderer),
+            group_5,
+            "{quality:?}: no group 5"
+        );
+        assert_eq!(
+            renderer.full().fluid_surface.reflection_target_extent(),
+            target
+        );
+    }
+
+    // A dev override survives the tier it holds and resets on a change.
+    renderer.set_reflection_march_step_budget(7);
+    renderer.set_reflection_quality(FluidReflectionQuality::Ultra);
+    assert_eq!(
+        renderer.reflection_march_step_budget(),
+        7,
+        "the tier it holds"
+    );
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    assert_eq!(tuning(&renderer), preset(FluidReflectionQuality::High));
+    let restored = capture_checked(&mut renderer, view);
+    eprintln!(
+        "[FluidSurfaceProof] same-fraction tier GPU case ran: {worsts:?} (tier, worst, quad \
+         hits), high restored byte-equal: {}, {} target and {} group 5 builds unchanged",
+        restored == high,
+        target_builds(&renderer),
+        group_5_builds(&renderer)
+    );
+    assert!(restored == high, "high's preset restores high's frame");
     assert_eq!(target_builds(&renderer), targets);
     assert_eq!(group_5_builds(&renderer), group_5);
     renderer.release_level_resources();

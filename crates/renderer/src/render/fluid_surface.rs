@@ -288,7 +288,7 @@ pub(crate) struct FluidSurfacePass {
     scene_inputs: FluidSceneInputs,
     /// The screen-space reflection pass, its pipeline built at full init at
     /// every tier; its target exists only while a level with a probe-bound
-    /// face is installed at a tier other than Off.
+    /// face is installed at a tier that runs the screen-space layer.
     reflection: reflection_pass::FluidReflectionPass,
     /// `None` until a level with drawable fluid surfaces installs: a level
     /// without them allocates nothing and never opens the pass.
@@ -398,9 +398,9 @@ impl FluidSurfacePass {
     /// level without it binds dummies. Faces are cut along `lattice`, the
     /// level's SH lattice, so the vertex stage's baked lighting varies within
     /// a probe cell; without one they pack whole. A level with a probe-bound
-    /// face installed at a tier other than Off also creates the screen-space
+    /// face installed at medium or above also creates the screen-space
     /// reflection target at the kept tier's fraction and rebinds group 5 to
-    /// it; at Off it keeps the placeholder.
+    /// it; at Off and Low it keeps the placeholder.
     #[allow(clippy::too_many_arguments)]
     pub fn install(
         &mut self,
@@ -844,9 +844,13 @@ impl Renderer {
     /// reflection target follows the tier at once: created, resized or
     /// released at the tier's fraction of the current scene extent on a
     /// level with a probe-bound fluid face, with group 5 and the reflection
-    /// inputs' scale rebuilt around it. Off also turns every draw
-    /// reflection-free. Compiles nothing: the reflection pipeline is built at
-    /// full init, at every tier.
+    /// inputs' scale rebuilt around it; Off and Low release it. The march
+    /// resets to the tier's preset, any dev override dropped, and reaches
+    /// the reflection uniform alone: two screen-space tiers with one
+    /// fraction rebuild neither the target nor group 5. Off also turns every
+    /// draw reflection-free; Low keeps the reflecting variant over the
+    /// placeholder, the probe term alone. Compiles nothing: the reflection
+    /// pipeline is built at full init, at every tier.
     pub fn set_reflection_quality(&mut self, quality: FluidReflectionQuality) {
         if self.reflection_quality == quality {
             return;
@@ -862,6 +866,28 @@ impl Renderer {
     /// The reflection tier the next frame draws at.
     pub fn reflection_quality(&self) -> FluidReflectionQuality {
         self.reflection_quality
+    }
+
+    /// Override the active tier's reflection target fraction per axis until
+    /// the next tier change or full init resets it: the target is created,
+    /// resized or released as a tier's would be (rounded up, at least 1×1).
+    /// A measurement hook, never player-facing. Returns false, changing
+    /// nothing, without a full renderer, at a tier that runs no screen-space
+    /// layer (Off, Low), or for a fraction outside (0, 1].
+    pub fn set_reflection_target_fraction(&mut self, fraction: f32) -> bool {
+        let Self { device, full, .. } = self;
+        full.as_mut().is_some_and(|full| {
+            full.fluid_surface
+                .set_reflection_target_fraction(device, fraction)
+        })
+    }
+
+    /// The active tier's reflection target fraction, with any override;
+    /// `None` at Off and Low or without a full renderer.
+    pub fn reflection_target_fraction(&self) -> Option<f32> {
+        self.full
+            .as_ref()
+            .and_then(|full| full.fluid_surface.reflection_target_fraction())
     }
 }
 

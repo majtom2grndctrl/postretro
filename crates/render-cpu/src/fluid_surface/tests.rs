@@ -1175,7 +1175,8 @@ fn collector_keeps_a_zero_opacity_fog_free_fluid_only_when_a_bound_face_reflects
 // reflection tier is not Off; every other draw takes the reflection-free
 // variant. Opacity and fog never choose it. A probe-bound volume at
 // reflectivity 1 under the all-terms mask is reflection-free at Off and
-// reflecting at low, medium and high.
+// reflecting at low and every tier above: Low draws the probe term, so its
+// draws take the reflecting variant though it runs no screen-space layer.
 #[test]
 fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every_term() {
     use crate::fluid_surface::reflection_quality::FluidReflectionQuality;
@@ -1238,6 +1239,8 @@ fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every
         FluidReflectionQuality::Low,
         FluidReflectionQuality::Medium,
         FluidReflectionQuality::High,
+        FluidReflectionQuality::VeryHigh,
+        FluidReflectionQuality::Ultra,
     ] {
         assert_eq!(
             probe_bound.shader_variant(all, quality),
@@ -1251,7 +1254,8 @@ fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every
 
 // The frame's draws carry their variants in the collector's far-to-near
 // order, so the pass switches pipeline only where neighbours differ; an
-// isolating mask, or the Off tier, turns every draw reflection-free, and no
+// isolating mask, or the Off tier, turns every draw reflection-free; every
+// other tier, Low included, pairs each draw with High's variant; and no
 // tier changes the draw order.
 #[test]
 fn slots_pair_each_frame_draw_with_its_shader_variant_in_draw_order() {
@@ -1298,7 +1302,7 @@ fn slots_pair_each_frame_draw_with_its_shader_variant_in_draw_order() {
                 .all(|(_, variant)| variant == FluidShaderVariant::ReflectionFree)
         );
         let tiered: Vec<_> = slots.frame_draws(all, quality).collect();
-        let expected: Vec<_> = if quality.reflects() {
+        let expected: Vec<_> = if quality != FluidReflectionQuality::Off {
             variants.clone()
         } else {
             variants

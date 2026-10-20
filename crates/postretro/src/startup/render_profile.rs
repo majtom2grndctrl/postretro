@@ -63,6 +63,8 @@ pub(crate) const fn renderer_reflection_quality(
         ReflectionQuality::Low => FluidReflectionQuality::Low,
         ReflectionQuality::Medium => FluidReflectionQuality::Medium,
         ReflectionQuality::High => FluidReflectionQuality::High,
+        ReflectionQuality::VeryHigh => FluidReflectionQuality::VeryHigh,
+        ReflectionQuality::Ultra => FluidReflectionQuality::Ultra,
     }
 }
 
@@ -285,7 +287,8 @@ mod tests {
             "self.apply_mod_bloom_render_profile(render_profile);\
              self.apply_mod_reflection_profile(render_profile);"
         ));
-        // Frame capture loads no manifest and never sets a style.
+        // Frame capture loads no manifest: it may set the style from its own
+        // scene file, never from a mod's render profile.
         for capture in [
             include_str!("../capture/mod.rs"),
             include_str!("../capture/prepared.rs"),
@@ -294,15 +297,22 @@ mod tests {
             include_str!("../capture/scene.rs"),
         ] {
             let code = code_only(capture);
-            assert!(!code.contains("set_fluid_reflection_style"));
             assert!(!code.contains("apply_mod_reflection_profile"));
+            assert!(!code.contains("ModRenderProfile"));
+            assert!(!code.contains("ModReflection"));
         }
+        let prepared = code_only(include_str!("../capture/prepared.rs"));
+        assert!(prepared.contains(
+            "ifletSome(style)=scene.reflection_style{\
+             renderer.set_fluid_reflection_style(style.renderer());}"
+        ));
     }
 
     // The kept tier reaches the renderer before anything sizes a reflection
     // target from it: before full init builds, before each level's fluid
     // install, and live from the options bridge. Frame capture reads no
-    // player options, so it draws at the renderer's default tier (high).
+    // player options: it draws at the renderer's default tier (high) unless
+    // its own scene file names one.
     #[test]
     fn the_reflection_tier_is_applied_before_full_init_and_each_fluid_install() {
         let splash = include_str!("splash_lifecycle.rs")
@@ -373,17 +383,28 @@ mod tests {
         assert!(!capture_files.is_empty(), "capture sources were found");
         for path in capture_files {
             let capture = std::fs::read_to_string(&path).expect("capture source is readable");
-            assert!(
-                !capture.contains("set_reflection_quality"),
-                "{} sets the reflection tier",
-                path.display()
-            );
-            assert!(
-                !capture.contains("apply_player_reflection_quality"),
-                "{} applies the player reflection tier",
-                path.display()
-            );
+            for player in [
+                "PlayerOptions",
+                "player_options",
+                "apply_player_",
+                "options::",
+            ] {
+                assert!(
+                    !capture.contains(player),
+                    "{} reaches player options through `{player}`: capture reads its own \
+                     scene file, never the player's settings",
+                    path.display()
+                );
+            }
         }
+        // The tier capture sets comes from its scene file alone.
+        let prepared = include_str!("../capture/prepared.rs");
+        let code: String = prepared.split_whitespace().collect();
+        assert_eq!(code.matches("set_reflection_quality(").count(), 1);
+        assert!(code.contains(
+            "ifletSome(quality)=scene.reflection_quality{\
+             renderer.set_reflection_quality(quality.renderer());}"
+        ));
     }
 
     #[test]
@@ -488,6 +509,11 @@ mod tests {
             (ReflectionQuality::Low, FluidReflectionQuality::Low),
             (ReflectionQuality::Medium, FluidReflectionQuality::Medium),
             (ReflectionQuality::High, FluidReflectionQuality::High),
+            (
+                ReflectionQuality::VeryHigh,
+                FluidReflectionQuality::VeryHigh,
+            ),
+            (ReflectionQuality::Ultra, FluidReflectionQuality::Ultra),
         ] {
             assert_eq!(renderer_reflection_quality(persisted), expected);
         }
@@ -500,15 +526,18 @@ mod tests {
                 FluidReflectionQuality::Low => ReflectionQuality::Low,
                 FluidReflectionQuality::Medium => ReflectionQuality::Medium,
                 FluidReflectionQuality::High => ReflectionQuality::High,
+                FluidReflectionQuality::VeryHigh => ReflectionQuality::VeryHigh,
+                FluidReflectionQuality::Ultra => ReflectionQuality::Ultra,
             };
             assert_eq!(renderer_reflection_quality(persisted), renderer_tier);
         }
     }
 
     #[test]
-    fn reflection_quality_defaults_to_the_top_tier_on_both_sides() {
+    fn reflection_quality_defaults_to_high_on_both_sides() {
         // A player who never opens the menu draws what a renderer no option
-        // has spoken to draws (frame capture's): high.
+        // has spoken to draws (frame capture's, absent a scene tier): high,
+        // below very high and ultra.
         assert_eq!(
             renderer_reflection_quality(ReflectionQuality::default()),
             FluidReflectionQuality::High,

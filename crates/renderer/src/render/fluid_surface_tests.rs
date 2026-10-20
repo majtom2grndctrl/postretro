@@ -3072,7 +3072,16 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
         "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits(),quality){"
     ));
     let reflecting = code_only(wgsl_fn(reflection_source, "has_reflecting_draws"));
-    assert!(reflecting.contains("quality.reflects()&&"), "{reflecting}");
+    // The pass records only at a tier that runs the screen-space layer:
+    // Low takes the reflecting variant but records no pass.
+    assert!(
+        reflecting.starts_with(
+            "fnhas_reflecting_draws(&self,light_term_mask:LightTermMask,\
+             quality:FluidReflectionQuality,)->bool{quality.runs_screen_space()&&"
+        ),
+        "{reflecting}"
+    );
+    assert!(!reflecting.contains("draws_probe_term"), "{reflecting}");
     assert!(
         reflecting.contains(".frame_draws(light_term_mask.bits(),quality)"),
         "{reflecting}"
@@ -3123,11 +3132,14 @@ fn fluid_pass_opens_depth_read_only() {
 //   - the scene-target rebuild (`rebuild_scene_inputs`);
 //   - a fluid install or a tier change that creates or drops the reflection
 //     target, or resizes it, since a resized target is a new view (medium to
-//     high, say): both reach `set_reflection_target`, the one rebinding path;
+//     high, say), and the capture's fraction override, which resizes it as a
+//     tier change would: all reach `set_reflection_target`, the one
+//     rebinding path;
 //   - unload, through the clear, which rebinds the placeholder.
 // Setting the tier it already holds builds nothing, nor does an extent the
-// target already has. Never in the frame; never on a reflectivity change
-// (P17). The uniforms upload before the reflection pass, so both passes of
+// target already has: two screen-space tiers with one fraction (high to
+// very high, say) change the reflection uniform alone. Never in the frame;
+// never on a reflectivity change (P17). The uniforms upload before the reflection pass, so both passes of
 // one frame draw one style (P8).
 // "Scene targets" in the name also covers reflection-target create, resize
 // and release.
@@ -3231,7 +3243,7 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     assert_eq!(
         code_only(wgsl_fn(reflection_source, "tier_target_extent")),
         "fntier_target_extent(&self)->Option<(u32,u32)>{\
-         self.quality.target_extent(self.scene_extent)}"
+         self.fraction.map(|fraction|reflection_target_extent(self.scene_extent,fraction))}"
     );
     assert!(
         code_only(wgsl_fn(reflection_source, "rebind_reflection_target")).contains(
@@ -3266,10 +3278,15 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
             .count(),
         1
     );
-    // Exactly three callers change the target: install keys it to a
+    // Exactly four callers change the target: install keys it to a
     // probe-bound face and the kept tier after starting from a clear; clear
-    // (level change and unload) drops it; a tier change re-keys it.
-    assert_eq!(pass_code.matches(".set_reflection_target(").count(), 3);
+    // (level change and unload) drops it; a tier change and the capture's
+    // fraction override re-key it.
+    assert_eq!(pass_code.matches(".set_reflection_target(").count(), 4);
+    assert!(
+        code_only(wgsl_fn(reflection_source, "set_reflection_target_fraction"))
+            .contains("self.set_reflection_target(device,self.wanted_reflection_target());")
+    );
     let install = code_only(wgsl_fn(source, "install"));
     assert!(install.starts_with(
         "fninstall(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
@@ -3285,14 +3302,21 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     assert_eq!(
         code_only(wgsl_fn(reflection_source, "set_reflection_quality")),
         "fnset_reflection_quality(&mutself,device:&wgpu::Device,quality:FluidReflectionQuality,){\
-         ifself.reflection.quality==quality{return;}self.reflection.quality=quality;\
+         ifself.reflection.quality==quality{return;}self.reflection.apply_preset(quality);\
          self.set_reflection_target(device,self.wanted_reflection_target());}",
         "the tier it already holds builds nothing (P5)"
     );
     // The wanted target is keyed to probe binding and the tier alone, never
-    // reflectivity, which only switches variants per frame (P17).
+    // reflectivity, which only switches variants per frame (P17). Only a
+    // tier that runs the screen-space layer wants one: Off and Low keep the
+    // placeholder.
     let wanted = code_only(wgsl_fn(reflection_source, "wanted_reflection_target"));
     assert!(wanted.contains("is_some_and(InstalledFluidSurfaces::has_probe_bound_face)"));
+    assert!(
+        wanted
+            .contains("if!probe_bound||!self.reflection.quality.runs_screen_space(){returnNone;}"),
+        "{wanted}"
+    );
     assert!(
         wanted.ends_with("self.reflection.tier_target_extent()}"),
         "{wanted}"
@@ -4065,19 +4089,50 @@ fn fluid_reflection_pass_clears_its_target_and_orders_fluid_by_its_own_depth() {
     assert!(labels.contains(line), "missing timing label `{line}`");
 }
 
-// The target extent per axis at the tier's fraction of the scene's, rounded
-// up and never below one texel, is render-cpu's `FluidReflectionQuality`
-// rule alone (its tests pin the rule): the renderer sizes every target
-// through it and keeps no fraction or rounding of its own.
+// The target extent per axis at the active fraction of the scene's, rounded
+// up and never below one texel, is render-cpu's `reflection_target_extent`
+// rule alone (its tests pin the rule), and every fraction the pass holds
+// comes from render-cpu's preset table, or from the capture's override,
+// which the setter range-checks: the renderer sizes every target through
+// the rule and keeps no fraction value or rounding of its own.
 #[test]
 fn the_reflection_target_sizes_by_the_render_cpu_tier_rule_alone() {
     use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
-    let pass = code_only(include_str!("fluid_surface/reflection_pass.rs"));
-    assert_eq!(pass.matches(".target_extent(").count(), 1);
-    assert!(pass.contains("self.quality.target_extent(self.scene_extent)"));
-    for copy in ["ceil(", "FRACTION", "fraction", "0.25", "0.5)"] {
+    let source = include_str!("fluid_surface/reflection_pass.rs");
+    let pass = code_only(source);
+    // One call of the rule; the other match is the test accessor of the same name.
+    assert_eq!(pass.matches("reflection_target_extent(").count(), 2);
+    assert!(pass.contains(
+        "fnreflection_target_extent(&self)->Option<(u32,u32)>{self.reflection.live_target_extent()}"
+    ));
+    assert!(pass.contains("reflection_target_extent(self.scene_extent,fraction)"));
+    for copy in ["ceil(", "FRACTION", "0.25", "0.5)", ".target_extent("] {
         assert!(!pass.contains(copy), "the pass keeps its own `{copy}`");
     }
+    // Every write of the fraction: the default tier's preset at full init,
+    // a tier's preset on a change, and the range-checked override.
+    assert_eq!(
+        pass.matches("fraction:preset.map(|preset|preset.fraction),")
+            .count(),
+        1
+    );
+    assert_eq!(
+        pass.matches("self.fraction=preset.map(|preset|preset.fraction);")
+            .count(),
+        1
+    );
+    assert_eq!(
+        pass.matches("self.reflection.fraction=Some(fraction);")
+            .count(),
+        1
+    );
+    assert!(
+        code_only(wgsl_fn(source, "set_reflection_target_fraction")).contains(
+            "if self.reflection.fraction.is_none()||!(fraction>0.0&&fraction<=1.0){returnfalse;}"
+                .replace(' ', "")
+                .as_str()
+        )
+    );
     assert!(!code_only(include_str!("fluid_surface.rs")).contains("ceil("));
     assert_eq!(
         FluidReflectionQuality::Medium.target_extent((1921, 1081)),
@@ -4090,7 +4145,9 @@ fn the_reflection_target_sizes_by_the_render_cpu_tier_rule_alone() {
 // wanted extent, the target change, the target's creation and group 5's
 // rebind and scale) create no pipeline, shader module or pipeline layout;
 // those exist only in the full-init constructors, built at every tier. The
-// march's dev tuning setters compile and rebuild nothing either.
+// tier's preset reaches the march tuning and the fraction alone, and the
+// capture's fraction override reaches the same target change. The march's
+// dev tuning setters compile and rebuild nothing either.
 #[test]
 fn raising_the_reflection_tier_compiles_nothing() {
     const COMPILES: [&str; 3] = [
@@ -4113,6 +4170,10 @@ fn raising_the_reflection_tier_compiles_nothing() {
             code_only(wgsl_fn(source, "set_reflection_quality")),
         ),
         (
+            "Renderer::set_reflection_target_fraction",
+            code_only(wgsl_fn(source, "set_reflection_target_fraction")),
+        ),
+        (
             "has_probe_bound_face",
             code_only(wgsl_fn(source, "has_probe_bound_face")),
         ),
@@ -4132,6 +4193,8 @@ fn raising_the_reflection_tier_compiles_nothing() {
     ];
     for helper in [
         "set_reflection_quality",
+        "apply_preset",
+        "set_reflection_target_fraction",
         "wanted_reflection_target",
         "set_reflection_target",
         "tier_target_extent",
@@ -4149,18 +4212,25 @@ fn raising_the_reflection_tier_compiles_nothing() {
         }
     }
     // The march's dev tuning writes the reflection uniform alone, on its
-    // next change-driven upload: neither the pass's setter and sanitizer nor
-    // the renderer's setters compile, build a bind group or target, or write
-    // a buffer themselves.
+    // next change-driven upload: neither the pass's setter, render-cpu's
+    // sanitizer (GPU-free) nor the renderer's setters compile, build a bind
+    // group or target, or write a buffer themselves.
     let state = include_str!("renderer_state.rs");
-    let mut tuning: Vec<(&str, String)> = [
-        "reflection_march_tuning",
-        "set_reflection_march_tuning",
-        "sanitized",
-    ]
-    .into_iter()
-    .map(|helper| (helper, code_only(wgsl_fn(reflection_source, helper))))
-    .collect();
+    let presets = include_str!("../../../render-cpu/src/fluid_surface/reflection_quality.rs");
+    let mut tuning: Vec<(&str, String)> =
+        ["reflection_march_tuning", "set_reflection_march_tuning"]
+            .into_iter()
+            .map(|helper| (helper, code_only(wgsl_fn(reflection_source, helper))))
+            .collect();
+    tuning.push(("sanitized", code_only(wgsl_fn(presets, "sanitized"))));
+    // A tier change applies its preset as values: the march and the
+    // fraction, nothing built.
+    let apply = code_only(wgsl_fn(reflection_source, "apply_preset"));
+    assert!(
+        apply.contains("self.tuning=preset.march;")
+            && apply.contains("self.fraction=preset.map(|preset|preset.fraction);"),
+        "{apply}"
+    );
     for setter in [
         "set_reflection_march_step_budget",
         "set_reflection_march_thickness",
@@ -4190,7 +4260,11 @@ fn raising_the_reflection_tier_compiles_nothing() {
         .unwrap()
         .1;
     assert!(
-        pass_setter.contains("self.set_reflection_target(device,self.wanted_reflection_target());")
+        pass_setter.contains(
+            "self.reflection.apply_preset(quality);\
+             self.set_reflection_target(device,self.wanted_reflection_target());"
+        ),
+        "{pass_setter}"
     );
     // The only compiles in these modules are the full-init constructors'.
     let pass_new = code_only(wgsl_fn(

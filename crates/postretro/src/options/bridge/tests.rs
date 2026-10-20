@@ -187,7 +187,8 @@ fn write_state_slot_json_validates_every_option_slot() {
     assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("high")).is_err());
     assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("low")).is_err());
     assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("medium")).is_err());
-    assert!(write_state_slot_json(&ctx, REFLECTION_QUALITY_SLOT, &json!("ultra")).is_err());
+    // The dropped probes tier is no tier.
+    assert!(write_state_slot_json(&ctx, REFLECTION_QUALITY_SLOT, &json!("probes")).is_err());
     // The player owns cost, never style: a style name is no tier.
     assert!(write_state_slot_json(&ctx, REFLECTION_QUALITY_SLOT, &json!("smooth")).is_err());
     assert!(write_state_slot_json(&ctx, RENDER_RESOLUTION_SLOT, &json!("eighth")).is_err());
@@ -377,6 +378,8 @@ fn every_remaining_option_slot_updates_its_matching_field() {
         ("off", ReflectionQuality::Off),
         ("low", ReflectionQuality::Low),
         ("medium", ReflectionQuality::Medium),
+        ("very_high", ReflectionQuality::VeryHigh),
+        ("ultra", ReflectionQuality::Ultra),
         ("high", ReflectionQuality::High),
     ] {
         write(&ctx, REFLECTION_QUALITY_SLOT, json!(value));

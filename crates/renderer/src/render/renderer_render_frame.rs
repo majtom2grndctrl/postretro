@@ -670,7 +670,7 @@ impl Renderer {
             // The screen-space reflection layer, resolved into its own target
             // before the fluid pass samples it: the frame's reflecting draws,
             // by the same mask snapshot and tier the fluid pass picks variants
-            // by. Off and a frame with no reflecting draw record none.
+            // by. Off, Low and a frame with no reflecting draw record none.
             if self
                 .full()
                 .fluid_surface

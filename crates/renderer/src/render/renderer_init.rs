@@ -315,7 +315,9 @@ impl Renderer {
         self.set_fluid_reflection_style(self.fluid_reflection_style);
         // And at the default tier; hand it the kept one. No level is
         // installed yet, so this allocates no target: the first fluid
-        // install consults the tier, and at Off keeps the placeholder.
+        // install consults the tier, and at Off or Low keeps the
+        // placeholder. The pass starts at the default tier's preset, so a
+        // kept default tier keeps its march; any other resets it to its own.
         let quality = self.reflection_quality;
         let Self { device, full, .. } = self;
         full.as_mut()

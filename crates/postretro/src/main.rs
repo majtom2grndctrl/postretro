@@ -10424,6 +10424,8 @@ mod tests {
                     "optionsReflectionLow",
                     "optionsReflectionMedium",
                     "optionsReflectionHigh",
+                    "optionsReflectionVeryHigh",
+                    "optionsReflectionUltra",
                     "optionsRenderResolutionAuto",
                     "optionsRenderResolutionNative",
                     "optionsRenderResolutionHalf",
@@ -10658,6 +10660,16 @@ mod tests {
                 "medium",
             ),
             ("optionsReflectionHigh", "options.reflectionQuality", "high"),
+            (
+                "optionsReflectionVeryHigh",
+                "options.reflectionQuality",
+                "very_high",
+            ),
+            (
+                "optionsReflectionUltra",
+                "options.reflectionQuality",
+                "ultra",
+            ),
         ] {
             let button =
                 find_button(graphics_panel, id).unwrap_or_else(|| panic!("{id} is a radio button"));

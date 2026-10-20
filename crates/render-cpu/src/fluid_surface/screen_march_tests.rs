@@ -1,7 +1,9 @@
 // Tests: the screen-space march reference on a fixed synthetic depth buffer.
-// Every tier reaches the same hit, a thin occluder included; misses, the
-// budget and the edge band set confidence; a ray toward the camera steps like
-// any other; a hidden origin skips its starting overlap.
+// A lower tier never reaches further than a higher one; at one tuning the
+// march reaches the same hit at every target fraction, a thin occluder
+// included; misses, the budget and the edge band set confidence; a ray
+// toward the camera steps like any other; a hidden origin skips its starting
+// overlap.
 // See: context/lib/testing_guide.md
 
 use std::cell::RefCell;
@@ -10,6 +12,7 @@ use glam::{Mat4, UVec2, Vec2, Vec3};
 use proptest::prelude::*;
 
 use super::*;
+use crate::fluid_surface::reflection_quality::FluidReflectionQuality;
 
 /// The synthetic scene depth's extent: small, so every column and row the
 /// tests name is easy to reason about.
@@ -171,39 +174,144 @@ fn depth_in_front_of_ray(origin: Vec3, direction: Vec3, row: u32, gap: f32) -> f
     ndc_at_view_depth(view_depth(ray_point_at_row(origin, direction, row)) - gap)
 }
 
-// --- Tier invariance --------------------------------------------------------
+// --- Tiers ------------------------------------------------------------------
 
-// Every tier marches the same full-resolution scene depth at the same
-// full-resolution stride: the reflection pass sets
-// `stride = max(1, scene_rows / 540)` from the scene's extent, never the
-// target's, and binds scene depth, never a target-resolution copy. Neither
-// the target extent nor the tier is an input of `screen_march`. A tier only
-// changes which origins are shaded: the low tier (a quarter per axis) shades
-// one per 4 × 4 block of scene pixels, at the block's centre; the high tier
-// one per scene pixel. So the low tier's origin, marched with the inputs
-// each tier's pass hands the march, reaches the same hit at the same
-// confidence, and so does every high-tier origin in that block, on a bar
-// standing across the pool one depth texel tall. A one-pixel stride along a
-// mostly vertical screen path samples every row and cannot step over it. The
-// bar stands a few rows above the block, where the block's rays cross it
-// within the thickness of one another. A march that scaled its stride with
-// the tier (four pixels at the quarter tier) steps over the same bar, so the
-// bar is thin for what this test claims.
+// Each tier's preset is pinned in `reflection_quality_tests.rs`
+// (`every_fluid_reflection_tier_pins_its_preset`); these tests march them.
+
+/// The march inputs a tier's pass hands `screen_march` at `scene` extent:
+/// its preset's stride, step budget and thickness.
+fn preset_inputs(quality: FluidReflectionQuality, scene: (u32, u32)) -> (f32, u32, f32) {
+    let march = quality.preset().expect("a screen-space tier").march;
+    (march.stride(scene), march.step_budget, march.thickness)
+}
+
+/// A depth buffer of any extent holding nothing (every load reads the far
+/// clear), recording the position of each sample the march loads.
+struct EmptyRecording {
+    dimensions: UVec2,
+    loads: RefCell<Vec<Vec2>>,
+}
+
+impl ScreenMarchDepth for EmptyRecording {
+    fn dimensions(&self) -> UVec2 {
+        self.dimensions
+    }
+
+    fn load(&self, pixel: Vec2) -> f32 {
+        self.loads.borrow_mut().push(pixel);
+        1.0
+    }
+}
+
+/// The water point under an NDC position: the same world point at every
+/// extent of `view_proj`'s aspect.
+fn water_point_ndc(ndc: Vec2) -> Vec3 {
+    let inverse = view_proj().inverse();
+    let near = inverse.project_point3(ndc.extend(0.0));
+    let far = inverse.project_point3(ndc.extend(1.0));
+    near + (far - near) * (near.y / (near.y - far.y))
+}
+
+// Tiers differ in reach: a preset's stride divisor and step budget set how
+// far its rays travel across the screen. For the same ray over an empty
+// scene, at every scene extent of the test projection's aspect, a lower
+// screen-space tier never reaches further than a higher one: where the lower
+// tier runs to the end of the ray's on-screen path (leaving the screen or
+// the depth range before its budget), so does the higher; where the lower
+// exhausts its budget, the higher either runs to the path's end or samples
+// at least as far from the origin. And the lowest falls short of the highest
+// somewhere. Reach is read from the march's own depth loads, so it is
+// observed, not re-derived; a march that runs to the path's end has no
+// further to go, whatever its last on-screen sample's stride phase.
 #[test]
-fn every_tier_reaches_the_same_hit_on_a_one_texel_occluder() {
-    // The low tier's target pixel (4, 8) covers scene pixels 16..20 × 32..36;
-    // its fragment shades the water at the block's centre.
-    let low_pixel = UVec2::new(4, 8);
-    let low_origin = water_point(low_pixel.as_vec2() * 4.0 + Vec2::splat(2.0));
-    let direction = mirrored(low_origin);
+fn a_lower_tier_never_reaches_further_than_a_higher_one() {
+    let tiers: Vec<_> = FluidReflectionQuality::ALL
+        .into_iter()
+        .filter(|quality| quality.runs_screen_space())
+        .collect();
+    assert_eq!(tiers.len(), 4);
+    let origin = water_point_ndc(Vec2::new(0.1, -0.9));
+    let direction = mirrored(origin);
+    let mut shorter_somewhere = false;
+    for rows in [48, 120, 270, 360, 540, 720, 1080, 1440, 2160] {
+        let scene = (rows * EXTENT.x / EXTENT.y, rows);
+        // Per tier: whether it ran to the path's end, and how far it sampled.
+        let reaches: Vec<(bool, f32)> = tiers
+            .iter()
+            .map(|&quality| {
+                let (stride, budget, thickness) = preset_inputs(quality, scene);
+                let depth = EmptyRecording {
+                    dimensions: UVec2::new(scene.0, scene.1),
+                    loads: RefCell::new(Vec::new()),
+                };
+                let end = screen_march(
+                    origin,
+                    direction,
+                    view_proj(),
+                    &depth,
+                    stride,
+                    budget,
+                    thickness,
+                );
+                assert_eq!(end, MISS, "{quality:?} at {scene:?}: nothing to hit");
+                let loads = depth.loads.borrow();
+                let first = *loads.first().expect("the ray stepped");
+                let sampled = loads
+                    .iter()
+                    .map(|pixel| pixel.distance(first))
+                    .fold(0.0, f32::max);
+                ((loads.len() as u32) < budget, sampled)
+            })
+            .collect();
+        for (pair, tier) in reaches.windows(2).zip(tiers.windows(2)) {
+            let ((lower_ended, lower), (higher_ended, higher)) = (pair[0], pair[1]);
+            let holds = if lower_ended {
+                higher_ended
+            } else {
+                higher_ended || lower <= higher + 1.0e-3
+            };
+            assert!(
+                holds,
+                "{:?} {:?} reaches past {:?} {:?} at {scene:?}",
+                tier[0], pair[0], tier[1], pair[1]
+            );
+        }
+        let (lowest, highest) = (reaches[0], reaches[3]);
+        shorter_somewhere |= !lowest.0 && (highest.0 || lowest.1 + 1.0 < highest.1);
+    }
+    assert!(shorter_somewhere, "the tiers differ in reach");
+}
+
+// The march at one tuning is still independent of the target's resolution
+// fraction: the reflection pass sets the stride from the scene's extent,
+// never the target's, and binds full-resolution scene depth, so neither the
+// target extent nor the fraction is an input of `screen_march`. A fraction
+// only changes which origins are shaded: a quarter per axis shades one per
+// 4 × 4 block of scene pixels, at the block's centre; full resolution one
+// per scene pixel. So at every screen-space tier's march, the block-centre
+// origin and every full-resolution origin in that block reach the same hit
+// on a bar standing across the pool one depth texel tall: same ray, same
+// tuning, same hit. A one-pixel stride along a mostly vertical screen path
+// samples every row and cannot step over it. A march that scaled its stride
+// with the fraction (four pixels at a quarter) steps over the same bar, so
+// the bar is thin for what this test claims.
+#[test]
+fn the_march_at_one_tuning_reaches_the_same_hit_at_every_target_fraction() {
+    // The quarter-fraction target pixel (4, 8) covers scene pixels
+    // 16..20 × 32..36; its fragment shades the water at the block's centre.
+    let quarter_pixel = UVec2::new(4, 8);
+    let quarter_origin = water_point(quarter_pixel.as_vec2() * 4.0 + Vec2::splat(2.0));
+    let direction = mirrored(quarter_origin);
     let block: Vec<Vec3> = (32..36)
         .flat_map(|y| (16..20).map(move |x| Vec2::new(x as f32 + 0.5, y as f32 + 0.5)))
         .map(water_point)
         .collect();
     // The bar: row 28, every column, just in front of where each of the
-    // block's rays crosses that row, and within the thickness of each.
+    // block's rays crosses that row, and within the thinnest preset's
+    // thickness of each.
     let bar_row = 28;
-    let crossings: Vec<f32> = std::iter::once(low_origin)
+    let crossings: Vec<f32> = std::iter::once(quarter_origin)
         .chain(block.iter().copied())
         .map(|origin| view_depth(ray_point_at_row(origin, mirrored(origin), bar_row)))
         .collect();
@@ -216,47 +324,79 @@ fn every_tier_reaches_the_same_hit_on_a_one_texel_occluder() {
     let mut texels = empty_depth();
     let bar = ndc_at_view_depth(nearest - 0.05);
     fill(&mut texels, bar_row..bar_row + 1, 0..EXTENT.x, bar);
+    let scene = (EXTENT.x, EXTENT.y);
 
-    // Each tier's pass hands the march the same scene depth, stride, budget
-    // and thickness; its own target extent is no input.
-    let mut ends = Vec::new();
-    for tier in ["high", "medium", "low"] {
-        let end = march(low_origin, direction, &buffer(&texels));
-        assert_eq!(end.pixel.y.floor() as u32, bar_row, "{tier}: {end:?}");
-        assert!(end.confidence > 0.9, "{tier}: {end:?}");
-        ends.push(end);
+    for quality in FluidReflectionQuality::ALL
+        .into_iter()
+        .filter(|quality| quality.runs_screen_space())
+    {
+        let (stride, budget, thickness) = preset_inputs(quality, scene);
+        let at = |origin: Vec3, direction: Vec3, stride: f32, depth: &dyn ScreenMarchDepthDyn| {
+            depth.march(origin, direction, stride, budget, thickness)
+        };
+        // The block-centre origin, as any fraction's pass marches it.
+        let end = at(quarter_origin, direction, stride, &buffer(&texels));
+        assert_eq!(end.pixel.y.floor() as u32, bar_row, "{quality:?}: {end:?}");
+        assert!(end.confidence > 0.9, "{quality:?}: {end:?}");
+        // Every full-resolution origin in the block hits the same bar.
+        for &origin in &block {
+            let hit = at(origin, mirrored(origin), stride, &buffer(&texels));
+            assert_eq!(
+                hit.pixel.y.floor() as u32,
+                bar_row,
+                "{quality:?} {origin}: {hit:?}"
+            );
+            assert!(hit.confidence > 0.9, "{quality:?} {origin}: {hit:?}");
+        }
+        // The bar is thin: the same ray at a stride scaled by a quarter
+        // fraction samples no texel of it.
+        let scaled = Recording::new(&texels);
+        let jumped = at(quarter_origin, direction, 4.0 * stride, &scaled);
+        assert!(
+            scaled
+                .loads
+                .borrow()
+                .iter()
+                .all(|pixel| pixel.y.floor() as u32 != bar_row),
+            "{quality:?}: a four-pixel stride steps over the bar: {:?}",
+            scaled.loads.borrow()
+        );
+        assert_eq!(jumped, MISS, "{quality:?}");
     }
-    assert!(ends.iter().all(|end| *end == ends[0]), "{ends:?}");
+}
 
-    // Every high-tier origin in the block hits the same bar.
-    for origin in block {
-        let hit = march(origin, mirrored(origin), &buffer(&texels));
-        assert_eq!(hit.pixel.y.floor() as u32, bar_row, "{origin}: {hit:?}");
-        assert!(hit.confidence > 0.9, "{origin}: {hit:?}");
+/// `screen_march` over a depth buffer behind a trait object, so one closure
+/// marches both the plain and the recording buffer.
+trait ScreenMarchDepthDyn {
+    fn march(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        stride: f32,
+        budget: u32,
+        thickness: f32,
+    ) -> ScreenMarch;
+}
+
+impl<T: ScreenMarchDepth> ScreenMarchDepthDyn for T {
+    fn march(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        stride: f32,
+        budget: u32,
+        thickness: f32,
+    ) -> ScreenMarch {
+        screen_march(
+            origin,
+            direction,
+            view_proj(),
+            self,
+            stride,
+            budget,
+            thickness,
+        )
     }
-
-    // The bar is thin: the same ray marched at the low tier's own stride
-    // samples no texel of it.
-    let scaled = Recording::new(&texels);
-    let jumped = screen_march(
-        low_origin,
-        direction,
-        view_proj(),
-        &scaled,
-        4.0 * STRIDE,
-        BUDGET,
-        THICKNESS,
-    );
-    assert!(
-        scaled
-            .loads
-            .borrow()
-            .iter()
-            .all(|pixel| pixel.y.floor() as u32 != bar_row),
-        "a four-pixel stride steps over the bar: {:?}",
-        scaled.loads.borrow()
-    );
-    assert_eq!(jumped, MISS);
 }
 
 // --- Confidence -------------------------------------------------------------

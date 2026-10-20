@@ -286,13 +286,16 @@ const RENDER_RESOLUTION_CHOICES = [
   { value: "quarter", id: "optionsRenderResolutionQuarter", label: "1/4" },
 ] as const;
 
-/// Fluid reflection tiers, cheapest first. A cost choice only: the reflection
-/// style is the game's, never the player's.
+/// Fluid reflection tiers, cheapest first: off, the probe term alone (low),
+/// then the screen-space layer by each tier's preset. A cost choice only: the
+/// reflection style is the game's, never the player's.
 const REFLECTION_QUALITY_CHOICES = [
   { value: "off", id: "optionsReflectionOff", label: "OFF" },
   { value: "low", id: "optionsReflectionLow", label: "LOW" },
   { value: "medium", id: "optionsReflectionMedium", label: "MEDIUM" },
   { value: "high", id: "optionsReflectionHigh", label: "HIGH" },
+  { value: "very_high", id: "optionsReflectionVeryHigh", label: "VERY HIGH" },
+  { value: "ultra", id: "optionsReflectionUltra", label: "ULTRA" },
 ] as const;
 
 const optionReactions: NamedReactionDescriptor[] = [

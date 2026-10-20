@@ -851,8 +851,9 @@ mod tests {
             Some(SlotValue::Enum("on".into())),
             "the feature ships on; the switch is an escape hatch",
         );
-        // Reflections put Off below the quality ladder and default to the top
-        // tier; the player picks cost, never the author's style.
+        // Reflections put Off and the probe-only Low below the screen-space
+        // tiers and default to High; the player picks cost, never the
+        // author's style.
         assert_eq!(
             table
                 .get("options.reflectionQuality")
@@ -860,7 +861,14 @@ mod tests {
                 .schema
                 .slot_type,
             SlotType::Enum {
-                values: vec!["off".into(), "low".into(), "medium".into(), "high".into()]
+                values: vec![
+                    "off".into(),
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                    "very_high".into(),
+                    "ultra".into(),
+                ]
             }
         );
         assert_eq!(

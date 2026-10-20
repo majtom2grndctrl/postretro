@@ -115,9 +115,11 @@ impl SurfaceDepthQuality {
     }
 }
 
-/// Fluid reflection cost tier. Applies live. `Off` removes both reflection
-/// layers, the probe term included; lower tiers resolve the screen-space layer
-/// at a coarser fraction of the scene extent with the same march.
+/// Fluid reflection cost tier: off / low / medium / high / very_high / ultra.
+/// Applies live. `Off` removes both reflection layers, the probe term
+/// included; `Low` keeps the probe term alone, with no screen-space layer;
+/// medium and above add the screen-space layer by the tier's preset
+/// (resolution fraction and march), cheaper the lower the tier.
 ///
 /// A cost lever only: the reflection *style* (pixelated or smooth) is the game
 /// author's `render.reflections.style`, never a player option.
@@ -129,6 +131,8 @@ pub enum ReflectionQuality {
     Medium,
     #[default]
     High,
+    VeryHigh,
+    Ultra,
 }
 
 impl ReflectionQuality {
@@ -138,6 +142,8 @@ impl ReflectionQuality {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::VeryHigh => "very_high",
+            Self::Ultra => "ultra",
         }
     }
 
@@ -147,6 +153,8 @@ impl ReflectionQuality {
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "very_high" => Some(Self::VeryHigh),
+            "ultra" => Some(Self::Ultra),
             _ => None,
         }
     }
@@ -268,13 +276,17 @@ mod tests {
             ReflectionQuality::Low,
             ReflectionQuality::Medium,
             ReflectionQuality::High,
+            ReflectionQuality::VeryHigh,
+            ReflectionQuality::Ultra,
         ];
         for variant in variants {
             match variant {
                 ReflectionQuality::Off
                 | ReflectionQuality::Low
                 | ReflectionQuality::Medium
-                | ReflectionQuality::High => {}
+                | ReflectionQuality::High
+                | ReflectionQuality::VeryHigh
+                | ReflectionQuality::Ultra => {}
             }
             assert!(
                 values.contains(&variant.slot_value()),

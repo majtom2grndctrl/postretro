@@ -115,8 +115,10 @@ pub type DespawnReason = u8;
 /// no update — but the authority metadata (`owner_client_id`,
 /// `last_processed_client_tick`) is refreshed on **every** ingest without bumping
 /// the baseline, since the resolved cursor advances each tick a command resolves
-/// while the pose may not have moved. Folding the cursor into the baseline would
-/// resend an otherwise-unchanged pawn every tick.
+/// while the pose may not have moved. The owner still needs each advanced cursor
+/// to reconcile a still pawn, so the encoder resends the owner's pawn at its held
+/// baseline when the cursor moves (a metadata-only resend); every other recipient
+/// keeps the omission.
 #[derive(Debug, Clone)]
 struct EntityState {
     baseline_id: u32,
@@ -217,6 +219,7 @@ impl ServerReplication {
             client.pending_refreshes.retain(|(id, _)| *id != network_id);
             client.excluded_entities.remove(&network_id);
             client.in_flight_baselines.remove(&network_id);
+            client.sent_cursors.remove(&network_id);
         }
     }
 
@@ -355,6 +358,7 @@ impl ServerReplication {
             self.tombstones.remove(&network_id);
             for client in self.clients.values_mut() {
                 client.excluded_entities.remove(&network_id);
+                client.sent_cursors.remove(&network_id);
             }
         }
     }
@@ -1776,13 +1780,31 @@ mod tests {
         };
         server.apply_ack(CLIENT_A, snap1.sequence, &[(1, baseline_id)], &[]);
 
-        // Cursor advances 5 -> 6 but the movement mirror is identical: the pawn is
-        // omitted next tick (no baseline bump).
+        // Cursor advances 5 -> 6 but the movement mirror is identical: no baseline
+        // bump, but the owner gets a metadata-only resend at the held baseline
+        // carrying the new cursor, so it can reconcile a still pawn.
         server.ingest_tick(vec![owned_movement(1, CLIENT_A, Some(6), 1.0)]);
         let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
+        match record_for(&snap2, 1).expect("a cursor advance resends the owner's pawn") {
+            EntityRecord::Delta {
+                baseline_ref,
+                new_baseline_id,
+                last_processed_client_tick,
+                ..
+            } => {
+                assert_eq!(baseline_ref, baseline_id);
+                assert_eq!(new_baseline_id, baseline_id, "no baseline bump");
+                assert_eq!(last_processed_client_tick, Some(6));
+            }
+            other => panic!("expected a metadata-only Delta, got {other:?}"),
+        }
+
+        // The same cursor again: nothing new to stamp, so the pawn is omitted.
+        server.ingest_tick(vec![owned_movement(1, CLIENT_A, Some(6), 1.0)]);
+        let repeat = server.encode_for_client(CLIENT_A, 61).unwrap();
         assert!(
-            record_for(&snap2, 1).is_none(),
-            "cursor-only advance must not resend the pawn"
+            record_for(&repeat, 1).is_none(),
+            "an unchanged cursor and pose omit the pawn"
         );
 
         // Force a refresh: the re-sent FullBaseline carries the *latest* cursor (6),
@@ -1797,6 +1819,36 @@ mod tests {
             } => assert_eq!(last_processed_client_tick, Some(6)),
             other => panic!("expected FullBaseline, got {other:?}"),
         }
+    }
+
+    // A cursor advance resends a still pawn only to its owner: another recipient
+    // gets no cursor on the record, so it has nothing new to read.
+    #[test]
+    fn cursor_advance_resends_a_still_pawn_only_to_its_owner() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.register_client(CLIENT_B);
+        server.ingest_tick(vec![owned_movement(1, CLIENT_A, Some(5), 1.0)]);
+        for client in [CLIENT_A, CLIENT_B] {
+            let snap = server.encode_for_client(client, 60).unwrap();
+            let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap, 1).unwrap()
+            else {
+                panic!("fb");
+            };
+            server.apply_ack(client, snap.sequence, &[(1, baseline_id)], &[]);
+        }
+
+        server.ingest_tick(vec![owned_movement(1, CLIENT_A, Some(6), 1.0)]);
+        let owner = server.encode_for_client(CLIENT_A, 61).unwrap();
+        let other = server.encode_for_client(CLIENT_B, 61).unwrap();
+        assert!(
+            record_for(&owner, 1).is_some(),
+            "the owner gets the new cursor"
+        );
+        assert!(
+            record_for(&other, 1).is_none(),
+            "another recipient keeps the omission"
+        );
     }
 
     #[test]

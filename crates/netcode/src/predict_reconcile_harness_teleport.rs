@@ -785,7 +785,9 @@ fn teleport_gap_command_stamp_held_neutral_late_run_in_post_teleport_frame() {
     let mut dropped = 0;
     let mut teleported = false;
     for _ in 0..200 {
-        let near = rig.ticks.last().unwrap().position_after.z <= -5.6;
+        // The gap opens within the held-command budget's reach of the trigger
+        // at z = -6, so the host's held forward commands carry it across.
+        let near = rig.ticks.last().unwrap().position_after.z <= -5.8;
         let drop = !teleported && near || (dropped > 0 && dropped < 6);
         teleported |= rig.step_with(FORWARD, !drop, &[]).is_some();
         if drop {

@@ -149,12 +149,14 @@ fn fs_reflection(in: ReflectionVertexOutput) -> @location(0) vec4<f32> {
     let ray = fluid_reflection_above_horizon(fluid_reflection_mirror(view, point.normal));
     let march = screen_march(point.position, ray, uniforms.view_proj, scene_depth,
         reflection_inputs.stride, reflection_inputs.step_budget, reflection_inputs.thickness);
-    // The loaded texel may hold Inf (an Rgba16Float overflow stores Inf).
-    // Clamping to the f16 maximum keeps a hit's premultiplied colour finite,
-    // and a miss, or a stop with no confidence, writes a literal 0, so smooth
-    // bilinear sampling never meets Inf x 0, a NaN it would spread across the
-    // water.
-    let colour = min(textureLoad(scene_color, vec2<i32>(march.pixel), 0).rgb, vec3<f32>(65504.0));
+    // The loaded texel may hold +Inf or -Inf (an Rgba16Float overflow stores
+    // Inf) or a negative value. Clamping to [0, f16 max] keeps a hit's
+    // premultiplied colour finite and non-negative, and a miss, or a stop with
+    // no confidence, writes a literal 0, so smooth bilinear sampling never
+    // meets Inf x 0, a NaN it would spread across the water. A NaN texel is
+    // not covered: clamp's result for NaN is implementation-defined.
+    let colour = clamp(textureLoad(scene_color, vec2<i32>(march.pixel), 0).rgb, vec3<f32>(0.0),
+        vec3<f32>(65504.0));
     let premultiplied = vec4<f32>(colour * march.confidence, march.confidence);
     return select(vec4<f32>(0.0), premultiplied, march.confidence > 0.0);
 }

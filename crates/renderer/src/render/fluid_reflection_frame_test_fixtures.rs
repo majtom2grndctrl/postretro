@@ -649,14 +649,14 @@ impl Reference<'_> {
     }
 
     /// What the reflection pass writes for `march`: the scene colour at its
-    /// stop, clamped to the f16 maximum and premultiplied by its confidence,
-    /// or a literal 0 wherever the confidence is not above 0, as
-    /// `fs_reflection` writes it.
+    /// stop, clamped to [0, f16 max] and premultiplied by its confidence, or
+    /// a literal 0 wherever the confidence is not above 0, as `fs_reflection`
+    /// writes it. A NaN colour is not covered, as on the GPU.
     pub fn screen(&self, march: ScreenMarch) -> Vec4 {
         let colour = self
             .scene
             .colour_at(march.pixel.as_uvec2().min(UVec2::splat(FRAME - 1)))
-            .min(Vec3::splat(65504.0));
+            .clamp(Vec3::ZERO, Vec3::splat(65504.0));
         if march.confidence > 0.0 {
             (colour * march.confidence).extend(march.confidence)
         } else {

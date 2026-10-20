@@ -3928,13 +3928,44 @@ fn fluid_reflection_pass_structs_match_the_fluid_shader_and_the_cpu() {
     );
 }
 
-/// `fs_reflection`'s tail, code only: the loaded colour clamped to the f16
-/// maximum, so an Inf or huge texel stays finite, then premultiplied
-/// (c·SSR, c), or a literal 0 wherever c is not above 0, so a miss never
-/// writes the texel it loaded (Inf × 0 is a NaN that smooth bilinear sampling
-/// would spread).
-const FS_REFLECTION_TAIL: &str = "letcolour=min(textureLoad(scene_color,vec2<i32>(march.pixel),0).rgb,\
-     vec3<f32>(65504.0));\
+/// `fs_reflection`'s tail, code only: the loaded colour clamped to
+/// [0, f16 max], so a ±Inf, negative or huge texel stays finite and
+/// non-negative (a NaN texel is not covered), then premultiplied (c·SSR, c),
+/// or a literal 0 wherever c is not above 0, so a miss never writes the texel
+/// it loaded (Inf × 0 is a NaN that smooth bilinear sampling would spread).
+const FS_REFLECTION_TAIL: &str = "letcolour=clamp(textureLoad(scene_color,vec2<i32>(march.pixel),0).rgb,\
+     vec3<f32>(0.0),vec3<f32>(65504.0));\
+     letpremultiplied=vec4<f32>(colour*march.confidence,march.confidence);\
+     returnselect(vec4<f32>(0.0),premultiplied,march.confidence>0.0);}";
+
+/// `fs_reflection`, whole, code only. Pinned under the march's IP rule: a
+/// statement anywhere in the entry, such as a direction test between the gate
+/// and the march or between the march and its write, would choose per pixel
+/// whether SSR applies by direction.
+const FS_REFLECTION_BODY: &str = "fnfs_reflection(in:ReflectionVertexOutput)->@location(0)vec4<f32>{\
+     letddx=dpdx(in.uv);\
+     letddy=dpdy(in.uv);\
+     letddx_world=dpdx(in.world_position);\
+     letddy_world=dpdy(in.world_position);\
+     letdims=vec2<f32>(textureDimensions(base_texture,0));\
+     letscale=reflection_inputs.target_scale;\
+     lettexels_per_pixel=max(length(ddx*dims*scale.x),length(ddy*dims*scale.y));\
+     letview_dir=normalize(uniforms.camera_position-in.world_position);\
+     letoutward=normalize(in.world_normal);\
+     letreflectivity=fluid_volumes.slots[in.slot].surface.z;\
+     if!fluid_reflection_gate(in.probe,outward,view_dir,uniforms.light_term_mask,reflectivity){\
+     discard;}\
+     letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);\
+     letpoint=fluid_reflection_point(reflection_inputs.reflection_style,in.uv*dims,\
+     in.world_position,outward,axes,uniforms.time,texels_per_pixel,\
+     fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
+     fluid_probes.probes[in.probe].capture_point);\
+     letview=normalize(uniforms.camera_position-point.position);\
+     letray=fluid_reflection_above_horizon(fluid_reflection_mirror(view,point.normal));\
+     letmarch=screen_march(point.position,ray,uniforms.view_proj,scene_depth,\
+     reflection_inputs.stride,reflection_inputs.step_budget,reflection_inputs.thickness);\
+     letcolour=clamp(textureLoad(scene_color,vec2<i32>(march.pixel),0).rgb,\
+     vec3<f32>(0.0),vec3<f32>(65504.0));\
      letpremultiplied=vec4<f32>(colour*march.confidence,march.confidence);\
      returnselect(vec4<f32>(0.0),premultiplied,march.confidence>0.0);}";
 
@@ -4408,7 +4439,8 @@ const DIRECTION_READS: [&str; 10] = [
 // sign. A name scan cannot see a direction gate written as data flow (a flag
 // set from `k1 <= k0`, a mix weight, a shadowed thickness, a loop bound), so
 // the march's whole body is also pinned, in both the WGSL and its CPU
-// reference: any edit to the march fails here and needs owner IP review.
+// reference, as is the whole `fs_reflection` entry that runs it: any edit to
+// either fails here and needs owner IP review.
 #[test]
 fn the_march_and_its_confidence_read_no_direction() {
     for (source, signature, far_end) in [
@@ -4565,6 +4597,16 @@ fn the_march_and_its_confidence_read_no_direction() {
             "{rule}: the march body"
         );
     }
+    // The entry that runs the march, whole: the finer `fs_reflection` checks
+    // pin its head and tail, but nothing else holds them adjacent.
+    assert_eq!(
+        code_only(wgsl_fn(
+            composed_reflection_shader_source(),
+            "fs_reflection"
+        )),
+        FS_REFLECTION_BODY,
+        "{rule}: the reflection entry"
+    );
 }
 
 /// Each `if` condition in `screen_march`, code only, in source order: every

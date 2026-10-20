@@ -378,17 +378,17 @@ fn const_named_literals(code: &str, name: &str) -> Option<Vec<String>> {
 }
 
 /// The suffixes in each `format!("{base}...")` literal in `code`, in order: the
-/// text between the `{base}` placeholder and the closing quote. A literal that
-/// starts from another placeholder, or that follows the base with another
-/// placeholder (`"{base}{suffix}"`), is not a fixed suffix and is skipped.
+/// text between the `{base}` placeholder and the closing quote, raw. A suffix
+/// bound through another placeholder (`"{base}{SUFFIX}"`) is kept as written,
+/// so a pinned list of fixed suffixes cannot match it. A literal that starts
+/// from another placeholder is not bound to `base` and is not collected.
 /// Shares the `//` limit of [`const_string_literals`].
 fn format_suffix_literals(code: &str, base: &str) -> Vec<String> {
     let opening = format!("format!(\"{{{base}}}");
     code.match_indices(&opening)
         .filter_map(|(at, _)| {
             let rest = &code[at + opening.len()..];
-            let suffix = &rest[..rest.find('"')?];
-            (!suffix.contains('{')).then(|| suffix.to_string())
+            Some(rest[..rest.find('"')?].to_string())
         })
         .collect()
 }
@@ -899,11 +899,16 @@ fn format_suffix_literals_reads_the_suffixes_bound_to_one_base() {
          // name_to_path.get(&format!(\"{resolved_base}_x\"))\n\
          other: name_to_path.get(&format!(\"{normalized}_h\")).cloned(),\n",
     );
+    // A suffix bound through a placeholder is kept raw, so it cannot pass
+    // as one of the pinned fixed suffixes.
     assert_eq!(
         format_suffix_literals(&code, "resolved_base"),
-        ["_s", "_n", "_r"]
+        ["_s", "_n", "_r", "{other}"]
     );
-    assert_eq!(format_suffix_literals(&code, "normalized"), ["_h"]);
+    assert_eq!(
+        format_suffix_literals(&code, "normalized"),
+        ["{suffix}", "_h"]
+    );
     assert!(format_suffix_literals(&code, "missing").is_empty());
 }
 

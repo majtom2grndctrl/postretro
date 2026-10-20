@@ -6,6 +6,7 @@ use glam::Vec3;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{BlockPolicy, EntityId, KinematicMoverMode};
 
+use super::MoverAutoCloseTimers;
 use super::pin_test_fixtures::*;
 use crate::collision::{OVERLAP_TOLERANCE, SKIN_DISTANCE};
 use postretro_entities::MoverCommand;
@@ -271,6 +272,7 @@ fn reversed_once_door_runs_again_on_its_next_start() {
         (rig.mover_position(door) - Vec3::new(3.0, 0.0, 0.0)).length() < 1.0e-3,
         "the door backed off the pawn to its start"
     );
+    assert!(!rig.mover(door).started, "and ended unstarted");
     rig.set_position(pawn, Vec3::new(-8.0, rest_y(0.0), 8.0));
     rig.settle(5);
     rig.start(door);
@@ -943,11 +945,11 @@ fn vault_onto_rising_mover_under_ceiling_never_embeds() {
     );
 }
 
-#[test]
-fn reverse_lift_pinned_both_ways_holds_without_flipping_and_fires_once() {
-    // A deck rising from 1.0 with a rider, a pawn spawned under it once the
-    // deck is within a tick of the pawn's head, and a ceiling the rider meets
-    // on that same tick.
+/// A lift rising with a rider toward a ceiling, and a pawn that walks under
+/// the deck on the tick the rider meets the ceiling, so both the course and
+/// its reversal pin a body. Returns the rig, lift, rider, pawn under it and
+/// the Blocked edges fired through that tick.
+fn pinned_both_ways_rig(policy: BlockPolicy) -> (Rig, EntityId, EntityId, EntityId, usize) {
     let pawn_top = rest_y(0.0) + HALF_HEIGHT + RADIUS;
     // On the pin tick the deck sits half a tick above the pawn's head and the
     // rider's head half a tick outside the ceiling's skin band; a tick
@@ -970,13 +972,12 @@ fn reverse_lift_pinned_both_ways_holds_without_flipping_and_fires_once() {
         vec![Vec3::new(0.0, start_y, 0.0), Vec3::new(0.0, 6.0, 0.0)],
         2.0,
         KinematicMoverMode::Once,
-        BlockPolicy::Reverse,
+        policy,
     );
     let rider = rig.add_pawn(Vec3::new(0.0, rest_y(start_y), 0.0));
     rig.settle(20);
     rig.assert_rides(rider, LIFT);
     rig.start(lift);
-    // The pawn walks under the deck on the pin tick, before the pass.
     let mut under = None;
     let mut blocked_events = 0;
     for _ in 0..2 * ticks_to_pin {
@@ -991,14 +992,25 @@ fn reverse_lift_pinned_both_ways_holds_without_flipping_and_fires_once() {
             break;
         }
     }
-    let under = under.expect("the pawn spawned");
-    let direction = rig.mover(lift).direction_sign;
-    assert_eq!(
-        direction, 1,
-        "the lift held rather than reversing onto the pawn"
-    );
-    for tick in 0..60 {
-        blocked_events += rig.tick().blocked_events(LIFT);
+    let under = under.expect("the pawn walked under the deck");
+    (rig, lift, rider, under, blocked_events)
+}
+
+/// Run `ticks`, asserting the lift never changes direction, never moves onto
+/// the pawn under it and never embeds its rider; returns the Blocked edges.
+fn hold_pinned_both_ways(
+    rig: &mut Rig,
+    lift: EntityId,
+    rider: EntityId,
+    under: EntityId,
+    ticks: usize,
+    mut between_ticks: impl FnMut(&mut Rig, usize),
+) -> usize {
+    let mut blocked_events = 0;
+    let mut direction = rig.mover(lift).direction_sign;
+    for tick in 0..ticks {
+        let fired = rig.tick().blocked_events(LIFT);
+        blocked_events += fired;
         assert_eq!(
             rig.mover(lift).direction_sign,
             direction,
@@ -1006,16 +1018,26 @@ fn reverse_lift_pinned_both_ways_holds_without_flipping_and_fires_once() {
         );
         assert!(
             rig.mover_overlap(under) <= OVERLAP_TOLERANCE,
-            "tick {tick}: never onto the pawn, {} deep, under {:?} lift {:?} rider {:?}",
-            rig.mover_overlap(under),
-            rig.position(under),
-            rig.mover_position(lift),
-            rig.position(rider)
+            "tick {tick}: never onto the pawn under the deck"
         );
-        assert_clear_of_static(&rig, rider, "rider");
+        assert_clear_of_static(rig, rider, "rider");
+        between_ticks(rig, fired);
+        direction = rig.mover(lift).direction_sign;
     }
+    blocked_events
+}
+
+#[test]
+fn reverse_lift_pinned_both_ways_holds_without_flipping_and_fires_once() {
+    let (mut rig, lift, rider, under, fired) = pinned_both_ways_rig(BlockPolicy::Reverse);
+    assert_eq!(
+        rig.mover(lift).direction_sign,
+        1,
+        "the lift held rather than reversing onto the pawn"
+    );
+    let later = hold_pinned_both_ways(&mut rig, lift, rider, under, 60, |_, _| {});
     assert!(rig.mover(lift).blocked, "the lift holds");
-    assert_eq!(blocked_events, 1, "one blocked event for the whole pin");
+    assert_eq!(fired + later, 1, "one blocked event for the whole pin");
 }
 
 #[test]
@@ -1053,4 +1075,347 @@ fn rider_yield_warns_once_per_mover_per_level_load() {
         .count();
     assert_eq!(warnings, 2, "the reload warns again");
     let _ = rider;
+}
+
+// --- Hold, onset and restart -----------------------------------------------------
+
+#[test]
+fn blocked_event_fires_once_per_onset_even_under_self_reactions() {
+    // A reaction on the held lift's own blocked event runs `moverStart`.
+    let (mut rig, lift, rider) = low_ceiling_lift(BlockPolicy::Displace, 3.0, 4.6);
+    rig.start(lift);
+    let mut fired = 0;
+    for _ in 0..180 {
+        let now = rig.tick().blocked_events(LIFT);
+        fired += now;
+        if now > 0 {
+            rig.start(lift);
+        }
+        assert_clear_of_static(&rig, rider, "start reaction");
+    }
+    assert_eq!(
+        fired, 1,
+        "moverStart on the held lift fires no second onset"
+    );
+    assert!(rig.mover(lift).blocked);
+
+    // A reaction running `moverReverse` where both courses pin: the command
+    // turns the lift once, and nothing turns it again.
+    let (mut rig, lift, rider, under, mut fired) = pinned_both_ways_rig(BlockPolicy::Displace);
+    let mut reversals = 0;
+    if fired > 0 {
+        rig.command(lift, MoverCommand::Reverse);
+        reversals += 1;
+    }
+    let mut direction = rig.mover(lift).direction_sign;
+    for tick in 0..60 {
+        let now = rig.tick().blocked_events(LIFT);
+        fired += now;
+        assert_eq!(
+            rig.mover(lift).direction_sign,
+            direction,
+            "tick {tick}: no flip"
+        );
+        assert!(
+            rig.mover_overlap(under) <= OVERLAP_TOLERANCE,
+            "never onto the pawn"
+        );
+        assert_clear_of_static(&rig, rider, "reverse reaction");
+        if now > 0 {
+            rig.command(lift, MoverCommand::Reverse);
+            reversals += 1;
+            direction = rig.mover(lift).direction_sign;
+        }
+    }
+    assert_eq!(fired, 1, "one blocked event for the whole pin");
+    assert_eq!(reversals, 1, "the reaction ran once");
+    assert!(rig.mover(lift).blocked, "the reversed course held too");
+}
+
+#[test]
+fn stop_release_then_restart_into_pin_fires_again() {
+    let (mut rig, lift, _rider) = low_ceiling_lift(BlockPolicy::Displace, 3.0, 4.6);
+    rig.start(lift);
+    let mut fired = 0;
+    for _ in 0..120 {
+        fired += rig.tick().blocked_events(LIFT);
+    }
+    assert_eq!(fired, 1);
+    rig.command(lift, MoverCommand::Stop);
+    fired += rig.tick().blocked_events(LIFT);
+    assert!(!rig.mover(lift).blocked, "moverStop released the hold");
+    rig.start(lift);
+    for _ in 0..30 {
+        fired += rig.tick().blocked_events(LIFT);
+    }
+    assert_eq!(fired, 2, "the restart into the pin is a new onset");
+    assert!(rig.mover(lift).blocked);
+}
+
+#[test]
+fn reversed_once_mover_ends_unstarted_at_its_start() {
+    let mut rig = Rig::new(static_boxes(&[floor()]));
+    let door = rig.add_mover(
+        door_leaf(DOOR),
+        vec![Vec3::new(3.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Displace,
+    );
+    rig.start(door);
+    rig.settle(30);
+    rig.command(door, MoverCommand::Reverse);
+    rig.settle(60);
+    let state = rig.mover(door);
+    assert!(
+        !state.started && !state.completed && state.direction_sign == 1,
+        "moverReverse back to the start leaves the door unstarted: {state:?}"
+    );
+    assert!((rig.mover_position(door) - Vec3::new(3.0, 0.0, 0.0)).length() < 1.0e-3);
+    rig.start(door);
+    rig.settle(150);
+    assert!(
+        rig.mover(door).completed,
+        "the next start runs it to completion"
+    );
+}
+
+// --- Orderings -------------------------------------------------------------------
+
+#[test]
+fn auto_close_expiry_into_pin_yields() {
+    let world = static_boxes(&[
+        floor(),
+        (Vec3::new(-2.0, 0.0, -2.0), Vec3::new(-1.0, 3.0, 2.0)),
+    ]);
+    let mut rig = Rig::new(world);
+    let timers = MoverAutoCloseTimers::default();
+    timers.set_enabled(true);
+    rig.auto_close = Some(timers);
+    // Waypoint 0 is closed against the jamb; the door opens to +X.
+    let door = rig.add_mover(
+        door_leaf(DOOR),
+        vec![Vec3::new(-1.0, 0.0, 0.0), Vec3::new(3.0, 0.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Displace,
+    );
+    rig.edit_mover(door, |mover| mover.auto_close_ms = 500.0);
+    rig.start(door);
+    rig.settle(150);
+    assert!(rig.mover(door).completed, "the door opened");
+    let pawn = rig.add_pawn(Vec3::new(-0.5, rest_y(0.0), 0.0));
+    for tick in 0..120 {
+        rig.tick();
+        assert!(
+            rig.mover_overlap(pawn) <= OVERLAP_TOLERANCE,
+            "tick {tick}: the auto-close never moved the door into the pawn"
+        );
+    }
+    let state = rig.mover(door);
+    assert!(
+        state.blocked && state.direction_sign < 0,
+        "the closing course holds for the pawn"
+    );
+}
+
+#[test]
+fn trigger_stage_commands_on_held_mover_move_only_off_the_pin() {
+    let (mut rig, door, pawn) = jamb_door_rig(BlockPolicy::Displace);
+    rig.start(door);
+    let mut fired = 0;
+    for _ in 0..150 {
+        fired += rig.tick().blocked_events(DOOR);
+    }
+    assert!(rig.mover(door).blocked && fired == 1);
+    let held_at = rig.mover_position(door);
+
+    // A trigger's start re-runs the course into the pin: it yields again,
+    // silently.
+    let report = rig.tick_with(|rig| rig.start(door));
+    assert_eq!(report.blocked_events(DOOR), 0, "no second onset");
+    rig.tick();
+    assert!(rig.mover(door).blocked);
+    assert!(
+        (rig.mover_position(door) - held_at).length() < 1.0e-6,
+        "never into the pawn"
+    );
+
+    // A trigger's reverse runs a course away from the pin: it moves.
+    rig.tick_with(|rig| rig.command(door, MoverCommand::Reverse));
+    rig.tick();
+    assert!(
+        rig.mover_position(door).x > held_at.x,
+        "the reversed door backs off"
+    );
+    assert!(rig.mover_overlap(pawn) <= OVERLAP_TOLERANCE);
+}
+
+#[test]
+fn despawned_pinned_pawn_releases_hold_next_tick() {
+    let (mut rig, door, pawn) = jamb_door_rig(BlockPolicy::Displace);
+    rig.start(door);
+    rig.settle(150);
+    assert!(rig.mover(door).blocked);
+    let held_at = rig.mover_position(door);
+    rig.remove_pawn(pawn);
+    rig.tick();
+    assert!(!rig.mover(door).blocked, "the next pass releases the hold");
+    rig.tick();
+    assert!(rig.mover_position(door).x < held_at.x, "the door moves on");
+}
+
+#[test]
+fn block_policy_switch_mid_pin_takes_effect_next_tick() {
+    // Held default door switched to crush: resumes the next tick and crushes.
+    let (mut rig, door, pawn) = jamb_door_rig(BlockPolicy::Displace);
+    give_health(&mut rig, pawn, 100.0);
+    rig.edit_mover(door, |mover| {
+        mover.crush_damage = 10.0;
+        mover.crush_interval_ms = 100.0;
+    });
+    rig.start(door);
+    rig.settle(150);
+    assert!(rig.mover(door).blocked);
+    let held_at = rig.mover_position(door);
+    rig.command(door, MoverCommand::SetBlockPolicy(BlockPolicy::Crush));
+    rig.tick();
+    assert!(
+        rig.mover_position(door).x < held_at.x,
+        "the crusher resumes"
+    );
+    let mut crushed = false;
+    for _ in 0..15 {
+        crushed |= rig.tick().impacts > 0;
+        if crushed {
+            break;
+        }
+    }
+    assert!(crushed && health(&rig, pawn) < 100.0, "and crushes");
+
+    // A crusher pressing into a pawn switched to displace yields the next tick.
+    let pressed_at = rig.mover_position(door);
+    rig.command(door, MoverCommand::SetBlockPolicy(BlockPolicy::Displace));
+    rig.tick();
+    assert!(rig.mover(door).blocked, "the default yields");
+    let after = rig.mover_position(door);
+    rig.tick();
+    assert!(
+        (rig.mover_position(door) - after).length() < 1.0e-6 && after.x <= pressed_at.x,
+        "and holds"
+    );
+}
+
+#[test]
+fn frame_end_commands_on_held_mover_never_embed_rider() {
+    let commands = [
+        MoverCommand::Start,
+        MoverCommand::Reverse,
+        MoverCommand::GoToPathNode("node1".to_string()),
+        MoverCommand::SetSpinRate(90.0),
+    ];
+    for command in commands {
+        let (mut rig, lift, rider) = low_ceiling_lift(BlockPolicy::Displace, 3.0, 4.6);
+        rig.start(lift);
+        rig.settle(120);
+        assert!(rig.mover(lift).blocked);
+        // The frame-end script drain runs after the frame's last pass.
+        rig.command(lift, command.clone());
+        for _ in 0..30 {
+            rig.tick();
+            assert_clear_of_static(&rig, rider, &format!("{command:?}"));
+        }
+    }
+}
+
+#[test]
+fn blocked_event_reverse_backs_door_off_and_restart_closes_it() {
+    let (mut rig, door, pawn) = jamb_door_rig(BlockPolicy::Displace);
+    rig.start(door);
+    let mut fired = 0;
+    let mut reacted = false;
+    for _ in 0..240 {
+        let now = rig.tick().blocked_events(DOOR);
+        fired += now;
+        if now > 0 && !reacted {
+            // The door's blocked_event reaction backs it off.
+            rig.command(door, MoverCommand::Reverse);
+            reacted = true;
+        }
+        assert!(rig.mover_overlap(pawn) <= OVERLAP_TOLERANCE);
+    }
+    assert_eq!(fired, 1);
+    assert!(
+        !rig.mover(door).started
+            && (rig.mover_position(door) - Vec3::new(3.0, 0.0, 0.0)).length() < 1.0e-3,
+        "the reaction backed the door off to its start"
+    );
+    // Its trigger closes it again, into the same pawn: a new onset.
+    rig.start(door);
+    for _ in 0..150 {
+        fired += rig.tick().blocked_events(DOOR);
+    }
+    assert_eq!(fired, 2);
+    assert!(rig.mover(door).blocked);
+}
+
+// --- Crush keeps pressing --------------------------------------------------------
+
+#[test]
+fn crush_lift_still_damages_ceiling_rider_on_cadence_and_keeps_moving() {
+    let (mut rig, lift, rider) = low_ceiling_lift(BlockPolicy::Crush, 3.0, 4.6);
+    give_health(&mut rig, rider, 1000.0);
+    rig.edit_mover(lift, |mover| {
+        mover.crush_damage = 10.0;
+        mover.crush_interval_ms = 100.0;
+    });
+    rig.start(lift);
+    let mut crush_ticks = Vec::new();
+    for tick in 0..120 {
+        if rig.tick().impacts > 0 {
+            crush_ticks.push(tick);
+        }
+        assert!(!rig.mover(lift).blocked, "a crusher never holds");
+    }
+    assert!(rig.mover(lift).completed, "the crusher reached its stop");
+    assert!(
+        crush_ticks.len() >= 3,
+        "crushed on cadence: {crush_ticks:?}"
+    );
+    assert!(
+        crush_ticks.windows(2).all(|pair| pair[1] - pair[0] >= 6),
+        "no faster than its 100 ms cadence: {crush_ticks:?}"
+    );
+}
+
+#[test]
+fn crusher_damages_sideways_rider_and_two_mover_squeeze_on_cadence() {
+    for (name, (mut rig, crusher, pawn)) in [
+        ("sideways rider", sideways_crusher_rig(10.0)),
+        ("two-mover squeeze", two_mover_crusher_rig(10.0)),
+    ] {
+        give_health(&mut rig, pawn, 1000.0);
+        rig.start(crusher);
+        let mut crush_ticks = Vec::new();
+        let mut last_x = rig.mover_position(crusher).x;
+        for tick in 0..120 {
+            if rig.tick().impacts > 0 {
+                crush_ticks.push(tick);
+            }
+            let x = rig.mover_position(crusher).x;
+            assert!(
+                rig.mover(crusher).completed || x != last_x,
+                "{name}: tick {tick}: the crusher keeps moving"
+            );
+            last_x = x;
+        }
+        assert!(
+            crush_ticks.len() >= 2,
+            "{name}: crushed on cadence: {crush_ticks:?}"
+        );
+        assert!(
+            crush_ticks.windows(2).all(|pair| pair[1] - pair[0] >= 6),
+            "{name}: no faster than its cadence: {crush_ticks:?}"
+        );
+    }
 }

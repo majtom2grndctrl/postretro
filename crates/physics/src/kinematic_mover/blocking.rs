@@ -188,8 +188,10 @@ pub fn run_mover_blocking_pass(
             let transform = registry.get_component::<Transform>(entity).ok().copied()?;
             let moving = mover.started && !mover.completed;
             // `displace` enters only to answer pins, so it skips the preview
-            // when no pawn is within a tick of it.
+            // when no pawn is within a tick of it. A held one always enters,
+            // so its hold can release.
             if policy == BlockPolicy::Displace
+                && !mover.blocked
                 && !(moving
                     && mover_colliders
                         .iter()
@@ -297,18 +299,34 @@ pub fn run_mover_blocking_pass(
                     );
                 }
                 BlockPolicy::Crush => {
-                    // A rider whose next carry sweeps into a blocker is pinned
-                    // whatever this tick's push did: a tangential carry makes
-                    // no push at all.
-                    if course_pins.iter().any(|(pinned_index, pawn, pin)| {
-                        *pinned_index == index && *pawn == player_entity && pin.rider
-                    }) && mover.policy_active
+                    // A rider whose next carry sweeps into a blocker, or that
+                    // the crusher still carries while embedded, is pinned
+                    // whatever this tick's push did: a carry makes no push on
+                    // its own rider.
+                    let carried = mover.prospective_pose.is_some()
+                        && body.carry_ground == GroundRef::Mover(mover.mover_id);
+                    if carried
+                        && mover.policy_active
+                        && (course_pins.iter().any(|(pinned_index, pawn, pin)| {
+                            *pinned_index == index && *pawn == player_entity && pin.rider
+                        }) || pin_world.is_embedded(body))
                     {
                         pinned_crush_contacts.insert((mover.entity, player_entity));
                         continue;
                     }
                     let maintains_cadence =
                         blocking_state.has_crush_cadence(mover.entity, player_entity);
+                    // A body already being crushed stays pinned while the next
+                    // course still drives it into a blocker, even on a tick
+                    // displacement shuffled it off this crusher's face.
+                    if maintains_cadence
+                        && course_pins.iter().any(|(pinned_index, pawn, _)| {
+                            *pinned_index == index && *pawn == player_entity
+                        })
+                    {
+                        pinned_crush_contacts.insert((mover.entity, player_entity));
+                        continue;
+                    }
                     if contact.is_none() && !maintains_cadence {
                         continue;
                     }

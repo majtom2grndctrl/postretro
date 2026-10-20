@@ -17,7 +17,7 @@ use crate::collision::moving::{
     MoverCollider, MoverPose, MoverPoseSource, cast_capsule_combined_parry,
     deepest_mover_push_penetration,
 };
-use crate::collision::{CollisionWorld, MAP_UNIT_METRES, SKIN_DISTANCE};
+use crate::collision::{CollisionCapsule, CollisionWorld, MAP_UNIT_METRES, SKIN_DISTANCE};
 use crate::movement::carry_ground_for;
 
 /// A player pawn as the pin test reads it.
@@ -169,6 +169,15 @@ impl PinWorld<'_> {
             })
     }
 
+    /// Whether `body` already overlaps static geometry: a crusher's rider it
+    /// keeps carrying while embedded stays pinned once the sweep starts inside.
+    pub(super) fn is_embedded(&self, body: &PawnBody) -> bool {
+        self.static_world.overlaps_static(
+            body.position,
+            CollisionCapsule::new(body.capsule.radius, body.capsule.half_height()),
+        )
+    }
+
     /// Whether a mover's push on `body` along `normal` for `depth` is blocked
     /// by static geometry or another mover. The static half is the
     /// substrate's own `mover_push_is_blocked_by_static` cast.
@@ -202,7 +211,9 @@ pub(super) fn any_body_in_reach(
     bodies.iter().any(|body| {
         let body_reach = body.capsule.half_height() + body.capsule.radius;
         let limit = reach + body_reach;
-        !(body.position.distance_squared(origin) > limit * limit)
+        // NaN positions fall through to the narrow phase.
+        body.position.distance_squared(origin) <= limit * limit
+            || !body.position.distance_squared(origin).is_finite()
     })
 }
 

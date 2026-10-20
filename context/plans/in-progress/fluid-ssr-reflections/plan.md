@@ -52,6 +52,21 @@ Every source symbol that Decisions and Path cite was re-read at `db0f270d3`. No 
     - **AC 10:** round-trips five values.
     - **AC 19:** `probes` allocates only the placeholder.
     - **AC 26:** stepping to `probes` removes SSR and keeps the probe term.
+- **Owner decision (2026-10-20, revised): tier presets and ULTRA.** This supersedes the probes-only entry above. The ladder is `off` / `low` / `medium` / `high` / `ultra`, default `high`.
+  - `low` is the probe term only: no SSR target and no reflection pass.
+  - `medium`, `high` and `ultra` run SSR. Each tier is a preset of resolution fraction, step budget, stride divisor and thickness. This supersedes the brief's "every tier marches the same stride and step budget".
+  - Starting presets:
+    - medium: ½, 48 steps, divisor 180, 1.0 m
+    - high: full, 96 steps, divisor 270, 1.0 m
+    - ultra: placeholder, tuned on the 1660
+  - Owner intent for `ultra`: deliberately beyond the 5300M, as future-proofing.
+  - The dev sliders are live overrides on the active preset.
+  - The pillar investigation found the reach default too short. The owner's Mac playtest at ½ render resolution held vsync at 202–256 steps with divisor 135–350, and a lower divisor read sharper because SSR covered more of the water.
+  - AC rows read accordingly:
+    - **AC 5:** tiers differ in reach; a lower tier never reaches further.
+    - **AC 10:** five values.
+    - **AC 19 and AC 26:** `low` allocates only the placeholder and records no pass.
+    - **AC 28:** `ultra` is judged on the 1660, not the 5300M.
 - **Pillar reflection (owner report, 2026-10-20): in scope.** Manual row 24 and the Decision "SSR owns … the camera-facing sides of objects standing in the water" both cover it. Under investigation as a defect or reach limit, not a follow-up brief.
 
 ## AC-to-proof

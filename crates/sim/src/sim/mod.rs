@@ -55,7 +55,9 @@ use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::components::mesh::{MeshAnimation, MeshComponent, switch_animation_state};
+use postretro_entities::components::mesh::{
+    MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
+};
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
 use postretro_entities::components::weapon::WeaponComponent;
@@ -1116,23 +1118,30 @@ pub fn update_player_animation_locomotion(
                 run_speed,
                 direction,
                 current_state: &animation.current_state,
-                idle_state: &animation.default_state,
             };
             let selection = PlayerLocomotionStates::from_animation(animation).map(|states| {
                 let (state, tier) = states.select(&input, |state| animation.is_state_usable(state));
-                (state.to_string(), tier, animation.current_state != state)
+                let target = state.unwrap_or(&animation.default_state);
+                // Only an actual switch needs an owned name.
+                let switch_to = (animation.current_state != target).then(|| target.to_string());
+                (switch_to, tier)
             });
             (animation.locomotion_direction, direction, selection)
         };
         if direction != stored_direction {
             store_locomotion_direction(registry, id, direction);
         }
-        let Some((target_state, tier, needs_switch)) = selection else {
+        let Some((switch_to, tier)) = selection else {
             continue;
         };
-        if needs_switch {
-            let _ = switch_animation_state(registry, id, &target_state);
-        }
+        // A refused switch (an unresolved clip) leaves another state playing,
+        // which rests at its authored rate.
+        let target_reached = switch_to.is_none_or(|target| {
+            matches!(
+                switch_animation_state(registry, id, &target),
+                SwitchResult::Switched | SwitchResult::AlreadyInState
+            )
+        });
         let (moving, fallback_speed) = match tier {
             LocomotionTierKind::Idle => (false, 1.0),
             LocomotionTierKind::Walk => (true, walk_speed),
@@ -1144,7 +1153,7 @@ pub fn update_player_animation_locomotion(
             .ok()
             .and_then(|mesh| {
                 let animation = mesh.animation.as_ref()?;
-                if !moving || animation.current_state != target_state || !animation.speed_scale {
+                if !moving || !target_reached || !animation.speed_scale {
                     return Some(1.0);
                 }
                 let effective = effective_travel_speed(animation, mesh, hit_zone_store);
@@ -1326,7 +1335,8 @@ pub fn update_presentation_pose_inputs(
 /// value; entities without a live acquired target hold their body heading with
 /// zero pitch, making pose modifiers a visual no-op. Player pawns fold their
 /// travel heading by the forward/backward classification; see
-/// [`presented_player_heading`].
+/// [`presented_player_heading`]. With `local_pawn_owns_direction` this pass is
+/// also the local pawn's direction-memory writer.
 fn update_pose_inputs(
     registry: &mut EntityRegistry,
     camera_aim: (f32, f32),
@@ -1492,11 +1502,11 @@ fn update_pose_inputs(
 }
 
 /// The lower-body heading a host or local pawn presents: travel folded by the
-/// forward/backward classification against `aim_yaw`. The active state seeds the
-/// classification where it decides a direction, so a backward clip received from
-/// the host folds the legs with it; outside the dead zone travel still decides,
-/// keeping the twist bounded. Only `owns_direction` writes the result back as the
-/// pawn's memory. Stationary pawns face `fallback`.
+/// forward/backward classification against `aim_yaw`. A freshly entered state
+/// seeds the classification where it decides a direction, so a backward clip
+/// received from the host folds the legs with it; outside the dead zone travel
+/// still decides, keeping the twist bounded. Only `owns_direction` writes the
+/// result back as the pawn's memory. Stationary pawns face `fallback`.
 fn presented_player_heading(
     registry: &mut EntityRegistry,
     id: EntityId,
@@ -1520,7 +1530,14 @@ fn presented_player_heading(
         return fallback;
     };
     let stored = animation.locomotion_direction;
-    let previous = PlayerLocomotionStates::from_animation(animation)
+    // Only a freshly entered state seeds the classification. The state can lag
+    // this pass (a connected client's own pawn takes it from the host a round
+    // trip late), so seeding from it every frame would undo a band crossing the
+    // state has not caught up with yet.
+    let entering = animation.entered_at.is_none() || animation.previous_state.is_some();
+    let previous = entering
+        .then(|| PlayerLocomotionStates::from_animation(animation))
+        .flatten()
         .and_then(|states| {
             states.direction_of(&animation.current_state, |state| {
                 animation.is_state_usable(state)

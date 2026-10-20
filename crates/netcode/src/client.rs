@@ -172,9 +172,10 @@ struct RemotePlayerLocomotion {
     /// Last state selected from the interpolated intrinsic player velocity. Snapshot application
     /// compares its authoritative state against this prediction before correcting.
     client_derived_state: Option<String>,
-    /// Server state currently being honored through its authored crossfade window.
-    /// The render-order velocity derivation must not switch away from this state in
-    /// the same frame that snapshot apply entered it.
+    /// Server state currently honored over this client's prediction. Snapshot
+    /// state leads the interpolated pose, so the velocity derivation does not
+    /// switch away from it until the derivation agrees with it or the host names
+    /// another state.
     authoritative_correction_state: Option<String>,
 }
 
@@ -2415,19 +2416,44 @@ impl ClientReplication {
         reference: Option<RemotePlayerLocomotionReference>,
     ) {
         match reference {
-            Some(reference) => {
-                self.remote_player_locomotion.insert(
-                    network_id,
-                    RemotePlayerLocomotion {
-                        reference,
-                        client_derived_state: None,
-                        authoritative_correction_state: None,
-                    },
-                );
-            }
+            // Re-materializing a mapped avatar (a weapon swap) refreshes the
+            // descriptor data and keeps any correction it is honoring.
+            Some(reference) => match self.remote_player_locomotion.get_mut(&network_id) {
+                Some(locomotion) => locomotion.reference = reference,
+                None => {
+                    self.remote_player_locomotion.insert(
+                        network_id,
+                        RemotePlayerLocomotion {
+                            reference,
+                            client_derived_state: None,
+                            authoritative_correction_state: None,
+                        },
+                    );
+                }
+            },
             None => {
                 self.remote_player_locomotion.remove(&network_id);
             }
+        }
+    }
+
+    /// Seed a freshly materialized remote avatar's forward/backward memory from
+    /// the host's state. Inside the dead zone the memory decides, so an unseeded
+    /// joiner would first derive the opposite fold and flip once the next delta
+    /// corrects it. Names are checked as declared: the host enters a backward
+    /// state only when its clip resolves.
+    pub(crate) fn seed_remote_player_direction(
+        &self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        entity_id: EntityId,
+        state: &str,
+    ) {
+        let Some(locomotion) = self.remote_player_locomotion.get(&network_id) else {
+            return;
+        };
+        if let Some(direction) = locomotion.reference.states.direction_of(state, |_| true) {
+            crate::sim::store_locomotion_direction(registry, entity_id, direction);
         }
     }
 
@@ -2547,20 +2573,23 @@ impl ClientReplication {
         let reference = &locomotion.reference;
         let usable = |state: &str| animation.is_state_usable(state);
         let stored_direction = animation.locomotion_direction;
-        let current_state = animation.current_state.clone();
-        let fading = animation.entered_at.is_none() || animation.previous_state.is_some();
-        let correction_in_flight = locomotion
+        let current_state = animation.current_state.as_str();
+        // A host correction leads the interpolated pose by about the interpolation
+        // delay, so it is honored until this client's own derivation agrees with
+        // it rather than for its crossfade alone: releasing earlier reverts to the
+        // lagging prediction, and the next delta corrects again.
+        let correction_held = locomotion
             .authoritative_correction_state
             .as_deref()
-            .is_some_and(|authoritative| authoritative == current_state && fading);
-        // A host correction leads the interpolated velocity, so it seeds the
-        // classification rather than overriding it: inside the dead zone the legs
-        // fold with the corrected clip, and outside it travel still decides,
-        // keeping the twist bounded while the presented motion catches up.
-        let previous = if correction_in_flight {
+            .is_some_and(|authoritative| authoritative == current_state);
+        // The held state seeds the classification rather than overriding it:
+        // inside the dead zone the legs fold with the corrected clip, and outside
+        // it travel still decides, keeping the twist bounded while the presented
+        // motion catches up.
+        let previous = if correction_held {
             reference
                 .states
-                .direction_of(&current_state, usable)
+                .direction_of(current_state, usable)
                 .unwrap_or(stored_direction)
         } else {
             stored_direction
@@ -2572,29 +2601,35 @@ impl ClientReplication {
                 walk_speed: reference.walk_speed,
                 run_speed: reference.run_speed,
                 direction,
-                current_state: &current_state,
-                idle_state: &reference.idle_state,
+                current_state,
             },
             usable,
         );
+        let target_state = target_state.unwrap_or(&reference.idle_state);
+        let at_target = current_state == target_state;
         let moving = tier != crate::sim::LocomotionTierKind::Idle;
-        let target_state = target_state.to_string();
         let tier_speed = match tier {
             crate::sim::LocomotionTierKind::Idle => None,
             crate::sim::LocomotionTierKind::Walk => Some(reference.walk_speed),
             crate::sim::LocomotionTierKind::Run => Some(reference.run_speed),
         };
         let derived_travel_speed =
-            tier_speed.and_then(|_| reference.derived_travel_speeds.get(&target_state).copied());
+            tier_speed.and_then(|_| reference.derived_travel_speeds.get(target_state).copied());
         let fallback_speed = tier_speed.unwrap_or(1.0);
 
-        locomotion.client_derived_state = Some(target_state.clone());
-        if !correction_in_flight {
+        if locomotion.client_derived_state.as_deref() != Some(target_state) {
+            locomotion.client_derived_state = Some(target_state.to_string());
+        }
+        if !correction_held || at_target {
             locomotion.authoritative_correction_state = None;
         }
-        if !correction_in_flight && current_state != target_state {
-            let _ = switch_animation_state(registry, entity_id, &target_state);
-        }
+        // A held correction plays the host's state at its authored rate.
+        let target_reached = at_target
+            || (!correction_held
+                && matches!(
+                    switch_animation_state(registry, entity_id, target_state),
+                    SwitchResult::Switched | SwitchResult::AlreadyInState
+                ));
         if direction != stored_direction {
             crate::sim::store_locomotion_direction(registry, entity_id, direction);
         }
@@ -2604,10 +2639,10 @@ impl ClientReplication {
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
             .and_then(|animation| {
-                if !moving || animation.current_state != target_state || !animation.speed_scale {
+                if !moving || !target_reached || !animation.speed_scale {
                     return Some(1.0);
                 }
-                let state = animation.states.get(&target_state)?;
+                let state = animation.states.get(target_state)?;
                 let effective = state.effective_travel_speed(derived_travel_speed);
                 Some(MeshAnimation::locomotion_rate_ratio(
                     speed_xz.max(0.0),
@@ -5097,7 +5132,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_player_locomotion_uses_intrinsic_velocity_and_crossfades_authoritative_mismatch() {
+    fn remote_player_locomotion_holds_an_authoritative_mismatch_until_the_derivation_agrees() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         client.apply_snapshot(
@@ -5196,8 +5231,37 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .current_state,
-            "walk_forward",
-            "velocity derivation resumes after the correction crossfade completes"
+            "idle",
+            "the host's state outlasts its crossfade: reverting to the lagging \
+             prediction would only be corrected again by the next delta"
+        );
+
+        // The host comes round to walking; the client already derives walk, so
+        // the correction releases and velocity derivation resumes.
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                3,
+                112,
+                vec![delta(7, 3, 4, vec![mesh_animation_payload("walk_forward")])],
+            ),
+        );
+        resolve_pending_animation_stamps(&mut registry, 1.1);
+        client.sample_into_registry(&mut registry, 105.0, 1.1);
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "walk_forward"
+        );
+        assert!(
+            client.remote_player_locomotion[&NetworkId(7)]
+                .authoritative_correction_state
+                .is_none()
         );
     }
 
@@ -5218,9 +5282,9 @@ mod tests {
         remote_player_mesh_with(&["walk_backward"])
     }
 
-    /// Map remote player 7 facing yaw zero (-Z), install `mesh`, and present it
-    /// travelling at `velocity` across two snapshots.
-    fn present_remote_player(
+    /// Map remote player 7 facing yaw zero (-Z), install `mesh`, and buffer it
+    /// travelling at `velocity` across snapshots at ticks 100 and 110.
+    fn map_remote_player(
         mesh: MeshComponent,
         declared: &[&str],
         velocity: [f32; 3],
@@ -5267,6 +5331,17 @@ mod tests {
                 )],
             ),
         );
+        (registry, client, id)
+    }
+
+    /// [`map_remote_player`], then present it at render tick 105.
+    fn present_remote_player(
+        mesh: MeshComponent,
+        declared: &[&str],
+        velocity: [f32; 3],
+        speeds: (f32, f32),
+    ) -> (EntityRegistry, ClientReplication, EntityId) {
+        let (mut registry, mut client, id) = map_remote_player(mesh, declared, velocity, speeds);
         client.sample_into_registry(&mut registry, 105.0, 1.0);
         (registry, client, id)
     }
@@ -5426,6 +5501,96 @@ mod tests {
             heading.abs() <= EPSILON,
             "legs face forward travel, not 180° behind aim: {heading}"
         );
+    }
+
+    #[test]
+    fn remote_player_reversal_correction_holds_until_the_presented_travel_reverses() {
+        let declared = ["idle", "walk_forward", "walk_backward"];
+        let (mut registry, mut client, id) = present_remote_player(
+            remote_player_backpedal_mesh(),
+            &declared,
+            [0.0, 0.0, -60.0],
+            (60.0, 60.0),
+        );
+        // The host reverses into a backpedal a full interpolation delay ahead of
+        // the presented pose, and resends that state with every delta.
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![mesh_animation_payload("walk_backward")],
+                )],
+            ),
+        );
+        for anim_time in [1.0, 1.06, 1.2] {
+            client.sample_into_registry(&mut registry, 105.0, anim_time);
+            resolve_pending_animation_stamps(&mut registry, anim_time);
+            let (state, heading) = presented_state_and_heading(&registry, &client, id);
+            assert_eq!(
+                state, "walk_backward",
+                "no revert to the lagging forward prediction at {anim_time}"
+            );
+            assert!(heading.abs() <= EPSILON, "legs follow forward travel");
+        }
+        // Once the presented travel reverses, the derivation agrees and the
+        // correction releases with the legs folded toward aim.
+        for (sequence, tick, baseline, next) in [(3, 120, 3, 4), (4, 130, 4, 5)] {
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(
+                    sequence,
+                    tick,
+                    vec![delta(
+                        7,
+                        baseline,
+                        next,
+                        vec![
+                            transform_payload_at([0.0, 0.0, 0.0], 0.0),
+                            movement_payload_with_velocity([0.0, 0.0, 60.0]),
+                            mesh_animation_payload("walk_backward"),
+                        ],
+                    )],
+                ),
+            );
+        }
+        client.sample_into_registry(&mut registry, 125.0, 1.3);
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward");
+        assert!(heading.abs() <= EPSILON, "+Z travel folds to face aim");
+        assert!(
+            client.remote_player_locomotion[&NetworkId(7)]
+                .authoritative_correction_state
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn remote_player_join_seeds_direction_from_the_host_state() {
+        // A joiner meets a player strafing in the dead zone whose host state is
+        // the backpedal; the first presented frame keeps that fold.
+        let (mut registry, mut client, id) = map_remote_player(
+            remote_player_backpedal_mesh(),
+            &["idle", "walk_forward", "walk_backward"],
+            [60.0, 0.0, 0.0],
+            (60.0, 60.0),
+        );
+        assert!(apply_mesh_animation_state(
+            &mut registry,
+            id,
+            "walk_backward",
+            true
+        ));
+        client.seed_remote_player_direction(&mut registry, NetworkId(7), id, "walk_backward");
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward");
+        assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= EPSILON);
     }
 
     #[test]

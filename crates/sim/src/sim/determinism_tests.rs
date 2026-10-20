@@ -2633,6 +2633,25 @@ fn connected_client_own_pawn_shadow_folds_with_the_host_sent_backward_clip() {
         LocomotionDirection::Backward,
         "a connected client keeps its own pawn's memory"
     );
+
+    // A settled state lagging the client's own classification does not pull the
+    // legs back: the host still shows `walk_forward` while this peer's memory
+    // already crossed into the backpedal, and travel sits in the dead zone.
+    let mut mesh = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .clone();
+    let animation = mesh.animation.as_mut().unwrap();
+    animation.current_state = "walk_forward".to_string();
+    animation.entered_at = Some(0.0);
+    animation.previous_state = None;
+    registry.set_component(pawn, mesh).unwrap();
+    let (heading, direction) = present(&mut registry, true);
+    assert!(
+        (heading - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5,
+        "legs hold the fold: {heading}"
+    );
+    assert_eq!(direction, LocomotionDirection::Backward);
 }
 
 #[test]

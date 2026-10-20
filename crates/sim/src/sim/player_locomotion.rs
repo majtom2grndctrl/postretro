@@ -112,8 +112,6 @@ pub struct LocomotionInput<'a> {
     pub direction: LocomotionDirection,
     /// The active animation state: the tier hysteresis memory.
     pub current_state: &'a str,
-    /// The descriptor's `defaultState`, played while still.
-    pub idle_state: &'a str,
 }
 
 /// Whether the run tier plays: speed is nearer run pace than walk pace, past a
@@ -130,7 +128,7 @@ fn run_tier_holds(run: &LocomotionTier, input: &LocomotionInput<'_>) -> bool {
 }
 
 /// One speed tier's declared state names. Names are the engine's own constants,
-/// so selecting from them allocates nothing on the per-tick and per-frame paths.
+/// so selection hands back borrowed names and allocates nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocomotionTier {
     pub forward: &'static str,
@@ -203,16 +201,17 @@ impl PlayerLocomotionStates {
             .flat_map(|tier| std::iter::once(tier.forward).chain(tier.backward))
     }
 
-    /// Pick the target state. `is_usable` reports whether a state's clip
-    /// resolved; an unusable backward state yields the tier's forward state.
-    pub fn select<'a>(
+    /// Pick the target state: `None` is the descriptor's `defaultState`, which
+    /// the caller holds. `is_usable` reports whether a state's clip resolved; an
+    /// unusable backward state yields the tier's forward state.
+    pub fn select(
         &self,
-        input: &LocomotionInput<'a>,
+        input: &LocomotionInput<'_>,
         is_usable: impl Fn(&str) -> bool,
-    ) -> (&'a str, LocomotionTierKind) {
+    ) -> (Option<&'static str>, LocomotionTierKind) {
         let speed = input.speed_xz;
         if !speed.is_finite() || speed <= MOVING_SPEED_EPSILON {
-            return (input.idle_state, LocomotionTierKind::Idle);
+            return (None, LocomotionTierKind::Idle);
         }
         // A run state whose clip did not resolve leaves the walk tier covering
         // every speed, as if no run state were declared.
@@ -225,7 +224,7 @@ impl PlayerLocomotionStates {
         let backward = tier
             .backward
             .filter(|state| input.direction == LocomotionDirection::Backward && is_usable(state));
-        (backward.unwrap_or(tier.forward), kind)
+        (Some(backward.unwrap_or(tier.forward)), kind)
     }
 
     /// The direction an entered state commits the body to, when it decides one: a
@@ -397,7 +396,6 @@ mod tests {
             run_speed: 11.0,
             direction,
             current_state,
-            idle_state: "idle",
         }
     }
 
@@ -415,7 +413,7 @@ mod tests {
         let pick =
             |states: &PlayerLocomotionStates, speed, direction, usable: &dyn Fn(&str) -> bool| {
                 let (state, tier) = states.select(&input(speed, direction, "idle"), usable);
-                (state.to_string(), tier)
+                (state.unwrap_or("idle").to_string(), tier)
             };
         let s = |name: &str, tier| (name.to_string(), tier);
         assert_eq!(pick(&all, 0.0, Backward, &usable), s("idle", Idle));
@@ -482,7 +480,7 @@ mod tests {
                     usable
                 )
                 .0,
-            "run_backward"
+            Some("run_backward")
         );
         // A run state whose clip did not resolve leaves sprinting on walk.
         let unresolved_run = |state: &str| state != "run_forward";
@@ -491,7 +489,7 @@ mod tests {
                 &input(11.0, LocomotionDirection::Forward, "walk_forward"),
                 unresolved_run
             ),
-            ("walk_forward", LocomotionTierKind::Walk)
+            (Some("walk_forward"), LocomotionTierKind::Walk)
         );
         // Equal walk and run speeds degenerate to the plain threshold.
         let flat = |speed| LocomotionInput {
@@ -500,7 +498,6 @@ mod tests {
             run_speed: 7.0,
             direction: LocomotionDirection::Forward,
             current_state: "walk_forward",
-            idle_state: "idle",
         };
         assert_eq!(all.select(&flat(7.0), usable).1, LocomotionTierKind::Walk);
         assert_eq!(all.select(&flat(7.1), usable).1, LocomotionTierKind::Run);

@@ -129,6 +129,12 @@ pub(super) fn materialize_remote_entities(
         replication.cache_remote_presentation_complete(remote.network_id, complete);
         if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
             client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
+            replication.seed_remote_player_direction(
+                registry,
+                remote.network_id,
+                remote.entity_id,
+                state,
+            );
         }
         let attachment_changed = remote.weapon_attachment_changed
             && remote_materialize::update_active_weapon_attachment(

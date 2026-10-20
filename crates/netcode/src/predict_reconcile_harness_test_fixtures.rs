@@ -1397,12 +1397,21 @@ impl LoopbackHarness {
                 let entity_class =
                     super::descriptor_class::decode_replicated_descriptor_class(entity_class)
                         .canonical_name();
-                materialize_net_local_movement_component(
-                    entity_class,
-                    &self.descriptors,
-                    &mut self.client_registry,
-                    armed.entity_id,
-                );
+                // Installed host tuning with no movement leaves the pawn inert, as
+                // production's `materialize_armed_local_pawn` does; every owner
+                // record re-arms, so the shared-descriptor shortcut must not revive it.
+                let inert = self
+                    .client_tuning
+                    .as_deref()
+                    .is_some_and(|tuning| tuning.movement.is_none());
+                if !inert {
+                    materialize_net_local_movement_component(
+                        entity_class,
+                        &self.descriptors,
+                        &mut self.client_registry,
+                        armed.entity_id,
+                    );
+                }
             }
             if let Some(reconcile) = &outcome.local_reconcile
                 && let Some(environment) = client_environment_view(

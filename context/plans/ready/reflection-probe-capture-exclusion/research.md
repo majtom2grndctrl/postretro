@@ -74,7 +74,7 @@ Brush-side projection drops face fragments in solid space (`build_pipeline.md` �
 | 270 | high | 0.00497 | 2.5 cm | 0.25 m |
 
   At HFOV 130°, the player maximum, the coarsest ratio is 0.0179. The bake uses the default FOV. f stays far below t, since p(W) ≥ 0.085 up to 500 m.
-- **Why thinness is measured along the normal.** For water, a reflected ray's screen path runs mostly vertically. A vertical post crosses it along its height and is sampled along its length. A horizontal bar or a slab seen edge-on crosses it across its extent along the normal, which a stride can step over. On the march alone, extent along the normal predicts misses better than the smallest in-plane extent. The owner first chose in-plane thinness, then switched to extent along the normal (2026-10-20) once it was clear that in-plane thinness keeps poles in the probe. Beyond the underside rule, the floor covers thin decor outside the water's horizontal projection, such as shore rails and bars.
+- **Why thinness is measured along the normal.** For water, a reflected ray's screen path runs mostly vertically. A vertical post crosses it along its height and is sampled along its length. A horizontal bar or a slab seen edge-on crosses it across its extent along the normal, which a stride can step over. On the march alone, extent along the normal predicts misses better than the smallest in-plane extent. Beyond the underside rule, the floor covers thin decor outside the water's horizontal projection, such as shore rails and bars.
 - **Reach, not stride.** Reach is `step_budget × stride` pixels: high ≈ 0.36 screen heights, medium ≈ 0.27, ultra ≈ 1.9. A tall excluded object near the camera can reflect past reach at lower SSR tiers, and its upper part then fades out with no probe fallback. In-plane size ignores height, so tall thin poles are excluded. This is a manual-check item.
 - **Floor against probe resolution.** A 128² octahedral tile averages about 1.6° per texel; f subtends 0.57° at W, so the floor keeps a sub-texel smear, not a resolved image.
 - **Thickness band.** 1–2.5 m. Decor a few centimetres thick reads as a metre deep, so SSR may draw a short false streak behind it.
@@ -88,7 +88,7 @@ Read from TrenchBroom master at 29ef55a (sparse clone). `mdl::Group` holds only 
 
 ## Threshold curve
 
-p(W) = 0.85 for W ≤ 10 m; 0.85·(W/10)^−a above, with a = ln(0.85/0.33)/ln 5 ≈ 0.58787, so 50 m gives exactly 0.33. t = p·W: 2 → 1.7, 10 → 8.5, 50 → 16.5, 100 → 21.956, 500 → 42.6. The rounded a = 0.588 gives 16.497 at 50 m and 21.949 at 100 m, both outside a 1e-3 check against 16.5 and 21.9. The handoff's "≈21.9" is the rounded value.
+p(W) = 0.85 for W ≤ 10 m; 0.85·(W/10)^−a above, with a = ln(0.85/0.33)/ln 5 ≈ 0.58787, so 50 m gives exactly 0.33. t = p·W: 2 → 1.7, 10 → 8.5, 50 → 16.5, 100 → 21.956, 500 → 42.6. Use the exact a: the rounded 0.588 gives 16.497 at 50 m and 21.949 at 100 m, outside the 1e-3 checks.
 
 W = √(bound area): a 10 × 2.4 m canal gives 4.90 m, where its long side is 10 m. A canal-length rail of 6 m stays in the probe even though it runs the whole canal.
 

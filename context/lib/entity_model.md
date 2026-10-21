@@ -134,7 +134,7 @@ Unknown classnames are logged as warnings and skipped. The engine does not crash
 
 Entity properties arrive as string key-value pairs. The loader parses these into typed values (floats, vectors, integers, enums). Malformed values log a warning and fall back to defaults.
 
-**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (§7, Environment Volumes); any further regional field needs its own amendment, and gas and haze stay with fog volumes. `force` on `push_volume` is one such amendment: a modifier that rides its volume's push and wins with it, scaling what bodies feel while particles and fluid surfaces show the nominal push (`movement.md` §6). Teleporter regions are another: baked like the rest, but armed and disarmed by script, so not static (§7). A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
+**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (§7, Environment Volumes); any further regional field needs its own amendment, and gas and haze stay with fog volumes. `force` on `push_volume` is one such amendment: a modifier that rides its volume's push and wins with it, scaling what bodies feel while particles and fluid surfaces show the nominal push (`movement.md` §6). Teleporter regions are another: baked like the rest, but armed and disarmed by script, so not static (§7). Ghost links are a third: baked regions scripts arm, presentation only (§7d). A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
 
 **Facing convention (engine-wide).** A map entity's yaw is the arrow TrenchBroom draws: Quake yaw 0 faces +X and turns counter-clockwise. The compiler keeps its sign (`build_pipeline.md` §Supported Map Formats), because the axis map (x, y, z) → (−y, z, −x) is a proper rotation. Camera and player forward is −Z; a model's front (glTF) is +Z. The half turn between them is applied at exactly one seam, `MapEntity::model_rotation_quat()`, which every model-bearing placement spawns from: props, spawners, descriptor-placed enemies, dummies and pickups, and loadout weapons. View-frame and frontless placements — player spawn and network slots, billboard emitters — spawn from `rotation_quat()`, and teleport destinations use the arrow's yaw directly. Copies a spawner releases fan out to the left of its arrow. A new spawn path picks its frame by the axis its entity treats as forward, never by negating yaw.
 
@@ -289,6 +289,26 @@ Invariants the evaluator upholds:
 - **Death is not a graph transition.** AI and steering exclude a zero-HP enemy as soon as damage settles. The later death sweep owns the death latch and frozen credit; an authored impact policy owns the death animation and despawn delay.
 
 Graph evaluation is host-only. Clients consume replicated animation state and never evaluate guards.
+
+---
+
+## 7d. Ghost Links (decided, not yet built)
+
+Timelines are separate physical room copies joined by seamless teleporters. A **ghost link** lets a copy perceive the other: while armed, its members draw as translucent ghosts at the mapped pose in the other copy, and their sounds can play there. Room copies keep collision, hits, splash, AI perception and triggers isolated without any interaction filter. Ghosts are presentation only: they never collide, block, take hits or touch triggers.
+
+- **Region.** A `ghost_link` brush volume over the source copy names a landmark inside it and a target in the other copy, both teleport destinations. The mapping is the seamless teleport's landmark → target transform, one function teleports and ghosts share, so a ghost and a seamless arrival from the same pose agree. A link is independent of teleporters. A two-way link is two volumes.
+- **Eligibility is declared per layer, and links only narrow.**
+  - A descriptor's `ghost` attribute marks an archetype that can ghost. It defaults to false for every descriptor, players included: the engine never branches on actor kind. A pawn ghosts with its third-person weapon.
+  - A weapon's projectile block carries its own `ghost`, resolved from the firing weapon on every peer, a monster's projectiles included.
+  - Movers have no descriptor: a link's `ghost_tags` names them by tag, per link.
+  - Each link shows four member categories: players, non-player descriptor entities, projectiles and movers. A category never ghosts what the descriptor or tag did not opt in. The map sets a link's starting categories; scripts change them.
+  - An impact belongs to a link when its shot's owner is a member.
+  - The viewing player's own pawn, projectiles and sounds never ghost on that viewer's machine.
+- **Resolved locally.** Each peer reads `ghost` from its own descriptors by the class each entity was materialized from, and resolves `ghost_tags` against its own movers. No membership fact rides the wire, and peers whose content differs see different ghosts. Per-instance tags on descriptor placements are unusable here: a connected client's copies of them carry no tags or map identity.
+- **Per frame, from presented state.** An eligible entity is a member while its link is armed, its category is shown, and its presented point is inside the volume. The ghost draws at the mapped presented pose, so aim, pose modifiers and teleport cuts carry over. A ghost whose membership ends, despawn included, fades out at its last in-volume mapped pose, so a swap never draws a ghost between copies. An entity inside two armed links ghosts through each.
+- **Not built in this design:** flipping `ghost` on one entity at runtime, and widening a link past its opt-ins.
+
+Draw, limiter and audio contracts: `rendering_pipeline.md` §7.9, §7.8, `audio.md` §1. Replication: `networking.md` §Current contract. Script surface: `scripting.md` §2, §12.
 
 ---
 

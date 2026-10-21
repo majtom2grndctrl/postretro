@@ -229,7 +229,7 @@ The decision is host-only, off the wire and digest; a client reconciles to the h
 
 ### Teleport
 
-One substrate chokepoint relocates a pawn: position, every velocity channel, a yaw delta, a movement-state reset and a presentation cut, alike on host, prediction and replay (`crates/physics/src/movement/teleport.rs`). It runs after the substrate step in every movement tick, reading the caller's snapshot of installed armed state for that tick. Teleporters are its first consumer (`entity_model.md` §7, Teleporter regions).
+One substrate chokepoint relocates a pawn: position, every velocity channel, a yaw delta, a movement-state reset and a presentation cut, alike on host, prediction and replay (`crates/physics/src/movement/teleport.rs`). It runs after the substrate step in every movement tick, reading the caller's snapshot of installed armed state for that tick. Teleporters are its first consumer (`entity_model.md` §7, Teleporter regions). The seamless landmark → target mapping is one function; ghost links draw through the same one (`entity_model.md` §7d).
 
 - **Firing.** A teleporter fires when the post-step body point lies inside an armed, unlatched region. Capsule overlap alone never fires. Overlaps pick one winner (`entity_model.md` §7). A pawn teleports at most once per tick, and the tick ends at the arrival pose.
 - **One rotation rule.** Both modes rotate view yaw and every velocity channel — base, knockback, drift, and a dash or slide's banked boost — by one world-up yaw delta, on the teleport tick itself. Speeds and pitch are unchanged; roll is never touched. Classic keeps momentum, unlike Quake's fixed exit speed.

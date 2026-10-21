@@ -1,7 +1,9 @@
-// Integrated, production-adjacent prediction/reconciliation tests plus the headline
-// deterministic latency gate. Every test drives the real production seams through
-// `LoopbackHarness` (see the sibling `predict_reconcile_harness_test_fixtures`);
-// the prototype `sim::predict_reconcile` type is never instantiated.
+// Integrated, production-adjacent prediction/reconciliation tests. Every test drives
+// the real production seams through `LoopbackHarness` (see the sibling
+// `predict_reconcile_harness_test_fixtures`), whose link is the production channel
+// configuration over the relay; the prototype `sim::predict_reconcile` type is never
+// instantiated. The own-pawn latency gate under the dev profile lives in
+// `predict_reconcile_relay_harness`.
 // See: context/lib/networking.md · context/lib/testing_guide.md
 //
 // Replay-purity guard: the production replay path (`prediction::replay`) is
@@ -31,8 +33,6 @@ use super::predict_reconcile_harness_test_fixtures::{
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
 use crate::kinematic_mover::apply_mover_command;
-use crate::movement::MovementInput;
-use crate::netcode::host_handle_client_message;
 use crate::netcode::{
     CurrentSwitchResolution, HostSwitchDecision, PendingSwitchDeclaration, SwitchOutcome,
     apply_host_switch_declaration, resolve_switch_outcome,
@@ -319,60 +319,32 @@ fn missing_input_gap_policy_still_converges() {
     assert!(h.bystanders_alive());
 }
 
-// --- Duplicate input injected directly at the host_handle_client_message drain
-// seam: an exact-duplicate ClientMessage::Input collapses to one queued command
-// and never mutates another client's state or panics the host. ---
+// --- Duplicate input on the framed Input channel: an exact-duplicate
+// ClientMessage::Input the client sends three times collapses to one queued command
+// at host intake and never mutates another client's state or panics the host. ---
 #[test]
-fn duplicate_input_at_drain_seam_is_inert() {
+fn duplicate_input_on_the_input_channel_is_inert() {
     let mut h = LoopbackHarness::new(light_link());
+    assert!(h.join_without_input(JOIN_FRAMES_MAX), "the client joins");
 
-    // Inject the same input tick three times directly at the seam (no transport).
+    // The same input tick three times, each its own reliable Input message.
     let dup = input_at(0, 1.0);
     for _ in 0..3 {
-        host_handle_client_message(
-            &mut h.server,
-            &mut h.server_replication,
-            &mut h.server_state,
-            &mut h.command_queues,
-            &h.owners,
-            CLIENT_ID,
-            0,
-            0,
-            ClientMessage::Input(dup),
-        );
+        h.client_send_message(&ClientMessage::Input(dup));
     }
     // Fix A (playout buildup): the buildup latch withholds the first real command until
     // the pending queue reaches INPUT_BUFFER_TARGET, so a second distinct tick is queued
     // to disarm the latch and let the de-duplicated tick 0 resolve. The flood still
     // collapses to ONE tick-0 command — proven by the cursor advancing to exactly 0 (not
     // past it) on the first resolve.
-    host_handle_client_message(
-        &mut h.server,
-        &mut h.server_replication,
-        &mut h.server_state,
-        &mut h.command_queues,
-        &h.owners,
-        CLIENT_ID,
-        0,
-        0,
-        ClientMessage::Input(input_at(1, 1.0)),
-    );
+    h.client_send_message(&ClientMessage::Input(input_at(1, 1.0)));
+    deliver_uplink(&mut h);
 
     // A second, unrelated client's queue is untouched by the flood. It likewise needs
     // INPUT_BUFFER_TARGET depth before its first command resolves.
     const OTHER: u64 = 99;
-    for wish_tick in [(0u32, -1.0_f32), (1, -1.0)] {
-        host_handle_client_message(
-            &mut h.server,
-            &mut h.server_replication,
-            &mut h.server_state,
-            &mut h.command_queues,
-            &h.owners,
-            OTHER,
-            0,
-            0,
-            ClientMessage::Input(input_at(wish_tick.0, wish_tick.1)),
-        );
+    for (tick, wish) in [(0u32, -1.0_f32), (1, -1.0)] {
+        h.command_queues.ingest(OTHER, &input_at(tick, wish));
     }
 
     // The duplicated tick resolves exactly once with the first-arrival intent.
@@ -968,25 +940,18 @@ fn teleport_correction_snaps_without_smoothing() {
     assert!(h.bystanders_alive());
 }
 
-// --- Malformed input at the drain seam: a non-finite ClientMessage::Input is
-// rejected by sanitize, mutating no queue/cursor and never panicking the host. ---
+// --- Malformed input on the framed Input channel: a non-finite
+// ClientMessage::Input is rejected by sanitize at host intake, mutating no
+// queue/cursor and never panicking the host. ---
 #[test]
-fn malformed_input_at_drain_seam_is_rejected() {
+fn malformed_input_on_the_input_channel_is_rejected() {
     let mut h = LoopbackHarness::new(light_link());
+    assert!(h.join_without_input(JOIN_FRAMES_MAX), "the client joins");
 
     let mut bad = input_at(0, 1.0);
     bad.movement.wish_dir[1] = f32::NAN;
-    host_handle_client_message(
-        &mut h.server,
-        &mut h.server_replication,
-        &mut h.server_state,
-        &mut h.command_queues,
-        &h.owners,
-        CLIENT_ID,
-        0,
-        0,
-        ClientMessage::Input(bad),
-    );
+    h.client_send_message(&ClientMessage::Input(bad));
+    deliver_uplink(&mut h);
     assert!(
         h.command_queues.resolved_cursor(CLIENT_ID).is_none(),
         "a malformed command created no queue/cursor state"
@@ -995,6 +960,19 @@ fn malformed_input_at_drain_seam_is_rejected() {
     assert!(
         run_resolve(&mut h, CLIENT_ID).is_none(),
         "a rejected malformed command never resolves a tick"
+    );
+
+    // Input is reliable-ordered, so commands sent after it arriving proves the
+    // malformed one reached host intake first. The stream starts at the first
+    // command intake accepted.
+    for tick in [1, 2] {
+        h.client_send_message(&ClientMessage::Input(input_at(tick, 1.0)));
+    }
+    deliver_uplink(&mut h);
+    assert_eq!(
+        run_resolve(&mut h, CLIENT_ID).map(|resolved| resolved.client_tick),
+        Some(1),
+        "the commands behind the rejected one arrived and resolve from tick 1"
     );
     assert!(h.bystanders_alive());
 }
@@ -1416,7 +1394,7 @@ fn run_volume_crossing(
     command_for_step: impl Fn(u32) -> SimCommand,
 ) -> VolumeCrossingRun {
     let mut h = LoopbackHarness::with_environment_volumes(light_link(), volumes);
-    h.step_until_armed(&idle_command());
+    h.step_until_predicting(&idle_command());
     let mut run = VolumeCrossingRun {
         final_host_position: Vec3::ZERO,
         max_host_y: f32::NEG_INFINITY,
@@ -1622,7 +1600,7 @@ fn run_level_gravity(
     steps: u32,
     change: Option<GravityChange>,
 ) -> LevelGravityRun {
-    h.step_until_armed(&idle_command());
+    h.step_until_predicting(&idle_command());
     let mut run = LevelGravityRun {
         corrections: Vec::new(),
         max_host_y: f32::NEG_INFINITY,
@@ -1743,7 +1721,7 @@ struct GroundFrictionRun {
 /// Run, turn 90° at speed, release to a stop, then walk off again: every edge
 /// of the ground friction model, driven from the client.
 fn run_ground_friction(mut h: LoopbackHarness) -> GroundFrictionRun {
-    h.step_until_armed(&idle_command());
+    h.step_until_predicting(&idle_command());
     let mut corrections = Vec::new();
     for step in 0..240_u32 {
         let mut command = forward_command(false);
@@ -1826,11 +1804,13 @@ fn host_set_gravity_mid_level_reaches_joined_client_with_exactly_one_correction(
         None,
     );
 
+    // The lighter gravity raises every later hop. Read at the peak, not at the
+    // final step, whose hop phase both runs can share.
     assert!(
-        (changed.final_host_position - unchanged.final_host_position).length() > 0.05,
-        "fixture: the mid-level change must alter the host trajectory: {:?} vs {:?}",
-        changed.final_host_position,
-        unchanged.final_host_position
+        changed.max_host_y > unchanged.max_host_y + 0.1,
+        "fixture: the mid-level change must alter the host trajectory: max y {} vs {}",
+        changed.max_host_y,
+        unchanged.max_host_y
     );
     assert_eq!(
         changed.client_tuning_installs, 2,
@@ -2157,238 +2137,6 @@ fn remote_use_trigger_fires_on_host_and_reconciles_mover_target() {
 }
 
 // ---------------------------------------------------------------------------
-// Section B — Headline deterministic latency gate
-// ---------------------------------------------------------------------------
-
-// The headline acceptance test (Task 6 §B). The full loop runs under the mandated
-// profile in both directions for >5 s of simulated time after time-sync convergence
-// is assumed (this harness's master clock IS the converged shared clock — time sync
-// is validated separately in `net::harness`). HARD GATES:
-//  - final position error after drain <= 0.05 m;
-//  - sub-teleport corrections smooth (the run never takes a snap-teleport path);
-//  - no stale/duplicate/malformed input mutates unrelated entities (bystanders live).
-// Deterministic: seeded conditioner (0x1502) + caller-advanced virtual clock; no
-// wall-clock read anywhere.
-#[test]
-fn latency_harness_converges_within_tolerance_under_mandated_profile() {
-    let measured = run_latency_gate(mandated_link());
-
-    println!(
-        "[Task6 gate] error={:.5}m drained={} teleport={} max_smoothed={:.4}m \
-         smoothed_count={} host_travel={:.2}m drain_iters={} drop_to_server={} drop_to_client={}",
-        measured.final_error,
-        measured.drained,
-        measured.took_teleport,
-        measured.max_smoothed_correction,
-        measured.smoothed_correction_count,
-        measured.host_travel,
-        measured.drain_iters,
-        measured.dropped_to_server,
-        measured.dropped_to_client,
-    );
-
-    assert!(
-        measured.drained,
-        "the harness must reach the explicit drain condition before asserting the gate"
-    );
-    // HARD GATE 1: final position error after drain <= 0.05 m.
-    assert!(
-        measured.final_error <= 0.05,
-        "HARD GATE: final client/server position error after drain must be <= 0.05 m; \
-         measured {:.5} m (seed 0x1502, {} active ticks)",
-        measured.final_error,
-        measured.active_ticks
-    );
-    // HARD GATE 2: every correction below the teleport threshold takes the smoothed
-    // (seed-a-decaying-offset) path, never a snap-teleport. Under the mandated profile
-    // the client predicts ahead of the (playout-lagged) authority, so each snapshot
-    // reconciles a correction the size of that lead; the gate's invariant is that the
-    // engine *smooths* every such correction (decaying presentation offset) rather than
-    // snapping — and that the magnitude stays in the smoothed band, below the teleport
-    // floor. Smoothing was actually exercised (corrections occurred and were seeded as
-    // decaying offsets). Steady locomotion never escalates to a teleport snap.
-    assert!(
-        !measured.took_teleport,
-        "HARD GATE: corrections below the teleport threshold must smooth, never snap-teleport \
-         (max smoothed correction {:.4} m over {} corrections)",
-        measured.max_smoothed_correction, measured.smoothed_correction_count
-    );
-    assert!(
-        measured.smoothed_correction_count > 0,
-        "the conditioned link should produce real smoothed corrections to absorb \
-         (none observed — the scenario did not exercise reconciliation)"
-    );
-    assert!(
-        measured.max_smoothed_correction < TELEPORT_CORRECTION_MIN_M,
-        "every smoothed correction stays below the teleport floor; worst was {:.4} m",
-        measured.max_smoothed_correction
-    );
-    // HARD GATE 3: no stale/duplicate/malformed input mutated an unrelated entity.
-    assert!(
-        measured.bystanders_alive,
-        "HARD GATE: no stale/duplicate/malformed input mutated an unrelated entity \
-         (the death-sweep bystanders survived — the movement-only path never ran simulate_tick)"
-    );
-    // The scenario was non-trivial: the pawn actually traversed the map, and the
-    // conditioned link actually dropped packets (loss was exercised).
-    assert!(
-        measured.host_travel > 5.0,
-        "the 5 s scenario produced real motion (host traveled {:.2} m)",
-        measured.host_travel
-    );
-    assert!(
-        measured.dropped_to_server > 0 && measured.dropped_to_client > 0,
-        "the 5% loss model dropped packets in both directions (to_server={}, to_client={})",
-        measured.dropped_to_server,
-        measured.dropped_to_client
-    );
-}
-
-// The same run is bit-for-bit reproducible under the fixed seed: two independent
-// runs produce identical final error, travel, and tick counts.
-#[test]
-fn latency_harness_is_deterministic_under_seed_0x1502() {
-    let a = run_latency_gate(mandated_link());
-    let b = run_latency_gate(mandated_link());
-    assert_eq!(a.active_ticks, b.active_ticks, "tick count is reproducible");
-    assert_eq!(
-        a.final_error.to_bits(),
-        b.final_error.to_bits(),
-        "final position error is bit-identical across runs (seed 0x1502)"
-    );
-    assert_eq!(
-        a.host_travel.to_bits(),
-        b.host_travel.to_bits(),
-        "host travel is bit-identical across runs"
-    );
-    assert_eq!(
-        a.dropped_to_server, b.dropped_to_server,
-        "drop pattern reproducible"
-    );
-    assert_eq!(
-        a.dropped_to_client, b.dropped_to_client,
-        "drop pattern reproducible"
-    );
-}
-
-struct GateResult {
-    final_error: f32,
-    drained: bool,
-    took_teleport: bool,
-    max_smoothed_correction: f32,
-    smoothed_correction_count: u32,
-    bystanders_alive: bool,
-    host_travel: f32,
-    active_ticks: u32,
-    drain_iters: u32,
-    dropped_to_server: u64,
-    dropped_to_client: u64,
-}
-
-/// Run the full loop under `link` for a varied >5 s movement scenario, drain to the
-/// explicit condition, and measure the gate quantities. The scenario weaves
-/// forward / strafing / turning / dashing so reconciliation has real corrections to
-/// absorb under the conditioned link.
-fn run_latency_gate(link: LinkConfig) -> GateResult {
-    let mut h = LoopbackHarness::new(link);
-
-    // 5 s at 60 Hz = 300 active ticks. Run a varied command stream so the
-    // prediction/reconcile path is genuinely exercised (not a straight line a
-    // perfect predictor never mis-predicts).
-    const ACTIVE_TICKS: u32 = 360; // 6 s of active input, comfortably past 5 s
-    let start = h.host_position();
-    let mut took_teleport = false;
-    let mut max_smoothed_correction = 0.0_f32;
-    let mut smoothed_correction_count = 0u32;
-
-    for tick in 0..ACTIVE_TICKS {
-        let command = scripted_command(tick);
-        let (teleport, correction) = h.step_and_watch_correction(&command);
-        if teleport {
-            took_teleport = true;
-        }
-        if correction > 1e-4 {
-            smoothed_correction_count += 1;
-            max_smoothed_correction = max_smoothed_correction.max(correction);
-        }
-    }
-
-    // Drain: stop sending new input, keep the loop running until the explicit drain
-    // condition holds (no packets in flight, host cursor caught up to the last sent
-    // tick, client acked the frozen target tick). Cap iterations so a regression
-    // cannot hang.
-    let mut drain_iters = 0;
-    while !h.is_drained() && drain_iters < 4_000 {
-        h.drain_step();
-        drain_iters += 1;
-    }
-
-    let final_error = h.position_error();
-    let host_travel = (h.host_position() - start).length();
-
-    GateResult {
-        final_error,
-        drained: h.is_drained(),
-        took_teleport,
-        max_smoothed_correction,
-        smoothed_correction_count,
-        bystanders_alive: h.bystanders_alive(),
-        host_travel,
-        active_ticks: ACTIVE_TICKS,
-        drain_iters,
-        dropped_to_server: h.to_server.dropped(),
-        dropped_to_client: h.to_client.dropped(),
-    }
-}
-
-/// A scripted per-tick command: continuous locomotion with phases of forward,
-/// strafing, and turning so the reconcile path sees ordinary and turning corrections
-/// under the conditioned link. No dash: a dash burst (18 m/s) during a snapshot-loss
-/// window legitimately produces a teleport-sized correction (the designed snap escape
-/// hatch, validated separately in `dash_correction_classifies_as_dash_and_smooths`);
-/// the headline "no visible rubber-banding under normal *locomotion* latency" gate is
-/// about steady movement, where every correction must stay in the smoothed band.
-fn scripted_command(tick: u32) -> SimCommand {
-    let phase = tick % 120;
-    let wish_dir = if phase < 60 {
-        Vec2::new(0.0, 1.0) // forward
-    } else if phase < 90 {
-        Vec2::new(0.6, 0.8) // strafe-forward
-    } else {
-        Vec2::new(-0.5, 0.85) // strafe the other way
-    };
-    let facing_yaw = if phase < 80 { 0.0 } else { 0.4 };
-    SimCommand {
-        input_tick: tick,
-        secondary_button: crate::weapon::FireButtonState {
-            pressed: false,
-            active: false,
-        },
-        activation: postretro_foundation::ActivationInput::default(),
-        movement: MovementInput {
-            wish_dir,
-            jump_pressed: false,
-            dash_pressed: false,
-            running: phase < 100,
-            crouch_intent: false,
-            facing_yaw,
-            facing_pitch: 0.0,
-            use_pressed: false,
-            drop_pressed: false,
-        },
-        fire_button: crate::weapon::FireButtonState {
-            pressed: false,
-            active: false,
-        },
-        reload: false,
-        firing_slot: 0,
-        select_slot: None,
-        use_pressed: false,
-        drop_pressed: false,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Local helpers
 // ---------------------------------------------------------------------------
 
@@ -2468,6 +2216,20 @@ fn drain(h: &mut LoopbackHarness) {
     }
 }
 
+/// Frames the client may take to join.
+const JOIN_FRAMES_MAX: u32 = 200;
+
+/// Run transport-only frames, neither peer ticking, until everything the client
+/// queued has crossed the link and the host has drained it through its Input
+/// dispatcher.
+fn deliver_uplink(h: &mut LoopbackHarness) {
+    for _ in 0..8 {
+        h.advance_clock();
+        h.client_drain_control();
+        h.host_poll();
+    }
+}
+
 /// Resolve one command for `client_id` directly off the harness command queues —
 /// the host gap-policy resolution seam, used by the inject-at-seam scenario tests.
 fn run_resolve(
@@ -2517,102 +2279,5 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
         state_records: Vec::new(),
         faction_sentiment_record: None,
         server_script_time: 0.0,
-    }
-}
-
-impl LoopbackHarness {
-    /// A full step that additionally observes the reconcile correction taken on each
-    /// snapshot applied this step. Returns `(took_teleport, max_correction_magnitude)`
-    /// where the magnitude is the largest smoothed correction (the registry's
-    /// `predicted - reconciled` delta, as `latest_local_corrections` records it) over
-    /// the snapshots applied this step. The gate
-    /// uses this to assert sub-teleport corrections smooth and to report the worst
-    /// per-snapshot correction under the conditioned link.
-    pub(crate) fn step_and_watch_correction(&mut self, command: &SimCommand) -> (bool, f32) {
-        self.client_predict_and_send(command);
-        self.advance_clock();
-        self.host_tick();
-
-        // Wrap client_receive to observe the correction class via the public reconcile
-        // return. We replicate client_receive here so we can capture the class.
-        let mut took_teleport = false;
-        let mut max_correction = 0.0_f32;
-        let mut acks = Vec::new();
-        self.client_drain_control();
-        for packet in self.to_client.take_ready() {
-            let Ok(raw) =
-                postretro_net::wire::decode::<postretro_net::wire::RawSnapshotMessage>(&packet)
-            else {
-                continue;
-            };
-            let Ok(snapshot) = raw.validate() else {
-                continue;
-            };
-            let outcome = self
-                .client_replication
-                .apply_snapshot(&mut self.client_registry, &snapshot);
-            if let Some(armed) = &outcome.armed_local_pawn {
-                self.prediction.arm(armed.network_id, armed.entity_id);
-                self.client_pawn = Some(armed.entity_id);
-                let entity_class = armed.entity_class.as_deref().unwrap_or("player");
-                let entity_class =
-                    super::descriptor_class::decode_replicated_descriptor_class(entity_class)
-                        .canonical_name();
-                crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component(
-                    entity_class,
-                    &self.descriptors,
-                    &mut self.client_registry,
-                    armed.entity_id,
-                );
-            }
-            if let Some(reconcile) = outcome.local_reconcile
-                && let Some(environment) = crate::netcode::client_environment_view(
-                    self.client_tuning.as_deref(),
-                    &self.client_environment_volumes,
-                )
-            {
-                // The first record adopts silently: it is no correction.
-                let adopting = self.prediction.first_record_pending();
-                let before = self
-                    .client_registry
-                    .get_component::<Transform>(reconcile.entity_id)
-                    .ok()
-                    .map(|transform| transform.position);
-                let class = reconcile_local_pawn(
-                    &mut self.client_registry,
-                    &mut self.prediction,
-                    reconcile.entity_id,
-                    reconcile.transform,
-                    reconcile.movement.as_ref(),
-                    reconcile.acked_tick,
-                    &self.world,
-                    environment,
-                    DT,
-                );
-                match class {
-                    Some(super::prediction::CorrectionClass::Teleport) => took_teleport = true,
-                    // A smoothed correction moved the registry by this correction's
-                    // magnitude. The presentation offset composes with any remainder
-                    // in flight, so its length is no longer this correction's.
-                    Some(_) if !adopting => {
-                        if let (Some(before), Ok(after)) = (
-                            before,
-                            self.client_registry
-                                .get_component::<Transform>(reconcile.entity_id),
-                        ) {
-                            max_correction = max_correction.max((before - after.position).length());
-                        }
-                    }
-                    Some(_) | None => {}
-                }
-            }
-            if let Some(ack) = outcome.ack {
-                self.client_acked_server_tick =
-                    self.client_acked_server_tick.max(ack.acked_server_tick);
-                acks.push(ack);
-            }
-        }
-        self.apply_acks(&acks);
-        (took_teleport, max_correction)
     }
 }

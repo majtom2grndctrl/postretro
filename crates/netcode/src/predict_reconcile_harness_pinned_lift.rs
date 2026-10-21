@@ -145,8 +145,7 @@ fn client_riding_a_default_lift_into_a_low_ceiling_converges_on_the_host_hold() 
         let predicted = static_overlap(&h, false);
         h.advance_clock();
         h.host_tick();
-        let acks = h.client_receive();
-        h.apply_acks(&acks);
+        h.client_receive();
         let reconciled = static_overlap(&h, false);
 
         host_ever_held |= h

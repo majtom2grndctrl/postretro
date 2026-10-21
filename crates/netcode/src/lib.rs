@@ -90,17 +90,25 @@ mod client_switch_relay_test;
 #[cfg(test)]
 mod client_tuning_install_tests;
 
-// M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
-// its shared test scaffolding. Both are test-only — they drive the real Task 1-5 seams
-// end to end over the dev `PacketConditioner` but introduce no production runtime state.
+// The integrated in-memory prediction/reconciliation harnesses and their shared test
+// scaffolding. All are test-only: they drive the real seams end to end over a renet
+// relay pair on the production channel configuration (framed Input, acks and time
+// sync on Input, no harness warmup), carried by the dev `PacketConditioner`, and
+// introduce no production runtime state. `LoopbackHarness` steps one tick at a time
+// with movers, volumes and teleporters; `RelayHarness` runs the production client
+// endpoint frame by frame.
 #[cfg(test)]
 mod predict_reconcile_harness;
 #[cfg(test)]
 mod predict_reconcile_harness_test_fixtures;
-// The predict/reconcile loop over a renet relay pair with production channel
-// semantics: framed Input, acks and time sync on Input, no harness warmup.
+#[cfg(test)]
+mod predict_reconcile_harness_world_test_fixtures;
+#[cfg(test)]
+mod predict_reconcile_loopback_test_fixtures;
 #[cfg(test)]
 mod predict_reconcile_relay_harness;
+#[cfg(test)]
+mod predict_reconcile_relay_link_test_fixtures;
 #[cfg(test)]
 mod predict_reconcile_relay_test_fixtures;
 // Latency and cost over the relay: a lost ack, sliced tuning beside Input, tuning
@@ -184,7 +192,7 @@ pub use host::{
     host_unregister_own_pawn,
 };
 #[cfg(test)]
-pub(crate) use host_input::{host_handle_client_message, host_handle_client_message_inner};
+pub(crate) use host_input::host_handle_client_message_inner;
 pub use host_input::{host_handle_client_messages, send_shot_verdict};
 pub use host_presentation::{
     present_client_pawns as host_present_client_pawns,
@@ -5187,8 +5195,8 @@ mod tests {
             &mut state_slots::HostStateReplication::new(),
             &mut queues,
             &MovementOwners::new(),
-            Some(&mut pending),
-            Some(&mut fixture.open_shots),
+            &mut pending,
+            &mut fixture.open_shots,
             7,
             100,
             0,
@@ -5365,8 +5373,8 @@ mod tests {
             &mut state_slots::HostStateReplication::new(),
             &mut queues,
             &MovementOwners::new(),
-            Some(&mut pending),
-            Some(&mut fixture.open_shots),
+            &mut pending,
+            &mut fixture.open_shots,
             7,
             100,
             0,

@@ -140,7 +140,7 @@ fn run_records(
     let mut h =
         LoopbackHarness::with_fluid_tables(light_link(), records, host_fluids(), client_fluids)
             .with_player_swim(swim());
-    h.step_until_armed(&idle_command());
+    h.step_until_predicting(&idle_command());
     let mut run = SwimRun {
         corrections: Vec::new(),
         windows: Vec::new(),

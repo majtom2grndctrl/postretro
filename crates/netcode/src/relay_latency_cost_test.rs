@@ -33,9 +33,10 @@ use super::SERVER_TICK_MICROS;
 use super::endpoint::NetEndpoint;
 use super::predict_reconcile_harness_test_fixtures::{CLIENT_ID, idle_command};
 use super::predict_reconcile_relay_harness::course_command;
-use super::predict_reconcile_relay_test_fixtures::{
-    DrainedControl, LoggedDatagram, RelayHarness, dev_profile, frame_start_us,
+use super::predict_reconcile_relay_link_test_fixtures::{
+    LoggedDatagram, dev_profile, frame_start_us,
 };
+use super::predict_reconcile_relay_test_fixtures::{DrainedControl, RelayHarness};
 
 /// Frames the client may take to join and start predicting.
 const JOIN_FRAMES_MAX: u64 = 600;

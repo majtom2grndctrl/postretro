@@ -17,7 +17,8 @@ use postretro_net::timesync::{
 use postretro_net::transport::Channel;
 
 use super::predict_reconcile_harness_test_fixtures::idle_command;
-use super::predict_reconcile_relay_test_fixtures::{RelayHarness, dev_profile};
+use super::predict_reconcile_relay_link_test_fixtures::dev_profile;
+use super::predict_reconcile_relay_test_fixtures::RelayHarness;
 
 /// Frames the client may take to join and start predicting.
 const JOIN_FRAMES_MAX: u64 = 600;

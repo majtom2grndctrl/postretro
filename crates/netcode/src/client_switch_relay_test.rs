@@ -27,7 +27,7 @@ use super::command_queue::{HostCommandQueues, MovementOwners, ResolutionSource, 
 use super::endpoint::{ClientSessionStatus, ClientTimeSync, NetEndpoint};
 use super::interpolation::InterpolationDelayState;
 use super::predict_reconcile_harness_test_fixtures::{CLIENT_ID, input_at};
-use super::predict_reconcile_relay_test_fixtures::relay_pair;
+use super::predict_reconcile_relay_link_test_fixtures::relay_pair;
 use super::prediction::ClientPrediction;
 use super::replication::ReplicableSet;
 use super::state_slots::{ClientStateApply, HostStateReplication};

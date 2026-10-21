@@ -4,7 +4,7 @@
 use std::f32::consts::TAU;
 use std::fmt::Write as _;
 
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 use postretro_foundation::{MovementStateKind, VaultEntry, VaultTrigger};
 use postretro_net::harness::{LinkConfig, PacketConditioner, ScriptedDrop};
 use postretro_net::transport::Channel;
@@ -15,9 +15,8 @@ use super::command_queue::ResolutionSource;
 use super::endpoint::NetEndpoint;
 use super::predict_reconcile_harness_test_fixtures::{CLIENT_ID, forward_command, idle_command};
 use super::predict_reconcile_harness_vault::{ledge_world, vault};
-use super::predict_reconcile_relay_test_fixtures::{
-    ClientCorrection, RelayHarness, dev_profile, frame_start_us,
-};
+use super::predict_reconcile_relay_link_test_fixtures::{dev_profile, frame_start_us};
+use super::predict_reconcile_relay_test_fixtures::{ClientCorrection, RelayHarness};
 use super::prediction::{CorrectionClass, ORDINARY_CORRECTION_MAX_M};
 use crate::sim::SimCommand;
 
@@ -52,11 +51,24 @@ fn dev_links(seed: u64) -> (LinkConfig, LinkConfig) {
     (dev_profile(seed), dev_profile(seed.wrapping_add(1)))
 }
 
+/// Idle frames after the course before the pawns are compared: past the
+/// hold window, deceleration to rest and a round trip under the profile.
+const SETTLE_FRAMES: u64 = 120;
+
 /// One course run: the reconciles the client ran during it (the join's
 /// first-record adoption excluded), and a summary for failure messages.
 struct SteadyRun {
     corrections: Vec<ClientCorrection>,
     summary: String,
+    /// The host pawn's path length over the course.
+    host_travel: f32,
+    /// Client-to-host pawn distance once both settle after the course.
+    settled_error: f32,
+    /// Datagrams the seeded link lost to the host and to the client.
+    dropped: (u64, u64),
+    bystanders_alive: bool,
+    /// The host pawn's settled position.
+    host_final: Vec3,
 }
 
 fn steady_run(to_server: LinkConfig, to_client: LinkConfig) -> SteadyRun {
@@ -124,10 +136,23 @@ fn steady_run(to_server: LinkConfig, to_client: LinkConfig) -> SteadyRun {
         h.to_server.dropped(),
         h.to_client.dropped(),
     );
+    let host_travel = course_trace
+        .windows(2)
+        .map(|pair| (pair[1].position - pair[0].position).length())
+        .sum();
     eprintln!("[steady run] seed {:#x}: {summary}", to_server.seed);
+
+    for _ in 0..SETTLE_FRAMES {
+        h.frame(&idle_command());
+    }
     SteadyRun {
         corrections,
         summary,
+        host_travel,
+        settled_error: h.position_error().expect("the client stays armed"),
+        dropped: (h.to_server.dropped(), h.to_client.dropped()),
+        bystanders_alive: h.bystanders_alive(),
+        host_final: h.host_trace.last().expect("the host ticked").position,
     }
 }
 
@@ -177,6 +202,59 @@ fn steady_run_stays_in_ordinary_band_under_dev_profile() {
         "Teleport-class corrections on frames {snaps:?} ({})",
         run.summary
     );
+    assert_course_exercised_and_converged(&run);
+}
+
+/// The run was not trivial: the pawn travelled, the seeded link lost datagrams
+/// both ways and the client reconciled against them. Once both pawns settle,
+/// the client's matches the host's, and the movement-only paths ran no
+/// registry-wide system on either peer.
+fn assert_course_exercised_and_converged(run: &SteadyRun) {
+    assert!(
+        run.host_travel > 5.0,
+        "the course moved the host pawn {:.2} m",
+        run.host_travel
+    );
+    assert!(
+        run.dropped.0 > 0 && run.dropped.1 > 0,
+        "the profile's loss dropped datagrams both ways: to host {}, to client {}",
+        run.dropped.0,
+        run.dropped.1
+    );
+    assert!(
+        !run.corrections.is_empty(),
+        "the client reconciled during the course"
+    );
+    assert!(
+        run.settled_error <= 0.05,
+        "the settled client pawn is within 0.05 m of the host's: {:.5} m",
+        run.settled_error
+    );
+    assert!(
+        run.bystanders_alive,
+        "the death-sweep bystanders survived: neither peer ran simulate_tick"
+    );
+}
+
+// The seeded run is bit-for-bit reproducible: the same seed yields the same
+// losses, corrections and final pose.
+#[test]
+fn steady_run_is_deterministic_under_its_seed() {
+    let fingerprint = |run: &SteadyRun| {
+        (
+            run.dropped,
+            run.corrections
+                .iter()
+                .map(|correction| (correction.frame, correction.sample.magnitude.to_bits()))
+                .collect::<Vec<_>>(),
+            run.host_final.to_array().map(f32::to_bits),
+            run.settled_error.to_bits(),
+        )
+    };
+    let (to_server, to_client) = dev_links(STEADY_RUN_SEED);
+    let first = steady_run(to_server, to_client);
+    let second = steady_run(to_server, to_client);
+    assert_eq!(fingerprint(&first), fingerprint(&second));
 }
 
 // The loss-off control: if this records a correction above the band, jitter rather

@@ -42,8 +42,8 @@ pub fn host_handle_client_messages(
             state_slots,
             command_queues,
             owners,
-            Some(&mut *pending_hit_declarations),
-            Some(&mut *open_shots),
+            pending_hit_declarations,
+            open_shots,
             client_id,
             server_tick,
             server_now_us,
@@ -52,39 +52,9 @@ pub fn host_handle_client_messages(
     }
 }
 
-/// Apply one decoded `ClientMessage` from `client_id` (M15 Phase 3). Split from the
-/// drain loop so the duplicate/old-input hardening is testable by injecting a
-/// `ClientMessage::Input` directly at this seam — without a reliable-ordered
-/// transport producing duplicates. An invalid `Input` (non-finite) is dropped at
-/// intake and mutates no queue or registry state.
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(crate) fn host_handle_client_message(
-    server: &mut NetServer,
-    replication: &mut ServerReplication,
-    state_slots: &mut state_slots::HostStateReplication,
-    command_queues: &mut HostCommandQueues,
-    owners: &MovementOwners,
-    client_id: u64,
-    server_tick: u32,
-    server_now_us: u64,
-    msg: wire::ClientMessage,
-) {
-    host_handle_client_message_inner(
-        server,
-        replication,
-        state_slots,
-        command_queues,
-        owners,
-        None,
-        None,
-        client_id,
-        server_tick,
-        server_now_us,
-        msg,
-    );
-}
-
+/// Apply one decoded `ClientMessage` from `client_id` (M15 Phase 3). An invalid
+/// `Input` (non-finite) is dropped at intake and mutates no queue or registry
+/// state.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_client_message_inner(
     server: &mut NetServer,
@@ -92,8 +62,8 @@ pub(crate) fn host_handle_client_message_inner(
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
     owners: &MovementOwners,
-    pending_hit_declarations: Option<&mut PendingHitDeclarations>,
-    open_shots: Option<&mut OpenAuthorizedShots>,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    open_shots: &mut OpenAuthorizedShots,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -140,17 +110,13 @@ pub(crate) fn host_handle_client_message_inner(
             if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
                 return;
             }
-            if let Some(pending) = pending_hit_declarations
-                && !pending.push_at(client_id, declaration.clone(), server_tick)
-            {
-                if let Some(verdict) = open_shots.and_then(|shots| {
-                    shots.refuse_overflowed_hit(
-                        &command_queues.activations,
-                        client_id,
-                        wire_convert::shot_id_from_wire(declaration.shot_id),
-                        server_tick,
-                    )
-                }) {
+            if !pending_hit_declarations.push_at(client_id, declaration.clone(), server_tick) {
+                if let Some(verdict) = open_shots.refuse_overflowed_hit(
+                    &command_queues.activations,
+                    client_id,
+                    wire_convert::shot_id_from_wire(declaration.shot_id),
+                    server_tick,
+                ) {
                     send_shot_verdict(
                         server,
                         client_id,

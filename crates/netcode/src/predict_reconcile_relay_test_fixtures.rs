@@ -1,9 +1,10 @@
-// Relay link layer for the prediction/reconciliation harness: a renet relay pair
-// over two `PacketConditioner`s, stepped in production frame order on a virtual clock.
+// The relay prediction/reconciliation harness: a host and the production client
+// endpoint over the relay link layer, stepped in production frame order on a virtual
+// clock.
 // See: context/lib/networking.md §Testing the conditioned link · context/lib/testing_guide.md §4
 //
-// Test infrastructure only. Unlike `LoopbackHarness`, nothing here stands in for the
-// transport: input rides `NetClient::send_input` framed by participation, acks and
+// Test infrastructure only. Nothing here stands in for the transport
+// (`predict_reconcile_relay_link_test_fixtures`): input rides `NetClient::send_input` framed by participation, acks and
 // time sync ride the reliable-ordered Input channel at the shipped resend, snapshots
 // ride the Snapshot channel, and the host queue starts at its production buildup
 // latch with no harness warmup.
@@ -12,7 +13,6 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -24,13 +24,10 @@ use postretro_entities::{
     SlotTable, Transform,
 };
 use postretro_foundation::{MovementStateKind, PlayerMovementComponent, VaultParams};
-use postretro_net::harness::{
-    LinkConfig, PacketConditioner, RenetDatagram, ScriptedDrop, VirtualMillis,
-    parse_renet_datagram, renet_packet_channel,
-};
+use postretro_net::harness::{LinkConfig, PacketConditioner, ScriptedDrop, VirtualMillis};
 use postretro_net::replication::ServerReplication;
 use postretro_net::slots::SlotEvent;
-use postretro_net::transport::{Channel, NetClient, NetServer};
+use postretro_net::transport::NetServer;
 use postretro_net::wire::{DivergenceReason, ServerControlMessage};
 
 use super::client::{ClientReplication, NoPresentationBindings};
@@ -41,7 +38,11 @@ use super::endpoint::{ClientSessionStatus, ClientTimeSync, LocalCorrectionSample
 use super::interpolation::InterpolationDelayState;
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, HostTickTrace, START, component, entity_descriptors, floor_world,
-    net_slot_provenance,
+    net_slot_provenance, spawn_dead_bystander,
+};
+use super::predict_reconcile_relay_link_test_fixtures::{
+    CLIENT_CLOCK_ORIGIN_US, DatagramDrop, LinkBytes, LoggedDatagram, flush, frame_start_us,
+    relay_pair,
 };
 use super::prediction::ClientPrediction;
 use super::replication::ReplicableSet;
@@ -57,83 +58,6 @@ use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
 use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sim::SimCommand;
-
-/// The owner's dev lag proxy preset (`networking.md` §Testing the conditioned
-/// link), for one direction: 45 ms + up to 60 ms jitter + 5% loss.
-pub(crate) fn dev_profile(seed: u64) -> LinkConfig {
-    LinkConfig {
-        delay: 45,
-        jitter: 60,
-        loss_probability: 0.05,
-        seed,
-    }
-}
-
-/// An arbitrary origin for the client's monotonic clock, unrelated to the host
-/// tick, so time sync must recover the offset rather than read it.
-const CLIENT_CLOCK_ORIGIN_US: u64 = 7_000_000;
-
-/// Virtual time at the start of frame `frame` of a 60 Hz run, in microseconds.
-pub(crate) fn frame_start_us(frame: u64) -> u64 {
-    frame * 1_000_000 / 60
-}
-
-/// The relay's four channels by renet channel id.
-pub(crate) fn channel_from_id(id: u8) -> Option<Channel> {
-    [
-        Channel::Control,
-        Channel::Snapshot,
-        Channel::Input,
-        Channel::Presentation,
-    ]
-    .into_iter()
-    .find(|channel| u8::from(*channel) == id)
-}
-
-/// One datagram a peer flushed onto its link, read at the flush.
-#[derive(Debug, Clone)]
-pub(crate) struct LoggedDatagram {
-    /// The frame whose poll flushed it.
-    pub(crate) frame: u64,
-    pub(crate) channel: Option<Channel>,
-    /// Its index among `channel`'s datagrams on its link: the
-    /// [`ScriptedDrop::NthOnChannel`] index and the
-    /// [`PacketConditioner::channel_datagram`] key.
-    pub(crate) index: Option<u64>,
-    pub(crate) contents: Option<RenetDatagram>,
-}
-
-/// A datagram predicate: `true` drops it on the link (a scripted drop).
-pub(crate) type DatagramDrop = Box<dyn FnMut(&LoggedDatagram) -> bool>;
-
-/// renet connection-level bytes one peer emitted, by datagram kind: what the
-/// relay sees, renet payload plus renet headers, before netcode encryption
-/// and UDP.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct LinkBytes {
-    pub(crate) datagrams: u64,
-    pub(crate) bytes: u64,
-    /// Per renet channel id: datagrams and bytes.
-    pub(crate) by_channel: [(u64, u64); 4],
-    /// renet's own ack packets: datagrams and bytes.
-    pub(crate) acks: (u64, u64),
-}
-
-impl LinkBytes {
-    fn count(&mut self, packet: &[u8]) {
-        let bytes = packet.len() as u64;
-        self.datagrams += 1;
-        self.bytes += bytes;
-        let slot = match renet_packet_channel(packet) {
-            Some(channel) => self.by_channel.get_mut(usize::from(channel)),
-            None => Some(&mut self.acks),
-        };
-        if let Some((datagrams, total)) = slot {
-            *datagrams += 1;
-            *total += bytes;
-        }
-    }
-}
 
 /// A Control message the client drained.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -202,6 +126,11 @@ pub(crate) struct RelayHarness {
     hit_zone_store: HitZoneStore,
     /// The client pawn, once its first baseline armed prediction.
     pub(crate) client_pawn: Option<EntityId>,
+    /// A zero-HP entity in each registry that the full `simulate_tick` death
+    /// sweep would despawn: its survival shows the movement-only paths never
+    /// ran the registry-wide systems.
+    host_bystander: EntityId,
+    client_bystander: EntityId,
     /// Every own-pawn reconcile, in order.
     pub(crate) corrections: Vec<ClientCorrection>,
     /// The `client_tick` of the client's latest predicted command.
@@ -248,6 +177,9 @@ impl RelayHarness {
         replicable.register(host_pawn);
         let mut allocator = NetworkIdAllocator::new();
         allocator.stamp(host_pawn);
+        let host_bystander = spawn_dead_bystander(&mut host_registry);
+        let mut client_registry = EntityRegistry::new();
+        let client_bystander = spawn_dead_bystander(&mut client_registry);
 
         let (mut server, mut client) = relay_pair();
         server.add_relay_connection(CLIENT_ID, None);
@@ -299,13 +231,15 @@ impl RelayHarness {
             last_emitted_snapshot_tick: None,
             host_trace: Vec::new(),
             endpoint,
-            client_registry: EntityRegistry::new(),
+            client_registry,
             client_mover_states: MoverTickStateTable::default(),
             client_slot_table: SlotTable::new(),
             client_factions: FactionRegistry::default(),
             client_faction_sentiment: RefCell::new(FactionSentimentState::default()),
             hit_zone_store: HitZoneStore::new(),
             client_pawn: None,
+            host_bystander,
+            client_bystander,
             corrections: Vec::new(),
             last_client_tick: None,
             to_server: PacketConditioner::new(to_server),
@@ -360,6 +294,29 @@ impl RelayHarness {
         self.replicable.register(entity);
         let network_id = self.allocator.stamp(entity);
         (entity, network_id)
+    }
+
+    /// Whether both zero-HP bystanders are still alive: neither peer's
+    /// movement path ran the full `simulate_tick` death sweep.
+    pub(crate) fn bystanders_alive(&self) -> bool {
+        self.host_registry.exists(self.host_bystander)
+            && self.client_registry.exists(self.client_bystander)
+    }
+
+    /// The distance between the client's predicted pawn and the host's, once
+    /// the client has armed.
+    pub(crate) fn position_error(&self) -> Option<f32> {
+        let client = self
+            .client_registry
+            .get_component::<Transform>(self.client_pawn?)
+            .ok()?
+            .position;
+        let host = self
+            .host_registry
+            .get_component::<Transform>(self.host_pawn)
+            .ok()?
+            .position;
+        Some((client - host).length())
     }
 
     /// The client pawn's predicted movement state, once armed.
@@ -770,74 +727,4 @@ impl RelayHarness {
                 }),
         );
     }
-}
-
-/// Enqueue one peer's flush on `link`, logging each datagram with its channel
-/// index when `log` is given, dropping the ones `drop` picks, and counting
-/// bytes into `bytes`.
-fn flush(
-    link: &mut PacketConditioner,
-    packets: Vec<Vec<u8>>,
-    frame: u64,
-    mut log: Option<&mut Vec<LoggedDatagram>>,
-    mut drop: Option<&mut DatagramDrop>,
-    mut bytes: Option<&mut LinkBytes>,
-) {
-    for packet in packets {
-        if let Some(bytes) = bytes.as_deref_mut() {
-            bytes.count(&packet);
-        }
-        if log.is_some() || drop.is_some() {
-            let channel = renet_packet_channel(&packet).and_then(channel_from_id);
-            let datagram = LoggedDatagram {
-                frame,
-                channel,
-                index: channel.map(|channel| link.enqueued_on_channel(channel)),
-                contents: parse_renet_datagram(&packet),
-            };
-            if let (Some(drop), Some(channel), Some(index)) =
-                (drop.as_deref_mut(), datagram.channel, datagram.index)
-                && drop(&datagram)
-            {
-                link.script_drop(ScriptedDrop::NthOnChannel { channel, index });
-            }
-            if let Some(log) = log.as_deref_mut() {
-                log.push(datagram);
-            }
-        }
-        link.enqueue(packet);
-    }
-}
-
-/// A server/client transport pair joined by in-memory relay, both declaring
-/// the same mod, level and reveal so the slot will participate.
-pub(crate) fn relay_pair() -> (NetServer, NetClient) {
-    let origin = Duration::from_secs(1);
-    let server_socket =
-        UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("relay server binds loopback socket");
-    let server_addr: SocketAddr = server_socket
-        .local_addr()
-        .expect("relay server resolves loopback address");
-    let client_socket =
-        UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("relay client binds loopback socket");
-    let fingerprint = [0x5a; 32];
-    let mut server = NetServer::new(server_socket, server_addr, 1, origin, Some(fingerprint))
-        .expect("relay server transport constructs");
-    let mut client = NetClient::new(
-        client_socket,
-        server_addr,
-        CLIENT_ID,
-        origin,
-        Some(fingerprint),
-        None,
-    )
-    .expect("relay client transport constructs");
-    server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
-    client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
-    server.set_mod_digest(Some(fingerprint));
-    client.set_mod_digest(Some(fingerprint));
-    server.set_level_parity(Some(("test-level".to_string(), fingerprint)));
-    client.set_level_parity(Some(("test-level".to_string(), fingerprint)));
-    postretro_net::harness::reveal_both(&mut server, &mut client, "test-level");
-    (server, client)
 }

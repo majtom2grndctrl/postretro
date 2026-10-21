@@ -79,7 +79,7 @@ fn run(from: VaultEntry, steps: u32, command_at: impl Fn(Vec3) -> SimCommand) ->
 }
 
 fn run_on(mut h: LoopbackHarness, steps: u32, command_at: impl Fn(Vec3) -> SimCommand) -> VaultRun {
-    h.step_until_armed(&idle_command());
+    h.step_until_predicting(&idle_command());
     let mut run = VaultRun {
         corrections: Vec::new(),
         windows: Vec::new(),

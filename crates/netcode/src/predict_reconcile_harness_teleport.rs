@@ -1160,8 +1160,6 @@ fn rig_idle_input() -> crate::movement::MovementInput {
 // full baseline, whose record is the first to merge and adopts silently.
 #[test]
 fn teleport_join_unmerged_arming_record_rebaselines_before_predicting() {
-    use postretro_net::harness::{LinkConfig, PacketConditioner};
-
     // The spawn room sends its traveller into a second region's interior.
     let arrival_region = Spec::classic(
         region((37.0, 43.0), (-3.0, 3.0)),
@@ -1172,10 +1170,7 @@ fn teleport_join_unmerged_arming_record_rebaselines_before_predicting() {
     teleport_host_pawn_before_join(&mut rig);
     assert_eq!(&rig.host_teleport().arrival_latches[..], &[1]);
     // The tuning send is lost: it waits on the Control lane until retransmitted.
-    rig.h.to_client_control = PacketConditioner::new(LinkConfig {
-        delay: 1_000_000,
-        ..clean_link()
-    });
+    rig.h.hold_tuning();
     for _ in 0..200 {
         if rig.h.client_pawn.is_some() {
             break;
@@ -1188,15 +1183,7 @@ fn teleport_join_unmerged_arming_record_rebaselines_before_predicting() {
     assert!(rig.corrections.is_empty(), "nothing merged without tuning");
 
     // The retransmit lands in a frame with no snapshot.
-    let mut lost = std::mem::replace(
-        &mut rig.h.to_client_control,
-        PacketConditioner::new(LinkConfig::perfect()),
-    );
-    lost.advance(2_000_000);
-    for packet in lost.take_ready() {
-        rig.h.to_client_control.enqueue(packet);
-    }
-    rig.h.client_drain_control();
+    rig.h.land_tuning();
     assert!(rig.h.client_tuning.is_some());
     for _ in 0..60 {
         if rig.client_teleport() == rig.host_teleport() {

@@ -82,7 +82,7 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 | P2 | `arm` and `disarm` in one tick | both apply at one host tick, in call order | Last call wins; no frame on any peer presents a ghost; no ramp starts |
 | P3 | `arm` tick N, `disarm` tick N+1 | target membership changes twice, the ramp follows | Presented membership rises for one tick at the rate cap, then falls to 0 at the rate cap |
 | P4 | `arm` during a ramp-out; member re-enters mid-fade | reversal mid-ramp | Ramps from the presented value, never resets |
-| P5 | `setLook` naming only opacity, mid tint ramp | second set before the first ramp ends | Tint ramp continues to its target; opacity ramps on its own clock |
+| P5 | `setLook` naming only opacity, mid tint ramp | second set before the first ramp ends | Tint ramp continues to its target; opacity ramps on its own |
 | P6 | `setLook` mid-ramp | from-value captured at the applying host tick | Unclamped ramp value at that tick's host script time; host limiter state never on the wire |
 | P7 | Two `setLook` calls in one tick | applied in call order within one tick | Later call wins per field; its ramp starts from the value before that tick |
 | P8 | Snapshot repeats an identical link record | always-on record every snapshot | No re-rebase; the presented value does not move as the RTT estimate changes |
@@ -95,10 +95,10 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 | P15 | Opacity-only `setLook`; peers with differing styles; then staged reload | setLook, replication, reload | Only opacity crosses the wire; tint and desaturation stay local and follow the reload |
 | P16 | Staged reload mid `setLook` ramp; reload on a disarmed link | reload commit during a ramp or while disarmed | Script-set ramps continue to their targets; disarmed links re-resolve too |
 | P17 | Staged reload changing `audio.ghost` | reload after or without `setGhostAudio` | Bus re-resolves; `setGhostAudio` fields stand |
-| P18 | Link arm and a remote pawn's seamless swap on one host tick | client presents armed edges at remote-presentation time | Both present on one client frame |
+| P18 | Link arm and a remote pawn's seamless swap on one host tick | each ghost reads link state at its member's presentation time, on client and host seat | Both present on one frame on every peer |
 | P19 | Entity slot freed and re-tenanted on one frame | despawn, then spawn, same frame | Ramp and limiter state key by generation-checked id; the new tenant starts at 0 |
-| P20 | Member fires a projectile; the projectile despawns | spawn frame, flight, despawn frame | Ghost ramps in from spawn at the rate cap; gone on the despawn frame |
-| P21 | A ghost's first presented frame | limiter state creation, then first pack | State starts from opacity 0, not fresh against its own value |
+| P20 | Member fires a projectile; the projectile despawns | spawn frame, flight, despawn frame | Ghost ramps in from spawn at the rate cap; fades out at its last pose on despawn |
+| P21 | A new ghost's first presented frame | membership ramp creation, then first pack | Membership starts at 0, so the limiter's fresh start sees 0 |
 | P22 | Owner leaves the volume while its projectile flies | owner membership changes before impact | Projectile ghost ramps out with the owner; the impact is not ghosted |
 | P23 | Ghost voice playing when the link disarms, the member leaves or despawns | voice admitted, then membership ends | Voice plays out at its fire-time mapped point |
 | P24 | Sound at a member near the boundary or mid-ramp | drain-time admission | Admitted when armed and the fire-time point is inside; the presented ramp is ignored |
@@ -108,3 +108,15 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 | P28 | `getMapEntities("ghostLink", { tag })` with zero tagged links | query in `setupLevel` | Returns `[]` silently; the fixture asserts both dev-map links return |
 | P29 | `setGhostAudio` lowering `lowPassHz` while a `highPassHz` ramp is in flight | validation at the applying host tick | Judged against targets after the step; high at or above low warns and drops |
 | P30 | Limiter off; a hitch frame | the ramp is independent of the limiter | Membership ramp still applies unclamped; a hitch steps at most the hitch ceiling |
+| P31 | Limiter turned on, or a new renderer's first frame, while ghosts present | enable frame, then pack | Each ghost starts fresh against its current value; no dip |
+| P32 | Level first frame with the limiter on, link armed on spawn | install at full membership, then the limiter's first pack | Full membership on frame 1, presented through the limiter's fresh start; a headless capture, outside the limiter, shows full style opacity |
+| P33 | Link arm and a member mover's phase change on one host tick, on a connected client | movers present at the estimated host tick | The mover's ghost and its motion start on one client frame |
+| P34 | Observer fire cue on a client for a shot on the host tick after an arm or disarm | cue played on receipt | Admission reads armed state as the shooter's ghost presents it at that frame |
+| P35 | `arm` on tick N, `disarm` on tick N+1, on a connected client | snapshots may skip tick N | At most one rise and fall, each at the rate cap; none when no snapshot carries tick N |
+| P36 | Resolved cutoffs cross after a staged reload under a script-set cutoff, or against another peer's profile | reload or record apply, then resolve | Floor cutoffs present; one warning; never a high-pass at or above the low-pass |
+| P37 | Host restarts the same map; an old-level link record arrives after the new install | participation reset, then re-promotion, then the stale record | Rejected by the participation reset; the new link presents spawn state until its first record |
+| P38 | Client demoted mid-level while received state differs from local spawn state | received state dropped, then the next frame | Local spawn state and style; membership moves at the rate cap |
+| P39 | Mover carrying two tags one link lists | one link, two tag matches | One membership, one ghost transform |
+| P40 | SFX at its cap when a member's sound is requested | real voice refused, then ghost admission | No ghost voice |
+| P41 | `setLook` or `setGhostAudio` naming no field | applying host tick | Warns and drops; no ramp in flight changes |
+| P42 | Game paused mid membership ramp and mid `setLook` ramp | pause while frames keep presenting | `setLook` ramps freeze with script time; the membership ramp runs on presented-frame time |

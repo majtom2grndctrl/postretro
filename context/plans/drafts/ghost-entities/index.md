@@ -9,7 +9,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
 - **Room copies, not phase tags.** Timelines are separate physical copies, so collision, hits, splash, AI perception and triggers stay isolated with no filter (none exists). Copies may differ in geometry and baked light. Ghosts are presentation only: they never collide, block, take hits or touch triggers. Rival rejected: tags in one shared space need a filter in every interaction path, and both timelines would have to share geometry and lighting.
 - **No network work for the ghosted entities.** Members are player pawns and movers. Every peer has both: pawns replicate to every client wherever its pawn is, with no relevance filter, and clients spawn movers, tags included, from the level file. Ghosts derive locally on every peer, the listen host included. Only link state and ghost audio state cross the wire.
 - **Each layer answers one question** (`scripting.md` §1, "Engine owns the floor; scripts own the taste"). The mod manifest says how ghosts present: named styles and the ghost bus profile. Map data says where and what: volume, points, tags, spawn state and style name. Level scripts say what changes during play. The link holds no raw look values or presentation flags, and the manifest names no map entity.
-- **`ghost_link` is a brush entity that reuses `teleport_destination` points.** `landmark` names a point inside the source copy, `target` a point in the other copy. They must exist and differ, under the seamless `trigger_teleport` rules and error wording. Links carry `_tags` for script queries. A link is independent of teleporters. A two-way link is two volumes.
+- **`ghost_link` is a brush entity that reuses `teleport_destination` points.** `landmark` names a point inside the source copy, `target` a point in the other copy. They must exist and differ, under the seamless `trigger_teleport` rules and error wording. Links carry `_tags` for script queries. A link is independent of teleporters, so a link can look into a copy nobody teleports to. A two-way link is two volumes.
 - **One mapping function, in physics beside the teleport resolve.** The seamless landmark → target transform becomes one shared pure function that teleports and ghosts both call, so a ghost and a seamless arrival from the same pose always agree. This follows the one-chokepoint rule for pawn relocation (`movement.md` §6).
 - **Membership: players and tagged movers.**
   - Player pawns, with their third-person weapon, are members of every link. A link's `ghost_tags` adds the movers carrying those `_tags`, and membership is per link.
@@ -23,38 +23,39 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - A link naming no style uses the engine floor style. A name no style declares also uses it, warning once at install.
   - Styles stay out of the mod compatibility digest and off the wire. Peers whose declarations differ see different ghosts, the visibility difference co-op accepts for fluid look (`networking.md` §What gates, and what replicates instead).
 - **The floor style is legible and neutral, not a game's taste.** It is fully desaturated, neutrally tinted and translucent, yet readable against both copies' lighting and under the high-contrast theme. It ghosts no projectiles and carries no sound. The floor ghost bus profile is band-limited, quieter than SFX and undistorted. A game's look, Dreadgate's "punchy but muffled" included, is a style and a bus profile in its own manifest.
-- **Future relevance must treat an armed link as a one-way coupling.** Cells under the source volume are perceivable from cells under the target while the link is armed. Any relevance, cue-recipient or audible-set filter that lands later gets it through the cell-visibility relation, never by knowing about links (`context/research/cell-visibility-substrate.md`, generalizability contract). The shipped relation stores connected-component ids, and folding a link into a component would couple both ways and permanently. So the coupling waits for the relation's runtime-masked couplings, and nothing is built now. At promotion it is recorded in `build_pipeline.md` beside id 46 as an obligation on that extension.
+- **Future relevance must treat an armed link as a coupling.** Any relevance, cue-recipient or audible-set filter that lands later gets it through the cell-visibility relation, never by knowing about links (`context/research/cell-visibility-substrate.md`, generalizability contract). The relation is symmetric by contract, so an armed link couples the cells under its two volumes both ways. That over-includes the reverse direction, which the substrate accepts as safe. The shipped relation stores connected-component ids, and folding a link into a component would make the coupling permanent. So the coupling waits for the relation's runtime-masked couplings, and nothing is built now. At promotion it is recorded in `build_pipeline.md` beside id 46 as an obligation on that extension.
 - **Membership is evaluated per frame from presented state.**
   - An entity is a target member while the link is armed and its presented point lies inside the volume: the body point for pawns, the origin for projectiles, the current bounds center for movers.
   - The ghost draws at the mapped presented pose, so aim pitch, upper-body yaw, pose modifiers and teleport cuts carry over.
-  - A ghost whose membership ends fades out at its last in-volume mapped pose. It never draws at the mapping of a pose outside the volume, so a teleport swap draws no ghost between copies.
-  - An entity inside two armed links ghosts through each, one transform per link.
+  - A ghost whose membership ends, its entity's despawn included, fades out at its last in-volume mapped pose. It never draws at the mapping of a pose outside the volume, so a teleport swap draws no ghost between copies.
+  - An entity inside two armed links ghosts through each, one transform per link. A mover matching several of one link's tags ghosts once through it.
   - At level install, members of links armed on spawn present at full membership on the first frame.
 - **Ghost draw.**
   - Unlit: the base color is desaturated by `desaturate`, multiplied by `tint`, and blended at the presented opacity.
   - Depth-tested without depth write; no shadows.
   - Culled at the mapped position against the viewer's visible cells, whatever the real position's visibility.
-  - Translucent variants of the skinned-mesh and kinematic-brush passes, plus per-link mover transforms. A projectile ghost gets the same treatment on its billboard or model body.
-  - The renderer owns the pipelines. Game logic decides membership and hands the renderer extra instances with look values.
+  - A projectile ghost gets the same treatment on its billboard or model body.
+  - The renderer owns the pipelines; game logic decides membership.
 - **Ghosts pass the photosensitivity limiter.** E23 I2 counts a primitive that changes presented luminance without a clamp as a violation, and `setLook` and arm/disarm are such primitives.
   - A ghost's presented opacity is its link's opacity times its membership. Membership ramps linearly at the limiter's rate cap on arm, disarm, entry and exit, reversing from the presented value. As with fluid tint entry, ordinary reveals are never limited and a strobe is.
-  - Each ghost is one limiter channel: presented opacity is its strength and its link's tint is its redness, under the fluid view tint's rules and player-only toggle (`rendering_pipeline.md` §7.8). It assumes worst-case coverage (E23 D4).
-  - A ghost's limiter state starts from opacity 0 and keys by generation-checked entity and link. It applies on the presenting machine to the presented value, and nothing it holds reaches a script or the wire (I9).
+  - Each ghost is one limiter channel: presented opacity is its strength and its link's tint is its redness, under the fluid view tint's rules and player-only toggle. Like the screen channels, it judges the change as if it covered the screen (`rendering_pipeline.md` §7.8).
+  - A new ghost's membership starts at 0. Turning the limiter on starts every ghost fresh against its current value, as the screen channels start, so enabling it never dips a ghost. The membership ramp runs on presented-frame time, so it continues through a pause, while `setLook` ramps follow script time.
+  - The clamp applies on the presenting machine to the presented value, and nothing it holds reaches a script or the wire (I9).
 - **Look resolves per link, per field:** floor style, then the named style, then `setLook`. `setLook` ramps each field it names independently. An omitted field keeps its value and any ramp in flight. Presentation flags come from the style alone and never change at runtime.
 - **Ghost audio mirrors voices this machine plays.**
   - When a link's style sets `audio`, a sound this machine plays anchored at a member inside the volume also plays a second voice. The voice sits at the mapped fire-time point on the Ghost bus. Admission reads the fire-time point and armed state, not the presented ramp.
-  - Impact sounds join under the membership rule only when the style also sets `impactAudio`, and contacts outside the volume drop.
+  - Impact sounds join under the membership rule when the style sets `impactAudio`, and contacts outside the volume drop.
   - A ghost voice plays out when its member leaves or despawns or its link disarms. The real voice is untouched.
   - The Ghost bus sits under SFX, so SFX volume and world muffle apply. It carries volume, high-pass, low-pass and distortion drive, with mod-wide parameters, because the bus is one shared mix.
-  - Coverage follows what each peer already plays. Movers and a pawn's own reload, dry fire and overheat sound only on the host, so a connected client ghosts only remote fire and impacts. A client's barrier opens silently, real and ghost alike.
+  - Coverage follows what each peer already plays: a ghost voice starts only beside a real voice this machine started. Mover sounds play only on the host, and a connected client hears only the partner's fire and impacts, so it ghosts only those. A client's barrier opens silently, real and ghost alike. Teleport arrival sounds are point-anchored and never ghost.
 - **Ghost voices have their own cap of 16**, so the echo never crowds out sounds a player reacts to. The figure is half the SFX cap and fits the audio manager's capacity without raising it.
-- **The ghost bus profile resolves:** floor profile, then manifest `audio.ghost`, then `setGhostAudio`. A malformed `audio.ghost` field applies the whole floor profile with a warning naming the field, matching `audio.attenuation`. Level unload and demotion return the bus to the resolved manifest profile on every peer.
+- **The ghost bus profile resolves:** floor profile, then manifest `audio.ghost`, then `setGhostAudio`. A malformed `audio.ghost` field applies the whole floor profile with a warning naming the field, matching `audio.attenuation`. Level unload and demotion return the bus to the resolved manifest profile on every peer. A resolved profile whose high-pass reaches its low-pass, after a reload or against another peer's profile, presents the floor cutoffs and warns once.
 - **Link state and ghost audio replicate as always-on host state, the teleporter precedent.**
   - `arm`, `disarm`, `setLook` and `setGhostAudio` apply on the host only, at its next tick, in call order, and do nothing on a connected client.
-  - Each link registers at level install and replicates armed state plus the fields `setLook` has set, each with its ramp. One level-scoped record replicates the fields `setGhostAudio` has set. Fields no script has set stay local.
-  - A ramp's from-value is the unclamped value at the applying host tick. The client rebases the start with the host-time rule bound presentation state uses (`networking.md` §Current contract).
-  - A client presents an armed edge at the remote-presentation time of the snapshot that carried it, so it lines up with the remote poses it gates.
-  - Until a link's first record lands, a joiner presents its local spawn state and style. Demotion and level unload drop received state.
+  - Each link replicates armed state plus the fields `setLook` has set, each with its ramp. One level-scoped record replicates the fields `setGhostAudio` has set. Fields no script has set stay local.
+  - A ramp's from-value is the unclamped value at the applying host tick.
+  - Each ghost reads its link's armed state and look at the host time its member presents on that machine: the remote-pawn delay for pawns, on the host seat and on clients alike, and the mover clock for movers. An arm and the motion it reveals therefore present on one frame. A ghost voice reads armed state the same way, for its member, at the frame the voice starts.
+  - Until a link's first record lands, a joiner presents its local spawn state and style. Demotion and level unload drop received state, and the client returns to local spawn state through the membership ramp. A record from before a participation reset never binds.
   - This diverges from the bound-presentation lane, which replicates only after a host-only write and lets every-machine origins present locally. Link state needs one authority and a late-joiner baseline, and a client-local early apply would double-apply against the replicated record.
 - **Off the level content digest.** Links and their keys are presentation, not a prediction input (`networking.md` §Level identity and level content digest).
 - **First consumer ships with it.** A dev map holds two room copies, a two-way link pair and a two-way seamless pair, with both set-pieces: the barrier puzzle, with the barrier a tagged mover, and the battle swap. The dev mod's manifest declares a sound-carrying style and a ghost bus profile. TypeScript and Luau scripts follow `teleporters.map` / `teleporters-luau.map`. An author section joins `docs/teleporters.md` or a new `docs/ghost-links.md` (executor's call).
@@ -89,7 +90,8 @@ export default defineMod({
 ```
 ```typescript
 // Level script: changes during play
-import { defineReaction, getMapEntities, setGhostAudio } from "postretro";
+import { defineReaction, getMapEntities } from "postretro";
+import { setGhostAudio } from "postretro/ui"; // target-less reaction bodies ship here, as setSentiment does
 
 export function setupLevel() {
   const echoes = getMapEntities("ghostLink", { tag: "vault_echo" }); // map order
@@ -111,7 +113,7 @@ export function setupLevel() {
 - `defineGhostStyle` is a pure identity helper, like `defineFluid`. `setLook`, `arm` and `disarm` return `SequenceStep[]`. `setGhostAudio` returns a primitive reaction body.
 - Each member carries `id`, `position` and `tags`.
 - Ranges: `tint` components, `opacity`, `desaturate`, `volume` and `drive` lie in 0..=1, and filter cutoffs in 20..=20000 Hz. `volume` maps on the existing perceptual taper.
-- An out-of-range or non-finite script argument warns and drops that step or reaction. So does a `setGhostAudio` whose targets would leave `highPassHz` at or above `lowPassHz`.
+- An out-of-range or non-finite script argument, or a call naming no field, warns and drops that step or reaction. So does a `setGhostAudio` whose targets would leave `highPassHz` at or above `lowPassHz`.
 - The Luau mirror ships: `defineGhostStyle({...})`, `l:arm()`, `l:setLook({...})`, `setGhostAudio({...})`.
 
 ## Acceptance
@@ -121,56 +123,60 @@ Pins are in `research.md`.
 - [ ] A map with a `ghost_link` round-trips its records, tags, ghost tags and style name through the PRL section.
 - [ ] A missing or unknown `landmark` or `target`, a `landmark` equal to `target`, a link with no brushes and a bad `enabled_on_spawn` each fail with the author-facing error.
 - [ ] A `ghost_tags` entry matching no mover warns once at level install on host and client alike, and the level loads.
-- [ ] Decode rejects each case the Wire format names.
-- [ ] Adding a link to a map leaves the level content digest unchanged, while adding a teleporter still changes it.
+- [ ] Decode rejects each case the Wire format names, for the PRL section and for snapshot link and audio records alike.
+- [ ] Adding a link as the map's last entity leaves the level content digest unchanged, while adding a teleporter still changes it.
 **Styles**
 - [ ] A link naming a declared style presents that style's values and flags. A link naming no style presents the floor style with no warning. A link naming an undeclared style presents the floor style and warns once at install.
 - [ ] A style with one malformed field drops whole with a warning naming `ghostStyles[i].<field>`, and links naming it get the floor style. A later duplicate name drops with a warning, and the first declaration stands. Both runtimes judge the same entries the same way.
 - [ ] A committed staged reload that changes a style re-resolves every link naming it, armed or not, mid-ramp or not. Fields set by `setLook` keep their values and ramps (P16).
+- [ ] The floor style ghosts no projectiles and carries no sound, and the floor bus profile applies no distortion.
 - [ ] Two peers whose manifests declare one style name with different values each present their own, and the session admits both. After an opacity-only `setLook`, both present the host's opacity and still their own tint and desaturation (P15).
 **Mapping and membership**
 - [ ] For rotated and unrotated pairs, with vertical offset, a ghost pose equals the pose a seamless teleport through the same points produces.
 - [ ] Membership edges, each on host and on a connected client:
-  - presented point just inside vs just outside the volume
+  - presented point just inside vs just outside the volume, for a pawn's body point, a projectile's origin and a mover's bounds center
   - partner pawn ghosted while an untagged mover and a monster beside it are not
   - a mover carrying a listed tag ghosted
   - the same tagged barrier inside two links ghosts through the link that lists its tag and not the other
   - a player's projectile ghosted under a style with `projectiles` true and not under one with false; a monster's projectile never
   - the viewer's own pawn, projectiles and sounds absent from its own ghost set and ghost voices, while the partner sees and hears them
-  - a mover inside two armed links that both list its tag draws two ghosts at two transforms (P27)
-- [ ] `arm` on tick N and `disarm` on tick N+1 ramp presented membership up and back down at the rate cap. `arm` and `disarm` in one tick start no ramp and present no ghost on any peer (P2, P3). An arm during a ramp-out, or a re-entry mid-fade, ramps from the presented value (P4).
+  - a mover inside two armed links that both list its tag draws two ghosts at two transforms (P27), and a mover matching two tags of one link draws one (P39)
+  - a ghost pawn's pose matches the mapped presented pose, aim pitch and third-person weapon included
+- [ ] `arm` on tick N and `disarm` on tick N+1 ramp presented membership up and back down at the rate cap. `arm` and `disarm` in one tick start no ramp and present no ghost on any peer (P2, P3). On a connected client the one-tick span presents at most one rise and fall, each at the rate cap (P35). An arm during a ramp-out, or a re-entry mid-fade, ramps from the presented value (P4).
 - [ ] A ghost draws when its mapped cell is visible and not when it isn't, both with the real cell visible and without.
 - [ ] Two pawns swapped on one tick by arming both seamless teleporters: each old ghost fades at its last in-volume mapped pose, each new ghost starts on the cut frame and fades in, and no frame draws a ghost between the copies (P1).
-- [ ] On a connected client, a link arm and a remote pawn's seamless swap on one host tick present on one client frame (P18).
-- [ ] An entity slot freed and re-tenanted on one frame starts the new tenant's ghost at membership 0 (P19). A member's projectile despawns with its ghost on the same frame. An owner leaving the volume mid-flight ramps out its projectile's ghost, and that projectile's impact is not ghosted (P20, P22).
-- [ ] A ghost is never a hit, overlap, trigger or AI target: a hitscan through it, a splash on it and a trigger it overlaps record nothing.
+- [ ] A link arm and a remote pawn's seamless swap on one host tick present on one frame, on a connected client and on the host seat (P18). A link arm and a member mover's motion on one host tick present on one client frame (P33).
+- [ ] An entity slot freed and re-tenanted on one frame starts the new tenant's ghost at membership 0 (P19). A member's projectile ghost ramps in from spawn and fades out at its last pose on despawn. An owner leaving the volume mid-flight ramps out its projectile's ghost, and that projectile's impact is not ghosted (P20, P22).
+- [ ] A ghost is never a hit, overlap, trigger or AI target: a hitscan through it records no hit on the ghost, a splash centered on it damages nothing through it, a trigger it overlaps does not fire, and an enemy facing it acquires nothing.
 **Photosensitivity**
 - [ ] With the limiter on and a style at opacity 1, each of these presents at most 3 flashes in any 1 s window and rests at its pre-flash level over budget:
   - a script toggling `arm`/`disarm` at 10 Hz
   - `setLook` opacity alternating 0 and 1 at `periodMs` 0
   - a member oscillating across the volume boundary at 10 Hz
 - [ ] With the limiter on, a red `setLook` tint strobe desaturates over budget, keeping luminance, while a single red tint change keeps its hue.
-- [ ] With the limiter on, a single `arm` reaches full style opacity within 250 ms, and the example's 1500 ms `setLook` fade presents exactly as with the limiter off. A ghost's first presented frame starts from opacity 0 (P21).
-- [ ] With the limiter turned off by the player, the 10 Hz `arm`/`disarm` strobe presents unclamped, and the membership ramp still applies (P30).
+- [ ] With the limiter on, a single `arm` reaches full style opacity within 250 ms, and the example's 1500 ms `setLook` fade presents exactly as with the limiter off. A new ghost's first presented frame starts from membership 0 (P21). Turning the limiter on while ghosts present dips none (P31).
+- [ ] With the limiter turned off by the player, the 10 Hz `arm`/`disarm` strobe presents unclamped, the membership ramp still applies, and a hitch frame steps at most the hitch ceiling (P30). A pause freezes `setLook` ramps while the membership ramp continues (P42).
 **Look and audio values**
-- [ ] `setLook` overrides the style field by field. An opacity-only `setLook` mid tint ramp leaves the tint ramp running to its target (P5). Two `setLook` calls in one tick apply in order, the later winning per field (P7).
+- [ ] `setLook` overrides the style field by field. An opacity-only `setLook` mid tint ramp leaves the tint ramp running to its target (P5). Two `setLook` calls in one tick apply in order, the later winning per field (P7). A `setLook` or `setGhostAudio` naming no field warns and changes no ramp (P41).
 - [ ] A malformed `audio.ghost` field applies the whole floor profile and warns naming the field. A `highPassHz` at or above `lowPassHz` counts as malformed.
-- [ ] A `periodMs` ramp presents the midpoint value halfway through, and a second set mid-ramp starts from the presented value. `periodMs` 0 lands in one frame. A `setGhostAudio` whose targets cross the cutoffs warns and drops (P29). A non-finite or out-of-range `setLook` or `setGhostAudio` argument warns and drops.
-- [ ] A fire sound anchored at a ghosted pawn admits a second voice at the mapped fire-time point under a style with `audio` true, and none under one with `audio` false. A sound fired just inside the volume during a ramp-out still admits; one fired just outside does not (P24).
+- [ ] A `periodMs` ramp presents the midpoint value halfway through, and a second set mid-ramp starts from the unclamped value at that moment. `periodMs` 0 lands in one frame. A `setGhostAudio` whose targets cross the cutoffs warns and drops (P29). A resolved profile whose cutoffs cross after a reload, or a client whose own `audio.ghost` crosses against host-set fields, presents the floor cutoffs and warns once (P36). A non-finite or out-of-range `setLook` or `setGhostAudio` argument warns and drops.
+- [ ] A fire sound anchored at a ghosted pawn admits a second voice at the mapped fire-time point under a style with `audio` true, and none under one with `audio` false. A sound fired just inside the volume during a ramp-out still admits; one fired just outside does not (P24). A mover's open sound ghosts on the host under a sound-carrying style. A member's sound refused at the SFX cap admits no ghost voice (P40). On a client, a fire cue arriving just after an arm admits by armed state as the shooter's ghost presents it at that frame (P34).
+- [ ] The viewer's own fire admits no ghost voice on its machine (P25).
 - [ ] An impact sound is ghosted only under a style with `audio` and `impactAudio` both true, from a shot whose owner is a member. The host's own impact is never attributed to another entity. An impact without a shot id is never ghosted. Contacts outside the volume drop.
 - [ ] A ghost voice plays out at its mapped point after its member despawns or its link disarms (P23). Ghost voices follow SFX volume and world muffle.
-- [ ] The seventeenth live ghost voice is refused while a real SFX sound requested in the same frame still plays. Ghost voices release their slot on finish, stop and level unload.
+- [ ] The seventeenth live ghost voice is refused while a real SFX sound requested in the same frame still plays. With the Ghost track present, SFX keeps headroom for two full caps of voices, and the ghost pool keeps its own.
+- [ ] On the mock backend, a tone through the Ghost bus under the dev profile measures attenuated below the high-pass and above the low-pass cutoffs, and changes after `setGhostAudio`. Ghost voices release their slot on finish, stop and level unload.
 - [ ] After `setGhostAudio`, a level unload or demotion returns the Ghost bus to the manifest profile on host and client (P13). A staged reload changing `audio.ghost` re-resolves the bus, and `setGhostAudio` values stand (P17).
 **Replication**
 - [ ] Host `arm`, `setLook` and `setGhostAudio` reach a connected client, and the client's ramp ends within one snapshot interval of the host's. Repeated identical records do not move the presented value as RTT changes (P8).
-- [ ] A late joiner, including one joining mid-ramp, gets current armed state, `setLook` fields and `setGhostAudio` fields, not its local spawn state (P9, P12). A record landing before the presentation clock applies armed state and defers the ramp (P10). A record naming an uninstalled link binds nothing, and a stale old-level record never binds a new link (P11, P14).
+- [ ] A late joiner, including one joining mid-ramp, gets current armed state, `setLook` fields and `setGhostAudio` fields, not its local spawn state (P9, P12). A record landing before the presentation clock applies armed state and defers the ramp (P10). A record naming an uninstalled link binds nothing, and a stale old-level record never binds a new link, the host restarting the same map included (P11, P14, P37). A client demoted mid-level returns to local spawn state through the membership ramp (P38).
 - [ ] A mid-ramp `setLook` carries the unclamped host value: a host with the limiter on and a client with it off present the same ramp, each through its own limiter (P6).
 - [ ] The same steps run on a connected client change nothing.
 - [ ] Demotion and level unload drop received link and audio state.
 - [ ] A handshake across the old and new wire versions is refused.
 **Surface fixture**
 - [ ] The dev mod's manifest and the dev map's TypeScript and Luau scripts, which contain the Scripting surface examples, load and run with zero warnings. The `ghostLink` query returns both dev-map links, and their set-pieces drive the arm, look and audio changes the rows above observe (P28).
-- [ ] A headless frame capture of the dev map's tagged barrier on a link armed on spawn, at rest, shows tinted, blended, unlit pixels with the geometry behind still visible, and no ghost shadow (P26).
+- [ ] A headless frame capture of the dev map's tagged barrier on a link armed on spawn, at rest, shows tinted, blended pixels with the geometry behind still visible and no ghost shadow (P26, P32). The ghost's pixels are identical under two different dynamic-light setups, and the part behind a nearer wall does not draw.
 ### Manual
 - [ ] Two-peer loopback co-op on the dev map, run once as listen host and once as client, at the harness lag profile:
   - Barrier puzzle: one player presses the button in copy B, sees the ghost barrier open, and the player in copy A passes.
@@ -185,14 +191,15 @@ Pins are in `research.md`.
   - `defineFluid`, for styles.
   - `setSentiment`, for a target-less reaction body.
   - `resolve_authored_attenuation`, for the bus profile.
-- Rendering: a mover ghost needs its own instance path, because upload keys by `mover_id` and keeps one instance per id. Skinned ghosts ride the batch as extra instances with a ghost palette cache key.
+- Rendering: translucent variants of the skinned-mesh and kinematic-brush passes; game logic hands the renderer extra instances with look values. A mover ghost needs its own instance path, because upload keys by `mover_id` and keeps one instance per id. Skinned ghosts ride the batch as extra instances with a ghost palette cache key.
 - Limiter: the per-channel tracked value in `flash_clamp.rs` is private and hard-wired to the three screen channels. Expose it, or build a per-value clamp on the same rules.
 - Audio:
   - Voices need the bus they took, through `start_voice`, `AudioCore::play` and voice release.
   - The Ghost track takes one of SFX's child-track slots and needs its own pool.
   - A ghost voice uses a `Point` anchor.
   - The chain is kira 0.12.5's built-in filter, distortion and volume effects, added with `add_effect` so their handles are kept. Drive is in decibels, so the 0..=1 value maps to a dB range.
-- Impact owner: the host's own shots carry a raw local pawn id until `publish_observer_weapon_cues` normalizes it, and `NetworkId(0)` is a real id. Normalize before reading membership.
+- Impact owner: the host's own shots carry a raw local pawn id until `publish_observer_weapon_cues` normalizes it, and `NetworkId(0)` is a real id. On the host, a partner client's projectile is a visual-only flight entity whose owner sits in a netcode-private table (`projectile_presentation.rs`).
+- Replication: links register at level install like teleporters. Look ramps rebase with the host-time rule bound presentation state uses, then present at each member's own presentation delay. Clients present movers at the estimated host tick and remote pawns at `render_server_tick`. The host seat presents client pawns `PRESENTATION_DELAY_TICKS` late.
 - Rivals weighed:
   - Ghosts as registry display copies: they enter hit, trigger, overlap and AI paths, and would need the filters room copies avoid.
   - Per-link look keys and flags: every link would repeat a game's taste.
@@ -234,4 +241,4 @@ Pins are in `research.md`.
 | Look change | host-only command | per-field look ramps in link-state payload | `setLook({ tint, opacity, desaturate, periodMs })` | `l:setLook({...})` | — |
 | Arm / disarm | host-only commands | armed in link-state payload | `arm()`, `disarm()` | `l:arm()`, `l:disarm()` | — |
 | Ghost bus profile | resolved profile | — | `audio.ghost: { volume, highPassHz, lowPassHz, drive }` | same | — |
-| Ghost bus change | host-only reaction body | per-field level audio payload | `setGhostAudio({ volume, highPassHz, lowPassHz, drive, periodMs })` | `setGhostAudio({...})` | — |
+| Ghost bus change | host-only reaction body | per-field level audio payload | `setGhostAudio({ volume, highPassHz, lowPassHz, drive, periodMs })` from `postretro/ui` | `setGhostAudio({...})` | — |

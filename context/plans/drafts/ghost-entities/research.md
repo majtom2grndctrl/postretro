@@ -64,3 +64,47 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 
 ## Audio capacity
 - Bus voice caps (`BusId::voice_cap`, crates/audio/src/buses.rs): SFX 32, Music 4, UI 8. The manager budget has room for a 16-voice ghost cap without raising its capacity (`caps_within_capacity`).
+
+## Client-side facts that bound membership and audio
+- A connected client drops every host-replicated map placement before dispatch (`filter_out_client_host_replicated_placements`, crates/postretro/src/startup/lifecycle_world_cpu.rs). It rebuilds them from snapshots as class-only display copies with no `_tags` or map ordinal (crates/netcode/src/remote_materialize.rs, crates/sim/src/scripting/builtins/net_descriptor.rs). `ComponentPayload` carries no map identity (crates/net/src/wire/components.rs). Movers spawn locally from PRL with tags on every peer (crates/postretro/src/runtime_movers.rs).
+- The host's own shots carry `shot_id.pawn = 0` in the raw emission (crates/sim/src/sim/mod.rs, crates/sim/src/sim/weapon_stage/machine.rs). Only `publish_observer_weapon_cues` normalizes it to a `NetworkId` (crates/postretro/src/weapon_observers.rs). `NetworkId(0)` is a real allocation (crates/netcode/src/lib.rs). Client-predicted shots and observed cues already use `NetworkId`s.
+- Mover sounds and a pawn's own reload, dry fire and overheat play on the host only. Clients receive only fire and impact observer cues (`audio.md` §4).
+- A sequence step must name a target. The JS step parser requires an `id`, so a mod-wide primitive is a whole reaction body (`setSentiment`, content/dev/scripts/faction-sentiment.ts).
+- The cell-visibility relation (id 46) stores per-cell reachability component ids plus graded pair records, with no per-pair open state to mask. The research doc's dynamic portal is a sightline blocker mask for destructibles, not built.
+- `ChannelClamp` (crates/render-cpu/src/flash_clamp.rs) is hard-wired to `screen.flash`, `screen.vignette` and the fluid tint, and its per-channel tracked value is private. A state turned on "starts fresh against its own values".
+- Nesting the Ghost track under SFX takes one of SFX's child-track slots, which are sized to the SFX voice headroom. `caps_within_capacity` with a 16 ghost cap totals 60 of 64.
+- Fluid colors are `[r, g, b]` arrays (`viewTint`, `fogColor` in content/dev/start-script.ts).
+
+## Pin table
+| id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Pawn teleported out of link A's volume | seamless cut frame, then A's ramp-out | A's ghost fades at its last in-volume mapped pose; never drawn at the mapping of the new pose |
+| P2 | `arm` and `disarm` in one tick | both apply at one host tick, in call order | Last call wins; no frame on any peer presents a ghost; no ramp starts |
+| P3 | `arm` tick N, `disarm` tick N+1 | target membership changes twice, the ramp follows | Presented membership rises for one tick at the rate cap, then falls to 0 at the rate cap |
+| P4 | `arm` during a ramp-out; member re-enters mid-fade | reversal mid-ramp | Ramps from the presented value, never resets |
+| P5 | `setLook` naming only opacity, mid tint ramp | second set before the first ramp ends | Tint ramp continues to its target; opacity ramps on its own clock |
+| P6 | `setLook` mid-ramp | from-value captured at the applying host tick | Unclamped ramp value at that tick's host script time; host limiter state never on the wire |
+| P7 | Two `setLook` calls in one tick | applied in call order within one tick | Later call wins per field; its ramp starts from the value before that tick |
+| P8 | Snapshot repeats an identical link record | always-on record every snapshot | No re-rebase; the presented value does not move as the RTT estimate changes |
+| P9 | Joiner before its first link record | install, then the first record lands | Presents local spawn state and style; a disagreeing armed state moves membership at the rate cap, never cuts |
+| P10 | Link record before the presentation clock is ready | record lands, then clock anchor | Armed state applies; look ramp deferred, then rebased |
+| P11 | Record names a link not installed | record before or without a matching install | Binds nothing, warns, not acked; a later baseline binds |
+| P12 | Joiner mid-`setLook` or mid-`setGhostAudio` ramp | join after ramp start, before end | Presents the rebased current value; ends with the host |
+| P13 | Level unload or demotion after `setGhostAudio` | record dropped, then next level | Ghost bus returns to the manifest profile on every peer, host included; ghost voices released |
+| P14 | Host level change with links in both levels | old-level record arrives after new install | Matched by index and source entity; a stale record never binds a new link |
+| P15 | Opacity-only `setLook`; peers with differing styles; then staged reload | setLook, replication, reload | Only opacity crosses the wire; tint and desaturation stay local and follow the reload |
+| P16 | Staged reload mid `setLook` ramp; reload on a disarmed link | reload commit during a ramp or while disarmed | Script-set ramps continue to their targets; disarmed links re-resolve too |
+| P17 | Staged reload changing `audio.ghost` | reload after or without `setGhostAudio` | Bus re-resolves; `setGhostAudio` fields stand |
+| P18 | Link arm and a remote pawn's seamless swap on one host tick | client presents armed edges at remote-presentation time | Both present on one client frame |
+| P19 | Entity slot freed and re-tenanted on one frame | despawn, then spawn, same frame | Ramp and limiter state key by generation-checked id; the new tenant starts at 0 |
+| P20 | Member fires a projectile; the projectile despawns | spawn frame, flight, despawn frame | Ghost ramps in from spawn at the rate cap; gone on the despawn frame |
+| P21 | A ghost's first presented frame | limiter state creation, then first pack | State starts from opacity 0, not fresh against its own value |
+| P22 | Owner leaves the volume while its projectile flies | owner membership changes before impact | Projectile ghost ramps out with the owner; the impact is not ghosted |
+| P23 | Ghost voice playing when the link disarms, the member leaves or despawns | voice admitted, then membership ends | Voice plays out at its fire-time mapped point |
+| P24 | Sound at a member near the boundary or mid-ramp | drain-time admission | Admitted when armed and the fire-time point is inside; the presented ramp is ignored |
+| P25 | Viewer's own pawn makes a sound | local drain | No ghost voice on the viewer's machine |
+| P26 | Level first frame; headless capture | install, then first frame or capture at time zero | Members of links armed on spawn present at full membership |
+| P27 | Tagged mover inside two armed links that both list its tag | two memberships, one mover id | Two ghost transforms for one mover |
+| P28 | `getMapEntities("ghostLink", { tag })` with zero tagged links | query in `setupLevel` | Returns `[]` silently; the fixture asserts both dev-map links return |
+| P29 | `setGhostAudio` lowering `lowPassHz` while a `highPassHz` ramp is in flight | validation at the applying host tick | Judged against targets after the step; high at or above low warns and drops |
+| P30 | Limiter off; a hitch frame | the ramp is independent of the limiter | Membership ramp still applies unclamped; a hitch steps at most the hitch ceiling |

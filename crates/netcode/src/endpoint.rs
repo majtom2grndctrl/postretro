@@ -281,6 +281,24 @@ pub struct ClientApplyFrameOutcome {
     /// Final authoritative mover correction per mover received this frame.
     /// App consumes these after snapshot apply to refresh the live carry table.
     pub mover_corrections: Vec<client::MoverCorrection>,
+    /// Every own-pawn reconcile this frame, in apply order, for the relay
+    /// harness: production reads only the offset it seeds.
+    #[cfg(test)]
+    pub(crate) local_corrections: Vec<LocalCorrectionSample>,
+}
+
+/// One own-pawn reconcile as the receive path ran it: the distance from the
+/// predicted pose to the reconciled one, and how reconcile classified it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LocalCorrectionSample {
+    pub(crate) server_tick: u32,
+    pub(crate) acked_tick: Option<u32>,
+    pub(crate) magnitude: f32,
+    pub(crate) class: crate::netcode::prediction::CorrectionClass,
+    /// The first record's silent adoption, which is a camera hold rather than a
+    /// smoothed correction.
+    pub(crate) first_record_adoption: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,10 +314,18 @@ pub struct ClientArmedLocalPawn {
 /// it never aliases the `sender`/`estimator` borrows.
 pub(crate) struct EngineClock {
     origin: std::time::Instant,
+    /// A test-driven clock in place of `origin`, so a relay harness runs the
+    /// production probe/echo path on its virtual time.
+    #[cfg(test)]
+    virtual_now_us: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl MonotonicClock for EngineClock {
     fn now_micros(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(now) = &self.virtual_now_us {
+            return now.load(std::sync::atomic::Ordering::Relaxed);
+        }
         // Saturate at u64::MAX rather than panic on the (practically unreachable)
         // overflow of microseconds since process start.
         self.origin.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
@@ -324,10 +350,20 @@ impl Default for ClientTimeSync {
 }
 
 impl ClientTimeSync {
+    /// Client time sync reading `now_us` as its monotonic clock.
+    #[cfg(test)]
+    pub(crate) fn with_virtual_clock(now_us: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Self {
+        let mut time_sync = Self::new();
+        time_sync.clock.virtual_now_us = Some(now_us);
+        time_sync
+    }
+
     pub fn new() -> Self {
         Self {
             clock: EngineClock {
                 origin: std::time::Instant::now(),
+                #[cfg(test)]
+                virtual_now_us: None,
             },
             activation_outcomes: std::collections::VecDeque::new(),
             weapon_cues: VecDeque::new(),

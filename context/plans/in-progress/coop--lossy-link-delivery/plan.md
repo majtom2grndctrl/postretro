@@ -29,8 +29,8 @@ Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the b
 
 | AC | Row | Proof | Status |
 |---|---|---|---|
-| 1 | Reproduces first; loss-off control | `steady_run_records_oversized_correction_on_base_resend` committed failing at base resend; `steady_run_loss_off_records_no_oversized_correction` (P1) | achievable as stated; stop gate |
-| 2 | Seeded-minute steady run, strafe, slides: nothing above Ordinary | `steady_run_minute_stays_in_ordinary_band_under_dev_profile` (relay harness) | achievable as stated |
+| 1 | Reproduces first; loss-off control | `steady_run_stays_in_ordinary_band_under_dev_profile` committed failing at base resend (148 above band, max 5.3 m Teleport; host Neutral 1365/3600, seeds 0x1502/0x1503); `steady_run_loss_off_records_no_oversized_correction` (P1) passes (all 0.000 m, 3600 Real) | stop gate passed |
+| 2 | Seeded-minute steady run, strafe, slides: nothing above Ordinary | `steady_run_stays_in_ordinary_band_under_dev_profile` (relay harness; same test as row 1, passes after task 2) | achievable as stated |
 | 3 | Slide/vault entry on the same client tick, incl. lost entry datagram (P3) | `slide_entry_lost_datagram_enters_on_host_same_client_tick`, vault twin on `ledge_world` | achievable as stated |
 | 4 | Fixed delay, one scripted lost Input datagram: no hold/neutral/trim, Real on its own tick (P2) | `single_lost_input_datagram_resolves_real_on_its_own_tick` + conditioner scripted drop | achievable as stated (trace proof per Corrections) |
 | 5 | Grep gate: hold/target/max stay 3/2/8 | pin test on the three constants + grep in preflight | achievable as stated |
@@ -80,7 +80,7 @@ fixed tick after the first copy. Its RTT comes out about one tick high, more tha
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Relay link layer (`PacketConditioner` scripted drop: Nth flush / virtual window, applied after the seeded draw; renet pair on production `connection_config`; framed Input; acks/refresh/time sync over Input; no warmup; `HostTickTrace` movement state) as a new fixture module beside the existing fixtures; reproduce-first steady-run test (committed failing at the 300 ms base) and P1 loss-off control. **Stop and report** if no reproduction, or if loss-off also records one. | integrating executor | — | |
+| 1 | Relay link layer (`PacketConditioner` scripted drop: Nth flush / virtual window, applied after the seeded draw; renet pair on production `connection_config`; framed Input; acks/refresh/time sync over Input; no warmup; `HostTickTrace` movement state) as a new fixture module beside the existing fixtures; reproduce-first steady-run test (committed failing at the 300 ms base) and P1 loss-off control. **Stop and report** if no reproduction, or if loss-off also records one. | delegated worker | — | done: relay fixture `predict_reconcile_relay_test_fixtures.rs` (`RelayHarness`), `ScriptedDrop` in net harness.rs; repro fails on base, P1 passes; net 295 pass, netcode lib 833 pass + 1 expected fail |
 | 2 | Transport resend: Input 10 ms, Control 100 ms; extend channel-list test; bump `PROTOCOL_ID` PRLB→PRLC and `WIRE_VERSION` 32→33, update the hard-coded pin tests; AC 2–5, 15, 27 green on the relay harness | integrating executor | 1 | |
 | 3 | Presentation offset composition in `seed_presentation_offset`/reconcile: compose, composed-floor snap with camera cut, existing clears; harness decays per step; tests read `latest_local_corrections`; AC 24–25 | delegated worker (prediction.rs, reconcile.rs, offset tests) | — (parallel with 2) | |
 | 4a | Behaviour-preserving split of netcode lib.rs: `host_input.rs` (host Input dispatch), `client_switch.rs` (switch chain + endpoint switch API) | integrating executor | 2 | |

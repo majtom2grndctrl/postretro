@@ -91,6 +91,12 @@ mod client_tuning_install_tests;
 mod predict_reconcile_harness;
 #[cfg(test)]
 mod predict_reconcile_harness_test_fixtures;
+// The predict/reconcile loop over a renet relay pair with production channel
+// semantics: framed Input, acks and time sync on Input, no harness warmup.
+#[cfg(test)]
+mod predict_reconcile_relay_harness;
+#[cfg(test)]
+mod predict_reconcile_relay_test_fixtures;
 // E24 co-op fluid parity: host and client fluid tables through the tuning install.
 #[cfg(test)]
 mod predict_reconcile_harness_fluid_tables;
@@ -1056,7 +1062,15 @@ pub fn client_receive_and_apply(
         if let Some(local) = &outcome.local_reconcile
             && let Some(environment) = client_environment_view(host_tuning, environment_volumes)
         {
-            reconcile::reconcile_local_pawn_with_mover_history(
+            #[cfg(test)]
+            let (predicted, first_record_adoption) = (
+                registry
+                    .get_component::<Transform>(local.entity_id)
+                    .ok()
+                    .map(|transform| transform.position),
+                prediction.first_record_pending(),
+            );
+            let _class = reconcile::reconcile_local_pawn_with_mover_history(
                 registry,
                 prediction,
                 local.entity_id,
@@ -1069,6 +1083,22 @@ pub fn client_receive_and_apply(
                 environment,
                 tick_dt,
             );
+            #[cfg(test)]
+            if let (Some(class), Some(predicted), Ok(reconciled)) = (
+                _class,
+                predicted,
+                registry.get_component::<Transform>(local.entity_id),
+            ) {
+                frame_outcome
+                    .local_corrections
+                    .push(endpoint::LocalCorrectionSample {
+                        server_tick: local.server_tick,
+                        acked_tick: local.acked_tick,
+                        magnitude: (predicted - reconciled.position).length(),
+                        class,
+                        first_record_adoption,
+                    });
+            }
         }
         frame_outcome
             .local_teleport_adoptions

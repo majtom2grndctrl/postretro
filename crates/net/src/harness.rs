@@ -110,6 +110,62 @@ impl LinkConfig {
     }
 }
 
+/// A test-scripted loss on top of the seeded link model: the datagram is
+/// dropped even when the loss coin passes it. A test that needs "the
+/// datagram carrying command t" lost targets it by enqueue index or by its
+/// position among one channel's datagrams; the conditioner sees only opaque
+/// packets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptedDrop {
+    /// The `index`th datagram this conditioner enqueues (0-based), counting
+    /// every datagram whatever its fate.
+    Nth(u64),
+    /// The `index`th datagram (0-based) whose renet header names `channel`
+    /// ([`renet_packet_channel`]), counting every such datagram whatever its
+    /// fate. An ack-only datagram carries no channel and never matches.
+    NthOnChannel {
+        channel: crate::transport::Channel,
+        index: u64,
+    },
+    /// Every datagram enqueued while the virtual clock is in `[start, end)`.
+    Window {
+        start: VirtualMillis,
+        end: VirtualMillis,
+    },
+}
+
+impl ScriptedDrop {
+    fn matches(self, index: u64, channel_index: Option<(u8, u64)>, now: VirtualMillis) -> bool {
+        match self {
+            Self::Nth(target) => index == target,
+            Self::NthOnChannel {
+                channel,
+                index: target,
+            } => channel_index == Some((u8::from(channel), target)),
+            Self::Window { start, end } => (start..end).contains(&now),
+        }
+    }
+}
+
+/// The renet channel id a connection-level datagram carries, or `None` for an
+/// ack-only or unparseable one.
+///
+/// Couples to the pinned renet `=2.0.0` packet layout (`Packet::to_bytes`):
+/// byte 0 is the packet type (0 SmallReliable, 1 SmallUnreliable,
+/// 2 ReliableSlice, 3 UnreliableSlice, 4 Ack), then a QUIC-varint sequence,
+/// then the channel id byte. A renet upgrade must re-check it; the
+/// conditioner's scripted-drop self-test reads real renet datagrams through it.
+#[must_use]
+pub fn renet_packet_channel(packet: &[u8]) -> Option<u8> {
+    let (&kind, rest) = packet.split_first()?;
+    if kind > 3 {
+        return None;
+    }
+    // A QUIC varint's top two bits give its length: 1, 2, 4 or 8 bytes.
+    let varint_len = 1usize << (rest.first()? >> 6);
+    rest.get(varint_len).copied()
+}
+
 /// One packet buffer scheduled for delivery at a virtual arrival time.
 #[derive(Debug, Clone)]
 struct ScheduledPacket {
@@ -138,8 +194,17 @@ pub struct PacketConditioner {
     now: VirtualMillis,
     /// Packets in flight, not yet due. Not kept sorted; `take_ready` scans.
     queue: Vec<ScheduledPacket>,
-    /// Count of packets dropped by the loss model, for test assertions/telemetry.
+    /// Count of packets dropped by the loss model or a scripted drop, for test
+    /// assertions/telemetry.
     dropped: u64,
+    /// The scripted share of `dropped`.
+    scripted_dropped: u64,
+    /// Scripted drops in force, applied after the seeded draw.
+    scripted: Vec<ScriptedDrop>,
+    /// Datagrams enqueued so far, whatever their fate: the next one's index.
+    enqueued: u64,
+    /// Per renet channel id, datagrams enqueued so far carrying it.
+    enqueued_on_channel: std::collections::HashMap<u8, u64>,
 }
 
 impl PacketConditioner {
@@ -152,7 +217,62 @@ impl PacketConditioner {
             now: 0,
             queue: Vec::new(),
             dropped: 0,
+            scripted_dropped: 0,
+            scripted: Vec::new(),
+            enqueued: 0,
+            enqueued_on_channel: std::collections::HashMap::new(),
         }
+    }
+
+    /// Add a scripted drop, effective from the next enqueue. A scripted run
+    /// draws the same PRNG stream as the unscripted one, so its other
+    /// datagrams keep their fates and arrival times.
+    pub fn script_drop(&mut self, drop: ScriptedDrop) {
+        self.scripted.push(drop);
+    }
+
+    /// How many of [`Self::dropped`] were scripted drops.
+    #[must_use]
+    pub fn scripted_dropped(&self) -> u64 {
+        self.scripted_dropped
+    }
+
+    /// Datagrams enqueued so far carrying `channel`: the index the next one
+    /// will take for [`ScriptedDrop::NthOnChannel`].
+    #[must_use]
+    pub fn enqueued_on_channel(&self, channel: crate::transport::Channel) -> u64 {
+        self.enqueued_on_channel
+            .get(&u8::from(channel))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The link decision for the next enqueued datagram: its arrival time, or
+    /// `None` when it is dropped. The seeded draw runs first and unchanged, so a
+    /// scripted drop never shifts the stream for later datagrams.
+    fn schedule(&mut self, packet: &[u8]) -> Option<VirtualMillis> {
+        let index = self.enqueued;
+        self.enqueued += 1;
+        let channel_index = renet_packet_channel(packet).map(|channel| {
+            let count = self.enqueued_on_channel.entry(channel).or_insert(0);
+            let channel_index = *count;
+            *count += 1;
+            (channel, channel_index)
+        });
+        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
+            self.dropped += 1;
+            return None;
+        };
+        if self
+            .scripted
+            .iter()
+            .any(|drop| drop.matches(index, channel_index, self.now))
+        {
+            self.dropped += 1;
+            self.scripted_dropped += 1;
+            return None;
+        }
+        Some(self.now + delay)
     }
 
     /// The conditioner's current virtual time.
@@ -173,20 +293,17 @@ impl PacketConditioner {
         self.queue.len()
     }
 
-    /// Enqueue one packet buffer. The loss coin is flipped first: a dropped
-    /// packet is counted and discarded (returns `false`, never scheduled). A
-    /// surviving packet is scheduled at `now + delay + jitter_draw` and returns
-    /// `true`. PRNG consumption follows [`LinkConfig::sample_delay`], so the
-    /// stream position is a deterministic function of the enqueue sequence.
+    /// Enqueue one packet buffer. The loss coin is flipped first, then any
+    /// scripted drop applies: a dropped packet is counted and discarded
+    /// (returns `false`, never scheduled). A surviving packet is scheduled at
+    /// `now + delay + jitter_draw` and returns `true`. PRNG consumption follows
+    /// [`LinkConfig::sample_delay`], so the stream position is a deterministic
+    /// function of the enqueue sequence.
     pub fn enqueue(&mut self, packet: Vec<u8>) -> bool {
-        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
-            self.dropped += 1;
+        let Some(deliver_at) = self.schedule(&packet) else {
             return false;
         };
-        self.queue.push(ScheduledPacket {
-            deliver_at: self.now + delay,
-            packet,
-        });
+        self.queue.push(ScheduledPacket { deliver_at, packet });
         true
     }
 
@@ -200,12 +317,11 @@ impl PacketConditioner {
     /// without consuming twice. Clones only the surviving buffer.
     fn enqueue_one(&mut self, packet: &[u8]) -> bool {
         // Mirror `enqueue` but avoid cloning a dropped buffer.
-        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
-            self.dropped += 1;
+        let Some(deliver_at) = self.schedule(packet) else {
             return false;
         };
         self.queue.push(ScheduledPacket {
-            deliver_at: self.now + delay,
+            deliver_at,
             packet: packet.to_vec(),
         });
         true
@@ -259,7 +375,7 @@ pub fn reveal_both(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{NetClient, NetServer};
+    use crate::transport::{Channel, NetClient, NetServer};
     use crate::wire::{
         self, COMPONENT_KIND_TRANSFORM, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
         RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION, WireTransform,
@@ -596,6 +712,112 @@ mod tests {
         let second = rng.next_unit_f64();
         assert!(first < 0.5, "first flip must drop (got {first})");
         assert!(second >= 0.5, "second flip must pass (got {second})");
+    }
+
+    // --- Scripted drop ---
+
+    /// Real renet datagrams, one server flush per relay step. Each flush carries
+    /// one new Input message beside the join's Control traffic and renet acks,
+    /// so the stream mixes channels as a live link does.
+    fn captured_server_flushes(steps: u8) -> Vec<Vec<Vec<u8>>> {
+        let (mut server, mut client) = relay_pair();
+        let mut flushes = Vec::new();
+        for step in 0..steps {
+            server.send_input(CLIENT_ID, vec![step; 24]);
+            server.update_connections(RELAY_DT);
+            let packets = server.packets_to_send(CLIENT_ID);
+            for packet in &packets {
+                client.process_packet(packet);
+            }
+            client.update_connections(RELAY_DT);
+            for packet in client.packets_to_send() {
+                server.process_packet_from(&packet, CLIENT_ID);
+            }
+            flushes.push(packets);
+        }
+        flushes
+    }
+
+    /// Relay `flushes` one per step, then drain, returning each arrival with
+    /// the virtual time it was taken.
+    fn relay_flushes(
+        cond: &mut PacketConditioner,
+        flushes: &[Vec<Vec<u8>>],
+    ) -> Vec<(VirtualMillis, Vec<u8>)> {
+        let mut arrivals = Vec::new();
+        let drain_steps = std::iter::repeat_n(&[][..], 16);
+        for flush in flushes.iter().map(Vec::as_slice).chain(drain_steps) {
+            cond.enqueue_all(flush.iter().cloned());
+            cond.advance(RELAY_DT_MS);
+            let now = cond.now();
+            arrivals.extend(cond.take_ready().into_iter().map(|p| (now, p)));
+        }
+        arrivals
+    }
+
+    #[test]
+    fn scripted_drop_loses_one_input_datagram_and_keeps_other_arrivals() {
+        const TARGET: u64 = 6;
+        let flushes = captured_server_flushes(24);
+        let input = u8::from(Channel::Input);
+        let all: Vec<&Vec<u8>> = flushes.iter().flatten().collect();
+        assert!(
+            all.iter().any(|p| renet_packet_channel(p) != Some(input)),
+            "the captured stream must mix Input with other datagrams"
+        );
+        let target = all
+            .iter()
+            .filter(|p| renet_packet_channel(p) == Some(input))
+            .nth(TARGET as usize)
+            .copied()
+            .expect("the captured stream carries enough Input datagrams");
+
+        let link = LinkConfig {
+            delay: 45,
+            jitter: 60,
+            loss_probability: 0.05,
+            seed: 0x5C41,
+        };
+        let mut unscripted = PacketConditioner::new(link);
+        let baseline = relay_flushes(&mut unscripted, &flushes);
+        let mut scripted = PacketConditioner::new(link);
+        scripted.script_drop(ScriptedDrop::NthOnChannel {
+            channel: Channel::Input,
+            index: TARGET,
+        });
+        let observed = relay_flushes(&mut scripted, &flushes);
+
+        assert!(
+            baseline.iter().any(|(_, p)| p == target),
+            "precondition: the seeded link delivers the targeted Input datagram"
+        );
+        assert_eq!(scripted.scripted_dropped(), 1);
+        assert_eq!(scripted.dropped(), unscripted.dropped() + 1);
+        let expected: Vec<_> = baseline.into_iter().filter(|(_, p)| p != target).collect();
+        assert_eq!(
+            observed, expected,
+            "every other datagram keeps its fate and arrival time"
+        );
+    }
+
+    #[test]
+    fn scripted_window_drops_every_datagram_enqueued_inside_it() {
+        let mut cond = PacketConditioner::new(LinkConfig {
+            delay: 10,
+            ..LinkConfig::perfect()
+        });
+        cond.script_drop(ScriptedDrop::Window { start: 32, end: 64 });
+        let mut arrivals = Vec::new();
+        // Enqueued at virtual 0, 16, 32, 48, 64 and 80 ms.
+        for step in 0..6u8 {
+            cond.enqueue(vec![step]);
+            cond.advance(16);
+            arrivals.extend(cond.take_ready());
+        }
+        cond.advance(16);
+        arrivals.extend(cond.take_ready());
+        assert_eq!(arrivals, vec![vec![0], vec![1], vec![4], vec![5]]);
+        assert_eq!(cond.scripted_dropped(), 2);
     }
 
     // A non-conditioned sanity baseline: a perfect link relays the handshake and

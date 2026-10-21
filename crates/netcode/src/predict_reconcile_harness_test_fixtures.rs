@@ -333,7 +333,7 @@ pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
 /// production (`produce_owned_snapshots` -> `descriptor_entity_class`) stamps
 /// `entity_class = Some("pawn:player")` on the owned snapshot — exactly as
 /// `spawn_net_slot_pawn` does in production.
-fn net_slot_provenance() -> DescriptorProvenance {
+pub(crate) fn net_slot_provenance() -> DescriptorProvenance {
     DescriptorProvenance {
         canonical_name: ENTITY_CLASS.to_string(),
         owned_components: [DescriptorComponentKind::Movement].into_iter().collect(),
@@ -478,16 +478,22 @@ pub(crate) struct HostTickTrace {
     pub(crate) position: Vec3,
     pub(crate) yaw: f32,
     pub(crate) teleport: postretro_foundation::TeleportState,
+    /// The movement state the pawn ended the tick in, so a test can see the
+    /// tick a slide or vault started on the host.
+    pub(crate) movement_state: postretro_foundation::MovementStateKind,
 }
 
 impl HostTickTrace {
-    fn capture(
+    pub(crate) fn capture(
         registry: &EntityRegistry,
         pawn: EntityId,
         server_tick: u32,
         resolved: Option<ResolvedPawnCommand>,
     ) -> Self {
         let transform = registry.get_component::<Transform>(pawn).unwrap();
+        let movement = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap();
         // Yaw of `Quat::from_rotation_y(yaw)`: its forward is (-sin, 0, -cos).
         let forward = transform.rotation * Vec3::NEG_Z;
         Self {
@@ -495,11 +501,8 @@ impl HostTickTrace {
             resolved,
             position: transform.position,
             yaw: (-forward.x).atan2(-forward.z),
-            teleport: registry
-                .get_component::<PlayerMovementComponent>(pawn)
-                .unwrap()
-                .teleport
-                .clone(),
+            teleport: movement.teleport.clone(),
+            movement_state: movement.movement_state.kind(),
         }
     }
 }

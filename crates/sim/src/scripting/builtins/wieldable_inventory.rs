@@ -5,12 +5,15 @@ use std::collections::HashSet;
 
 use super::MapEntity;
 use super::data_archetype::{find_descriptor, spawn_descriptor_instance};
+use crate::sim::refuse_local_wieldable_switch;
+use crate::sim::weapon_stage::finish_lowering;
 use postretro_combat_model::CarriedState;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::touchable::TouchableComponent;
 use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::wieldable_state::WieldableState;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_scripting_core::data_descriptors::{EntityTypeDescriptor, WeaponResource};
@@ -301,6 +304,19 @@ pub(crate) fn acquire_wieldable(
 }
 
 /// Release a slot's wieldable and repair selection state around the vacancy.
+///
+/// Rule: releasing a wieldable never moves the active weapon, except to replace
+/// the one released.
+/// - Non-active slot: `active_slot` is unchanged. A `switch_origin` naming the
+///   slot is cleared. A `switch_target` naming it ends the switch through
+///   [`refuse_local_wieldable_switch`], so the lowering active weapon returns to
+///   Idle instead of lowering forever (`normalize_inventory_liveness` repairs
+///   only a dead target, not a cleared one).
+/// - A released weapon mid-lower or mid-raise returns to Idle.
+/// - Active slot: the pending live `switch_target` becomes active, else the
+///   lowest occupied slot (0 when none). Both switch fields clear because the
+///   switch is over. No raise starts; the new active weapon keeps its holstered
+///   Idle state, so a drop stays instant.
 pub(crate) fn release_wieldable(
     registry: &mut EntityRegistry,
     pawn: EntityId,
@@ -309,18 +325,50 @@ pub(crate) fn release_wieldable(
     let mut inventory = registry.get_component::<Inventory>(pawn).cloned().ok()?;
     let item = inventory.wieldables.get_mut(slot)?.take()?;
 
-    inventory.active_slot = inventory
-        .wieldables
-        .iter()
-        .position(Option::is_some)
-        .unwrap_or(0);
-    if inventory.switch_target == Some(slot) {
-        inventory.switch_target = None;
+    // A released wieldable has no equip transition in flight. Without this, a
+    // weapon released mid-lower stays `Lowering` and a later holder's active
+    // weapon never fires.
+    if let Ok(mut component) = registry.get_component::<WeaponComponent>(item).cloned()
+        && matches!(
+            component.state,
+            WieldableState::Lowering | WieldableState::Raising
+        )
+    {
+        finish_lowering(&mut component);
+        let _ = registry.set_component(item, component);
     }
+
+    if inventory.active_slot == slot {
+        let live_target = inventory.switch_target.filter(|target| {
+            inventory
+                .wieldables
+                .get(*target)
+                .is_some_and(Option::is_some)
+        });
+        inventory.active_slot = live_target.unwrap_or_else(|| {
+            inventory
+                .wieldables
+                .iter()
+                .position(Option::is_some)
+                .unwrap_or(0)
+        });
+        inventory.switch_target = None;
+        inventory.switch_origin = None;
+        registry.set_component(pawn, inventory).ok()?;
+        return Some(item);
+    }
+
     if inventory.switch_origin == Some(slot) {
         inventory.switch_origin = None;
     }
+    let target_released = inventory.switch_target == Some(slot);
+    let active_slot = inventory.active_slot;
+    // The target stays set here so the refusal helper recognizes the in-flight
+    // switch and settles the machine state along with the fields.
     registry.set_component(pawn, inventory).ok()?;
+    if target_released {
+        refuse_local_wieldable_switch(registry, pawn, slot, active_slot);
+    }
     Some(item)
 }
 
@@ -699,6 +747,214 @@ mod tests {
         assert_eq!(inventory.active_slot, 1);
         assert_eq!(inventory.switch_target, None);
         assert_eq!(inventory.switch_origin, None);
+    }
+
+    fn lowering_wieldable(registry: &mut EntityRegistry) -> EntityId {
+        let item = wieldable(registry);
+        let mut weapon = registry
+            .get_component::<WeaponComponent>(item)
+            .unwrap()
+            .clone();
+        weapon.state = WieldableState::Lowering;
+        weapon.state_total_ms = 100;
+        weapon.state_remaining_ms = 40;
+        registry.set_component(item, weapon).unwrap();
+        item
+    }
+
+    fn pawn_with(
+        registry: &mut EntityRegistry,
+        slots: &[(usize, EntityId)],
+        active_slot: usize,
+        switch: Option<(usize, usize)>,
+    ) -> EntityId {
+        let pawn = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        for &(slot, item) in slots {
+            inventory.wieldables[slot] = Some(item);
+        }
+        inventory.active_slot = active_slot;
+        if let Some((origin, target)) = switch {
+            inventory.switch_origin = Some(origin);
+            inventory.switch_target = Some(target);
+        }
+        registry.set_component(pawn, inventory).unwrap();
+        pawn
+    }
+
+    #[test]
+    fn release_non_active_slot_keeps_the_active_weapon_with_no_switch_in_flight() {
+        let mut registry = EntityRegistry::new();
+        let items = [
+            wieldable(&mut registry),
+            wieldable(&mut registry),
+            wieldable(&mut registry),
+        ];
+        let pawn = pawn_with(
+            &mut registry,
+            &[(0, items[0]), (2, items[1]), (3, items[2])],
+            3,
+            None,
+        );
+
+        assert_eq!(release_wieldable(&mut registry, pawn, 0), Some(items[0]));
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.wieldables[0], None);
+        assert_eq!(inventory.active_slot, 3);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+    }
+
+    #[test]
+    fn release_non_active_slot_keeps_active_and_an_unrelated_switch_in_flight() {
+        let mut registry = EntityRegistry::new();
+        let released = wieldable(&mut registry);
+        let outgoing = lowering_wieldable(&mut registry);
+        let target = wieldable(&mut registry);
+        let pawn = pawn_with(
+            &mut registry,
+            &[(0, released), (2, outgoing), (3, target)],
+            2,
+            Some((2, 3)),
+        );
+
+        assert_eq!(release_wieldable(&mut registry, pawn, 0), Some(released));
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 2);
+        assert_eq!(inventory.switch_target, Some(3));
+        assert_eq!(inventory.switch_origin, Some(2));
+        let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
+        assert_eq!(outgoing.state, WieldableState::Lowering);
+        assert_eq!(outgoing.state_remaining_ms, 40);
+    }
+
+    #[test]
+    fn release_non_active_origin_slot_clears_only_the_origin() {
+        let mut registry = EntityRegistry::new();
+        let origin = wieldable(&mut registry);
+        let active = wieldable(&mut registry);
+        let pawn = pawn_with(&mut registry, &[(0, origin), (2, active)], 2, None);
+        let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        inventory.switch_origin = Some(0);
+        registry.set_component(pawn, inventory).unwrap();
+
+        assert_eq!(release_wieldable(&mut registry, pawn, 0), Some(origin));
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 2);
+        assert_eq!(inventory.switch_origin, None);
+    }
+
+    #[test]
+    fn release_active_slot_selects_the_live_switch_target_in_idle_and_ends_the_switch() {
+        let mut registry = EntityRegistry::new();
+        let lowest = wieldable(&mut registry);
+        let outgoing = lowering_wieldable(&mut registry);
+        let target = wieldable(&mut registry);
+        let pawn = pawn_with(
+            &mut registry,
+            &[(0, lowest), (2, outgoing), (3, target)],
+            2,
+            Some((2, 3)),
+        );
+
+        assert_eq!(release_wieldable(&mut registry, pawn, 2), Some(outgoing));
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 3, "the target, not the lowest slot");
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+        let target = registry.get_component::<WeaponComponent>(target).unwrap();
+        assert_eq!(target.state, WieldableState::Idle, "a drop starts no raise");
+    }
+
+    #[test]
+    fn release_active_slot_with_a_dead_switch_target_falls_back_to_the_lowest_slot() {
+        let mut registry = EntityRegistry::new();
+        let lowest = wieldable(&mut registry);
+        let outgoing = lowering_wieldable(&mut registry);
+        // Slot 3 is the declared target but holds nothing.
+        let pawn = pawn_with(
+            &mut registry,
+            &[(1, lowest), (2, outgoing)],
+            2,
+            Some((2, 3)),
+        );
+
+        assert_eq!(release_wieldable(&mut registry, pawn, 2), Some(outgoing));
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 1);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+    }
+
+    #[test]
+    fn release_switch_target_mid_lower_returns_the_lowering_weapon_to_idle() {
+        let mut registry = EntityRegistry::new();
+        let outgoing = lowering_wieldable(&mut registry);
+        let target = wieldable(&mut registry);
+        let pawn = pawn_with(
+            &mut registry,
+            &[(0, outgoing), (1, target)],
+            0,
+            Some((0, 1)),
+        );
+
+        assert_eq!(release_wieldable(&mut registry, pawn, 1), Some(target));
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 0);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+        let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
+        assert_eq!(outgoing.state, WieldableState::Idle);
+        assert_eq!(outgoing.state_total_ms, 0);
+        assert_eq!(outgoing.state_remaining_ms, 0);
+    }
+
+    #[test]
+    fn released_mid_transition_weapon_is_idle_for_the_next_holder() {
+        for state in [WieldableState::Lowering, WieldableState::Raising] {
+            let mut registry = EntityRegistry::new();
+            let item = wieldable(&mut registry);
+            let mut weapon = registry
+                .get_component::<WeaponComponent>(item)
+                .unwrap()
+                .clone();
+            weapon.state = state;
+            weapon.state_total_ms = 100;
+            weapon.state_remaining_ms = 40;
+            weapon.primary_press_held_over_gate = true;
+            registry.set_component(item, weapon).unwrap();
+            let dropper = pawn_with(&mut registry, &[(0, item)], 0, None);
+
+            assert_eq!(release_wieldable(&mut registry, dropper, 0), Some(item));
+
+            let released = registry.get_component::<WeaponComponent>(item).unwrap();
+            assert_eq!(released.state, WieldableState::Idle);
+            assert_eq!(released.state_remaining_ms, 0);
+            assert_eq!(released.state_total_ms, 0);
+            assert!(!released.primary_press_held_over_gate);
+
+            // A second pawn with an empty inventory picks it up as its active weapon.
+            let picker = registry.spawn(Transform::default());
+            registry
+                .set_component(picker, Inventory::default())
+                .unwrap();
+            assert!(acquire_wieldable_at(&mut registry, picker, 1, item));
+            let inventory = registry.get_component::<Inventory>(picker).unwrap();
+            assert_eq!(inventory.active_wieldable(), Some(item));
+            assert_eq!(
+                registry
+                    .get_component::<WeaponComponent>(item)
+                    .unwrap()
+                    .state,
+                WieldableState::Idle
+            );
+        }
     }
 
     #[test]

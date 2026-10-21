@@ -64,7 +64,7 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
 
 - [ ] **Network lag simulator** — inject latency, jitter and loss into a session from a dev-toolbar control or CLI flag, so co-op playtests at realistic RTT need no OS-level link conditioning.
 
-- [ ] **coop--lossy-link-delivery** — under the dev lag profile a connected client's own pawn rubber-bands, worst in slides and vaults, because one lost datagram stalls reliable-ordered gameplay traffic for a 300 ms resend. Input resends at most one tick later and carries every gameplay family, switches included; Control resends at about 100 ms; the harness runs production channel semantics. Brief: `context/plans/ready/coop--lossy-link-delivery/`.
+- [x] **coop--lossy-link-delivery** — under the dev lag profile a connected client's own pawn rubber-bands, worst in slides and vaults, because one lost datagram stalls reliable-ordered gameplay traffic for a 300 ms resend. Input resends at most one tick later and carries every gameplay family, switches included; Control resends at about 100 ms; the harness runs production channel semantics. Brief: `context/plans/done/coop--lossy-link-delivery/`.
 
 - [ ] **coop--timed-slot-projection** — a connected client's reload meter fills in steps because the host's samples arrive about 30 times a second and show raw. The client projects reload, cooldown, heat and cell between samples from the host's own stamped slope, display only, with no wire change; the dev HUD gains a heat bar. Brief: `context/plans/ready/coop--timed-slot-projection/`.
 

@@ -8,6 +8,7 @@ use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION,
 };
 
+use super::capture_exclusion::ProbeExclusion;
 use super::shading::{CaptureScene, ShadeScratch};
 use super::share::{ShareSums, sample_solid_angle};
 use crate::bc6h::encode_bc6h_rgb_from_f32_rgba;
@@ -74,10 +75,12 @@ pub(crate) fn inverse_l1_distance(distance: Option<f32>, direction: Vec3) -> f32
 /// solid angle it stands for, feeds the share sums, which keep only the upper
 /// hemisphere the water reads; the tile keeps every direction. The same ray's
 /// hit distance feeds the distance tile, summed in the fixed supersample order
-/// so the bytes never depend on the worker count.
+/// so the bytes never depend on the worker count. Primary rays skip the
+/// probe's `exclusion`; with nothing excluded the row is the unfiltered one.
 pub(crate) fn capture_row(
     scene: &CaptureScene<'_>,
     capture_point: Vec3,
+    exclusion: &ProbeExclusion<'_>,
     row: u32,
     references: &[[f32; 3]],
 ) -> anyhow::Result<RowCapture> {
@@ -98,7 +101,7 @@ pub(crate) fn capture_row(
             let v = (row as f32 + 0.5 + dy) / interior;
             let direction = octahedral_direction(u, v);
             let (static_radiance, distance) =
-                scene.radiance(capture_point, direction, angle, &mut scratch)?;
+                scene.radiance(capture_point, direction, angle, exclusion, &mut scratch)?;
             inverse_distance += inverse_l1_distance(distance, direction);
             let animated = scratch.animated.lights();
             let capture = animated

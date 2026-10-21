@@ -4,8 +4,9 @@
 use glam::Vec3;
 
 use super::animated_direct::AnimatedDirectSampler;
+use super::capture_exclusion::{CaptureBrushes, ProbeExclusion, RayOutcome};
 use super::delta_sample::DeltaShSampler;
-use super::hit::SceneTracer;
+use super::hit::{SceneTracer, SurfacePoint};
 use super::lightmap_sample::LightmapSampler;
 use super::materials::SurfaceMaterials;
 use super::sdf_lights::SdfLights;
@@ -22,11 +23,13 @@ pub(crate) const PRODUCTION_INDIRECT_WEIGHT: f32 = 0.33;
 /// never occludes its own sdf light; the chunk light list's receiver offset.
 const SDF_SHADOW_NORMAL_OFFSET_M: f32 = 2.0e-3;
 
-/// Everything a capture ray reads: the static world, its materials, the
-/// encoded lightmap, the packed base SH volume, the animated lights' baked
-/// transport and the runtime's sdf lights.
+/// Everything a capture ray reads: the static world and the brushes it was
+/// built from, its materials, the encoded lightmap, the packed base SH
+/// volume, the animated lights' baked transport and the runtime's sdf lights.
 pub(crate) struct CaptureScene<'a> {
     pub tracer: SceneTracer<'a>,
+    /// The brushes a probe's excluded set names.
+    pub brushes: CaptureBrushes<'a>,
     pub materials: SurfaceMaterials<'a>,
     pub lightmap: LightmapSampler<'a>,
     pub sh: ShVolumeSampler<'a>,
@@ -67,20 +70,54 @@ impl AnimatedTerms {
 /// Per-thread buffers one capture ray reuses.
 #[derive(Debug, Default)]
 pub(crate) struct ShadeScratch {
-    /// The animated terms of the last [`CaptureScene::radiance`] call.
+    /// The animated terms of the last [`CaptureScene::shade`] call.
     pub animated: AnimatedTerms,
     slots: Vec<SlotRead>,
     slot_deltas: Vec<(u32, Vec3)>,
 }
 
 impl CaptureScene<'_> {
+    /// The surface a capture ray from `origin` along unit `direction` reads
+    /// under the probe's `exclusion`, its distance measured from `origin`.
+    pub(crate) fn trace(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        exclusion: &ProbeExclusion<'_>,
+    ) -> RayOutcome {
+        exclusion.trace(&self.tracer, origin, direction, self.max_distance)
+    }
+
     /// Radiance arriving at `origin` from unit `direction`, split as the
     /// capture composes it: the returned static radiance, and in
     /// `scratch.animated` each animated light's unit-radiance contribution;
     /// beside it the hit's distance along `direction`. Black with no animated
-    /// terms and no distance on a miss. `sample_angle` is the angular
-    /// width one sample stands for, which picks the texture mip a pixel of
-    /// that footprint would read.
+    /// terms and no distance on a miss. The surface comes from
+    /// [`Self::trace`] and shades through [`Self::shade`].
+    pub(crate) fn radiance(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        sample_angle: f32,
+        exclusion: &ProbeExclusion<'_>,
+        scratch: &mut ShadeScratch,
+    ) -> anyhow::Result<(Vec3, Option<f32>)> {
+        let outcome = self.trace(origin, direction, exclusion);
+        let Some(hit) = outcome.surface() else {
+            scratch.animated.clear();
+            return Ok((Vec3::ZERO, None));
+        };
+        let surface = self.tracer.surface(hit, origin, direction);
+        let radiance = self.shade(&surface, hit.distance, sample_angle, scratch)?;
+        Ok((radiance, Some(hit.distance)))
+    }
+
+    /// Static radiance leaving `surface` toward a capture point `distance`
+    /// away, with each animated light's unit-radiance contribution in
+    /// `scratch.animated`. A traced point and a synthesized one shade alike;
+    /// `distance` and `sample_angle` size the texture footprint, so the mip
+    /// is the one a pixel at the capture point would read. `sample_angle` is
+    /// the angular width one sample stands for.
     ///
     /// Static is `albedo × (lightmap + selected sdf direct + base SH ×
     /// production weight) + emissive × prefix multiplier`; a light's unit term
@@ -91,23 +128,17 @@ impl CaptureScene<'_> {
     /// needs a runtime entity, so neither enters. An animated sdf light's
     /// direct is static: the forward sdf loop reads the spec buffer's fixed
     /// colour, never its curve, and draws it whether or not the light is
-    /// active, so only its delta SH follows its curve.
-    pub(crate) fn radiance(
+    /// active, so only its delta SH follows its curve. Shadow rays see the
+    /// whole static world, excluded brushes included.
+    pub(crate) fn shade(
         &self,
-        origin: Vec3,
-        direction: Vec3,
+        surface: &SurfacePoint,
+        distance: f32,
         sample_angle: f32,
         scratch: &mut ShadeScratch,
-    ) -> anyhow::Result<(Vec3, Option<f32>)> {
+    ) -> anyhow::Result<Vec3> {
         scratch.animated.clear();
-        let Some(hit) = self
-            .tracer
-            .closest_hit(origin, direction, self.max_distance)
-        else {
-            return Ok((Vec3::ZERO, None));
-        };
-        let surface = self.tracer.surface(&hit, origin, direction);
-        let footprint_texels = hit.distance * sample_angle * surface.texel_density;
+        let footprint_texels = distance * sample_angle * surface.texel_density;
         let material = self
             .materials
             .sample(surface.texture_index, surface.uv, footprint_texels);
@@ -147,10 +178,7 @@ impl CaptureScene<'_> {
                 &mut scratch.animated,
             );
         }
-        Ok((
-            shade(material.albedo, direct, indirect, material.emissive),
-            Some(hit.distance),
-        ))
+        Ok(shade(material.albedo, direct, indirect, material.emissive))
     }
 }
 

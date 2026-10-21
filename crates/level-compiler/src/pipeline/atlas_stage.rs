@@ -58,10 +58,13 @@ pub(super) struct AtlasStageOutput {
 /// face-identity set (leaf face ranges, BVH, CellDrawIndex) over the cut
 /// geometry; resolve the cell partition from the final leaves and BVH; check
 /// the conservative animated-block bound; then pack blocks in partition
-/// order. `leaves` is updated in place; `bvh_section` is the pre-atlas BVH.
+/// order. `leaves` and `face_brushes`, the face → brush table index-aligned
+/// with `geometry`'s faces, are updated in place; `bvh_section` is the
+/// pre-atlas BVH.
 pub(super) fn prepare_atlas_stage(
     inputs: AtlasStageInputs<'_>,
     geometry: &mut GeometryResult,
+    face_brushes: &mut Vec<Option<u32>>,
     leaves: &mut BspLeavesSection,
     bvh_section: &BvhSection,
 ) -> anyhow::Result<AtlasStageOutput> {
@@ -88,6 +91,7 @@ pub(super) fn prepare_atlas_stage(
                     .sum::<usize>(),
                 face_remap.last().map_or(0, |range| range.end),
             );
+            *face_brushes = crate::geometry::remap_face_brushes(face_brushes, face_remap);
             Some(rebuild_face_identity(geometry, leaves, face_remap)?)
         }
         None => None,

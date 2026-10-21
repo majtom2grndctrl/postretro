@@ -10,8 +10,8 @@ use postretro_level_format::reflection_probes::MAX_REFLECTION_PROBES;
 
 use crate::bake_control::BakeControl;
 use crate::bvh_build::{BvhPrimitive, build_bvh};
-use crate::geometry::{GeometryResult, extract_geometry};
-use crate::map_data::{MapData, MapReflectionVolume};
+use crate::geometry::{GeometryResult, extract_geometry_with_brushes};
+use crate::map_data::{BrushVolume, MapData, MapReflectionVolume};
 use crate::map_format::MapFormat;
 use crate::partition::BspTree;
 use crate::{environment_volumes, parse, partition, portals, visibility};
@@ -31,15 +31,20 @@ const TEXTURE: &str = "test/wall";
 /// A Quake-format axis-aligned box brush spanning `min`..`max` in map units,
 /// each face wound so its normal points out of the box.
 pub(crate) fn box_brush(min: [f64; 3], max: [f64; 3]) -> String {
+    textured_box_brush(min, max, TEXTURE)
+}
+
+/// [`box_brush`] with every side textured `texture`.
+pub(crate) fn textured_box_brush(min: [f64; 3], max: [f64; 3], texture: &str) -> String {
     let ([x0, y0, z0], [x1, y1, z1]) = (min, max);
     format!(
         "{{\n\
-         ( {x0} 0 0 ) ( {x0} 1 0 ) ( {x0} 0 1 ) {TEXTURE} 0 0 0 1 1\n\
-         ( {x1} 0 0 ) ( {x1} 0 1 ) ( {x1} 1 0 ) {TEXTURE} 0 0 0 1 1\n\
-         ( 0 {y0} 0 ) ( 0 {y0} 1 ) ( 1 {y0} 0 ) {TEXTURE} 0 0 0 1 1\n\
-         ( 0 {y1} 0 ) ( 1 {y1} 0 ) ( 0 {y1} 1 ) {TEXTURE} 0 0 0 1 1\n\
-         ( 0 0 {z0} ) ( 1 0 {z0} ) ( 0 1 {z0} ) {TEXTURE} 0 0 0 1 1\n\
-         ( 0 0 {z1} ) ( 0 1 {z1} ) ( 1 0 {z1} ) {TEXTURE} 0 0 0 1 1\n\
+         ( {x0} 0 0 ) ( {x0} 1 0 ) ( {x0} 0 1 ) {texture} 0 0 0 1 1\n\
+         ( {x1} 0 0 ) ( {x1} 0 1 ) ( {x1} 1 0 ) {texture} 0 0 0 1 1\n\
+         ( 0 {y0} 0 ) ( 0 {y0} 1 ) ( 1 {y0} 0 ) {texture} 0 0 0 1 1\n\
+         ( 0 {y1} 0 ) ( 1 {y1} 0 ) ( 0 {y1} 1 ) {texture} 0 0 0 1 1\n\
+         ( 0 0 {z0} ) ( 1 0 {z0} ) ( 0 1 {z0} ) {texture} 0 0 0 1 1\n\
+         ( 0 0 {z1} ) ( 0 1 {z1} ) ( 1 0 {z1} ) {texture} 0 0 0 1 1\n\
          }}"
     )
 }
@@ -95,6 +100,9 @@ pub(crate) struct PlacementFixture {
     pub exterior: HashSet<usize>,
     pub environment: EnvironmentVolumesSection,
     pub authored: Vec<MapReflectionVolume>,
+    /// `MapData::brush_volumes`, and each face's brush in that list.
+    pub brushes: Vec<BrushVolume>,
+    pub face_brushes: Vec<Option<u32>>,
 }
 
 impl PlacementFixture {
@@ -109,7 +117,8 @@ impl PlacementFixture {
         let result = partition::partition(&map.brush_volumes).expect("partition");
         let generated = portals::generate_portals(&result.tree);
         let exterior = visibility::find_exterior_leaves(&result.tree, &generated);
-        let mut geometry = extract_geometry(&result.faces, &result.tree, &exterior);
+        let (mut geometry, face_brushes) =
+            extract_geometry_with_brushes(&result.faces, &result.tree, &exterior);
         let (bvh, primitives, _) = build_bvh(&geometry).expect("BVH build");
         let environment = environment_volumes::encode_environment_volumes_section(
             &map.environment_volumes,
@@ -125,6 +134,8 @@ impl PlacementFixture {
             exterior,
             environment,
             authored: map.reflection_volumes,
+            brushes: map.brush_volumes,
+            face_brushes,
         }
     }
 
@@ -161,7 +172,7 @@ impl PlacementFixture {
         fit_box(&tracer, origin, &self.bounds(), &fit_rays())
     }
 
-    fn bounds(&self) -> WorldBounds {
+    pub(crate) fn bounds(&self) -> WorldBounds {
         WorldBounds::from_positions(self.geometry.geometry.vertices.iter().map(|v| &v.position))
             .expect("the fixture has a static world")
     }

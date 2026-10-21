@@ -59,8 +59,21 @@ pub fn extract_geometry(
     tree: &BspTree,
     exterior_leaves: &HashSet<usize>,
 ) -> GeometryResult {
+    extract_geometry_with_brushes(faces, tree, exterior_leaves).0
+}
+
+/// [`extract_geometry`], plus each output face's source brush
+/// (`Face::brush_index`, indexing `MapData::brush_volumes`), index-aligned
+/// with `geometry.faces`. The table stays beside the result, out of the
+/// serialized geometry, and follows the oversize cut through
+/// [`remap_face_brushes`].
+pub fn extract_geometry_with_brushes(
+    faces: &[Face],
+    tree: &BspTree,
+    exterior_leaves: &HashSet<usize>,
+) -> (GeometryResult, Vec<Option<u32>>) {
     if faces.is_empty() {
-        return GeometryResult {
+        let empty = GeometryResult {
             geometry: GeometrySection {
                 vertices: Vec::new(),
                 indices: Vec::new(),
@@ -69,6 +82,7 @@ pub fn extract_geometry(
             texture_names: TextureNamesSection { names: Vec::new() },
             face_index_ranges: Vec::new(),
         };
+        return (empty, Vec::new());
     }
 
     // Build deduplicated texture name list (encounter order).
@@ -95,9 +109,11 @@ pub fn extract_geometry(
     let mut indices: Vec<u32> = Vec::new();
     let mut face_metas: Vec<FaceMeta> = Vec::new();
     let mut face_index_ranges: Vec<FaceIndexRange> = Vec::new();
+    let mut face_brushes: Vec<Option<u32>> = Vec::with_capacity(ordered_faces.len());
 
     for &(face_idx, bsp_leaf_idx) in &ordered_faces {
         let face = &faces[face_idx];
+        face_brushes.push(Some(face.brush_index as u32));
 
         let base_vertex = vertices.len() as u32;
 
@@ -152,7 +168,7 @@ pub fn extract_geometry(
         });
     }
 
-    GeometryResult {
+    let result = GeometryResult {
         geometry: GeometrySection {
             vertices,
             indices,
@@ -162,7 +178,26 @@ pub fn extract_geometry(
             names: texture_names,
         },
         face_index_ranges,
+    };
+    (result, face_brushes)
+}
+
+/// The face → brush table after the oversize cut: each sub-face takes its
+/// parent's brush (`face_remap[old]` is the range of faces that replaced
+/// `old`), and a face the cut emptied, whose range is empty, leaves no entry.
+/// A post-cut slot no range reaches stays `None`.
+pub fn remap_face_brushes(
+    face_brushes: &[Option<u32>],
+    face_remap: &[std::ops::Range<usize>],
+) -> Vec<Option<u32>> {
+    let total = face_remap.last().map_or(0, |range| range.end);
+    let mut remapped = vec![None; total];
+    for (brush, range) in face_brushes.iter().zip(face_remap) {
+        for slot in &mut remapped[range.clone()] {
+            *slot = *brush;
+        }
     }
+    remapped
 }
 
 /// Project kinematic mover brush sides into origin-relative PRL geometry.

@@ -209,12 +209,16 @@ pub(super) fn with_inputs<R>(
     let tree = empty_tree();
     let exterior = HashSet::new();
     let extras = &room.extras;
+    // No brushes: the synthetic room is faces only, and no probe excludes.
+    let face_brushes = vec![None; room.geometry.geometry.faces.len()];
     f(&ReflectionProbeInputs {
         bvh: &bvh,
         primitives: &primitives,
         geometry: &room.geometry,
         environment_volumes: environment,
         reflection_volumes: &extras.authored,
+        brush_volumes: &[],
+        face_brushes: &face_brushes,
         tree: &tree,
         exterior_leaves: &exterior,
         lightmap: &room.lightmap,

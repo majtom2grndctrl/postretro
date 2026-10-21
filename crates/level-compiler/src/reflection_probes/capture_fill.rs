@@ -3,6 +3,7 @@
 
 use glam::{DVec3, Vec3};
 
+use super::capture_exclusion::BrushFaces;
 use super::hit::{SceneTracer, SurfaceHit, SurfacePoint};
 use super::placement::PLANE_TOLERANCE_M;
 use crate::geometry::{GeometryResult, compute_texel_uv, engine_to_quake};
@@ -56,17 +57,15 @@ impl KeptCandidate {
     /// post-cut faces of that brush lying on its plane.
     pub(super) fn build(
         volumes: &[BrushVolume],
-        face_brushes: &[Option<u32>],
+        brush_faces: &BrushFaces,
         geometry: &GeometryResult,
         kept: &[u32],
     ) -> Vec<Self> {
         let names = &geometry.texture_names.names;
-        let mut candidates: Vec<Self> = kept
-            .iter()
-            .map(|&brush| Self {
-                brush,
-                sides: volumes[brush as usize]
-                    .sides
+        kept.iter()
+            .map(|&brush| {
+                let brush_sides = &volumes[brush as usize].sides;
+                let mut sides: Vec<CoveringSide> = brush_sides
                     .iter()
                     .map(|side| CoveringSide {
                         faces: Vec::new(),
@@ -75,30 +74,23 @@ impl KeptCandidate {
                             .position(|name| *name == side.texture)
                             .map(|i| i as u32),
                     })
-                    .collect(),
-            })
-            .collect();
-        if kept.is_empty() {
-            return candidates;
-        }
-        for (face, brush) in face_brushes.iter().enumerate() {
-            let Some(slot) = brush.and_then(|b| kept.binary_search(&b).ok()) else {
-                continue;
-            };
-            let Some((normal, distance)) = face_plane(geometry, face) else {
-                continue;
-            };
-            let candidate = &mut candidates[slot];
-            let sides = &volumes[candidate.brush as usize].sides;
-            for (side, covering) in sides.iter().zip(&mut candidate.sides) {
-                if side.normal.dot(normal) >= COPLANAR_MIN_COS
-                    && (side.distance - distance).abs() <= FILL_TOLERANCE_M
-                {
-                    covering.faces.push(face as u32);
+                    .collect();
+                // The brush's faces arrive ascending, so each side's do.
+                for &face in brush_faces.of(brush) {
+                    let Some((normal, distance)) = face_plane(geometry, face as usize) else {
+                        continue;
+                    };
+                    for (side, covering) in brush_sides.iter().zip(&mut sides) {
+                        if side.normal.dot(normal) >= COPLANAR_MIN_COS
+                            && (side.distance - distance).abs() <= FILL_TOLERANCE_M
+                        {
+                            covering.faces.push(face);
+                        }
+                    }
                 }
-            }
-        }
-        candidates
+                Self { brush, sides }
+            })
+            .collect()
     }
 }
 

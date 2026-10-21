@@ -14,6 +14,7 @@ mod capture_visibility;
 mod delta_sample;
 mod derived;
 mod exclusion;
+mod exclusion_underside;
 mod hit;
 mod lightmap_sample;
 mod materials;
@@ -35,6 +36,8 @@ mod capture_fill_tests;
 mod capture_tests;
 #[cfg(test)]
 mod distance_tests;
+#[cfg(test)]
+mod exclusion_stage_tests;
 #[cfg(test)]
 mod exclusion_tests;
 #[cfg(test)]
@@ -69,16 +72,17 @@ use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::StageCache;
 use crate::geometry::GeometryResult;
-use crate::map_data::{BrushVolume, MapReflectionVolume};
+use crate::map_data::{BrushVolume, MapReflectionVolume, ReflectionCapture};
 use crate::partition::BspTree;
 
 use animated_direct::AnimatedDirectSampler;
 use box_fit::WorldBounds;
 use capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile, encode_tile};
-use capture_exclusion::{CaptureBrushes, ProbeExclusion};
+use capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
 use capture_point::PointClassifier;
 use capture_visibility::warn_hidden_water;
 use delta_sample::DeltaShSampler;
+use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
 use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
 use materials::SurfaceMaterials;
@@ -105,7 +109,10 @@ const STAGE_ID: &str = "reflection_probes";
 /// 9: a wall past a column's first ceiling hit still tops it when farther
 /// out (a sunken pool under an overhanging lip fits the room); the key
 /// gains id 45's descriptor table.
-const STAGE_VERSION: u32 = 9;
+/// 10: capture exclusion: primary rays skip each probe's excluded brushes,
+/// with fill and leak guard; the key gains the override table, the rule's
+/// constants and each probe's excluded set with its hulls and contacts.
+const STAGE_VERSION: u32 = 10;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -124,6 +131,9 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     /// through that set.
     pub brush_volumes: &'a [BrushVolume],
     pub face_brushes: &'a [Option<u32>],
+    /// Each brush's resolved capture override, index-aligned with
+    /// `brush_volumes` (`MapData::brush_capture_override`).
+    pub capture_override: &'a [ReflectionCapture],
     /// The compiler BSP and its exterior leaves: a capture point in a solid
     /// leaf is in solid, one in an exterior leaf is outside the hull.
     pub tree: &'a BspTree,
@@ -188,6 +198,29 @@ pub(crate) fn bake_or_load_reflection_probes(
     stage_cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
+    bake_or_load_with(inputs, stage_cache, control, classify_probes_within_boxes)
+}
+
+/// The stage with every probe's excluded set forced empty: the unfiltered
+/// capture, for tests comparing against it.
+#[cfg(test)]
+pub(crate) fn bake_or_load_unfiltered(
+    inputs: &ReflectionProbeInputs<'_>,
+    stage_cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> anyhow::Result<Option<ReflectionProbesSection>> {
+    bake_or_load_with(inputs, stage_cache, control, |_, probes| {
+        vec![Vec::new(); probes.len()]
+    })
+}
+
+/// The stage, each placed probe's excluded set from `classify`.
+fn bake_or_load_with(
+    inputs: &ReflectionProbeInputs<'_>,
+    stage_cache: Option<&StageCache>,
+    control: &BakeControl,
+    classify: impl FnOnce(&ExclusionScene<'_>, &[PlacedProbe]) -> Vec<Vec<u32>>,
+) -> anyhow::Result<Option<ReflectionProbesSection>> {
     if inputs.reflection_volumes.is_empty()
         && up_facing_faces(inputs.environment_volumes).is_empty()
     {
@@ -233,8 +266,59 @@ pub(crate) fn bake_or_load_reflection_probes(
     let references = references(&inputs.sh_volume.animation_descriptors);
     log_negative_references(&references);
 
+    // Classification follows placement and the cap, which never see it, and
+    // runs on every build: each probe's excluded set, its hulls and their
+    // contacts key the capture.
+    anyhow::ensure!(
+        inputs.capture_override.len() == inputs.brush_volumes.len()
+            && inputs.face_brushes.len() == inputs.geometry.face_index_ranges.len(),
+        "{} capture override(s) for {} brush(es), {} face brush(es) for {} face(s)",
+        inputs.capture_override.len(),
+        inputs.brush_volumes.len(),
+        inputs.face_brushes.len(),
+        inputs.geometry.face_index_ranges.len(),
+    );
+    let excluded = classify(
+        &ExclusionScene {
+            brush_volumes: inputs.brush_volumes,
+            capture_override: inputs.capture_override,
+            face_brush: inputs.face_brushes,
+            geometry: inputs.geometry,
+            environment_volumes: inputs.environment_volumes,
+        },
+        &probes,
+    );
+    anyhow::ensure!(
+        excluded.len() == probes.len(),
+        "{} excluded set(s) for {} probe(s)",
+        excluded.len(),
+        probes.len()
+    );
+    let brush_faces = BrushFaces::new(inputs.face_brushes, inputs.brush_volumes.len());
+    let brushes = CaptureBrushes {
+        volumes: inputs.brush_volumes,
+        face_brushes: inputs.face_brushes,
+        faces: &brush_faces,
+    };
+    let exclusions: Vec<ProbeExclusion<'_>> = probes
+        .iter()
+        .zip(&excluded)
+        .map(|(probe, set)| ProbeExclusion::new(&tracer, brushes, set, probe))
+        .collect();
+    for (index, exclusion) in exclusions.iter().enumerate() {
+        log::info!(
+            "[ReflectionProbes] probe {index}: {} brush(es) excluded from its capture",
+            exclusion.excluded().len()
+        );
+    }
+
     // Capture is a pure function of the keyed inputs, so a hit skips it.
-    let key = cache_key(inputs, &probes)?;
+    let key = cache_key(
+        inputs,
+        &probes,
+        &exclusions,
+        &ExclusionConstants::PRODUCTION,
+    )?;
     if let Some((section, reports)) =
         stage_cache
             .and_then(|cache| cache.get(&key))
@@ -269,10 +353,7 @@ pub(crate) fn bake_or_load_reflection_probes(
         .transpose()?;
     let scene = CaptureScene {
         tracer,
-        brushes: CaptureBrushes {
-            volumes: inputs.brush_volumes,
-            face_brushes: inputs.face_brushes,
-        },
+        brushes,
         materials: SurfaceMaterials::new(
             &inputs.geometry.texture_names.names,
             inputs.texture_keys,
@@ -287,10 +368,7 @@ pub(crate) fn bake_or_load_reflection_probes(
         sdf: SdfLights::new(inputs.alpha_lights, inputs.chunk_light_list),
         max_distance: bounds.diagonal() as f32 + 1.0,
     };
-    // No probe excludes a brush until per-probe classification feeds these
-    // sets, so every capture is the unfiltered one.
-    let excluded = vec![Vec::new(); probes.len()];
-    let (section, reports) = capture_section(&scene, &probes, &excluded, &references, control)?;
+    let (section, reports) = capture_probes(&scene, &probes, &exclusions, &references, control)?;
     if let Some(cache) = stage_cache {
         cache.put(&key, &cache_payload(&section, &reports));
     }
@@ -299,11 +377,9 @@ pub(crate) fn bake_or_load_reflection_probes(
     Ok(Some(section))
 }
 
-/// Capture every probe's colour and distance tiles and light share, each
-/// probe's primary rays skipping its `excluded` brushes (sorted brush
-/// indices, one set per probe). Work items are tile rows, so one probe
-/// spreads across workers; rows land in item order and each probe's share
-/// sums merge in row order, so the bytes never depend on the worker count.
+/// [`capture_probes`] with each probe's primary rays skipping its
+/// `excluded` brushes (sorted brush indices, one set per probe).
+#[cfg(test)]
 fn capture_section(
     scene: &CaptureScene<'_>,
     probes: &[PlacedProbe],
@@ -322,6 +398,27 @@ fn capture_section(
         .zip(excluded)
         .map(|(probe, excluded)| ProbeExclusion::new(&scene.tracer, scene.brushes, excluded, probe))
         .collect();
+    capture_probes(scene, probes, &exclusions, references, control)
+}
+
+/// Capture every probe's colour and distance tiles and light share, each
+/// probe's primary rays under its exclusion (one per probe). Work items are
+/// tile rows, so one probe spreads across workers; rows land in item order
+/// and each probe's share sums merge in row order, so the bytes never depend
+/// on the worker count.
+fn capture_probes(
+    scene: &CaptureScene<'_>,
+    probes: &[PlacedProbe],
+    exclusions: &[ProbeExclusion<'_>],
+    references: &[[f32; 3]],
+    control: &BakeControl,
+) -> anyhow::Result<(ReflectionProbesSection, Vec<ShareReport>)> {
+    anyhow::ensure!(
+        exclusions.len() == probes.len(),
+        "{} exclusion(s) for {} probe(s)",
+        exclusions.len(),
+        probes.len()
+    );
     let rows_per_tile = TILE_INTERIOR as usize;
     let items: Vec<(usize, u32)> = (0..probes.len())
         .flat_map(|probe| (0..TILE_INTERIOR).map(move |row| (probe, row)))

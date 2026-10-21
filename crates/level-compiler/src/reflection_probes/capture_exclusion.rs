@@ -7,6 +7,7 @@ use super::capture_fill::{Fill, KeptCandidate, find_fill};
 use super::hit::{FaceMask, MaskedHit, RAY_EPSILON, SceneTracer, SurfaceHit};
 use super::placement::{PLANE_TOLERANCE_M, PlacedProbe};
 use crate::map_data::BrushVolume;
+use crate::partition::Aabb;
 
 /// A point within this of a hull's planes is inside it. It only absorbs the
 /// rounding of a ray point computed on a coplanar plane (flush contact), so
@@ -22,6 +23,52 @@ pub(crate) struct CaptureBrushes<'a> {
     /// Post-cut face → brush index into `volumes`, index-aligned with the
     /// geometry's faces; `None` for a face no brush owns.
     pub face_brushes: &'a [Option<u32>],
+    /// `face_brushes` inverted.
+    pub faces: &'a BrushFaces,
+}
+
+/// Each brush's post-cut faces, ascending: the face → brush table inverted
+/// once per stage, so a probe's mask and contact faces cost what its brushes
+/// own rather than a pass over every face in the world.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BrushFaces {
+    /// Brush `b`'s faces are `faces[offsets[b]..offsets[b + 1]]`.
+    offsets: Vec<u32>,
+    faces: Vec<u32>,
+}
+
+impl BrushFaces {
+    /// `face_brushes` inverted over `brush_count` brushes; a face naming a
+    /// brush past them, or none, is in no brush's list.
+    pub(crate) fn new(face_brushes: &[Option<u32>], brush_count: usize) -> Self {
+        let owner = |brush: &Option<u32>| brush.filter(|&b| (b as usize) < brush_count);
+        let mut offsets = vec![0u32; brush_count + 1];
+        for brush in face_brushes.iter().filter_map(owner) {
+            offsets[brush as usize + 1] += 1;
+        }
+        for b in 0..brush_count {
+            offsets[b + 1] += offsets[b];
+        }
+        let mut next = offsets.clone();
+        let mut faces = vec![0u32; offsets[brush_count] as usize];
+        // Faces visited in ascending order land ascending in each list.
+        for (face, brush) in face_brushes.iter().enumerate() {
+            if let Some(brush) = owner(brush) {
+                faces[next[brush as usize] as usize] = face as u32;
+                next[brush as usize] += 1;
+            }
+        }
+        Self { offsets, faces }
+    }
+
+    /// Brush `brush`'s faces, ascending; empty for a brush past the table.
+    pub(crate) fn of(&self, brush: u32) -> &[u32] {
+        let b = brush as usize;
+        match (self.offsets.get(b), self.offsets.get(b + 1)) {
+            (Some(&start), Some(&end)) => &self.faces[start as usize..end as usize],
+            _ => &[],
+        }
+    }
 }
 
 /// What a capture ray reads.
@@ -71,8 +118,10 @@ pub(crate) struct ProbeExclusion<'a> {
     /// Their surviving faces.
     mask: FaceMask,
     /// Per excluded brush, parallel to `excluded`: the brushes whose bounds
-    /// touch its own. An exit point or a covering side lies on the hull, so
-    /// any brush holding one is among these.
+    /// touch its own, among those touching the projection box. An exit point
+    /// or a covering side lies on the hull, so any brush holding one is among
+    /// these; one off the box could only place the ray outside it, where the
+    /// leak guard reads the same surface whatever that brush is.
     contacts: Vec<Contacts>,
     /// Every kept brush some excluded brush touches, sorted by brush.
     kept: Vec<KeptCandidate>,
@@ -112,6 +161,7 @@ impl<'a> ProbeExclusion<'a> {
             excluded.windows(2).all(|pair| pair[0] < pair[1]),
             "excluded brushes are sorted and deduplicated"
         );
+        let projection_box = ProjectionBox::of(probe);
         let excluded: Vec<u32> = excluded
             .iter()
             .copied()
@@ -121,25 +171,31 @@ impl<'a> ProbeExclusion<'a> {
             FaceMask::default()
         } else {
             tracer.face_mask(
-                brushes
-                    .face_brushes
+                excluded
                     .iter()
-                    .enumerate()
-                    .filter(|(_, brush)| brush.is_some_and(|b| excluded.binary_search(&b).is_ok()))
-                    .map(|(face, _)| face as u32),
+                    .flat_map(|&brush| brushes.faces.of(brush).iter().copied()),
             )
+        };
+        // One pass over the hulls per probe; every contact scan after it is
+        // bounded by the brushes near the box.
+        let near: Vec<u32> = if excluded.is_empty() {
+            Vec::new()
+        } else {
+            (0..brushes.volumes.len() as u32)
+                .filter(|&brush| projection_box.touches(&brushes.volumes[brush as usize].aabb))
+                .collect()
         };
         let mut touching: Vec<(Vec<u32>, Vec<usize>)> = Vec::with_capacity(excluded.len());
         for &brush in &excluded {
             let bounds = &brushes.volumes[brush as usize].aabb;
             let (mut kept, mut others) = (Vec::new(), Vec::new());
-            for (other, volume) in brushes.volumes.iter().enumerate() {
-                if other == brush as usize || !bounds_touch(bounds, &volume.aabb) {
+            for &other in &near {
+                if other == brush || !bounds_touch(bounds, &brushes.volumes[other as usize].aabb) {
                     continue;
                 }
-                match excluded.binary_search(&(other as u32)) {
+                match excluded.binary_search(&other) {
                     Ok(slot) => others.push(slot),
-                    Err(_) => kept.push(other as u32),
+                    Err(_) => kept.push(other),
                 }
             }
             touching.push((kept, others));
@@ -153,7 +209,7 @@ impl<'a> ProbeExclusion<'a> {
         kept_brushes.dedup();
         let kept = KeptCandidate::build(
             brushes.volumes,
-            brushes.face_brushes,
+            brushes.faces,
             tracer.geometry(),
             &kept_brushes,
         );
@@ -173,8 +229,39 @@ impl<'a> ProbeExclusion<'a> {
             mask,
             contacts,
             kept,
-            projection_box: ProjectionBox::of(probe),
+            projection_box,
         }
+    }
+
+    /// The excluded brushes, ascending.
+    pub(crate) fn excluded(&self) -> &[u32] {
+        &self.excluded
+    }
+
+    /// Every kept brush some excluded brush touches, ascending: the
+    /// candidates whose sides a fill reads and whose hulls are kept solid.
+    pub(crate) fn kept_contacts(&self) -> impl Iterator<Item = u32> + '_ {
+        self.kept.iter().map(|candidate| candidate.brush)
+    }
+
+    /// The post-cut faces of the excluded brush in `slot` of
+    /// [`Self::excluded`]: its share of the mask, ascending.
+    pub(crate) fn faces_of(&self, slot: usize) -> &[u32] {
+        self.brushes.faces.of(self.excluded[slot])
+    }
+
+    /// The contacts of the excluded brush in `slot` of [`Self::excluded`]:
+    /// its kept brushes, then its other excluded brushes, each ascending.
+    pub(crate) fn contacts_of(&self, slot: usize) -> (Vec<u32>, Vec<u32>) {
+        let contacts = &self.contacts[slot];
+        (
+            contacts.kept.iter().map(|&k| self.kept[k].brush).collect(),
+            contacts
+                .excluded
+                .iter()
+                .map(|&e| self.excluded[e])
+                .collect(),
+        )
     }
 
     /// Whether the probe excludes nothing: its capture is the unfiltered one.
@@ -357,7 +444,7 @@ impl<'a> ProbeExclusion<'a> {
 }
 
 /// Bounds that overlap or touch within [`PLANE_TOLERANCE_M`].
-fn bounds_touch(a: &crate::partition::Aabb, b: &crate::partition::Aabb) -> bool {
+fn bounds_touch(a: &Aabb, b: &Aabb) -> bool {
     (0..3).all(|axis| {
         a.min[axis] <= b.max[axis] + PLANE_TOLERANCE_M
             && b.min[axis] <= a.max[axis] + PLANE_TOLERANCE_M
@@ -366,13 +453,13 @@ fn bounds_touch(a: &crate::partition::Aabb, b: &crate::partition::Aabb) -> bool 
 
 /// A probe's projection box as the leak guard tests it.
 #[derive(Debug, Clone, Copy)]
-struct ProjectionBox {
+pub(crate) struct ProjectionBox {
     min: DVec3,
     max: DVec3,
 }
 
 impl ProjectionBox {
-    fn of(probe: &PlacedProbe) -> Self {
+    pub(crate) fn of(probe: &PlacedProbe) -> Self {
         Self {
             min: Vec3::from(probe.box_min).as_dvec3(),
             max: Vec3::from(probe.box_max).as_dvec3(),
@@ -391,5 +478,17 @@ impl ProjectionBox {
             && point.z >= self.min.z - tolerance
             && point.z <= self.max.z + tolerance
             && point.y <= self.max.y + tolerance
+    }
+
+    /// Whether `aabb` touches the box under [`Self::holds`]'s rule: within
+    /// [`PLANE_TOLERANCE_M`], its floor ignored. A hull that does not touch
+    /// it holds no point the box holds.
+    pub(crate) fn touches(&self, aabb: &Aabb) -> bool {
+        let tolerance = PLANE_TOLERANCE_M;
+        aabb.min.x <= self.max.x + tolerance
+            && aabb.max.x >= self.min.x - tolerance
+            && aabb.min.z <= self.max.z + tolerance
+            && aabb.max.z >= self.min.z - tolerance
+            && aabb.min.y <= self.max.y + tolerance
     }
 }

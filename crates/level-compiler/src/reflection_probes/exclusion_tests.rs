@@ -17,8 +17,8 @@ use super::box_fit::WorldBounds;
 use super::capture_point::PointClassifier;
 use super::exclusion::{
     BrushExtents, DEFAULT_HFOV_DEGREES, ExclusionScene, SSR_COARSEST_STRIDE_DIVISOR,
-    THRESHOLD_KNEE_WIDTH_M, classify_probes, excluded_by_rule, floor_ratio, size_threshold,
-    thin_floor, water_width,
+    THRESHOLD_KNEE_WIDTH_M, classify_probes, classify_probes_within_boxes, excluded_by_rule,
+    floor_ratio, size_threshold, thin_floor, water_width,
 };
 use super::hit::SceneTracer;
 use super::placement::{PlacedProbe, PlacementScene, place_probes};
@@ -31,11 +31,13 @@ use super::reflection_probes_test_fixtures::{GeometryBuilder, fluid_volume, up_r
 // Fixtures
 // ---------------------------------------------------------------------------
 
-/// A compiled map with what classification reads, every brush `Auto`.
+/// A compiled map with what classification reads.
 struct ExclusionFixture {
     geometry: GeometryResult,
     face_brush: Vec<Option<u32>>,
     brush_volumes: Vec<BrushVolume>,
+    /// As parsed; [`Self::excluded`] ignores it.
+    capture_override: Vec<ReflectionCapture>,
     environment: EnvironmentVolumesSection,
     probes: Vec<PlacedProbe>,
 }
@@ -87,11 +89,27 @@ impl ExclusionFixture {
             geometry,
             face_brush,
             brush_volumes: map.brush_volumes,
+            capture_override: map.brush_capture_override,
             environment,
             probes,
         }
     }
 
+    /// The stage's sets: the parsed overrides, within each probe's box.
+    fn stage_excluded(&self) -> Vec<Vec<u32>> {
+        classify_probes_within_boxes(
+            &ExclusionScene {
+                brush_volumes: &self.brush_volumes,
+                capture_override: &self.capture_override,
+                face_brush: &self.face_brush,
+                geometry: &self.geometry,
+                environment_volumes: &self.environment,
+            },
+            &self.probes,
+        )
+    }
+
+    /// Every brush `Auto`, map-wide.
     fn excluded(&self) -> Vec<Vec<u32>> {
         let overrides = vec![ReflectionCapture::Auto; self.brush_volumes.len()];
         classify_probes(
@@ -408,6 +426,135 @@ fn overrides_beat_the_rule_in_both_directions() {
         ReflectionCapture::Auto,
     ];
     assert_eq!(classify_with(&brushes, &overrides, width), vec![0, 2]);
+}
+
+// Corrections (task 5): the stage classifies only brushes whose hulls touch
+// the probe's projection box, its floor ignored, within the plane tolerance.
+#[test]
+fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
+    let cube = |x: f64, y: f64, z: f64| hull([x, y, z], [x + 1.0, y + 1.0, z + 1.0]);
+    let brushes = [
+        cube(1.0, 1.0, 1.0),
+        // A 0.5 mm gap past +x, inside the tolerance.
+        cube(10.0005, 1.0, 1.0),
+        // A 2 mm gap past +x.
+        cube(10.002, 1.0, 1.0),
+        // Under the floor, which the test ignores.
+        cube(1.0, -5.0, 1.0),
+        // Over the top, and past -z.
+        cube(1.0, 5.002, 1.0),
+        cube(1.0, 1.0, -3.0),
+    ];
+    let overrides = vec![ReflectionCapture::Auto; brushes.len()];
+    let geometry = GeometryBuilder::default().finish(Vec::new());
+    let environment = volumes(Vec::new());
+    let scene = ExclusionScene {
+        brush_volumes: &brushes,
+        capture_override: &overrides,
+        face_brush: &[],
+        geometry: &geometry,
+        environment_volumes: &environment,
+    };
+    let probes = [PlacedProbe {
+        box_min: [0.0; 3],
+        box_max: [10.0, 5.0, 10.0],
+        ..probe(2500.0, Vec::new())
+    }];
+    assert_eq!(
+        classify_probes(&scene, &probes),
+        vec![vec![0, 1, 2, 3, 4, 5]]
+    );
+    assert_eq!(
+        classify_probes_within_boxes(&scene, &probes),
+        vec![vec![0, 1, 3]]
+    );
+}
+
+// Acceptance (classification half): through parse and the stage's
+// classification, `never` on a `func_group` and on a `switch` excludes a
+// brush past the threshold, a dock the underside rule keeps and a slab under
+// the floor; `always` keeps a crate under the threshold and a post the rule
+// excludes; `auto` follows the rule. Without the overrides the rule decides
+// all of them.
+#[test]
+fn capture_overrides_on_func_group_and_switch_beat_the_rule_through_parse() {
+    // 8 x 8 m of water in a 10 m room, one authored box over it all.
+    let room = [400.0, 400.0, 160.0];
+    let pool = water(&[([40.0, 40.0, 0.0], [360.0, 360.0, 16.0])]);
+    let probe_box = reflection_volume("", [0.0; 3], room);
+    let big = ([50.0, 370.0, 0.0], [340.0, 380.0, 40.0]);
+    let dock = ([100.0, 100.0, 40.0], [200.0, 200.0, 56.0]);
+    let slab = ([5.0, 100.0, 30.0], [35.0, 200.0, 31.0]);
+    let crate_ = ([5.0, 250.0, 0.0], [35.0, 280.0, 20.0]);
+    let post = ([300.0, 250.0, 0.0], [312.0, 262.0, 120.0]);
+    let auto_post = ([300.0, 100.0, 0.0], [312.0, 112.0, 120.0]);
+    let auto_dock = ([220.0, 200.0, 40.0], [300.0, 280.0, 56.0]);
+    type Bounds = ([f64; 3], [f64; 3]);
+    let brushes =
+        |list: &[Bounds]| -> Vec<String> { list.iter().map(|&(a, b)| box_brush(a, b)).collect() };
+    for classname in ["func_group", "switch"] {
+        // A `func_group` carries all its brushes; a switch owns one, so each
+        // brush takes a switch of its own carrying the value.
+        let carrier = |value: Option<&str>, list: &[Bounds]| {
+            let value = value
+                .map(|value| format!("\"_reflection_capture\" \"{value}\""))
+                .unwrap_or_default();
+            if classname == "func_group" {
+                return entity(classname, &value, &brushes(list));
+            }
+            list.iter()
+                .map(|&bounds| {
+                    let name = format!("\"name\" \"press{}\"\n", bounds.0[0] + bounds.0[1]);
+                    entity(classname, &(name + &value), &brushes(&[bounds]))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let compile = |never: Option<&str>, always: Option<&str>, auto: Option<&str>| {
+            ExclusionFixture::compile(
+                &room_with(room, &[]),
+                &[
+                    pool.clone(),
+                    probe_box.clone(),
+                    carrier(never, &[big, dock, slab]),
+                    carrier(always, &[crate_, post]),
+                    carrier(auto, &[auto_post, auto_dock]),
+                ],
+            )
+        };
+        let overridden = compile(Some("never"), Some("always"), Some("auto"));
+        let width = water_width(&overridden.probes[0]);
+        let (t, f) = (size_threshold(width), thin_floor(width));
+        let extents = |b: Bounds| {
+            let brush = overridden.brush(b.0, b.1) as usize;
+            BrushExtents::of(&overridden.brush_volumes[brush].aabb, DVec3::Y)
+        };
+        assert!(extents(big).size >= t, "{classname}: t = {t}");
+        assert!(
+            extents(slab).thinness < f && extents(slab).size < t,
+            "{classname}: f = {f}"
+        );
+        for small in [dock, crate_, post] {
+            assert!(extents(small).size < t && extents(small).thinness >= f);
+        }
+
+        let set_of = |fixture: &ExclusionFixture, list: &[Bounds]| {
+            let mut set: Vec<u32> = list.iter().map(|b| fixture.brush(b.0, b.1)).collect();
+            set.sort_unstable();
+            set
+        };
+        assert_eq!(
+            overridden.stage_excluded(),
+            vec![set_of(&overridden, &[big, dock, slab, auto_post])],
+            "{classname}"
+        );
+        let unset = compile(None, None, None);
+        assert_eq!(
+            unset.stage_excluded(),
+            vec![set_of(&unset, &[crate_, post, auto_post])],
+            "{classname}: the rule alone"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

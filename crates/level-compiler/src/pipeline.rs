@@ -1885,6 +1885,7 @@ fn run_after_parsing(
             reflection_volumes: &map_data.reflection_volumes,
             brush_volumes: &map_data.brush_volumes,
             face_brushes: &face_brushes,
+            capture_override: &map_data.brush_capture_override,
             tree: &result.tree,
             exterior_leaves: &exterior_leaves,
             lightmap: &lightmap_section,

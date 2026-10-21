@@ -11,7 +11,7 @@ use postretro_level_format::reflection_probes::MAX_REFLECTION_PROBES;
 use crate::bake_control::BakeControl;
 use crate::bvh_build::{BvhPrimitive, build_bvh};
 use crate::geometry::{GeometryResult, extract_geometry_with_brushes};
-use crate::map_data::{BrushVolume, MapData, MapReflectionVolume};
+use crate::map_data::{BrushVolume, MapData, MapReflectionVolume, ReflectionCapture};
 use crate::map_format::MapFormat;
 use crate::partition::BspTree;
 use crate::{environment_volumes, parse, partition, portals, visibility};
@@ -103,6 +103,8 @@ pub(crate) struct PlacementFixture {
     /// `MapData::brush_volumes`, and each face's brush in that list.
     pub brushes: Vec<BrushVolume>,
     pub face_brushes: Vec<Option<u32>>,
+    /// `MapData::brush_capture_override`, index-aligned with `brushes`.
+    pub capture_override: Vec<ReflectionCapture>,
 }
 
 impl PlacementFixture {
@@ -136,6 +138,7 @@ impl PlacementFixture {
             authored: map.reflection_volumes,
             brushes: map.brush_volumes,
             face_brushes,
+            capture_override: map.brush_capture_override,
         }
     }
 

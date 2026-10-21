@@ -31,6 +31,9 @@ Branch: `claude/reflection-probe-capture-exclusion`, cut from `main` at the clai
 - **O11's overlap exists only where the trim straddles the wall's end** (task 2). A trim wholly inside a wall's face, its front coplanar with the wall's, loses that front to CSG in either map order, so the wall is always traced. The AC 29 fixture is a kept wall panel with the trim across its end, as the row's "straddling its end" wording says.
 - **AC 28's wall stub cannot stand with the exterior behind it** (task 2): openings beside a stub onto the exterior leak the map. The stub is built with a second room behind, under an authored box over the first room; the exterior backdrop is proved by the `never` outer wall, both backdrops. The row keeps its meaning.
 - **A covering side with no surviving coplanar face ends the fill search for that hull** (task 2): the exit classification decides, so a side the excluded brush covered whole takes the leak guard (research.md Contact holes). With pooled sides (O12), material and UV come from the side of the brush owning the nearest pooled face, so material and lighting name one surface.
+- **AC 42's two builds share vertex positions and indices at 0.5 m sunk** (task 5); they differ in `FaceMeta` leaf indices. The key still differs through the hashed excluded hull planes, which is the row's first outcome.
+- **A `switch` owns one brush** (task 5); the parser refuses a multi-brush switch, so AC 36's switch fixtures give each brush its own switch.
+- **prl-build has no pool-edge flag** (task 5); AC 34's forced-cut half forces the oversize cut end to end with a 91 m hall at the default density (log: "cut 8 oversize lightmap face(s)").
 - **`build_brush_volumes_with_ids` drops degenerate brushes and sides.** `BrushVolume::sides` and `planes` are not index-aligned. The exit test uses `planes`, and the covering-side test uses `sides` (vertices, normal, distance).
 
 ## Delegated answers

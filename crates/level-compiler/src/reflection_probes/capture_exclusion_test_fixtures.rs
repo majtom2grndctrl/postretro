@@ -19,8 +19,9 @@ use postretro_level_format::prm::{
 use postretro_level_format::sh_reconstruct::Level;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use super::ReflectionProbeInputs;
 use super::animated_direct::AnimatedDirectSampler;
-use super::capture_exclusion::{CaptureBrushes, ProbeExclusion};
+use super::capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
 use super::hit::SceneTracer;
 use super::lightmap_sample::LightmapSampler;
 use super::materials::SurfaceMaterials;
@@ -155,6 +156,8 @@ pub(super) fn fixture_materials() -> Vec<(&'static str, MipPayload)> {
 /// and the runtime's sdf lights.
 pub(super) struct CaptureFixture {
     pub world: PlacementFixture,
+    /// `world.face_brushes` inverted.
+    pub brush_faces: BrushFaces,
     pub keys: HashMap<String, [u8; 32]>,
     pub prm_dir: tempfile::TempDir,
     pub lightmap: LightmapSection,
@@ -182,6 +185,7 @@ impl CaptureFixture {
             .unwrap()
             .0;
         Self {
+            brush_faces: BrushFaces::new(&world.face_brushes, world.brushes.len()),
             world,
             keys,
             prm_dir,
@@ -337,7 +341,35 @@ impl CaptureFixture {
         CaptureBrushes {
             volumes: &self.world.brushes,
             face_brushes: &self.world.face_brushes,
+            faces: &self.brush_faces,
         }
+    }
+
+    /// Run `f` over the stage inputs of the compiled level, its brushes'
+    /// overrides as parsed.
+    pub(super) fn with_inputs<R>(&self, f: impl FnOnce(&ReflectionProbeInputs<'_>) -> R) -> R {
+        let world = &self.world;
+        f(&ReflectionProbeInputs {
+            bvh: &world.bvh,
+            primitives: &world.primitives,
+            geometry: &world.geometry,
+            environment_volumes: &world.environment,
+            reflection_volumes: &world.authored,
+            brush_volumes: &world.brushes,
+            face_brushes: &world.face_brushes,
+            capture_override: &world.capture_override,
+            tree: &world.tree,
+            exterior_leaves: &world.exterior,
+            lightmap: &self.lightmap,
+            sh_volume: &self.sh,
+            delta_sh: None,
+            animated_weight_maps: self.weight_maps.as_ref(),
+            animated_direct_sh: None,
+            alpha_lights: &self.alpha_lights,
+            chunk_light_list: &self.chunk_list,
+            texture_keys: &self.keys,
+            prm_root: self.prm_dir.path(),
+        })
     }
 
     /// Run `f` over the capture scene and the placed probes.

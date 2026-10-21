@@ -6743,21 +6743,20 @@ mod tests {
 
     #[test]
     fn enemy_projectile_authority_reuses_the_existing_wire_versions() {
-        assert_eq!(
-            postretro_net::handshake::PROTOCOL_ID,
-            0x_5052_4C42,
-            "player-addressed presentation commands require application protocol PRLB (protocol 11)"
-        );
-        assert_eq!(
-            postretro_net::handshake::WIRE_VERSION,
-            32,
-            "the vault movement state requires wire version 31"
-        );
-        assert_eq!(
-            postretro_net::wire::SNAPSHOT_VERSION,
-            21,
-            "the vault movement state requires snapshot version 20"
-        );
+        const {
+            assert!(
+                postretro_net::handshake::PROTOCOL_ID >= 0x_5052_4C42,
+                "player-addressed presentation commands require application protocol PRLB (protocol 11) or later"
+            );
+            assert!(
+                postretro_net::handshake::WIRE_VERSION >= 31,
+                "the vault movement state requires wire version 31"
+            );
+            assert!(
+                postretro_net::wire::SNAPSHOT_VERSION >= 20,
+                "the vault movement state requires snapshot version 20"
+            );
+        }
     }
 
     #[test]

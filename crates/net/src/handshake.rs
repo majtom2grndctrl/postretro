@@ -10,9 +10,10 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// the client's revealed-level declaration and the two revealed holding
 /// causes advance it to protocol 10. The id is four ASCII bytes, so the
 /// counter byte continues as a hex digit: protocol 10 is "PRLA". Player-addressed
-/// presentation commands advance it to protocol 11, "PRLB". Independent of
-/// the baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
+/// presentation commands advance it to protocol 11, "PRLB". The gameplay
+/// channel layout, with weapon switches moving from Control to Input, advances
+/// it to protocol 12, "PRLC". Independent of the baked PRL file format.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -34,7 +35,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// Teleporters advance it to 32: the pawn teleport record in player movement
 /// state, the replicated teleporter armed state, and the input command's
 /// teleport yaw stamp share the bump.
-pub const WIRE_VERSION: u32 = 32;
+/// The gameplay channel layout (Input's one-tick resend, switches on Input)
+/// advances it to 33.
+pub const WIRE_VERSION: u32 = 33;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -167,10 +170,12 @@ mod tests {
     #[test]
     fn knockback_snapshot_layout_refuses_previous_wire_version() {
         const PRE_KNOCKBACK_WIRE_VERSION: u32 = 21;
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C42,
-            "player-addressed presentation commands require application protocol PRLB (protocol 11)"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C42,
+                "player-addressed presentation commands require application protocol PRLB (protocol 11) or later"
+            );
+        };
         const {
             assert!(
                 WIRE_VERSION > PRE_KNOCKBACK_WIRE_VERSION,
@@ -449,14 +454,10 @@ mod tests {
         const PRE_COMMAND_PROTOCOL_ID: u32 = 0x_5052_4C41; // "PRLA"
         const {
             assert!(
-                PROTOCOL_ID == PRE_COMMAND_PROTOCOL_ID + 1,
-                "player-addressed presentation advances the application protocol by one"
+                PROTOCOL_ID > PRE_COMMAND_PROTOCOL_ID,
+                "player-addressed presentation advances the application protocol"
             );
         };
-        assert_eq!(
-            WIRE_VERSION, 32,
-            "the teleport record, teleporter arming and input yaw stamp extend the shipped layout"
-        );
         let previous = ProtocolVersion {
             app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
             wire_version: WIRE_VERSION,
@@ -558,8 +559,8 @@ mod activation_epoch_tests {
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
         const {
             assert!(WIRE_VERSION >= 26);
+            assert!(PROTOCOL_ID >= 0x5052_4c42);
         }
-        assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         for received in [
             ProtocolVersion {
                 app_protocol_id: PROTOCOL_ID,
@@ -587,8 +588,8 @@ mod switch_tick_epoch_tests {
     fn shared_overlay_roster_refuses_wire_27_without_changing_snapshot_layout() {
         const {
             assert!(WIRE_VERSION >= 28);
+            assert!(PROTOCOL_ID >= 0x5052_4c42);
         }
-        assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: 27,
@@ -648,8 +649,10 @@ mod switch_tick_epoch_tests {
     // arming, or the input yaw stamp, so gate 1 refuses it before any decode.
     #[test]
     fn teleport_record_refuses_wire_31_peers() {
-        assert_eq!(WIRE_VERSION, 32);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 21);
+        const {
+            assert!(WIRE_VERSION >= 32);
+            assert!(crate::wire::SNAPSHOT_VERSION >= 21);
+        }
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: 31,
@@ -659,6 +662,50 @@ mod switch_tick_epoch_tests {
             Err(ClosingCause::Protocol { .. })
         ));
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 31);
+    }
+
+    // A PRLB / wire-32 peer reads switches on Control and resends Input at
+    // 300 ms, so it cannot share the gameplay channel layout. Both gates refuse
+    // it; the snapshot layout did not change, so `SNAPSHOT_VERSION` stays.
+    #[test]
+    fn gameplay_channel_layout_refuses_prlb_and_wire_32_peers() {
+        const PRE_LAYOUT_PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
+        const PRE_LAYOUT_WIRE_VERSION: u32 = 32;
+        assert_eq!(PROTOCOL_ID, 0x_5052_4C43, "the layout is protocol 12, PRLC");
+        assert_eq!(WIRE_VERSION, 33);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 21);
+        assert_eq!(
+            validate_handshake(
+                protocol_version(),
+                ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C43,
+                    wire_version: 33,
+                },
+            ),
+            Ok(()),
+            "a PRLC / 33 peer is admitted"
+        );
+        for (app_protocol_id, wire_version) in [
+            (PRE_LAYOUT_PROTOCOL_ID, WIRE_VERSION),
+            (PROTOCOL_ID, PRE_LAYOUT_WIRE_VERSION),
+            (PRE_LAYOUT_PROTOCOL_ID, PRE_LAYOUT_WIRE_VERSION),
+        ] {
+            assert!(matches!(
+                validate_handshake(
+                    protocol_version(),
+                    ProtocolVersion {
+                        app_protocol_id,
+                        wire_version,
+                    },
+                ),
+                Err(ClosingCause::Protocol { .. })
+            ));
+            assert_ne!(
+                transport_protocol_id(),
+                (u64::from(app_protocol_id) << 32) | u64::from(wire_version),
+                "gate 1 refuses the pre-layout pair before any decode"
+            );
+        }
     }
 
     /// The switch declaration as shipped at wire 25, before its client tick.
@@ -684,10 +731,12 @@ mod switch_tick_epoch_tests {
         const {
             assert!(WIRE_VERSION >= 26);
         }
-        assert_eq!(
-            PROTOCOL_ID, 0x5052_4c42,
-            "the switch tick changed no vocabulary; player-addressed presentation later advanced it to PRLB"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x5052_4c42,
+                "the switch tick changed no vocabulary; later vocabulary advanced it to PRLB and past"
+            );
+        }
         const {
             assert!(
                 crate::wire::SNAPSHOT_VERSION >= 18,

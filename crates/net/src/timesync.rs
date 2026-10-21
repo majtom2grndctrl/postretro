@@ -119,8 +119,9 @@ pub const RTT_GATE_FLOOR_US: f64 = 20_000.0;
 
 /// Proportional part of the min-RTT gate's tolerance: `tolerance =
 /// max(RTT_GATE_FLOOR_US, RTT_GATE_FRACTION × window_min)`. At 0.5 a 150 ms link
-/// admits samples up to 225 ms, while a reliable-channel resend stall (~300 ms
-/// added to one direction) lands far outside.
+/// admits samples up to 225 ms, while a probe held behind an outage on the
+/// reliable-ordered channel (hundreds of ms added to one direction) lands far
+/// outside.
 pub const RTT_GATE_FRACTION: f64 = 0.5;
 
 /// A completed round trip, ready to fold into the estimate. Built by
@@ -691,10 +692,10 @@ mod tests {
         }
     }
 
-    // Playtest defect: under 5% loss a large share of probes wait out a ~300 ms
-    // reliable resend in one direction. An outbound-stalled probe reports RTT
-    // +300 ms and a server tick 300 ms late, biasing the midpoint offset by
-    // +150 ms (~9 ticks) and inflating jitter.
+    // Playtest defect: under 5% loss a large share of probes waited out Input's
+    // former ~300 ms reliable resend in one direction. An outbound-stalled probe
+    // reports RTT +300 ms and a server tick 300 ms late, biasing the midpoint
+    // offset by +150 ms (~9 ticks) and inflating jitter.
     #[test]
     fn min_rtt_gate_rejects_outbound_stalled_probes() {
         const STALL_US: u64 = 300_000;

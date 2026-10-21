@@ -38,7 +38,17 @@ impl From<Channel> for u8 {
 }
 
 const CHANNEL_MEMORY_BYTES: usize = 5 * 1024 * 1024;
-const RELIABLE_RESEND: Duration = Duration::from_millis(300);
+/// Input's resend, kept below one 60 Hz fixed tick with margin. renet resends
+/// an unacked message on the first poll at least this long after its last
+/// send, and the transport polls once per frame, so a lost command rides the
+/// next frame's datagram even when that frame runs a few ms short. At a full
+/// tick or more a short frame would push the resend to the second datagram,
+/// after the host has given up the lost tick.
+const GAMEPLAY_RESEND: Duration = Duration::from_millis(10);
+/// Control's resend. Nothing on Control needs a faster one, and a joiner's
+/// inventory waits on the tuning payload, so a lost slice costs about this
+/// plus one transit rather than a longer stall.
+const CONTROL_RESEND: Duration = Duration::from_millis(100);
 
 #[must_use]
 pub fn connection_config() -> ConnectionConfig {
@@ -47,7 +57,7 @@ pub fn connection_config() -> ConnectionConfig {
             channel_id: Channel::Control.into(),
             max_memory_usage_bytes: CHANNEL_MEMORY_BYTES,
             send_type: SendType::ReliableOrdered {
-                resend_time: RELIABLE_RESEND,
+                resend_time: CONTROL_RESEND,
             },
         },
         ChannelConfig {
@@ -59,7 +69,7 @@ pub fn connection_config() -> ConnectionConfig {
             channel_id: Channel::Input.into(),
             max_memory_usage_bytes: CHANNEL_MEMORY_BYTES,
             send_type: SendType::ReliableOrdered {
-                resend_time: RELIABLE_RESEND,
+                resend_time: GAMEPLAY_RESEND,
             },
         },
         ChannelConfig {
@@ -1847,29 +1857,74 @@ mod tests {
         client
     }
 
+    /// The delivery a channel is configured with, comparable in a test.
+    fn delivery(send_type: &SendType) -> (&'static str, Option<Duration>) {
+        match send_type {
+            SendType::Unreliable => ("unreliable", None),
+            SendType::ReliableOrdered { resend_time } => ("reliable-ordered", Some(*resend_time)),
+            SendType::ReliableUnordered { resend_time } => {
+                ("reliable-unordered", Some(*resend_time))
+            }
+        }
+    }
+
+    // The channel layout is folded into the protocol gate, so both peers must
+    // build the same four channels, in order, with the same resends.
     #[test]
-    fn presentation_channel_is_the_fourth_dedicated_unreliable_channel() {
+    fn connection_config_pins_four_channels_with_gameplay_resend_under_one_tick() {
+        let expected = vec![
+            (
+                u8::from(Channel::Control),
+                ("reliable-ordered", Some(CONTROL_RESEND)),
+            ),
+            (u8::from(Channel::Snapshot), ("unreliable", None)),
+            (
+                u8::from(Channel::Input),
+                ("reliable-ordered", Some(GAMEPLAY_RESEND)),
+            ),
+            (u8::from(Channel::Presentation), ("unreliable", None)),
+        ];
         let config = connection_config();
-        let channel_ids: Vec<u8> = config
-            .server_channels_config
-            .iter()
-            .map(|channel| channel.channel_id)
-            .collect();
-        assert_eq!(
-            channel_ids,
-            vec![
-                Channel::Control.into(),
-                Channel::Snapshot.into(),
-                Channel::Input.into(),
-                Channel::Presentation.into(),
-            ]
-        );
-        let presentation = config
-            .server_channels_config
-            .iter()
-            .find(|channel| channel.channel_id == Channel::Presentation.into())
-            .expect("presentation channel is configured");
-        assert!(matches!(&presentation.send_type, SendType::Unreliable));
+        for (side, channels) in [
+            ("server", &config.server_channels_config),
+            ("client", &config.client_channels_config),
+        ] {
+            let layout: Vec<_> = channels
+                .iter()
+                .map(|channel| (channel.channel_id, delivery(&channel.send_type)))
+                .collect();
+            assert_eq!(layout, expected, "{side} channel layout");
+        }
+        assert_eq!(CONTROL_RESEND, Duration::from_millis(100));
+
+        // renet resends on the first poll at least one resend after the last
+        // send. Below one fixed tick, with margin for a short frame, a lost
+        // command rides the next frame's datagram rather than every second one.
+        const FIXED_TICK: Duration = Duration::from_micros(16_667);
+        const SHORT_FRAME_MARGIN: Duration = Duration::from_millis(5);
+        const {
+            assert!(
+                GAMEPLAY_RESEND.as_micros() + SHORT_FRAME_MARGIN.as_micros()
+                    <= FIXED_TICK.as_micros(),
+                "the gameplay resend plus a short-frame margin fits inside one fixed tick"
+            );
+        }
+    }
+
+    // `harness::renet_packet_channel` and the resend arithmetic above read
+    // renet 2.0.0's behaviour; an upgrade must re-check both.
+    #[test]
+    fn renet_stays_pinned_at_2_0_0() {
+        let manifest = include_str!("../Cargo.toml");
+        for dependency in ["renet", "renet_netcode"] {
+            let pin = format!("{dependency} = {{ version = \"=2.0.0\"");
+            assert!(
+                manifest
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(&pin)),
+                "crates/net/Cargo.toml pins {dependency} at =2.0.0"
+            );
+        }
     }
 
     #[test]
@@ -2511,6 +2566,61 @@ mod tests {
             }]
         );
         assert!(server.poll_handshakes().lifecycle.is_empty());
+    }
+
+    // A PRLB / wire-32 peer predates the gameplay channel layout. The admission
+    // gate refuses its declaration with a typed cause and admits a PRLC / 33 one.
+    #[test]
+    fn admission_refuses_prlb_or_wire_32_and_admits_prlc_33() {
+        let prlc_33 = wire::ProtocolVersion {
+            app_protocol_id: 0x_5052_4C43,
+            wire_version: 33,
+        };
+        assert_eq!(protocol_version(), prlc_33);
+        let cases = [
+            (
+                wire::ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C42,
+                    ..prlc_33
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 32,
+                    ..prlc_33
+                },
+                false,
+            ),
+            (prlc_33, true),
+        ];
+        for (declared, admitted) in cases {
+            let (mut server, mut client) = relay_pair();
+            server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+            client.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Admission {
+                    protocol: declared,
+                    mod_id: "postretro.test".to_string(),
+                    mod_version: "1".to_string(),
+                }),
+            );
+            relay_client_to_server(&mut client, &mut server);
+            let poll = server.poll_handshakes();
+            match poll.handshakes.first() {
+                Some(HandshakeOutcome::Admitted { .. }) => {
+                    assert!(admitted, "{declared:?} must be refused");
+                }
+                Some(HandshakeOutcome::Rejected {
+                    cause: ClosingCause::Protocol { expected, received },
+                    ..
+                }) => {
+                    assert!(!admitted, "{declared:?} must be admitted");
+                    assert_eq!((*expected, *received), (prlc_33, declared));
+                }
+                other => panic!("{declared:?}: expected an admission verdict, got {other:?}"),
+            }
+        }
     }
 
     // Regression: admission rejection disconnected after one send attempt, so one

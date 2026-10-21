@@ -31,9 +31,9 @@ Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the b
 |---|---|---|---|
 | 1 | Reproduces first; loss-off control | `steady_run_stays_in_ordinary_band_under_dev_profile` committed failing at base resend (148 above band, max 5.3 m Teleport; host Neutral 1365/3600, seeds 0x1502/0x1503); `steady_run_loss_off_records_no_oversized_correction` (P1) passes (all 0.000 m, 3600 Real) | stop gate passed |
 | 2 | Seeded-minute steady run, strafe, slides: nothing above Ordinary | `steady_run_stays_in_ordinary_band_under_dev_profile` (relay harness; same test as row 1, passes after task 2) | achievable as stated |
-| 3 | Slide/vault entry on the same client tick, incl. lost entry datagram (P3) | `slide_entry_lost_datagram_enters_on_host_same_client_tick`, vault twin on `ledge_world` | achievable as stated |
-| 4 | Fixed delay, one scripted lost Input datagram: no hold/neutral/trim, Real on its own tick (P2) | `single_lost_input_datagram_resolves_real_on_its_own_tick` + conditioner scripted drop | achievable as stated (trace proof per Corrections) |
-| 5 | Grep gate: hold/target/max stay 3/2/8 | pin test on the three constants + grep in preflight | achievable as stated |
+| 3 | Slide/vault entry on the same client tick, incl. lost entry datagram (P3) | `slide_entry_lost_datagram_enters_on_host_same_client_tick`, `vault_entry_lost_datagram_enters_on_host_same_client_tick`, no-loss twins | passes (task 2) |
+| 4 | Fixed delay, one scripted lost Input datagram: no hold/neutral/trim, Real on its own tick (P2) | `single_lost_input_datagram_resolves_real_on_its_own_tick` | passes (task 2) |
+| 5 | Grep gate: hold/target/max stay 3/2/8 | `gap_policy_keeps_hold_3_buffer_target_2_and_buffer_max_8` + grep in preflight | passes (task 2) |
 | 6 | 2 s outage: no disconnect; edges/switches exactly once in order; starts one terminal; no malformed switch (P12) | `two_second_outage_delivers_lanes_once_in_client_tick_order` (relay, scripted window drop) | achievable as stated (test design per Corrections) |
 | 7 | Switch then later start, loss on switch datagram (P4); start on switch's own command (P5) | `switch_order` relay tests migrated to Input | achievable as stated |
 | 8 | Switch outcomes in declaration order under loss and jitter | `switch_outcomes_arrive_in_declaration_order_under_profile` | achievable as stated |
@@ -43,7 +43,7 @@ Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the b
 | 12 | Host-dropped declaration never leaves chain waiting; Holding + marker in one drain (P7) | relay test, incl. world-less poll regression | achievable as stated |
 | 13 | Switch retained in lane at demotion never applied after re-promotion (P8) | command-queue / relay test | achievable as stated |
 | 14 | Grep gate: no switch on Control | grep in preflight + compile-time removal of Control variants | achievable as stated |
-| 15 | Relay pair, scripted single drop either direction ≤ largest one-way + 2 ticks (P2) | `single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions`, measured at conditioner arrival | achievable as stated (tight at 60 Hz: one frame of send queue plus one resend poll) |
+| 15 | Relay pair, scripted single drop either direction ≤ largest one-way + 2 ticks (P2) | `single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions` | passes (task 2): 116.0 / 127.0 ms at conditioner arrival (116.7 / 133.3 frame-quantized) vs 138.3 ms bound |
 | 16 | New entity's baseline frozen ≤ one snapshot past a lost ack, ack on Input (P15) | relay test with scripted ack drop | achievable as stated |
 | 17 | Sliced tuning on Control under loss delays no Input message (P16) | relay test: scripted slice drops, Input latency bound | achievable as stated |
 | 18 | Tuning sent before demote/relevel never applies after; permit post-re-promotion (P17) | relay test | achievable as stated |
@@ -55,7 +55,7 @@ Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the b
 | 24 | Two corrections before decay / same frame: presented eye continuous (P18) | prediction/reconcile offset tests | achievable as stated |
 | 25 | Refuse: teleport-class, first-record, level reset clear offset; composed ≥ floor snaps (P18) | prediction/reconcile offset tests | achievable as stated (snap per Corrections) |
 | 26 | Previous protocol id or wire version refused; new pair admitted; snapshot version unmoved | handshake pin tests at PRLC / 33 / 21 | achievable as stated |
-| 27 | Channel list: four in order, Control RO ~100 ms, Snapshot/Presentation unreliable, Input RO at gameplay resend; renet `=2.0.0` | extended channel-list test + Cargo.toml pin check | achievable as stated |
+| 27 | Channel list: four in order, Control RO ~100 ms, Snapshot/Presentation unreliable, Input RO at gameplay resend; renet `=2.0.0` | `connection_config_pins_four_channels_with_gameplay_resend_under_one_tick`, `renet_stays_pinned_at_2_0_0` | passes (task 2) |
 | 28 | Manual: loopback recipe at 45/60/5 and 10% loss | owner, in-engine | manual |
 | 29 | Manual: two-client session, no bursts after loss | owner, in-engine | manual |
 | 30 | Manual: Network tab Off mid-session recovers | owner, in-engine | manual |
@@ -81,7 +81,7 @@ fixed tick after the first copy. Its RTT comes out about one tick high, more tha
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Relay link layer (`PacketConditioner` scripted drop: Nth flush / virtual window, applied after the seeded draw; renet pair on production `connection_config`; framed Input; acks/refresh/time sync over Input; no warmup; `HostTickTrace` movement state) as a new fixture module beside the existing fixtures; reproduce-first steady-run test (committed failing at the 300 ms base) and P1 loss-off control. **Stop and report** if no reproduction, or if loss-off also records one. | delegated worker | — | done: relay fixture `predict_reconcile_relay_test_fixtures.rs` (`RelayHarness`), `ScriptedDrop` in net harness.rs; repro fails on base, P1 passes; net 295 pass, netcode lib 833 pass + 1 expected fail |
-| 2 | Transport resend: Input 10 ms, Control 100 ms; extend channel-list test; bump `PROTOCOL_ID` PRLB→PRLC and `WIRE_VERSION` 32→33, update the hard-coded pin tests; AC 2–5, 15, 27 green on the relay harness | integrating executor | 1 | |
+| 2 | Transport resend: Input 10 ms, Control 100 ms; extend channel-list test; bump `PROTOCOL_ID` PRLB→PRLC and `WIRE_VERSION` 32→33, update the hard-coded pin tests; AC 2–5, 15, 27 green on the relay harness | integrating executor | 1 |done: steady run max 0.18 m (Real 3599/3600); PRLC/33 pins + `gameplay_channel_layout_refuses_prlb_and_wire_32_peers`, `admission_refuses_prlb_or_wire_32_and_admits_prlc_33`; engine trim cells in `host_activations/conditioned_tests.rs` now force the trim with a 255 ms uplink cut (`TRIM_OUTAGE`) instead of 300 ms-era loss seeds; net 298, netcode 841 + 1 ignored, host_activations 66 |
 | 3 | Presentation offset composition in `seed_presentation_offset`/reconcile: compose, composed-floor snap with camera cut, existing clears; harness decays per step; tests read `latest_local_corrections`; AC 24–25 | delegated worker (prediction.rs, reconcile.rs, offset tests) | — (parallel with 2) | |
 | 4a | Behaviour-preserving split of netcode lib.rs: `host_input.rs` (host Input dispatch), `client_switch.rs` (switch chain + endpoint switch API) | integrating executor | 2 | |
 | 4b | Move switches to Input: wire variants (control.rs → `ClientMessage`/`ServerMessage`), retire Control arms, `ServerPoll.switch_declarations`, and the append-layout guards that mirror removed variants (rewrite against the new layout); host intake from `drain_input` with `MovementOwners`; outcome sends via `send_input`; client outcome route from the Input drain; stale Control-citing comments; migrate `conditioned_tests`/`switch_order`/`late_join`/roster harness; AC 7, 10–14 | integrating executor | 4a | |

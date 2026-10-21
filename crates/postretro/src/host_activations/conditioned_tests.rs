@@ -41,10 +41,14 @@ const MAGAZINE: u32 = 32;
 
 /// The E16 mandated-link seed; its losses reach ordinary held commands.
 const MANDATED_SEED: u64 = 0x1502;
-/// Mandated-link seeds whose losses stall the input stream into the catch-up
-/// trim, so a hold restart reaches the host early against its cadence.
-const TRIM_SEED_A: u64 = 0x1_3c6e_e670;
-const TRIM_SEED_B: u64 = 0x9e37_6cbb;
+/// A genuine uplink outage that forces the catch-up trim: `(first stream
+/// offset, ticks)`. Input resends every 10 ms, so seeded loss alone no longer
+/// stalls the stream into the trim; only an outage does. Fifteen ticks (255 ms)
+/// leaves a backlog past `INPUT_BUFFER_MAX` (8) when the link returns, yet its
+/// oldest start still lags under the 500 ms catch-up allowance once the
+/// mandated link's transit is added. The window holds a press edge of every
+/// tapped cell, so the trim has a start to lose.
+const TRIM_OUTAGE: (u32, u32) = (40, 15);
 
 fn near(actual: f32, expected: f32) {
     assert!(
@@ -59,13 +63,6 @@ fn mandated_link() -> LinkConfig {
         jitter: 60,
         loss_probability: 0.05,
         seed: MANDATED_SEED,
-    }
-}
-
-fn mandated_link_seeded(seed: u64) -> LinkConfig {
-    LinkConfig {
-        seed,
-        ..mandated_link()
     }
 }
 
@@ -2057,13 +2054,18 @@ fn stamped_start(tick: u32) -> sim::SimCommand {
     command
 }
 
-/// Drives a stream's client ticks against a host that may hitch.
+/// Drives a stream's client ticks against a host that may hitch and a link
+/// that may drop out.
 /// `hitch = Some((period, length))`: every `period` client ticks the host
 /// simulation stalls for `length` ticks (a long host frame) while the client
 /// keeps predicting and sending, then runs the missed fixed ticks back to back,
 /// as the frame loop's accumulator does.
+/// `outage = Some((first, length))`: the client's uplink is cut for `length`
+/// ticks from stream offset `first`, so renet's retained commands and starts
+/// arrive in one burst when it returns.
 struct HitchDriver {
     hitch: Option<(u32, u32)>,
+    outage: Option<(u32, u32)>,
     /// Client tick of the stream's first command.
     start: u32,
     stalled: u32,
@@ -2073,14 +2075,23 @@ impl HitchDriver {
     fn new(hitch: Option<(u32, u32)>, start: u32) -> Self {
         Self {
             hitch,
+            outage: None,
             start,
             stalled: 0,
         }
     }
 
+    fn with_outage(mut self, outage: Option<(u32, u32)>) -> Self {
+        self.outage = outage;
+        self
+    }
+
     /// The stream's client tick `offset` ticks in.
     fn step(&mut self, fixture: &mut Fixture, offset: u32, mut command: sim::SimCommand) {
         let tick = self.start + offset;
+        fixture.cut_up = self
+            .outage
+            .is_some_and(|(first, length)| (first..first + length).contains(&offset));
         let in_hitch = self
             .hitch
             .is_some_and(|(period, length)| offset >= period && offset % period < length);
@@ -2140,18 +2151,20 @@ fn run_steady_hold(
     link: LinkConfig,
     descriptor: WeaponDescriptor,
     projectile: bool,
+    outage: Option<(u32, u32)>,
 ) -> (Fixture, StreamReport) {
-    run_stream(link, descriptor, projectile, None, None)
+    run_stream(link, descriptor, projectile, None, outage, None)
 }
 
 /// A `STREAM_TICKS` primary stream: a steady hold, or with `tap_period` a tap
-/// every that many ticks (pressed one tick, held two). `hitch` is a
-/// [`HitchDriver`] schedule.
+/// every that many ticks (pressed one tick, held two). `hitch` and `outage` are
+/// [`HitchDriver`] schedules.
 fn run_stream(
     link: LinkConfig,
     descriptor: WeaponDescriptor,
     projectile: bool,
     hitch: Option<(u32, u32)>,
+    outage: Option<(u32, u32)>,
     tap_period: Option<u32>,
 ) -> (Fixture, StreamReport) {
     let mut fixture = Fixture::new(link, descriptor);
@@ -2160,7 +2173,7 @@ fn run_stream(
         clear_line_of_fire(&fixture);
     }
     let start = 1000u32;
-    let mut driver = HitchDriver::new(hitch, start);
+    let mut driver = HitchDriver::new(hitch, start).with_outage(outage);
     for offset in 0..STREAM_TICKS {
         let command = match tap_period {
             None => held(ActivationLane::Primary, offset == 0),
@@ -2263,10 +2276,13 @@ fn summarize(label: &str, report: &StreamReport) -> String {
     )
 }
 
-/// A cell that hitches the host or runs a trim seed claims the catch-up trim,
+/// A cell that hitches the host or cuts the uplink claims the catch-up trim,
 /// so it must show one.
-fn missed_its_trim(link: LinkConfig, hitch: Option<(u32, u32)>, report: &StreamReport) -> bool {
-    let claims_trim = hitch.is_some() || [TRIM_SEED_A, TRIM_SEED_B].contains(&link.seed);
+fn claims_trim(hitch: Option<(u32, u32)>, outage: Option<(u32, u32)>) -> bool {
+    hitch.is_some() || outage.is_some()
+}
+
+fn missed_its_trim(claims_trim: bool, report: &StreamReport) -> bool {
     claims_trim && report.catch_up_jumps == 0
 }
 
@@ -2369,8 +2385,10 @@ fn stall_refusals(fixture: &Fixture, report: &StreamReport) -> Result<Vec<(u32, 
 /// A stream cell's parity: at least `floor` predicted shots, each authorized
 /// in order, none denied, none cut short. On a lossy link the shots of starts
 /// `stall_refusals` accepts are exempt: their input stalled past the catch-up
-/// allowance, as when a lost packet's resend is lost too, and the 500 ms
-/// catch-up allowance (networking.md §Combat authority) refuses them. The mandated seed does that once near every stream's start.
+/// allowance, as in an outage longer than the redundancy (a loss and its 10 ms
+/// resend both missing for 500 ms), and the 500 ms catch-up allowance
+/// (networking.md §Combat authority) refuses them. Seeded loss alone no longer
+/// stalls that long; the exemption covers only a genuine outage.
 fn stream_parity(
     link: LinkConfig,
     fixture: &Fixture,
@@ -2408,13 +2426,13 @@ fn stream_parity(
 fn stream_cell_failure(
     label: &str,
     link: LinkConfig,
-    hitch: Option<(u32, u32)>,
+    claims_trim: bool,
     fixture: &Fixture,
     report: &StreamReport,
     floor: usize,
 ) -> Option<String> {
     let verdict = stream_parity(link, fixture, report, floor).and_then(|()| {
-        if missed_its_trim(link, hitch, report) {
+        if missed_its_trim(claims_trim, report) {
             Err("no catch-up trim".into())
         } else {
             Ok(())
@@ -2432,18 +2450,17 @@ fn stream_cell_failure(
 #[test]
 fn conditioned_steady_hold_keeps_every_resourced_predicted_bolt_to_its_natural_end() {
     let mut failures = Vec::new();
-    for (label, link) in [
-        ("clean", LinkConfig::perfect()),
-        ("mandated", mandated_link()),
-        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A)),
-        ("mandated-seed-b", mandated_link_seeded(TRIM_SEED_B)),
+    for (label, link, outage) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated+outage", mandated_link(), Some(TRIM_OUTAGE)),
     ] {
         // Cell large enough that drain cannot explain any refusal.
-        let (fixture, report) = run_steady_hold(link, plasma_rifle(1.0e6), true);
+        let (fixture, report) = run_steady_hold(link, plasma_rifle(1.0e6), true, outage);
         failures.extend(stream_cell_failure(
             label,
             link,
-            None,
+            claims_trim(None, outage),
             &fixture,
             &report,
             fired_floor(RIFLE_RECOVERY_TICKS, 1),
@@ -2461,6 +2478,7 @@ fn conditioned_steady_hold_host_hitch_on_clean_link_keeps_resourced_bolts() {
         plasma_rifle(1.0e6),
         true,
         Some((60, 12)),
+        None,
         None,
     );
     let summary = summarize("clean+host-hitch-200ms-every-1s", &report);
@@ -2485,16 +2503,16 @@ fn conditioned_steady_hold_host_hitch_on_clean_link_keeps_resourced_bolts() {
 #[test]
 fn conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo() {
     let mut failures = Vec::new();
-    for (label, link) in [
-        ("clean", LinkConfig::perfect()),
-        ("mandated", mandated_link()),
-        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A)),
+    for (label, link, outage) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated+outage", mandated_link(), Some(TRIM_OUTAGE)),
     ] {
-        let (fixture, report) = run_steady_hold(link, hitscan_rifle("hold", 130.0), false);
+        let (fixture, report) = run_steady_hold(link, hitscan_rifle("hold", 130.0), false, outage);
         failures.extend(stream_cell_failure(
             label,
             link,
-            None,
+            claims_trim(None, outage),
             &fixture,
             &report,
             fired_floor(RIFLE_RECOVERY_TICKS, 1),
@@ -2512,16 +2530,17 @@ fn conditioned_rapid_press_taps_are_never_refused_with_ample_ammo() {
     const TAP_PERIOD: u32 = 9;
     let mut failures = Vec::new();
     let tap = hitscan_rifle("press", 130.0);
-    for (label, link) in [
-        ("clean", LinkConfig::perfect()),
-        ("mandated", mandated_link()),
-        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A)),
+    for (label, link, outage) in [
+        ("clean", LinkConfig::perfect(), None),
+        ("mandated", mandated_link(), None),
+        ("mandated+outage", mandated_link(), Some(TRIM_OUTAGE)),
     ] {
-        let (fixture, report) = run_stream(link, tap.clone(), false, None, Some(TAP_PERIOD));
+        let (fixture, report) =
+            run_stream(link, tap.clone(), false, None, outage, Some(TAP_PERIOD));
         failures.extend(stream_cell_failure(
             &format!("press {label}"),
             link,
-            None,
+            claims_trim(None, outage),
             &fixture,
             &report,
             fired_floor(TAP_PERIOD, 1),
@@ -2535,7 +2554,7 @@ fn conditioned_rapid_press_taps_are_never_refused_with_ample_ammo() {
 /// the stale-projection bolt, never a refused activation start.
 #[test]
 fn conditioned_steady_hold_reference_cell_drain_refuses_only_for_resource() {
-    let (_, report) = run_steady_hold(LinkConfig::perfect(), plasma_rifle(100.0), true);
+    let (_, report) = run_steady_hold(LinkConfig::perfect(), plasma_rifle(100.0), true, None);
     let summary = summarize("cell-100 clean", &report);
     assert!(
         report.predicted.len() >= fired_floor(RIFLE_RECOVERY_TICKS, 1),
@@ -2602,17 +2621,23 @@ fn rocket_launcher() -> WeaponDescriptor {
 #[test]
 fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
     let mut failures = Vec::new();
-    for (label, link, hitch) in [
-        ("clean", LinkConfig::perfect(), None),
-        ("mandated", mandated_link(), None),
-        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A), None),
-        ("clean+host-hitch", LinkConfig::perfect(), Some((60, 12))),
+    for (label, link, hitch, outage) in [
+        ("clean", LinkConfig::perfect(), None, None),
+        ("mandated", mandated_link(), None, None),
+        ("mandated+outage", mandated_link(), None, Some(TRIM_OUTAGE)),
+        (
+            "clean+host-hitch",
+            LinkConfig::perfect(),
+            Some((60, 12)),
+            None,
+        ),
     ] {
-        let (fixture, report) = run_stream(link, burst_rifle("hold", 130.0), false, hitch, None);
+        let (fixture, report) =
+            run_stream(link, burst_rifle("hold", 130.0), false, hitch, outage, None);
         failures.extend(stream_cell_failure(
             &format!("burst {label}"),
             link,
-            hitch,
+            claims_trim(hitch, outage),
             &fixture,
             &report,
             fired_floor(BURST_PERIOD_TICKS, BURST_SHOTS),
@@ -2628,19 +2653,20 @@ fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
 #[test]
 fn conditioned_burst_taps_released_mid_burst_are_never_refused() {
     let mut failures = Vec::new();
-    for (label, link, hitch) in [
-        ("clean", LinkConfig::perfect(), None),
-        ("mandated", mandated_link(), None),
-        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A), None),
+    for (label, link, hitch, outage) in [
+        ("clean", LinkConfig::perfect(), None, None),
+        ("mandated", mandated_link(), None, None),
+        ("mandated+outage", mandated_link(), None, Some(TRIM_OUTAGE)),
         (
             "clean+host-hitch",
             LinkConfig::perfect(),
             Some((56u32, 12u32)),
+            None,
         ),
     ] {
         let mut fixture = Fixture::new(link, burst_rifle("press", 130.0));
         let start = 1000u32;
-        let mut driver = HitchDriver::new(hitch, start);
+        let mut driver = HitchDriver::new(hitch, start).with_outage(outage);
         for offset in 0..STREAM_TICKS {
             let phase = offset % BURST_PERIOD_TICKS;
             let mut command = if phase < 2 {
@@ -2665,7 +2691,7 @@ fn conditioned_burst_taps_released_mid_burst_are_never_refused() {
         failures.extend(stream_cell_failure(
             label,
             link,
-            hitch,
+            claims_trim(hitch, outage),
             &fixture,
             &report,
             BURST_SHOTS * taps,
@@ -2682,19 +2708,31 @@ fn conditioned_rocket_presses_at_recovery_rate_keep_every_rocket_under_loss_and_
     // 45 ticks covers the 750 ms recovery.
     const PRESS_PERIOD: u32 = 45;
     let mut failures = Vec::new();
-    for (label, link, hitch) in [
-        ("clean", LinkConfig::perfect(), None),
-        ("mandated", mandated_link(), None),
-        ("mandated-seed-a", mandated_link_seeded(TRIM_SEED_A), None),
-        ("clean+host-hitch", LinkConfig::perfect(), Some((45, 12))),
+    for (label, link, hitch, outage) in [
+        ("clean", LinkConfig::perfect(), None, None),
+        ("mandated", mandated_link(), None, None),
+        ("mandated+outage", mandated_link(), None, Some(TRIM_OUTAGE)),
+        (
+            "clean+host-hitch",
+            LinkConfig::perfect(),
+            Some((45, 12)),
+            None,
+        ),
     ] {
-        let (_, report) = run_stream(link, rocket_launcher(), true, hitch, Some(PRESS_PERIOD));
+        let (_, report) = run_stream(
+            link,
+            rocket_launcher(),
+            true,
+            hitch,
+            outage,
+            Some(PRESS_PERIOD),
+        );
         // Every press lands at the authored rate, so every press fires.
         if report.predicted.len() != STREAM_TICKS.div_ceil(PRESS_PERIOD) as usize
             || report.authorized != report.predicted
             || !report.initiation_rejected.is_empty()
             || !report.bolts_removed_early.is_empty()
-            || missed_its_trim(link, hitch, &report)
+            || missed_its_trim(claims_trim(hitch, outage), &report)
         {
             failures.push(format!("rocket {}", summarize(label, &report)));
         }
@@ -2704,7 +2742,7 @@ fn conditioned_rocket_presses_at_recovery_rate_keep_every_rocket_under_loss_and_
 
 /// A plasma hold on a clean link whose input stalls: every command from
 /// `STALL_AT` for `stall` ticks is withheld, then the backlog arrives at once,
-/// while the host keeps ticking, as after a lost packet's resend.
+/// while the host keeps ticking, as after an outage.
 struct StalledHold {
     fixture: Fixture,
     /// Host tick on which the client's offset-0 command was sent.
@@ -2913,7 +2951,7 @@ fn conditioned_clean_link_hold_at_authored_rate_matches_the_host_player_shot_cou
         host_player, 45,
         "130 ms recovery is 8 ticks: 45 shots in 6 s"
     );
-    let (_, report) = run_steady_hold(LinkConfig::perfect(), rifle, true);
+    let (_, report) = run_steady_hold(LinkConfig::perfect(), rifle, true, None);
     let summary = summarize("clean", &report);
     assert_eq!(report.predicted.len(), host_player, "{summary}");
     assert_eq!(report.authorized, report.predicted, "{summary}");
@@ -2979,19 +3017,16 @@ fn conditioned_alternating_two_weapons_at_authored_rates_are_never_refused() {
     let plasma = plasma_rifle(1.0e6);
     let rifle = hitscan_rifle("hold", 200.0);
     let mut failures = Vec::new();
-    for (label, link, hitch) in [
+    for (label, link, hitch, outage) in [
         (
             "clean+host-hitch",
             LinkConfig::perfect(),
             Some((60u32, 12u32)),
+            None,
         ),
-        ("mandated", mandated_link(), None),
-        ("mandated+host-hitch", mandated_link(), Some((60, 12))),
-        (
-            "mandated-seed-a+host-hitch",
-            mandated_link_seeded(TRIM_SEED_A),
-            Some((45, 12)),
-        ),
+        ("mandated", mandated_link(), None, None),
+        ("mandated+host-hitch", mandated_link(), Some((60, 12)), None),
+        ("mandated+outage", mandated_link(), None, Some(TRIM_OUTAGE)),
     ] {
         // A phase of 9 ticks fires each weapon about once per visit; 24 several times.
         for phase in [9u32, 24] {
@@ -3000,7 +3035,7 @@ fn conditioned_alternating_two_weapons_at_authored_rates_are_never_refused() {
             let second = fixture.equip_second(&rifle);
             clear_line_of_fire(&fixture);
             let start = 1000u32;
-            let mut driver = HitchDriver::new(hitch, start);
+            let mut driver = HitchDriver::new(hitch, start).with_outage(outage);
             for offset in 0..STREAM_TICKS {
                 let visit = offset % phase == 0;
                 let mut command = held(ActivationLane::Primary, visit);
@@ -3033,7 +3068,12 @@ fn conditioned_alternating_two_weapons_at_authored_rates_are_never_refused() {
                 ));
             }
             failures.extend(stream_cell_failure(
-                &label, link, hitch, &fixture, &report, 0,
+                &label,
+                link,
+                claims_trim(hitch, outage),
+                &fixture,
+                &report,
+                0,
             ));
         }
     }

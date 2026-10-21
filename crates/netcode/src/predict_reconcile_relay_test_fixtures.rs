@@ -23,7 +23,7 @@ use postretro_entities::{
     EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry, FactionSentimentState,
     SlotTable, Transform,
 };
-use postretro_foundation::{MovementStateKind, PlayerMovementComponent};
+use postretro_foundation::{MovementStateKind, PlayerMovementComponent, VaultParams};
 use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
 use postretro_net::replication::ServerReplication;
 use postretro_net::slots::SlotEvent;
@@ -71,7 +71,7 @@ pub(crate) fn dev_profile(seed: u64) -> LinkConfig {
 const CLIENT_CLOCK_ORIGIN_US: u64 = 7_000_000;
 
 /// Virtual time at the start of frame `frame` of a 60 Hz run, in microseconds.
-fn frame_start_us(frame: u64) -> u64 {
+pub(crate) fn frame_start_us(frame: u64) -> u64 {
     frame * 1_000_000 / 60
 }
 
@@ -235,6 +235,36 @@ impl RelayHarness {
             frame: 0,
             frame_dt: Duration::ZERO,
         }
+    }
+
+    /// Give the shared player descriptor a vault block and rematerialize the
+    /// host pawn from it, before the client joins.
+    pub(crate) fn with_player_vault(mut self, vault: VaultParams) -> Self {
+        for descriptor in &mut self.descriptors {
+            if let Some(movement) = descriptor.movement.as_mut() {
+                movement.vault = Some(vault.clone());
+            }
+        }
+        let movement = self.descriptors[0]
+            .movement
+            .as_ref()
+            .expect("the shared player descriptor has movement");
+        self.host_registry
+            .set_component(
+                self.host_pawn,
+                PlayerMovementComponent::from_descriptor(movement),
+            )
+            .unwrap();
+        self
+    }
+
+    /// The client pawn's predicted movement state, once armed.
+    pub(crate) fn client_movement_state(&self) -> Option<MovementStateKind> {
+        let pawn = self.client_pawn?;
+        self.client_registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .ok()
+            .map(|movement| movement.movement_state.kind())
     }
 
     /// One 60 Hz frame: the host's frame, then the client's, each running one

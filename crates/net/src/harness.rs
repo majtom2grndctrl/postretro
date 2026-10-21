@@ -166,6 +166,16 @@ pub fn renet_packet_channel(packet: &[u8]) -> Option<u8> {
     rest.get(varint_len).copied()
 }
 
+/// What became of one datagram the conditioner enqueued, read back by its
+/// position among one channel's datagrams ([`PacketConditioner::channel_datagram`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DatagramFate {
+    /// Virtual time it was enqueued: the sender's flush.
+    pub enqueued_at: VirtualMillis,
+    /// Virtual time it arrives, or `None` when the link or a scripted drop lost it.
+    pub arrives_at: Option<VirtualMillis>,
+}
+
 /// One packet buffer scheduled for delivery at a virtual arrival time.
 #[derive(Debug, Clone)]
 struct ScheduledPacket {
@@ -203,8 +213,9 @@ pub struct PacketConditioner {
     scripted: Vec<ScriptedDrop>,
     /// Datagrams enqueued so far, whatever their fate: the next one's index.
     enqueued: u64,
-    /// Per renet channel id, datagrams enqueued so far carrying it.
-    enqueued_on_channel: std::collections::HashMap<u8, u64>,
+    /// Per renet channel id, the fate of every datagram enqueued carrying it,
+    /// in enqueue order: index `n` is the [`ScriptedDrop::NthOnChannel`] index.
+    channel_datagrams: std::collections::HashMap<u8, Vec<DatagramFate>>,
 }
 
 impl PacketConditioner {
@@ -220,7 +231,7 @@ impl PacketConditioner {
             scripted_dropped: 0,
             scripted: Vec::new(),
             enqueued: 0,
-            enqueued_on_channel: std::collections::HashMap::new(),
+            channel_datagrams: std::collections::HashMap::new(),
         }
     }
 
@@ -241,10 +252,21 @@ impl PacketConditioner {
     /// will take for [`ScriptedDrop::NthOnChannel`].
     #[must_use]
     pub fn enqueued_on_channel(&self, channel: crate::transport::Channel) -> u64 {
-        self.enqueued_on_channel
+        self.channel_datagrams
             .get(&u8::from(channel))
-            .copied()
-            .unwrap_or(0)
+            .map_or(0, |fates| fates.len() as u64)
+    }
+
+    /// The fate of the `index`th datagram (0-based) carrying `channel`, once it
+    /// has been enqueued: when it left and when, if ever, it arrives.
+    #[must_use]
+    pub fn channel_datagram(
+        &self,
+        channel: crate::transport::Channel,
+        index: u64,
+    ) -> Option<DatagramFate> {
+        let fates = self.channel_datagrams.get(&u8::from(channel))?;
+        fates.get(usize::try_from(index).ok()?).copied()
     }
 
     /// The link decision for the next enqueued datagram: its arrival time, or
@@ -253,26 +275,38 @@ impl PacketConditioner {
     fn schedule(&mut self, packet: &[u8]) -> Option<VirtualMillis> {
         let index = self.enqueued;
         self.enqueued += 1;
-        let channel_index = renet_packet_channel(packet).map(|channel| {
-            let count = self.enqueued_on_channel.entry(channel).or_insert(0);
-            let channel_index = *count;
-            *count += 1;
-            (channel, channel_index)
+        let channel = renet_packet_channel(packet);
+        let channel_index = channel.map(|channel| {
+            let count = self.channel_datagrams.get(&channel).map_or(0, Vec::len);
+            (channel, count as u64)
         });
-        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
-            self.dropped += 1;
-            return None;
+        let arrives_at = match self.config.sample_delay(&mut self.rng) {
+            None => {
+                self.dropped += 1;
+                None
+            }
+            Some(_)
+                if self
+                    .scripted
+                    .iter()
+                    .any(|drop| drop.matches(index, channel_index, self.now)) =>
+            {
+                self.dropped += 1;
+                self.scripted_dropped += 1;
+                None
+            }
+            Some(delay) => Some(self.now + delay),
         };
-        if self
-            .scripted
-            .iter()
-            .any(|drop| drop.matches(index, channel_index, self.now))
-        {
-            self.dropped += 1;
-            self.scripted_dropped += 1;
-            return None;
+        if let Some(channel) = channel {
+            self.channel_datagrams
+                .entry(channel)
+                .or_default()
+                .push(DatagramFate {
+                    enqueued_at: self.now,
+                    arrives_at,
+                });
         }
-        Some(self.now + delay)
+        arrives_at
     }
 
     /// The conditioner's current virtual time.
@@ -793,6 +827,21 @@ mod tests {
         );
         assert_eq!(scripted.scripted_dropped(), 1);
         assert_eq!(scripted.dropped(), unscripted.dropped() + 1);
+        let fate = |cond: &PacketConditioner, index| {
+            cond.channel_datagram(Channel::Input, index)
+                .expect("the Input datagram was enqueued")
+        };
+        assert_eq!(fate(&scripted, TARGET).arrives_at, None);
+        assert_eq!(
+            fate(&scripted, TARGET).enqueued_at,
+            fate(&unscripted, TARGET).enqueued_at
+        );
+        assert!(fate(&unscripted, TARGET).arrives_at.is_some());
+        assert_eq!(
+            fate(&scripted, TARGET + 1),
+            fate(&unscripted, TARGET + 1),
+            "the next Input datagram keeps its seeded arrival"
+        );
         let expected: Vec<_> = baseline.into_iter().filter(|(_, p)| p != target).collect();
         assert_eq!(
             observed, expected,

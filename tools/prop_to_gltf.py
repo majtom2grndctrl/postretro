@@ -9,6 +9,7 @@ Usage:
         [--scale 0.01] \
         [--rotate-euler X Y Z] \
         [--mount-axes BX BY BZ UX UY UZ] \
+        [--character-forward=-z] \
         [--socket muzzle=BarrelTip] \
         [--socket optic_rail=ScopeMount]
 
@@ -38,6 +39,7 @@ REJECTED_EXTENSIONS = {
 }
 MOUNT_AXIS_MIN_LENGTH_SQUARED = 1.0e-12
 MOUNT_AXIS_ORTHOGONAL_EPSILON = 1.0e-3
+CHARACTER_FORWARDS = ("+z", "-z")
 
 
 def finite_float(value):
@@ -100,6 +102,12 @@ def parse_args():
         help="Persist author-declared raw-source weapon barrel and up axes in the exported "
              "mesh node's extras.mount metadata. The applied --rotate-euler "
              "is recorded there too. Do not use this flag for geometric-assist axes."
+    )
+    parser.add_argument(
+        "--character-forward", choices=CHARACTER_FORWARDS, default=None,
+        help="Record the holder facing the --rotate-euler was solved for in "
+             "extras.mount (requires --mount-axes). Omit for the +z default. "
+             "Write it as --character-forward=-z so -z is not read as an option."
     )
     parser.add_argument(
         "--socket", action="append", metavar="NAME=NODE",
@@ -382,8 +390,16 @@ def normalized_mount_axis(axis, label):
     return tuple(value / length for value in axis)
 
 
-def validated_mount_metadata(mount_axes, rotate_euler):
+def validated_mount_metadata(mount_axes, rotate_euler, character_forward=None):
     """Validate and normalize metadata before it can reach JSON serialization."""
+    if character_forward is not None:
+        if character_forward not in CHARACTER_FORWARDS:
+            raise ValueError(
+                f"mount character forward must be one of {CHARACTER_FORWARDS}"
+            )
+        if mount_axes is None:
+            raise ValueError("mount character forward is persisted only with mount axes")
+
     normalized_euler = None
     if rotate_euler is not None:
         if len(rotate_euler) != 3:
@@ -411,9 +427,12 @@ def validated_mount_metadata(mount_axes, rotate_euler):
     return barrel + up, normalized_euler
 
 
-def postprocess_gltf(gltf_path, sockets=None, rotate_euler=None, mount_axes=None):
+def postprocess_gltf(gltf_path, sockets=None, rotate_euler=None, mount_axes=None,
+                     character_forward=None):
     """Post-process the exported glTF JSON and write optional author metadata."""
-    mount_axes, rotate_euler = validated_mount_metadata(mount_axes, rotate_euler)
+    mount_axes, rotate_euler = validated_mount_metadata(
+        mount_axes, rotate_euler, character_forward
+    )
     gltf_path = Path(gltf_path)
     with open(gltf_path, "r") as f:
         gltf = json.load(f)
@@ -480,6 +499,8 @@ def postprocess_gltf(gltf_path, sockets=None, rotate_euler=None, mount_axes=None
                 "up": list(mount_axes[3:]),
                 "euler": list(rotate_euler) if rotate_euler is not None else [0, 0, 0],
             }
+            if character_forward is not None:
+                extras["mount"]["characterForward"] = character_forward
             mesh_node["extras"] = extras
             modified = True
             print(
@@ -598,6 +619,7 @@ def main():
         sockets=args.socket,
         rotate_euler=args.rotate_euler,
         mount_axes=args.mount_axes,
+        character_forward=args.character_forward,
     )
 
 

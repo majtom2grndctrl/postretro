@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use glam::Vec3;
-use postretro_model::mount::MountAxes;
+use postretro_model::mount::{CharacterForward, MountAxes};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct MountCheckThresholds {
@@ -45,6 +45,8 @@ pub(super) struct SolveWeaponMountArgs {
     pub(super) scale: Option<String>,
     pub(super) sockets: Vec<String>,
     pub(super) current_euler: Option<[f32; 3]>,
+    /// `None` defers to the weapon's persisted forward, then the +Z default.
+    pub(super) character_forward: Option<CharacterForward>,
     pub(super) thresholds: MountCheckThresholds,
 }
 
@@ -55,6 +57,7 @@ impl SolveWeaponMountArgs {
                 barrel,
                 up,
                 euler: None,
+                character_forward: None,
             })),
             (None, None) => Ok(None),
             _ => Err(usage("--barrel and --up must be supplied together")),
@@ -100,6 +103,7 @@ pub(super) fn parse_solve_weapon_mount_args(
     let mut scale = None;
     let mut sockets = Vec::new();
     let mut current_euler = None;
+    let mut character_forward = None;
     let mut min_barrel_dot = None;
     let mut max_barrel_y = None;
     let mut min_up_dot = None;
@@ -199,6 +203,15 @@ pub(super) fn parse_solve_weapon_mount_args(
                     "--current-euler",
                 )?;
             }
+            "--character-forward" => {
+                let value = next_argument(&args, &mut index, "--character-forward")?;
+                let parsed = CharacterForward::parse(&value).ok_or_else(|| {
+                    usage(&format!(
+                        "--character-forward expects +z or -z, got {value:?}"
+                    ))
+                })?;
+                set_once(&mut character_forward, parsed, "--character-forward")?;
+            }
             "--min-barrel-dot" => {
                 set_once(
                     &mut min_barrel_dot,
@@ -270,6 +283,7 @@ pub(super) fn parse_solve_weapon_mount_args(
         scale,
         sockets,
         current_euler,
+        character_forward,
         thresholds: MountCheckThresholds {
             min_barrel_dot: min_barrel_dot.unwrap_or(0.999),
             max_barrel_y: max_barrel_y.unwrap_or(0.02),
@@ -377,7 +391,7 @@ pub(super) fn usage(message: &str) -> String {
         "{message}\n\nUsage: postretro-tool solve-weapon-mount <skeleton.gltf> \\
          --weapon <baked-weapon.gltf> [--check] [--raw-source <raw-source> --out <output.gltf>] \\
          [--mount-joint NAME] [--clip NAME] [--time SECONDS] \\
-         [--barrel X Y Z --up X Y Z] [--current-euler X Y Z] \\
+         [--barrel X Y Z --up X Y Z] [--current-euler X Y Z] [--character-forward +z|-z] \\
          [--min-barrel-dot VALUE] [--max-barrel-y VALUE] [--min-up-dot VALUE] \\
          [--grip X Y Z] [--scale FACTOR] [--socket NAME=NODE]..."
     )
@@ -442,6 +456,7 @@ mod tests {
             Some("content/dev/models/ar_4/model.gltf")
         );
         assert_eq!(parsed.thresholds, MountCheckThresholds::default());
+        assert_eq!(parsed.character_forward, None);
         assert_eq!(
             parsed.grip,
             Some(["0.0".into(), "-0.05".into(), "0.120".into()])
@@ -528,6 +543,53 @@ mod tests {
                 min_up_dot: 0.9,
             }
         );
+    }
+
+    #[test]
+    fn parse_solve_weapon_mount_accepts_character_forward_and_rejects_other_axes() {
+        let parsed = parse_solve_weapon_mount_args(os_args(&[
+            "holder.gltf",
+            "--weapon",
+            "weapon.gltf",
+            "--check",
+            "--character-forward",
+            "-z",
+        ]))
+        .expect("a -z value is not mistaken for an option");
+        assert_eq!(parsed.character_forward, Some(CharacterForward::NegativeZ));
+
+        for args in [
+            [
+                "holder.gltf",
+                "--weapon",
+                "w.gltf",
+                "--check",
+                "--character-forward",
+                "x",
+            ]
+            .as_slice(),
+            [
+                "holder.gltf",
+                "--weapon",
+                "w.gltf",
+                "--check",
+                "--character-forward",
+            ]
+            .as_slice(),
+            [
+                "holder.gltf",
+                "--weapon",
+                "w.gltf",
+                "--check",
+                "--character-forward",
+                "+z",
+                "--character-forward",
+                "-z",
+            ]
+            .as_slice(),
+        ] {
+            assert!(parse_solve_weapon_mount_args(os_args(args)).is_err());
+        }
     }
 
     #[test]

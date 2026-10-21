@@ -3584,6 +3584,7 @@ mod tests {
                 barrel: Vec3::Y,
                 up: Vec3::Z,
                 euler: Some([10.0, 20.0, 30.0]),
+                character_forward: None,
             }),
             "the selected mesh node carries the public mount declaration",
         );

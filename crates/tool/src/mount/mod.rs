@@ -14,8 +14,8 @@ use std::path::Path;
 use glam::{Mat4, Vec3};
 use postretro_model::gltf_loader::{LoadedModel, load_model};
 use postretro_model::mount::{
-    MountAxes, MountConfidence, MountDetection, MountVerification, corrective_delta,
-    corrective_delta_for_axes, detect_weapon_mount, read_muzzle_offset_in_model,
+    CharacterForward, MountAxes, MountConfidence, MountDetection, MountVerification,
+    corrective_delta, corrective_delta_for_axes, detect_weapon_mount, read_muzzle_offset_in_model,
     resolve_socket_frame_in_model, verify_mount,
 };
 
@@ -63,20 +63,28 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         return check_weapon_mount(&args, &weapon, socket.matrix);
     }
 
+    let character_forward = resolved_character_forward(weapon.mount, args.character_forward);
+    print_character_forward(character_forward);
     let cli_axes = args.cli_axes()?;
     let declared_axes = cli_axes.or(weapon.mount);
     let (euler, emitted_axes, unverified) = match declared_axes {
         Some(axes) => {
-            let delta = corrective_delta_for_axes(socket.matrix, axes)
+            let delta = corrective_delta_for_axes(socket.matrix, axes, character_forward)
                 .map_err(|error| format!("solve declared weapon axes: {error}"))?;
             println!(
                 "Declared raw-source axes: barrel {}  up {}",
                 format_vec3(axes.barrel),
                 format_vec3(axes.up),
             );
+            // The solved Euler is only meaningful for this facing, so the
+            // rebake persists it beside the axes.
+            let emitted_axes = MountAxes {
+                character_forward: Some(character_forward),
+                ..axes
+            };
             (
                 blender_xyz_euler_degrees(gltf_to_blender_rotation(delta)),
-                Some(axes),
+                Some(emitted_axes),
                 false,
             )
         }
@@ -90,7 +98,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
                     )
                 })?;
             let current_blender = blender_xyz_rotation(current_euler);
-            let residual = corrective_delta(socket.matrix, detection.frame)
+            let residual = corrective_delta(socket.matrix, detection.frame, character_forward)
                 .map_err(|error| format!("solve geometric residual: {error}"))?;
             let total_blender = gltf_to_blender_rotation(residual) * current_blender;
 
@@ -101,6 +109,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
                 barrel: current_gltf.transpose() * detection.frame.barrel,
                 up: current_gltf.transpose() * detection.frame.up,
                 euler: None,
+                character_forward: None,
             };
 
             println!("UNVERIFIED geometric assist — no declared barrel/up axes were found.");
@@ -165,6 +174,8 @@ fn check_weapon_mount(
     weapon: &LoadedModel,
     socket_matrix: Mat4,
 ) -> Result<i32, String> {
+    let character_forward = resolved_character_forward(weapon.mount, args.character_forward);
+    print_character_forward(character_forward);
     let declared_axes = args.cli_axes()?.or(weapon.mount);
     let (verification, status) = match declared_axes {
         Some(declared_axes) => {
@@ -185,7 +196,7 @@ fn check_weapon_mount(
                 format_vec3(baked_axes.up),
             );
             (
-                verify_mount(socket_matrix, baked_frame)
+                verify_mount(socket_matrix, baked_frame, character_forward)
                     .map_err(|error| format!("verify declared weapon mount: {error}"))?,
                 "VERIFIED",
             )
@@ -196,15 +207,15 @@ fn check_weapon_mount(
             println!("UNVERIFIED geometric assist — no declared barrel/up axes were found.");
             print_detected_baked_frame(detection);
             (
-                verify_mount(socket_matrix, detection.frame)
+                verify_mount(socket_matrix, detection.frame, character_forward)
                     .map_err(|error| format!("verify geometric weapon mount: {error}"))?,
                 "UNVERIFIED",
             )
         }
     };
 
-    print_mount_metrics(verification);
-    let failures = failed_mount_metrics(verification, args.thresholds);
+    print_mount_metrics(verification, character_forward);
+    let failures = failed_mount_metrics(verification, args.thresholds, character_forward);
     if failures.is_empty() {
         println!("{status}: mount check passed.");
         Ok(0)
@@ -230,15 +241,33 @@ fn current_bake_euler(
     cli_euler.or_else(|| persisted_mount.and_then(|mount| mount.euler))
 }
 
+/// A CLI forward overrides the persisted one, like CLI axes and Euler do.
+fn resolved_character_forward(
+    persisted_mount: Option<MountAxes>,
+    cli_forward: Option<CharacterForward>,
+) -> CharacterForward {
+    cli_forward
+        .or_else(|| persisted_mount.and_then(|mount| mount.character_forward))
+        .unwrap_or_default()
+}
+
+fn barrel_forward_label(character_forward: CharacterForward) -> &'static str {
+    match character_forward {
+        CharacterForward::PositiveZ => "barrel·+Z",
+        CharacterForward::NegativeZ => "barrel·-Z",
+    }
+}
+
 fn failed_mount_metrics(
     verification: MountVerification,
     thresholds: MountCheckThresholds,
+    character_forward: CharacterForward,
 ) -> Vec<&'static str> {
     let mut failures = Vec::new();
     if !verification.barrel_dot_forward.is_finite()
         || verification.barrel_dot_forward < thresholds.min_barrel_dot
     {
-        failures.push("barrel·+Z");
+        failures.push(barrel_forward_label(character_forward));
     }
     if !verification.barrel_dot_up.is_finite()
         || verification.barrel_dot_up.abs() > thresholds.max_barrel_y
@@ -251,9 +280,17 @@ fn failed_mount_metrics(
     failures
 }
 
-fn print_mount_metrics(verification: MountVerification) {
+fn print_character_forward(character_forward: CharacterForward) {
     println!(
-        "barrel·+Z: {}",
+        "Character forward: {} (barrel target; up stays +Y)",
+        character_forward.as_str(),
+    );
+}
+
+fn print_mount_metrics(verification: MountVerification, character_forward: CharacterForward) {
+    println!(
+        "{}: {}",
+        barrel_forward_label(character_forward),
         format_number(verification.barrel_dot_forward),
     );
     println!("barrel·+Y: {}", format_number(verification.barrel_dot_up));
@@ -419,6 +456,7 @@ converter.postprocess_gltf(
             barrel: Vec3::Z,
             up: Vec3::Y,
             euler: Some([10.0, 20.0, 30.0]),
+            character_forward: None,
         };
         assert_eq!(
             current_bake_euler(Some(persisted), Some([40.0, 50.0, 60.0])),
@@ -456,7 +494,11 @@ converter.postprocess_gltf(
         };
 
         assert_eq!(
-            failed_mount_metrics(verification, MountCheckThresholds::default()),
+            failed_mount_metrics(
+                verification,
+                MountCheckThresholds::default(),
+                CharacterForward::PositiveZ,
+            ),
             ["barrel·+Z", "|barrel·+Y|", "up·+Y"]
         );
     }
@@ -474,7 +516,11 @@ converter.postprocess_gltf(
         };
 
         assert_eq!(
-            failed_mount_metrics(verification, MountCheckThresholds::default()),
+            failed_mount_metrics(
+                verification,
+                MountCheckThresholds::default(),
+                CharacterForward::PositiveZ,
+            ),
             ["barrel·+Z", "|barrel·+Y|", "up·+Y"]
         );
     }
@@ -492,6 +538,7 @@ converter.postprocess_gltf(
                 barrel: Vec3::Z,
                 up: Vec3::Y,
                 euler: Some([0.0, 0.0, 0.0]),
+                character_forward: None,
             }),
             "the loader surfaces normalized metadata from the real writer",
         );
@@ -516,6 +563,7 @@ converter.postprocess_gltf(
                 barrel: Vec3::Z,
                 up: Vec3::Y,
                 euler: Some([0.0, 0.0, 0.0]),
+                character_forward: None,
             }),
             ..LoadedModel::default()
         };
@@ -541,6 +589,7 @@ converter.postprocess_gltf(
                 barrel: Vec3::Z,
                 up: Vec3::Y,
                 euler: Some([0.0, 0.0, 0.0]),
+                character_forward: None,
             }),
             ..LoadedModel::default()
         };
@@ -555,6 +604,90 @@ converter.postprocess_gltf(
         let error = check_weapon_mount(&args, &weapon, Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)))
             .expect_err("reflected sockets cannot produce trusted checks");
         assert!(error.contains("determinant must be positive"));
+    }
+
+    /// A raw weapon solved and baked for a -Z-facing holder, as the emitted
+    /// rebake would persist it.
+    fn negative_z_baked_weapon(
+        socket: Mat4,
+        persisted_forward: Option<CharacterForward>,
+    ) -> LoadedModel {
+        let declared = MountAxes {
+            barrel: Vec3::X,
+            up: Vec3::Y,
+            euler: None,
+            character_forward: None,
+        };
+        let delta = corrective_delta_for_axes(socket, declared, CharacterForward::NegativeZ)
+            .expect("rotation socket is usable");
+        LoadedModel {
+            mount: Some(MountAxes {
+                euler: Some(blender_xyz_euler_degrees(gltf_to_blender_rotation(delta))),
+                character_forward: persisted_forward,
+                ..declared
+            }),
+            ..LoadedModel::default()
+        }
+    }
+
+    fn check_args(extra: &[&str]) -> SolveWeaponMountArgs {
+        let mut args = vec!["holder.gltf", "--weapon", "weapon.gltf", "--check"];
+        args.extend_from_slice(extra);
+        parse_solve_weapon_mount_args(os_args(&args)).expect("check arguments parse")
+    }
+
+    #[test]
+    fn negative_z_bake_passes_check_only_against_negative_z_forward() {
+        let socket = Mat4::from_rotation_x(0.4) * Mat4::from_rotation_y(2.2);
+        let weapon = negative_z_baked_weapon(socket, None);
+
+        assert_eq!(
+            check_weapon_mount(&check_args(&["--character-forward", "-z"]), &weapon, socket),
+            Ok(0),
+        );
+        assert_eq!(
+            check_weapon_mount(&check_args(&[]), &weapon, socket),
+            Ok(1),
+            "the +Z default must reject a barrel pointing down -Z",
+        );
+    }
+
+    #[test]
+    fn persisted_character_forward_is_reused_and_cli_overrides_it() {
+        let socket = Mat4::from_rotation_z(-0.3) * Mat4::from_rotation_y(0.9);
+        let weapon = negative_z_baked_weapon(socket, Some(CharacterForward::NegativeZ));
+
+        assert_eq!(check_weapon_mount(&check_args(&[]), &weapon, socket), Ok(0));
+        assert_eq!(
+            check_weapon_mount(&check_args(&["--character-forward", "+z"]), &weapon, socket),
+            Ok(1),
+        );
+    }
+
+    #[test]
+    fn default_forward_check_is_unchanged_for_positive_z_bakes() {
+        let socket = Mat4::from_rotation_y(0.7);
+        let declared = MountAxes {
+            barrel: Vec3::X,
+            up: Vec3::Y,
+            euler: None,
+            character_forward: None,
+        };
+        let delta = corrective_delta_for_axes(socket, declared, CharacterForward::PositiveZ)
+            .expect("rotation socket is usable");
+        let weapon = LoadedModel {
+            mount: Some(MountAxes {
+                euler: Some(blender_xyz_euler_degrees(gltf_to_blender_rotation(delta))),
+                ..declared
+            }),
+            ..LoadedModel::default()
+        };
+
+        assert_eq!(check_weapon_mount(&check_args(&[]), &weapon, socket), Ok(0));
+        assert_eq!(
+            check_weapon_mount(&check_args(&["--character-forward", "-z"]), &weapon, socket),
+            Ok(1),
+        );
     }
 
     #[test]

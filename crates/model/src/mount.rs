@@ -23,18 +23,62 @@ const LOW_CONFIDENCE_ELONGATION: f32 = 2.0;
 /// Author-declared weapon axes in raw-source weapon-local glTF space.
 ///
 /// `euler` records a Blender-tool value for the caller's benefit. The model
-/// crate neither interprets nor converts it.
+/// crate neither interprets nor converts it. `character_forward` records the
+/// holder facing that Euler was solved for; absent means the +Z default.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MountAxes {
     pub barrel: Vec3,
     pub up: Vec3,
     pub euler: Option<[f32; 3]>,
+    pub character_forward: Option<CharacterForward>,
 }
 
 impl MountAxes {
     /// Build the right-handed local mount frame `[side, up, barrel]`.
     pub fn frame(self) -> Result<MountFrame, MountSolveError> {
         MountFrame::from_axes(self.barrel, self.up)
+    }
+}
+
+/// The holder's facing in its raw glTF frame: where a mounted barrel must point.
+///
+/// Up is always +Y. Models facing +Z (enemies; AI `MESH_FORWARD`) take the
+/// default. Player bodies face -Z: their presentation yaw 0 looks down -Z.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CharacterForward {
+    #[default]
+    PositiveZ,
+    NegativeZ,
+}
+
+impl CharacterForward {
+    /// Parse the `+z` / `-z` spelling shared by the CLI and `extras.mount`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "+z" => Some(Self::PositiveZ),
+            "-z" => Some(Self::NegativeZ),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PositiveZ => "+z",
+            Self::NegativeZ => "-z",
+        }
+    }
+
+    pub fn direction(self) -> Vec3 {
+        match self {
+            Self::PositiveZ => Vec3::Z,
+            Self::NegativeZ => Vec3::NEG_Z,
+        }
+    }
+
+    /// The mounted target frame `[side, up, barrel]`; identity for +Z.
+    fn target_rotation(self) -> Mat3 {
+        let forward = self.direction();
+        Mat3::from_cols(Vec3::Y.cross(forward), Vec3::Y, forward)
     }
 }
 
@@ -102,6 +146,7 @@ pub struct ResolvedSocketFrame {
 pub struct MountVerification {
     pub barrel_world: Vec3,
     pub up_world: Vec3,
+    /// Against [`CharacterForward::direction`], not a fixed +Z.
     pub barrel_dot_forward: f32,
     pub barrel_dot_up: f32,
     pub up_dot_up: f32,
@@ -231,26 +276,31 @@ pub fn read_muzzle_offset_in_model(model: &LoadedModel) -> Result<Vec3, MountSol
     }
 }
 
-/// Compute the glTF-space corrective rotation `D = S^T * G^T`.
+/// Compute the glTF-space corrective rotation `D = S^T * T * G^T`.
 ///
-/// `S` is the proper rotation from the socket matrix's direction axes and `G`
-/// is the weapon frame `[side, up, barrel]`. This module intentionally has no
-/// Euler conversion because that belongs to the authoring-tool adapter.
+/// `S` is the proper rotation from the socket matrix's direction axes, `T` the
+/// character-forward target frame, and `G` the weapon frame `[side, up,
+/// barrel]`. This module intentionally has no Euler conversion because that
+/// belongs to the authoring-tool adapter.
 pub fn corrective_delta(
     socket_frame: Mat4,
     weapon_frame: MountFrame,
+    character_forward: CharacterForward,
 ) -> Result<Mat3, MountSolveError> {
     let socket_rotation = normalized_socket_rotation(socket_frame)?;
     let weapon_rotation = Mat3::from_cols(weapon_frame.side, weapon_frame.up, weapon_frame.barrel);
-    Ok(socket_rotation.transpose() * weapon_rotation.transpose())
+    Ok(socket_rotation.transpose()
+        * character_forward.target_rotation()
+        * weapon_rotation.transpose())
 }
 
 /// Compute a corrective delta directly from declared barrel/up axes.
 pub fn corrective_delta_for_axes(
     socket_frame: Mat4,
     axes: MountAxes,
+    character_forward: CharacterForward,
 ) -> Result<Mat3, MountSolveError> {
-    corrective_delta(socket_frame, axes.frame()?)
+    corrective_delta(socket_frame, axes.frame()?, character_forward)
 }
 
 /// Verify a weapon frame mounted at a socket frame.
@@ -262,6 +312,7 @@ pub fn corrective_delta_for_axes(
 pub fn verify_mount(
     socket_frame: Mat4,
     weapon_frame: MountFrame,
+    character_forward: CharacterForward,
 ) -> Result<MountVerification, MountSolveError> {
     normalized_socket_rotation(socket_frame)?;
     let socket_rotation = Mat3::from_mat4(socket_frame);
@@ -273,7 +324,7 @@ pub fn verify_mount(
     Ok(MountVerification {
         barrel_world,
         up_world,
-        barrel_dot_forward: barrel_world.dot(Vec3::Z),
+        barrel_dot_forward: barrel_world.dot(character_forward.direction()),
         barrel_dot_up: barrel_world.dot(Vec3::Y),
         up_dot_up: up_world.dot(Vec3::Y),
     })
@@ -283,8 +334,9 @@ pub fn verify_mount(
 pub fn verify_mount_axes(
     socket_frame: Mat4,
     axes: MountAxes,
+    character_forward: CharacterForward,
 ) -> Result<MountVerification, MountSolveError> {
-    verify_mount(socket_frame, axes.frame()?)
+    verify_mount(socket_frame, axes.frame()?, character_forward)
 }
 
 fn detect_weapon_mount_vertices(vertices: &[Vec3]) -> Result<MountDetection, MountSolveError> {
@@ -465,8 +517,8 @@ mod tests {
     use crate::gltf_loader::{LoadedModel, SocketBinding};
 
     use super::{
-        MountAxes, MountConfidence, MountFrame, corrective_delta, detect_weapon_mount_vertices,
-        read_muzzle_offset_in_model, verify_mount,
+        CharacterForward, MountAxes, MountConfidence, MountFrame, corrective_delta,
+        detect_weapon_mount_vertices, read_muzzle_offset_in_model, verify_mount,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -507,9 +559,11 @@ mod tests {
             barrel: Vec3::X,
             up: Vec3::Y,
             euler: None,
+            character_forward: None,
         };
         let frame = axes.frame().expect("cardinal axes form a frame");
-        let delta = corrective_delta(socket, frame).expect("scaled rotation is usable");
+        let delta = corrective_delta(socket, frame, CharacterForward::PositiveZ)
+            .expect("scaled rotation is usable");
         let socket_rotation = Mat3::from_cols(
             Mat3::from_mat4(socket).x_axis.normalize(),
             Mat3::from_mat4(socket).y_axis.normalize(),
@@ -521,10 +575,59 @@ mod tests {
     }
 
     #[test]
+    fn negative_z_forward_solves_barrel_onto_negative_z_and_verifies_against_it() {
+        // A player body faces -Z, so its correct mount points the barrel there.
+        let socket = Mat4::from_mat3(Mat3::from_rotation_x(0.3) * Mat3::from_rotation_y(-1.1));
+        let frame = MountFrame::from_axes(Vec3::X, Vec3::Z).expect("cardinal axes form a frame");
+        let delta = corrective_delta(socket, frame, CharacterForward::NegativeZ)
+            .expect("rotation socket is usable");
+        let socket_rotation = Mat3::from_mat4(socket);
+
+        assert_close(
+            (socket_rotation * delta * frame.barrel).dot(Vec3::NEG_Z),
+            1.0,
+        );
+        assert_close((socket_rotation * delta * frame.up).dot(Vec3::Y), 1.0);
+        assert_close(delta.determinant(), 1.0);
+
+        let baked = MountFrame::from_axes(delta * frame.barrel, delta * frame.up)
+            .expect("a rotated frame stays orthonormal");
+        let verification = verify_mount(socket, baked, CharacterForward::NegativeZ)
+            .expect("rotation socket is verifiable");
+        assert_close(verification.barrel_dot_forward, 1.0);
+        assert_close(verification.barrel_dot_up, 0.0);
+        assert_close(verification.up_dot_up, 1.0);
+
+        let against_default = verify_mount(socket, baked, CharacterForward::PositiveZ)
+            .expect("rotation socket is verifiable");
+        assert_close(against_default.barrel_dot_forward, -1.0);
+    }
+
+    #[test]
+    fn positive_z_forward_target_is_the_identity_frame() {
+        // An identity target leaves every pre-existing +Z solve unchanged.
+        assert_eq!(CharacterForward::default(), CharacterForward::PositiveZ);
+        assert_eq!(
+            CharacterForward::PositiveZ.target_rotation(),
+            Mat3::IDENTITY
+        );
+        assert_eq!(
+            CharacterForward::parse("+Z"),
+            Some(CharacterForward::PositiveZ)
+        );
+        assert_eq!(
+            CharacterForward::parse("-z"),
+            Some(CharacterForward::NegativeZ)
+        );
+        assert_eq!(CharacterForward::parse("z"), None);
+    }
+
+    #[test]
     fn verification_uses_raw_socket_rotation_for_reported_directions() {
         let frame = MountFrame::from_axes(Vec3::Z, Vec3::Y).expect("cardinal axes form a frame");
         let socket = Mat4::from_scale(Vec3::new(2.0, 3.0, 4.0));
-        let verification = verify_mount(socket, frame).expect("scaled rotation is verifiable");
+        let verification = verify_mount(socket, frame, CharacterForward::PositiveZ)
+            .expect("scaled rotation is verifiable");
 
         assert_eq!(verification.barrel_world, Vec3::Z);
         assert_eq!(verification.up_world, Vec3::Y);
@@ -538,7 +641,7 @@ mod tests {
         // Regression: zero socket columns normalized to NaN, and NaN threshold
         // comparisons let a mount check report a false pass.
         let frame = MountFrame::from_axes(Vec3::Z, Vec3::Y).expect("cardinal axes form a frame");
-        let error = verify_mount(Mat4::ZERO, frame)
+        let error = verify_mount(Mat4::ZERO, frame, CharacterForward::PositiveZ)
             .expect_err("a degenerate socket cannot produce verification metrics");
 
         assert!(
@@ -555,7 +658,7 @@ mod tests {
         let sheared_socket =
             Mat4::from_scale(Vec3::new(2.0, 3.0, 4.0)) * Mat4::from_rotation_z(0.4);
 
-        let error = corrective_delta(sheared_socket, frame)
+        let error = corrective_delta(sheared_socket, frame, CharacterForward::PositiveZ)
             .expect_err("a sheared socket cannot produce a trusted corrective");
         assert!(
             error.to_string().contains("not orthogonal"),
@@ -570,7 +673,7 @@ mod tests {
         let frame = MountFrame::from_axes(Vec3::Z, Vec3::Y).expect("cardinal axes form a frame");
         let reflected_socket = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
 
-        let error = verify_mount(reflected_socket, frame)
+        let error = verify_mount(reflected_socket, frame, CharacterForward::PositiveZ)
             .expect_err("a reflected socket cannot produce trusted verification metrics");
         assert!(
             error.to_string().contains("determinant must be positive"),

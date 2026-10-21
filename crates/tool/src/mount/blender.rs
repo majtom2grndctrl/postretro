@@ -8,7 +8,7 @@
 //! See: context/lib/resource_management.md §7
 
 use glam::{Mat3, Vec3};
-use postretro_model::mount::MountAxes;
+use postretro_model::mount::{CharacterForward, MountAxes};
 
 use super::args::SolveWeaponMountArgs;
 use super::format_number;
@@ -68,6 +68,7 @@ pub(super) fn compose_declared_axes_into_baked_frame(
         barrel: applied_gltf_rotation * declared_axes.barrel,
         up: applied_gltf_rotation * declared_axes.up,
         euler: None,
+        character_forward: None,
     }
 }
 
@@ -116,6 +117,15 @@ pub(super) fn emitted_blender_command(
                 .into_iter()
                 .flat_map(|axis| axis.to_array().into_iter().map(format_number)),
         );
+        // Absent means +Z, so default bakes keep their exact command and
+        // metadata. The `=` form stops argparse reading `-z` as an option.
+        let character_forward = axes.character_forward.unwrap_or_default();
+        if character_forward != CharacterForward::default() {
+            command.push(format!(
+                "--character-forward={}",
+                character_forward.as_str()
+            ));
+        }
     }
     command.join(" ")
 }
@@ -141,6 +151,7 @@ mod tests {
                 barrel: Vec3::Y,
                 up: Vec3::Z,
                 euler: None,
+                character_forward: None,
             },
             [90.0, 0.0, 0.0],
         );
@@ -176,6 +187,7 @@ mod tests {
                 barrel: Vec3::Y,
                 up: Vec3::Z,
                 euler: None,
+                character_forward: Some(CharacterForward::PositiveZ),
             }),
         );
 
@@ -188,6 +200,46 @@ mod tests {
                 "--mount-axes 0.000000 1.000000 0.000000 0.000000 0.000000 1.000000"
             )
         );
+    }
+
+    #[test]
+    fn emitted_blender_command_persists_only_a_non_default_character_forward() {
+        let args = parse_solve_weapon_mount_args(os_args(&[
+            "holder.gltf",
+            "--weapon",
+            "weapon.gltf",
+            "--raw-source",
+            "raw.gltf",
+            "--out",
+            "weapon_tp.gltf",
+        ]))
+        .expect("solve arguments parse");
+        let axes = MountAxes {
+            barrel: Vec3::new(0.0, 0.0, -1.0),
+            up: Vec3::Y,
+            euler: None,
+            character_forward: Some(CharacterForward::NegativeZ),
+        };
+
+        let command = emitted_blender_command(&args, [0.0, 0.0, 0.0], Some(axes));
+        assert!(
+            command.ends_with(
+                "--mount-axes 0.000000 0.000000 -1.000000 0.000000 1.000000 0.000000 --character-forward=-z"
+            ),
+            "{command}",
+        );
+
+        for character_forward in [None, Some(CharacterForward::PositiveZ)] {
+            let command = emitted_blender_command(
+                &args,
+                [0.0, 0.0, 0.0],
+                Some(MountAxes {
+                    character_forward,
+                    ..axes
+                }),
+            );
+            assert!(!command.contains("--character-forward"), "{command}");
+        }
     }
 
     #[test]

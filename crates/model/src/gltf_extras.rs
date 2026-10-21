@@ -9,7 +9,7 @@
 use glam::Vec3;
 use serde::Deserialize;
 
-use crate::mount::MountAxes;
+use crate::mount::{CharacterForward, MountAxes};
 
 /// A skeletal hit zone authored on a joint node's per-node `extras`. Read at
 /// load time and carried parallel to the loaded skeleton. A radius is carried
@@ -26,8 +26,8 @@ pub struct JointZone {
 }
 
 /// The per-node `extras.mount` shape. The core axes deserialize separately
-/// from the optional Euler metadata so a malformed Euler never hides valid
-/// author intent.
+/// from the optional Euler and character-forward metadata so a malformed
+/// optional field never hides valid author intent.
 #[derive(Debug, Deserialize)]
 struct NodeMountExtras {
     mount: Option<MountExtras>,
@@ -39,14 +39,17 @@ struct MountExtras {
     up: Option<[f32; 3]>,
     #[serde(default)]
     euler: Option<serde_json::Value>,
+    #[serde(default, rename = "characterForward")]
+    character_forward: Option<serde_json::Value>,
 }
 
 /// Read raw-source weapon axes from a selected mesh node's `extras.mount`.
 ///
 /// Barrel and up are one core pair: a missing, malformed, non-finite,
 /// degenerate, or non-orthogonal member degrades the whole declaration to
-/// `None`. Euler metadata is independently optional, so malformed Euler data
-/// does not hide a valid barrel/up declaration. Metadata never rejects a model.
+/// `None`. Euler and `characterForward` metadata are independently optional, so
+/// malformed values do not hide a valid barrel/up declaration; an unreadable
+/// forward reads as absent (+Z). Metadata never rejects a model.
 pub(crate) fn read_mount_axes(extras: &gltf::json::Extras) -> Option<MountAxes> {
     let raw = extras.as_ref()?;
     let parsed = serde_json::from_str::<NodeMountExtras>(raw.get()).ok()?;
@@ -57,6 +60,11 @@ pub(crate) fn read_mount_axes(extras: &gltf::json::Extras) -> Option<MountAxes> 
         barrel,
         up,
         euler: valid_mount_euler(mount.euler.as_ref()),
+        character_forward: mount
+            .character_forward
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .and_then(CharacterForward::parse),
     })
 }
 
@@ -455,7 +463,7 @@ fn indexed_leg_suffix(name: &str, prefix: &str) -> Option<usize> {
 mod tests {
     use glam::Vec3;
 
-    use super::{read_mount_axes, read_socket_name};
+    use super::{CharacterForward, read_mount_axes, read_socket_name};
 
     #[test]
     fn read_socket_name_rejects_empty_socket_tag() {
@@ -478,6 +486,30 @@ mod tests {
         assert_eq!(mount.barrel, Vec3::Y);
         assert_eq!(mount.up, Vec3::Z);
         assert_eq!(mount.euler, Some([10.0, 20.0, 30.0]));
+        assert_eq!(mount.character_forward, None);
+    }
+
+    #[test]
+    fn read_mount_axes_reads_character_forward_and_ignores_malformed_values() {
+        let raw: Box<serde_json::value::RawValue> = serde_json::from_str(
+            r#"{"mount":{"barrel":[0,0,1],"up":[0,1,0],"euler":[0,0,0],"characterForward":"-z"}}"#,
+        )
+        .expect("test raw JSON parses");
+        let extras: gltf::json::Extras = Some(raw);
+        assert_eq!(
+            read_mount_axes(&extras).and_then(|mount| mount.character_forward),
+            Some(CharacterForward::NegativeZ),
+        );
+
+        for malformed in [r#""sideways""#, "[0,0,-1]", "null"] {
+            let raw: Box<serde_json::value::RawValue> = serde_json::from_str(&format!(
+                r#"{{"mount":{{"barrel":[0,0,1],"up":[0,1,0],"characterForward":{malformed}}}}}"#,
+            ))
+            .expect("test raw JSON parses");
+            let extras: gltf::json::Extras = Some(raw);
+            let mount = read_mount_axes(&extras).expect("valid core pair remains available");
+            assert_eq!(mount.character_forward, None, "{malformed} reads as absent");
+        }
     }
 
     #[test]

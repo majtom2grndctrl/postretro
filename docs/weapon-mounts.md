@@ -40,6 +40,27 @@ bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
   --scale 0.68
 ```
 
+The solve points the barrel along the character's forward and the weapon's up
+along +Y. Forward defaults to +Z, which is how enemy models such as Limitator
+face. A model that faces -Z, such as the player body `exo_red`, needs
+`--character-forward -z`; without it the solve turns the gun to point behind
+the character:
+
+```bash
+bin/postretro-tool solve-weapon-mount content/dev/models/exo_red/model.gltf \
+  --weapon content/dev/models/cyberpunk_weapons/rifle/model.gltf \
+  --mount-joint hand_r \
+  --barrel 0 0 -1 \
+  --up 0 1 0 \
+  --character-forward -z \
+  --raw-source content/dev/models/cyberpunk_weapons/rifle/model.gltf \
+  --out content/dev/models/cyberpunk_weapons/rifle/model_tp.gltf
+```
+
+A bake solved for one facing is wrong for the other, so a weapon shared by +Z
+enemies and a -Z player needs a separate baked file for the player, such as
+`model_tp.gltf` beside the weapon's `model.gltf`.
+
 `--mount-joint hand_r` selects the joint/socket on the character skeleton. It
 is unrelated to `prop_to_gltf.py --socket NAME=NODE`, which writes named prop
 attachment-point metadata in the weapon glTF's `extras`; use the latter only
@@ -59,11 +80,14 @@ Copy and run that command. It applies the printed `--rotate-euler` and writes
 the final asset's mesh-node metadata:
 
 ```text
-extras.mount = { barrel, up, euler }
+extras.mount = { barrel, up, euler, characterForward? }
 ```
 
 The persisted barrel/up values remain raw-source-frame declarations. The
-persisted Euler is the rotation applied during the final bake.
+persisted Euler is the rotation applied during the final bake. A -Z solve
+emits `--character-forward=-z` (the `=` keeps `-z` from reading as an option)
+and records `characterForward: "-z"`; a +Z solve records nothing, and absent
+means +Z.
 
 ## 4. Check the final bake
 
@@ -78,7 +102,11 @@ bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
 
 For a declared asset, the check composes `extras.mount.euler` into the
 raw-source axes to recover the baked-frame directions. That is why the Euler
-metadata is required. `--barrel`, `--up`, and `--current-euler` are only
+metadata is required. The check also reuses `extras.mount.characterForward`,
+so a -Z bake checks against -Z without re-passing the flag; its first metric
+then reads `barrel·-Z` instead of `barrel·+Z`. `--character-forward` overrides
+the persisted value; a -Z bake without the field, such as a geometric-assist
+rebake, needs the flag. `--barrel`, `--up`, and `--current-euler` are only
 first-author override/fallback inputs for pre-metadata assets; they are not
 part of the normal check command. When supplied, CLI axes and Euler override
 stale persisted values. A declared solve still computes the full from-raw
@@ -114,5 +142,5 @@ the copied `muzzleOffset` participates in projectile simulation.
 A rigid bake is exact only at the solve pose. A wrist-reorienting animation
 (for example, Limitator's `reloading`) needs a skinned weapon rather than a
 single rigid bake. The default is one baked weapon file per weapon. If
-characters use different hand frames, separate baked weapon files per
-character are the escape hatch.
+characters use different hand frames or face opposite ways, separate baked
+weapon files per character are the escape hatch.

@@ -91,6 +91,27 @@ class PostprocessGltfMountMetadataTests(unittest.TestCase):
 
         self.assertEqual(result["nodes"][1]["extras"], {"keep": "value"})
 
+    def test_writes_character_forward_beside_mount_axes(self):
+        temp_dir, path = self.write_fixture()
+        with temp_dir:
+            CONVERTER.postprocess_gltf(
+                path,
+                rotate_euler=[0.0, 180.0, 0.0],
+                mount_axes=[0.0, 0.0, -1.0, 0.0, 1.0, 0.0],
+                character_forward="-z",
+            )
+            mount = json.loads(path.read_text())["nodes"][1]["extras"]["mount"]
+
+        self.assertEqual(mount["characterForward"], "-z")
+
+    def test_rejects_character_forward_without_mount_axes(self):
+        temp_dir, path = self.write_fixture()
+        with temp_dir:
+            original = path.read_text()
+            with self.assertRaisesRegex(ValueError, "character forward"):
+                CONVERTER.postprocess_gltf(path, character_forward="-z")
+            self.assertEqual(path.read_text(), original)
+
     def test_normalizes_unit_normalizable_mount_axes_before_writing(self):
         temp_dir, path = self.write_fixture()
         with temp_dir:
@@ -138,6 +159,12 @@ class ConverterArgumentValidationTests(unittest.TestCase):
         for scale in ["0", "-1"]:
             with self.subTest(scale=scale), self.assertRaises(SystemExit):
                 self.parse("--scale", scale)
+
+    def test_accepts_equals_form_negative_character_forward(self):
+        self.assertEqual(self.parse("--character-forward=-z").character_forward, "-z")
+        self.assertIsNone(self.parse().character_forward)
+        with self.assertRaises(SystemExit):
+            self.parse("--character-forward=x")
 
     def test_rejects_non_finite_transform_metadata_inputs(self):
         for args in [

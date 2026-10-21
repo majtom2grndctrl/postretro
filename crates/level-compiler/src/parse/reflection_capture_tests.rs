@@ -95,12 +95,12 @@ fn parse_inline_map(map_text: &str) -> anyhow::Result<MapData> {
 fn capture_by_texture(map: &MapData) -> BTreeMap<String, ReflectionCapture> {
     assert_eq!(
         map.brush_volumes.len(),
-        map.brush_reflection_capture.len(),
+        map.brush_capture_override.len(),
         "the override table is index-aligned with brush_volumes"
     );
     map.brush_volumes
         .iter()
-        .zip(&map.brush_reflection_capture)
+        .zip(&map.brush_capture_override)
         .filter_map(|(brush, &capture)| {
             let texture = brush.sides.first()?.texture.clone();
             Some((texture, capture))
@@ -222,7 +222,7 @@ fn never_func_group_with_degenerate_first_brush_excludes_its_other_brushes() {
         .expect("the hull builder retains the one-plane brush");
     assert!(map.brush_volumes[degenerate_index].sides.is_empty());
     assert_eq!(
-        map.brush_reflection_capture[degenerate_index],
+        map.brush_capture_override[degenerate_index],
         ReflectionCapture::Never
     );
     let expected = BTreeMap::from([

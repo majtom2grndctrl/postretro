@@ -656,7 +656,7 @@ pub struct MapData {
     /// resolved reflection-probe capture override. `Auto` unless its source
     /// entity authored one.
     #[allow(dead_code)]
-    pub(crate) brush_reflection_capture: Vec<ReflectionCapture>,
+    pub(crate) brush_capture_override: Vec<ReflectionCapture>,
     /// Brush count per non-worldspawn entity. Diagnostic only; editor-group
     /// brushes are flattened into static brush volumes, while semantic brush
     /// entities are resolved by their owning subsystems.

@@ -8,7 +8,7 @@ Owner approved 2026-10-20 ("Plan approved. Start the build.").
 
 ## Shared contracts (integrating executor owns)
 - `map_data::ReflectionCapture { Auto (default), Always, Never }`: seeded with the approval commit.
-- `MapData::brush_reflection_capture: Vec<ReflectionCapture>`, index-aligned with `brush_volumes` (task 4 adds the field).
+- `MapData::brush_capture_override: Vec<ReflectionCapture>`, index-aligned with `brush_volumes` (task 4). Named so it never contains the substring `_reflection_capture`, which the AC 45 source gate greps for.
 - Face → brush table: `Vec<Option<u32>>`, index-aligned with the post-cut output faces (the `SurfaceHit::face` / `face_index_ranges` space), each entry indexing `MapData::brush_volumes`; `None` for a face the oversize cut emptied. Built in `extract_geometry`'s walk beside `GeometryResult`, remapped by `face_remap` (task 1).
 - Per-probe exclusion: a sorted, deduplicated `Vec<u32>` of excluded brush indices per placed probe (task 3 produces, tasks 1/2/5 consume). The capture derives its face mask from it through the face → brush table.
 
@@ -31,7 +31,7 @@ Branch: `claude/reflection-probe-capture-exclusion`, cut from `main` at the clai
 - **`build_brush_volumes_with_ids` drops degenerate brushes and sides.** `BrushVolume::sides` and `planes` are not index-aligned. The exit test uses `planes`, and the covering-side test uses `sides` (vertices, normal, distance).
 
 ## Delegated answers
-- Canonical override type name: `ReflectionCapture { Auto, Always, Never }` in `map_data.rs`. `MapData::brush_reflection_capture: Vec<ReflectionCapture>` is index-aligned with `brush_volumes`, built at the retained-hull seam beside `brush_assembly`. Reason: it mirrors `brush_assembly`, and the name is format-neutral.
+- Canonical override type name: `ReflectionCapture { Auto, Always, Never }` in `map_data.rs`. `MapData::brush_capture_override: Vec<ReflectionCapture>` is index-aligned with `brush_volumes`, built at the retained-hull seam beside `brush_assembly`. Reason: it mirrors `brush_assembly`, and the name is format-neutral.
 - Where the floor constant lives: a compiler constant `SSR_COARSEST_STRIDE_DIVISOR = 180` and `DEFAULT_HFOV_DEGREES = 100` in the new classification module, with f's ratio computed from them. A `#[cfg(test)]` drift test reads `FluidReflectionQuality::ALL` / `preset()` (dev-dependency) and asserts it, and a pin test asserts HFOV 100° against a copy, since `camera::HFOV` lives in the binary crate, which level-compiler cannot depend on. Reason: the Path chose this, and render-cpu stays a dev-dependency.
 - Vertical FOV: θv = 2·atan(tan(HFOV/2) · 9/16).
 

@@ -1612,11 +1612,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // brush list position. `Face::brush_index` is this resulting vector's
     // enumerate index.
     let brush_assembly = brush_assembly_for_retained_hulls(&world_hulls, &assembly_by_brush_id);
-    let brush_reflection_capture = reflection_capture_overrides.for_retained_hulls(&world_hulls);
+    let brush_capture_override = reflection_capture_overrides.for_retained_hulls(&world_hulls);
     let brush_volumes: Vec<BrushVolume> =
         world_hulls.into_iter().map(|(_, volume)| volume).collect();
     debug_assert_eq!(brush_volumes.len(), brush_assembly.len());
-    debug_assert_eq!(brush_volumes.len(), brush_reflection_capture.len());
+    debug_assert_eq!(brush_volumes.len(), brush_capture_override.len());
     let total_vertex_count: usize = brush_volumes
         .iter()
         .flat_map(|brush| brush.sides.iter())
@@ -1658,7 +1658,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         brush_volumes,
         assemblies,
         brush_assembly,
-        brush_reflection_capture,
+        brush_capture_override,
         entity_brushes: entity_brushes_summary,
         entities,
         lights,

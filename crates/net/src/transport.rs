@@ -23,6 +23,9 @@ use crate::wire::{
 
 pub use crate::handshake::*;
 
+#[cfg(test)]
+mod protocol_gate_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     Control = 0,

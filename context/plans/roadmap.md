@@ -64,6 +64,8 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
 
 - [ ] **Network lag simulator** — inject latency, jitter and loss into a session from a dev-toolbar control or CLI flag, so co-op playtests at realistic RTT need no OS-level link conditioning.
 
+- [ ] **coop--lossy-link-delivery** — under the dev lag profile a connected client's own pawn rubber-bands, worst in slides and vaults, because one lost datagram stalls reliable-ordered gameplay traffic for a 300 ms resend. Input resends at most one tick later and carries every gameplay family, switches included; Control resends at about 100 ms; the harness runs production channel semantics. Brief: `context/plans/ready/coop--lossy-link-delivery/`.
+
 - [ ] **coop--pre-arm-fire-resolves-slot-zero** — before a connected client's pawn arms, its Input carries `firing_slot` 0, and a fresh fire press there fires the host pawn's slot-0 weapon whatever its active slot. Traced in source, not yet seen in play. Trace: `context/plans/done/coop--client-inventory-awaits-tuning/research.md`. Needs a draft session.
 
 **Testable outcome:** two-plus players use the selected hosted-session flow, with one joining mid-level and another dropping while the session survives, through a mod-authored lobby.

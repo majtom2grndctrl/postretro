@@ -3,7 +3,7 @@
 Brief · compact · reads: `context/lib/networking.md` §What gates, and what replicates instead, §Combat authority, §Presentation events vs. replicated state · `context/lib/ui.md` §3 · read at d6f3471
 
 ## Problem
-Owner playtest under the dev lag proxy after PR #601: a connected client's reload meter fills in steps. Basis: observed defect, split out of `drafts/coop--lossy-link-delivery` and then `drafts/ui-tween-clock`. Cause: a client's store receives the host's sample about 30 times a second (`SNAPSHOT_TICK_INTERVAL` = 2), and the meter shows each sample raw. It steps on a clean link at any frame rate above 30; loss and jitter only lengthen the holds. The client has no rate to advance the value between samples. When done, a connected client's timed meters advance smoothly between samples and through lost or reordered snapshots, with no change to the host, single-player or any mod HUD.
+Owner playtest under the dev lag proxy after PR #601: a connected client's reload meter fills in steps. Basis: observed defect, split out of `coop--lossy-link-delivery` and then `drafts/ui-tween-clock`. Cause: a client's store receives the host's sample about 30 times a second (`SNAPSHOT_TICK_INTERVAL` = 2), and the meter shows each sample raw. It steps on a clean link at any frame rate above 30; loss and jitter only lengthen the holds. The client has no rate to advance the value between samples. When done, a connected client's timed meters advance smoothly between samples and through lost or reordered snapshots, with no change to the host, single-player or any mod HUD.
 
 ## Decisions
 - **The projection sets the display target.** For an enumerated slot on a connected client, the target the display value retargets to (`ui.md` §3) is the slot's projection, not the raw sample. The rest of §3 holds: a bound tween eases toward the moving target, and an untweened binding shows the projection. A mod HUD needs no change. The store slot keeps the host sample, so state crossings and the sample-derived reload sound edges (`networking.md` §Combat authority) fire once per host crossing.
@@ -17,11 +17,11 @@ Owner playtest under the dev lag proxy after PR #601: a connected client's reloa
   - A default tween on the HUD binding lags in every role and leaves an engine symptom to mod policy.
   - Advancing at the client's local tuning rate breaks `networking.md`'s no-local-fallback rule.
 - **Independent of the UI clock.** Projection reads host time, built on the level clock `script_time`; UI time does not drive it. A tween bound to a projected slot eases on whatever UI time is, so this brief and `drafts/ui-tween-clock` land in either order.
-- **Placement.** Projection runs in `postretro-netcode` on the state-slot apply path and hands the UI snapshot a projected target per enumerated slot. The UI module still writes no store slot. The rate is a wire field on the slot record; `SNAPSHOT_VERSION` moves if it changes a snapshot record, and the previous peer is refused at the handshake. Independent of `drafts/coop--lossy-link-delivery`'s protocol and wire bump; whichever lands second rebases its version.
+- **Placement.** Projection runs in `postretro-netcode` on the state-slot apply path and hands the UI snapshot a projected target per enumerated slot. The UI module still writes no store slot. The rate is a wire field on the slot record; `SNAPSHOT_VERSION` moves if it changes a snapshot record, and the previous peer is refused at the handshake. Independent of `coop--lossy-link-delivery`'s protocol and wire bump; whichever lands second rebases its version.
 - **Docs owed at promotion.** `ui.md` §3: the target bullet names the connected-client projection. `networking.md` §What gates: the timed-slot rate and its projection. `networking.md` §Combat authority: the heat and cell display sentence. `docs/scripting-reference.md`: one sentence that a timed meter advances smoothly on clients with no author change.
 - **Non-goals.**
   - The UI clock, frontend tweens and Loading animation: `drafts/ui-tween-clock` owns them.
-  - Loss recovery on the reliable channels: `drafts/coop--lossy-link-delivery` owns it.
+  - Loss recovery on the reliable channels: `ready/coop--lossy-link-delivery` owns it.
 
 ## Acceptance
 ### Automated

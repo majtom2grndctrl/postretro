@@ -3,19 +3,18 @@
 
 use glam::{DVec3, Vec3};
 
-use super::capture_exclusion::BrushFaces;
+use super::capture_exclusion::{BrushFaces, CONTACT_TOLERANCE_M};
 use super::hit::{SceneTracer, SurfaceHit, SurfacePoint};
-use super::placement::PLANE_TOLERANCE_M;
-use crate::geometry::{GeometryResult, compute_texel_uv, engine_to_quake};
+use crate::geometry::{GeometryResult, brush_side_texel_uv};
 use crate::map_data::{BrushSide, BrushVolume};
-use crate::map_format::MapFormat;
 
-/// How far a covering side's plane may lie from where the ray enters or
-/// leaves an excluded hull, perpendicular to the plane, and still fill; also
-/// the in-polygon slack. No smaller than the 1 mm hit epsilon: brush CSG
-/// treats a gap that small as contact and cuts the kept face, so a side just
-/// past the hull's exit is the one the excluded brush removed.
-const FILL_TOLERANCE_M: f64 = PLANE_TOLERANCE_M;
+/// How far along the ray a covering side may be crossed before the ray
+/// enters an excluded hull or after it leaves, and still fill; also the
+/// plane-match and in-polygon slack. Brush CSG cuts the kept face across a
+/// gap within its contact epsilon, so a side just past the hull's exit is
+/// the one the excluded brush removed. Measured along the ray, not off the
+/// plane, so a grazing ray never reaches far past the exit.
+const FILL_TOLERANCE_M: f64 = CONTACT_TOLERANCE_M;
 /// Normals within this cosine of each other are one plane's.
 const COPLANAR_MIN_COS: f64 = 1.0 - 1.0e-4;
 
@@ -94,61 +93,52 @@ impl KeptCandidate {
     }
 }
 
-/// Where the ray `(origin, unit direction)`, inside an excluded hull over
-/// `span` (its entry and exit distances), first
-/// crosses into one of the `slots` candidates through a side whose polygon
-/// holds the crossing. Every candidate side on that crossing's plane pools
-/// its surviving faces, so a brush that lost the coplanar dedupe never
-/// decides; the fill reads the nearest point on them, ties to the lowest
-/// post-cut face. `None` when no side is crossed, or the first crossed has
-/// no surviving face: the exit decides instead.
+/// Where the ray `(origin, unit direction)`, inside an excluded hull between
+/// `entry` and `exit` (its distances), first crosses into one of the `slots`
+/// candidates through a side whose polygon holds the crossing. Every
+/// candidate side on that crossing's plane pools its surviving faces, so a
+/// brush that lost the coplanar dedupe never decides; the fill reads the
+/// nearest point on them, ties to the lowest post-cut face. `None` when no
+/// side is crossed, or the first crossed has no surviving face: the exit
+/// decides instead. It runs per excluded hull per capture ray, so it
+/// allocates nothing.
 pub(super) fn find_fill(
     tracer: &SceneTracer<'_>,
     volumes: &[BrushVolume],
     candidates: &[KeptCandidate],
     slots: &[usize],
-    (origin, direction): (DVec3, DVec3),
+    ray: (DVec3, DVec3),
     [entry, exit]: [f64; 2],
 ) -> Option<Fill> {
-    let mut crossings: Vec<(f64, usize, usize)> = Vec::new();
-    for &slot in slots {
-        let sides = &volumes[candidates[slot].brush as usize].sides;
-        for (index, side) in sides.iter().enumerate() {
-            let rate = side.normal.dot(direction);
-            if rate >= 0.0 {
-                continue;
-            }
-            let t = (side.distance - side.normal.dot(origin)) / rate;
-            // Signed distances to the plane at entry and exit, along its
-            // normal: the ray enters the side's brush between them.
-            let at_entry = rate * (entry - t);
-            let at_exit = rate * (exit - t);
-            if at_entry < -FILL_TOLERANCE_M || at_exit > FILL_TOLERANCE_M {
-                continue;
-            }
-            if polygon_holds(side, origin + direction * t) {
-                crossings.push((t, slot, index));
-            }
-        }
-    }
-    let first = crossings.iter().map(|&(t, ..)| t).min_by(f64::total_cmp)?;
+    let crossings = || {
+        slots.iter().flat_map(move |&slot| {
+            let sides = &volumes[candidates[slot].brush as usize].sides;
+            sides.iter().enumerate().filter_map(move |(index, side)| {
+                Some((crossing(side, ray, [entry, exit])?, slot, index))
+            })
+        })
+    };
+    let first = crossings().map(|(t, ..)| t).min_by(f64::total_cmp)?;
+    let (origin, direction) = ray;
     let point = origin + direction * first;
-    let mut pool: Vec<(u32, usize, usize)> = Vec::new();
-    for &(_, slot, index) in &crossings {
+    // Every crossed side on the first crossing's plane pools its faces. A
+    // face belongs to one brush's one side, so none is visited twice.
+    let mut best: Option<Nearest> = None;
+    for (_, slot, index) in crossings() {
         let side = &volumes[candidates[slot].brush as usize].sides[index];
         if (side.normal.dot(point) - side.distance).abs() > FILL_TOLERANCE_M {
             continue;
         }
-        pool.extend(
-            candidates[slot].sides[index]
-                .faces
-                .iter()
-                .map(|&face| (face, slot, index)),
-        );
+        for &face in &candidates[slot].sides[index].faces {
+            nearest_on_face(tracer, face, point, (slot, index), &mut best);
+        }
     }
-    pool.sort_unstable();
-    pool.dedup_by_key(|entry| entry.0);
-    let (lit, slot, index) = nearest_on_faces(tracer, &pool, point)?;
+    let Nearest {
+        hit: lit,
+        slot,
+        side: index,
+        ..
+    } = best?;
     let candidate = &candidates[slot];
     let texture_index = candidate.sides[index]
         .texture_index
@@ -161,6 +151,24 @@ pub(super) fn find_fill(
         texture_index,
         lit: SurfaceHit { distance, ..lit },
     })
+}
+
+/// Where the ray crosses into `side`'s brush through `side`: within
+/// [`FILL_TOLERANCE_M`] of the hull's `entry`..`exit` along the ray, inside
+/// the side's polygon. `None` when the ray heads out through the side or
+/// crosses it elsewhere.
+fn crossing(
+    side: &BrushSide,
+    (origin, direction): (DVec3, DVec3),
+    [entry, exit]: [f64; 2],
+) -> Option<f64> {
+    let rate = side.normal.dot(direction);
+    if rate >= 0.0 {
+        return None;
+    }
+    let t = (side.distance - side.normal.dot(origin)) / rate;
+    let within = t >= entry - FILL_TOLERANCE_M && t <= exit + FILL_TOLERANCE_M;
+    (within && polygon_holds(side, origin + direction * t)).then_some(t)
 }
 
 /// The surface a fill reads, facing a ray of unit `direction` from
@@ -177,47 +185,58 @@ pub(crate) fn fill_surface(
     let side = &volumes[fill.brush as usize].sides[fill.side as usize];
     let point = origin.as_dvec3() + direction.as_dvec3() * f64::from(fill.distance);
     let mut surface = tracer.surface_at(&fill.lit, tracer.position_on(&fill.lit), direction);
-    let quake = engine_to_quake(point) * (1.0 / MapFormat::IdTech2.units_to_meters());
-    let (u, v) = compute_texel_uv(quake, side.normal, &side.tex_projection);
-    surface.uv = [u as f32, v as f32];
+    surface.uv = brush_side_texel_uv(point, side.normal, &side.tex_projection);
     surface.texture_index = fill.texture_index;
     surface
 }
 
-/// The nearest point to `point` over `pool`'s faces (ascending face index),
-/// as a hit on its triangle, with the pooled entry's candidate and side.
-/// Faces and their triangles are visited in index order and only a strictly
-/// nearer point replaces the best, so ties go to the lowest index.
-fn nearest_on_faces(
+/// The pooled face point nearest a fill so far: its squared distance, the
+/// hit on its triangle, and the candidate slot and side that pooled it.
+struct Nearest {
+    squared: f64,
+    hit: SurfaceHit,
+    slot: usize,
+    side: usize,
+}
+
+/// Fold the point of `face` nearest `point` into `best`. A nearer point
+/// replaces it, and an equally near one only from a lower face, so the
+/// result never depends on the order faces are visited: ties go to the
+/// lowest index, and within a face to its first triangle.
+fn nearest_on_face(
     tracer: &SceneTracer<'_>,
-    pool: &[(u32, usize, usize)],
+    face: u32,
     point: DVec3,
-) -> Option<(SurfaceHit, usize, usize)> {
+    (slot, side): (usize, usize),
+    best: &mut Option<Nearest>,
+) {
     let geometry = &tracer.geometry().geometry;
-    let ranges = &tracer.geometry().face_index_ranges;
-    let mut best: Option<(f64, SurfaceHit, usize, usize)> = None;
-    for &(face, slot, index) in pool {
-        let range = ranges[face as usize];
-        let start = range.index_offset as usize;
-        let (triangles, _) =
-            geometry.indices[start..start + range.index_count as usize].as_chunks::<3>();
-        for &corners in triangles {
-            let [a, b, c] =
-                corners.map(|i| Vec3::from(geometry.vertices[i as usize].position).as_dvec3());
-            let (nearest, barycentric) = closest_point_on_triangle(point, a, b, c);
-            let squared = nearest.distance_squared(point);
-            if best.as_ref().is_none_or(|(d, ..)| squared < *d) {
-                let hit = SurfaceHit {
+    let range = tracer.geometry().face_index_ranges[face as usize];
+    let start = range.index_offset as usize;
+    let (triangles, _) =
+        geometry.indices[start..start + range.index_count as usize].as_chunks::<3>();
+    for &corners in triangles {
+        let [a, b, c] =
+            corners.map(|i| Vec3::from(geometry.vertices[i as usize].position).as_dvec3());
+        let (nearest, barycentric) = closest_point_on_triangle(point, a, b, c);
+        let squared = nearest.distance_squared(point);
+        let replaces = best.as_ref().is_none_or(|best| {
+            squared < best.squared || (squared == best.squared && face < best.hit.face)
+        });
+        if replaces {
+            *best = Some(Nearest {
+                squared,
+                hit: SurfaceHit {
                     distance: 0.0,
                     face,
                     triangle: corners,
                     barycentric: barycentric.map(|w| w as f32),
-                };
-                best = Some((squared, hit, slot, index));
-            }
+                },
+                slot,
+                side,
+            });
         }
     }
-    best.map(|(_, hit, slot, index)| (hit, slot, index))
 }
 
 /// The point of triangle `abc` nearest `p`, with its barycentrics

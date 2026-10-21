@@ -39,7 +39,7 @@ pub(super) struct ReflectionCaptureOverrides {
 impl ReflectionCaptureOverrides {
     /// A `func_group`: an authored brush entity carries the key for every
     /// brush; a TrenchBroom group or layer does not, since TrenchBroom drops
-    /// the key on save, so an authored one is ignored with a warning.
+    /// the key on save, so an authored key value is ignored with a warning.
     pub(super) fn record_func_group(
         &mut self,
         props: &HashMap<String, String>,
@@ -59,8 +59,8 @@ impl ReflectionCaptureOverrides {
         }
     }
 
-    /// An authored brush entity (`switch`, or `func_group` without
-    /// `_tb_type`): every brush takes the entity's value. Warns once per
+    /// An authored brush entity (`switch`, or `func_group` without a
+    /// non-blank `_tb_type`): every brush takes the entity's value. Warns once per
     /// entity on a bad value, which acts as `auto`.
     pub(super) fn record_brush_entity(
         &mut self,

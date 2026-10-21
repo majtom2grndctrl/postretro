@@ -428,7 +428,7 @@ fn overrides_beat_the_rule_in_both_directions() {
     assert_eq!(classify_with(&brushes, &overrides, width), vec![0, 2]);
 }
 
-// Corrections (task 5): the stage classifies only brushes whose hulls touch
+// The stage classifies only brushes whose hulls touch
 // the probe's projection box, its floor ignored, within the plane tolerance.
 #[test]
 fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
@@ -470,7 +470,7 @@ fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
     );
 }
 
-// Acceptance (classification half): through parse and the stage's
+// Through parse and the stage's
 // classification, `never` on a `func_group` and on a `switch` excludes a
 // brush past the threshold, a dock the underside rule keeps and a slab under
 // the floor; `always` keeps a crate under the threshold and a post the rule
@@ -593,8 +593,10 @@ fn floor_field_of_view_matches_the_engine_default() {
         .and_then(|value| value.split('*').next())
         .and_then(|degrees| degrees.trim().parse().ok())
         .unwrap_or_else(|| panic!("HFOV is not written as `<degrees> * PI / 180`: {line}"));
-    assert_eq!(DEFAULT_HFOV_DEGREES, degrees);
-    assert_eq!(DEFAULT_HFOV_DEGREES, 100.0);
+    assert!(
+        (DEFAULT_HFOV_DEGREES - degrees).abs() < 1e-9,
+        "DEFAULT_HFOV_DEGREES ({DEFAULT_HFOV_DEGREES}) disagrees with the engine's HFOV ({degrees})"
+    );
     // θv = 2·atan(tan(50°)·9/16), so 2·tan(θv/2) = 2·tan(50°)·9/16.
     let expected = 2.0 * 50.0_f64.to_radians().tan() * 9.0 / 16.0 / 180.0;
     assert!(

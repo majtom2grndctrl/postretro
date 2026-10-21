@@ -361,7 +361,7 @@ To force brushes in or out, select them and use **Create Brush Entity → `func_
 
 | Key | Values | Default | What it does |
 |-----|--------|---------|--------------|
-| `_reflection_capture` | `auto`, `always`, `never` | `auto` | `auto` follows the rule above. `always` keeps every brush of the entity in the probe; use it when a left-out brush, such as a short wall between two openings, lets the reflection show what lies behind it. `never` leaves every brush out. Any other value warns, naming the entity, and acts as `auto`. |
+| `_reflection_capture` | `auto`, `always`, `never` | `auto` | `auto` follows the rule above. `always` keeps every brush of the entity in the probe; use it when a left-out or `never` brush, such as a short wall between two openings, lets the reflection show what lies behind it, or when the probe's box reaches past a left-out or `never` wall and the reflection shows what lies beyond. `never` leaves the brush out of the probe except where the probe would otherwise see through the level: an outer wall with only the exterior behind it, or a brush buried in solid, still shows its own surface. Any other value warns, naming the entity, and acts as `auto`. |
 
 Worldspawn brushes always follow the rule. A TrenchBroom group or layer cannot carry the key: TrenchBroom drops it when it saves, so the compiler ignores it there with a warning. Use a `func_group` brush entity instead.
 

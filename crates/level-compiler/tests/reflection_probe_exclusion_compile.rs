@@ -254,7 +254,7 @@ fn assert_reads_through_the_pillar(
 
 const ALWAYS: &str = "\"_reflection_capture\" \"always\"\n";
 
-// Acceptance: from a `.map` with no override, the rule excludes the pillar
+// From a `.map` with no override, the rule excludes the pillar
 // and id 54's colour and distance texels through it read the wall behind;
 // the same pillar set to `always`, the same hull, reads the pillar.
 #[test]
@@ -272,7 +272,7 @@ fn prl_build_captures_the_wall_behind_a_pillar_the_rule_excludes() {
     assert_reads_through_the_pillar(&filtered, &kept);
 }
 
-// Acceptance (O2): the same with the oversize lightmap cut forced. The room
+// The same with the oversize lightmap cut forced. The room
 // runs 91 m along y, so the long faces' charts pass one pool layer at the
 // default density and are cut into sub-faces, renumbering the faces the
 // pillar's mask names.
@@ -294,7 +294,7 @@ fn prl_build_captures_through_an_excluded_pillar_with_the_oversize_cut_forced() 
     assert_reads_through_the_pillar(&filtered, &kept);
 }
 
-// Acceptance: `--no-cache` at one worker and at four emits byte-identical id
+// `--no-cache` at one worker and at four emits byte-identical id
 // 54 for a level whose probe excludes a brush.
 #[test]
 fn prl_build_excluding_capture_is_byte_identical_at_one_and_four_jobs() {

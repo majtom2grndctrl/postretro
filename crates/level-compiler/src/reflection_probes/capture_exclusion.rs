@@ -8,12 +8,20 @@ use super::hit::{FaceMask, MaskedHit, RAY_EPSILON, SceneTracer, SurfaceHit};
 use super::placement::{PLANE_TOLERANCE_M, PlacedProbe};
 use crate::map_data::BrushVolume;
 use crate::partition::Aabb;
+use crate::partition::brush_bsp::REGION_CLASSIFICATION_EPSILON;
 
-/// A point within this of a hull's planes is inside it. It only absorbs the
-/// rounding of a ray point computed on a coplanar plane (flush contact), so
-/// it stays far below the 1 mm hit epsilon: an exit half a millimetre short
-/// of a kept face lies in empty space and re-traces onto that face.
-const HULL_INSIDE_TOLERANCE_M: f64 = 1.0e-5;
+/// Brushes this close count as touching, along a ray or between bounds.
+/// Brush CSG treats a gap up to its 1 mm epsilon as contact and cuts both
+/// facing faces; the half again above it keeps such a gap from ever tying.
+/// A slightly wider gap CSG left whole reads the same inside it: the fill
+/// reads the surviving kept face before the exit is classified, and an
+/// excluded hull is crossed whether entered at once or by a re-trace.
+pub(super) const CONTACT_TOLERANCE_M: f64 = 1.5 * REGION_CLASSIFICATION_EPSILON;
+
+/// A ray parallel to a hull plane lies on its inner side within this. It
+/// only absorbs the rounding of a ray running on the plane (flush contact),
+/// so a level ray half a millimetre under a ceiling never enters it.
+const PARALLEL_INSIDE_TOLERANCE_M: f64 = 1.0e-5;
 
 /// The world brushes a capture may exclude, and the brush each face came from.
 #[derive(Debug, Clone, Copy)]
@@ -74,7 +82,7 @@ impl BrushFaces {
 /// What a capture ray reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum RayOutcome {
-    /// Nothing within reach: distance 0.
+    /// Nothing within reach: no distance (the tile stores 0).
     Miss,
     /// A kept front face, as traced, behind any excluded brush the ray crossed.
     Hit(SurfaceHit),
@@ -87,10 +95,10 @@ pub(crate) enum RayOutcome {
 }
 
 impl RayOutcome {
-    #[cfg(test)]
     /// The traced surface the ray reads, with its distance from the ray
     /// origin. A fill's surface is synthesized instead
     /// ([`super::capture_fill::fill_surface`]).
+    #[cfg(test)]
     pub(crate) fn surface(&self) -> Option<&SurfaceHit> {
         match self {
             Self::Miss | Self::Fill(_) => None,
@@ -98,8 +106,8 @@ impl RayOutcome {
         }
     }
 
-    #[cfg(test)]
     /// How far along the ray its surface lies; `None` on a miss.
+    #[cfg(test)]
     pub(crate) fn distance(&self) -> Option<f32> {
         match self {
             Self::Miss => None,
@@ -147,10 +155,9 @@ enum Crossing {
 }
 
 impl<'a> ProbeExclusion<'a> {
-    /// `excluded`: brush indices into `brushes.volumes`, sorted and
-    /// deduplicated (the per-probe contract). Contacts are drawn per probe,
-    /// so a brush another probe excludes is kept solid here when this one
-    /// keeps it.
+    /// `excluded`: brush indices into `brushes.volumes`. Contacts are drawn
+    /// per probe, so a brush another probe excludes is kept solid here when
+    /// this one keeps it.
     pub(crate) fn new(
         tracer: &SceneTracer<'_>,
         brushes: CaptureBrushes<'a>,
@@ -158,15 +165,26 @@ impl<'a> ProbeExclusion<'a> {
         probe: &PlacedProbe,
     ) -> Self {
         debug_assert!(
-            excluded.windows(2).all(|pair| pair[0] < pair[1]),
-            "excluded brushes are sorted and deduplicated"
+            excluded
+                .iter()
+                .all(|&brush| (brush as usize) < brushes.volumes.len()),
+            "excluded brushes index the brush volumes"
         );
         let projection_box = ProjectionBox::of(probe);
-        let excluded: Vec<u32> = excluded
+        // Leaving out brushes wholly off the box captures the same only
+        // while the capture point is inside it.
+        debug_assert!(
+            projection_box.holds(probe.capture_point_vec3().as_dvec3()),
+            "the projection box holds the capture point: {probe:?}"
+        );
+        let mut excluded: Vec<u32> = excluded
             .iter()
             .copied()
             .filter(|&brush| (brush as usize) < brushes.volumes.len())
             .collect();
+        // Slots and contact lookups binary-search it.
+        excluded.sort_unstable();
+        excluded.dedup();
         let mask = if excluded.is_empty() {
             FaceMask::default()
         } else {
@@ -295,7 +313,8 @@ impl<'a> ProbeExclusion<'a> {
         let mut min_distance = RAY_EPSILON;
         let mut first_skipped: Option<SurfaceHit> = None;
         // Each pass moves past one excluded hull, so the excluded set bounds
-        // them; a ray re-entering hulls past that takes the guard.
+        // them; a ray re-entering hulls past that takes the guard, as does a
+        // grazing ray that spends its passes re-entering the same hull.
         for _ in 0..=self.excluded.len() {
             let MaskedHit { hit, skipped } = tracer.closest_hit_masked(
                 origin,
@@ -308,7 +327,12 @@ impl<'a> ProbeExclusion<'a> {
                 return self.settle(hit, first_skipped, origin, direction);
             };
             let first = *first_skipped.get_or_insert(skipped);
-            let Some(slot) = self.slot_of_face(skipped.face) else {
+            let slot = self.slot_of_face(skipped.face);
+            debug_assert!(
+                slot.is_some(),
+                "the mask holds only excluded brushes' faces"
+            );
+            let Some(slot) = slot else {
                 return RayOutcome::LeakGuard(first);
             };
             match self.cross(
@@ -318,6 +342,10 @@ impl<'a> ProbeExclusion<'a> {
                 direction64,
                 f64::from(skipped.distance),
             ) {
+                // A kept front face nearer than the fill hides it.
+                Crossing::Fill(fill) if hit.is_some_and(|hit| hit.distance < fill.distance) => {
+                    return self.settle(hit, first_skipped, origin, direction);
+                }
                 Crossing::Fill(fill) => {
                     let point = origin64 + direction64 * f64::from(fill.distance);
                     return if self.projection_box.holds(point) {
@@ -361,7 +389,13 @@ impl<'a> ProbeExclusion<'a> {
 
     /// Resolve the excluded hull in `slot`, entered at `entry`: a covering
     /// side crossed inside it fills, else its exit is classified, continuing
-    /// through every excluded hull that exit lies in.
+    /// through every excluded hull that exit lies in. A hull holds the exit
+    /// when the ray enters it within [`CONTACT_TOLERANCE_M`] past the exit,
+    /// measured along the ray, and leaves it later: CSG cut the facing faces
+    /// across a gap that small, so no entry face would stop a re-trace. A
+    /// level ray leaving a pillar's side just under the ceiling never enters
+    /// the ceiling, and a shallow one enters it well past the tolerance, so
+    /// both re-trace onto the intact ceiling.
     fn cross(
         &self,
         tracer: &SceneTracer<'_>,
@@ -371,8 +405,9 @@ impl<'a> ProbeExclusion<'a> {
         entry: f64,
     ) -> Crossing {
         let mut reached = entry;
+        let mut leaves = self.span(self.excluded[slot], origin, direction).1;
         for _ in 0..self.excluded.len() {
-            let exit = self.hull_exit(slot, origin, direction).max(reached);
+            let exit = leaves.max(reached);
             if !exit.is_finite() {
                 return Crossing::LeakGuard;
             }
@@ -387,21 +422,22 @@ impl<'a> ProbeExclusion<'a> {
             ) {
                 return Crossing::Fill(fill);
             }
-            let point = origin + direction * exit;
-            // Rule 1: a hull that holds the exit and reaches past it.
-            if let Some(&next) = contacts.excluded.iter().find(|&&next| {
-                self.holds(self.excluded[next], point)
-                    && self.hull_exit(next, origin, direction) > exit
-            }) {
+            // Rule 1: an excluded hull that holds the exit and reaches past it.
+            let next = contacts.excluded.iter().find_map(|&next| {
+                let span = self.span(self.excluded[next], origin, direction);
+                holds_past(span, exit).then_some((next, span.1))
+            });
+            if let Some((next, next_leaves)) = next {
                 slot = next;
                 reached = exit;
+                leaves = next_leaves;
                 continue;
             }
             // Rule 3: kept solid behind the exit.
             if contacts
                 .kept
                 .iter()
-                .any(|&kept| self.holds(self.kept[kept].brush, point))
+                .any(|&kept| holds_past(self.span(self.kept[kept].brush, origin, direction), exit))
             {
                 return Crossing::LeakGuard;
             }
@@ -410,26 +446,24 @@ impl<'a> ProbeExclusion<'a> {
         Crossing::LeakGuard
     }
 
-    /// The least distance at which the ray leaves the excluded hull in
-    /// `slot`: the hull is convex, so over the planes the ray heads out of.
-    fn hull_exit(&self, slot: usize, origin: DVec3, direction: DVec3) -> f64 {
-        let volume = &self.brushes.volumes[self.excluded[slot] as usize];
-        volume
-            .planes
-            .iter()
-            .filter_map(|plane| {
-                let rate = plane.normal.dot(direction);
-                (rate > 0.0).then(|| (plane.distance - plane.normal.dot(origin)) / rate)
-            })
-            .fold(f64::INFINITY, f64::min)
-    }
-
-    /// Whether `point` lies in brush `brush`'s hull, its boundary included.
-    fn holds(&self, brush: u32, point: DVec3) -> bool {
-        self.brushes.volumes[brush as usize]
-            .planes
-            .iter()
-            .all(|plane| plane.normal.dot(point) - plane.distance <= HULL_INSIDE_TOLERANCE_M)
+    /// Where the ray enters and leaves brush `brush`'s convex hull: the
+    /// latest plane it heads into and the earliest it heads out of. A plane
+    /// the ray runs parallel to, outside it, leaves no entry (`+∞`).
+    fn span(&self, brush: u32, origin: DVec3, direction: DVec3) -> (f64, f64) {
+        let (mut enters, mut leaves) = (f64::NEG_INFINITY, f64::INFINITY);
+        for plane in &self.brushes.volumes[brush as usize].planes {
+            let rate = plane.normal.dot(direction);
+            // Positive while the origin lies inside the plane.
+            let inside = plane.distance - plane.normal.dot(origin);
+            if rate > 0.0 {
+                leaves = leaves.min(inside / rate);
+            } else if rate < 0.0 {
+                enters = enters.max(inside / rate);
+            } else if inside < -PARALLEL_INSIDE_TOLERANCE_M {
+                enters = f64::INFINITY;
+            }
+        }
+        (enters, leaves)
     }
 
     fn slot_of_face(&self, face: u32) -> Option<usize> {
@@ -443,11 +477,18 @@ impl<'a> ProbeExclusion<'a> {
     }
 }
 
-/// Bounds that overlap or touch within [`PLANE_TOLERANCE_M`].
+/// Whether a hull the ray spans over `(enters, leaves)` holds what lies just
+/// past `exit`: entered within [`CONTACT_TOLERANCE_M`] past it, left after it.
+fn holds_past((enters, leaves): (f64, f64), exit: f64) -> bool {
+    enters <= exit + CONTACT_TOLERANCE_M && leaves > exit && enters < leaves
+}
+
+/// Bounds that overlap or touch within [`CONTACT_TOLERANCE_M`], so every
+/// hull a contact test can reach is a candidate.
 fn bounds_touch(a: &Aabb, b: &Aabb) -> bool {
     (0..3).all(|axis| {
-        a.min[axis] <= b.max[axis] + PLANE_TOLERANCE_M
-            && b.min[axis] <= a.max[axis] + PLANE_TOLERANCE_M
+        a.min[axis] <= b.max[axis] + CONTACT_TOLERANCE_M
+            && b.min[axis] <= a.max[axis] + CONTACT_TOLERANCE_M
     })
 }
 

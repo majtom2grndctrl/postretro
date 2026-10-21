@@ -337,6 +337,30 @@ impl CaptureFixture {
         self.world.face_brushes[face as usize]
     }
 
+    /// How many of `brush`'s post-cut faces lie on the plane through the
+    /// map-unit point `q` across map axis `axis`: whether CSG left any of the
+    /// brush's side there.
+    pub(super) fn faces_on_plane(&self, brush: u32, axis: usize, q: [f64; 3]) -> usize {
+        // Map x, y, z are engine −z, −x, y.
+        let engine_axis = [2, 0, 1][axis];
+        let value = engine(q)[engine_axis];
+        let geometry = &self.world.geometry;
+        self.brush_faces
+            .of(brush)
+            .iter()
+            .filter(|&&face| {
+                let range = geometry.face_index_ranges[face as usize];
+                let start = range.index_offset as usize;
+                geometry.geometry.indices[start..start + range.index_count as usize]
+                    .iter()
+                    .all(|&i| {
+                        let p = geometry.geometry.vertices[i as usize].position[engine_axis];
+                        (f64::from(p) - value).abs() < 1.0e-4
+                    })
+            })
+            .count()
+    }
+
     pub(super) fn brushes(&self) -> CaptureBrushes<'_> {
         CaptureBrushes {
             volumes: &self.world.brushes,

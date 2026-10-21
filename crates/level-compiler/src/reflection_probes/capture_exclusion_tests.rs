@@ -75,7 +75,7 @@ fn wall_lod(distance: f32) -> f32 {
     (distance * sample_angle() / 0.0254).max(1.0).log2().round()
 }
 
-// Acceptance: directions through the pillar's body read the wall behind it,
+// Directions through the pillar's body read the wall behind it,
 // in colour and distance, with distance and texture mip from the capture point.
 #[test]
 fn rays_through_an_excluded_pillar_read_the_wall_behind_from_the_capture_point() {
@@ -145,7 +145,7 @@ fn rays_through_an_excluded_pillar_read_the_wall_behind_from_the_capture_point()
     }
 }
 
-// Acceptance: the wall behind keeps the pillar's sdf shadow, because the
+// The wall behind keeps the pillar's sdf shadow, because the
 // capture's shadow rays still see the pillar. The fixture's faces carry no
 // lightmap, so no lightmap shadow exists for the wall to read instead.
 #[test]
@@ -222,7 +222,7 @@ fn rows(scene: &CaptureScene<'_>, probe: &PlacedProbe, excluded: &[u32]) -> Vec<
         .collect()
 }
 
-// Acceptance (first slice): texels no unfiltered supersample sent into the
+// Texels no unfiltered supersample sent into the
 // pillar are bit-identical before encoding, colour and distance, and every
 // BC6H block holding none of the pillar's texels is byte-identical.
 #[test]
@@ -306,7 +306,7 @@ fn texels_no_ray_sent_into_the_pillar_capture_bit_identically_when_it_is_exclude
     });
 }
 
-// O10, rule 4: a pillar whose top stops short of the ceiling leaves the
+// A pillar whose top stops short of the ceiling leaves the
 // ceiling whole. A ray leaving its top is in empty space and re-traces from
 // the exit onto the intact ceiling, never past it into the leak guard. Brush
 // CSG still treats a gap up to about 1 mm as contact and cuts the hole, so
@@ -334,7 +334,48 @@ fn rays_through_a_pillar_short_of_the_ceiling_re_trace_onto_the_intact_ceiling()
     });
 }
 
-// Acceptance: a small brush embedded in a kept brush, with no coplanar kept
+// A ray leaving a flush pillar's back side half a millimetre under the
+// ceiling is in empty space under the intact ceiling, though within CSG's
+// contact epsilon of its plane. Level, it never enters the ceiling; rising
+// gently, it enters a quarter metre on. Neither takes the ceiling as kept
+// solid behind the exit: they re-trace onto the wall behind and onto the
+// ceiling past the pillar.
+#[test]
+fn rays_leaving_a_flush_pillars_side_just_under_the_ceiling_re_trace_past_the_pillar() {
+    let room = CaptureFixture::pool_room(Some(ROOM_MAX[2]));
+    let pillar = room.brush_at(IN_PILLAR);
+    let (back_wall, ceiling) = (room.brush_at(IN_BACK_WALL), room.brush_at(IN_CEILING));
+    let under = ROOM_MAX[2] - 0.0005 / 0.0254;
+    // Map +x is engine −z; the exit lies on the pillar's back side.
+    let exit = engine([PILLAR_MAX[0], 0.5, under]).as_vec3();
+    let level = Vec3::NEG_Z;
+    let rising = Vec3::new(0.0, 0.002, -1.0).normalize();
+    room.with_scene(|scene, probes| {
+        let filter = exclusion(scene, only_probe(probes), &[pillar]);
+        for (direction, brush, distance) in [
+            (
+                level,
+                back_wall,
+                1.5 + (BACK_WALL_X - PILLAR_MAX[0]) as f32 * 0.0254,
+            ),
+            (rising, ceiling, 1.5 + 0.0005 / rising.y),
+        ] {
+            let origin = exit - direction * 1.5;
+            let none = exclusion(scene, only_probe(probes), &[]);
+            let first = *scene.trace(origin, direction, &none).surface().unwrap();
+            assert_eq!(room.face_brush(first.face), Some(pillar), "{direction}");
+            match scene.trace(origin, direction, &filter) {
+                RayOutcome::Hit(hit) => {
+                    assert_eq!(room.face_brush(hit.face), Some(brush), "{direction}");
+                    assert!((hit.distance - distance).abs() < 1e-3, "{hit:?}");
+                }
+                other => panic!("{direction} re-traces, not {other:?}"),
+            }
+        }
+    });
+}
+
+// A small brush embedded in a kept brush, with no coplanar kept
 // face where the ray crosses into it, is excluded and reads its own surface
 // where it is the first hit. Here a cap encloses a kept beam's end, so the
 // beam's end side survives nowhere.
@@ -383,16 +424,60 @@ fn an_excluded_cap_embedded_in_a_kept_beam_reads_its_own_surface() {
     });
 }
 
-// O2: the oversize cut renumbers faces; the face → brush table follows it,
-// each sub-face taking its parent's brush and an emptied face none, and the
-// mask built from it skips exactly the pillar's post-cut faces even where a
-// cut kept face precedes them.
+// An excluded block half a millimetre in front of a kept beam covers the
+// beam's end whole. Brush CSG treats the gap as contact and cuts both facing
+// faces, so the beam's end survives nowhere to fill from. A ray through the
+// block toward that end leaves the block into the beam's solid and takes the
+// leak guard; it never re-traces through the beam onto the wall behind.
+#[test]
+fn rays_through_an_excluded_block_against_a_covered_kept_end_take_the_leak_guard() {
+    let gap = 0.0005 / 0.0254;
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [80.0, -8.0, 48.0],
+        [96.0, 8.0, 64.0],
+        "test/ceiling",
+    ));
+    world.push(textured_box_brush(
+        [72.0, -16.0, 40.0],
+        [80.0 - gap, 16.0, 72.0],
+        TRIM_TEXTURE,
+    ));
+    let room = CaptureFixture::compile(&world, &[pool_entity()]);
+    let beam = room.brush_at([88.0, 0.0, 56.0]);
+    let block = room.brush_at([76.0, 0.0, 56.0]);
+    assert_eq!(
+        room.faces_on_plane(beam, 0, [80.0, 0.0, 0.0]),
+        0,
+        "CSG cuts the beam's end at a half-millimetre gap"
+    );
+    room.with_scene(|scene, probes| {
+        let probe = only_probe(probes);
+        let capture = probe.capture_point_vec3();
+        let none = exclusion(scene, probe, &[]);
+        let filter = exclusion(scene, probe, &[block]);
+        for (y, z) in [(0.5, 56.0), (-4.5, 52.0), (4.5, 60.0)] {
+            let (direction, _) = toward(capture, [80.0, y, z]);
+            let first = *scene
+                .trace(capture, direction, &none)
+                .surface()
+                .expect("the block faces the ray");
+            assert_eq!(room.face_brush(first.face), Some(block), "{y}, {z}");
+            assert_eq!(
+                scene.trace(capture, direction, &filter),
+                RayOutcome::LeakGuard(first),
+                "{y}, {z}"
+            );
+        }
+    });
+}
+
+// The oversize cut renumbers faces; the face → brush table follows it,
+// each sub-face taking its parent's brush, and the mask built from it skips
+// exactly the pillar's post-cut faces even where a cut kept face precedes
+// them.
 #[test]
 fn oversize_cut_remaps_each_sub_face_to_its_parent_brush_and_the_mask_follows() {
-    // A face the cut emptied leaves no post-cut entry.
-    let remapped = remap_face_brushes(&[Some(4), Some(7), Some(9)], &[0..2, 2..2, 2..3]);
-    assert_eq!(remapped, [Some(4), Some(4), Some(9)]);
-
     let room = CaptureFixture::pool_room(Some(ROOM_MAX[2]));
     let pillar = room.brush_at(IN_PILLAR);
     let mut geometry = room.world.geometry.clone();

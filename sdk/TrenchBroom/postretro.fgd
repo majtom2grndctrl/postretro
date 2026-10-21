@@ -580,7 +580,11 @@
     // Auto leaves small decor near water out of the probe, so it reflects
     // through screen-space reflections with true parallax, and not at
     // reflection quality Low. Always keeps every brush in the probe; never
-    // leaves every brush out. Any other value warns and acts as auto.
+    // leaves the brush out except where the probe would otherwise see through
+    // the level (an outer wall, or a brush buried in solid, still shows its
+    // own surface). Where the probe's box reaches past a never or left-out
+    // wall, the reflection shows what lies beyond; always fixes it. Any other
+    // value warns and acts as auto.
     _reflection_capture(choices) : "Reflection probe capture (auto leaves small decor near water to screen-space reflections)" : "auto" =
     [
         "auto" : "Auto (default)"
@@ -602,7 +606,11 @@
     // Auto leaves small decor near water out of the probe, so it reflects
     // through screen-space reflections with true parallax, and not at
     // reflection quality Low. Always keeps every brush in the probe; never
-    // leaves every brush out. Any other value warns and acts as auto.
+    // leaves the brush out except where the probe would otherwise see through
+    // the level (an outer wall, or a brush buried in solid, still shows its
+    // own surface). Where the probe's box reaches past a never or left-out
+    // wall, the reflection shows what lies beyond; always fixes it. Any other
+    // value warns and acts as auto.
     _reflection_capture(choices) : "Reflection probe capture (auto leaves small decor near water to screen-space reflections)" : "auto" =
     [
         "auto" : "Auto (default)"

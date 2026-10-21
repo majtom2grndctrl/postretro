@@ -190,6 +190,11 @@ pub fn remap_face_brushes(
     face_brushes: &[Option<u32>],
     face_remap: &[std::ops::Range<usize>],
 ) -> Vec<Option<u32>> {
+    debug_assert_eq!(
+        face_brushes.len(),
+        face_remap.len(),
+        "one remap range per pre-cut face"
+    );
     let total = face_remap.last().map_or(0, |range| range.end);
     let mut remapped = vec![None; total];
     for (brush, range) in face_brushes.iter().zip(face_remap) {
@@ -291,7 +296,7 @@ pub fn extract_kinematic_mover_geometry(
 /// Inverse of the `quake_to_engine` transform in parse.rs:
 ///   engine = (-qy, qz, -qx)
 ///   quake  = (-engine_z, -engine_x, engine_y)
-pub(crate) fn engine_to_quake(v: DVec3) -> DVec3 {
+fn engine_to_quake(v: DVec3) -> DVec3 {
     DVec3::new(-v.z, -v.x, v.y)
 }
 
@@ -417,11 +422,7 @@ pub fn brush_side_texel_uv(
 ///
 /// Returns (u, v) in texel units. The engine normalizes by dividing by
 /// texture width/height at load time.
-pub(crate) fn compute_texel_uv(
-    quake_pos: DVec3,
-    normal: DVec3,
-    projection: &TextureProjection,
-) -> (f64, f64) {
+fn compute_texel_uv(quake_pos: DVec3, normal: DVec3, projection: &TextureProjection) -> (f64, f64) {
     match projection {
         TextureProjection::Standard {
             u_offset,
@@ -1129,6 +1130,49 @@ mod tests {
             "v at origin should be offset (16.0), got {}",
             v0.uv[1]
         );
+    }
+
+    // -- Face → brush table --
+
+    // The table follows the leaf-ordered walk: one entry per output face,
+    // naming that face's source brush, with an exterior leaf's face absent.
+    #[test]
+    fn extract_geometry_with_brushes_names_each_output_faces_brush() {
+        let faces: Vec<Face> = [("a", 3), ("b", 1), ("c", 2), ("d", 5)]
+            .into_iter()
+            .map(|(texture, brush_index)| Face {
+                texture: texture.to_string(),
+                brush_index,
+                ..triangle_face()
+            })
+            .collect();
+        let tree = make_tree_with_empty_leaves(vec![
+            (vec![2, 0], false),
+            (vec![3], false),
+            (vec![1], false),
+        ]);
+        let exterior = HashSet::from([1]);
+
+        let (result, face_brushes) = extract_geometry_with_brushes(&faces, &tree, &exterior);
+
+        assert_eq!(face_brushes.len(), result.geometry.faces.len());
+        let names = &result.texture_names.names;
+        let sources: Vec<&str> = result
+            .geometry
+            .faces
+            .iter()
+            .map(|meta| names[meta.texture_index as usize].as_str())
+            .collect();
+        assert_eq!(sources, ["c", "a", "b"]);
+        assert_eq!(face_brushes, [Some(2), Some(3), Some(1)]);
+    }
+
+    // Each sub-face of a cut face takes its parent's brush; a face the cut
+    // emptied leaves no post-cut entry.
+    #[test]
+    fn remap_face_brushes_follows_the_cut_and_drops_an_emptied_face() {
+        let remapped = remap_face_brushes(&[Some(4), Some(7), Some(9)], &[0..2, 2..2, 2..3]);
+        assert_eq!(remapped, [Some(4), Some(4), Some(9)]);
     }
 
     // -- Coordinate transform round-trip --

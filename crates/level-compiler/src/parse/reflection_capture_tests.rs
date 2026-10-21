@@ -193,7 +193,7 @@ fn func_group_and_switch_reflection_capture_lands_on_every_brush() {
     );
 }
 
-// O4: a value is keyed by source brush id and translated at the retained-hull
+// A value is keyed by source brush id and translated at the retained-hull
 // seam, so a degenerate brush never moves a value onto a neighbour.
 #[test]
 fn never_func_group_with_degenerate_first_brush_excludes_its_other_brushes() {
@@ -309,7 +309,7 @@ fn retained_hull_seam_keeps_values_on_their_own_brushes_when_a_brush_drops() {
     );
 }
 
-// O5: the warning comes from the entity parse, before probe placement, so the
+// The warning comes from the entity parse, before probe placement, so the
 // count is the same with two pools and with none.
 #[test]
 fn invalid_reflection_capture_warns_once_naming_the_entity_and_acts_as_auto() {

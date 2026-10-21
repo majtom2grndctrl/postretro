@@ -97,7 +97,7 @@ fn pillar_room(top: f64) -> CaptureFixture {
 // Stage flow
 // ---------------------------------------------------------------------------
 
-// Acceptance (O1): placement and the cap never see exclusion. The pillar
+// Placement and the cap never see exclusion. The pillar
 // fixture's derived box changes when the pillar is deleted, yet the filtered
 // and unfiltered builds place the same probes, boxes, points and bindings;
 // only the capture differs.
@@ -145,7 +145,7 @@ fn placed_probes_are_identical_with_the_filter_on_and_off() {
     assert_ne!(filtered.distances, unfiltered.distances);
 }
 
-// Acceptance: a level whose brushes are all at least every probe's
+// A level whose brushes are all at least every probe's
 // threshold excludes nothing, and its id 54 is byte-identical to the build
 // with every excluded set forced empty. A block beside the pool, not just
 // the room's slabs, sits just past the threshold.
@@ -171,10 +171,10 @@ fn a_level_whose_brushes_all_reach_the_threshold_captures_byte_identically_unfil
     );
 }
 
-// Corrections (task 5): a brush wholly off a probe's projection box
-// captures identically kept or excluded, which is why the stage's sets hold
-// only brushes touching the box. A crate past an authored box's edge, which
-// the rule alone would exclude.
+// A brush wholly off a probe's projection box captures identically kept or
+// excluded, which is why the stage's sets hold only brushes touching the box.
+// The test uses a crate past an authored box's edge, which the rule alone
+// would exclude.
 #[test]
 fn a_brush_off_the_projection_box_captures_identically_kept_or_excluded() {
     let mut world = textured_room();
@@ -214,7 +214,7 @@ fn a_brush_off_the_projection_box_captures_identically_kept_or_excluded() {
     assert_eq!(capture(vec![crate_]), capture(Vec::new()));
 }
 
-// Acceptance (O1): standing posts, all excluded, ring the capture point and
+// Standing posts, all excluded, ring the capture point and
 // hide nearly all of the pool from it. With every excluded set forced empty
 // the hidden-water warning fires, on the cold build and the warm one; the
 // filtered capture sees through the posts and warns on neither.
@@ -274,7 +274,7 @@ fn hidden_water_warns_unfiltered_and_not_filtered_cold_and_warm() {
     }
 }
 
-// Acceptance: the capture with an exclusion in play is byte-identical at one
+// The capture with an exclusion in play is byte-identical at one
 // worker and at four.
 #[test]
 fn an_excluding_capture_is_byte_identical_across_worker_counts() {
@@ -307,7 +307,7 @@ fn brush_faces_list_each_brushs_faces_in_ascending_order() {
 // Cache key
 // ---------------------------------------------------------------------------
 
-// Acceptance: a changed resolved override value, or any curve or floor
+// A changed resolved override value, or any curve or floor
 // constant, misses the capture stage, even where the excluded sets stay the
 // same; an unchanged rebuild hits.
 #[test]
@@ -396,7 +396,7 @@ fn capture_key_misses_on_a_resolved_override_or_any_rule_constant_and_hits_other
     }
 }
 
-// Acceptance: an excluded pillar flush with the ceiling and one sunk into
+// An excluded pillar flush with the ceiling and one sunk into
 // it leave the same surfaces, since CSG hides the sunk part, yet key the
 // capture stage differently.
 #[test]
@@ -428,7 +428,7 @@ fn flush_and_sunk_excluded_pillars_key_the_capture_differently() {
     }
 }
 
-// Acceptance: with geometry, primitives and every other input fixed, moving
+// With geometry, primitives and every other input fixed, moving
 // one plane of an excluded hull, or one side of a kept brush it touches,
 // misses; the same edit to a brush neither excluded nor touched hits.
 #[test]
@@ -520,7 +520,7 @@ fn pillar_map(properties: &str, pools: &[String]) -> String {
     entities.join("\n") + "\n"
 }
 
-// Acceptance: changing only a brush's `_reflection_capture` value hits every
+// Changing only a brush's `_reflection_capture` value hits every
 // cached stage before the capture stage and misses the capture stage, though
 // no brush moves; an unchanged rebuild then hits the capture too.
 #[test]
@@ -553,7 +553,7 @@ fn an_override_only_edit_misses_only_the_capture_stage() {
     assert_eq!((capture.read_hits, capture.writes), (1, 0));
 }
 
-// Acceptance (O5): an invalid value on a three-brush `func_group` warns
+// An invalid value on a three-brush `func_group` warns
 // exactly once, naming the entity, on a cold build, on a warm build whose
 // capture stage hits, and in a map with no water.
 #[test]

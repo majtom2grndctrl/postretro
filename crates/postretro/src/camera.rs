@@ -4,6 +4,8 @@
 use glam::{Mat4, Vec3};
 
 /// Horizontal field of view in radians (100 degrees).
+/// Pinned by level-compiler's reflection-probe exclusion tests: a change re-keys
+/// every fluid map's probe capture.
 pub const HFOV: f32 = 100.0 * std::f32::consts::PI / 180.0;
 /// Shared horizontal-FOV presentation band, in degrees. Capture validates its
 /// authored scene FOV against the same public capability band.

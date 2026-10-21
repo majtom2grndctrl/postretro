@@ -60,7 +60,8 @@ pub struct Face {
     pub tex_projection: TextureProjection,
     /// Index of the source brush in `MapData::brush_volumes`. Used by the
     /// coplanar dedup rule: when two brushes share the same oriented plane
-    /// in the same leaf, the lower index wins.
+    /// in the same leaf, the lower index wins. Also feeds the reflection-probe
+    /// face-to-brush table (`geometry::extract_geometry_with_brushes`).
     pub brush_index: usize,
 }
 
@@ -655,6 +656,8 @@ pub struct MapData {
     /// One entry per retained [`Self::brush_volumes`] item: the brush's
     /// resolved reflection-probe capture override. `Auto` unless its source
     /// entity authored one.
+    // Read by the `prl-build` target only; the library target compiles
+    // `map_data` without the pipeline.
     #[allow(dead_code)]
     pub(crate) brush_capture_override: Vec<ReflectionCapture>,
     /// Brush count per non-worldspawn entity. Diagnostic only; editor-group

@@ -770,7 +770,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             }
             Some(_) if warned_duplicate_group_ids.insert(assembly.group_id.clone()) => {
                 log::warn!(
-                    "[Compiler] duplicate func_group `_tb_id` `{}`; brace brushes and sibling members for every marker with this id will remain unassociated; assign each func_group a unique non-empty `_tb_id`",
+                    "[Compiler] duplicate func_group `_tb_id` `{}`; brace brushes and sibling members for every marker with this id will remain unassociated; assign every TrenchBroom group and layer a unique non-empty `_tb_id`",
                     assembly.group_id,
                 );
             }

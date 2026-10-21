@@ -171,7 +171,7 @@ fn relative_error(a: Vec3, b: Vec3) -> f32 {
     ((a - b).abs() / b.abs().max(Vec3::splat(1e-6))).max_element()
 }
 
-// Acceptance: directions through the filled ceiling patch read the ceiling's
+// Directions through the filled ceiling patch read the ceiling's
 // material at the ceiling plane's distance, its albedo at the fill point's
 // UV, and static direct and SH indirect within 5% of the adjacent kept
 // ceiling's; the ceiling spans several faces and its lightmap varies. The
@@ -295,7 +295,7 @@ fn the_filled_ceiling_patch_reads_the_ceilings_material_and_lighting() {
     });
 }
 
-// Acceptance: with an sdf light below the ceiling, the patch's sdf direct is
+// With an sdf light below the ceiling, the patch's sdf direct is
 // within 5% of the adjacent kept ceiling's, and so is its unit term for an
 // animated light whose weight map covers the ceiling; an animated light
 // whose weight map covers only the pillar takes no share once it is excluded.
@@ -392,7 +392,7 @@ fn the_filled_patch_takes_the_ceilings_sdf_and_animated_light_and_the_pillars_li
     });
 }
 
-// Acceptance: on the pillar fixture's derived probe, whose box lies on the
+// On the pillar fixture's derived probe, whose box lies on the
 // wall behind and the ceiling, no direction through the pillar or its filled
 // ceiling patch, above or below the horizon, takes the leak guard.
 #[test]
@@ -417,7 +417,7 @@ fn no_ray_through_the_pillar_or_its_filled_patches_takes_the_leak_guard() {
     });
 }
 
-// O10's last clause: a pillar half a millimetre short of the ceiling still
+// A pillar half a millimetre short of the ceiling still
 // cuts the hole (brush CSG treats the gap as contact); the ray leaves the
 // pillar's top before the ceiling plane, and fills there within the plane
 // tolerance, at the ceiling plane's distance.
@@ -434,7 +434,7 @@ fn rays_through_a_pillar_half_a_millimetre_short_of_the_ceiling_fill_at_the_ceil
     });
 }
 
-// Acceptance (O9, O12): a pillar sunk half a metre into the ceiling fills
+// A pillar sunk half a metre into the ceiling fills
 // like a flush one; and with a second kept brush overlapping the ceiling
 // above the pillar, its bottom coplanar with the ceiling's, either map order
 // fills from the ceiling surface's faces and never takes the leak guard.
@@ -480,7 +480,7 @@ fn a_sunk_pillar_and_an_overlapping_kept_brush_both_fill_the_ceiling_patch() {
     }
 }
 
-// Acceptance: in a closed room, a crate against a wall, a beam under the
+// In a closed room, a crate against a wall, a beam under the
 // ceiling and a block embedded in a wall are all excluded; no ray misses and
 // none reads a surface outside the room.
 #[test]
@@ -515,7 +515,7 @@ fn a_closed_room_with_every_decor_brush_excluded_never_misses_or_leaves_the_room
     });
 }
 
-// Acceptance (O3): three excluded pillars in a row, the farthest touching the
+// Three excluded pillars in a row, the farthest touching the
 // wall and the ceiling, and two touching excluded crates stacked against a
 // side wall, the upper touching the ceiling. No ray through them misses or
 // leaves the room; rays reaching the far pillar's wall and ceiling patches
@@ -579,6 +579,63 @@ fn a_chained_closed_room_fills_every_contact_patch_behind_its_excluded_brushes()
     });
 }
 
+// Two stacked excluded crates half a millimetre apart, the upper touching
+// the ceiling. Brush CSG treats the gap as contact and cuts both facing
+// faces, so a ray leaving the lower crate's top crosses straight into the
+// upper one: rays through the lower crate toward the upper crate's ceiling
+// patch read the ceiling fill and never take the leak guard.
+#[test]
+fn rays_through_stacked_crates_half_a_millimetre_apart_fill_the_ceiling_patch() {
+    let gap = 0.0005 / 0.0254;
+    let split = 112.0;
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [-24.0, -128.0, 0.0],
+        [8.0, -96.0, split - gap],
+        TRIM_TEXTURE,
+    ));
+    world.push(textured_box_brush(
+        [-24.0, -128.0, split],
+        [8.0, -96.0, ROOM_MAX[2]],
+        TRIM_TEXTURE,
+    ));
+    let room = CaptureFixture::compile(&world, &[pool_entity()]);
+    let lower = room.brush_at([-8.0, -112.0, 32.0]);
+    let upper = room.brush_at([-8.0, -112.0, 120.0]);
+    let ceiling = room.brush_at(IN_CEILING);
+    assert_eq!(
+        (
+            room.faces_on_plane(lower, 2, [0.0, 0.0, split - gap]),
+            room.faces_on_plane(upper, 2, [0.0, 0.0, split]),
+        ),
+        (0, 0),
+        "CSG cuts both crates' facing sides at a half-millimetre gap"
+    );
+    let mut excluded = vec![lower, upper];
+    excluded.sort_unstable();
+    room.with_scene(|scene, probes| {
+        let probe = only_probe(probes);
+        let capture = probe.capture_point_vec3();
+        let none = exclusion(scene, probe, &[]);
+        let filter = exclusion(scene, probe, &excluded);
+        let mut through_lower = 0;
+        for x in [-19.5, -8.5, 2.5] {
+            for y in [-123.5, -112.5, -101.5] {
+                let q = [x, y, ROOM_MAX[2]];
+                let (direction, _) = toward(capture, q);
+                let first = scene.trace(capture, direction, &none);
+                let first = room.face_brush(first.surface().expect("closed room").face);
+                assert!(first == Some(lower) || first == Some(upper), "{q:?}");
+                through_lower += usize::from(first == Some(lower));
+                fill_toward(scene, capture, &filter, q, &[ceiling]);
+            }
+        }
+        assert!(through_lower > 0, "some rays enter the lower crate first");
+        let guarded = sweep_stays_inside(scene, probe, &filter, (ROOM_MIN, ROOM_MAX));
+        assert_eq!(guarded, 0);
+    });
+}
+
 /// A second room behind the back wall: map x 144..400, sharing that wall.
 fn room_behind() -> Vec<String> {
     let w = 16.0;
@@ -592,7 +649,7 @@ fn room_behind() -> Vec<String> {
     ]
 }
 
-// Acceptance (O3): an outer wall set to `never`, with the exterior behind
+// An outer wall set to `never`, with the exterior behind
 // it and with a second room behind it, and a 2 m wall stub between two
 // openings into that second room, read their own surfaces and never miss or
 // land outside the projection box. A ray that skips an excluded post and
@@ -684,7 +741,7 @@ fn excluded_seals_read_their_own_surfaces_and_a_post_before_one_reads_itself() {
     });
 }
 
-// Acceptance (O11): a kept wall and an excluded trim whose front sides are
+// A kept wall and an excluded trim whose front sides are
 // coplanar and partly overlap, the trim straddling the wall's end, read the
 // wall in either map order: through the fill with the trim first (it wins
 // the coplanar overlap), traced with the wall first; none misses or takes
@@ -733,7 +790,7 @@ fn a_coplanar_trim_over_a_wall_reads_the_wall_in_either_map_order() {
     }
 }
 
-// Acceptance (O7): one map, two probes. A beam the small probe excludes and
+// One map, two probes. A beam the small probe excludes and
 // the large one keeps; a crate both exclude hangs under it. Rays through the
 // crate read the beam's covering side in the large probe's capture, and
 // never the beam's surface or material in the small probe's.

@@ -355,6 +355,16 @@ When the fitted box is wrong, draw a `reflection_volume` brush around the room. 
 - **Too many boxes.** A level holds at most 256 reflection probes. `reflection_volume` boxes past that cap refuse the build; derived probes past it are dropped with a warning instead, the ones over the least water first.
 - **Warnings.** A box with no water inside, or whose water smaller boxes all claim, draws nothing and warns. A capture point inside solid, inside a fluid or outside the level drops its probe with a warning naming the entity. A capture point within 1 cm of a wall moves 1 cm clear of it; it drops with a warning if that move would leave its box or its water, or if walls stand within 1 cm on both sides of it. Derived probes drop the same way, and their water then reflects nothing: draw a `reflection_volume` there. A pillar standing in the water where the capture point would land does not drop it: the point moves onto the water beside the pillar, which then blocks much of the view, so use an offset to step clear. A box holding water at more than one height warns, naming the heights, and captures above the lowest. A capture point that sees less than half of its probe's water warns, naming the probe; the water it cannot see reflects nothing. Move the point with `_capture_offset`, or give the hidden water its own box.
 
+**Small decor near water.** The probe photographs the room from one point, so small brushes near the water, such as pillars, posts, trim, crates and steps, would show there blurred or at the wrong angle. The compiler leaves them out of the probe, and they reflect through screen-space reflections instead, which show them with true parallax. What counts as small scales with the water's width, so a pillar that counts as small beside a lake may not beside a fountain. Walls, floors and ceilings stay in the probe, and so does anything hanging over the water, like a dock or a footbridge, whose underside the reflection shows. At reflection quality **Low** there are no screen-space reflections, so left-out decor does not reflect at all.
+
+To force brushes in or out, select them and use **Create Brush Entity → `func_group`**, then set `_reflection_capture` on it. `switch` takes the same key.
+
+| Key | Values | Default | What it does |
+|-----|--------|---------|--------------|
+| `_reflection_capture` | `auto`, `always`, `never` | `auto` | `auto` follows the rule above. `always` keeps every brush of the entity in the probe; use it when a left-out brush, such as a short wall between two openings, lets the reflection show what lies behind it. `never` leaves every brush out. Any other value warns, naming the entity, and acts as `auto`. |
+
+Worldspawn brushes always follow the rule. A TrenchBroom group or layer cannot carry the key: TrenchBroom drops it when it saves, so the compiler ignores it there with a warning. Use a `func_group` brush entity instead.
+
 ### Tips
 
 - **Sink pools into the floor.** Cut a pit into the world brushwork and fill it with the fluid brush. Leave the surface a little below the rim so swimmers can climb out with a jump, or by climbing over the edge when the player descriptor has a `movement.vault` block.

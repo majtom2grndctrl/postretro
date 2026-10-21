@@ -12,6 +12,7 @@ mod capture_point;
 mod capture_visibility;
 mod delta_sample;
 mod derived;
+mod exclusion;
 mod hit;
 mod lightmap_sample;
 mod materials;
@@ -31,6 +32,8 @@ mod capture_exclusion_tests;
 mod capture_tests;
 #[cfg(test)]
 mod distance_tests;
+#[cfg(test)]
+mod exclusion_tests;
 #[cfg(test)]
 mod placement_test_fixtures;
 #[cfg(test)]

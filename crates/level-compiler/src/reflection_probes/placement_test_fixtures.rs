@@ -178,7 +178,7 @@ impl PlacementFixture {
     }
 }
 
-fn parse_inline(map_text: &str) -> MapData {
+pub(crate) fn parse_inline(map_text: &str) -> MapData {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(

@@ -652,6 +652,11 @@ pub struct MapData {
     /// assembly which supplied the brush, or is `None` for ungrouped geometry.
     #[allow(dead_code)]
     pub(crate) brush_assembly: Vec<Option<usize>>,
+    /// One entry per retained [`Self::brush_volumes`] item: the brush's
+    /// resolved reflection-probe capture override. `Auto` unless its source
+    /// entity authored one.
+    #[allow(dead_code)]
+    pub(crate) brush_reflection_capture: Vec<ReflectionCapture>,
     /// Brush count per non-worldspawn entity. Diagnostic only; editor-group
     /// brushes are flattened into static brush volumes, while semantic brush
     /// entities are resolved by their owning subsystems.

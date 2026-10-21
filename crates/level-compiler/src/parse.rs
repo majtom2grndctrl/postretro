@@ -33,6 +33,11 @@ mod environment_volume_tests;
 mod environment_volumes;
 #[path = "parse/map_source.rs"]
 mod map_source;
+#[path = "parse/reflection_capture.rs"]
+mod reflection_capture;
+#[cfg(test)]
+#[path = "parse/reflection_capture_tests.rs"]
+mod reflection_capture_tests;
 #[cfg(test)]
 #[path = "parse/reflection_volume_tests.rs"]
 mod reflection_volume_tests;
@@ -718,25 +723,32 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // flattening remains in the existing walk below so its geometry ordering is
     // unchanged.
     let mut assemblies = Vec::new();
+    // Association is safe only when a marker identity is non-empty and unique.
+    // Keep every marker as an append-only assembly for diagnostics and future
+    // consumers, but do not guess which marker owns members in malformed input.
+    // Only TrenchBroom groups and layers need an id: an authored `func_group`
+    // brush entity has none and is not counted.
+    let mut empty_marker_count = 0usize;
     for entity_id in geo_map.entities.iter() {
         let classname = get_property(&geo_map, entity_id, "classname");
         if classname.as_deref() != Some("func_group") {
             continue;
         }
 
-        assemblies.push(map_assembly_from_marker(&geo_map, entity_id));
+        let assembly = map_assembly_from_marker(&geo_map, entity_id);
+        if assembly.group_id.is_empty()
+            && quake_map::is_trenchbroom_container(
+                get_property(&geo_map, entity_id, "_tb_type").as_deref(),
+            )
+        {
+            empty_marker_count += 1;
+        }
+        assemblies.push(assembly);
     }
 
-    // Association is safe only when a marker identity is non-empty and unique.
-    // Keep every marker as an append-only assembly for diagnostics and future
-    // consumers, but do not guess which marker owns members in malformed input.
-    let empty_marker_count = assemblies
-        .iter()
-        .filter(|assembly| assembly.group_id.is_empty())
-        .count();
     if empty_marker_count > 0 {
         log::warn!(
-            "[Compiler] {empty_marker_count} func_group marker(s) have an empty `_tb_id`; brace brushes and sibling members from those markers will remain unassociated; assign every func_group a unique non-empty `_tb_id`"
+            "[Compiler] {empty_marker_count} func_group marker(s) have an empty `_tb_id`; brace brushes and sibling members from those markers will remain unassociated; assign every TrenchBroom group and layer a unique non-empty `_tb_id`"
         );
     }
 
@@ -821,6 +833,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // Other paths such as `switch` deliberately retain their current ungrouped
     // diagnostic behavior until their own provenance work lands.
     let mut assembly_by_brush_id: HashMap<BrushId, usize> = HashMap::new();
+    let mut reflection_capture_overrides =
+        reflection_capture::ReflectionCaptureOverrides::default();
 
     // Collect entity info and entity brush counts
     let mut entities = Vec::new();
@@ -1104,6 +1118,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .unwrap_or_default();
 
         if quake_map::is_editor_group_classname(&classname) {
+            reflection_capture_overrides.record_func_group(
+                &collect_entity_properties(&geo_map, entity_id),
+                &format!("entity {} '{classname}'", entities.len() - 1),
+                &brush_ids,
+            );
             let group_id = get_property(&geo_map, entity_id, "_tb_id")
                 .map(|value| value.trim().to_owned())
                 .unwrap_or_default();
@@ -1398,6 +1417,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                         .trigger_indices
                         .push(trigger_index);
                 }
+                reflection_capture_overrides.record_brush_entity(
+                    &props,
+                    &format!("entity {} '{classname}'", entities.len() - 1),
+                    &brush_ids,
+                );
                 world_brush_ids.extend(brush_ids.iter().copied());
                 continue;
             }
@@ -1588,9 +1612,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // brush list position. `Face::brush_index` is this resulting vector's
     // enumerate index.
     let brush_assembly = brush_assembly_for_retained_hulls(&world_hulls, &assembly_by_brush_id);
+    let brush_reflection_capture = reflection_capture_overrides.for_retained_hulls(&world_hulls);
     let brush_volumes: Vec<BrushVolume> =
         world_hulls.into_iter().map(|(_, volume)| volume).collect();
     debug_assert_eq!(brush_volumes.len(), brush_assembly.len());
+    debug_assert_eq!(brush_volumes.len(), brush_reflection_capture.len());
     let total_vertex_count: usize = brush_volumes
         .iter()
         .flat_map(|brush| brush.sides.iter())
@@ -1632,6 +1658,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         brush_volumes,
         assemblies,
         brush_assembly,
+        brush_reflection_capture,
         entity_brushes: entity_brushes_summary,
         entities,
         lights,

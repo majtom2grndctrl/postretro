@@ -60,8 +60,8 @@ impl ReflectionCaptureOverrides {
     }
 
     /// An authored brush entity (`switch`, or `func_group` without a
-    /// non-blank `_tb_type`): every brush takes the entity's value. Warns once per
-    /// entity on a bad value, which acts as `auto`.
+    /// non-blank `_tb_type`): every brush takes the entity's value. Warns
+    /// once per entity on a bad value, which acts as `auto`.
     pub(super) fn record_brush_entity(
         &mut self,
         props: &HashMap<String, String>,

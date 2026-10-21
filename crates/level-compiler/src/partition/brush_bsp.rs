@@ -23,6 +23,8 @@ const CANDIDATE_ROUTING_EPSILON: f64 = 1e-6;
 /// within it of a brush's planes is inside the brush, so brush-side
 /// projection treats brushes this close as touching and cuts both facing
 /// faces; reflection-probe capture exclusion derives its contact tests from it.
+/// A change here changes capture output, so it needs a bump of the
+/// reflection_probes `STAGE_VERSION`.
 pub(crate) const REGION_CLASSIFICATION_EPSILON: f64 = 1e-3;
 
 /// Slack added on every axis when deriving the world AABB from brush bounds.

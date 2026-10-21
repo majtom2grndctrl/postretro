@@ -110,11 +110,12 @@ const STAGE_ID: &str = "reflection_probes";
 /// 9: a wall past a column's first ceiling hit still tops it when farther
 /// out (a sunken pool under an overhanging lip fits the room); the key
 /// gains id 45's descriptor table.
-/// 10: branch only, never on main; never reuse it, as its entries may sit in
-/// local caches.
+/// 10: unreleased build of this feature; never reuse it, as its entries may
+/// sit in local caches.
 /// 11: capture exclusion: primary rays skip each probe's excluded brushes,
 /// with fill and leak guard; the key gains the override table, the rule's
-/// constants and each probe's excluded set with its hulls and contacts.
+/// constants, each probe's excluded set with its hulls and contacts, and
+/// each kept contact candidate's faces, planes and sides.
 const STAGE_VERSION: u32 = 11;
 
 /// What the stage reads. Everything here enters its cache key.

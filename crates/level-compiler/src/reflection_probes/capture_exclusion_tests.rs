@@ -306,11 +306,10 @@ fn texels_no_ray_sent_into_the_pillar_capture_bit_identically_when_it_is_exclude
     });
 }
 
-// A pillar whose top stops short of the ceiling leaves the
-// ceiling whole. A ray leaving its top is in empty space and re-traces from
-// the exit onto the intact ceiling, never past it into the leak guard. Brush
-// CSG still treats a gap up to about 1 mm as contact and cuts the hole, so
-// the gap here is 2 mm.
+// A pillar whose top stops short of the ceiling leaves the ceiling whole. A
+// ray leaving its top is in empty space and re-traces from the exit onto the
+// intact ceiling, never past it into the leak guard. Brush CSG still treats a
+// gap up to about 1 mm as contact and cuts the hole, so the gap here is 2 mm.
 #[test]
 fn rays_through_a_pillar_short_of_the_ceiling_re_trace_onto_the_intact_ceiling() {
     let short = ROOM_MAX[2] - 0.002 / 0.0254;
@@ -375,10 +374,10 @@ fn rays_leaving_a_flush_pillars_side_just_under_the_ceiling_re_trace_past_the_pi
     });
 }
 
-// A small brush embedded in a kept brush, with no coplanar kept
-// face where the ray crosses into it, is excluded and reads its own surface
-// where it is the first hit. Here a cap encloses a kept beam's end, so the
-// beam's end side survives nowhere.
+// A small brush embedded in a kept brush, with no coplanar kept face where
+// the ray crosses into it, is excluded and reads its own surface where it is
+// the first hit. Here a cap encloses a kept beam's end, so the beam's end
+// side survives nowhere.
 #[test]
 fn an_excluded_cap_embedded_in_a_kept_beam_reads_its_own_surface() {
     let mut world = textured_room();
@@ -465,6 +464,51 @@ fn rays_through_an_excluded_block_against_a_covered_kept_end_take_the_leak_guard
             assert_eq!(room.face_brush(first.face), Some(block), "{y}, {z}");
             assert_eq!(
                 scene.trace(capture, direction, &filter),
+                RayOutcome::LeakGuard(first),
+                "{y}, {z}"
+            );
+        }
+    });
+}
+
+// Regression: a slanted ray crossing a sub-millimetre gap read the ceiling
+// behind a kept beam.
+// A ray rising through the block's bottom at 10° off the beam's end plane
+// leaves the block's back half a millimetre from that end, 2.9 mm along the
+// ray, into the beam's solid: it takes the leak guard, never re-tracing
+// through the beam's cut end.
+#[test]
+fn slanted_rays_through_an_excluded_block_against_a_covered_kept_end_take_the_leak_guard() {
+    let gap = 0.0005 / 0.0254;
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [80.0, -8.0, 48.0],
+        [96.0, 8.0, 64.0],
+        "test/ceiling",
+    ));
+    world.push(textured_box_brush(
+        [72.0, -16.0, 40.0],
+        [80.0 - gap, 16.0, 72.0],
+        TRIM_TEXTURE,
+    ));
+    let room = CaptureFixture::compile(&world, &[pool_entity()]);
+    let block = room.brush_at([76.0, 0.0, 56.0]);
+    let slant = 10f64.to_radians();
+    let rise = engine([slant.sin(), 0.0, slant.cos()]).normalize();
+    room.with_scene(|scene, probes| {
+        let probe = only_probe(probes);
+        let none = exclusion(scene, probe, &[]);
+        let filter = exclusion(scene, probe, &[block]);
+        for (y, z) in [(0.5, 52.0), (-4.5, 56.0), (4.5, 60.0)] {
+            let exit = engine([80.0 - gap, y, z]);
+            let (origin, direction) = ((exit - rise * 0.6).as_vec3(), rise.as_vec3());
+            let first = *scene
+                .trace(origin, direction, &none)
+                .surface()
+                .expect("the block faces the ray");
+            assert_eq!(room.face_brush(first.face), Some(block), "{y}, {z}");
+            assert_eq!(
+                scene.trace(origin, direction, &filter),
                 RayOutcome::LeakGuard(first),
                 "{y}, {z}"
             );

@@ -417,10 +417,10 @@ fn no_ray_through_the_pillar_or_its_filled_patches_takes_the_leak_guard() {
     });
 }
 
-// A pillar half a millimetre short of the ceiling still
-// cuts the hole (brush CSG treats the gap as contact); the ray leaves the
-// pillar's top before the ceiling plane, and fills there within the plane
-// tolerance, at the ceiling plane's distance.
+// A pillar half a millimetre short of the ceiling still cuts the hole (brush
+// CSG treats the gap as contact); the ray leaves the pillar's top before the
+// ceiling plane, and fills there within the contact tolerance, at the ceiling
+// plane's distance.
 #[test]
 fn rays_through_a_pillar_half_a_millimetre_short_of_the_ceiling_fill_at_the_ceiling() {
     let room = CaptureFixture::pool_room(Some(ROOM_MAX[2] - 0.0005 / 0.0254));
@@ -434,10 +434,42 @@ fn rays_through_a_pillar_half_a_millimetre_short_of_the_ceiling_fill_at_the_ceil
     });
 }
 
-// A pillar sunk half a metre into the ceiling fills
-// like a flush one; and with a second kept brush overlapping the ceiling
-// above the pillar, its bottom coplanar with the ceiling's, either map order
-// fills from the ceiling surface's faces and never takes the leak guard.
+/// From `q`, a map-unit point on the ceiling, back along a ray rising at
+/// 10° toward map +x: that ray's origin `back` metres short of `q`.
+fn rising_shallowly_to(q: [f64; 3], back: f64) -> Vec3 {
+    let elevation = 10f64.to_radians();
+    let rise = engine([elevation.cos(), 0.0, elevation.sin()]).normalize();
+    (engine(q) - rise * back).as_vec3()
+}
+
+// Regression: a shallow ray crossing a sub-millimetre gap took the leak guard.
+// Rising at 10°, a ray enters the pillar's side, leaves through its top and
+// meets the ceiling plane 2.9 mm along the ray but half a millimetre off the
+// pillar, within CSG's contact: it fills there.
+#[test]
+fn shallow_rays_through_a_pillar_half_a_millimetre_short_of_the_ceiling_fill_at_the_ceiling() {
+    let room = CaptureFixture::pool_room(Some(ROOM_MAX[2] - 0.0005 / 0.0254));
+    let (pillar, ceiling) = (room.brush_at(IN_PILLAR), room.brush_at(IN_CEILING));
+    room.with_scene(|scene, probes| {
+        let probe = only_probe(probes);
+        let none = exclusion(scene, probe, &[]);
+        let filter = exclusion(scene, probe, &[pillar]);
+        for (x, y) in [(45.0, -3.5), (48.0, 0.5), (51.0, 3.5)] {
+            let q = [x, y, ROOM_MAX[2]];
+            let origin = rising_shallowly_to(q, 1.0);
+            let (direction, _) = toward(origin, q);
+            let first = scene.trace(origin, direction, &none);
+            let first = room.face_brush(first.surface().expect("closed room").face);
+            assert_eq!(first, Some(pillar), "{q:?} enters the pillar's side");
+            fill_toward(scene, origin, &filter, q, &[ceiling]);
+        }
+    });
+}
+
+// A pillar sunk half a metre into the ceiling fills like a flush one; and
+// with a second kept brush overlapping the ceiling above the pillar, its
+// bottom coplanar with the ceiling's, either map order fills from the ceiling
+// surface's faces and never takes the leak guard.
 #[test]
 fn a_sunk_pillar_and_an_overlapping_kept_brush_both_fill_the_ceiling_patch() {
     let sunk = CaptureFixture::pool_room(Some(ROOM_MAX[2] + 0.5 / 0.0254));
@@ -636,6 +668,57 @@ fn rays_through_stacked_crates_half_a_millimetre_apart_fill_the_ceiling_patch() 
     });
 }
 
+// Regression: a shallow ray crossing a sub-millimetre gap between excluded
+// crates took the leak guard.
+// The upper crate is thin, so a ray rising at 10° that enters the lower
+// crate's side and leaves through its top crosses the gap into the upper
+// crate, 2.9 mm along the ray, and meets the ceiling inside it: it fills at
+// the upper crate's ceiling patch.
+#[test]
+fn shallow_rays_from_a_crate_into_one_half_a_millimetre_above_fill_the_ceiling_patch() {
+    let gap = 0.0005 / 0.0254;
+    let split = ROOM_MAX[2] - 4.0;
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [-24.0, -128.0, 0.0],
+        [8.0, -96.0, split - gap],
+        TRIM_TEXTURE,
+    ));
+    world.push(textured_box_brush(
+        [-24.0, -128.0, split],
+        [8.0, -96.0, ROOM_MAX[2]],
+        TRIM_TEXTURE,
+    ));
+    let room = CaptureFixture::compile(&world, &[pool_entity()]);
+    let lower = room.brush_at([-8.0, -112.0, 32.0]);
+    let upper = room.brush_at([-8.0, -112.0, split + 2.0]);
+    let ceiling = room.brush_at(IN_CEILING);
+    assert_eq!(
+        (
+            room.faces_on_plane(lower, 2, [0.0, 0.0, split - gap]),
+            room.faces_on_plane(upper, 2, [0.0, 0.0, split]),
+        ),
+        (0, 0),
+        "CSG cuts both crates' facing sides at a half-millimetre gap"
+    );
+    let mut excluded = vec![lower, upper];
+    excluded.sort_unstable();
+    room.with_scene(|scene, probes| {
+        let probe = only_probe(probes);
+        let none = exclusion(scene, probe, &[]);
+        let filter = exclusion(scene, probe, &excluded);
+        for (x, y) in [(-0.5, -123.5), (0.5, -112.5), (4.5, -101.5)] {
+            let q = [x, y, ROOM_MAX[2]];
+            let origin = rising_shallowly_to(q, 1.5);
+            let (direction, _) = toward(origin, q);
+            let first = scene.trace(origin, direction, &none);
+            let first = room.face_brush(first.surface().expect("closed room").face);
+            assert_eq!(first, Some(lower), "{q:?} enters the lower crate's side");
+            fill_toward(scene, origin, &filter, q, &[ceiling]);
+        }
+    });
+}
+
 /// A second room behind the back wall: map x 144..400, sharing that wall.
 fn room_behind() -> Vec<String> {
     let w = 16.0;
@@ -649,11 +732,11 @@ fn room_behind() -> Vec<String> {
     ]
 }
 
-// An outer wall set to `never`, with the exterior behind
-// it and with a second room behind it, and a 2 m wall stub between two
-// openings into that second room, read their own surfaces and never miss or
-// land outside the projection box. A ray that skips an excluded post and
-// then the `never` wall, exterior behind, reads the post at its distance.
+// An outer wall set to `never`, with the exterior behind it and with a second
+// room behind it, and a 2 m wall stub between two openings into that second
+// room, read their own surfaces and never miss or land outside the projection
+// box. A ray that skips an excluded post and then the `never` wall, exterior
+// behind, reads the post at its distance.
 #[test]
 fn excluded_seals_read_their_own_surfaces_and_a_post_before_one_reads_itself() {
     let post = textured_box_brush([96.0, -4.0, 0.0], [104.0, 4.0, 96.0], PILLAR_TEXTURE);

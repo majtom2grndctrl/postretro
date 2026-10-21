@@ -102,10 +102,10 @@ fn pillar_room(top: f64) -> CaptureFixture {
 // Stage flow
 // ---------------------------------------------------------------------------
 
-// Placement and the cap never see exclusion. The pillar
-// fixture's derived box changes when the pillar is deleted, yet the filtered
-// and unfiltered builds place the same probes, boxes, points and bindings;
-// only the capture differs.
+// Placement and the cap never see exclusion. The pillar fixture's derived box
+// changes when the pillar is deleted, yet the filtered and unfiltered builds
+// place the same probes, boxes, points and bindings; only the capture
+// differs.
 #[test]
 fn placed_probes_are_identical_with_the_filter_on_and_off() {
     let room = pillar_room(ROOM_MAX[2]);
@@ -150,10 +150,10 @@ fn placed_probes_are_identical_with_the_filter_on_and_off() {
     assert_ne!(filtered.distances, unfiltered.distances);
 }
 
-// A level whose brushes are all at least every probe's
-// threshold excludes nothing, and its id 54 is byte-identical to the build
-// with every excluded set forced empty. A block beside the pool, not just
-// the room's slabs, sits just past the threshold.
+// A level whose brushes are all at least every probe's threshold excludes
+// nothing, and its id 54 is byte-identical to the build with every excluded
+// set forced empty. A block beside the pool, not just the room's slabs, sits
+// just past the threshold.
 #[test]
 fn a_level_whose_brushes_all_reach_the_threshold_captures_byte_identically_unfiltered() {
     let mut world = textured_room();
@@ -219,10 +219,10 @@ fn a_brush_off_the_projection_box_captures_identically_kept_or_excluded() {
     assert_eq!(capture(vec![crate_]), capture(Vec::new()));
 }
 
-// Standing posts, all excluded, ring the capture point and
-// hide nearly all of the pool from it. With every excluded set forced empty
-// the hidden-water warning fires, on the cold build and the warm one; the
-// filtered capture sees through the posts and warns on neither.
+// Standing posts, all excluded, ring the capture point and hide nearly all of
+// the pool from it. With every excluded set forced empty the hidden-water
+// warning fires, on the cold build and the warm one; the filtered capture
+// sees through the posts and warns on neither.
 #[test]
 fn hidden_water_warns_unfiltered_and_not_filtered_cold_and_warm() {
     let mut world = sealed_room([-160.0, -160.0, 0.0], [160.0, 160.0, 128.0]);
@@ -279,8 +279,8 @@ fn hidden_water_warns_unfiltered_and_not_filtered_cold_and_warm() {
     }
 }
 
-// The capture with an exclusion in play is byte-identical at one
-// worker and at four.
+// The capture with an exclusion in play is byte-identical at one worker and
+// at four.
 #[test]
 fn an_excluding_capture_is_byte_identical_across_worker_counts() {
     let room = pillar_room(ROOM_MAX[2]);
@@ -312,9 +312,9 @@ fn brush_faces_list_each_brushs_faces_in_ascending_order() {
 // Cache key
 // ---------------------------------------------------------------------------
 
-// A changed resolved override value, or any curve or floor
-// constant, misses the capture stage, even where the excluded sets stay the
-// same; an unchanged rebuild hits.
+// A changed resolved override value, or any curve or floor constant, misses
+// the capture stage, even where the excluded sets stay the same; an unchanged
+// rebuild hits.
 #[test]
 fn capture_key_misses_on_a_resolved_override_or_any_rule_constant_and_hits_otherwise() {
     let mut room = pillar_room(ROOM_MAX[2]);
@@ -469,9 +469,9 @@ fn a_perturbed_rule_constant_moves_a_brush_near_the_threshold_and_misses_the_cap
     assert_ne!(kept, excluded);
 }
 
-// An excluded pillar flush with the ceiling and one sunk into
-// it leave the same surfaces, since CSG hides the sunk part, yet key the
-// capture stage differently.
+// An excluded pillar flush with the ceiling and one sunk into it leave the
+// same surfaces, since CSG hides the sunk part, yet key the capture stage
+// differently.
 #[test]
 fn flush_and_sunk_excluded_pillars_key_the_capture_differently() {
     let flush = pillar_room(ROOM_MAX[2]);
@@ -501,10 +501,10 @@ fn flush_and_sunk_excluded_pillars_key_the_capture_differently() {
     }
 }
 
-// With geometry, primitives and every other input fixed, moving
-// one plane of an excluded hull, or one side of a kept brush it touches, or
-// dropping one of that kept brush's faces from the face → brush table,
-// misses; the same edit to a brush neither excluded nor touched hits.
+// With geometry, primitives and every other input fixed, moving one plane of
+// an excluded hull, or one side of a kept brush it touches, or dropping one
+// of that kept brush's faces from the face → brush table, misses; the same
+// edit to a brush neither excluded nor touched hits.
 #[test]
 fn moving_an_excluded_hull_plane_or_a_contact_side_misses_the_capture() {
     let mut room = pillar_room(ROOM_MAX[2]);

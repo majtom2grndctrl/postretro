@@ -3,17 +3,18 @@
 
 use glam::{DVec3, Vec3};
 
-use super::capture_exclusion::{BrushFaces, CONTACT_TOLERANCE_M};
+use super::capture_exclusion::{BrushFaces, CONTACT_TOLERANCE_M, outside_by};
 use super::hit::{SceneTracer, SurfaceHit, SurfacePoint};
 use crate::geometry::{GeometryResult, brush_side_texel_uv};
 use crate::map_data::{BrushSide, BrushVolume};
 
-/// How far along the ray a covering side may be crossed before the ray
-/// enters an excluded hull or after it leaves, and still fill; also the
-/// plane-match and in-polygon slack. Brush CSG cuts the kept face across a
-/// gap within its contact epsilon, so a side just past the hull's exit is
-/// the one the excluded brush removed. Measured along the ray, not off the
-/// plane, so a grazing ray never reaches far past the exit.
+/// How far outside an excluded hull, off its planes, a covering side may be
+/// crossed and still fill, and how far along the ray before the hull's
+/// entry; also the plane-match and in-polygon slack. Brush CSG cuts a kept
+/// face within its contact epsilon of the excluded brush, measured off the
+/// brush's planes, so a side crossed that close is one the excluded brush
+/// removed, at any ray angle. A kept front face nearer than the crossing
+/// hides it, so a grazing ray's fill never reaches past what it would read.
 const FILL_TOLERANCE_M: f64 = CONTACT_TOLERANCE_M;
 /// Normals within this cosine of each other are one plane's.
 const COPLANAR_MIN_COS: f64 = 1.0 - 1.0e-4;
@@ -93,40 +94,45 @@ impl KeptCandidate {
     }
 }
 
-/// Where the ray `(origin, unit direction)`, inside an excluded hull between
-/// `entry` and `exit` (its distances), first crosses into one of the `slots`
-/// candidates through a side whose polygon holds the crossing. Every
-/// candidate side on that crossing's plane pools its surviving faces, so a
-/// brush that lost the coplanar dedupe never decides; the fill reads the
-/// nearest point on them, ties to the lowest post-cut face. `None` when no
-/// side is crossed, or the first crossed has no surviving face: the exit
-/// decides instead. It runs per excluded hull per capture ray, so it
-/// allocates nothing.
+/// Where the ray `(origin, unit direction)`, past its `entry` distance into
+/// the excluded `hull`, first crosses into one of the `slots` candidates
+/// through a side whose polygon holds the crossing, at a point inside the
+/// hull or touching it ([`FILL_TOLERANCE_M`]). Every candidate side on that
+/// crossing's plane pools its surviving faces, so a brush that lost the
+/// coplanar dedupe never decides; the fill reads the nearest point on them,
+/// ties to the lowest post-cut face. `None` when no side is crossed, or the
+/// first crossed has no surviving face: the exit decides instead. It runs
+/// per excluded hull per capture ray, so it allocates nothing.
 pub(super) fn find_fill(
     tracer: &SceneTracer<'_>,
     volumes: &[BrushVolume],
     candidates: &[KeptCandidate],
     slots: &[usize],
     ray: (DVec3, DVec3),
-    [entry, exit]: [f64; 2],
+    excluded: (&BrushVolume, f64),
 ) -> Option<Fill> {
-    let crossings = || {
-        slots.iter().flat_map(move |&slot| {
-            let sides = &volumes[candidates[slot].brush as usize].sides;
-            sides.iter().enumerate().filter_map(move |(index, side)| {
-                Some((crossing(side, ray, [entry, exit])?, slot, index))
-            })
-        })
+    let sides = |slot: usize| {
+        volumes[candidates[slot].brush as usize]
+            .sides
+            .iter()
+            .enumerate()
+            .map(move |(index, side)| (slot, index, side))
     };
-    let first = crossings().map(|(t, ..)| t).min_by(f64::total_cmp)?;
+    let first = slots
+        .iter()
+        .flat_map(|&slot| sides(slot))
+        .filter_map(|(_, _, side)| crossing(side, ray, excluded))
+        .min_by(f64::total_cmp)?;
     let (origin, direction) = ray;
     let point = origin + direction * first;
     // Every crossed side on the first crossing's plane pools its faces. A
     // face belongs to one brush's one side, so none is visited twice.
     let mut best: Option<Nearest> = None;
-    for (_, slot, index) in crossings() {
-        let side = &volumes[candidates[slot].brush as usize].sides[index];
-        if (side.normal.dot(point) - side.distance).abs() > FILL_TOLERANCE_M {
+    for (slot, index, side) in slots.iter().flat_map(|&slot| sides(slot)) {
+        // The plane first, so sides off it skip the polygon test.
+        if (side.normal.dot(point) - side.distance).abs() > FILL_TOLERANCE_M
+            || crossing(side, ray, excluded).is_none()
+        {
             continue;
         }
         for &face in &candidates[slot].sides[index].faces {
@@ -153,22 +159,24 @@ pub(super) fn find_fill(
     })
 }
 
-/// Where the ray crosses into `side`'s brush through `side`: within
-/// [`FILL_TOLERANCE_M`] of the hull's `entry`..`exit` along the ray, inside
-/// the side's polygon. `None` when the ray heads out through the side or
-/// crosses it elsewhere.
+/// Where the ray crosses into `side`'s brush through `side`: no earlier
+/// than [`FILL_TOLERANCE_M`] before the ray's `entry` into the excluded
+/// `hull`, at a point within that tolerance of the hull, inside the side's
+/// polygon. `None` when the ray heads out through the side or crosses it
+/// elsewhere.
 fn crossing(
     side: &BrushSide,
     (origin, direction): (DVec3, DVec3),
-    [entry, exit]: [f64; 2],
+    (hull, entry): (&BrushVolume, f64),
 ) -> Option<f64> {
     let rate = side.normal.dot(direction);
     if rate >= 0.0 {
         return None;
     }
     let t = (side.distance - side.normal.dot(origin)) / rate;
-    let within = t >= entry - FILL_TOLERANCE_M && t <= exit + FILL_TOLERANCE_M;
-    (within && polygon_holds(side, origin + direction * t)).then_some(t)
+    let point = origin + direction * t;
+    let touches = t >= entry - FILL_TOLERANCE_M && outside_by(hull, point) <= FILL_TOLERANCE_M;
+    (touches && polygon_holds(side, point)).then_some(t)
 }
 
 /// The surface a fill reads, facing a ray of unit `direction` from

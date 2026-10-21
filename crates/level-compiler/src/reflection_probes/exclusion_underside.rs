@@ -4,7 +4,7 @@
 use glam::{DVec2, DVec3};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 
-use super::exclusion::{ExclusionScene, UNDERSIDE_MAX_NORMAL_DOT};
+use super::exclusion::ExclusionScene;
 use super::placement::{FaceGeometry, PLANE_TOLERANCE_M, PlacedProbe};
 
 /// An orthonormal frame of the reflector: heights along its normal, 2D
@@ -121,10 +121,12 @@ pub(super) struct DownwardFace {
     top: f64,
 }
 
-/// Each brush's surviving downward faces, through the face → brush table.
+/// Each brush's surviving downward faces, through the face → brush table: a
+/// face points down when n·N ≤ `max_normal_dot`.
 pub(super) fn downward_faces(
     scene: &ExclusionScene<'_>,
     basis: &PlaneBasis,
+    max_normal_dot: f64,
 ) -> Vec<Vec<DownwardFace>> {
     let mut per_brush: Vec<Vec<DownwardFace>> = vec![Vec::new(); scene.brush_volumes.len()];
     let geometry = &scene.geometry.geometry;
@@ -154,7 +156,7 @@ pub(super) fn downward_faces(
         let Some(normal) = winding.try_normalize() else {
             continue;
         };
-        if normal.dot(basis.normal) > UNDERSIDE_MAX_NORMAL_DOT {
+        if normal.dot(basis.normal) > max_normal_dot {
             continue;
         }
         let corners = || triangles.iter().flatten().copied();

@@ -265,7 +265,13 @@ impl<'a> ProbeExclusion<'a> {
     /// The post-cut faces of the excluded brush in `slot` of
     /// [`Self::excluded`]: its share of the mask, ascending.
     pub(crate) fn faces_of(&self, slot: usize) -> &[u32] {
-        self.brushes.faces.of(self.excluded[slot])
+        self.brush_faces(self.excluded[slot])
+    }
+
+    /// The post-cut faces of `brush`, ascending: for a kept contact
+    /// candidate, the faces its fill pools.
+    pub(crate) fn brush_faces(&self, brush: u32) -> &[u32] {
+        self.brushes.faces.of(brush)
     }
 
     /// The contacts of the excluded brush in `slot` of [`Self::excluded`]:

@@ -16,9 +16,10 @@ use crate::{environment_volumes, partition, portals, visibility};
 use super::box_fit::WorldBounds;
 use super::capture_point::PointClassifier;
 use super::exclusion::{
-    BrushExtents, DEFAULT_HFOV_DEGREES, ExclusionScene, SSR_COARSEST_STRIDE_DIVISOR,
-    THRESHOLD_KNEE_WIDTH_M, classify_probes, classify_probes_within_boxes, excluded_by_rule,
-    floor_ratio, size_threshold, thin_floor, water_width,
+    BrushExtents, DEFAULT_HFOV_DEGREES, ExclusionConstants, ExclusionScene,
+    SSR_COARSEST_STRIDE_DIVISOR, THRESHOLD_KNEE_WIDTH_M, classify_probes,
+    classify_probes_within_boxes, excluded_by_rule, floor_ratio, size_threshold, thin_floor,
+    water_width,
 };
 use super::hit::SceneTracer;
 use super::placement::{PlacedProbe, PlacementScene, place_probes};
@@ -106,6 +107,7 @@ impl ExclusionFixture {
                 environment_volumes: &self.environment,
             },
             &self.probes,
+            &ExclusionConstants::PRODUCTION,
         )
     }
 
@@ -465,7 +467,7 @@ fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
         vec![vec![0, 1, 2, 3, 4, 5]]
     );
     assert_eq!(
-        classify_probes_within_boxes(&scene, &probes),
+        classify_probes_within_boxes(&scene, &probes, &ExclusionConstants::PRODUCTION),
         vec![vec![0, 1, 3]]
     );
 }

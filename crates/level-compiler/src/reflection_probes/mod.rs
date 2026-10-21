@@ -20,6 +20,7 @@ mod lightmap_sample;
 mod materials;
 pub(crate) mod placement;
 mod reference;
+mod roster;
 mod sdf_lights;
 mod sh_sample;
 mod shading;
@@ -65,7 +66,7 @@ use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
     REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeRecord, ReflectionProbesSection,
 };
-use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShVolumeSection};
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
@@ -87,7 +88,7 @@ use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
 use materials::SurfaceMaterials;
 use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
-use reference::reference_value;
+use roster::{check_roster, references};
 use sdf_lights::SdfLights;
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
 use shading::CaptureScene;
@@ -109,10 +110,12 @@ const STAGE_ID: &str = "reflection_probes";
 /// 9: a wall past a column's first ceiling hit still tops it when farther
 /// out (a sunken pool under an overhanging lip fits the room); the key
 /// gains id 45's descriptor table.
-/// 10: capture exclusion: primary rays skip each probe's excluded brushes,
+/// 10: branch only, never on main; never reuse it, as its entries may sit in
+/// local caches.
+/// 11: capture exclusion: primary rays skip each probe's excluded brushes,
 /// with fill and leak guard; the key gains the override table, the rule's
 /// constants and each probe's excluded set with its hulls and contacts.
-const STAGE_VERSION: u32 = 10;
+const STAGE_VERSION: u32 = 11;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -198,7 +201,30 @@ pub(crate) fn bake_or_load_reflection_probes(
     stage_cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
-    bake_or_load_with(inputs, stage_cache, control, classify_probes_within_boxes)
+    bake_or_load_with(
+        inputs,
+        stage_cache,
+        control,
+        &ExclusionConstants::PRODUCTION,
+        classify_probes_within_boxes,
+    )
+}
+
+/// The stage with the rule under `constants`, for tests perturbing them.
+#[cfg(test)]
+pub(crate) fn bake_or_load_under(
+    inputs: &ReflectionProbeInputs<'_>,
+    stage_cache: Option<&StageCache>,
+    control: &BakeControl,
+    constants: &ExclusionConstants,
+) -> anyhow::Result<Option<ReflectionProbesSection>> {
+    bake_or_load_with(
+        inputs,
+        stage_cache,
+        control,
+        constants,
+        classify_probes_within_boxes,
+    )
 }
 
 /// The stage with every probe's excluded set forced empty: the unfiltered
@@ -209,17 +235,23 @@ pub(crate) fn bake_or_load_unfiltered(
     stage_cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
-    bake_or_load_with(inputs, stage_cache, control, |_, probes| {
-        vec![Vec::new(); probes.len()]
-    })
+    bake_or_load_with(
+        inputs,
+        stage_cache,
+        control,
+        &ExclusionConstants::PRODUCTION,
+        |_, probes, _| vec![Vec::new(); probes.len()],
+    )
 }
 
-/// The stage, each placed probe's excluded set from `classify`.
+/// The stage, each placed probe's excluded set from `classify` under
+/// `constants`, the instance the key hashes.
 fn bake_or_load_with(
     inputs: &ReflectionProbeInputs<'_>,
     stage_cache: Option<&StageCache>,
     control: &BakeControl,
-    classify: impl FnOnce(&ExclusionScene<'_>, &[PlacedProbe]) -> Vec<Vec<u32>>,
+    constants: &ExclusionConstants,
+    classify: impl FnOnce(&ExclusionScene<'_>, &[PlacedProbe], &ExclusionConstants) -> Vec<Vec<u32>>,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
     if inputs.reflection_volumes.is_empty()
         && up_facing_faces(inputs.environment_volumes).is_empty()
@@ -287,6 +319,7 @@ fn bake_or_load_with(
             environment_volumes: inputs.environment_volumes,
         },
         &probes,
+        constants,
     );
     anyhow::ensure!(
         excluded.len() == probes.len(),
@@ -313,12 +346,7 @@ fn bake_or_load_with(
     }
 
     // Capture is a pure function of the keyed inputs, so a hit skips it.
-    let key = cache_key(
-        inputs,
-        &probes,
-        &exclusions,
-        &ExclusionConstants::PRODUCTION,
-    )?;
+    let key = cache_key(inputs, &probes, &exclusions, constants)?;
     if let Some((section, reports)) =
         stage_cache
             .and_then(|cache| cache.get(&key))
@@ -488,73 +516,6 @@ fn capture_probes(
         distances,
     };
     Ok((section, shares.iter().map(|share| share.report).collect()))
-}
-
-/// Each animated light's reference value, by roster index: the runtime's
-/// descriptors are the SH section's, one per AnimatedBakedLights row.
-fn references(descriptors: &[AnimationDescriptor]) -> Vec<[f32; 3]> {
-    descriptors.iter().map(reference_value).collect()
-}
-
-/// Every light the baked transport names must have a descriptor, and each
-/// shipped descriptor table (ids 27 and 45) must be the identity over the
-/// whole roster: a share's roster index indexes the runtime descriptor
-/// buffer directly, so roster slot `r` must name descriptor `r`. This
-/// refuses a table of another length as well as a non-identity entry. The
-/// loader's check of section 54 (`validate_reflection_probe_lights` in
-/// `postretro-level-loader`) is narrower: identity over each table's own
-/// length, and every stored share's light inside the roster.
-fn check_roster(inputs: &ReflectionProbeInputs<'_>, roster: usize) -> anyhow::Result<()> {
-    let tables = [
-        (
-            "DeltaShVolumes (id 27)",
-            inputs
-                .delta_sh
-                .map(|delta| delta.animation_descriptor_indices.as_slice()),
-        ),
-        (
-            "AnimatedDirectShDeltaVolumes (id 45)",
-            inputs
-                .animated_direct_sh
-                .map(|section| section.animation_descriptor_indices.as_slice()),
-        ),
-    ];
-    for (table, indices) in tables {
-        let Some(indices) = indices else {
-            continue;
-        };
-        anyhow::ensure!(
-            indices.len() == roster,
-            "{table} has {} animated light(s) over the {roster}-light roster; reflection \
-             probes need the identity roster",
-            indices.len(),
-        );
-        if let Some((slot, descriptor)) = indices
-            .iter()
-            .enumerate()
-            .find(|&(slot, &descriptor)| descriptor as usize != slot)
-        {
-            anyhow::bail!(
-                "{table} maps animated light {slot} to descriptor {descriptor}; reflection \
-                 probes need the identity roster"
-            );
-        }
-    }
-    if let Some(delta) = inputs.delta_sh {
-        anyhow::ensure!(
-            delta.affinity_lights.iter().all(|&l| (l as usize) < roster),
-            "DeltaShVolumes names an animated light past the {roster}-light roster"
-        );
-    }
-    if let Some(maps) = inputs.animated_weight_maps {
-        anyhow::ensure!(
-            maps.texel_lights
-                .iter()
-                .all(|t| (t.light_index as usize) < roster),
-            "AnimatedLightWeightMaps names an animated light past the {roster}-light roster"
-        );
-    }
-    Ok(())
 }
 
 fn log_probes(section: &ReflectionProbesSection, reports: &[ShareReport]) {

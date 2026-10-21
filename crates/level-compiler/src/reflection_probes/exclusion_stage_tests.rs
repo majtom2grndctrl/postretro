@@ -21,8 +21,8 @@ use super::placement_test_fixtures::{
     UNIT, entity, fluid, reflection_volume, sealed_room, textured_box_brush,
 };
 use super::{
-    ReflectionProbeInputs, STAGE_ID, bake_or_load_reflection_probes, bake_or_load_unfiltered,
-    cache_key,
+    ReflectionProbeInputs, STAGE_ID, bake_or_load_reflection_probes, bake_or_load_under,
+    bake_or_load_unfiltered, cache_key,
 };
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
@@ -54,8 +54,13 @@ fn bake(
 /// The stage's excluded sets for `room`: placement, then classification
 /// within each probe's box, as the stage runs them.
 fn stage_sets(room: &CaptureFixture) -> Vec<Vec<u32>> {
+    stage_sets_under(room, &ExclusionConstants::PRODUCTION)
+}
+
+/// [`stage_sets`] with the rule under `constants`.
+fn stage_sets_under(room: &CaptureFixture, constants: &ExclusionConstants) -> Vec<Vec<u32>> {
     let probes = room.world.place().unwrap();
-    room.with_inputs(|inputs| classify_probes_within_boxes(&scene(inputs), &probes))
+    room.with_inputs(|inputs| classify_probes_within_boxes(&scene(inputs), &probes, constants))
 }
 
 fn scene<'a>(inputs: &ReflectionProbeInputs<'a>) -> ExclusionScene<'a> {
@@ -68,12 +73,12 @@ fn scene<'a>(inputs: &ReflectionProbeInputs<'a>) -> ExclusionScene<'a> {
     }
 }
 
-/// The capture stage's key for `room` under the rule's `constants`, every
-/// step before it run as the stage runs it.
+/// The capture stage's key for `room` under the rule's `constants`, which
+/// classify and key alike, every step before it run as the stage runs it.
 fn stage_key(room: &CaptureFixture, constants: &ExclusionConstants) -> String {
     let probes = room.world.place().unwrap();
     room.with_inputs(|inputs| {
-        let excluded = classify_probes_within_boxes(&scene(inputs), &probes);
+        let excluded = classify_probes_within_boxes(&scene(inputs), &probes, constants);
         let tracer = SceneTracer::new(inputs.bvh, inputs.primitives, inputs.geometry);
         let exclusions: Vec<ProbeExclusion<'_>> = probes
             .iter()
@@ -396,6 +401,74 @@ fn capture_key_misses_on_a_resolved_override_or_any_rule_constant_and_hits_other
     }
 }
 
+// The stage classifies under the instance its key hashes. A block just past
+// the threshold stays in the probe; raising the near share past its size
+// excludes it, misses the cache and captures as the block excluded would.
+#[test]
+fn a_perturbed_rule_constant_moves_a_brush_near_the_threshold_and_misses_the_capture() {
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [-100.0, 104.0, 0.0],
+        [60.0, 120.0, 48.0],
+        PILLAR_TEXTURE,
+    ));
+    let room = CaptureFixture::compile(&world, &[pool_entity()]);
+    let block = room.brush_at([0.0, 112.0, 24.0]);
+    let production = ExclusionConstants::PRODUCTION;
+    let raised = ExclusionConstants {
+        near_share: 0.95,
+        ..production
+    };
+    let width = super::exclusion::water_width(only_probe(&room.world.place().unwrap()));
+    let block_size = 160.0 * UNIT;
+    assert!(
+        production.size_threshold(width) < block_size && block_size < raised.size_threshold(width),
+        "the block sits between t = {} m and t = {} m",
+        production.size_threshold(width),
+        raised.size_threshold(width)
+    );
+    assert_eq!(
+        stage_sets_under(&room, &production),
+        vec![Vec::<u32>::new()]
+    );
+    assert_eq!(stage_sets_under(&room, &raised), vec![vec![block]]);
+    assert_ne!(stage_key(&room, &production), stage_key(&room, &raised));
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache = StageCache::new(dir.path()).unwrap();
+    let control = BakeControl::unrestricted();
+    let bake_under = |constants: &ExclusionConstants| {
+        room.with_inputs(|inputs| bake_or_load_under(inputs, Some(&cache), &control, constants))
+            .unwrap()
+            .expect("the pool keeps its probe")
+            .to_bytes()
+    };
+    let (kept, excluded) = (bake_under(&production), bake_under(&raised));
+    let access = cache.test_access(STAGE_ID);
+    assert_eq!(
+        (access.writes, access.read_hits),
+        (2, 0),
+        "both builds miss"
+    );
+    assert_eq!(kept, bake(&room, true, None).to_bytes());
+    let capture = |excluded: Vec<u32>| {
+        room.with_scene(|scene, probes| {
+            super::capture_section(
+                scene,
+                probes,
+                &[excluded],
+                &[],
+                &BakeControl::unrestricted(),
+            )
+            .unwrap()
+            .0
+            .to_bytes()
+        })
+    };
+    assert_eq!(excluded, capture(vec![block]));
+    assert_ne!(kept, excluded);
+}
+
 // An excluded pillar flush with the ceiling and one sunk into
 // it leave the same surfaces, since CSG hides the sunk part, yet key the
 // capture stage differently.
@@ -429,7 +502,8 @@ fn flush_and_sunk_excluded_pillars_key_the_capture_differently() {
 }
 
 // With geometry, primitives and every other input fixed, moving
-// one plane of an excluded hull, or one side of a kept brush it touches,
+// one plane of an excluded hull, or one side of a kept brush it touches, or
+// dropping one of that kept brush's faces from the face → brush table,
 // misses; the same edit to a brush neither excluded nor touched hits.
 #[test]
 fn moving_an_excluded_hull_plane_or_a_contact_side_misses_the_capture() {
@@ -457,6 +531,25 @@ fn moving_an_excluded_hull_plane_or_a_contact_side_misses_the_capture() {
     shifted(&mut room, ceiling, 1.0e-3);
     assert_ne!(base, stage_key(&room, &production), "a contact side");
     shifted(&mut room, ceiling, -1.0e-3);
+    assert_eq!(base, stage_key(&room, &production));
+
+    // The fill pools a kept contact's faces; the wall's are never read.
+    let sets = stage_sets(&room);
+    let retag = |room: &mut CaptureFixture, face: usize, brush: Option<u32>| {
+        room.world.face_brushes[face] = brush;
+        room.brush_faces = BrushFaces::new(&room.world.face_brushes, room.world.brushes.len());
+    };
+    for (brush, misses) in [(ceiling, true), (wall, false)] {
+        let face = room.brush_faces.of(brush as u32)[0] as usize;
+        retag(&mut room, face, None);
+        assert_eq!(stage_sets(&room), sets);
+        assert_eq!(
+            misses,
+            base != stage_key(&room, &production),
+            "dropping face {face} of brush {brush}"
+        );
+        retag(&mut room, face, Some(brush as u32));
+    }
     assert_eq!(base, stage_key(&room, &production));
 
     shifted(&mut room, wall, 1.0e-3);

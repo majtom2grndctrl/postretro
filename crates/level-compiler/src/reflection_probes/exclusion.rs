@@ -39,9 +39,10 @@ pub(crate) const FLOOR_ASPECT: f64 = 16.0 / 9.0;
 /// A face points down, toward the reflector, when n·N ≤ −sin 1°.
 pub(crate) const UNDERSIDE_MAX_NORMAL_DOT: f64 = -0.017_452_406_437_283_51;
 
-/// The constants that shape the rule, as the capture's cache key reads them:
-/// a retune of any one re-keys every fluid map's capture, even where it moves
-/// no brush in or out. A constant the rule gains joins this.
+/// The constants that shape the rule. Classification and the capture's cache
+/// key read one instance, so a retune of any one re-keys every fluid map's
+/// capture, even where it moves no brush in or out. A constant the rule
+/// gains joins this.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ExclusionConstants {
     pub near_share: f64,
@@ -68,20 +69,55 @@ impl ExclusionConstants {
 
     /// Every field, little-endian, in declaration order.
     pub(crate) fn key_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 * 8);
+        let mut out = Vec::with_capacity(7 * 8 + 4);
         for value in [
             self.near_share,
             self.knee_width_m,
             self.far_share,
             self.far_width_m,
+        ] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&self.stride_divisor.to_le_bytes());
+        for value in [
             self.hfov_degrees,
             self.floor_aspect,
             self.underside_max_normal_dot,
         ] {
             out.extend_from_slice(&value.to_le_bytes());
         }
-        out.extend_from_slice(&self.stride_divisor.to_le_bytes());
         out
+    }
+
+    /// t(W) = p(W)·W: brushes smaller than this in the reflector's plane
+    /// leave the probe.
+    pub(crate) fn size_threshold(&self, width: f64) -> f64 {
+        let share = if width <= self.knee_width_m {
+            self.near_share
+        } else {
+            self.near_share * (width / self.knee_width_m).powf(-self.threshold_exponent())
+        };
+        share * width
+    }
+
+    /// a = ln(p_near / p_far) / ln(W_far / W_knee), exact: rounding it moves
+    /// t at 50 m and 100 m by a few millimetres.
+    fn threshold_exponent(&self) -> f64 {
+        (self.near_share / self.far_share).ln() / (self.far_width_m / self.knee_width_m).ln()
+    }
+
+    /// f ÷ W = 2·tan(θv/2) / D: the extent one coarsest march stride spans
+    /// per metre of view distance, with θv the vertical field of view.
+    pub(crate) fn floor_ratio(&self) -> f64 {
+        let half_horizontal = (self.hfov_degrees.to_radians() * 0.5).tan();
+        let vertical_fov = 2.0 * (half_horizontal / self.floor_aspect).atan();
+        2.0 * (vertical_fov * 0.5).tan() / f64::from(self.stride_divisor)
+    }
+
+    /// f(W): brushes thinner than this along the reflector normal stay in
+    /// the probe, since the march can step over them from view distance W.
+    pub(crate) fn thin_floor(&self, width: f64) -> f64 {
+        width * self.floor_ratio()
     }
 }
 
@@ -105,10 +141,11 @@ pub(crate) struct ExclusionScene<'a> {
 /// `Never`, or follows the rule (`Auto`) and is smaller than the probe's
 /// threshold in the reflector's plane, at least the floor thick along its
 /// normal, and has no underside over the probe's water. `Always` keeps.
-/// Every brush of the map is classified for every probe.
+/// Every brush of the map is classified for every probe, under the
+/// production constants.
 #[cfg(test)]
 pub(crate) fn classify_probes(scene: &ExclusionScene<'_>, probes: &[PlacedProbe]) -> Vec<Vec<u32>> {
-    classify(scene, probes, |_, _| true)
+    classify(scene, probes, &ExclusionConstants::PRODUCTION, |_, _| true)
 }
 
 /// [`classify_probes`], each probe's set restricted to brushes whose hulls
@@ -119,20 +156,23 @@ pub(crate) fn classify_probes(scene: &ExclusionScene<'_>, probes: &[PlacedProbe]
 /// both take the leak guard on that brush; with none, the kept hull's hit
 /// and the leak guard on the excluded hull read the same face at the same
 /// distance. So the work, and the key's share of the brushes, shrink to what
-/// each box holds.
+/// each box holds. The rule reads `constants`, the instance the stage keys.
 pub(crate) fn classify_probes_within_boxes(
     scene: &ExclusionScene<'_>,
     probes: &[PlacedProbe],
+    constants: &ExclusionConstants,
 ) -> Vec<Vec<u32>> {
-    classify(scene, probes, |projection_box, brush| {
+    classify(scene, probes, constants, |projection_box, brush| {
         projection_box.touches(&brush.aabb)
     })
 }
 
-/// The rule over the brushes `in_scope` admits for each probe's box.
+/// The rule under `constants` over the brushes `in_scope` admits for each
+/// probe's box.
 fn classify(
     scene: &ExclusionScene<'_>,
     probes: &[PlacedProbe],
+    constants: &ExclusionConstants,
     in_scope: impl Fn(&ProjectionBox, &BrushVolume) -> bool,
 ) -> Vec<Vec<u32>> {
     debug_assert_eq!(scene.capture_override.len(), scene.brush_volumes.len());
@@ -146,12 +186,12 @@ fn classify(
         .iter()
         .map(|brush| BrushExtents::of(&brush.aabb, basis.normal))
         .collect();
-    let downward = downward_faces(scene, &basis);
+    let downward = downward_faces(scene, &basis, constants.underside_max_normal_dot);
     probes
         .iter()
         .map(|probe| {
             let width = water_width(probe);
-            let (threshold, floor) = (size_threshold(width), thin_floor(width));
+            let (threshold, floor) = (constants.size_threshold(width), constants.thin_floor(width));
             let water = bound_water(scene.environment_volumes, probe, &basis);
             let projection_box = ProjectionBox::of(probe);
             (0..scene.brush_volumes.len())
@@ -183,36 +223,22 @@ pub(crate) fn water_width(probe: &PlacedProbe) -> f64 {
     probe.bound_area.max(0.0).sqrt()
 }
 
-/// t(W) = p(W)·W: brushes smaller than this in the reflector's plane leave
-/// the probe.
+/// [`ExclusionConstants::size_threshold`] under the production constants.
+#[cfg(test)]
 pub(crate) fn size_threshold(width: f64) -> f64 {
-    let share = if width <= THRESHOLD_KNEE_WIDTH_M {
-        THRESHOLD_NEAR_SHARE
-    } else {
-        THRESHOLD_NEAR_SHARE * (width / THRESHOLD_KNEE_WIDTH_M).powf(-threshold_exponent())
-    };
-    share * width
+    ExclusionConstants::PRODUCTION.size_threshold(width)
 }
 
-/// a = ln(p_near / p_far) / ln(W_far / W_knee), exact: rounding it moves t
-/// at 50 m and 100 m by a few millimetres.
-fn threshold_exponent() -> f64 {
-    (THRESHOLD_NEAR_SHARE / THRESHOLD_FAR_SHARE).ln()
-        / (THRESHOLD_FAR_WIDTH_M / THRESHOLD_KNEE_WIDTH_M).ln()
-}
-
-/// f ÷ W = 2·tan(θv/2) / D: the extent one coarsest march stride spans per
-/// metre of view distance, with θv the default vertical field of view.
+/// [`ExclusionConstants::floor_ratio`] under the production constants.
+#[cfg(test)]
 pub(crate) fn floor_ratio() -> f64 {
-    let half_horizontal = (DEFAULT_HFOV_DEGREES.to_radians() * 0.5).tan();
-    let vertical_fov = 2.0 * (half_horizontal / FLOOR_ASPECT).atan();
-    2.0 * (vertical_fov * 0.5).tan() / f64::from(SSR_COARSEST_STRIDE_DIVISOR)
+    ExclusionConstants::PRODUCTION.floor_ratio()
 }
 
-/// f(W): brushes thinner than this along the reflector normal stay in the
-/// probe, since the march can step over them from view distance W.
+/// [`ExclusionConstants::thin_floor`] under the production constants.
+#[cfg(test)]
 pub(crate) fn thin_floor(width: f64) -> f64 {
-    width * floor_ratio()
+    ExclusionConstants::PRODUCTION.thin_floor(width)
 }
 
 /// A hull's size against a reflector normal, measured on its axis-aligned

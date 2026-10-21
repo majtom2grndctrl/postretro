@@ -248,9 +248,10 @@ pub(super) fn cache_key(
 
 /// Per probe: its excluded brushes and their post-cut faces (the mask), each
 /// excluded hull's planes (its exit test) and contacts, and every kept
-/// contact candidate's planes (kept solid) and sides (the fill's covering
-/// test, material and projection). CSG hides what an excluded hull buries,
-/// so the geometry alone need not tell a flush pillar from a sunk one.
+/// contact candidate's post-cut faces (the fill's pool), planes (kept solid)
+/// and sides (the fill's covering test, material and projection). CSG hides
+/// what an excluded hull buries, so the geometry alone does not necessarily
+/// tell a flush pillar from a sunk one.
 fn exclusion_bytes(
     inputs: &ReflectionProbeInputs<'_>,
     exclusions: &[ProbeExclusion<'_>],
@@ -275,6 +276,7 @@ fn exclusion_bytes(
         let kept: Vec<u32> = exclusion.kept_contacts().collect();
         u32s(&mut out, &kept);
         for &brush in &kept {
+            u32s(&mut out, exclusion.brush_faces(brush));
             let volume = &inputs.brush_volumes[brush as usize];
             hull_planes(&mut out, volume);
             hull_sides(&mut out, volume);

@@ -31,7 +31,13 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 - `BusTree::build` / `build_bus` (crates/audio/src/buses.rs). SFX carries `WorldMuffleBuilder`, a custom Simper SVF low-pass in `muffle.rs`, driven through an atomic target with a per-sample ramp. Bus volume uses `TrackHandle::set_volume`.
 - A sub-track can hang under SFX, and its output then passes SFX volume and muffle. SFX `sub_track_capacity` is 64 (2 × 32). The manager's sub-track capacity is 16, with 3 used.
 - `spatial.rs::start_voice` parents every voice to the `&mut TrackHandle` it is passed, always SFX today (`audio_core.rs`). `has_room` checks the parent's sub-track count. `try_acquire_voice` / `release_voice` key by `BusId`. Reclaim, `stop_all` and failed-start release `BusId::Sfx` unconditionally. `AudioCore::play` drops anchored requests whose bus is not SFX.
-- kira 0.12.5 is pinned. No local source was available to confirm `FilterBuilder` (low-pass, high-pass), `DistortionBuilder` or `VolumeControlBuilder` handles. These are recalled from the API and unverified.
+- kira 0.12.5 is pinned. Checked in its source (`src/effect/`):
+  - `FilterBuilder` with `FilterMode::{LowPass, BandPass, HighPass, Notch}`; `FilterHandle::set_mode`, `set_cutoff`, `set_resonance` and `set_mix`.
+  - `DistortionBuilder` with `DistortionKind::{HardClip, SoftClip}`; `DistortionHandle::set_kind`, `set_drive` (`Decibels`) and `set_mix`.
+  - `VolumeControlBuilder` / `VolumeControlHandle`.
+  - Every `set_*` takes a value and a `Tween` (`handle_param_setters!`).
+  - Compressor, delay, EQ filter, panning control and reverb also exist.
+- The engine uses none of kira's built-in effects yet. World muffle and mono are custom `Effect`s (`muffle.rs`, `mono.rs`). The behind-the-listener low-pass is planned, not built: roadmap Epic 12 step 2 puts kira's `FilterBuilder` on each voice's spatial track. The Ghost bus would be the first user of kira's built-in filter.
 - Manifest attenuation: `resolve_authored_attenuation` (crates/scripting-core/src/data_descriptors/audio_profile.rs), drained by `drain_audio_profile_lua` and `drain_audio_profile_js`. Any malformed field falls back to the whole default.
 - Drain anchors: `AnchorScene::sound_anchor` maps `Emitter::Entity` → `SoundAnchor::Entity { key, point }` and `Emitter::Contacts` → `SoundAnchor::Contacts`. `SoundAnchor::Point` exists. Requests are built in `frozen_sound`, the mover and teleporter sound modules, and the `PlaySound` drain.
 - No machine plays a remote pawn's movement sounds (`audio.md` §4).

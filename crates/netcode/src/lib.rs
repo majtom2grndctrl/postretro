@@ -34,6 +34,7 @@ extern crate self as netcode;
 use std::collections::VecDeque;
 
 mod client;
+mod client_switch;
 mod command_queue;
 mod descriptor_class;
 pub use descriptor_class::is_host_replicated_descriptor_entity;
@@ -46,6 +47,7 @@ mod endpoint;
 pub mod frame_order;
 mod host;
 mod host_address;
+mod host_input;
 // Weapon-switch declarations: intake into the ordered switch lane, then
 // validation, application and reply on the fixed tick that releases them.
 mod host_switch;
@@ -146,6 +148,9 @@ mod ingest_hit_harness_test;
 mod snapshot_regression_harness_test;
 
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
+#[cfg(test)]
+pub(crate) use client_switch::resolve_switch_outcome;
+pub use client_switch::{CurrentSwitchResolution, PendingSwitchDeclaration, SwitchOutcome};
 #[cfg(any(test, feature = "test-support"))]
 pub use command_queue::host_resolve_remote_commands;
 pub use command_queue::{
@@ -155,8 +160,7 @@ pub use command_queue::{
 #[cfg(feature = "dev-tools")]
 pub use endpoint::LagProfile;
 pub use endpoint::{
-    ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,
-    NetEndpoint, PendingSwitchDeclaration, SwitchOutcome, WorldLessPoll,
+    ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, NetEndpoint, WorldLessPoll,
     apply_client_session_roster,
 };
 pub use host::{
@@ -165,6 +169,9 @@ pub use host::{
     host_handle_transport_disconnect, host_register_own_pawn, host_replicate,
     host_unregister_own_pawn,
 };
+#[cfg(test)]
+pub(crate) use host_input::{host_handle_client_message, host_handle_client_message_inner};
+pub use host_input::{host_handle_client_messages, send_shot_verdict};
 pub use host_presentation::{
     present_client_pawns as host_present_client_pawns,
     probe_presented_client_pawn_feet as host_probe_presented_client_pawn_feet,
@@ -458,63 +465,6 @@ fn parse_port(value: &str) -> Result<u16, NetArgError> {
         )),
         Ok(port) => Ok(port),
         Err(_) => Err(NetArgError(format!("invalid --host port: {value}"))),
-    }
-}
-
-fn resolve_switch_outcome(
-    pending: &mut VecDeque<PendingSwitchDeclaration>,
-    outcome: SwitchOutcome,
-) -> CurrentSwitchResolution {
-    let (declaration_id, target_slot, accepted) = match outcome {
-        SwitchOutcome::Accepted(accepted) => (accepted.declaration_id, accepted.slot, true),
-        SwitchOutcome::Refused(refused) => (refused.declaration_id, refused.slot, false),
-    };
-    let Some(front) = pending.front().copied() else {
-        return CurrentSwitchResolution::None;
-    };
-    // Both directions use reliable-ordered Control. Refuse an out-of-order or
-    // stale outcome rather than letting it skip an unresolved predecessor.
-    if front.declaration_id != declaration_id || front.target_slot != target_slot {
-        return CurrentSwitchResolution::None;
-    }
-    let settled = pending
-        .pop_front()
-        .expect("the non-empty declaration chain was checked");
-    let (settled_active, settled_last_weapon) = if accepted {
-        // A declaration naming the slot the client held when it made it is the
-        // active-slot re-sync: the local switch machine never emits one, and a
-        // round trip back (0 -> 1 -> 0) holds the intermediate slot as its
-        // origin. Accepting it makes no last-weapon history.
-        let last_weapon = if usize::from(settled.target_slot) == settled.held_origin_slot {
-            settled.rollback_last_weapon_slot
-        } else {
-            Some(settled.held_origin_slot)
-        };
-        (usize::from(settled.target_slot), last_weapon)
-    } else {
-        (settled.rollback_slot, settled.rollback_last_weapon_slot)
-    };
-
-    if let Some(next) = pending.front_mut() {
-        // An older outcome changes where a refusal of the next declaration must
-        // return host authority. It does not change which slot the client had
-        // actually held before the superseding local switch, nor should it touch
-        // the newest in-flight presentation or last-weapon memory.
-        next.rollback_slot = settled_active;
-        next.rollback_last_weapon_slot = settled_last_weapon;
-        return CurrentSwitchResolution::None;
-    }
-
-    if accepted {
-        CurrentSwitchResolution::Accepted {
-            last_weapon_slot: settled_last_weapon,
-        }
-    } else {
-        CurrentSwitchResolution::Refused {
-            target_slot: usize::from(settled.target_slot),
-            rollback_slot: settled_active,
-            last_weapon_slot: settled_last_weapon,
-        }
     }
 }
 
@@ -1836,83 +1786,6 @@ fn cleanup_remote_pawn_owned_state(
     allocator.forget_dead(registry, replicable);
 }
 
-/// Drain and apply one accepted client's reliable `Channel::Input` messages on the
-/// host: replication acks advance that client's per-entity baseline / retire
-/// tombstones, baseline-refresh requests queue a `FullBaseline` for the named
-/// entity, and a time-sync probe is echoed back on `Channel::Input` with the
-/// current `server_tick`. Corrupt or unknown-variant bytes are logged and dropped
-/// — never a panic.
-///
-/// `server_tick` is the host's current monotonic sim tick (sampled at echo);
-/// `server_now_us` is the host's monotonic microseconds, carried in the echo as
-/// telemetry only. `InputCommand` messages are decoded but not yet applied
-/// (Phase 3 gameplay).
-#[allow(clippy::too_many_arguments)]
-pub fn host_handle_client_messages(
-    server: &mut NetServer,
-    replication: &mut ServerReplication,
-    state_slots: &mut state_slots::HostStateReplication,
-    command_queues: &mut HostCommandQueues,
-    pending_hit_declarations: &mut PendingHitDeclarations,
-    open_shots: &mut OpenAuthorizedShots,
-    client_id: u64,
-    server_tick: u32,
-    server_now_us: u64,
-) {
-    for bytes in server.drain_input(client_id) {
-        let msg: wire::ClientMessage = match wire::decode(&bytes) {
-            Ok(msg) => msg,
-            Err(err) => {
-                log::warn!("[Net] dropping undecodable client message from {client_id}: {err}");
-                continue;
-            }
-        };
-        host_handle_client_message_inner(
-            server,
-            replication,
-            state_slots,
-            command_queues,
-            Some(&mut *pending_hit_declarations),
-            Some(&mut *open_shots),
-            client_id,
-            server_tick,
-            server_now_us,
-            msg,
-        );
-    }
-}
-
-/// Apply one decoded `ClientMessage` from `client_id` (M15 Phase 3). Split from the
-/// drain loop so the duplicate/old-input hardening is testable by injecting a
-/// `ClientMessage::Input` directly at this seam — without a reliable-ordered
-/// transport producing duplicates. An invalid `Input` (non-finite) is dropped at
-/// intake and mutates no queue or registry state.
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(crate) fn host_handle_client_message(
-    server: &mut NetServer,
-    replication: &mut ServerReplication,
-    state_slots: &mut state_slots::HostStateReplication,
-    command_queues: &mut HostCommandQueues,
-    client_id: u64,
-    server_tick: u32,
-    server_now_us: u64,
-    msg: wire::ClientMessage,
-) {
-    host_handle_client_message_inner(
-        server,
-        replication,
-        state_slots,
-        command_queues,
-        None,
-        None,
-        client_id,
-        server_tick,
-        server_now_us,
-        msg,
-    );
-}
-
 struct HostHitIngestContext<'a> {
     registry: &'a mut EntityRegistry,
     collision_world: &'a CollisionWorld,
@@ -2127,116 +2000,6 @@ pub fn host_ingest_ready_hit_declarations(
         accepted_any_hit |= result.hit_accepted;
     }
     accepted_any_hit
-}
-
-#[allow(clippy::too_many_arguments)]
-fn host_handle_client_message_inner(
-    server: &mut NetServer,
-    replication: &mut ServerReplication,
-    state_slots: &mut state_slots::HostStateReplication,
-    command_queues: &mut HostCommandQueues,
-    pending_hit_declarations: Option<&mut PendingHitDeclarations>,
-    open_shots: Option<&mut OpenAuthorizedShots>,
-    client_id: u64,
-    server_tick: u32,
-    server_now_us: u64,
-    msg: wire::ClientMessage,
-) {
-    match msg {
-        wire::ClientMessage::Ack(ack) => {
-            replication.apply_ack(
-                client_id,
-                ack.latest_snapshot_sequence,
-                &ack.entity_baselines,
-                &ack.despawn_tombstones,
-            );
-            // The same ack advances replicated-state baselines (M15 Phase 3.5), keyed
-            // by `StateSlotId` rather than `NetworkId`. One ack, one server frame.
-            state_slots.apply_ack(
-                client_id,
-                ack.latest_snapshot_sequence,
-                &ack.slot_baselines,
-                ack.faction_sentiment_baseline,
-            );
-        }
-        wire::ClientMessage::BaselineRefresh(req) => {
-            replication.request_refresh(client_id, req.network_id, req.missing_baseline_ref);
-        }
-        // Echo the time-sync probe with the server tick sampled now. The echo
-        // rides Channel::Input back; the client measures RTT from its own
-        // send/receive times and folds the server tick into its estimate.
-        wire::ClientMessage::TimeSync(req) => {
-            let echo = req.echo(server_tick, server_now_us);
-            server.send_input(
-                client_id,
-                wire::encode(&wire::ServerMessage::TimeSync(echo)),
-            );
-        }
-        // M15 Phase 3 Task 4: sanitize + queue the input command for this client.
-        // `ingest` rejects non-finite and out-of-window bootstrap commands, drops
-        // stale/duplicate ones, and never mutates any other client's queue. The movement
-        // stage resolves them per tick.
-        wire::ClientMessage::Input(input) => {
-            command_queues.ingest(client_id, &input);
-        }
-        wire::ClientMessage::HitDeclaration(declaration) => {
-            if !wire_convert::valid_wire_shot_id(declaration.shot_id) {
-                return;
-            }
-            if let Some(pending) = pending_hit_declarations
-                && !pending.push_at(client_id, declaration.clone(), server_tick)
-            {
-                if let Some(verdict) = open_shots.and_then(|shots| {
-                    shots.refuse_overflowed_hit(
-                        &command_queues.activations,
-                        client_id,
-                        wire_convert::shot_id_from_wire(declaration.shot_id),
-                        server_tick,
-                    )
-                }) {
-                    send_shot_verdict(
-                        server,
-                        client_id,
-                        wire_convert::shot_id_from_wire(verdict.shot_id),
-                        verdict.accept,
-                        verdict.hit_accepted,
-                    );
-                } else {
-                    server.send_input(
-                        client_id,
-                        wire::encode(&wire::ServerMessage::HitRefused(declaration.shot_id)),
-                    );
-                }
-            }
-        }
-        // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
-        // tracker schedules a full baseline for that slot in the client's next snapshot.
-        // Keyed by `StateSlotId` (distinct from the entity `BaselineRefresh`).
-        wire::ClientMessage::StateBaselineRefresh(req) => {
-            state_slots.request_refresh(client_id, req.slot_id, req.missing_baseline_ref);
-        }
-    }
-}
-
-pub fn send_shot_verdict(
-    server: &mut NetServer,
-    client_id: u64,
-    shot_id: postretro_foundation::ShotId,
-    accept: bool,
-    hit_accepted: bool,
-) {
-    server.send_input(
-        client_id,
-        wire::encode(&wire::ServerMessage::ShotVerdicts(
-            wire::ShotVerdictsMessage {
-                verdicts: vec![wire::ShotVerdict {
-                    shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
-                    accept,
-                    hit_accepted,
-                }],
-            },
-        )),
-    );
 }
 
 fn ingest_hit_declaration(
@@ -2823,242 +2586,6 @@ mod tests {
     // Float epsilon for transform round-trips (testing_guide §Floating-point:
     // approximate comparison for computed/converted floats).
     const EPSILON: f32 = 1e-6;
-
-    #[test]
-    fn delayed_double_refusal_rebases_newer_declaration_to_authoritative_origin() {
-        // Regression: A->B D1 completed locally, then B->C D2 completed. When the
-        // host refused both, retaining only D2 rolled the client back to B, not A.
-        let mut pending = VecDeque::from([
-            PendingSwitchDeclaration {
-                declaration_id: 11,
-                target_slot: 1,
-                held_origin_slot: 0,
-                rollback_slot: 0,
-                rollback_last_weapon_slot: Some(9),
-            },
-            PendingSwitchDeclaration {
-                declaration_id: 12,
-                target_slot: 2,
-                held_origin_slot: 1,
-                rollback_slot: 1,
-                rollback_last_weapon_slot: Some(0),
-            },
-        ]);
-
-        assert_eq!(
-            resolve_switch_outcome(
-                &mut pending,
-                SwitchOutcome::Refused(ServerSwitchRefused {
-                    declaration_id: 11,
-                    slot: 1,
-                }),
-            ),
-            CurrentSwitchResolution::None
-        );
-        assert_eq!(pending.front().unwrap().rollback_slot, 0);
-        assert_eq!(pending.front().unwrap().rollback_last_weapon_slot, Some(9));
-        assert_eq!(
-            resolve_switch_outcome(
-                &mut pending,
-                SwitchOutcome::Refused(ServerSwitchRefused {
-                    declaration_id: 12,
-                    slot: 2,
-                }),
-            ),
-            CurrentSwitchResolution::Refused {
-                target_slot: 2,
-                rollback_slot: 0,
-                last_weapon_slot: Some(9),
-            }
-        );
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn o29_ordered_accept_accept_retains_the_slot_the_client_actually_held() {
-        // Regression: A->B and A->C were both emitted before the client repointed;
-        // accepting B first must not make the unpresented B become last-weapon.
-        let mut pending = VecDeque::from([
-            PendingSwitchDeclaration {
-                declaration_id: 21,
-                target_slot: 1,
-                held_origin_slot: 0,
-                rollback_slot: 0,
-                rollback_last_weapon_slot: Some(9),
-            },
-            PendingSwitchDeclaration {
-                declaration_id: 22,
-                target_slot: 2,
-                held_origin_slot: 0,
-                rollback_slot: 0,
-                rollback_last_weapon_slot: Some(0),
-            },
-        ]);
-
-        assert_eq!(
-            resolve_switch_outcome(
-                &mut pending,
-                SwitchOutcome::Accepted(ServerSwitchAccepted {
-                    declaration_id: 21,
-                    slot: 1,
-                }),
-            ),
-            CurrentSwitchResolution::None,
-            "the superseded predecessor never mutates the newest local presentation"
-        );
-        assert_eq!(pending.front().unwrap().rollback_slot, 1);
-        assert_eq!(pending.front().unwrap().held_origin_slot, 0);
-        assert_eq!(
-            resolve_switch_outcome(
-                &mut pending,
-                SwitchOutcome::Accepted(ServerSwitchAccepted {
-                    declaration_id: 22,
-                    slot: 2,
-                }),
-            ),
-            CurrentSwitchResolution::Accepted {
-                last_weapon_slot: Some(0),
-            }
-        );
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn o29_ordered_accept_refuse_rolls_back_to_host_slot_with_local_history() {
-        let mut pending = VecDeque::from([
-            PendingSwitchDeclaration {
-                declaration_id: 31,
-                target_slot: 1,
-                held_origin_slot: 0,
-                rollback_slot: 0,
-                rollback_last_weapon_slot: Some(9),
-            },
-            PendingSwitchDeclaration {
-                declaration_id: 32,
-                target_slot: 2,
-                held_origin_slot: 0,
-                rollback_slot: 0,
-                rollback_last_weapon_slot: Some(0),
-            },
-        ]);
-
-        assert_eq!(
-            resolve_switch_outcome(
-                &mut pending,
-                SwitchOutcome::Accepted(ServerSwitchAccepted {
-                    declaration_id: 31,
-                    slot: 1,
-                }),
-            ),
-            CurrentSwitchResolution::None
-        );
-        assert_eq!(
-            resolve_switch_outcome(
-                &mut pending,
-                SwitchOutcome::Refused(ServerSwitchRefused {
-                    declaration_id: 32,
-                    slot: 2,
-                }),
-            ),
-            CurrentSwitchResolution::Refused {
-                target_slot: 2,
-                rollback_slot: 1,
-                last_weapon_slot: Some(0),
-            }
-        );
-        assert!(pending.is_empty());
-    }
-
-    // The active-slot re-sync declares the slot the client already holds. Its
-    // accept leaves last-weapon memory as it was; its refusal rolls back to
-    // that same slot, so neither outcome changes what the player holds.
-    #[test]
-    fn same_slot_resync_declaration_settles_without_moving_selection_or_history() {
-        let resync = |declaration_id| PendingSwitchDeclaration {
-            declaration_id,
-            target_slot: 0,
-            held_origin_slot: 0,
-            rollback_slot: 0,
-            rollback_last_weapon_slot: Some(2),
-        };
-        let mut pending = VecDeque::from([resync(41)]);
-        assert_eq!(
-            resolve_switch_outcome(
-                &mut pending,
-                SwitchOutcome::Accepted(ServerSwitchAccepted {
-                    declaration_id: 41,
-                    slot: 0,
-                }),
-            ),
-            CurrentSwitchResolution::Accepted {
-                last_weapon_slot: Some(2),
-            }
-        );
-        assert!(pending.is_empty());
-
-        let mut pending = VecDeque::from([resync(42)]);
-        assert_eq!(
-            resolve_switch_outcome(
-                &mut pending,
-                SwitchOutcome::Refused(ServerSwitchRefused {
-                    declaration_id: 42,
-                    slot: 0,
-                }),
-            ),
-            CurrentSwitchResolution::Refused {
-                target_slot: 0,
-                rollback_slot: 0,
-                last_weapon_slot: Some(2),
-            }
-        );
-        assert!(pending.is_empty());
-    }
-
-    // A round trip back (0 -> 1 -> 0) also ends on the slot the chain started
-    // from, but each declaration holds the slot it switched away from as its
-    // origin, so the return is an ordinary switch: its accept remembers the
-    // intermediate slot, never the re-sync's unchanged history.
-    #[test]
-    fn round_trip_switch_chain_is_not_mistaken_for_a_resync() {
-        let mut pending = VecDeque::from([
-            PendingSwitchDeclaration {
-                declaration_id: 1,
-                target_slot: 1,
-                held_origin_slot: 0,
-                rollback_slot: 0,
-                rollback_last_weapon_slot: Some(2),
-            },
-            PendingSwitchDeclaration {
-                declaration_id: 2,
-                target_slot: 0,
-                held_origin_slot: 1,
-                rollback_slot: 1,
-                rollback_last_weapon_slot: Some(0),
-            },
-        ]);
-        for (declaration_id, slot, expected) in [
-            (1, 1, CurrentSwitchResolution::None),
-            (
-                2,
-                0,
-                CurrentSwitchResolution::Accepted {
-                    last_weapon_slot: Some(1),
-                },
-            ),
-        ] {
-            assert_eq!(
-                resolve_switch_outcome(
-                    &mut pending,
-                    SwitchOutcome::Accepted(ServerSwitchAccepted {
-                        declaration_id,
-                        slot,
-                    }),
-                ),
-                expected
-            );
-        }
-        assert!(pending.is_empty());
-    }
 
     #[test]
     fn host_liveness_repoint_marks_attachment_dirty_before_already_active_acceptance() {

@@ -229,39 +229,6 @@ pub fn apply_client_session_roster(
     (changed, open_seats)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PendingSwitchDeclaration {
-    pub declaration_id: u32,
-    pub target_slot: u8,
-    /// Slot the client actually presented as active when this local switch chain
-    /// began. Older host outcomes may move the authoritative rollback point, but
-    /// must not turn an unpresented intermediate target into last-weapon history.
-    pub held_origin_slot: usize,
-    /// Host-authoritative active slot restored if this declaration is refused.
-    /// Ordered predecessor outcomes rebase this without changing local history.
-    pub rollback_slot: usize,
-    pub rollback_last_weapon_slot: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SwitchOutcome {
-    Accepted(ServerSwitchAccepted),
-    Refused(ServerSwitchRefused),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CurrentSwitchResolution {
-    None,
-    Accepted {
-        last_weapon_slot: Option<usize>,
-    },
-    Refused {
-        target_slot: usize,
-        rollback_slot: usize,
-        last_weapon_slot: Option<usize>,
-    },
-}
-
 #[derive(Debug, Default)]
 pub struct ClientApplyFrameOutcome {
     /// One latest accepted generation-change sample per remote pawn this frame.
@@ -482,65 +449,6 @@ impl NetEndpoint {
             client.is_participating(),
             session_status.local_seat(),
         ))
-    }
-
-    /// Send a client-local switch declaration over reliable Control. The client
-    /// transport refuses to queue it before participation, so an old level cannot
-    /// leak a selection into a newly promoted pawn. `client_tick` is the tick of
-    /// the input command the switch was made on; the host orders the switch
-    /// against that command's neighbours by it.
-    pub fn send_client_switch_declaration(
-        &mut self,
-        slot: u8,
-        client_tick: u32,
-        rollback_slot: usize,
-        rollback_last_weapon_slot: Option<usize>,
-    ) {
-        if let Self::Client {
-            client,
-            next_switch_declaration_id,
-            pending_switch_declarations,
-            ..
-        } = self
-        {
-            let declaration_id = *next_switch_declaration_id;
-            *next_switch_declaration_id = (*next_switch_declaration_id).wrapping_add(1);
-            pending_switch_declarations.push_back(PendingSwitchDeclaration {
-                declaration_id,
-                target_slot: slot,
-                held_origin_slot: rollback_slot,
-                rollback_slot,
-                rollback_last_weapon_slot,
-            });
-            client.send_switch_declaration(ClientSwitchDeclaration {
-                declaration_id,
-                slot,
-                client_tick,
-            });
-        }
-    }
-
-    /// Whether this client has a switch declaration the host has not yet
-    /// answered. `false` on a host.
-    pub fn has_pending_switch_declarations(&self) -> bool {
-        matches!(
-            self,
-            Self::Client {
-                pending_switch_declarations,
-                ..
-            } if !pending_switch_declarations.is_empty()
-        )
-    }
-
-    pub fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
-        let Self::Client {
-            pending_switch_declarations,
-            ..
-        } = self
-        else {
-            return CurrentSwitchResolution::None;
-        };
-        resolve_switch_outcome(pending_switch_declarations, outcome)
     }
 
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.

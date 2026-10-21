@@ -656,6 +656,8 @@ mod tests {
                 accel: 10.0,
                 step_height: 0.3,
                 max_slope: 45.0,
+                friction: GroundParams::DEFAULT_FRICTION,
+                stop_speed: GroundParams::DEFAULT_STOP_SPEED,
             },
             air: AirParams {
                 forward_steer: 0.0,
@@ -1353,8 +1355,8 @@ mod tests {
         let pawn_component = PlayerMovementComponent::from_descriptor(&desc);
 
         // Forward along +X (yaw -pi/2), walking: held into the ledge until the
-        // vault exits (tick 91), neutral just after, then on over the drop.
-        const NEUTRAL: std::ops::Range<u32> = 92..120;
+        // vault exits (tick 93), neutral just after, then on over the drop.
+        const NEUTRAL: std::ops::Range<u32> = 95..123;
         let mut commands = Vec::new();
         for tick in 0..240u32 {
             let mut command = forward_command(tick, false);

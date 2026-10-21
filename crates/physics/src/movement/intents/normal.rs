@@ -13,8 +13,8 @@ use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 use super::dash::try_enter_dash;
+use super::ground_locomotion;
 use super::slide::try_enter_slide;
-use super::{GROUND_STOP_FRICTION, OVERSPEED_BLEED_MARGIN};
 
 /// gravity, jump/air-jump, ground/air acceleration, ground friction, and the
 /// airborne horizontal cap. This is the walk/run/jump/air-control baseline —
@@ -91,16 +91,11 @@ pub(crate) fn normal_intent(
         component.ground_params.speed.walk
     };
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
+    // A slide banks the speed the pawn arrived with, before this tick's ground
+    // friction trims it (the slide gate below reads it).
+    let arrival = component.velocity;
     if component.is_grounded() {
-        if input_dir_3d.length_squared() > 0.0 {
-            pm_accelerate(
-                &mut component.velocity,
-                input_dir_3d,
-                ground_speed,
-                component.ground_params.accel * control,
-                dt,
-            );
-        }
+        ground_locomotion(component, input_dir_3d, ground_speed, control, dt);
     } else if input_dir_3d.length_squared() > 0.0 {
         // Blend toward facing only on forward/back input: strafing left/right
         // should not redirect the capsule toward the player's nose.
@@ -137,41 +132,6 @@ pub(crate) fn normal_intent(
         }
     }
 
-    // 6. Ground friction. With no directional input, bleed toward a stop. With
-    // input held, bleed only the *over-speed* above the run cap back toward the
-    // cap: `pm_accelerate` governs actively-driven motion up to the cap but
-    // cannot remove speed already above it, and the stop-friction is
-    // no-input-only. In normal play a grounded player never exceeds the cap, so
-    // the input-held branch is a no-op there; it exists so post-dash over-speed
-    // decays even while the stick is held, and a dash hands back into the steady
-    // band cleanly after the `DASH_MAX_MS` guard.
-    if component.is_grounded() && input.wish_dir.length_squared() < 0.001 {
-        let horiz = Vec2::new(component.velocity.x, component.velocity.z);
-        let h_speed = horiz.length();
-        if h_speed > 0.0 {
-            let drop = h_speed * GROUND_STOP_FRICTION * dt;
-            let new_speed = (h_speed - drop).max(0.0);
-            let scale = new_speed / h_speed;
-            component.velocity.x *= scale;
-            component.velocity.z *= scale;
-        }
-    } else if component.is_grounded() {
-        // Input held: `pm_accelerate` governs motion up to the run cap but cannot
-        // remove speed already above it, and the stop-friction above is
-        // no-input-only. Bleed only the *over-speed* above the cap back toward it
-        // so a dash (which deliberately exceeds the cap) decays even while the
-        // stick is held. The `OVERSPEED_BLEED_MARGIN` guard keeps this a no-op in
-        // normal play, where running sits at the cap modulo float overshoot.
-        let h_speed = Vec2::new(component.velocity.x, component.velocity.z).length();
-        if h_speed > ground_speed * OVERSPEED_BLEED_MARGIN {
-            let drop = (h_speed - ground_speed) * GROUND_STOP_FRICTION * dt;
-            let new_speed = (h_speed - drop).max(ground_speed);
-            let scale = new_speed / h_speed;
-            component.velocity.x *= scale;
-            component.velocity.z *= scale;
-        }
-    }
-
     // `Normal` → `Dash`: fire on the dash rising edge when the cooldown is ready
     // and — if airborne — an air-dash charge remains. Disabled when no
     // `DashParams` is materialized (descriptor omitted `movement.dash`). The
@@ -196,10 +156,14 @@ pub(crate) fn normal_intent(
     // tick begins the descent. The carry is `KEEP_ALL`: crouch is a resize, not a
     // velocity reset, so momentum is preserved unchanged (the §6 parity no-op).
     if input.crouch_intent {
-        if component.is_grounded()
-            && let Some(transition) = try_enter_slide(component, collision, position)
-        {
-            return Some(transition);
+        if component.is_grounded() {
+            let moved = component.velocity;
+            component.velocity.x = arrival.x;
+            component.velocity.z = arrival.z;
+            if let Some(transition) = try_enter_slide(component, collision, position) {
+                return Some(transition);
+            }
+            component.velocity = moved;
         }
         if let Some(crouch) = component.crouch.as_ref() {
             let target_half_height = crouch.half_height;

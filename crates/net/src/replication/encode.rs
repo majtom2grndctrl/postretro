@@ -39,6 +39,11 @@ pub(super) struct ClientReplicationState {
     pub(super) in_flight_baselines: HashMap<u32, BaselineFlight>,
     /// Baselines left pending by the most recent encoding budget.
     pub(super) deferred_baselines: usize,
+    /// `network_id -> resolved cursor` last stamped on this client's own pawn
+    /// record. An own pawn whose cursor moved past it is resent at its held
+    /// baseline, so the owner can reconcile a still pawn against each newly
+    /// resolved command.
+    pub(super) sent_cursors: HashMap<u32, u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,7 +117,10 @@ impl ServerReplication {
             {
                 Some(acked) => {
                     let force_full = refreshes.contains(&network_id);
-                    if acked != entity.baseline_id || force_full {
+                    if acked != entity.baseline_id
+                        || force_full
+                        || own_cursor_advanced(client, network_id, entity, client_id)
+                    {
                         held.push((network_id, entity, acked, force_full));
                     }
                 }
@@ -169,6 +177,13 @@ impl ServerReplication {
             admitted += 1;
         }
         client.deferred_baselines = pending_count - admitted;
+        for record in &records {
+            if record.local_player && record.has_last_processed_client_tick {
+                client
+                    .sent_cursors
+                    .insert(record.network_id, record.last_processed_client_tick);
+            }
+        }
 
         Some(RawSnapshotMessage {
             server_script_time: 0.0,
@@ -186,6 +201,30 @@ impl ServerReplication {
             faction_sentiment_record: None,
         })
     }
+}
+
+/// Whether `client`'s own movement pawn has resolved a command since its last
+/// record. The baseline id tracks wire state only, so a pawn standing still holds
+/// it while its cursor advances; without this resend the owner would never learn
+/// the newly resolved tick and could not correct a misprediction made at rest.
+///
+/// A cursor counts as sent once encoded, even if its snapshot is lost. That
+/// heals because the host's command queue advances the cursor every tick it
+/// resolves a command, held or neutral ones included, so the next one resends.
+fn own_cursor_advanced(
+    client: &ClientReplicationState,
+    network_id: u32,
+    entity: &EntityState,
+    client_id: u64,
+) -> bool {
+    entity.owner_client_id == Some(client_id)
+        && entity
+            .components
+            .iter()
+            .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)))
+        && entity
+            .last_processed_client_tick
+            .is_some_and(|tick| client.sent_cursors.get(&network_id) != Some(&tick))
 }
 
 /// Construct both live record shapes through the same metadata and payload path.

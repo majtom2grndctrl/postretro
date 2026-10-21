@@ -163,6 +163,21 @@ pub struct GroundParams {
     pub accel: f32,
     pub step_height: f32,
     pub max_slope: f32,
+    /// Ground friction rate (1/sec), applied every grounded `Normal` and
+    /// `Crouching` tick before acceleration. Sets how fast a player stops and how
+    /// fast speed banked above the cap bleeds away. With `accel` below it, ground
+    /// speed settles at `accel / friction` of the cap instead of reaching it.
+    /// Optional in descriptors, defaulting to [`Self::DEFAULT_FRICTION`].
+    pub friction: f32,
+    /// Speed (m/sec) below which friction, with no movement input, brakes as if
+    /// moving at this speed, so a stop ends at exactly zero instead of creeping. Optional in descriptors,
+    /// defaulting to [`Self::DEFAULT_STOP_SPEED`].
+    pub stop_speed: f32,
+}
+
+impl GroundParams {
+    pub const DEFAULT_FRICTION: f32 = 8.0;
+    pub const DEFAULT_STOP_SPEED: f32 = 2.5;
 }
 
 /// Walk/run/crouch ground speeds. The movement tick selects `run` while the

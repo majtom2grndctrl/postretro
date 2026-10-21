@@ -523,6 +523,8 @@ pub fn tick_with_immersion_and_armed(
 #[cfg(test)]
 mod environment_tests;
 #[cfg(test)]
+mod friction_tests;
+#[cfg(test)]
 mod overlap_baseline_tests;
 #[cfg(test)]
 mod overlap_baseline_tracks;
@@ -577,6 +579,8 @@ mod tests {
                 accel: 10.0,
                 step_height: 0.3,
                 max_slope: 45.0,
+                friction: GroundParams::DEFAULT_FRICTION,
+                stop_speed: GroundParams::DEFAULT_STOP_SPEED,
             },
             air: AirParams {
                 forward_steer: 0.0,
@@ -3002,8 +3006,8 @@ mod tests {
     }
 
     // Regression: a grounded dash held in the move direction must decay back to
-    // the run cap even while the stick stays down. Ground friction used to be
-    // no-input-only (it relies on `pm_accelerate` to cap grounded speed), so a
+    // the run cap even while the stick stays down. `Normal`'s ground friction used
+    // to be no-input-only (it relies on `pm_accelerate` to cap grounded speed), so a
     // held-input dash — which is deliberately above the cap — stayed locked at
     // boost speed indefinitely until the player released the button.
     #[test]
@@ -3264,7 +3268,7 @@ mod tests {
         let run_cap = desc.ground.speed.run;
 
         // Build up to the run cap, then dash forward and KEEP running forward so
-        // the base is sustained by ground accel (no friction while input held).
+        // the dash base takes no friction while input is held.
         let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
         let dash_run = MovementInput {
             wish_dir: Vec2::new(0.0, -1.0),
@@ -5634,6 +5638,38 @@ mod tests {
         };
     }
 
+    // A walking pawn that lands just above the slide threshold and crouches with
+    // input held slides on its arrival speed: the entry tick's ground friction
+    // must not trim it under the gate first.
+    #[test]
+    fn slide_entry_gates_on_arrival_speed_before_ground_friction() {
+        let desc = slide_descriptor();
+        let min_speed = desc.slide.as_ref().unwrap().min_speed;
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+
+        let arrival = min_speed + 0.5;
+        assert!(
+            arrival * (1.0 - desc.ground.friction * DT) < min_speed,
+            "fixture: one tick of friction would drop the arrival under the gate"
+        );
+        // Facing yaw 0 points along -Z.
+        comp.velocity = Vec3::new(0.0, 0.0, -arrival);
+        let crouch_forward = MovementInput {
+            wish_dir: Vec2::new(0.0, 1.0),
+            ..crouch_hold_input()
+        };
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_forward);
+        let MovementState::Sliding { boost, .. } = comp.movement_state else {
+            panic!("crouching at {arrival} m/s must slide");
+        };
+        assert!(
+            -boost.z > arrival,
+            "the slide banks the arrival speed plus its boost: {boost:?}"
+        );
+    }
+
     #[test]
     fn slide_entry_requires_speed_and_banks_horizontal_velocity_with_crouched_feet() {
         let desc = slide_descriptor();
@@ -5652,7 +5688,8 @@ mod tests {
         };
         assert!(
             boost.x > 12.0,
-            "entry boost adds to banked horizontal velocity"
+            "entry boost adds to the arrival speed, before ground friction: {}",
+            boost.x
         );
         assert!(
             approx_eq(boost.y, 0.0, VEL_EPS),

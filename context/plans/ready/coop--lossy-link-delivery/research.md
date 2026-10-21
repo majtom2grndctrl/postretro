@@ -13,7 +13,7 @@ Read at b0a5c0f. All claims cite symbols; re-verify before relying on them.
   - `neutral_sim_command` clears wish, crouch and jump.
 - Burst: `enqueue` stale-drops ticks at or below the crept-forward cursor. Catch-up keeps `INPUT_BUFFER_TARGET` = 2 when depth exceeds `INPUT_BUFFER_MAX` = 8.
 - Stall length: ~270–360 ms for one loss, ~600 ms when the resend is lost too. At 60 datagrams/s and 5% loss, roughly one stall cluster per second.
-- Analytic pull-back. Ground coast is `GROUND_STOP_FRICTION` = 6/s. Speeds from content/dev/scripts/player.ts: walk 7 m/s, run 11 m/s. With T′ = stall − 50 ms, gap ≈ v·[T′ − (1 − e^(−6T′))/6]:
+- Analytic pull-back. Ground coast was `GROUND_STOP_FRICTION` = 6/s when this was written; it is now the class's `ground.friction` (default 8/s) with a `stopSpeed` floor (`movement.md` §4 Ground friction), so re-derive the figures below before relying on them. Speeds from content/dev/scripts/player.ts: walk 7 m/s, run 11 m/s. With T′ = stall − 50 ms, gap ≈ v·[T′ − (1 − e^(−6T′))/6]:
 
   | Stall | Walk | Run | Class |
   |---|---|---|---|

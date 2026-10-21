@@ -120,9 +120,15 @@ fn scenarios(desc: &PlayerMovementDescriptor) -> Vec<Scenario> {
 
 /// Settle on idle ticks, then record `TICKS` poses under the scenario's input,
 /// each with its overlap depth.
+///
+/// The tracks guard collision, so the velocity intent replays the friction the
+/// recording ran under: exponential friction 6 with no stop speed while idle,
+/// and none while input was held, before ground friction applied every tick.
 fn record(desc: &PlayerMovementDescriptor, scenario: &Scenario) -> Vec<(Vec3, f32)> {
     let mut component = PlayerMovementComponent::from_descriptor(desc);
     let mut position = scenario.start;
+    component.ground_params.friction = 6.0;
+    component.ground_params.stop_speed = 0.0;
     for _ in 0..20 {
         position = tick_with_immersion(
             &mut component,
@@ -135,6 +141,7 @@ fn record(desc: &PlayerMovementDescriptor, scenario: &Scenario) -> Vec<(Vec3, f3
         .0;
     }
     let mut track = vec![(position, 0.0)];
+    component.ground_params.friction = 0.0;
     for _ in 0..TICKS {
         position = tick_with_immersion(
             &mut component,
@@ -153,6 +160,20 @@ fn record(desc: &PlayerMovementDescriptor, scenario: &Scenario) -> Vec<(Vec3, f3
     track
 }
 
+/// `displacement` with its horizontal part shortened to at most `limit`. The
+/// recording carried a diagonal wall slide above the walk cap; ground
+/// acceleration no longer lifts speed past the scenario's cap, so the cap
+/// bounds that recorded travel. Collision still owns the direction and the height.
+fn capped_horizontally(displacement: Vec3, limit: f32) -> Vec3 {
+    let horizontal = Vec2::new(displacement.x, displacement.z);
+    let length = horizontal.length();
+    if length <= limit {
+        return displacement;
+    }
+    let scaled = horizontal * (limit / length);
+    Vec3::new(scaled.x, displacement.y, scaled.y)
+}
+
 /// Every tick matches the recorded displacement within 1 mm. A tick that was
 /// embedded at b0a5c0f ends clear instead: its horizontal displacement still
 /// matches, and its height lies between the recorded heights either side, so
@@ -165,6 +186,11 @@ fn keeps_recorded_displacement(name: &str) {
         .into_iter()
         .find(|scenario| scenario.name == name)
         .expect("a named scenario");
+    let cap = if scenario.input.running {
+        desc.ground.speed.run
+    } else {
+        desc.ground.speed.walk
+    };
     {
         let mut last_clear = 0;
         let track = record(&desc, &scenario);
@@ -180,7 +206,10 @@ fn keeps_recorded_displacement(name: &str) {
             let embedded_then = recorded[i][3] > 0.5;
             if !embedded_then {
                 let moved = position - track[last_clear].0;
-                let was = pose(&recorded[i]) - pose(&recorded[last_clear]);
+                let was = capped_horizontally(
+                    pose(&recorded[i]) - pose(&recorded[last_clear]),
+                    cap * DT * (i - last_clear) as f32,
+                );
                 assert!(
                     (moved - was).length() <= TOLERANCE,
                     "{name} tick {i}: moved {moved:?} since tick {last_clear}, recorded {was:?}"

@@ -13,7 +13,7 @@ use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_foundation::PlayerMovementComponent;
 
 use super::dash::try_enter_dash;
-use super::{GROUND_STOP_FRICTION, OVERSPEED_BLEED_MARGIN};
+use super::ground_locomotion;
 
 /// The `Crouching` state's per-tick velocity intent. Locomotion mirrors
 /// `Normal` (gravity, jump/air-jump, ground/air acceleration, friction, the
@@ -101,21 +101,14 @@ pub(crate) fn crouching_intent(
         jumped_this_tick = true;
     }
 
-    // 3. Locomotion: ground vs air branch, mirroring `Normal` steps 4/5 but with
+    // 3. Locomotion: ground (friction, then capped acceleration) vs air branch,
+    // mirroring `Normal` steps 4/5 but with
     // the crouch speed tier as the target (and airborne cap). Crouch is
     // omnidirectional like walk/run — the tier just sits below them.
     let ground_speed = component.ground_params.speed.crouch;
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
     if component.is_grounded() {
-        if input_dir_3d.length_squared() > 0.0 {
-            pm_accelerate(
-                &mut component.velocity,
-                input_dir_3d,
-                ground_speed,
-                component.ground_params.accel * control,
-                dt,
-            );
-        }
+        ground_locomotion(component, input_dir_3d, ground_speed, control, dt);
     } else if input_dir_3d.length_squared() > 0.0 {
         let wish_dir_3d = if input.wish_dir.y.abs() > 1e-3 {
             let facing_dir = Vec3::new(-input.facing_yaw.sin(), 0.0, -input.facing_yaw.cos());
@@ -148,31 +141,7 @@ pub(crate) fn crouching_intent(
         }
     }
 
-    // 4. Ground friction — same contextual decay as `Normal` step 6, using the
-    // crouch tier as the cap so a crouched player bleeds to a stop / back to the
-    // crouch cap rather than the run cap.
-    if component.is_grounded() && input.wish_dir.length_squared() < 0.001 {
-        let horiz = Vec2::new(component.velocity.x, component.velocity.z);
-        let h_speed = horiz.length();
-        if h_speed > 0.0 {
-            let drop = h_speed * GROUND_STOP_FRICTION * dt;
-            let new_speed = (h_speed - drop).max(0.0);
-            let scale = new_speed / h_speed;
-            component.velocity.x *= scale;
-            component.velocity.z *= scale;
-        }
-    } else if component.is_grounded() {
-        let h_speed = Vec2::new(component.velocity.x, component.velocity.z).length();
-        if h_speed > ground_speed * OVERSPEED_BLEED_MARGIN {
-            let drop = (h_speed - ground_speed) * GROUND_STOP_FRICTION * dt;
-            let new_speed = (h_speed - drop).max(ground_speed);
-            let scale = new_speed / h_speed;
-            component.velocity.x *= scale;
-            component.velocity.z *= scale;
-        }
-    }
-
-    // 5. Eye smoothing (D3). Ease `eye_current` toward the crouched eye target
+    // 4. Eye smoothing (D3). Ease `eye_current` toward the crouched eye target
     // with a framerate-independent exponential approach and write it into the
     // live capsule for the camera follow. `crouch` is `Some` here — the state was
     // only entered when it was — but fall back gracefully (no eye change) if a
@@ -185,7 +154,7 @@ pub(crate) fn crouching_intent(
         component.capsule.eye_height = *eye_current;
     }
 
-    // 6. Stand-up decision. The `Dash` transition stays available from
+    // 5. Stand-up decision. The `Dash` transition stays available from
     // `Crouching` (D10) — check it first so a dash press exits crouch into the
     // dash burst regardless of crouch/jump state.
     if input.dash_pressed

@@ -1094,7 +1094,7 @@ pub fn client_receive_and_apply(
     // A record that could not merge (no tuning yet) leaves the pawn without its
     // teleport record; prediction stays inert and a full baseline is requested
     // until one merges. Judged per frame, not per received record: an idle pawn's
-    // stream may carry no record once its tuning lands. Nothing is asked for while
+    // stream carries records only while its resolved cursor advances. Nothing is asked for while
     // no merge could succeed: without tuning, or while the host's tuning gives the
     // pawn no movement component.
     let unmerged_wanted = prediction.first_record_pending()
@@ -7614,6 +7614,8 @@ mod tests {
                     accel: 10.0,
                     step_height: 0.3,
                     max_slope: 45.0,
+                    friction: GroundParams::DEFAULT_FRICTION,
+                    stop_speed: GroundParams::DEFAULT_STOP_SPEED,
                 },
                 air: AirParams {
                     forward_steer: 0.0,

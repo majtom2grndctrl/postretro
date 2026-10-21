@@ -1,12 +1,12 @@
 // Push volumes in player movement: lift-off, the protected drift layer, its medium decay, terminal speed along the push, and the steady-state drift fluid surfaces mirror.
 // See: context/lib/movement.md §6 (Regional gravity and push)
 
-use glam::{Vec2, Vec3};
+use glam::Vec3;
 
 use postretro_collision::ResolvedEnvironment;
 use postretro_foundation::{MovementState, PlayerMovementComponent};
 
-use super::intents::GROUND_STOP_FRICTION;
+use super::intents::apply_ground_friction;
 
 /// Below this squared speed a decaying drift stops outright, as damped knockback
 /// does, so a landed drift reaches exactly zero instead of trailing denormals.
@@ -203,10 +203,10 @@ fn drift_medium(component: &PlayerMovementComponent, viscosity: f32) -> DriftMed
 }
 
 /// The medium's decay of the drift layer, applied every tick before the tick's
-/// push accrues. Ground friction is the intents' stop-friction model on
-/// locomotion, applied whether or not input is held because drift is never
-/// voluntary; with a steady push the drift settles at push /
-/// `GROUND_STOP_FRICTION`. A fluid removes the same linear fraction per tick,
+/// push accrues. Ground friction is the descriptor's `ground.friction`, applied
+/// whether or not input is held because drift is never voluntary, and without
+/// the stop speed so a gentle current still moves a body; with a steady push
+/// the drift settles at push / friction. A fluid removes the same linear fraction per tick,
 /// on all three axes, as the swim intent's drag on locomotion
 /// (`max(0, 1 - viscosity * dt)`).
 ///
@@ -218,6 +218,7 @@ fn drift_medium(component: &PlayerMovementComponent, viscosity: f32) -> DriftMed
 /// without drag.
 fn decay_drift(component: &mut PlayerMovementComponent, viscosity: f32, dt: f32) {
     let medium = drift_medium(component, viscosity);
+    let friction = component.ground_params.friction;
     let drift = &mut component.push_velocity;
     match medium {
         DriftMedium::Fluid { viscosity } => {
@@ -227,13 +228,7 @@ fn decay_drift(component: &mut PlayerMovementComponent, viscosity: f32, dt: f32)
             }
         }
         DriftMedium::Ground => {
-            let speed = Vec2::new(drift.x, drift.z).length();
-            if speed > 0.0 {
-                let drop = speed * GROUND_STOP_FRICTION * dt;
-                let scale = (speed - drop).max(0.0) / speed;
-                drift.x *= scale;
-                drift.z *= scale;
-            }
+            apply_ground_friction(drift, friction, 0.0, dt);
             if drift.length_squared() < DRIFT_STOP_SPEED_SQ {
                 *drift = Vec3::ZERO;
             }

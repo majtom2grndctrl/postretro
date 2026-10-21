@@ -587,3 +587,105 @@ fn lua_movement_stuck_stop_threshold_negative_is_rejected() {
     let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
     assert!(matches!(err, DescriptorError::InvalidShape { .. }));
 }
+
+// --- ground friction parsing -------------------------------------------
+
+fn js_ground_with(extra: &str) -> String {
+    format!(
+        r#"({{
+        canonicalName: "player",
+        components: {{
+            movement: {{
+                capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }},
+                ground: {{ speed: {{ walk: 7.0, run: 11.0, crouch: 3.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0{extra} }},
+                air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 }},
+                fall: {{ terminalVelocity: 40.0 }}
+            }}
+        }}
+    }})"#
+    )
+}
+
+fn lua_ground_with(extra: &str) -> String {
+    format!(
+        r#"return {{
+        canonicalName = "player",
+        components = {{
+            movement = {{
+                capsule = {{ radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 }},
+                ground = {{ speed = {{ walk = 7.0, run = 11.0, crouch = 3.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0{extra} }},
+                air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 }},
+                fall = {{ terminalVelocity = 40.0 }}
+            }}
+        }}
+    }}"#
+    )
+}
+
+#[test]
+fn js_ground_friction_defaults_when_omitted_and_parses_explicit_values() {
+    let d = eval_js(&js_ground_with(""), |ctx, v| {
+        entity_descriptor_from_js(ctx, v).unwrap()
+    });
+    let ground = d.movement.expect("movement present").ground;
+    assert_eq!(ground.friction, GroundParams::DEFAULT_FRICTION);
+    assert_eq!(ground.stop_speed, GroundParams::DEFAULT_STOP_SPEED);
+
+    let src = js_ground_with(", friction: 4.5, stopSpeed: 0.0");
+    let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    let ground = d.movement.expect("movement present").ground;
+    assert_eq!(ground.friction, 4.5);
+    assert_eq!(ground.stop_speed, 0.0);
+}
+
+#[test]
+fn js_ground_friction_rejects_negative_and_non_finite_values() {
+    for (extra, field) in [
+        (", friction: -1.0", "movement.ground.friction"),
+        (", stopSpeed: -0.5", "movement.ground.stopSpeed"),
+        (", friction: Infinity", "movement.ground.friction"),
+        (", stopSpeed: NaN", "movement.ground.stopSpeed"),
+    ] {
+        let src = js_ground_with(extra);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(
+            err.to_string().contains(field),
+            "{extra}: the error names {field}: {err}"
+        );
+    }
+}
+
+#[test]
+fn lua_ground_friction_defaults_when_omitted_and_parses_explicit_values() {
+    let d = eval_lua(&lua_ground_with(""), |v| {
+        entity_descriptor_from_lua(v).unwrap()
+    });
+    let ground = d.movement.expect("movement present").ground;
+    assert_eq!(ground.friction, GroundParams::DEFAULT_FRICTION);
+    assert_eq!(ground.stop_speed, GroundParams::DEFAULT_STOP_SPEED);
+
+    let src = lua_ground_with(", friction = 4.5, stopSpeed = 0.0");
+    let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+    let ground = d.movement.expect("movement present").ground;
+    assert_eq!(ground.friction, 4.5);
+    assert_eq!(ground.stop_speed, 0.0);
+}
+
+#[test]
+fn lua_ground_friction_rejects_negative_and_non_finite_values() {
+    for (extra, field) in [
+        (", friction = -1.0", "movement.ground.friction"),
+        (", stopSpeed = -0.5", "movement.ground.stopSpeed"),
+        (", friction = math.huge", "movement.ground.friction"),
+        (", stopSpeed = 0/0", "movement.ground.stopSpeed"),
+    ] {
+        let src = lua_ground_with(extra);
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(
+            err.to_string().contains(field),
+            "{extra}: the error names {field}: {err}"
+        );
+    }
+}

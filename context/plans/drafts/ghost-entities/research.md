@@ -73,6 +73,8 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 - The cell-visibility relation (id 46) stores per-cell reachability component ids plus graded pair records, with no per-pair open state to mask. The research doc's dynamic portal is a sightline blocker mask for destructibles, not built.
 - `ChannelClamp` (crates/render-cpu/src/flash_clamp.rs) is hard-wired to `screen.flash`, `screen.vignette` and the fluid tint, and its per-channel tracked value is private. A state turned on "starts fresh against its own values".
 - Nesting the Ghost track under SFX takes one of SFX's child-track slots, which are sized to the SFX voice headroom. `caps_within_capacity` with a 16 ghost cap totals 60 of 64.
+- Remote entity baselines, remote pawns included, carry the descriptor `entity_class` they were materialized from, and clients build display copies from their own descriptors by that class (crates/netcode/src/client.rs, `RemoteEntityMaterialize`). Remote projectiles resolve their visual from the local weapon descriptor's `projectile` block (`materialize_armed_remote_projectile`, crates/netcode/src/remote_materialize.rs).
+- Descriptors are `defineEntity({ canonicalName, components })` (content/dev/scripts/player.ts); a weapon's projectile is `components.weapon.projectile`.
 - Fluid colors are `[r, g, b]` arrays (`viewTint`, `fogColor` in content/dev/start-script.ts).
 
 ## Presentation clocks
@@ -105,7 +107,7 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 | P19 | Entity slot freed and re-tenanted on one frame | despawn, then spawn, same frame | Ramp and limiter state key by generation-checked id; the new tenant starts at 0 |
 | P20 | Member fires a projectile; the projectile despawns | spawn frame, flight, despawn frame | Ghost ramps in from spawn at the rate cap; fades out at its last pose on despawn |
 | P21 | A new ghost's first presented frame | membership ramp creation, then first pack | Membership starts at 0, so the limiter's fresh start sees 0 |
-| P22 | Owner leaves the volume while its projectile flies | owner membership changes before impact | Projectile ghost ramps out with the owner; the impact is not ghosted |
+| P22 | Owner leaves the volume while its ghost-opted projectile flies | owner membership changes before impact | The projectile keeps ghosting while its origin is inside; the impact is not ghosted (owner rule) |
 | P23 | Ghost voice playing when the link disarms, the member leaves or despawns | voice admitted, then membership ends | Voice plays out at its fire-time mapped point |
 | P24 | Sound at a member near the boundary or mid-ramp | drain-time admission | Admitted when armed and the fire-time point is inside; the presented ramp is ignored |
 | P25 | Viewer's own pawn makes a sound | local drain | No ghost voice on the viewer's machine |
@@ -126,3 +128,7 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 | P40 | SFX at its cap when a member's sound is requested | real voice refused, then ghost admission | No ghost voice |
 | P41 | `setColorFilter` or `setGhostAudio` naming no field | applying host tick | Warns and drops; no ramp in flight changes |
 | P42 | Game paused mid membership ramp and mid `setColorFilter` ramp | pause while frames keep presenting | `setColorFilter` ramps freeze with script time; the membership ramp runs on presented-frame time |
+| P43 | Category on, entity not opted in | link shows `entities`; descriptor lacks `ghost` | No ghost: categories only narrow |
+| P44 | `setMembers` off then on in one tick | both apply at one host tick, in call order | Last call wins; no ramp starts |
+| P45 | `setMembers` and `arm` on one host tick; a flip mid-ramp | category change and armed edge together; reversal mid-ramp | Present on one frame; a reversal ramps from the presented value |
+| P46 | Committed reload changes a descriptor's `ghost` | reload commit, then the next frame | Membership re-resolves through the membership ramp; no cut |

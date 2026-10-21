@@ -17,12 +17,12 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - When the link's style sets `projectiles`, a player's projectile is a member while its owner is one. An impact belongs to a link when its shot's owner does, resolved from the shot id normalized the way observer cues normalize it. An impact without a shot id belongs to no link.
   - The viewing player's own pawn, its projectiles and its sounds never ghost on that viewer's machine.
 - **Ghost styles are named manifest declarations, following fluids.**
-  - `ModManifest.ghostStyles` lists `defineGhostStyle` entries: `name`, `tint`, `opacity`, `desaturate`, `projectiles`, `audio`, `impactAudio`. `impactAudio` takes effect only with `audio`.
+  - `ModManifest.ghostStyles` lists `defineGhostStyle` entries: `name`, `tint`, `opacity`, `saturation`, `projectiles`, `audio`, `impactAudio`. `impactAudio` takes effect only with `audio`.
   - A link's `ghost_style` names a style. Each peer resolves it locally, by name, at level install and on each committed staged reload, as fluid volumes resolve.
   - Validation follows fluids: a malformed entry or a later duplicate name drops with a warning naming `ghostStyles[i].<field>`, and the first declaration stands.
   - A link naming no style uses the engine floor style. A name no style declares also uses it, warning once at install.
   - Styles stay out of the mod compatibility digest and off the wire. Peers whose declarations differ see different ghosts, the visibility difference co-op accepts for fluid look (`networking.md` §What gates, and what replicates instead).
-- **The floor style is legible and neutral, not a game's taste.** It is fully desaturated, neutrally tinted and translucent, yet readable against both copies' lighting and under the high-contrast theme. It ghosts no projectiles and carries no sound. The floor ghost bus profile is band-limited, quieter than SFX and undistorted. A game's look, Dreadgate's "punchy but muffled" included, is a style and a bus profile in its own manifest.
+- **The floor style is legible and neutral, not a game's taste.** It has saturation 0, a neutral tint and translucent, yet readable against both copies' lighting and under the high-contrast theme. It ghosts no projectiles and carries no sound. The floor ghost bus profile is band-limited, quieter than SFX and undistorted. A game's look, Dreadgate's "punchy but muffled" included, is a style and a bus profile in its own manifest.
 - **Future relevance must treat an armed link as a coupling.** Any relevance, cue-recipient or audible-set filter that lands later gets it through the cell-visibility relation, never by knowing about links (`context/research/cell-visibility-substrate.md`, generalizability contract). The relation is symmetric by contract, so an armed link couples the cells under its two volumes both ways. That over-includes the reverse direction, which the substrate accepts as safe. The shipped relation stores connected-component ids, and folding a link into a component would make the coupling permanent. So the coupling waits for the relation's runtime-masked couplings, and nothing is built now. At promotion it is recorded in `build_pipeline.md` beside id 46 as an obligation on that extension.
 - **Membership is evaluated per frame from presented state.**
   - An entity is a target member while the link is armed and its presented point lies inside the volume: the body point for pawns, the origin for projectiles, the current bounds center for movers.
@@ -31,7 +31,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - An entity inside two armed links ghosts through each, one transform per link. A mover matching several of one link's tags ghosts once through it.
   - At level install, members of links armed on spawn present at full membership on the first frame.
 - **Ghost draw.**
-  - Unlit: the base color is desaturated by `desaturate`, multiplied by `tint`, and blended at the presented opacity.
+  - Unlit: the base color's saturation is scaled by `saturation` (1 keeps full color, 0 is grey), then multiplied by `tint`, and blended at the presented opacity.
   - Depth-tested without depth write; no shadows.
   - Culled at the mapped position against the viewer's visible cells, whatever the real position's visibility.
   - A projectile ghost gets the same treatment on its billboard or model body.
@@ -58,7 +58,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - Until a link's first record lands, a joiner presents its local spawn state and style. Demotion and level unload drop received state, and the client returns to local spawn state through the membership ramp. A record from before a participation reset never binds.
   - This diverges from the bound-presentation lane, which replicates only after a host-only write and lets every-machine origins present locally. Link state needs one authority and a late-joiner baseline, and a client-local early apply would double-apply against the replicated record.
 - **`postretro/audio` is a new SDK namespace, and `setGhostAudio` is its first member.** It is named for the audio subsystem, as the manifest `audio` block, the audio crate and `audio.md` are. Upcoming music work, such as reactions adding and removing music layers, lands there too. It ships as a virtual module in TypeScript and Luau, beside `postretro/ui`. `setGhostAudio` is not also exported from the root `postretro` module.
-- **The look setter is a color filter.** `setColorFilter` names the tint, opacity and desaturation stack the way image-editor filter layers do, and stays a single call with per-field ramps.
+- **The look setter is a color filter.** `setColorFilter` names the tint, opacity and saturation stack the way image-editor filter layers do, and stays a single call with per-field ramps.
 - **Off the level content digest.** Links and their keys are presentation, not a prediction input (`networking.md` §Level identity and level content digest).
 - **First consumer ships with it.** A dev map holds two room copies, a two-way link pair and a two-way seamless pair, with both set-pieces: the barrier puzzle, with the barrier a tagged mover, and the battle swap. The dev mod's manifest declares a sound-carrying style and a ghost bus profile. TypeScript and Luau scripts follow `teleporters.map` / `teleporters-luau.map`. An author section joins `docs/teleporters.md` or a new `docs/ghost-links.md` (executor's call).
 - **Non-goals.**
@@ -84,7 +84,7 @@ export default defineMod({
   name: "Dreadgate", id: "dreadgate", version: "0.1.0",
   // Every field but name optional; omitted fields take the floor style's value. Colors follow fluids: [r, g, b].
   ghostStyles: [
-    defineGhostStyle({ name: "echo", tint: [0.6, 0.8, 1.0], opacity: 0.45, desaturate: 0.8,
+    defineGhostStyle({ name: "echo", tint: [0.6, 0.8, 1.0], opacity: 0.45, saturation: 0.2,
       projectiles: false, audio: true, impactAudio: false }),
   ],
   // Every field optional; a malformed field applies the whole floor profile.
@@ -115,7 +115,7 @@ export function setupLevel() {
 ```
 - `defineGhostStyle` is a pure identity helper, like `defineFluid`. `setColorFilter`, `arm` and `disarm` return `SequenceStep[]`. `setGhostAudio` returns a primitive reaction body.
 - Each member carries `id`, `position` and `tags`.
-- Ranges: `tint` components, `opacity`, `desaturate`, `volume` and `drive` lie in 0..=1, and filter cutoffs in 20..=20000 Hz. `volume` maps on the existing perceptual taper.
+- Ranges: `tint` components, `opacity`, `saturation`, `volume` and `drive` lie in 0..=1, and filter cutoffs in 20..=20000 Hz. `volume` maps on the existing perceptual taper.
 - An out-of-range or non-finite script argument, or a call naming no field, warns and drops that step or reaction. So does a `setGhostAudio` whose targets would leave `highPassHz` at or above `lowPassHz`.
 - The Luau mirror ships: `defineGhostStyle({...})`, `l:arm()`, `l:setColorFilter({...})`, and `setGhostAudio({...})` from `require("postretro/audio")`.
 
@@ -133,7 +133,7 @@ Pins are in `research.md`.
 - [ ] A style with one malformed field drops whole with a warning naming `ghostStyles[i].<field>`, and links naming it get the floor style. A later duplicate name drops with a warning, and the first declaration stands. Both runtimes judge the same entries the same way.
 - [ ] A committed staged reload that changes a style re-resolves every link naming it, armed or not, mid-ramp or not. Fields set by `setColorFilter` keep their values and ramps (P16).
 - [ ] The floor style ghosts no projectiles and carries no sound, and the floor bus profile applies no distortion.
-- [ ] Two peers whose manifests declare one style name with different values each present their own, and the session admits both. After an opacity-only `setColorFilter`, both present the host's opacity and still their own tint and desaturation (P15).
+- [ ] Two peers whose manifests declare one style name with different values each present their own, and the session admits both. After an opacity-only `setColorFilter`, both present the host's opacity and still their own tint and saturation (P15).
 **Mapping and membership**
 - [ ] For rotated and unrotated pairs, with vertical offset, a ghost pose equals the pose a seamless teleport through the same points produces.
 - [ ] Membership edges, each on host and on a connected client:
@@ -231,7 +231,7 @@ Pins are in `research.md`.
   - an empty or duplicated ghost tag
   - a payload of the wrong length
 
-**Snapshot payloads (`WIRE_VERSION` 32 → 33, `SNAPSHOT_VERSION` 21 → 22).** Per link: map-order index (`u16`), source entity and armed. Then a `u8` field mask (bit 0 tint, bit 1 opacity, bit 2 desaturate; other bits 0), and for each set field its ramp: from-value, to-value, host start time and duration ms. Tint values are three `f32`. Level-scoped: a `u8` field mask (bit 0 volume, bit 1 highPassHz, bit 2 lowPassHz, bit 3 drive) with a ramp per set field. Bound on the client by map-order index and source entity, like `WireTeleporterState`. The level-scoped record's identity scheme is the executor's. Style values and limiter state never ride the wire.
+**Snapshot payloads (`WIRE_VERSION` 32 → 33, `SNAPSHOT_VERSION` 21 → 22).** Per link: map-order index (`u16`), source entity and armed. Then a `u8` field mask (bit 0 tint, bit 1 opacity, bit 2 saturation; other bits 0), and for each set field its ramp: from-value, to-value, host start time and duration ms. Tint values are three `f32`. Level-scoped: a `u8` field mask (bit 0 volume, bit 1 highPassHz, bit 2 lowPassHz, bit 3 drive) with a ramp per set field. Bound on the client by map-order index and source entity, like `WireTeleporterState`. The level-scoped record's identity scheme is the executor's. Style values and limiter state never ride the wire.
 
 ## Boundary inventory
 | Name | Rust | Wire / PRL | JS / TS | Luau | FGD KVP |
@@ -241,8 +241,8 @@ Pins are in `research.md`.
 | Spawn armed | — | `enabled_on_spawn` byte | — | — | `enabled_on_spawn` (0/1, default 1) |
 | Ghosted tags | — | per-link tag list | — | — | `ghost_tags` (whitespace-delimited, like `_tags`; default empty) |
 | Style reference | resolved style | style name string | — | — | `ghost_style` (default empty: floor style) |
-| Style declaration | style table | — | `ghostStyles: [defineGhostStyle({ name, tint: [r, g, b], opacity, desaturate, projectiles, audio, impactAudio })]` | same | — |
-| Look change | host-only command | per-field look ramps in link-state payload | `setColorFilter({ tint, opacity, desaturate, periodMs })` | `l:setColorFilter({...})` | — |
+| Style declaration | style table | — | `ghostStyles: [defineGhostStyle({ name, tint: [r, g, b], opacity, saturation, projectiles, audio, impactAudio })]` | same | — |
+| Look change | host-only command | per-field look ramps in link-state payload | `setColorFilter({ tint, opacity, saturation, periodMs })` | `l:setColorFilter({...})` | — |
 | Arm / disarm | host-only commands | armed in link-state payload | `arm()`, `disarm()` | `l:arm()`, `l:disarm()` | — |
 | Ghost bus profile | resolved profile | — | `audio.ghost: { volume, highPassHz, lowPassHz, drive }` | same | — |
 | Ghost bus change | host-only reaction body | per-field level audio payload | `setGhostAudio({ volume, highPassHz, lowPassHz, drive, periodMs })` from `postretro/audio` | `require("postretro/audio").setGhostAudio({...})` | — |

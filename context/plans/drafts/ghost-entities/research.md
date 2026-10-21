@@ -92,7 +92,7 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 | P12 | Joiner mid-`setColorFilter` or mid-`setGhostAudio` ramp | join after ramp start, before end | Presents the rebased current value; ends with the host |
 | P13 | Level unload or demotion after `setGhostAudio` | record dropped, then next level | Ghost bus returns to the manifest profile on every peer, host included; ghost voices released |
 | P14 | Host level change with links in both levels | old-level record arrives after new install | Matched by index and source entity; a stale record never binds a new link |
-| P15 | Opacity-only `setColorFilter`; peers with differing styles; then staged reload | setColorFilter, replication, reload | Only opacity crosses the wire; tint and desaturation stay local and follow the reload |
+| P15 | Opacity-only `setColorFilter`; peers with differing styles; then staged reload | setColorFilter, replication, reload | Only opacity crosses the wire; tint and saturation stay local and follow the reload |
 | P16 | Staged reload mid `setColorFilter` ramp; reload on a disarmed link | reload commit during a ramp or while disarmed | Script-set ramps continue to their targets; disarmed links re-resolve too |
 | P17 | Staged reload changing `audio.ghost` | reload after or without `setGhostAudio` | Bus re-resolves; `setGhostAudio` fields stand |
 | P18 | Link arm and a remote pawn's seamless swap on one host tick | each ghost reads link state at its member's presentation time, on client and host seat | Both present on one frame on every peer |

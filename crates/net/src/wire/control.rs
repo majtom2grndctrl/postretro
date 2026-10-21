@@ -130,9 +130,6 @@ pub enum ClientControlMessage {
         mod_version: String,
     },
     Parity(ParityDeclaration),
-    /// A client-authoritative inventory switch declaration. The transport only
-    /// carries its slot; engine code validates the owned pawn and its inventory.
-    SwitchDeclaration(ClientSwitchDeclaration),
     /// Persisted per-owner values keyed by the authored durable slot identity.
     ///
     /// New variants must be appended because bitcode encodes enum tags
@@ -144,18 +141,6 @@ pub enum ClientControlMessage {
     /// its parity declaration's identity. `None` retracts a reveal at unload or
     /// suspend. Re-sent on change; the host keeps the last one per slot.
     Revealed(Option<String>),
-}
-
-/// Reliable client -> host declaration of the inventory slot the client switched to.
-/// This stays registry-blind so it may cross the transport Control gate directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-pub struct ClientSwitchDeclaration {
-    pub declaration_id: u32,
-    pub slot: u8,
-    /// Client tick of the input command on which the switch was made. The host
-    /// orders the switch against that client's retained starts and presses by
-    /// it; the transport passes it through unvalidated, like `slot`.
-    pub client_tick: u32,
 }
 
 /// A terminal immutable-admission mismatch.
@@ -310,12 +295,6 @@ pub enum ServerControlMessage {
     /// Host-selected map catalog id. The engine resolves it against the local
     /// catalog and follows through its normal queued level-load path.
     Relevel(String),
-    /// The host refused a client switch declaration. The client restores its
-    /// previous active slot locally; no snapshot correction is required.
-    SwitchRefused(ServerSwitchRefused),
-    /// The host accepted a client switch declaration. Explicit acknowledgements
-    /// bound the client's rollback chain even when every declaration succeeds.
-    SwitchAccepted(ServerSwitchAccepted),
     /// Session-lifetime player roster. This stays deliberately registry-blind:
     /// seats are bare wire integers and carried seat contents remain host-local.
     ///
@@ -354,20 +333,6 @@ pub struct SessionRosterMessage {
     /// Number of remote peers that can currently join this hosted session.
     pub open_seats: u32,
     pub entries: Vec<RosterEntry>,
-}
-
-/// Reliable host -> client acknowledgement for one accepted inventory slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-pub struct ServerSwitchAccepted {
-    pub declaration_id: u32,
-    pub slot: u8,
-}
-
-/// Reliable host -> client refusal for one requested inventory slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-pub struct ServerSwitchRefused {
-    pub declaration_id: u32,
-    pub slot: u8,
 }
 
 /// Transport-owned frame around one server Control payload. The optional epoch
@@ -523,13 +488,6 @@ mod tests {
                 level: Some(("map-a".to_string(), [0xa5; 32])),
             }
         )));
-        assert!(round_trips(&ClientControlMessage::SwitchDeclaration(
-            ClientSwitchDeclaration {
-                declaration_id: 7,
-                slot: 3,
-                client_tick: u32::MAX - 1,
-            }
-        )));
         assert!(round_trips(&ClientControlMessage::JoinSeed {
             slots: BTreeMap::from([(
                 "kplayer0000000001".to_string(),
@@ -556,18 +514,6 @@ mod tests {
         assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
         assert!(round_trips(&ServerControlMessage::Relevel(
             "e1m1".to_string()
-        )));
-        assert!(round_trips(&ServerControlMessage::SwitchRefused(
-            ServerSwitchRefused {
-                declaration_id: 7,
-                slot: 3,
-            }
-        )));
-        assert!(round_trips(&ServerControlMessage::SwitchAccepted(
-            ServerSwitchAccepted {
-                declaration_id: 8,
-                slot: 4,
-            }
         )));
         assert!(round_trips(&ServerControlMessage::SessionRoster(
             SessionRosterMessage {

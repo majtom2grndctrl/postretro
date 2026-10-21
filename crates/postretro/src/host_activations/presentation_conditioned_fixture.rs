@@ -572,6 +572,7 @@ impl Harness {
                 &mut self.replication,
                 &mut self.state,
                 &mut self.queues,
+                &self.owners,
                 &mut self.pending_hits,
                 &mut self.open_shots,
                 peer.id,

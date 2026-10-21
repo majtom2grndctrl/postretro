@@ -2,11 +2,12 @@
 // the client's tick order with its retained starts and presses.
 // See: context/lib/networking.md §Host input command queue · §Combat authority
 //
-// A switch rides reliable Control while starts and presses ride reliable Input,
-// so after a stall a switch applied on arrival overtook them: it cancelled a
-// burst or charge the client had already finished and redirected an earlier
-// drop or reload. The lane holds each switch until everything the client
-// stamped before it has reached the host machine.
+// A switch rides the same ordered Input stream as the commands, but arrival is
+// not application: commands wait in playout and starts and presses in their
+// lanes, so a switch applied on arrival would overtake them after a stall,
+// cancelling a burst or charge the client had already finished and redirecting
+// an earlier drop or reload. The lane holds each switch until everything the
+// client stamped before it has reached the host machine.
 
 use std::collections::VecDeque;
 
@@ -24,9 +25,10 @@ use crate::prediction::client_tick_le;
 pub(super) const MAX_RETAINED_SWITCHES: usize = MAX_RETAINED_ACTIVATION_EDGES;
 
 /// Client ticks a switch may be stamped ahead of the newest command received.
-/// The client sends the switch just before the command it was made on, on
-/// another channel, so a legitimate lead is about one Input resend. A tick
-/// further ahead is malformed: it would wait for a command that is not coming.
+/// The client sends the switch just before the command it was made on, in the
+/// same Input stream, so a legitimate lead is a single tick. A tick further
+/// ahead than this bound is malformed: it would wait for a command that is not
+/// coming.
 pub(crate) const SWITCH_LEAD_TICKS: u32 = RETENTION_TICKS;
 
 /// Host ticks a retained switch may wait from intake before it applies
@@ -74,6 +76,11 @@ pub(super) struct SwitchLane {
 impl SwitchLane {
     pub(super) fn take_released(&mut self) -> Vec<SwitchDelivery> {
         std::mem::take(&mut self.released)
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_len(&self) -> usize {
+        self.retained.len()
     }
 }
 

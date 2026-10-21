@@ -6,9 +6,10 @@ use super::*;
 /// Drain and apply one accepted client's reliable `Channel::Input` messages on the
 /// host: replication acks advance that client's per-entity baseline / retire
 /// tombstones, baseline-refresh requests queue a `FullBaseline` for the named
-/// entity, and a time-sync probe is echoed back on `Channel::Input` with the
-/// current `server_tick`. Corrupt or unknown-variant bytes are logged and dropped
-/// — never a panic.
+/// entity, a time-sync probe is echoed back on `Channel::Input` with the
+/// current `server_tick`, and a switch declaration from a pawn-owning client is
+/// retained in its switch lane. Corrupt or unknown-variant bytes are logged and
+/// dropped — never a panic.
 ///
 /// `server_tick` is the host's current monotonic sim tick (sampled at echo);
 /// `server_now_us` is the host's monotonic microseconds, carried in the echo as
@@ -20,6 +21,7 @@ pub fn host_handle_client_messages(
     replication: &mut ServerReplication,
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
+    owners: &MovementOwners,
     pending_hit_declarations: &mut PendingHitDeclarations,
     open_shots: &mut OpenAuthorizedShots,
     client_id: u64,
@@ -39,6 +41,7 @@ pub fn host_handle_client_messages(
             replication,
             state_slots,
             command_queues,
+            owners,
             Some(&mut *pending_hit_declarations),
             Some(&mut *open_shots),
             client_id,
@@ -61,6 +64,7 @@ pub(crate) fn host_handle_client_message(
     replication: &mut ServerReplication,
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
+    owners: &MovementOwners,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -71,6 +75,7 @@ pub(crate) fn host_handle_client_message(
         replication,
         state_slots,
         command_queues,
+        owners,
         None,
         None,
         client_id,
@@ -86,6 +91,7 @@ pub(crate) fn host_handle_client_message_inner(
     replication: &mut ServerReplication,
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
+    owners: &MovementOwners,
     pending_hit_declarations: Option<&mut PendingHitDeclarations>,
     open_shots: Option<&mut OpenAuthorizedShots>,
     client_id: u64,
@@ -165,6 +171,12 @@ pub(crate) fn host_handle_client_message_inner(
         // Keyed by `StateSlotId` (distinct from the entity `BaselineRefresh`).
         wire::ClientMessage::StateBaselineRefresh(req) => {
             state_slots.request_refresh(client_id, req.slot_id, req.missing_baseline_ref);
+        }
+        // Retained in the switch lane, which releases it on a later fixed tick in
+        // client-tick order with this client's starts and presses. The Input
+        // drain already dropped one framed under a retired participation epoch.
+        wire::ClientMessage::SwitchDeclaration(declaration) => {
+            host_retain_switch_declaration(command_queues, owners, client_id, declaration);
         }
     }
 }

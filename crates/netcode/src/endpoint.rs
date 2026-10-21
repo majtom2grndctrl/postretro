@@ -305,6 +305,9 @@ impl MonotonicClock for EngineClock {
 pub struct ClientTimeSync {
     activation_outcomes: std::collections::VecDeque<postretro_net::wire::ActivationOutcome>,
     weapon_cues: VecDeque<wire::WeaponCue>,
+    /// Switch outcomes from this frame's Input drain, resolved against the
+    /// pending declaration chain in arrival order before activation outcomes.
+    switch_outcomes: VecDeque<SwitchOutcome>,
     pub(crate) clock: EngineClock,
     sender: TimeSyncSender,
     pub(crate) estimator: ClockEstimator,
@@ -334,6 +337,7 @@ impl ClientTimeSync {
             },
             activation_outcomes: std::collections::VecDeque::new(),
             weapon_cues: VecDeque::new(),
+            switch_outcomes: VecDeque::new(),
             sender: TimeSyncSender::new(),
             // The engine sim runs at 60 Hz; the estimator converts microseconds to
             // ticks at the same rate so its offset is in sim ticks.
@@ -377,6 +381,20 @@ impl ClientTimeSync {
         self.weapon_cues.drain(..)
     }
 
+    pub(crate) fn retain_switch_outcome(&mut self, outcome: SwitchOutcome) {
+        self.switch_outcomes.push_back(outcome);
+    }
+
+    pub(crate) fn drain_switch_outcomes(&mut self) -> impl Iterator<Item = SwitchOutcome> + '_ {
+        self.switch_outcomes.drain(..)
+    }
+
+    /// Drop Input facts that belong to a world or participation now gone.
+    fn clear_retired_input_facts(&mut self) {
+        self.weapon_cues.clear();
+        self.switch_outcomes.clear();
+    }
+
     /// Emit a 5 Hz probe if the cadence is due, recording the issued `sample_id`
     /// with the estimator in the same step. Sending and recording are fused here so
     /// a caller cannot queue a probe whose echo the estimator's provenance guard
@@ -410,6 +428,14 @@ impl ClientTimeSync {
             .is_initialized()
             .then(|| self.estimator.jitter_micros())
     }
+}
+
+/// Old-world reliable facts must not wait for a replacement world. A switch
+/// outcome dropped here meets a chain the level unload or Holding already
+/// cleared, so no declaration is left waiting on it.
+pub(crate) fn discard_world_less_input(client: &mut NetClient, time_sync: &mut ClientTimeSync) {
+    let _ = client.drain_input();
+    time_sync.clear_retired_input_facts();
 }
 
 /// The world-independent result of advancing a live network endpoint.
@@ -685,9 +711,7 @@ impl NetEndpoint {
                     // epoch bytes too: otherwise a snapshot queued between unload
                     // and replacement install can mutate the new world later.
                     discard_world_less_snapshots(client);
-                    // Old-world reliable facts must not wait for a replacement world.
-                    let _ = client.drain_input();
-                    time_sync.weapon_cues.clear();
+                    discard_world_less_input(client, time_sync);
                     WorldLessPoll::Client(client.drain_control())
                 }
             }
@@ -732,7 +756,7 @@ impl NetEndpoint {
         *tuning = None;
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
-        time_sync.weapon_cues.clear();
+        time_sync.clear_retired_input_facts();
     }
 
     /// Clear state whose entity ids belong to the old host level. This is separate
@@ -822,7 +846,7 @@ impl NetEndpoint {
         *tuning = None;
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
-        time_sync.weapon_cues.clear();
+        time_sync.clear_retired_input_facts();
     }
 
     /// The host's level state (level gravity and fluid table) from this

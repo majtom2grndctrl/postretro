@@ -80,22 +80,21 @@ mod tests {
     use super::*;
     use bitcode::{Decode, Encode};
 
-    /// The five shipped variants before [`ServerControlMessage::SessionRoster`]
-    /// was appended. Keeping this local historical mirror lets the test measure
-    /// bitcode's enum-tag layout rather than assuming that a sixth variant leaves
-    /// it unchanged.
+    /// The server Control variants before [`ServerControlMessage::SessionRoster`],
+    /// in the current layout (the switch outcomes left Control at wire 33).
+    /// Keeping this local mirror lets the test measure bitcode's enum-tag layout
+    /// rather than assuming that the appended variant leaves it unchanged.
     #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
     enum PreRosterServerControlMessage {
         Divergence(DivergenceReason),
         Tuning(Vec<u8>),
         Relevel(String),
-        SwitchRefused(crate::wire::ServerSwitchRefused),
-        SwitchAccepted(crate::wire::ServerSwitchAccepted),
     }
 
-    /// Historical client Control layout before `JoinSeed` was appended. This
-    /// measures positional bitcode tags directly, guarding the shipped
-    /// admission/parity/switch discriminants against an accidental insertion.
+    /// Client Control variants before `JoinSeed`, in the current layout (the
+    /// switch declaration left Control at wire 33). This measures positional
+    /// bitcode tags directly, guarding the admission/parity discriminants
+    /// against an accidental insertion.
     #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
     enum PreJoinSeedClientControlMessage {
         Admission {
@@ -104,10 +103,9 @@ mod tests {
             mod_version: String,
         },
         Parity(crate::wire::ParityDeclaration),
-        SwitchDeclaration(crate::wire::ClientSwitchDeclaration),
     }
 
-    /// Historical client Control layout before `Revealed` was appended.
+    /// Client Control variants before `Revealed`, in the current layout.
     #[derive(Debug, Clone, PartialEq, Encode, Decode)]
     enum PreRevealedClientControlMessage {
         Admission {
@@ -116,7 +114,6 @@ mod tests {
             mod_version: String,
         },
         Parity(crate::wire::ParityDeclaration),
-        SwitchDeclaration(crate::wire::ClientSwitchDeclaration),
         JoinSeed {
             slots: std::collections::BTreeMap<String, crate::wire::JoinSeedValue>,
         },
@@ -199,7 +196,7 @@ mod tests {
 
     #[test]
     fn session_roster_append_preserves_shipped_control_encodings() {
-        use crate::wire::{ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused};
+        use crate::wire::ServerControlMessage;
 
         let divergence = DivergenceReason::Closing(ClosingCause::Protocol {
             expected: ProtocolVersion {
@@ -224,26 +221,6 @@ mod tests {
                 PreRosterServerControlMessage::Relevel("campaign-test".to_owned()),
                 ServerControlMessage::Relevel("campaign-test".to_owned()),
             ),
-            (
-                PreRosterServerControlMessage::SwitchRefused(ServerSwitchRefused {
-                    declaration_id: 17,
-                    slot: 3,
-                }),
-                ServerControlMessage::SwitchRefused(ServerSwitchRefused {
-                    declaration_id: 17,
-                    slot: 3,
-                }),
-            ),
-            (
-                PreRosterServerControlMessage::SwitchAccepted(ServerSwitchAccepted {
-                    declaration_id: 18,
-                    slot: 4,
-                }),
-                ServerControlMessage::SwitchAccepted(ServerSwitchAccepted {
-                    declaration_id: 18,
-                    slot: 4,
-                }),
-            ),
         ];
 
         for (before, after) in cases {
@@ -257,7 +234,7 @@ mod tests {
 
     #[test]
     fn join_seed_append_preserves_shipped_client_control_encodings() {
-        use crate::wire::{ClientControlMessage, ClientSwitchDeclaration, ParityDeclaration};
+        use crate::wire::{ClientControlMessage, ParityDeclaration};
 
         let protocol = ProtocolVersion {
             app_protocol_id: 0x5052_4c36,
@@ -266,11 +243,6 @@ mod tests {
         let parity = ParityDeclaration {
             mod_digest: [0x17; 32],
             level: Some(("campaign-test".to_owned(), [0x18; 32])),
-        };
-        let switch = ClientSwitchDeclaration {
-            declaration_id: 17,
-            slot: 3,
-            client_tick: 17,
         };
         let cases = [
             (
@@ -289,10 +261,6 @@ mod tests {
                 PreJoinSeedClientControlMessage::Parity(parity.clone()),
                 ClientControlMessage::Parity(parity),
             ),
-            (
-                PreJoinSeedClientControlMessage::SwitchDeclaration(switch),
-                ClientControlMessage::SwitchDeclaration(switch),
-            ),
         ];
 
         for (before, after) in cases {
@@ -306,9 +274,7 @@ mod tests {
 
     #[test]
     fn revealed_append_preserves_shipped_client_control_encodings() {
-        use crate::wire::{
-            ClientControlMessage, ClientSwitchDeclaration, JoinSeedValue, ParityDeclaration,
-        };
+        use crate::wire::{ClientControlMessage, JoinSeedValue, ParityDeclaration};
         use std::collections::BTreeMap;
 
         let protocol = ProtocolVersion {
@@ -318,11 +284,6 @@ mod tests {
         let parity = ParityDeclaration {
             mod_digest: [0x25; 32],
             level: Some(("campaign-test".to_owned(), [0x26; 32])),
-        };
-        let switch = ClientSwitchDeclaration {
-            declaration_id: 25,
-            slot: 2,
-            client_tick: 26,
         };
         let slots = BTreeMap::from([("kplayer0000000001".to_owned(), JoinSeedValue::Number(3.0))]);
         let cases = [
@@ -341,10 +302,6 @@ mod tests {
             (
                 PreRevealedClientControlMessage::Parity(parity.clone()),
                 ClientControlMessage::Parity(parity),
-            ),
-            (
-                PreRevealedClientControlMessage::SwitchDeclaration(switch),
-                ClientControlMessage::SwitchDeclaration(switch),
             ),
             (
                 PreRevealedClientControlMessage::JoinSeed {
@@ -715,17 +672,6 @@ mod switch_tick_epoch_tests {
         slot: u8,
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-    enum PreTickClientControlMessage {
-        Admission {
-            protocol: ProtocolVersion,
-            mod_id: String,
-            mod_version: String,
-        },
-        Parity(crate::wire::ParityDeclaration),
-        SwitchDeclaration(PreTickSwitchDeclaration),
-    }
-
     #[test]
     fn switch_tick_advances_only_the_wire_version_and_refuses_wire_25_peers() {
         const {
@@ -755,26 +701,99 @@ mod switch_tick_epoch_tests {
         ));
     }
 
+    // The declaration left Control at wire 33, so the wire-25 envelope it
+    // shipped in no longer exists; the tick still pins the payload layout.
     #[test]
     fn switch_tick_changes_the_declaration_layout() {
-        use crate::wire::{ClientControlMessage, ClientSwitchDeclaration};
-        let before = bitcode::encode(&PreTickClientControlMessage::SwitchDeclaration(
-            PreTickSwitchDeclaration {
-                declaration_id: 9,
-                slot: 2,
-            },
-        ));
-        let after = crate::wire::encode(&ClientControlMessage::SwitchDeclaration(
-            ClientSwitchDeclaration {
-                declaration_id: 9,
-                slot: 2,
-                client_tick: 0x0102_0304,
-            },
-        ));
+        use crate::wire::ClientSwitchDeclaration;
+        let before = bitcode::encode(&PreTickSwitchDeclaration {
+            declaration_id: 9,
+            slot: 2,
+        });
+        let after = crate::wire::encode(&ClientSwitchDeclaration {
+            declaration_id: 9,
+            slot: 2,
+            client_tick: 0x0102_0304,
+        });
         assert_ne!(before, after, "the added tick changes the layout");
         assert!(
-            crate::wire::decode::<ClientControlMessage>(&before).is_err(),
+            crate::wire::decode::<ClientSwitchDeclaration>(&before).is_err(),
             "a wire-25 declaration never decodes as a tick-stamped one"
         );
+    }
+
+    /// The Input envelopes before the switch variants were appended at wire 33.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreSwitchClientMessage {
+        Input(crate::wire::InputCommand),
+        Ack(crate::wire::AckMessage),
+        BaselineRefresh(crate::wire::BaselineRefreshRequest),
+        TimeSync(crate::timesync::TimeSyncRequest),
+        StateBaselineRefresh(crate::wire::StateBaselineRefreshRequest),
+        HitDeclaration(crate::wire::HitDeclaration),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreSwitchServerMessage {
+        TimeSync(crate::timesync::TimeSyncEcho),
+        ShotVerdicts(crate::wire::ShotVerdictsMessage),
+        ActivationOutcomes(Vec<crate::wire::ActivationOutcome>),
+        WeaponCues(crate::wire::WeaponCuesMessage),
+        HitRefused(crate::wire::WireShotId),
+    }
+
+    #[test]
+    fn switch_append_preserves_shipped_input_message_tags() {
+        use crate::wire::{ClientMessage, HitDeclaration, ServerMessage, WireShotId};
+        let probe = crate::timesync::TimeSyncRequest {
+            sample_id: 3,
+            client_send_tick: 4,
+            client_send_time_us: 5,
+        };
+        let shot_id = WireShotId {
+            pawn: 1,
+            start_tick: 2,
+            lane: 0,
+            ordinal: 0,
+        };
+        let declaration = HitDeclaration {
+            shot_id,
+            records: Vec::new(),
+        };
+        let client_cases = [
+            (
+                PreSwitchClientMessage::TimeSync(probe),
+                ClientMessage::TimeSync(probe),
+            ),
+            (
+                PreSwitchClientMessage::HitDeclaration(declaration.clone()),
+                ClientMessage::HitDeclaration(declaration),
+            ),
+        ];
+        for (historical, current) in client_cases {
+            assert_eq!(
+                bitcode::encode(&historical),
+                crate::wire::encode(&current),
+                "appending SwitchDeclaration changed a shipped client Input tag"
+            );
+        }
+        let echo = probe.echo(10, 11);
+        let server_cases = [
+            (
+                PreSwitchServerMessage::TimeSync(echo),
+                ServerMessage::TimeSync(echo),
+            ),
+            (
+                PreSwitchServerMessage::HitRefused(shot_id),
+                ServerMessage::HitRefused(shot_id),
+            ),
+        ];
+        for (historical, current) in server_cases {
+            assert_eq!(
+                bitcode::encode(&historical),
+                crate::wire::encode(&current),
+                "appending the switch outcomes changed a shipped server Input tag"
+            );
+        }
     }
 }

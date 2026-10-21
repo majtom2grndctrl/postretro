@@ -226,28 +226,6 @@ fn append_tick_weapon_script_events(
 fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
-            ServerControlMessage::SwitchAccepted(accepted) => {
-                let Some(session) = app.session.as_mut() else {
-                    continue;
-                };
-                let Some(endpoint) = session.net_endpoint.as_mut() else {
-                    continue;
-                };
-                let resolution =
-                    endpoint.take_switch_outcome(netcode::SwitchOutcome::Accepted(accepted));
-                apply_client_switch_resolution(session, resolution);
-            }
-            ServerControlMessage::SwitchRefused(refusal) => {
-                let Some(session) = app.session.as_mut() else {
-                    continue;
-                };
-                let Some(endpoint) = session.net_endpoint.as_mut() else {
-                    continue;
-                };
-                let resolution =
-                    endpoint.take_switch_outcome(netcode::SwitchOutcome::Refused(refusal));
-                apply_client_switch_resolution(session, resolution);
-            }
             ServerControlMessage::Relevel(catalog_id) => app.follow_relevel_catalog(catalog_id),
             ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
                 log::error!(
@@ -360,18 +338,6 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             }
         }
     }
-}
-
-fn apply_client_switch_resolution(
-    session: &mut session::Session,
-    resolution: netcode::CurrentSwitchResolution,
-) {
-    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-    client_weapon::settle_switch_resolution(
-        &mut registry,
-        &mut session.gameplay_input_latch,
-        resolution,
-    );
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -4197,16 +4163,6 @@ impl App {
                                 );
                             }
                         }
-                        // Switches apply on the fixed tick their lane releases
-                        // them, ordered with the client's starts and presses.
-                        for &(client_id, declaration) in &poll.switch_declarations {
-                            netcode::host_retain_switch_declaration(
-                                command_queues,
-                                owners,
-                                client_id,
-                                declaration,
-                            );
-                        }
                         if let Some(seats) = seat_table {
                             netcode::clear_released_seat_slot_values(
                                 &mut script_ctx.slot_table.borrow_mut(),
@@ -4230,7 +4186,8 @@ impl App {
                 // `net_serialize_and_send`, just before the snapshot send.
                 // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
-                // and echo time-sync probes with the current server tick. The echo
+                // retain switch declarations in the switch lane, and echo
+                // time-sync probes with the current server tick. The echo
                 // microseconds are telemetry only, derived from the monotonic tick.
                 let server_tick = *tick;
                 let server_now_us = u64::from(server_tick) * netcode::SERVER_TICK_MICROS;
@@ -4241,6 +4198,7 @@ impl App {
                         replication,
                         state_slots,
                         command_queues,
+                        owners,
                         pending_hit_declarations,
                         open_shots,
                         client_id,
@@ -4259,6 +4217,7 @@ impl App {
                 tuning_generation,
                 applied_movement_tuning_generation,
                 session_status,
+                pending_switch_declarations,
                 ..
             }) => {
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
@@ -4280,6 +4239,19 @@ impl App {
                 // once per rendered frame before this frame can spawn new ones.
                 sim::advance_client_presentation_effects(&mut registry, frame_dt);
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
+                // Switch outcomes settle before activation outcomes, as the host
+                // applies a released switch before that tick's simulation. The
+                // Control drain above already ran, so a Holding in this frame
+                // cleared the chain these resolve against.
+                for resolution in
+                    netcode::client_resolve_switch_outcomes(time_sync, pending_switch_declarations)
+                {
+                    client_weapon::settle_switch_resolution(
+                        &mut registry,
+                        &mut session.gameplay_input_latch,
+                        resolution,
+                    );
+                }
                 for outcome in time_sync.drain_activation_outcomes() {
                     if let Some(effect) = self.client_weapon.records.outcome(&mut registry, outcome)
                     {

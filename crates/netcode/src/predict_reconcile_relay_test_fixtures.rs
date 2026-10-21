@@ -345,6 +345,7 @@ impl RelayHarness {
                 &mut self.server_replication,
                 &mut self.server_state,
                 &mut self.command_queues,
+                &self.owners,
                 &mut self.pending_hit_declarations,
                 &mut self.open_shots,
                 client_id,
@@ -586,7 +587,7 @@ impl RelayHarness {
 
 /// A server/client transport pair joined by in-memory relay, both declaring
 /// the same mod, level and reveal so the slot will participate.
-fn relay_pair() -> (NetServer, NetClient) {
+pub(crate) fn relay_pair() -> (NetServer, NetClient) {
     let origin = Duration::from_secs(1);
     let server_socket =
         UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("relay server binds loopback socket");

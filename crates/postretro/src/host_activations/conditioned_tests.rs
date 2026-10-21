@@ -29,7 +29,7 @@ use postretro_scripting_core::data_descriptors::{
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 use serde_json::{Value, json};
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::rc::Rc;
 use std::time::Duration;
@@ -351,8 +351,12 @@ struct Fixture {
     /// `(host tick, owned pawn facing yaw)` after each host simulation tick.
     host_facing: Vec<(u32, f32)>,
     weapon_owners: netcode::WeaponOwners,
-    /// Switch declarations the client has sent, numbered as production does.
+    /// Switch declarations the client has made, numbered as production does.
     next_switch_id: u32,
+    /// Declarations made but not yet sent, by the client tick of the command
+    /// they were made on. `send_input` sends each just before its command, in
+    /// the same Input stream, as production does.
+    unsent_switches: BTreeMap<u32, wire::ClientSwitchDeclaration>,
     /// `(host tick, declaration id, accepted)` per switch outcome the client received.
     switch_outcomes: Vec<(u32, u32, bool)>,
     /// `(host tick, active slot)` on the host after each tick's switches applied.
@@ -462,6 +466,7 @@ impl Fixture {
             host_facing: Vec::new(),
             weapon_owners: Default::default(),
             next_switch_id: 0,
+            unsent_switches: BTreeMap::new(),
             switch_outcomes: Vec::new(),
             host_active: Vec::new(),
             reloads: Vec::new(),
@@ -558,28 +563,10 @@ impl Fixture {
         for packet in self.down.take_ready() {
             self.client.process_packet(&packet);
         }
-        let poll = self.server.poll_handshakes();
-        for (client_id, declaration) in poll.switch_declarations {
-            netcode::host_retain_switch_declaration(
-                &mut self.queues,
-                &self.owners,
-                client_id,
-                declaration,
-            );
-        }
+        let _ = self.server.poll_handshakes();
         for message in self.client.drain_control() {
             if let Some(receive) = self.receive.as_mut() {
                 receive.control(&message, &mut self.local.borrow_mut());
-            }
-            match message {
-                wire::ServerControlMessage::SwitchAccepted(accepted) => self
-                    .switch_outcomes
-                    .push((self.tick, accepted.declaration_id, true)),
-                wire::ServerControlMessage::SwitchRefused(refused) => {
-                    self.switch_outcomes
-                        .push((self.tick, refused.declaration_id, false))
-                }
-                _ => {}
             }
         }
         self.receive_snapshots();
@@ -638,12 +625,23 @@ impl Fixture {
                     }
                     self.hit_refusals.push(shot_id);
                 }
+                wire::ServerMessage::SwitchAccepted(accepted) => {
+                    self.switch_outcomes
+                        .push((self.tick, accepted.declaration_id, true))
+                }
+                wire::ServerMessage::SwitchRefused(refused) => {
+                    self.switch_outcomes
+                        .push((self.tick, refused.declaration_id, false))
+                }
                 _ => {}
             }
         }
     }
 
     fn send_input(&mut self, tick: u32, command: &sim::SimCommand) {
+        if let Some(declaration) = self.unsent_switches.remove(&tick) {
+            self.send_switch_declaration(declaration);
+        }
         // Fixed fixture data, not an alternative serializer or queue: actual
         // bitcode and the production incoming converter handle these messages.
         let input = wire::InputCommand {
@@ -715,6 +713,28 @@ impl Fixture {
         self.sent_at.push(self.tick);
     }
 
+    /// Declare a switch to `slot` made on `tick`'s command; `send_input` sends
+    /// it just before that command.
+    fn declare_switch(&mut self, slot: usize, tick: u32) {
+        self.unsent_switches.insert(
+            tick,
+            wire::ClientSwitchDeclaration {
+                declaration_id: self.next_switch_id,
+                slot: u8::try_from(slot).expect("inventory slots fit a u8"),
+                client_tick: tick,
+            },
+        );
+        self.next_switch_id += 1;
+    }
+
+    /// Put one switch declaration on the client's framed Input now.
+    fn send_switch_declaration(&mut self, declaration: wire::ClientSwitchDeclaration) {
+        self.client
+            .send_input(wire::encode(&wire::ClientMessage::SwitchDeclaration(
+                declaration,
+            )));
+    }
+
     fn declare(&mut self, shot: ShotId, records: Vec<wire::HitRecord>) {
         if let Some(receive) = self.receive.as_mut() {
             receive.declarations.push(shot);
@@ -757,16 +777,10 @@ impl Fixture {
             0.0,
             DT,
         );
-        // Production declares an accepted switch on Control, stamped with the
-        // tick of the command it was made on.
+        // Production declares an accepted switch on Input just before the
+        // command it was made on, stamped with that command's tick.
         if switch_accepted && let Some(slot) = command.select_slot {
-            self.client
-                .send_switch_declaration(wire::ClientSwitchDeclaration {
-                    declaration_id: self.next_switch_id,
-                    slot: u8::try_from(slot).expect("inventory slots fit a u8"),
-                    client_tick: tick,
-                });
-            self.next_switch_id += 1;
+            self.declare_switch(slot, tick);
         }
         let pawn_network = self.pawn_network();
         self.frame.predict(
@@ -913,6 +927,7 @@ impl Fixture {
             &mut self.replication,
             &mut self.slots,
             &mut self.queues,
+            &self.owners,
             &mut self.pending,
             &mut self.open,
             CLIENT,

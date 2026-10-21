@@ -16,9 +16,9 @@ use renet_netcode::{
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
 use crate::wire::{
-    self, ClientControlMessage, ClientSwitchDeclaration, ConnectClaim, JoinSeedValue,
-    NETCODE_USER_DATA_BYTES, ParityDeclaration, ParticipationFrame, ServerControlFrame,
-    ServerControlMessage, ServerPresentationMessage,
+    self, ClientControlMessage, ConnectClaim, JoinSeedValue, NETCODE_USER_DATA_BYTES,
+    ParityDeclaration, ParticipationFrame, ServerControlFrame, ServerControlMessage,
+    ServerPresentationMessage,
 };
 
 pub use crate::handshake::*;
@@ -119,9 +119,6 @@ pub struct ServerPoll {
     pub disconnects: Vec<ClientId>,
     pub handshakes: Vec<HandshakeOutcome>,
     pub lifecycle: Vec<SlotEvent>,
-    /// Registry-blind reliable controls from currently participating clients.
-    /// Engine code resolves the client id into a pawn and validates its state.
-    pub switch_declarations: Vec<(ClientId, ClientSwitchDeclaration)>,
     /// Registry-blind join seeds. The engine owns buffering, validation, and
     /// per-seat application because the transport has no slot declarations.
     pub join_seeds: Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
@@ -129,7 +126,6 @@ pub struct ServerPoll {
 
 type ControlMessages = (
     Vec<HandshakeOutcome>,
-    Vec<(ClientId, ClientSwitchDeclaration)>,
     Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
 );
 
@@ -295,7 +291,7 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, switch_declarations, join_seeds) = self.process_control_messages();
+        let (handshakes, join_seeds) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
@@ -304,7 +300,6 @@ impl NetServer {
             disconnects,
             handshakes,
             lifecycle,
-            switch_declarations,
             join_seeds,
         })
     }
@@ -363,10 +358,9 @@ impl NetServer {
 
     fn process_control_messages(&mut self) -> ControlMessages {
         let mut outcomes = Vec::new();
-        let mut switch_declarations = Vec::new();
         let mut join_seeds = Vec::new();
         let Some((expected_id, expected_version)) = self.mod_identity.clone() else {
-            return (outcomes, switch_declarations, join_seeds);
+            return (outcomes, join_seeds);
         };
         let expected_protocol = protocol_version();
 
@@ -453,15 +447,6 @@ impl NetServer {
                             break;
                         }
                     }
-                    ClientControlMessage::SwitchDeclaration(declaration) => {
-                        // A declaration has no meaning before a slot owns a live
-                        // pawn. Keeping it inside the participation gate also
-                        // prevents pre-admission controls from leaking into a later
-                        // promotion generation.
-                        if self.is_participating(client_id) {
-                            switch_declarations.push((client_id, declaration));
-                        }
-                    }
                     ClientControlMessage::JoinSeed { slots } => {
                         // The engine validates the durable keys against its
                         // committed declarations and applies only eligible
@@ -506,7 +491,7 @@ impl NetServer {
                 }
             }
         }
-        (outcomes, switch_declarations, join_seeds)
+        (outcomes, join_seeds)
     }
 
     fn reject(&mut self, client_id: ClientId, cause: ClosingCause) {
@@ -740,6 +725,7 @@ impl NetServer {
                 | Ok(crate::wire::ClientMessage::TimeSync(_))
                 | Ok(crate::wire::ClientMessage::StateBaselineRefresh(_))
                 | Ok(crate::wire::ClientMessage::HitDeclaration(_))
+                | Ok(crate::wire::ClientMessage::SwitchDeclaration(_))
                 | Err(_) => messages.push(frame.payload),
             }
         }
@@ -892,7 +878,7 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, switch_declarations, join_seeds) = self.process_control_messages();
+        let (handshakes, join_seeds) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
@@ -900,7 +886,6 @@ impl NetServer {
             disconnects,
             handshakes,
             lifecycle,
-            switch_declarations,
             join_seeds,
         }
     }
@@ -1350,19 +1335,6 @@ impl NetClient {
                 participation_epoch,
                 payload: input,
             }),
-        );
-    }
-
-    /// Send one gameplay control only while a participation generation is active.
-    /// Admission and parity still own the early Control ordering; game declarations
-    /// are valid only after the host has made the client a participant.
-    pub fn send_switch_declaration(&mut self, declaration: ClientSwitchDeclaration) {
-        if self.active_participation_epoch.is_none() {
-            return;
-        }
-        self.client.send_message(
-            Channel::Control,
-            wire::encode(&ClientControlMessage::SwitchDeclaration(declaration)),
         );
     }
 
@@ -2374,17 +2346,18 @@ mod tests {
     }
 
     #[test]
-    fn participating_switch_declaration_reaches_the_server_poll() {
+    fn participating_switch_declaration_reaches_the_server_input_drain() {
         let (mut server, mut client) = participate_relay_pair();
-        // The participation marker normally establishes this before gameplay
-        // controls are emitted. Set it directly here so the public client send
-        // path, rather than the test-only raw Renet handle, is exercised.
-        client.active_participation_epoch = Some(1);
-        client.send_switch_declaration(ClientSwitchDeclaration {
+        // The participation marker arms the client's epoch before gameplay
+        // traffic is framed on Input.
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        let declaration = wire::ClientMessage::SwitchDeclaration(wire::ClientSwitchDeclaration {
             declaration_id: 9,
             slot: 2,
             client_tick: 4_000,
         });
+        client.send_input(wire::encode(&declaration));
 
         relay_client_to_server(&mut client, &mut server);
         let poll = server.poll_handshakes();
@@ -2392,15 +2365,9 @@ mod tests {
         assert!(poll.handshakes.is_empty());
         assert!(poll.lifecycle.is_empty());
         assert_eq!(
-            poll.switch_declarations,
-            vec![(
-                RELAY_CLIENT_ID,
-                ClientSwitchDeclaration {
-                    declaration_id: 9,
-                    slot: 2,
-                    client_tick: 4_000,
-                },
-            )]
+            server.drain_input(RELAY_CLIENT_ID),
+            vec![wire::encode(&declaration)],
+            "a switch declaration rides framed Input to the host's Input drain"
         );
     }
 

@@ -17,8 +17,8 @@ use glam::{Vec2, Vec3};
 
 use postretro_net::harness::{LinkConfig, PacketConditioner};
 use postretro_net::wire::{
-    ClientControlMessage, ClientMessage, ClientSwitchDeclaration, ServerControlMessage,
-    ServerSwitchAccepted, ServerSwitchRefused,
+    ClientMessage, ClientSwitchDeclaration, ServerMessage, ServerSwitchAccepted,
+    ServerSwitchRefused,
 };
 
 use super::movement_state::movement_state_to_wire;
@@ -146,13 +146,13 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
         },
     ] {
         to_host.enqueue(postretro_net::wire::encode(
-            &ClientControlMessage::SwitchDeclaration(declaration),
+            &ClientMessage::SwitchDeclaration(declaration),
         ));
     }
 
     to_host.advance(32);
     for packet in to_host.take_ready() {
-        let ClientControlMessage::SwitchDeclaration(declaration) =
+        let ClientMessage::SwitchDeclaration(declaration) =
             postretro_net::wire::decode(&packet).expect("decode conditioned declaration")
         else {
             panic!("switch harness carries declarations only");
@@ -164,18 +164,14 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
             usize::from(declaration.slot),
             false,
         ) {
-            HostSwitchDecision::Accepted => {
-                ServerControlMessage::SwitchAccepted(ServerSwitchAccepted {
-                    declaration_id: declaration.declaration_id,
-                    slot: declaration.slot,
-                })
-            }
-            HostSwitchDecision::Refused => {
-                ServerControlMessage::SwitchRefused(ServerSwitchRefused {
-                    declaration_id: declaration.declaration_id,
-                    slot: declaration.slot,
-                })
-            }
+            HostSwitchDecision::Accepted => ServerMessage::SwitchAccepted(ServerSwitchAccepted {
+                declaration_id: declaration.declaration_id,
+                slot: declaration.slot,
+            }),
+            HostSwitchDecision::Refused => ServerMessage::SwitchRefused(ServerSwitchRefused {
+                declaration_id: declaration.declaration_id,
+                slot: declaration.slot,
+            }),
         };
         to_client.enqueue(postretro_net::wire::encode(&outcome));
     }
@@ -201,11 +197,11 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
         .take_ready()
         .into_iter()
         .map(|packet| {
-            let control: ServerControlMessage =
+            let message: ServerMessage =
                 postretro_net::wire::decode(&packet).expect("decode conditioned outcome");
-            let outcome = match control {
-                ServerControlMessage::SwitchAccepted(accepted) => SwitchOutcome::Accepted(accepted),
-                ServerControlMessage::SwitchRefused(refused) => SwitchOutcome::Refused(refused),
+            let outcome = match message {
+                ServerMessage::SwitchAccepted(accepted) => SwitchOutcome::Accepted(accepted),
+                ServerMessage::SwitchRefused(refused) => SwitchOutcome::Refused(refused),
                 _ => panic!("switch harness carries switch outcomes only"),
             };
             resolve_switch_outcome(&mut pending, outcome)
@@ -338,6 +334,7 @@ fn duplicate_input_at_drain_seam_is_inert() {
             &mut h.server_replication,
             &mut h.server_state,
             &mut h.command_queues,
+            &h.owners,
             CLIENT_ID,
             0,
             0,
@@ -354,6 +351,7 @@ fn duplicate_input_at_drain_seam_is_inert() {
         &mut h.server_replication,
         &mut h.server_state,
         &mut h.command_queues,
+        &h.owners,
         CLIENT_ID,
         0,
         0,
@@ -369,6 +367,7 @@ fn duplicate_input_at_drain_seam_is_inert() {
             &mut h.server_replication,
             &mut h.server_state,
             &mut h.command_queues,
+            &h.owners,
             OTHER,
             0,
             0,
@@ -982,6 +981,7 @@ fn malformed_input_at_drain_seam_is_rejected() {
         &mut h.server_replication,
         &mut h.server_state,
         &mut h.command_queues,
+        &h.owners,
         CLIENT_ID,
         0,
         0,

@@ -52,10 +52,9 @@ pub use teleport::{
 
 mod control;
 pub use control::{
-    ClientControlMessage, ClientSwitchDeclaration, ClosingCause, ConnectClaim,
-    DISPLAY_NAME_MAX_BYTES, DivergenceReason, HoldingCause, JoinSeedValue, NETCODE_USER_DATA_BYTES,
-    ParityDeclaration, PlayerClaimId, ProtocolVersion, RosterEntry, ServerControlMessage,
-    ServerSwitchAccepted, ServerSwitchRefused, SessionId, SessionRosterMessage,
+    ClientControlMessage, ClosingCause, ConnectClaim, DISPLAY_NAME_MAX_BYTES, DivergenceReason,
+    HoldingCause, JoinSeedValue, NETCODE_USER_DATA_BYTES, ParityDeclaration, PlayerClaimId,
+    ProtocolVersion, RosterEntry, ServerControlMessage, SessionId, SessionRosterMessage,
     decode_connect_claim, encode_connect_claim,
 };
 pub(crate) use control::{ParticipationFrame, ServerControlFrame};
@@ -1235,8 +1234,8 @@ pub struct StateBaselineRefreshRequest {
 
 /// Discriminated client -> server envelope for the reliable-ordered
 /// `Channel::Input`, which multiplexes several message kinds (the input stream,
-/// replication acks, entity/state baseline-refresh requests, time-sync, and
-/// client-declared hit results). bitcode tags the enum, so the server decodes one
+/// replication acks, entity/state baseline-refresh requests, time-sync,
+/// client-declared hit results, and weapon-switch declarations). bitcode tags the enum, so the server decodes one
 /// `ClientMessage` and matches on the variant rather than guessing the type of an
 /// untagged payload. New kinds are added as **appended** variants to preserve the
 /// discriminant order of existing variants.
@@ -1259,6 +1258,37 @@ pub enum ClientMessage {
     /// Client-authoritative hit results for a host-authorized shot. Appended last
     /// to preserve all existing discriminants.
     HitDeclaration(HitDeclaration),
+    /// A client-authoritative inventory switch declaration, sent before the
+    /// command of the tick it was made on so it keeps the client's order.
+    /// Appended last to preserve all existing discriminants.
+    SwitchDeclaration(ClientSwitchDeclaration),
+}
+
+/// Client -> host declaration of the inventory slot the client switched to.
+/// Registry-blind: the transport carries the slot; engine code validates the
+/// owned pawn and its inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct ClientSwitchDeclaration {
+    pub declaration_id: u32,
+    pub slot: u8,
+    /// Client tick of the input command on which the switch was made. The host
+    /// orders the switch against that client's retained starts and presses by
+    /// it; the transport passes it through unvalidated, like `slot`.
+    pub client_tick: u32,
+}
+
+/// Host -> client acknowledgement for one accepted inventory slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct ServerSwitchAccepted {
+    pub declaration_id: u32,
+    pub slot: u8,
+}
+
+/// Host -> client refusal for one requested inventory slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct ServerSwitchRefused {
+    pub declaration_id: u32,
+    pub slot: u8,
 }
 
 /// One owner-private server verdict for a client-predicted shot.
@@ -1294,6 +1324,13 @@ pub enum ServerMessage {
     /// A HIT declaration exceeded its owner's pending limit or expired while
     /// FIRE was undecided. Settles HIT bookkeeping without deciding FIRE.
     HitRefused(WireShotId),
+    /// The host accepted a client switch declaration. Explicit acknowledgements
+    /// bound the client's rollback chain even when every declaration succeeds.
+    /// Appended last to preserve all existing discriminants.
+    SwitchAccepted(ServerSwitchAccepted),
+    /// The host refused a client switch declaration. The client restores its
+    /// previous active slot locally; no snapshot correction is required.
+    SwitchRefused(ServerSwitchRefused),
 }
 
 /// Wire codec failure. Today the only failure mode is a bitcode decode error
@@ -1734,6 +1771,29 @@ mod tests {
     fn hit_declaration_decode_failure_is_typed_error() {
         let err = decode::<ClientMessage>(&[0xFF, 0x00]).expect_err("garbage rejects");
         assert!(matches!(err, WireError::Decode(_)));
+    }
+
+    #[test]
+    fn switch_declarations_and_outcomes_round_trip_on_the_input_envelopes() {
+        assert!(round_trips(&ClientMessage::SwitchDeclaration(
+            ClientSwitchDeclaration {
+                declaration_id: 7,
+                slot: 3,
+                client_tick: u32::MAX - 1,
+            }
+        )));
+        assert!(round_trips(&ServerMessage::SwitchRefused(
+            ServerSwitchRefused {
+                declaration_id: 7,
+                slot: 3,
+            }
+        )));
+        assert!(round_trips(&ServerMessage::SwitchAccepted(
+            ServerSwitchAccepted {
+                declaration_id: 8,
+                slot: 4,
+            }
+        )));
     }
 
     #[test]

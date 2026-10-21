@@ -4,7 +4,7 @@
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
-    self, ClientSwitchDeclaration, ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused,
+    self, ClientSwitchDeclaration, ServerMessage, ServerSwitchAccepted, ServerSwitchRefused,
 };
 
 use crate::command_queue::{HostCommandQueues, MovementOwners, SwitchDelivery, WeaponOwners};
@@ -29,9 +29,9 @@ pub fn host_retain_switch_declaration(
 /// resolution and before the simulation, replying to each client in arrival
 /// order. Validation is the host's: the client owns its equip presentation,
 /// while the host owns the committed slot used by snapshots and server-side
-/// systems. A refusal is owner-private reliable Control because a snapshot
-/// cannot recover a stationary client with no later baseline change to
-/// compare against.
+/// systems. Each outcome is owner-private reliable Input, in the same ordered
+/// stream as the client's commands, because a snapshot cannot recover a
+/// stationary client with no later baseline change to compare against.
 pub fn host_apply_switch_deliveries(
     registry: &mut EntityRegistry,
     server: &mut NetServer,
@@ -135,21 +135,19 @@ pub(crate) fn apply_host_switch_declaration(
 }
 
 fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
-    server.send_control(
+    server.send_input(
         client_id,
-        wire::encode(&ServerControlMessage::SwitchAccepted(
-            ServerSwitchAccepted {
-                declaration_id,
-                slot,
-            },
-        )),
+        wire::encode(&ServerMessage::SwitchAccepted(ServerSwitchAccepted {
+            declaration_id,
+            slot,
+        })),
     );
 }
 
 fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
-    server.send_control(
+    server.send_input(
         client_id,
-        wire::encode(&ServerControlMessage::SwitchRefused(ServerSwitchRefused {
+        wire::encode(&ServerMessage::SwitchRefused(ServerSwitchRefused {
             declaration_id,
             slot,
         })),

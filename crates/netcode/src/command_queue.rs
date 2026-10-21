@@ -817,6 +817,14 @@ impl HostCommandQueues {
             .retain_switch(declaration);
     }
 
+    /// Switches this client's lane holds, not yet released.
+    #[cfg(test)]
+    pub(crate) fn retained_switch_count(&self, client_id: u64) -> usize {
+        self.clients
+            .get(&client_id)
+            .map_or(0, |state| state.switches.retained_len())
+    }
+
     /// Switches this client's lane released since the last call, in arrival
     /// order. Call after [`Self::resolve_tick`] and before the tick's
     /// simulation, so a switch reaches the weapon ahead of the starts and

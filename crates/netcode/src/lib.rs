@@ -82,6 +82,10 @@ mod state_slots;
 mod tuning_payload;
 pub mod wire_convert;
 
+// Switch declarations and outcomes on Input across demotion, re-promotion and unload.
+#[cfg(test)]
+mod client_switch_relay_test;
+
 // A connected client's inventory composes only from the host's tuning payload.
 #[cfg(test)]
 mod client_tuning_install_tests;
@@ -150,7 +154,10 @@ mod snapshot_regression_harness_test;
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
 #[cfg(test)]
 pub(crate) use client_switch::resolve_switch_outcome;
-pub use client_switch::{CurrentSwitchResolution, PendingSwitchDeclaration, SwitchOutcome};
+pub use client_switch::{
+    CurrentSwitchResolution, PendingSwitchDeclaration, SwitchOutcome,
+    client_resolve_switch_outcomes,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use command_queue::host_resolve_remote_commands;
 pub use command_queue::{
@@ -2465,6 +2472,14 @@ pub fn client_drive_time_sync(
                         shot_id,
                     )));
                 }
+            }
+            // Retained for `client_resolve_switch_outcomes`; no epoch filter
+            // (see that function).
+            Ok(wire::ServerMessage::SwitchAccepted(accepted)) => {
+                time_sync.retain_switch_outcome(SwitchOutcome::Accepted(accepted));
+            }
+            Ok(wire::ServerMessage::SwitchRefused(refused)) => {
+                time_sync.retain_switch_outcome(SwitchOutcome::Refused(refused));
             }
             Err(err) => {
                 log::warn!("[Net] dropping undecodable server input message: {err}");
@@ -5164,6 +5179,7 @@ mod tests {
             &mut ServerReplication::new(),
             &mut state_slots::HostStateReplication::new(),
             &mut queues,
+            &MovementOwners::new(),
             Some(&mut pending),
             Some(&mut fixture.open_shots),
             7,
@@ -5341,6 +5357,7 @@ mod tests {
             &mut ServerReplication::new(),
             &mut state_slots::HostStateReplication::new(),
             &mut queues,
+            &MovementOwners::new(),
             Some(&mut pending),
             Some(&mut fixture.open_shots),
             7,

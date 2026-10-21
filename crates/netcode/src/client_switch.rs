@@ -37,11 +37,14 @@ pub enum CurrentSwitchResolution {
 }
 
 impl NetEndpoint {
-    /// Send a client-local switch declaration over reliable Control. The client
-    /// transport refuses to queue it before participation, so an old level cannot
-    /// leak a selection into a newly promoted pawn. `client_tick` is the tick of
-    /// the input command the switch was made on; the host orders the switch
-    /// against that command's neighbours by it.
+    /// Send a client-local switch declaration on framed Input, before the
+    /// command of the tick it was made on. Outside participation nothing is sent
+    /// or chained, so an old level cannot leak a selection into a newly promoted
+    /// pawn and no declaration waits on an outcome that cannot come. The
+    /// participation frame lets the host's Input drain drop one sent under a
+    /// retired epoch. `client_tick` is the tick of the input command the switch
+    /// was made on; the host orders the switch against that command's
+    /// neighbours by it.
     pub fn send_client_switch_declaration(
         &mut self,
         slot: u8,
@@ -56,6 +59,9 @@ impl NetEndpoint {
             ..
         } = self
         {
+            if !client.is_participating() {
+                return;
+            }
             let declaration_id = *next_switch_declaration_id;
             *next_switch_declaration_id = (*next_switch_declaration_id).wrapping_add(1);
             pending_switch_declarations.push_back(PendingSwitchDeclaration {
@@ -65,11 +71,13 @@ impl NetEndpoint {
                 rollback_slot,
                 rollback_last_weapon_slot,
             });
-            client.send_switch_declaration(ClientSwitchDeclaration {
-                declaration_id,
-                slot,
-                client_tick,
-            });
+            client.send_input(wire::encode(&wire::ClientMessage::SwitchDeclaration(
+                ClientSwitchDeclaration {
+                    declaration_id,
+                    slot,
+                    client_tick,
+                },
+            )));
         }
     }
 
@@ -84,17 +92,20 @@ impl NetEndpoint {
             } if !pending_switch_declarations.is_empty()
         )
     }
+}
 
-    pub fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
-        let Self::Client {
-            pending_switch_declarations,
-            ..
-        } = self
-        else {
-            return CurrentSwitchResolution::None;
-        };
-        resolve_switch_outcome(pending_switch_declarations, outcome)
-    }
+/// Resolve the switch outcomes the client's Input drain retained against the
+/// pending declaration chain, in arrival order. Outcomes carry no participation
+/// epoch: demotion and level unload clear the chain while declaration ids never
+/// reset, so a stale outcome meets an empty chain or a newer front.
+pub fn client_resolve_switch_outcomes(
+    time_sync: &mut ClientTimeSync,
+    pending: &mut VecDeque<PendingSwitchDeclaration>,
+) -> Vec<CurrentSwitchResolution> {
+    time_sync
+        .drain_switch_outcomes()
+        .map(|outcome| resolve_switch_outcome(pending, outcome))
+        .collect()
 }
 
 pub(crate) fn resolve_switch_outcome(
@@ -108,8 +119,9 @@ pub(crate) fn resolve_switch_outcome(
     let Some(front) = pending.front().copied() else {
         return CurrentSwitchResolution::None;
     };
-    // Both directions use reliable-ordered Control. Refuse an out-of-order or
-    // stale outcome rather than letting it skip an unresolved predecessor.
+    // Both directions ride reliable-ordered Input, so outcomes arrive in
+    // declaration order. Refuse an out-of-order or stale outcome rather than
+    // letting it skip an unresolved predecessor.
     if front.declaration_id != declaration_id || front.target_slot != target_slot {
         return CurrentSwitchResolution::None;
     }

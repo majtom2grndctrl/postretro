@@ -306,7 +306,7 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
                 // the eye cuts. The reconcile was ordinary, so history stays, the
                 // teleport record did not move (no view turn or cue) and carry is kept.
                 log::debug!(
-                    "[Net] composed local correction offset reached the teleport floor; eye snaps"
+                    "[Net] composed local correction offset reached the teleport floor or went non-finite; eye snaps"
                 );
                 prediction.teleport_adoptions.push(LocalTeleportAdoption {
                     entity_id,

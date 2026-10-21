@@ -1,6 +1,8 @@
 // The relay link layer both predict/reconcile harnesses run on: a renet
 // `NetServer`/`NetClient` pair on the production channel configuration, joined by
-// two `PacketConditioner`s, flushed at each peer's poll on a virtual 60 Hz clock.
+// two `PacketConditioner`s, flushed at each peer's poll on a virtual clock. Both
+// peers poll at 60 Hz, or the client polls faster to measure its upstream bytes
+// at a render rate.
 // See: context/lib/networking.md §Testing the conditioned link · context/lib/testing_guide.md §4
 //
 // Test infrastructure only. `RelayHarness` (`predict_reconcile_relay_test_fixtures`)
@@ -23,9 +25,10 @@ use postretro_net::wire::{self, ClientMessage, ServerControlMessage, ServerMessa
 use super::SERVER_TICK_MICROS;
 use super::predict_reconcile_harness_test_fixtures::CLIENT_ID;
 
-/// The level both relay peers load and reveal, and its content fingerprint
-/// (also the mod digest), so the slot participates.
+/// The level both relay peers load and reveal, so the slot participates.
 pub(crate) const RELAY_LEVEL: &str = "test-level";
+/// [`RELAY_LEVEL`]'s content fingerprint, which both peers also declare as
+/// their mod digest.
 pub(crate) const RELAY_FINGERPRINT: [u8; 32] = [0x5a; 32];
 
 /// Frames a relay client may take to join and start predicting.

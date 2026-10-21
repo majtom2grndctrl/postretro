@@ -5,9 +5,9 @@ use super::*;
 
 /// Drain one accepted client's `Channel::Input` messages and dispatch each to
 /// [`host_handle_client_message_inner`], which routes by message variant:
-/// replication acks and baseline-refresh requests, time-sync echoes, input
-/// commands (queued per client, not applied here), hit declarations, and
-/// switch declarations (one from a client with no pawn is refused at once).
+/// replication acks and baseline-refresh requests, time-sync probes (echoed
+/// back), input commands (queued per client, not applied here), hit
+/// declarations, and switch declarations (one from a client with no pawn is refused at once).
 /// Corrupt or unknown-variant bytes are logged and dropped — never a panic.
 ///
 /// `server_tick` is the host's current monotonic sim tick (sampled at echo);

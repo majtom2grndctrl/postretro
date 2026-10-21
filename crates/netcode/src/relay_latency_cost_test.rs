@@ -290,19 +290,18 @@ fn lost_ack_delays_a_new_entitys_first_delta_by_at_most_one_snapshot() {
     );
 }
 
-// Finding, not yet a contract: "Baseline ack window" in
-// `context/plans/in-progress/coop--lossy-link-delivery/plan.md` §Findings
-// outside scope, which routes it. Under the dev profile the
-// snapshot carrying a new entity's FullBaseline can arrive after the next one.
-// The client then acks the newer sequence without the entity, and only then the
-// late baseline. An ack whose sequence covers the baseline's send but not its id
-// closes the host's in-flight window (`ServerReplication::apply_ack`), so when
-// the two acks reach the host on different polls with a snapshot encode
-// between, the host sends a second FullBaseline and the entity freezes a further
-// round trip. Here the entity ack's datagram is lost while the earlier ack's
-// arrives, splitting them: the first Delta comes 6 snapshots past the clean
-// run. The same split happens with no loss when jitter alone separates the two
-// ack datagrams (2 of 63 clean dev-profile seeds swept).
+// Finding, not yet a contract, about the baseline ack window. Under the dev
+// profile the snapshot carrying a new entity's FullBaseline can arrive after
+// the next one. The client then acks the newer sequence without the entity, and
+// only then the late baseline. An ack whose sequence covers the baseline's send
+// but not its id closes the host's in-flight window
+// (`ServerReplication::apply_ack`), so when the two acks reach the host on
+// different polls with a snapshot encode between, the host sends a second
+// FullBaseline and the entity freezes a further round trip. Here the entity
+// ack's datagram is lost while the earlier ack's arrives, splitting them: the
+// first Delta comes 6 snapshots past the clean run. The same split happens with
+// no loss when jitter alone separates the two ack datagrams (2 of 63 clean
+// dev-profile seeds swept).
 #[test]
 #[ignore = "finding: a reordered FullBaseline snapshot plus a split ack re-sends the baseline"]
 fn reordered_baseline_with_a_lost_ack_sends_the_baseline_once() {

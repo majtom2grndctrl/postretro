@@ -20,7 +20,8 @@ use super::predict_reconcile_harness_test_fixtures::{
 };
 use super::predict_reconcile_harness_vault::{RISER_Z, TOP_Y, ledge_world, vault};
 use super::predict_reconcile_relay_link_test_fixtures::{
-    OUTAGE_MS, SINGLE_LOSS_BOUND_US, dev_links, first_poll_frame, fixed_delay_link, frame_start_us,
+    LoggedDatagram, OUTAGE_MS, SINGLE_LOSS_BOUND_US, dev_links, first_poll_frame, fixed_delay_link,
+    frame_start_us,
 };
 use super::predict_reconcile_relay_test_fixtures::{ClientCorrection, RelayHarness};
 use super::prediction::{CorrectionClass, ORDINARY_CORRECTION_MAX_M};
@@ -64,8 +65,14 @@ struct SteadyRun {
     host_travel: f32,
     /// Client-to-host pawn distance once both settle after the course.
     settled_error: f32,
-    /// Datagrams the seeded link lost to the host and to the client.
+    /// Datagrams flushed during the course that the seeded link lost, to the
+    /// host and to the client.
     dropped: (u64, u64),
+    /// With datagram logging on, the flush frame of each channel datagram the
+    /// link lost during the course, to the host and to the client.
+    lost_flush_frames: (Vec<u64>, Vec<u64>),
+    /// The frame of the course's first host tick: `host_states[0]`.
+    course_start: u64,
     bystanders_alive: bool,
     /// The host pawn's settled position.
     host_final: Vec3,
@@ -86,6 +93,34 @@ impl SteadyRun {
             })
             .count()
     }
+
+    /// How many of the course's lost datagrams, to the host and to the client,
+    /// were flushed on a frame whose host tick ended in `kind`.
+    fn lost_in_host_state(&self, kind: MovementStateKind) -> (usize, usize) {
+        let in_state = |frames: &Vec<u64>| {
+            frames
+                .iter()
+                .filter(|&&frame| {
+                    let tick = usize::try_from(frame - self.course_start).expect("fits");
+                    self.host_states.get(tick) == Some(&kind)
+                })
+                .count()
+        };
+        (
+            in_state(&self.lost_flush_frames.0),
+            in_state(&self.lost_flush_frames.1),
+        )
+    }
+}
+
+/// The flush frame of each channel datagram in `log` that `link` lost.
+fn lost_flush_frames(log: &[LoggedDatagram], link: &PacketConditioner) -> Vec<u64> {
+    log.iter()
+        .filter_map(|datagram| {
+            let fate = link.channel_datagram(datagram.channel?, datagram.index?)?;
+            fate.arrives_at.is_none().then_some(datagram.frame)
+        })
+        .collect()
 }
 
 /// The floor course: a minute of [`course_command`], which slides on the host.
@@ -113,9 +148,19 @@ fn run_course(
     h.join();
     let course_start = h.frame + 1;
     let trace_start = h.host_trace.len();
+    let dropped_before = (h.to_server.dropped(), h.to_client.dropped());
+    let logged_before = (h.up_log.len(), h.down_log.len());
     for frame in 0..frames {
         h.frame(&command_at(frame));
     }
+    let dropped = (
+        h.to_server.dropped() - dropped_before.0,
+        h.to_client.dropped() - dropped_before.1,
+    );
+    let lost_flush_frames = (
+        lost_flush_frames(&h.up_log[logged_before.0..], &h.to_server),
+        lost_flush_frames(&h.down_log[logged_before.1..], &h.to_client),
+    );
 
     let course_trace = &h.host_trace[trace_start..];
     let corrections: Vec<ClientCorrection> = h
@@ -161,8 +206,8 @@ fn run_course(
         source_count(ResolutionSource::Held),
         source_count(ResolutionSource::Neutral),
         course_trace.len(),
-        h.to_server.dropped(),
-        h.to_client.dropped(),
+        dropped.0,
+        dropped.1,
     );
     let host_travel = course_trace
         .windows(2)
@@ -182,7 +227,9 @@ fn run_course(
         summary,
         host_travel,
         settled_error: h.position_error().expect("the client stays armed"),
-        dropped: (h.to_server.dropped(), h.to_client.dropped()),
+        dropped,
+        lost_flush_frames,
+        course_start,
         bystanders_alive: h.bystanders_alive(),
         host_final: h.host_trace.last().expect("the host ticked").position,
         host_states,
@@ -392,9 +439,10 @@ fn riser_steps_world() -> CollisionWorld {
     CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
-// Row 2's vault windows: a seeded run up a flight of risers under the dev
-// profile, vaulting each one, keeps every correction inside the ordinary band,
-// where the Dash band would otherwise pass up to 2 m.
+// Vaults under loss: a seeded run up a flight of risers under the dev profile,
+// vaulting each one while the link loses datagrams both ways, keeps every
+// correction inside the ordinary band, where the Dash band would otherwise pass
+// up to 2 m.
 #[test]
 fn vault_course_stays_in_ordinary_band_under_dev_profile() {
     let (to_server, to_client) = dev_links(VAULT_COURSE_SEED);
@@ -403,6 +451,7 @@ fn vault_course_stays_in_ordinary_band_under_dev_profile() {
         ..VaultEntry::default()
     }));
     h.world = riser_steps_world();
+    h.log_datagrams = true;
     let run = run_course(
         h,
         &format!("vault course seed {VAULT_COURSE_SEED:#x}"),
@@ -415,10 +464,24 @@ fn vault_course_stays_in_ordinary_band_under_dev_profile() {
         .iter()
         .filter(|correction| correction.movement_state == Some(MovementStateKind::Vault))
         .count();
-    eprintln!("[vault course] host vaults {vaults}; client corrections in a vault {in_vault}");
+    let (lost_up, lost_down) = run.lost_in_host_state(MovementStateKind::Vault);
+    eprintln!(
+        "[vault course] host vaults {vaults}; client corrections in a vault {in_vault}; \
+         datagrams lost in a vault to host {lost_up}, to client {lost_down}"
+    );
     assert!(
         vaults >= VAULT_COURSE_RISERS,
         "the host vaulted {vaults} of {VAULT_COURSE_RISERS} risers"
+    );
+    assert!(
+        lost_up > 0 && lost_down > 0,
+        "the link lost a datagram flushed during a host vault both ways: to host \
+         {lost_up}, to client {lost_down}"
+    );
+    assert!(
+        in_vault > 0,
+        "the client reconciled during a vault: {}",
+        run.summary
     );
     assert_ordinary_band_and_no_snap(&run);
     assert_course_exercised_and_converged(&run);

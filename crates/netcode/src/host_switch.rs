@@ -16,6 +16,11 @@ use crate::command_queue::{HostCommandQueues, MovementOwners, SwitchDelivery, We
 /// id and slot, through the same reply a refused slot uses: the client resolves
 /// its pending chain strictly in declaration order, so a dropped declaration
 /// would leave the front unresolved and discard every later outcome.
+///
+/// The immediate refusal assumes a client's owner entry goes only with its
+/// switch lane, at participation exit or slot replacement. Were the owner
+/// removed alone, this refusal could overtake a declaration the lane still
+/// retains and answer the chain out of order.
 pub fn host_retain_switch_declaration(
     server: &mut NetServer,
     command_queues: &mut HostCommandQueues,
@@ -219,6 +224,11 @@ mod tests {
                 declaration_id: 41,
                 slot: 3,
             })]
+        );
+        assert_eq!(
+            command_queues.retained_switch_count(7),
+            0,
+            "the refused declaration is not retained"
         );
     }
 }

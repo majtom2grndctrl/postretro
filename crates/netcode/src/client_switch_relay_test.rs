@@ -2,8 +2,8 @@
 // See: context/lib/networking.md §Combat authority · §Slot lifecycle · context/lib/testing_guide.md
 //
 // A renet relay pair with the production client endpoint and the host's Input
-// dispatch, switch lane and switch apply. Participation scopes switches with no
-// switch-specific framing: a declaration rides Input's participation frame, so the
+// dispatch, switch lane and switch apply. Switches carry no framing of their own
+// beyond Input's: a declaration rides Input's participation frame, so the
 // host's Input drain drops one framed under a retired epoch; and demotion or level
 // unload clears the client's chain while declaration ids never reset, so a stale
 // outcome meets an empty chain or a newer front.
@@ -107,6 +107,12 @@ struct SwitchRelay {
     /// Every switch declaration message the host's poll took while the slot
     /// participated, so that frame's Input drain read it.
     declarations_drained: Vec<(u64, Vec<u8>)>,
+    /// The declaration id of every switch outcome message the host flushed on
+    /// Input, cut or not, resends included.
+    outcomes_flushed: Vec<u32>,
+    /// The host lane's retained switches right after the latest host frame's
+    /// Input dispatch, before its tick can apply and remove one.
+    retained_after_dispatch: usize,
 }
 
 /// The switch declaration messages a client datagram carries on Input, as
@@ -126,6 +132,27 @@ fn switch_declarations(packet: &[u8]) -> Vec<(u64, Vec<u8>)> {
                 Some(wire::ClientMessage::SwitchDeclaration(_))
             )
         })
+        .collect()
+}
+
+/// The declaration id of each switch outcome message a host datagram carries
+/// on Input. Host Input carries no participation frame.
+fn switch_outcome_ids(packet: &[u8]) -> Vec<u32> {
+    let Some(RenetDatagram::Reliable { channel, messages }) = parse_renet_datagram(packet) else {
+        return Vec::new();
+    };
+    if channel != u8::from(Channel::Input) {
+        return Vec::new();
+    }
+    messages
+        .iter()
+        .filter_map(
+            |(_, bytes)| match wire::decode::<wire::ServerMessage>(bytes).ok()? {
+                wire::ServerMessage::SwitchAccepted(outcome) => Some(outcome.declaration_id),
+                wire::ServerMessage::SwitchRefused(outcome) => Some(outcome.declaration_id),
+                _ => None,
+            },
+        )
         .collect()
 }
 
@@ -178,6 +205,8 @@ impl SwitchRelay {
             cut_down_input: false,
             declarations_flushed: Vec::new(),
             declarations_drained: Vec::new(),
+            outcomes_flushed: Vec::new(),
+            retained_after_dispatch: 0,
         };
         relay.run_until_participating();
         relay.frames(10);
@@ -301,6 +330,7 @@ impl SwitchRelay {
                 0,
             );
         }
+        self.retained_after_dispatch = self.command_queues.retained_switch_count(CLIENT_ID);
         for resolved in host_resolve_remote_commands(&self.owners, &mut self.command_queues) {
             if resolved.source == ResolutionSource::Real {
                 self.resolved_real.push(resolved.client_tick);
@@ -315,6 +345,7 @@ impl SwitchRelay {
             false,
         );
         for packet in self.server.packets_to_send(CLIENT_ID) {
+            self.outcomes_flushed.extend(switch_outcome_ids(&packet));
             let input = renet_packet_channel(&packet) == Some(u8::from(Channel::Input));
             if !(self.cut_down_input && input) {
                 self.down.push(packet);
@@ -556,6 +587,12 @@ fn declaration_sent_before_a_demotion_never_reaches_the_lane_after_repromotion()
         !stale.is_empty() && stale.iter().all(|declaration| *declaration == stale[0]),
         "one declaration left before the demotion: {stale:?}"
     );
+    let Some(wire::ClientMessage::SwitchDeclaration(stale_declaration)) =
+        decode_client_input(&stale[0].1)
+    else {
+        panic!("the flushed message is a switch declaration");
+    };
+    let stale_id = stale_declaration.declaration_id;
     relay.host_demotes();
     relay.frames(3);
     assert_eq!(relay.holdings.len(), 1);
@@ -568,9 +605,10 @@ fn declaration_sent_before_a_demotion_never_reaches_the_lane_after_repromotion()
     relay.cut_up = false;
     for _ in 0..PAST_SWITCH_WAIT {
         relay.frame();
+        // Read right after the Input dispatch, so a declaration admitted and
+        // applied within one host frame would still show.
         assert_eq!(
-            relay.command_queues.retained_switch_count(CLIENT_ID),
-            0,
+            relay.retained_after_dispatch, 0,
             "the retired declaration never enters the lane"
         );
     }
@@ -603,6 +641,16 @@ fn declaration_sent_before_a_demotion_never_reaches_the_lane_after_repromotion()
         relay.resolutions
     );
     assert_eq!(relay.host_active_slot(), Some(1));
+    assert!(
+        relay.outcomes_flushed.contains(&(stale_id + 1)),
+        "the scan sees the new declaration's outcome: {:?}",
+        relay.outcomes_flushed
+    );
+    assert!(
+        !relay.outcomes_flushed.contains(&stale_id),
+        "the host never sends an outcome for the stale declaration {stale_id}: {:?}",
+        relay.outcomes_flushed
+    );
 }
 
 // A declaration the host drops by epoch leaves no chain waiting on it: Holding

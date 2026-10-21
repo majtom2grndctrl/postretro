@@ -103,13 +103,14 @@ fn handed_over_frame(arrivals: &BTreeMap<u64, Option<VirtualMillis>>, id: u64) -
     first_poll_frame(released)
 }
 
-/// The uplink message id carrying each probe, by sample id.
-fn probe_messages(h: &RelayHarness) -> HashMap<u32, u64> {
+/// The uplink message id carrying each probe and the frame whose poll first
+/// flushed it, by sample id.
+fn probe_messages(h: &RelayHarness) -> HashMap<u32, (u64, u64)> {
     let mut ids = HashMap::new();
     for datagram in &h.up_log {
         for (id, bytes) in input_messages(datagram) {
             if let Some(ClientMessage::TimeSync(probe)) = decode_client_input(bytes) {
-                ids.entry(probe.sample_id).or_insert(*id);
+                ids.entry(probe.sample_id).or_insert((*id, datagram.frame));
             }
         }
     }
@@ -197,7 +198,14 @@ fn rtt_estimate_tracks_the_realized_round_trip_under_dev_profile() {
     let probes = probe_messages(&h);
     let echo_ids = echo_messages(&h);
     let true_rtt_us = |sample_id: u32| -> u64 {
-        let host_frame = handed_over_frame(&up, probes[&sample_id]);
+        let (probe, probe_flush) = probes[&sample_id];
+        assert_eq!(
+            probe_flush,
+            sent_frame[&sample_id] + 1,
+            "the client issues probe {sample_id} after its poll's flush, and its next \
+             poll flushes the probe"
+        );
+        let host_frame = handed_over_frame(&up, probe);
         let (echo, echo_flush) = echo_ids[&sample_id];
         assert_eq!(
             echo_flush,
@@ -208,11 +216,15 @@ fn rtt_estimate_tracks_the_realized_round_trip_under_dev_profile() {
         frame_start_us(handed_over_frame(&down, echo)) - frame_start_us(sent_frame[&sample_id])
     };
 
-    // The link bounds the window minimum. Below: no probe beats both
-    // directions' base delay. Above: both directions' largest delay, two frames
-    // and one 60 Hz resend poll, which the quickest of sixteen probes beats
-    // unless the relay held up every one of them.
-    let floor_us = (to_server.delay + to_client.delay) * 1000;
+    // The link bounds the window minimum. Below: the two flush waits asserted
+    // above, a frame each, and each direction's base delay. A frame spans at
+    // least `SERVER_TICK_MICROS - 1` (`frame_start_us` rounds down), and the
+    // conditioners stamp sends in whole milliseconds, so a leg can undercut its
+    // base delay by up to 999 us. Above: both directions' largest delay, two
+    // frames and one 60 Hz resend poll, which the quickest of sixteen probes
+    // beats unless the relay held up every one of them.
+    let floor_us =
+        (to_server.delay + to_client.delay) * 1000 + 2 * (SERVER_TICK_MICROS - 1) - 2 * 999;
     let ceiling_us =
         largest_one_way_us(to_server) + largest_one_way_us(to_client) + 3 * SERVER_TICK_MICROS;
     let mut realized: Vec<f64> = Vec::new();

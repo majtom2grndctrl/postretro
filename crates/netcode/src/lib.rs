@@ -1507,10 +1507,11 @@ fn local_hits_to_wire_records(
         .collect()
 }
 
-/// Decay the local-pawn presentation offset after the current presented fixed-tick
-/// camera pose has been pushed. The render stage interpolates those presented poses
-/// directly, so the offset is baked into the frame-timing endpoints exactly once. A
-/// no-op for single-player, the host, or a client with no correction in flight.
+/// Decay the local-pawn presentation offset once per predicted tick, after the
+/// tick-rate camera follow has folded it into the camera pose and before that pose
+/// is pushed to frame timing. The render stage interpolates those presented poses
+/// directly, so the offset enters the frame-timing endpoints exactly once. A no-op
+/// for single-player, the host, or a client with no correction in flight.
 pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
     if let Some(NetEndpoint::Client { prediction, .. }) = endpoint {
         prediction.decay_presentation_offset();

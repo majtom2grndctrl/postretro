@@ -1711,21 +1711,34 @@ fn follow_camera_to_local_pawn(
     }
 }
 
-/// The followed local pawn's eye: its registry position, plus the presentation
-/// offset, plus the capsule's eye height. The one place the eye offset is
-/// applied, so level install holds, and preloads lightmaps for, the same
-/// point the first tick moves the camera to.
+/// The followed local pawn's eye; see [`pawn_eye_position`].
 fn local_pawn_eye_position(
     registry: &postretro_entities::EntityRegistry,
     presentation_offset: Vec3,
 ) -> Option<Vec3> {
+    pawn_eye_position(
+        registry,
+        followed_player_pawn(registry)?,
+        presentation_offset,
+    )
+}
+
+/// A movement pawn's presented eye: its registry position, plus the
+/// presentation offset, plus the capsule's eye height. The one place the eye
+/// offset is applied, so level install holds, and preloads lightmaps for, the
+/// same point the first tick moves the camera to, and an adoption's camera cut
+/// holds the eye the next tick presents.
+fn pawn_eye_position(
+    registry: &postretro_entities::EntityRegistry,
+    pawn: postretro_entities::EntityId,
+    presentation_offset: Vec3,
+) -> Option<Vec3> {
     use postretro_entities::Transform;
 
-    let id = followed_player_pawn(registry)?;
     let component = registry
-        .get_component::<postretro_foundation::PlayerMovementComponent>(id)
+        .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
         .ok()?;
-    let transform = registry.get_component::<Transform>(id).ok()?;
+    let transform = registry.get_component::<Transform>(pawn).ok()?;
     Some(
         transform.position
             + presentation_offset

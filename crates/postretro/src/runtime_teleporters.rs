@@ -309,12 +309,8 @@ pub(crate) fn apply_local_adoptions(
         }
     }
     if let Some(entity) = cut {
-        if let (Ok(pose), Ok(movement)) = (
-            registry.get_component::<Transform>(entity),
-            registry.get_component::<postretro_foundation::PlayerMovementComponent>(entity),
-        ) {
-            camera.position =
-                pose.position + presentation_offset + Vec3::Y * movement.capsule.eye_height;
+        if let Some(eye) = crate::pawn_eye_position(registry, entity, presentation_offset) {
+            camera.position = eye;
         }
         timing.hold_state(crate::frame_timing::InterpolableState::new(camera.position));
     }

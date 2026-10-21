@@ -1016,7 +1016,7 @@ fn presented_first_person_eye_is_smooth_under_reconcile_cadence() {
     h.step_until_armed(&forward_command(false));
     assert!(h.prediction.is_armed(), "prediction armed before sampling");
 
-    // Reconstruct the EXACT production first-person eye assembly (main.rs ~2175-2445):
+    // Reconstruct the EXACT production first-person eye assembly:
     //   - each fixed tick, `follow_camera_to_local_pawn` reads the registry CURRENT eye
     //     PLUS the presentation offset (the PRESENTED pose) into `camera.position`, the
     //     offset decays once per tick, and `frame_timing.push_state(camera.pos)` pushes
@@ -1025,9 +1025,9 @@ fn presented_first_person_eye_is_smooth_under_reconcile_cadence() {
     //     (the offset is already baked into the pose — NOT re-added at render).
     // We drive a real `FrameTiming` with that PRESENTED eye stream. The offset is folded
     // via `present_local_pose` (the pure presentation accessor) using the same value
-    // `client_local_presentation_offset` feeds the render seam. Several render frames per
-    // tick at a ladder of alphas reconstruct the continuous eye a variable-rate renderer
-    // draws. The reconcile cadence (inside `h.step`) perturbs the registry across the run;
+    // `client_local_presentation_offset` feeds the tick-rate camera follow. Several
+    // render frames per tick at a ladder of alphas reconstruct the continuous eye a
+    // variable-rate renderer draws. The reconcile cadence (inside `h.step`) perturbs the registry across the run;
     // a correct presented-pose assembly stays continuous across each snap.
     let seed_eye = h.local_pawn_eye().expect("armed pawn has an eye");
     let mut frame_timing = FrameTiming::new(InterpolableState::new(seed_eye));

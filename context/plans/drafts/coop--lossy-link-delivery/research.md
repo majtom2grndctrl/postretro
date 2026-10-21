@@ -91,13 +91,13 @@ Sources (techniques public; no current encumbrance found; not legal advice):
 - Carried magazine and reserve: no client reader. `client_reload.rs` reads `ReplicatedWeaponProjection`. No defect.
 - Latent (not this brief): host ack apply uses plain `>`, not serial. It only matters past a `u32` wrap (~days at high churn). The entity baseline allocator's `wrapping_add` can hand out sentinel 0.
 
-## Reload meter
+## Switch scoping off Control (read at d6f3471)
 
-- `hud.ts` `reloadMeter` binds `player.reloadProgress` with no tween, and visibility follows `player.reloadActive`.
-- On a connected client, `PlayerHudStatePublisher::tick_for_role_and_report_sampled_weapon` skips reload publish. The value is the host's `WeaponComponent::reload_feedback_sample`: an endpoint stream, else `1 - remaining/total`. It is sent as `ReplicatedWireShape::WieldableSlotNumber` at `SNAPSHOT_TICK_INTERVAL` = 2 (~30 Hz, unreliable).
-- `ClientStateApply` writes it straight into the store. Jitter reorders snapshots, and newest-wins drops the late ones. A loss leaves a ~66 ms hold.
-- `WEAPON_COOLDOWN_SLOT` (`player.weaponCooldownMs`) shares the wire shape, so the executor checks whether any HUD binds it.
-- Host-time anchor precedent: `PresentationBindings::accept_presentation_clock` / `presentation_host_time` (client/bindings.rs), consumed by mesh_anim.rs `rebase_time`.
+- Client→host: `NetClient::send_input` wraps payloads in `ParticipationFrame`; `NetServer::drain_input` drops frames whose epoch differs from the client's current one. `send_switch_declaration` sends on Control, gated only on `active_participation_epoch.is_some()`, with no frame epoch.
+- Host→client: `NetClient::drain_input` epoch-filters only `WeaponCues`. `resolve_switch_outcome` refuses an outcome unless it matches the front of the pending chain by `declaration_id` and slot. `demote_client_state` and `reset_level_scoped_client_state` clear `pending_switch_declarations`; `next_switch_declaration_id` is set once at endpoint construction and only increments (`wrapping_add`). A stale outcome therefore meets an empty chain or a newer front.
+- Host lane removal: `HostCommandQueues::remove_client` on slot close and pawn loss.
+
+The reload-meter research moved to `drafts/ui-tween-clock/research.md` §Timed-value projection with the scope.
 
 ## Harness inventory
 

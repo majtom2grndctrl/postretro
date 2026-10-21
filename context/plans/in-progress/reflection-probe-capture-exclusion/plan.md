@@ -43,57 +43,57 @@ Branch: `claude/reflection-probe-capture-exclusion`, cut from `main` at the clai
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 t(W) values, continuity, monotonic | `classify` unit test | achievable as stated |
-| 2 W = √area on L pool and canal | `classify` unit test over `PlacedProbe::bound_area` from fixture geometry | achievable as stated |
-| 3 predicate t ± ε at 5 m and 50 m | `classify` unit test | achievable as stated |
-| 4 floor both sides; post; f follows coarsest stride; f < t | `classify` unit tests | achievable as stated |
-| 5 shore rail kept, post excluded at W = 2 m | `classify` unit test | achievable as stated |
-| 6 vertical reflector normal | `classify` unit test (size/thin functions take the normal) | achievable as stated |
-| 7 floor-ratio drift test | `#[cfg(test)]` drift test reading render-cpu presets + HFOV pin | achievable as stated |
-| 8 lake dock/beam kept over water, excluded off it (f ≈ 0.37 m, see Corrections) | underside unit tests on built geometry | achievable as stated |
-| 9 pillar and post in water excluded | underside unit test | achievable as stated |
-| 10 off-projection and edge-only ledge excluded | underside unit test | achievable as stated |
-| 11 deck under authored `_capture_offset` kept | underside test through authored placement | achievable as stated |
-| 12 sunk crate on dock excluded | underside test through CSG geometry | achievable as stated |
-| 13 footbridge over pool A only: A keeps, B excludes | per-probe classification test | achievable as stated |
-| 14 two-height authored box deck | underside test | achievable as stated |
-| 15 45° wedge kept; 2° kept, 0.5° excluded | underside test | achievable as stated |
-| 16 face crossing the plane, part above kept | underside test | achievable as stated |
-| 17 pillar body reads wall, distance/mip from capture point | capture test, pillar fixture | achievable as stated |
-| 18 ceiling fill: material, distance, static + SH within 5%, deterministic, albedo at UV | capture test | achievable as stated |
-| 19 sdf and animated fill within 5%; pillar-only animated light no share | capture test | achievable as stated |
-| 20 derived box on wall/ceiling: no leak guard through pillar or patch | capture test (instrumented outcome counts) | achievable as stated |
-| 21 wall keeps pillar sdf shadow | capture test | achievable as stated |
-| 22 untouched texels bit-identical; untouched BC6H blocks byte-identical | capture test, filtered vs unfiltered | achievable as stated |
-| 23 sunk pillar fills; overlapping kept brush both orders fills | capture tests | achievable as stated |
-| 24 pillar 0.5 mm short reads intact ceiling | capture test | achievable as stated |
-| 25 embedded leak-guard brush reads itself | capture test | achievable as stated |
-| 26 closed room: no miss, none outside | capture test | achievable as stated |
-| 27 chained closed room O3 | capture test | achievable as stated |
-| 28 seal fixture both backdrops; post-then-`never` wall leak guard reads post | capture test | achievable as stated |
-| 29 coplanar trim both orders | capture test | achievable as stated |
-| 30 placement identical filter on/off | placement test | achievable as stated |
-| 31 two probes, O7 | capture test | achievable as stated |
-| 32 all ≥ t: id 54 byte-identical to forced-empty; old capture tests unchanged | capture test + existing suite | achievable as stated |
-| 33 oversize cut: face → brush remap, mask skips exactly the pillar's sub-faces | unit test through `plan_cut_charts` remap | achievable as stated |
-| 34 end to end prl-build, with and without forced cut | integration test in `tests/`, `.map` fixture | achievable as stated |
-| 35 hidden-water warning fires unfiltered, not filtered, cold and warm | capture test with log capture | achievable as stated |
-| 36 override on func_group and switch | parse + classify test from `.map` text | achievable as stated |
-| 37 degenerate first brush in `never` group | parse test | achievable as stated |
-| 38 invalid value warns once per entity, cold/warm/no water | parse test with log capture + stage test | achievable as stated |
-| 39 authored func_group no marker warning; TB group with empty id still warns | parse test with log capture | achievable as stated |
-| 40 worldspawn `never` inert; `_tb_group` / `_tb_layer` ignored with warning | parse test | achievable as stated |
-| 41 key misses on override, anchors, floor ratio, moved brush; hits otherwise; earlier stages hit | `stage_key` tests + pipeline stage-cache test | achievable as stated |
-| 42 flush vs sunk: differ in key or byte-identical cold | stage test | achievable as stated |
-| 43 moving one excluded hull plane or contact side misses | `stage_key` test | achievable as stated |
-| 44 `--no-cache` jobs 1 vs 4 byte-identical | integration test (extend the existing worker-count test) | achievable as stated |
-| 45 source gate grep | gate test or scripted grep in preflight, recorded here | achievable as stated |
-| 46 FGD `func_group` + `switch` offer values; docs; no xtask in docs | grep + FGD parse test if one exists | achievable as stated |
-| 47 ip-check §9 carries the line | grep | achievable as stated |
-| 48 visual check on three maps, anchor retune | owner, in-engine | manual |
-| 49 cold/warm probe-stage time on e24 before/after | owner's terminal (long bake) | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 t(W) values, continuity, monotonic | `classify` unit test | achievable as stated | pass: `size_threshold_meets_the_anchors_and_rises_continuously_with_width` |
+| 2 W = √area on L pool and canal | `classify` unit test over `PlacedProbe::bound_area` from fixture geometry | achievable as stated | pass: `water_width_is_the_root_of_the_bound_area_for_an_l_pool_and_a_canal` |
+| 3 predicate t ± ε at 5 m and 50 m | `classify` unit test | achievable as stated | pass: `brush_just_under_the_threshold_is_excluded_and_just_over_it_kept` |
+| 4 floor both sides; post; f follows coarsest stride; f < t | `classify` unit tests | achievable as stated | pass: `brush_just_under_the_floor_is_kept_and_just_over_it_excluded` |
+| 5 shore rail kept, post excluded at W = 2 m | `classify` unit test | achievable as stated | pass: `shore_rail_is_kept_and_standing_post_excluded_on_two_metre_water` |
+| 6 vertical reflector normal | `classify` unit test (size/thin functions take the normal) | achievable as stated | pass: `brush_extents_against_a_vertical_normal_read_vertical_and_along_wall_size_and_depth_thinness` |
+| 7 floor-ratio drift test | `#[cfg(test)]` drift test reading render-cpu presets + HFOV pin | achievable as stated | pass: `floor_stride_divisor_matches_the_coarsest_screen_space_tier`, `floor_field_of_view_matches_the_engine_default` |
+| 8 lake dock/beam kept over water, excluded off it (f ≈ 0.37 m, see Corrections) | underside unit tests on built geometry | achievable as stated | pass: `lake_dock_and_beam_are_kept_over_the_water_and_excluded_off_it` |
+| 9 pillar and post in water excluded | underside unit test | achievable as stated | pass: `pillar_and_post_standing_in_the_water_are_excluded` |
+| 10 off-projection and edge-only ledge excluded | underside unit test | achievable as stated | pass: `downward_faces_off_the_water_or_meeting_it_only_along_its_edge_are_excluded` |
+| 11 deck under authored `_capture_offset` kept | underside test through authored placement | achievable as stated | pass: `deck_over_an_authored_capture_offset_stays_in_the_capture` |
+| 12 sunk crate on dock excluded | underside test through CSG geometry | achievable as stated | pass: `crate_sunk_into_a_dock_over_the_water_is_excluded_and_the_dock_kept` |
+| 13 footbridge over pool A only: A keeps, B excludes | per-probe classification test | achievable as stated | pass: `footbridge_over_one_pool_is_kept_by_its_probe_and_excluded_by_the_other` |
+| 14 two-height authored box deck | underside test | achievable as stated | pass: `deck_between_two_bound_planes_is_kept_over_the_lower_water_and_excluded_under_the_upper` |
+| 15 45° wedge kept; 2° kept, 0.5° excluded | underside test | achievable as stated | pass: `faces_sloping_down_past_one_degree_over_the_water_are_undersides` |
+| 16 face crossing the plane, part above kept | underside test | achievable as stated | pass: `face_crossing_the_water_plane_counts_by_its_part_above` |
+| 17 pillar body reads wall, distance/mip from capture point | capture test, pillar fixture | achievable as stated | pass: `rays_through_an_excluded_pillar_read_the_wall_behind_from_the_capture_point` |
+| 18 ceiling fill: material, distance, static + SH within 5%, deterministic, albedo at UV | capture test | achievable as stated | pass: `the_filled_ceiling_patch_reads_the_ceilings_material_and_lighting` |
+| 19 sdf and animated fill within 5%; pillar-only animated light no share | capture test | achievable as stated | pass: `the_filled_patch_takes_the_ceilings_sdf_and_animated_light_and_the_pillars_light_drops_out` |
+| 20 derived box on wall/ceiling: no leak guard through pillar or patch | capture test (instrumented outcome counts) | achievable as stated | pass: `no_ray_through_the_pillar_or_its_filled_patches_takes_the_leak_guard` |
+| 21 wall keeps pillar sdf shadow | capture test | achievable as stated | pass: `the_wall_behind_an_excluded_pillar_keeps_its_sdf_shadow` |
+| 22 untouched texels bit-identical; untouched BC6H blocks byte-identical | capture test, filtered vs unfiltered | achievable as stated | pass: `texels_no_ray_sent_into_the_pillar_capture_bit_identically_when_it_is_excluded` |
+| 23 sunk pillar fills; overlapping kept brush both orders fills | capture tests | achievable as stated | pass: `a_sunk_pillar_and_an_overlapping_kept_brush_both_fill_the_ceiling_patch` |
+| 24 pillar 0.5 mm short reads intact ceiling | capture test | achievable as stated | pass (per Corrections): 2 mm `rays_through_a_pillar_short_of_the_ceiling_re_trace_onto_the_intact_ceiling`; 0.5 mm `rays_through_a_pillar_half_a_millimetre_short_of_the_ceiling_fill_at_the_ceiling`, `shallow_rays_through_a_pillar_half_a_millimetre_short_of_the_ceiling_fill_at_the_ceiling` |
+| 25 embedded leak-guard brush reads itself | capture test | achievable as stated | pass: `an_excluded_cap_embedded_in_a_kept_beam_reads_its_own_surface` |
+| 26 closed room: no miss, none outside | capture test | achievable as stated | pass: `a_closed_room_with_every_decor_brush_excluded_never_misses_or_leaves_the_room` |
+| 27 chained closed room O3 | capture test | achievable as stated | pass: `a_chained_closed_room_fills_every_contact_patch_behind_its_excluded_brushes`; sub-mm: `rays_through_stacked_crates_half_a_millimetre_apart_fill_the_ceiling_patch`, `shallow_rays_from_a_crate_into_one_half_a_millimetre_above_fill_the_ceiling_patch` |
+| 28 seal fixture both backdrops; post-then-`never` wall leak guard reads post | capture test | achievable as stated | pass (per Corrections): `excluded_seals_read_their_own_surfaces_and_a_post_before_one_reads_itself` |
+| 29 coplanar trim both orders | capture test | achievable as stated | pass (per Corrections): `a_coplanar_trim_over_a_wall_reads_the_wall_in_either_map_order` |
+| 30 placement identical filter on/off | placement test | achievable as stated | pass: `placed_probes_are_identical_with_the_filter_on_and_off` |
+| 31 two probes, O7 | capture test | achievable as stated | pass: `a_brush_one_probe_excludes_fills_only_in_the_probe_that_keeps_it` |
+| 32 all ≥ t: id 54 byte-identical to forced-empty; old capture tests unchanged | capture test + existing suite | achievable as stated | pass: `a_level_whose_brushes_all_reach_the_threshold_captures_byte_identically_unfiltered`; every pre-existing capture test unchanged |
+| 33 oversize cut: face → brush remap, mask skips exactly the pillar's sub-faces | unit test through `plan_cut_charts` remap | achievable as stated | pass: `oversize_cut_remaps_each_sub_face_to_its_parent_brush_and_the_mask_follows`, `remap_face_brushes_follows_the_cut_and_drops_an_emptied_face` |
+| 34 end to end prl-build, with and without forced cut | integration test in `tests/`, `.map` fixture | achievable as stated | pass: `prl_build_captures_the_wall_behind_a_pillar_the_rule_excludes`, `prl_build_captures_through_an_excluded_pillar_with_the_oversize_cut_forced` |
+| 35 hidden-water warning fires unfiltered, not filtered, cold and warm | capture test with log capture | achievable as stated | pass: `hidden_water_warns_unfiltered_and_not_filtered_cold_and_warm` |
+| 36 override on func_group and switch | parse + classify test from `.map` text | achievable as stated | pass: `func_group_and_switch_reflection_capture_lands_on_every_brush`, `capture_overrides_on_func_group_and_switch_beat_the_rule_through_parse` |
+| 37 degenerate first brush in `never` group | parse test | achievable as stated | pass: `never_func_group_with_degenerate_first_brush_excludes_its_other_brushes`, `retained_hull_seam_keeps_values_on_their_own_brushes_when_a_brush_drops` |
+| 38 invalid value warns once per entity, cold/warm/no water | parse test with log capture + stage test | achievable as stated | pass: `invalid_reflection_capture_warns_once_naming_the_entity_and_acts_as_auto`, `an_invalid_override_warns_once_cold_warm_and_without_water` |
+| 39 authored func_group no marker warning; TB group with empty id still warns | parse test with log capture | achievable as stated | pass: `authored_func_group_without_tb_keys_raises_no_empty_marker_warning` |
+| 40 worldspawn `never` inert; `_tb_group` / `_tb_layer` ignored with warning | parse test | achievable as stated | pass: `worldspawn_reflection_capture_never_leaves_world_brushes_auto`, `trenchbroom_group_and_layer_ignore_reflection_capture_with_one_warning_each` |
+| 41 key misses on override, anchors, floor ratio, moved brush; hits otherwise; earlier stages hit | `stage_key` tests + pipeline stage-cache test | achievable as stated | pass: `capture_key_misses_on_a_resolved_override_or_any_rule_constant_and_hits_otherwise`, `an_override_only_edit_misses_only_the_capture_stage`, `a_perturbed_rule_constant_moves_a_brush_near_the_threshold_and_misses_the_capture` |
+| 42 flush vs sunk: differ in key or byte-identical cold | stage test | achievable as stated | pass: `flush_and_sunk_excluded_pillars_key_the_capture_differently` |
+| 43 moving one excluded hull plane or contact side misses | `stage_key` test | achievable as stated | pass: `moving_an_excluded_hull_plane_or_a_contact_side_misses_the_capture` |
+| 44 `--no-cache` jobs 1 vs 4 byte-identical | integration test (extend the existing worker-count test) | achievable as stated | pass: `prl_build_excluding_capture_is_byte_identical_at_one_and_four_jobs`, `an_excluding_capture_is_byte_identical_across_worker_counts` |
+| 45 source gate grep | gate test or scripted grep in preflight, recorded here | achievable as stated | pass: greps at 0755a3fbd: non-test compiler hits only `parse/reflection_capture.rs`; none in renderer, render-cpu, level-format, level-loader; level-format reflection_probes unchanged from main; `FluidReflectionQuality` only in `exclusion_tests.rs` |
+| 46 FGD `func_group` + `switch` offer values; docs; no xtask in docs | grep + FGD parse test if one exists | achievable as stated | pass: `fgd_func_group_and_switch_offer_every_reflection_capture_value`; 0 `cargo run -p xtask` under docs/ |
+| 47 ip-check §9 carries the line | grep | achievable as stated | pass: ip-check.md section 9 carries the line |
+| 48 visual check on three maps, anchor retune | owner, in-engine | manual | outstanding (manual): owner looked at reflection-probes-test, e24 and campaign-test on 2026-10-20 and reported it looked good; the 50 m+ lake fixture is not built, the listed judgments are not recorded, anchors not retuned |
+| 49 cold/warm probe-stage time on e24 before/after | owner's terminal (long bake) | manual | outstanding (manual): cold and warm probe-stage time on e24, before and after |
 
 ## Tasks
 
@@ -105,6 +105,20 @@ Branch: `claude/reflection-probe-capture-exclusion`, cut from `main` at the clai
 | 4 | **Override authoring.** `ReflectionCapture` on `MapData`. Read `_reflection_capture` in parse.rs's `func_group` (no `_tb_type`) and `switch` branches through a new parse submodule, with warnings (O5), the `_tb_type` ignore-and-warn, and the marker-warning narrowing. Translate at the retained-hull seam (O4). FGD `func_group` entry plus `switch` key; `docs/level_design.md` §Fluid reflections. Proves ACs 36 (parse half), 37–40, 46. | delegated (Sonnet or Opus worker), reviewed by executor | — | |
 | 5 | **Integration.** Classification per probe feeds masks and contact candidates into `capture_section`. Pass brush volumes, the override table and the face → brush table through `ReflectionProbeInputs`. Cache key additions and `STAGE_VERSION` 10. Hidden-water warning over the filtered section. End-to-end `.map` fixture through prl-build. Proves ACs 30–32, 34–36, 41–44. | integrating executor | 1, 2, 3, 4 | |
 | 6 | **Gates and durable text.** Source-gate check (45), ip-check §9 line (47), and `resource_management.md` §5.2 "decided; not built" wording updated on landing. | integrating executor | 5 | |
-| 7 | Preflight, review panel, fix loop, full gate. | integrating executor | 6 | |
+| 7 | Preflight, review panel, fix loop, full gate. | integrating executor | 6 | done: see Gate and review |
 
 Tasks 3 and 4 touch disjoint files (classification module vs parse/FGD/docs) and can run concurrently with task 1. Cargo runs only in the integrating executor, sequentially.
+
+## Gate and review (at 0755a3fbd)
+
+- Preflight, run at e7cce95e0 (later commits touch only an xtask gate and one doc comment, re-checked):
+  - `cargo fmt --check` ✓; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` ✓; level-compiler `--all-targets` clippy ✓.
+  - `cargo test`: 12012 passed, 1 failed: `xtask` `no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input`. Fixed in 0755a3fbd; `cargo test -p xtask --bin xtask` 34 passed.
+  - `cargo check --release` ✓; `crate-graph --check` ✓.
+  - level-compiler `--ignored`: all pass but `cluster_directory_threshold_dry_run_from_prl` and `lightmap_residency_dry_run_from_prl`, which need `POSTRETRO_CLUSTER_DRY_RUN_PRL` / `POSTRETRO_LIGHTMAP_RESIDENCY_DRY_RUN_PRL` naming a prebuilt PRL (environment, not this change).
+- The reflection-input gate (fluid-ssr-reflections: "no FGD key gains a reflection input") now allows `_reflection_capture` on `func_group` and `switch` only. The key selects which brushes a probe's bake keeps, not how a surface reflects; the gate's material and texture-rule halves are unchanged.
+- Review panel:
+  - Round 1, 7 lenses: one 🟡 seam bug (sub-millimetre contact, found twice), the rest hygiene and drift. All acted on except the `_tb_type` exact match (the brief's Decision reads any `_tb_type`), redundant length guards, and a method/free-function name pair.
+  - Round 2, 2 lenses: one 🟡 (contact measured along the ray instead of off the hull's planes), fixed with slant-ray tests.
+  - Round 3, tracer: clean. 🟢 left: a sub-centimetre grazing band at a covered kept end can read the kept brush's own edge material instead of the leak guard; no slant test for the 2 mm gap, or for a fill on the intact ceiling just outside a pillar's footprint.
+- In-engine (owner, 2026-10-20): reflection-probes-test (probes exclude 17, 10 and 8 brushes), e24 (12 probes, 0 to 18 each) and campaign-test (1 probe, 7) bake and run with no new warnings or errors.

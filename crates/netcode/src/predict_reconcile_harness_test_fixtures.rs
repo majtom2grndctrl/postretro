@@ -249,6 +249,8 @@ pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
             accel: 10.0,
             step_height: 0.3,
             max_slope: 45.0,
+            friction: GroundParams::DEFAULT_FRICTION,
+            stop_speed: GroundParams::DEFAULT_STOP_SPEED,
         },
         air: AirParams {
             forward_steer: 0.0,
@@ -835,6 +837,28 @@ impl LoopbackHarness {
         self
     }
 
+    /// Give both peers' shared player descriptor ground friction tuning and
+    /// rematerialize the host pawn from it, as [`Self::with_player_swim`] does.
+    pub(crate) fn with_player_ground_friction(mut self, friction: f32, stop_speed: f32) -> Self {
+        for descriptor in &mut self.descriptors {
+            if let Some(movement) = descriptor.movement.as_mut() {
+                movement.ground.friction = friction;
+                movement.ground.stop_speed = stop_speed;
+            }
+        }
+        let movement = self.descriptors[0]
+            .movement
+            .as_ref()
+            .expect("the shared player descriptor has movement");
+        self.host_registry
+            .set_component(
+                self.host_pawn,
+                PlayerMovementComponent::from_descriptor(movement),
+            )
+            .unwrap();
+        self
+    }
+
     /// Give both peers' shared player descriptor a vault block and
     /// rematerialize the host pawn from it, as [`Self::with_player_swim`] does.
     pub(crate) fn with_player_vault(mut self, vault: VaultParams) -> Self {
@@ -1373,12 +1397,23 @@ impl LoopbackHarness {
                 let entity_class =
                     super::descriptor_class::decode_replicated_descriptor_class(entity_class)
                         .canonical_name();
-                materialize_net_local_movement_component(
-                    entity_class,
-                    &self.descriptors,
-                    &mut self.client_registry,
-                    armed.entity_id,
-                );
+                // Installed host tuning with no movement leaves the pawn inert, as
+                // production's `materialize_armed_local_pawn` does; every owner
+                // record re-arms, so the shared-descriptor shortcut must not revive
+                // it. Before any tuning installs, the harness still materializes
+                // from the shared descriptors, where production stays inert.
+                let inert = self
+                    .client_tuning
+                    .as_deref()
+                    .is_some_and(|tuning| tuning.movement.is_none());
+                if !inert {
+                    materialize_net_local_movement_component(
+                        entity_class,
+                        &self.descriptors,
+                        &mut self.client_registry,
+                        armed.entity_id,
+                    );
+                }
             }
             if let Some(reconcile) = &outcome.local_reconcile
                 && let Some(environment) = client_environment_view(

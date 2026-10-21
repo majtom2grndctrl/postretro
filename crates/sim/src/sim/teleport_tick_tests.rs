@@ -1193,6 +1193,8 @@ fn trigger_movement_descriptor() -> postretro_foundation::PlayerMovementDescript
             accel: 10.0,
             step_height: 0.3,
             max_slope: 45.0,
+            friction: GroundParams::DEFAULT_FRICTION,
+            stop_speed: GroundParams::DEFAULT_STOP_SPEED,
         },
         air: AirParams {
             forward_steer: 0.0,

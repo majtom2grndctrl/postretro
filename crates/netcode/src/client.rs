@@ -164,19 +164,103 @@ struct RemoteEnemyWalkPlayback {
 
 /// Descriptor-derived locomotion data for a remote player avatar. Remote player
 /// meshes deliberately remain presentation-only; this cache lets the client derive
-/// idle/walk/run and forward/backward from replicated intrinsic velocity without
-/// attaching PlayerMovement.
+/// idle/walk/run/crouch/jump and forward/backward from replicated intrinsic
+/// velocity, posture and footing without attaching PlayerMovement.
 #[derive(Debug, Clone)]
 struct RemotePlayerLocomotion {
     reference: RemotePlayerLocomotionReference,
-    /// Last state selected from the interpolated intrinsic player velocity. Snapshot application
-    /// compares its authoritative state against this prediction before correcting.
+    /// Last state selected from the interpolated intrinsic player velocity. A due
+    /// host state is compared against this prediction before correcting.
     client_derived_state: Option<String>,
-    /// Server state currently honored over this client's prediction. Snapshot
-    /// state leads the interpolated pose, so the velocity derivation does not
-    /// switch away from it until the derivation agrees with it or the host names
-    /// another state.
+    /// Server state currently honored over this client's prediction. The velocity
+    /// derivation does not switch away from it until the derivation agrees with it
+    /// or the host names another state.
     authoritative_correction_state: Option<String>,
+    /// Host states received but not yet presented, oldest first, each with the
+    /// server tick it was selected on. A state applies once the presented pose
+    /// reaches its tick, so it never leads the body it describes.
+    pending_corrections: VecDeque<PendingAnimationCorrection>,
+    /// The jump phase has no presented history to advance from: the avatar was
+    /// just cached, or a held newest pose is about to hand over to an older
+    /// interpolated one. The next interpolated presentation reads the phase from
+    /// its footing instead.
+    resync_jump_phase: bool,
+}
+
+/// Which pose a remote avatar's locomotion is selected from this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemotePlayerPresentation {
+    /// The interpolation sample at the render tick.
+    Interpolated,
+    /// The newest applied pose, held before time sync names a render tick.
+    HeldNewest,
+}
+
+/// One host animation state awaiting presentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingAnimationCorrection {
+    server_tick: u32,
+    state: String,
+}
+
+/// Host states queued per remote avatar. Snapshots outpace presentation by the
+/// interpolation delay (half the round trip plus 50–250 ms of buffer),
+/// and a resend of the newest queued state is not queued again, so the bound is
+/// reached only when the delay overruns; the oldest state, superseded by the
+/// rest, is dropped first.
+const MAX_PENDING_ANIMATION_CORRECTIONS: usize = 16;
+
+impl RemotePlayerLocomotion {
+    fn new(reference: RemotePlayerLocomotionReference) -> Self {
+        Self {
+            reference,
+            client_derived_state: None,
+            authoritative_correction_state: None,
+            pending_corrections: VecDeque::new(),
+            resync_jump_phase: true,
+        }
+    }
+
+    fn queue_correction(&mut self, server_tick: u32, state: &str) {
+        let queue = &mut self.pending_corrections;
+        // Accepted snapshot ticks only advance; one at or before the newest
+        // queued tick supersedes it.
+        while queue
+            .back()
+            .is_some_and(|pending| pending.server_tick >= server_tick)
+        {
+            queue.pop_back();
+        }
+        // The host resends an unchanged state with every delta; the earliest
+        // tick naming it is when it began.
+        if queue.back().is_some_and(|pending| pending.state == state) {
+            return;
+        }
+        if queue.len() == MAX_PENDING_ANIMATION_CORRECTIONS {
+            queue.pop_front();
+        }
+        queue.push_back(PendingAnimationCorrection {
+            server_tick,
+            state: state.to_string(),
+        });
+    }
+
+    /// The newest queued state whose tick the presentation has reached, dropping
+    /// it and every older one it supersedes. `None` for `presented_tick` releases
+    /// the whole queue.
+    fn take_due_correction(&mut self, presented_tick: Option<f64>) -> Option<String> {
+        let mut due = None;
+        while let Some(pending) = self.pending_corrections.front() {
+            if presented_tick.is_some_and(|tick| f64::from(pending.server_tick) > tick) {
+                break;
+            }
+            due = self
+                .pending_corrections
+                .pop_front()
+                .map(|pending| pending.state);
+        }
+        due
+    }
 }
 
 /// Immutable descriptor values needed for a remote player avatar's client-local
@@ -188,9 +272,13 @@ pub(crate) struct RemotePlayerLocomotionReference {
     pub(crate) states: crate::sim::PlayerLocomotionStates,
     pub(crate) walk_speed: f32,
     pub(crate) run_speed: f32,
+    pub(crate) crouch_speed: f32,
     /// Load-derived clip travel speed per locomotion state. States whose clip
     /// derives none are absent.
     pub(crate) derived_travel_speeds: HashMap<String, f32>,
+    /// Clip length per jump one-shot state, which ends it. States whose clip
+    /// the model lacks are absent.
+    pub(crate) clip_durations: HashMap<String, f32>,
 }
 
 #[cfg(test)]
@@ -209,7 +297,9 @@ impl RemotePlayerLocomotionReference {
             .expect("a walk state is declared"),
             walk_speed,
             run_speed,
+            crouch_speed: 3.0,
             derived_travel_speeds: HashMap::new(),
+            clip_durations: HashMap::new(),
         }
     }
 }
@@ -234,15 +324,16 @@ fn is_horizontal_motion(velocity: &Vec3) -> bool {
 }
 
 /// A wire payload the client received but deliberately did not apply, recorded as a
-/// typed diagnostic rather than silently dropped. Phase 2's dumb mover is
-/// `Transform`-only; a `PlayerMovementState` payload on an unmapped full baseline
-/// has no local descriptor-derived `PlayerMovementComponent` to merge onto, so it is
-/// ignored (the substrate carries the wire type for later prediction).
+/// typed diagnostic rather than silently dropped. A remote pawn's
+/// `PlayerMovementState` has no local descriptor-derived `PlayerMovementComponent`
+/// to merge onto, so it is not merged onto a component; its velocity, stance, aim
+/// pitch and teleport sample still ride the interpolation sample to presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IgnoredPayload {
     /// A `PlayerMovementState` payload arrived for an entity with no local
     /// `PlayerMovementComponent` to merge it onto. The `Transform` (if present) was
-    /// still applied; only the movement subset was ignored.
+    /// still applied, and the movement subset still fed presentation; only the
+    /// component merge was skipped.
     MovementWithoutLocalComponent { network_id: u32 },
     /// A mover payload referenced a PRL mover id this client did not load. This is
     /// an engine-side validation failure because the net crate is registry-blind.
@@ -1818,10 +1909,12 @@ impl ClientReplication {
     /// `set_component_value` (idempotent — re-applying the spawn Transform is
     /// harmless and keeps this path uniform between spawn and update) and recorded
     /// into the per-entity interpolation buffer stamped by `server_tick`. A
-    /// `PlayerMovementState` payload applies only to an entity that already carries a
-    /// local `PlayerMovementComponent`; otherwise it is ignored with a typed
-    /// diagnostic (Phase 2's dumb mover is Transform-only). Its intrinsic velocity
-    /// is still captured for bounded extrapolation and remote-player presentation.
+    /// `PlayerMovementState` payload merges only onto an entity that already carries a
+    /// local `PlayerMovementComponent`; otherwise the merge is skipped with a typed
+    /// diagnostic. Its intrinsic velocity, stance, aim pitch and teleport sample
+    /// still ride the interpolation sample, for bounded extrapolation and
+    /// remote-player presentation. A remote player's `MeshAnimationState` queues
+    /// until the presented pose reaches `server_tick`.
     #[allow(clippy::too_many_arguments)]
     fn apply_components_to(
         &mut self,
@@ -1834,8 +1927,9 @@ impl ClientReplication {
         components: &[ComponentPayload],
         outcome: &mut ApplyOutcome,
     ) -> bool {
-        // Capture the record's intrinsic movement velocity (if any) up front. It
-        // stamps the Transform sample for bounded extrapolation and keeps player
+        // Capture the record's movement presentation (if any) up front: intrinsic
+        // velocity, stance, aim pitch and teleport sample. They stamp the
+        // Transform sample, velocity for bounded extrapolation, and keep player
         // locomotion separate from mover-carried world-transform displacement.
         let record_movement = components.iter().find_map(|payload| match payload {
             ComponentPayload::PlayerMovementState(m) if payload_is_finite(payload) => Some(m),
@@ -1843,6 +1937,7 @@ impl ClientReplication {
         });
         let record_intrinsic_velocity =
             record_movement.map(|movement| Vec3::from_array(movement.velocity));
+        let record_stance = record_movement.map(super::movement_state::wire_locomotion_stance);
         let record_aim_pitch = record_movement.map_or(0.0, |movement| movement.aim_pitch);
         let record_teleport = record_movement.map(|movement| TeleportSample {
             generation: movement.teleport.generation,
@@ -1977,20 +2072,20 @@ impl ClientReplication {
                                 server_tick,
                                 transform,
                                 intrinsic_velocity: record_intrinsic_velocity,
+                                stance: record_stance,
                                 aim_pitch: record_aim_pitch,
                             },
                         );
                     }
                 }
                 ComponentPayload::PlayerMovementState(_) => {
-                    // Apply ONLY onto an entity that already has a descriptor-derived
+                    // Merge ONLY onto an entity that already has a descriptor-derived
                     // PlayerMovementComponent. The wire subset is not a full component
                     // and must never construct one (entity_model.md §7b: movement is
-                    // descriptor-owned). Phase 2's mover has no local source, so this
-                    // is ignored with a typed diagnostic. The local-merge path
-                    // (descriptor-immutable params + this mutable subset) lands with
-                    // prediction in Phase 3; there is no Phase 2 producer onto a
-                    // movement entity, so there is no merge to perform yet.
+                    // descriptor-owned). A remote pawn has no local source, so the
+                    // merge is skipped with a typed diagnostic; its velocity and
+                    // stance, captured above, still feed presentation. The local
+                    // pawn's subset reaches its component through reconcile.
                     let has_local = registry
                         .has_component_kind(id, ComponentKind::PlayerMovement)
                         .unwrap_or(false);
@@ -2011,15 +2106,18 @@ impl ClientReplication {
                     }
                 }
                 ComponentPayload::MeshAnimationState(wire) => {
-                    let switched = if self.remote_player_locomotion.contains_key(&network_id) {
-                        self.apply_remote_player_animation_correction(
-                            registry,
-                            network_id,
-                            id,
-                            &wire.current_state,
-                        )
-                    } else {
-                        apply_mesh_animation_state(registry, id, &wire.current_state, true)
+                    // A remote avatar's state describes the body at `server_tick`,
+                    // which the interpolation delay has yet to present; it waits
+                    // for the presented pose (`sample_into_registry`).
+                    let remote_player = (!is_local)
+                        .then(|| self.remote_player_locomotion.get_mut(&network_id))
+                        .flatten();
+                    let switched = match remote_player {
+                        Some(locomotion) => {
+                            locomotion.queue_correction(server_tick, &wire.current_state);
+                            true
+                        }
+                        None => apply_mesh_animation_state(registry, id, &wire.current_state, true),
                     };
                     if !switched {
                         log::trace!(
@@ -2048,6 +2146,7 @@ impl ClientReplication {
         }
         if !record_has_transform
             && let Some(intrinsic_velocity) = record_intrinsic_velocity
+            && let Some(stance) = record_stance
             && !is_local
             && mover_apply.is_none()
             && !invalid_bound_mover_payload
@@ -2057,6 +2156,7 @@ impl ClientReplication {
                 network_id,
                 server_tick,
                 intrinsic_velocity,
+                stance,
                 record_aim_pitch,
                 record_teleport,
             );
@@ -2096,7 +2196,7 @@ impl ClientReplication {
     /// Until the armed local pawn's first record has merged, keep a full baseline
     /// of it requested. A record that arrives before the host tuning installs
     /// cannot merge, since reconcile replays with that tuning, and an idle pawn's
-    /// later deltas carry no movement; without a fresh baseline the client would
+    /// later records arrive only while its resolved cursor advances; without a fresh baseline the client would
     /// predict from no teleport record at all.
     ///
     /// `wanted` is false once the record has merged, and while no merge could
@@ -2255,13 +2355,21 @@ impl ClientReplication {
                     .intrinsic_velocity
                     .filter(|velocity| velocity.is_finite());
                 let (aim_yaw, _, _) = pose.transform.rotation.to_euler(glam::EulerRot::YXZ);
+                self.apply_due_remote_player_correction(
+                    registry,
+                    network_id,
+                    entity_id,
+                    Some(render_server_tick),
+                );
                 let direction = self.update_remote_player_locomotion(
                     registry,
                     network_id,
                     entity_id,
                     intrinsic_velocity.unwrap_or(Vec3::ZERO),
+                    pose.stance,
                     aim_yaw,
                     frame_anim_time,
+                    RemotePlayerPresentation::Interpolated,
                 );
                 if let Some(velocity) = intrinsic_velocity.filter(is_horizontal_motion) {
                     let heading_yaw =
@@ -2320,8 +2428,11 @@ impl ClientReplication {
     }
 
     /// Before time sync can name a presentation tick, remote avatars hold their
-    /// newest applied pose. Preserve that pose's pitch, clear motion-derived heading,
-    /// and resolve client-local locomotion to idle.
+    /// newest applied pose. Preserve that pose's pitch, clear motion-derived
+    /// heading, and select client-local locomotion for a body at rest: the held
+    /// pose shows no travel, though its newest posture and footing still pick
+    /// crouch and jump states. With no presented tick to wait for, every queued host state is due
+    /// and the newest applies, as it would have on receipt.
     pub(crate) fn apply_held_remote_player_presentation(
         &mut self,
         registry: &mut EntityRegistry,
@@ -2348,13 +2459,17 @@ impl ClientReplication {
                     .aim_pitches
                     .insert(network_id, aim_pitch);
             }
+            let stance = self.interp.newest_stance(network_id);
+            self.apply_due_remote_player_correction(registry, network_id, entity_id, None);
             self.update_remote_player_locomotion(
                 registry,
                 network_id,
                 entity_id,
                 Vec3::ZERO,
+                stance,
                 0.0,
                 frame_anim_time,
+                RemotePlayerPresentation::HeldNewest,
             );
         }
     }
@@ -2421,14 +2536,8 @@ impl ClientReplication {
             Some(reference) => match self.remote_player_locomotion.get_mut(&network_id) {
                 Some(locomotion) => locomotion.reference = reference,
                 None => {
-                    self.remote_player_locomotion.insert(
-                        network_id,
-                        RemotePlayerLocomotion {
-                            reference,
-                            client_derived_state: None,
-                            authoritative_correction_state: None,
-                        },
-                    );
+                    self.remote_player_locomotion
+                        .insert(network_id, RemotePlayerLocomotion::new(reference));
                 }
             },
             None => {
@@ -2457,10 +2566,40 @@ impl ClientReplication {
         }
     }
 
+    /// Apply the newest queued host state for a remote player that the
+    /// presentation has reached: every one at or before `presented_tick`, or all
+    /// of them for `None`.
+    fn apply_due_remote_player_correction(
+        &mut self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        entity_id: EntityId,
+        presented_tick: Option<f64>,
+    ) {
+        let due = self
+            .remote_player_locomotion
+            .get_mut(&network_id)
+            .and_then(|locomotion| locomotion.take_due_correction(presented_tick));
+        if let Some(state) = due
+            && !self
+                .apply_remote_player_animation_correction(registry, network_id, entity_id, &state)
+        {
+            log::trace!(
+                "[Net] remote player {network_id:?} did not take mesh animation state `{state}`"
+            );
+        }
+    }
+
     /// Apply host animation authority for a remote player. A disagreement with the
     /// client-local velocity prediction deliberately enters through the normal
     /// transition API, preserving the descriptor's short avatar crossfade instead
     /// of replacing the displayed pose with a hard snap.
+    ///
+    /// Jump one-shots are the exception: this client times them from its own
+    /// presented takeoff and landing, and the host stamps its own with the frame's
+    /// animation clock, so after a host hitch its `jump_up` or `jump_down` can
+    /// outlast this client's. A host one-shot applies only while this client's
+    /// phase still plays it, never re-entering one the client has left.
     fn apply_remote_player_animation_correction(
         &mut self,
         registry: &mut EntityRegistry,
@@ -2468,10 +2607,34 @@ impl ClientReplication {
         entity_id: EntityId,
         authoritative_state: &str,
     ) -> bool {
-        let predicted_state = self
-            .remote_player_locomotion
-            .get(&network_id)
-            .and_then(|reference| reference.client_derived_state.as_deref());
+        let Some(locomotion) = self.remote_player_locomotion.get(&network_id) else {
+            return false;
+        };
+        let phase = registry
+            .get_component::<MeshComponent>(entity_id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .map(|animation| animation.locomotion_jump)
+            .unwrap_or_default();
+        if !locomotion
+            .reference
+            .states
+            .admits_state(authoritative_state, phase)
+        {
+            // The host has named another state, so a hold on an earlier one is
+            // stale; released, this client's own derivation, already in the
+            // matching phase, switches on the same frame.
+            if let Some(locomotion) = self.remote_player_locomotion.get_mut(&network_id)
+                && locomotion
+                    .authoritative_correction_state
+                    .as_deref()
+                    .is_some_and(|held| held != authoritative_state)
+            {
+                locomotion.authoritative_correction_state = None;
+            }
+            return false;
+        }
+        let predicted_state = locomotion.client_derived_state.as_deref();
         let correcting = predicted_state.is_some_and(|predicted| predicted != authoritative_state);
         if correcting {
             log::trace!(
@@ -2547,20 +2710,37 @@ impl ClientReplication {
 
     /// Derive one remote avatar's locomotion state and rate from the interpolated
     /// intrinsic player velocity, classified forward or backward against the
-    /// presented aim. The host's mesh state remains the correction authority; this
-    /// is only the responsive between-snapshot path. Returns the direction the
-    /// avatar's legs present this frame.
+    /// presented aim, and the replicated posture and footing presented with it. The
+    /// host's mesh state remains the correction authority; this is only the
+    /// responsive between-snapshot path. The jump phase advances from the
+    /// presented footing even while a correction is held, so the sequence memory
+    /// follows the presented motion rather than the host state. Returns the
+    /// direction the avatar's legs present this frame.
+    #[allow(clippy::too_many_arguments)]
     fn update_remote_player_locomotion(
         &mut self,
         registry: &mut EntityRegistry,
         network_id: NetworkId,
         entity_id: EntityId,
         velocity: Vec3,
+        stance: crate::sim::LocomotionStance,
         aim_yaw: f32,
         frame_anim_time: f64,
+        presentation: RemotePlayerPresentation,
     ) -> LocomotionDirection {
         let Some(locomotion) = self.remote_player_locomotion.get_mut(&network_id) else {
             return LocomotionDirection::Forward;
+        };
+        // A held newest pose is ahead of the first interpolated one, so the
+        // footing would run backward across the handover: a held rise would read
+        // its older grounded tick as a landing. That first interpolated pose
+        // resyncs the phase from its own footing instead.
+        let resync_jump_phase = match presentation {
+            RemotePlayerPresentation::HeldNewest => {
+                locomotion.resync_jump_phase = true;
+                false
+            }
+            RemotePlayerPresentation::Interpolated => locomotion.resync_jump_phase,
         };
         let speed_xz = horizontal_speed(velocity);
         let Some(animation) = registry
@@ -2570,14 +2750,19 @@ impl ClientReplication {
         else {
             return LocomotionDirection::Forward;
         };
+        // Consumed only once a mesh animation can take the resync.
+        if resync_jump_phase {
+            locomotion.resync_jump_phase = false;
+        }
         let reference = &locomotion.reference;
         let usable = |state: &str| animation.is_state_usable(state);
         let stored_direction = animation.locomotion_direction;
+        let stored_jump = animation.locomotion_jump;
         let current_state = animation.current_state.as_str();
-        // A host correction leads the interpolated pose by about the interpolation
-        // delay, so it is honored until this client's own derivation agrees with
-        // it rather than for its crossfade alone: releasing earlier reverts to the
-        // lagging prediction, and the next delta corrects again.
+        // A host correction is honored until this client's own derivation agrees
+        // with it rather than for its crossfade alone: releasing earlier reverts
+        // to the disagreeing prediction, and the host's next resend corrects
+        // again.
         let correction_held = locomotion
             .authoritative_correction_state
             .as_deref()
@@ -2595,24 +2780,38 @@ impl ClientReplication {
             stored_direction
         };
         let direction = crate::sim::classify_locomotion_direction(velocity, aim_yaw, previous);
-        let (target_state, tier) = reference.states.select(
-            &crate::sim::LocomotionInput {
-                speed_xz,
-                walk_speed: reference.walk_speed,
-                run_speed: reference.run_speed,
-                direction,
-                current_state,
-            },
-            usable,
-        );
+        let mut input = crate::sim::LocomotionInput {
+            speed_xz,
+            walk_speed: reference.walk_speed,
+            run_speed: reference.run_speed,
+            direction,
+            posture: stance.posture,
+            footing: stance.footing,
+            jump_phase: stored_jump,
+            current_state,
+        };
+        input.jump_phase = if resync_jump_phase {
+            reference.states.resync_jump_phase(stance.footing, usable)
+        } else {
+            reference
+                .states
+                .advance_jump_phase(&input, frame_anim_time, usable, |state| {
+                    reference.clip_durations.get(state).copied()
+                })
+        };
+        let jump = input.jump_phase;
+        let (target_state, tier) = reference.states.select(&input, usable);
         let target_state = target_state.unwrap_or(&reference.idle_state);
         let at_target = current_state == target_state;
-        let moving = tier != crate::sim::LocomotionTierKind::Idle;
         let tier_speed = match tier {
-            crate::sim::LocomotionTierKind::Idle => None,
+            crate::sim::LocomotionTierKind::Idle
+            | crate::sim::LocomotionTierKind::Slide
+            | crate::sim::LocomotionTierKind::Jump => None,
             crate::sim::LocomotionTierKind::Walk => Some(reference.walk_speed),
             crate::sim::LocomotionTierKind::Run => Some(reference.run_speed),
+            crate::sim::LocomotionTierKind::Crouch => Some(reference.crouch_speed),
         };
+        let moving = tier_speed.is_some();
         let derived_travel_speed =
             tier_speed.and_then(|_| reference.derived_travel_speeds.get(target_state).copied());
         let fallback_speed = tier_speed.unwrap_or(1.0);
@@ -2630,8 +2829,8 @@ impl ClientReplication {
                     switch_animation_state(registry, entity_id, target_state),
                     SwitchResult::Switched | SwitchResult::AlreadyInState
                 ));
-        if direction != stored_direction {
-            crate::sim::store_locomotion_direction(registry, entity_id, direction);
+        if direction != stored_direction || jump != stored_jump {
+            crate::sim::store_locomotion_memory(registry, entity_id, direction, Some(jump));
         }
 
         let raw_ratio = registry
@@ -3014,6 +3213,14 @@ mod tests {
         velocity: [f32; 3],
         aim_pitch: f32,
     ) -> ComponentPayload {
+        movement_payload_with(velocity, aim_pitch, WireMovementState::Normal)
+    }
+
+    fn movement_payload_with(
+        velocity: [f32; 3],
+        aim_pitch: f32,
+        movement_state: WireMovementState,
+    ) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
@@ -3024,7 +3231,7 @@ mod tests {
             air_dashes_remaining: 1,
             dash_cooldown_ms: 0.0,
             air_ticks: 0,
-            movement_state: WireMovementState::Normal,
+            movement_state,
             coyote_timer_ms: 0.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: false,
@@ -5197,7 +5404,7 @@ mod tests {
         // Regression: normal frame ordering applies snapshots, then samples remote
         // interpolation before render resolves animation stamps. Velocity derivation
         // must not switch straight back to walk in this same frame.
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 111.0, 1.0);
         let corrected = registry
             .get_component::<MeshComponent>(id)
             .unwrap()
@@ -5209,7 +5416,7 @@ mod tests {
         assert_eq!(corrected.states["idle"].crossfade_ms, 50.0);
 
         resolve_pending_animation_stamps(&mut registry, 1.0);
-        client.sample_into_registry(&mut registry, 105.0, 1.02);
+        client.sample_into_registry(&mut registry, 111.0, 1.02);
         assert_eq!(
             registry
                 .get_component::<MeshComponent>(id)
@@ -5222,7 +5429,7 @@ mod tests {
             "client locomotion holds through the configured server crossfade"
         );
         resolve_pending_animation_stamps(&mut registry, 1.06);
-        client.sample_into_registry(&mut registry, 105.0, 1.06);
+        client.sample_into_registry(&mut registry, 111.0, 1.06);
         assert_eq!(
             registry
                 .get_component::<MeshComponent>(id)
@@ -5247,7 +5454,7 @@ mod tests {
             ),
         );
         resolve_pending_animation_stamps(&mut registry, 1.1);
-        client.sample_into_registry(&mut registry, 105.0, 1.1);
+        client.sample_into_registry(&mut registry, 112.0, 1.1);
         assert_eq!(
             registry
                 .get_component::<MeshComponent>(id)
@@ -5288,6 +5495,17 @@ mod tests {
         mesh: MeshComponent,
         declared: &[&str],
         velocity: [f32; 3],
+        speeds: (f32, f32),
+    ) -> (EntityRegistry, ClientReplication, EntityId) {
+        map_remote_player_in(mesh, declared, velocity, WireMovementState::Normal, speeds)
+    }
+
+    /// [`map_remote_player`] with every snapshot replicating `movement_state`.
+    fn map_remote_player_in(
+        mesh: MeshComponent,
+        declared: &[&str],
+        velocity: [f32; 3],
+        movement_state: WireMovementState,
         (walk_speed, run_speed): (f32, f32),
     ) -> (EntityRegistry, ClientReplication, EntityId) {
         let mut registry = EntityRegistry::new();
@@ -5302,7 +5520,7 @@ mod tests {
                     1,
                     vec![
                         transform_payload_at([0.0, 0.0, 0.0], 0.0),
-                        movement_payload_with_velocity(velocity),
+                        movement_payload_with(velocity, 0.0, movement_state),
                     ],
                 )],
             ),
@@ -5326,7 +5544,7 @@ mod tests {
                     2,
                     vec![
                         transform_payload_at([1.0, 0.0, 1.0], 0.0),
-                        movement_payload_with_velocity(velocity),
+                        movement_payload_with(velocity, 0.0, movement_state),
                     ],
                 )],
             ),
@@ -5471,9 +5689,953 @@ mod tests {
     }
 
     #[test]
+    fn remote_player_prediction_agrees_with_host_selection_for_crouch_and_slide() {
+        use postretro_foundation::{MovementState, PlayerMovementComponent};
+
+        let extra = [
+            "walk_backward",
+            "run_forward",
+            "crouch_idle",
+            "crouch_forward",
+            "crouch_backward",
+        ];
+        let declared = [
+            "idle",
+            "walk_forward",
+            "walk_backward",
+            "run_forward",
+            "crouch_idle",
+            "crouch_forward",
+            "crouch_backward",
+        ];
+        // Crouch states name no travel speed, so both peers rate-scale against
+        // `ground.speed.crouch` (3).
+        let mesh = || {
+            let mut mesh = remote_player_mesh_with(&extra);
+            let animation = mesh.animation.as_mut().unwrap();
+            for name in ["crouch_forward", "crouch_backward"] {
+                animation.states.get_mut(name).unwrap().travel_speed = None;
+            }
+            mesh
+        };
+        let crouching = (
+            MovementState::Crouching { eye_current: 0.3 },
+            WireMovementState::Crouching { eye_current: 0.3 },
+        );
+        let sliding = (
+            MovementState::Sliding {
+                elapsed_ms: 40.0,
+                boost: Vec3::NEG_Z * 4.0,
+                eye_current: 0.3,
+            },
+            WireMovementState::Sliding {
+                elapsed_ms: 40.0,
+                boost: [0.0, 0.0, -4.0],
+                eye_current: 0.3,
+                floor_normal: None,
+            },
+        );
+        let standing = (MovementState::Normal, WireMovementState::Normal);
+        // Aim faces -Z.
+        for ((host_movement_state, wire_movement_state), velocity, expected, rate) in [
+            (crouching, [0.0, 0.0, 0.0], "crouch_idle", 1.0),
+            (crouching, [0.0, 0.0, -2.4], "crouch_forward", 0.8),
+            (crouching, [0.0, 0.0, 2.4], "crouch_backward", 0.8),
+            // Posture, not speed, picks the tier: a crouched body never runs.
+            (crouching, [0.0, 0.0, -10.0], "crouch_forward", 1.5),
+            (sliding, [0.0, 0.0, -12.0], "crouch_idle", 1.0),
+            // Standing selects as before; run_forward's 60 m/s stride clamps
+            // the rate to its 0.5 floor.
+            (standing, [0.0, 0.0, -10.0], "run_forward", 0.5),
+        ] {
+            let mut host = EntityRegistry::new();
+            let pawn = host.spawn(Transform::default());
+            let mut movement = PlayerMovementComponent::from_descriptor(
+                &crate::snapshot_regression_harness_test::player_descriptor(),
+            );
+            movement.velocity = Vec3::from(velocity);
+            movement.movement_state = host_movement_state;
+            host.set_component(pawn, movement).unwrap();
+            host.set_component(pawn, mesh()).unwrap();
+            crate::sim::update_player_animation_locomotion(
+                &mut host,
+                &crate::scripting_systems::hit_zones::HitZoneStore::new(),
+                0.0,
+            );
+            let host_animation = host
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            assert_eq!(
+                host_animation.current_state, expected,
+                "host {host_movement_state:?} at {velocity:?}"
+            );
+
+            let (mut registry, mut client, id) = map_remote_player_in(
+                mesh(),
+                &declared,
+                velocity,
+                wire_movement_state,
+                (7.0, 11.0),
+            );
+            client.sample_into_registry(&mut registry, 105.0, 1.0);
+            let client_animation = registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            assert_eq!(
+                client_animation.current_state, host_animation.current_state,
+                "client {wire_movement_state:?} at {velocity:?}"
+            );
+            assert!(
+                (client_animation.rate - host_animation.rate).abs() <= EPSILON
+                    && (client_animation.rate - rate).abs() <= EPSILON,
+                "{expected} rate: host {} client {}",
+                host_animation.rate,
+                client_animation.rate
+            );
+
+            resolve_pending_animation_stamps(&mut registry, 1.0);
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(
+                    2,
+                    111,
+                    vec![delta(
+                        7,
+                        2,
+                        3,
+                        vec![mesh_animation_payload(&host_animation.current_state)],
+                    )],
+                ),
+            );
+            assert!(
+                client.remote_player_locomotion[&NetworkId(7)]
+                    .authoritative_correction_state
+                    .is_none(),
+                "the host state for {wire_movement_state:?} needs no correction"
+            );
+        }
+    }
+
+    /// A remote player declaring walk, run and the jump sequence, the host's clip
+    /// store for its model, and the client's reference: walk 7, run 11,
+    /// `jump_up` 0.4 s, `jump_down` 0.3 s. Both peers read the one-shots'
+    /// lengths from the model's clips: the host per tick, the client precomputed
+    /// at materialization.
+    fn jump_sequence_fixture() -> (
+        MeshComponent,
+        crate::scripting_systems::hit_zones::HitZoneStore,
+        RemotePlayerLocomotionReference,
+    ) {
+        use crate::scripting_systems::hit_zones::{HitZoneStore, ModelHitZones};
+        use postretro_model::skeleton::{AnimationClip, Skeleton};
+
+        let extra = ["run_forward", "jump_up", "jump_loop", "jump_down"];
+        let declared = [
+            "idle",
+            "walk_forward",
+            "run_forward",
+            "jump_up",
+            "jump_loop",
+            "jump_down",
+        ];
+        let mesh = remote_player_mesh_with(&extra);
+        let clip = |name: &str, duration| AnimationClip {
+            name: name.to_string(),
+            duration,
+            joints: Vec::new(),
+            travel_speed: None,
+        };
+        let mut hit_zones = HitZoneStore::new();
+        hit_zones.insert_for_test(
+            postretro_model::ModelHandle::from(mesh.model.as_str()),
+            ModelHitZones::for_test(
+                std::sync::Arc::new(Skeleton { joints: Vec::new() }),
+                std::sync::Arc::new(vec![
+                    clip("idle", 1.0),
+                    clip("walk_forward", 1.0),
+                    clip("run_forward", 1.0),
+                    clip("jump_up", 0.4),
+                    clip("jump_loop", 1.0),
+                    clip("jump_down", 0.3),
+                ]),
+                Vec::new(),
+                HashMap::new(),
+                None,
+                Vec::new(),
+                Default::default(),
+            ),
+        );
+        let mut reference = RemotePlayerLocomotionReference::declaring(&declared, 7.0, 11.0);
+        reference.clip_durations =
+            HashMap::from([("jump_up".to_string(), 0.4), ("jump_down".to_string(), 0.3)]);
+        (mesh, hit_zones, reference)
+    }
+
+    /// One host tick of player movement: `air_ticks` zero is grounded.
+    fn host_movement(
+        air_ticks: u32,
+        jumped: bool,
+        velocity: Vec3,
+    ) -> postretro_foundation::PlayerMovementComponent {
+        use postretro_foundation::{GroundRef, PlayerMovementComponent};
+        let mut movement = PlayerMovementComponent::from_descriptor(
+            &crate::snapshot_regression_harness_test::player_descriptor(),
+        );
+        movement.ground = if air_ticks == 0 {
+            GroundRef::World
+        } else {
+            GroundRef::Airborne
+        };
+        movement.air_ticks = air_ticks;
+        movement.jump_spent = jumped;
+        movement.velocity = velocity;
+        movement
+    }
+
+    #[test]
+    fn remote_player_prediction_agrees_with_host_selection_across_the_jump_sequence() {
+        let (mesh, hit_zones, reference) = jump_sequence_fixture();
+        let mut host = EntityRegistry::new();
+        let pawn = host.spawn(Transform::default());
+        host.set_component(pawn, mesh.clone()).unwrap();
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([0.0, 0.0, 0.0], 0.0),
+                        movement_payload(),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, mesh).unwrap();
+        client.cache_remote_player_locomotion(NetworkId(7), Some(reference));
+
+        let walking = Vec3::NEG_Z * 5.0;
+        let running = Vec3::NEG_Z * 10.0;
+        // (animation clock, airborne ticks — 0 is grounded —, jump spent,
+        // velocity, the state both peers select). Aim faces -Z.
+        let sequence = [
+            (0.0, 0, false, walking, "walk_forward"),
+            (0.02, 1, true, walking + Vec3::Y * 6.0, "jump_up"),
+            (0.2, 12, true, walking + Vec3::Y * 0.5, "jump_up"),
+            (0.22, 13, true, walking - Vec3::Y * 0.5, "jump_loop"),
+            (0.5, 0, false, Vec3::NEG_Z * 3.0, "jump_down"),
+            (0.79, 0, false, Vec3::NEG_Z * 3.0, "jump_down"),
+            (0.81, 0, false, Vec3::NEG_Z * 3.0, "walk_forward"),
+            // Walking off a ledge keeps the stride, then falls; a running
+            // landing returns straight to the stride.
+            (1.0, 1, false, walking - Vec3::Y * 0.3, "walk_forward"),
+            (1.13, 8, false, walking - Vec3::Y * 2.4, "walk_forward"),
+            (1.15, 9, false, walking - Vec3::Y * 2.7, "jump_loop"),
+            (1.5, 0, false, running, "run_forward"),
+        ];
+        let mut host_state: Option<String> = None;
+        for (tick, (time, air_ticks, jumped, velocity, expected)) in (1u32..).zip(sequence) {
+            let movement = host_movement(air_ticks, jumped, velocity);
+            let wire = crate::movement_state::movement_state_to_wire(&movement, 0.0);
+            host.set_component(pawn, movement).unwrap();
+            crate::sim::update_player_animation_locomotion(&mut host, &hit_zones, time);
+            let host_animation = host
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            assert_eq!(host_animation.current_state, expected, "host at {time}");
+
+            // Each snapshot carries the host's state from the tick before, which
+            // the client already derived: no correction.
+            let mut components = vec![
+                transform_payload_at([0.0, 0.0, -0.1 * tick as f32], 0.0),
+                ComponentPayload::PlayerMovementState(wire),
+            ];
+            components.extend(host_state.as_deref().map(mesh_animation_payload));
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(tick, 100 + tick, vec![delta(7, tick, tick + 1, components)]),
+            );
+            client.sample_into_registry(&mut registry, f64::from(100 + tick), time);
+            assert!(
+                client.remote_player_locomotion[&NetworkId(7)]
+                    .authoritative_correction_state
+                    .is_none(),
+                "the host state before {time} needs no correction"
+            );
+            let client_animation = registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            assert_eq!(
+                client_animation.current_state, host_animation.current_state,
+                "client at {time}"
+            );
+            assert_eq!(
+                client_animation.locomotion_jump, host_animation.locomotion_jump,
+                "jump memory at {time}"
+            );
+            if expected.starts_with("jump") {
+                assert!(
+                    (host_animation.rate - 1.0).abs() <= EPSILON
+                        && (client_animation.rate - 1.0).abs() <= EPSILON,
+                    "{expected} plays at the authored rate"
+                );
+            }
+            host_state = Some(host_animation.current_state);
+        }
+    }
+
+    /// One scripted host tick for [`present_jumps_at_snapshot_cadence`]:
+    /// `air_ticks` zero is grounded.
+    #[derive(Debug, Clone, Copy)]
+    struct ScriptedTick {
+        air_ticks: u32,
+        jumped: bool,
+        velocity: Vec3,
+    }
+
+    /// Host movement for a walk, a jump with a slow landing and a walk off,
+    /// then a run into a bunny-hop chain whose landings last one grounded tick.
+    /// Returns the script and the slow landing's tick index.
+    fn jump_and_bunny_hop_script() -> (Vec<ScriptedTick>, usize) {
+        const GRAVITY: f32 = 20.0;
+        let dt = 1.0 / 60.0;
+        let mut script = Vec::new();
+        let ground = |script: &mut Vec<ScriptedTick>, ticks, speed: f32| {
+            for _ in 0..ticks {
+                script.push(ScriptedTick {
+                    air_ticks: 0,
+                    jumped: false,
+                    velocity: Vec3::NEG_Z * speed,
+                });
+            }
+        };
+        let jump = |script: &mut Vec<ScriptedTick>, speed: f32, takeoff: f32| {
+            let (mut height, mut vertical) = (0.0, takeoff);
+            for air_ticks in 1.. {
+                height += vertical * dt;
+                if height <= 0.0 {
+                    break;
+                }
+                script.push(ScriptedTick {
+                    air_ticks,
+                    jumped: true,
+                    velocity: Vec3::new(0.0, vertical, -speed),
+                });
+                vertical -= GRAVITY * dt;
+            }
+        };
+        ground(&mut script, 12, 5.0);
+        jump(&mut script, 3.0, 6.0);
+        let slow_landing = script.len();
+        ground(&mut script, 40, 3.0);
+        ground(&mut script, 10, 10.0);
+        // Varied takeoff speeds vary the hop lengths, so the one grounded tick
+        // falls both on and between snapshot ticks.
+        for takeoff in [6.0, 6.1, 6.2, 6.3] {
+            jump(&mut script, 10.0, takeoff);
+            ground(&mut script, 1, 10.0);
+        }
+        ground(&mut script, 20, 10.0);
+        (script, slow_landing)
+    }
+
+    /// What the client presented for a remote jumper over a host run at the
+    /// real cadence.
+    struct CadenceRun {
+        /// Per host tick: the host's selected state.
+        host_states: Vec<String>,
+        /// Per client frame: render tick (in script ticks), presented state and
+        /// footing, and whether a host correction was held.
+        frames: Vec<(f64, String, crate::sim::LocomotionFooting, bool)>,
+    }
+
+    /// Run `script` on a host at 60 Hz, sending every second tick's snapshot
+    /// through the client's apply path, and present it one frame per host tick
+    /// at a render tick 4.25 ticks behind the host, the animation clock tied to
+    /// the render tick. `host_anim_time` maps a script tick to the host
+    /// animation clock its frame ran with.
+    fn present_jumps_at_snapshot_cadence(
+        script: &[ScriptedTick],
+        host_anim_time: impl Fn(usize) -> f64,
+    ) -> CadenceRun {
+        const BASE: u32 = 1000;
+        const RENDER_LAG: f64 = 4.25;
+        let dt = 1.0 / 60.0;
+        let (mesh, hit_zones, reference) = jump_sequence_fixture();
+        let mut host = EntityRegistry::new();
+        let pawn = host.spawn(Transform::default());
+        host.set_component(pawn, mesh.clone()).unwrap();
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        let first = script[0];
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                BASE,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([0.0, 0.0, 0.0], 0.0),
+                        ComponentPayload::PlayerMovementState(
+                            crate::movement_state::movement_state_to_wire(
+                                &host_movement(first.air_ticks, first.jumped, first.velocity),
+                                0.0,
+                            ),
+                        ),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, mesh).unwrap();
+        client.cache_remote_player_locomotion(NetworkId(7), Some(reference));
+
+        let mut run = CadenceRun {
+            host_states: Vec::new(),
+            frames: Vec::new(),
+        };
+        let mut position = Vec3::ZERO;
+        let mut baseline = 1;
+        for (index, scripted) in script.iter().enumerate() {
+            let server_tick = BASE + 1 + index as u32;
+            let movement = host_movement(scripted.air_ticks, scripted.jumped, scripted.velocity);
+            let wire = crate::movement_state::movement_state_to_wire(&movement, 0.0);
+            host.set_component(pawn, movement).unwrap();
+            crate::sim::update_player_animation_locomotion(
+                &mut host,
+                &hit_zones,
+                host_anim_time(index),
+            );
+            let host_state = host
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state
+                .clone();
+            position += scripted.velocity * dt;
+            position.y = position.y.max(0.0);
+            if server_tick.is_multiple_of(2) {
+                client.apply_snapshot(
+                    &mut registry,
+                    &snapshot(
+                        baseline,
+                        server_tick,
+                        vec![delta(
+                            7,
+                            baseline,
+                            baseline + 1,
+                            vec![
+                                transform_payload_at(position.to_array(), 0.0),
+                                ComponentPayload::PlayerMovementState(wire),
+                                mesh_animation_payload(&host_state),
+                            ],
+                        )],
+                    ),
+                );
+                baseline += 1;
+            }
+            run.host_states.push(host_state);
+
+            let render_tick = f64::from(server_tick) - RENDER_LAG;
+            let frame_anim_time = render_tick / 60.0;
+            client.sample_into_registry(&mut registry, render_tick, frame_anim_time);
+            resolve_pending_animation_stamps(&mut registry, frame_anim_time);
+            let state = registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state
+                .clone();
+            let footing = client
+                .interp
+                .presented_pose(NetworkId(7), render_tick)
+                .expect("buffered")
+                .stance
+                .footing;
+            let held = client.remote_player_locomotion[&NetworkId(7)]
+                .authoritative_correction_state
+                .is_some();
+            run.frames
+                .push((render_tick - f64::from(BASE + 1), state, footing, held));
+        }
+        run
+    }
+
+    /// The realistic-cadence properties every run must keep.
+    fn assert_jumps_present_with_their_footing(run: &CadenceRun, script: &[ScriptedTick]) {
+        use crate::sim::LocomotionFooting;
+        let airborne =
+            |footing: LocomotionFooting| matches!(footing, LocomotionFooting::Airborne { .. });
+        let mut previous: Option<(&str, LocomotionFooting)> = None;
+        let mut held_frames = 0;
+        for (render_tick, state, footing, held) in &run.frames {
+            let (render_tick, state, footing) = (*render_tick, state.as_str(), *footing);
+            // A jump state shows only once the presented body has reached the
+            // host tick that chose it: the footing presented with it agrees.
+            match state {
+                "jump_up" => assert!(
+                    matches!(
+                        footing,
+                        LocomotionFooting::Airborne { vertical_speed, jumped: true, .. }
+                            if vertical_speed > 0.0
+                    ),
+                    "jump_up over {footing:?} at {render_tick}"
+                ),
+                "jump_loop" => {
+                    assert!(
+                        airborne(footing),
+                        "jump_loop over {footing:?} at {render_tick}"
+                    )
+                }
+                "jump_down" => assert_eq!(
+                    footing,
+                    LocomotionFooting::Grounded,
+                    "jump_down at {render_tick}"
+                ),
+                _ => {}
+            }
+            // A one-shot is entered only on the presented edge that starts it:
+            // a takeoff (from the ground, or a shorter airborne stretch than the
+            // last), or a touchdown. Never again after leaving it.
+            if let Some((previous_state, previous_footing)) = previous
+                && previous_state != state
+            {
+                match state {
+                    "jump_up" => assert!(
+                        match (previous_footing, footing) {
+                            (
+                                LocomotionFooting::Airborne {
+                                    air_ticks: before, ..
+                                },
+                                LocomotionFooting::Airborne { air_ticks, .. },
+                            ) => air_ticks < before,
+                            _ => true,
+                        },
+                        "jump_up re-entered mid-air at {render_tick}"
+                    ),
+                    "jump_down" => assert!(
+                        airborne(previous_footing),
+                        "jump_down re-entered on the ground at {render_tick}"
+                    ),
+                    _ => {}
+                }
+            }
+            // A held correction releases within a bounded number of frames.
+            held_frames = if *held { held_frames + 1 } else { 0 };
+            assert!(held_frames <= 2, "correction held past {render_tick}");
+            previous = Some((state, footing));
+        }
+        // Every host takeoff shows `jump_up` on the client once presented,
+        // bunny-hop re-takeoffs included.
+        let takeoffs: Vec<usize> = (1..run.host_states.len())
+            .filter(|&tick| {
+                run.host_states[tick] == "jump_up" && run.host_states[tick - 1] != "jump_up"
+            })
+            .collect();
+        assert_eq!(takeoffs.len(), 5, "one jump and four hops");
+        for takeoff in takeoffs {
+            assert!(
+                run.frames.iter().any(|(render_tick, state, _, _)| {
+                    state == "jump_up"
+                        && *render_tick >= takeoff as f64
+                        && *render_tick < takeoff as f64 + 6.0
+                }),
+                "the takeoff at tick {takeoff} never shows jump_up"
+            );
+        }
+        // The chain exercises a grounded tick no snapshot carried: script tick
+        // `i` is server tick 1001 + i, so an even index is never sent.
+        assert!(
+            (1..script.len()).any(|tick| {
+                script[tick].air_ticks == 0
+                    && script[tick - 1].air_ticks > 0
+                    && script.get(tick + 1).is_some_and(|next| next.air_ticks == 1)
+                    && tick.is_multiple_of(2)
+            }),
+            "some one-tick landing falls between snapshots"
+        );
+    }
+
+    // Regression: host states applied on receipt led the presented body (jump_up
+    // on the ground, jump_down mid-fall), a late resend re-entered a one-shot,
+    // and a stepped presentation missed one-tick bunny-hop landings.
+    #[test]
+    fn remote_player_jumps_present_with_their_footing_at_snapshot_cadence() {
+        let (script, slow_landing) = jump_and_bunny_hop_script();
+        let run = present_jumps_at_snapshot_cadence(&script, |tick| tick as f64 / 60.0);
+        assert!(
+            run.host_states[slow_landing] == "jump_down",
+            "the script's slow landing plays jump_down on the host"
+        );
+        assert_jumps_present_with_their_footing(&run, &script);
+        assert!(
+            run.frames
+                .iter()
+                .any(|(_, state, _, _)| state == "jump_down"),
+            "the client plays the slow landing"
+        );
+    }
+
+    #[test]
+    fn remote_player_jumps_present_with_their_footing_through_a_host_hitch_at_landing() {
+        // The host runs the ten ticks around the slow landing in one frame, so
+        // they share its animation clock: its `jump_down` is stamped late and
+        // outlasts the client's, which its resends must not restart.
+        let (script, slow_landing) = jump_and_bunny_hop_script();
+        let hitch = slow_landing - 1..=slow_landing + 8;
+        let frame_end = (slow_landing + 8) as f64 / 60.0;
+        let run = present_jumps_at_snapshot_cadence(&script, |tick| {
+            if hitch.contains(&tick) {
+                frame_end
+            } else {
+                tick as f64 / 60.0
+            }
+        });
+        let host_jump_down = run.host_states.iter().filter(|s| *s == "jump_down").count();
+        assert!(
+            host_jump_down > 24,
+            "the hitch stretches the host's jump_down well past the client's 18 ticks"
+        );
+        assert_jumps_present_with_their_footing(&run, &script);
+    }
+
+    // Regression: the held newest pose handing over to an older interpolated one
+    // ran the footing backward, reading a held rise's grounded past as a landing.
+    #[test]
+    fn remote_player_held_to_interpolated_handover_does_not_land() {
+        let (mesh, _, reference) = jump_sequence_fixture();
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        let movement = |air_ticks, jumped, velocity| {
+            ComponentPayload::PlayerMovementState(crate::movement_state::movement_state_to_wire(
+                &host_movement(air_ticks, jumped, velocity),
+                0.0,
+            ))
+        };
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([0.0, 0.0, 0.0], 0.0),
+                        movement(0, false, Vec3::ZERO),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, mesh).unwrap();
+        client.cache_remote_player_locomotion(NetworkId(7), Some(reference));
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                102,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![
+                        transform_payload_at([0.0, 0.2, 0.0], 0.0),
+                        movement(2, true, Vec3::Y * 6.0),
+                    ],
+                )],
+            ),
+        );
+        let presented_state = |registry: &EntityRegistry| {
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state
+                .clone()
+        };
+        // Before time sync the newest pose holds: a takeoff.
+        client.apply_held_remote_player_presentation(&mut registry, 1.0);
+        assert_eq!(presented_state(&registry), "jump_up");
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        // Interpolation starts behind it, still on the ground: no landing.
+        client.sample_into_registry(&mut registry, 101.0, 1.02);
+        assert_eq!(presented_state(&registry), "idle");
+        resolve_pending_animation_stamps(&mut registry, 1.02);
+        // The presented takeoff plays as one.
+        client.sample_into_registry(&mut registry, 102.0, 1.04);
+        assert_eq!(presented_state(&registry), "jump_up");
+    }
+
+    #[test]
+    fn remote_player_posture_steps_with_the_presented_sample() {
+        // Crouched at tick 100, standing from tick 110: the presented posture is
+        // the earlier sample's until the render target reaches the later one.
+        let mesh = remote_player_mesh_with(&["crouch_idle", "crouch_forward"]);
+        let declared = ["idle", "walk_forward", "crouch_idle", "crouch_forward"];
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        let velocity = [0.0, 0.0, -2.0];
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([0.0, 0.0, 0.0], 0.0),
+                        movement_payload_with(
+                            velocity,
+                            0.0,
+                            WireMovementState::Crouching { eye_current: 0.3 },
+                        ),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, mesh).unwrap();
+        client.cache_remote_player_locomotion(
+            NetworkId(7),
+            Some(RemotePlayerLocomotionReference::declaring(
+                &declared, 7.0, 11.0,
+            )),
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                110,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![
+                        transform_payload_at([0.0, 0.0, -0.33], 0.0),
+                        movement_payload_with(velocity, 0.0, WireMovementState::Normal),
+                    ],
+                )],
+            ),
+        );
+        let presented_state = |registry: &EntityRegistry| {
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state
+                .clone()
+        };
+        client.sample_into_registry(&mut registry, 109.0, 1.0);
+        assert_eq!(presented_state(&registry), "crouch_forward");
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.sample_into_registry(&mut registry, 110.0, 1.1);
+        assert_eq!(presented_state(&registry), "walk_forward");
+    }
+
+    // A host one-shot refused because this client's phase has not reached it
+    // releases a hold on the host's earlier state, so the client's own
+    // derivation switches instead of playing the stale state through the jump.
+    #[test]
+    fn remote_player_refused_one_shot_releases_a_stale_hold() {
+        let (mut registry, mut client, id) = present_remote_player(
+            remote_player_mesh_with(&["run_forward", "jump_up", "jump_loop", "jump_down"]),
+            &[
+                "idle",
+                "walk_forward",
+                "run_forward",
+                "jump_up",
+                "jump_loop",
+                "jump_down",
+            ],
+            [60.0, 0.0, 0.0],
+            (60.0, 120.0),
+        );
+        let locomotion = client
+            .remote_player_locomotion
+            .get_mut(&NetworkId(7))
+            .unwrap();
+        locomotion.authoritative_correction_state = Some("run_forward".to_string());
+        locomotion.queue_correction(200, "jump_up");
+        client.apply_due_remote_player_correction(&mut registry, NetworkId(7), id, Some(200.0));
+        let locomotion = &client.remote_player_locomotion[&NetworkId(7)];
+        assert_eq!(locomotion.authoritative_correction_state, None);
+        assert!(locomotion.pending_corrections.is_empty());
+        assert_ne!(
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "jump_up",
+            "a refused one-shot is not entered"
+        );
+    }
+
+    // Regression: a host state applied on receipt led the presented body by the
+    // interpolation delay, so a remote jump played `jump_up` while the presented
+    // body still stood and `jump_down` while it still fell.
+    #[test]
+    fn remote_player_host_state_waits_for_the_presented_tick() {
+        let (mut registry, mut client, id) = present_remote_player(
+            remote_player_mesh(),
+            &["idle", "walk_forward"],
+            [60.0, 0.0, 0.0],
+            (60.0, 60.0),
+        );
+        let presented_state = |registry: &EntityRegistry| {
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state
+                .clone()
+        };
+        assert_eq!(presented_state(&registry), "walk_forward");
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(7, 2, 3, vec![mesh_animation_payload("idle")])],
+            ),
+        );
+        // The host's tick-111 state waits while the presentation is short of it.
+        for render_tick in [105.0, 110.0, 110.99] {
+            client.sample_into_registry(&mut registry, render_tick, 1.0);
+            assert_eq!(
+                presented_state(&registry),
+                "walk_forward",
+                "at render tick {render_tick}"
+            );
+        }
+        client.sample_into_registry(&mut registry, 111.0, 1.0);
+        assert_eq!(presented_state(&registry), "idle");
+        assert_eq!(
+            client.remote_player_locomotion[&NetworkId(7)]
+                .authoritative_correction_state
+                .as_deref(),
+            Some("idle"),
+            "applied, the correction holds as before"
+        );
+
+        // Before time sync names a render tick, the held presentation applies
+        // whatever has arrived. Its held pose shows no travel, so it derives idle
+        // until the host's walk corrects it.
+        let (mut registry, mut client, held_id) = map_remote_player(
+            remote_player_mesh(),
+            &["idle", "walk_forward"],
+            [60.0, 0.0, 0.0],
+            (60.0, 60.0),
+        );
+        assert_eq!(held_id, id, "both fixtures map the avatar to one slot");
+        client.apply_held_remote_player_presentation(&mut registry, 1.0);
+        assert_eq!(presented_state(&registry), "idle");
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(7, 2, 3, vec![mesh_animation_payload("walk_forward")])],
+            ),
+        );
+        client.apply_held_remote_player_presentation(&mut registry, 1.02);
+        assert_eq!(presented_state(&registry), "walk_forward");
+        assert!(
+            client.remote_player_locomotion[&NetworkId(7)]
+                .pending_corrections
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn remote_player_pending_host_states_collapse_resends_and_stay_bounded() {
+        let mut locomotion = RemotePlayerLocomotion::new(
+            RemotePlayerLocomotionReference::idle_and_walk_forward(60.0),
+        );
+        locomotion.queue_correction(10, "walk_forward");
+        locomotion.queue_correction(12, "walk_forward");
+        locomotion.queue_correction(14, "idle");
+        let queued = |locomotion: &RemotePlayerLocomotion| {
+            locomotion
+                .pending_corrections
+                .iter()
+                .map(|pending| (pending.server_tick, pending.state.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            queued(&locomotion),
+            [(10, "walk_forward".to_string()), (14, "idle".to_string())],
+            "a resend keeps the tick its state began"
+        );
+        assert_eq!(locomotion.take_due_correction(Some(9.5)), None);
+        // Both are due by tick 14; the older is superseded.
+        assert_eq!(
+            locomotion.take_due_correction(Some(14.0)).as_deref(),
+            Some("idle")
+        );
+        assert!(locomotion.pending_corrections.is_empty());
+
+        for tick in 0..40u32 {
+            let state = if tick.is_multiple_of(2) {
+                "idle"
+            } else {
+                "walk_forward"
+            };
+            locomotion.queue_correction(100 + tick, state);
+        }
+        assert_eq!(
+            locomotion.pending_corrections.len(),
+            MAX_PENDING_ANIMATION_CORRECTIONS
+        );
+        assert_eq!(
+            locomotion
+                .pending_corrections
+                .front()
+                .map(|pending| pending.server_tick),
+            Some(124),
+            "overflow drops the oldest"
+        );
+    }
+
+    #[test]
     fn remote_player_correction_leading_forward_travel_keeps_legs_toward_travel() {
-        // The host has already reversed into a backpedal while the interpolated
-        // velocity still runs forward along aim (-Z).
+        // The host has reversed into a backpedal while the replicated velocity
+        // still runs forward along aim (-Z).
         let (mut registry, mut client, id) = present_remote_player(
             remote_player_backpedal_mesh(),
             &["idle", "walk_forward", "walk_backward"],
@@ -5494,7 +6656,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 111.0, 1.0);
         let (state, heading) = presented_state_and_heading(&registry, &client, id);
         assert_eq!(state, "walk_backward", "the correction's clip holds");
         assert!(
@@ -5512,8 +6674,8 @@ mod tests {
             [0.0, 0.0, -60.0],
             (60.0, 60.0),
         );
-        // The host reverses into a backpedal a full interpolation delay ahead of
-        // the presented pose, and resends that state with every delta.
+        // The host reverses into a backpedal before the replicated travel does,
+        // and resends that state with every delta.
         resolve_pending_animation_stamps(&mut registry, 1.0);
         client.apply_snapshot(
             &mut registry,
@@ -5529,12 +6691,12 @@ mod tests {
             ),
         );
         for anim_time in [1.0, 1.06, 1.2] {
-            client.sample_into_registry(&mut registry, 105.0, anim_time);
+            client.sample_into_registry(&mut registry, 111.0, anim_time);
             resolve_pending_animation_stamps(&mut registry, anim_time);
             let (state, heading) = presented_state_and_heading(&registry, &client, id);
             assert_eq!(
                 state, "walk_backward",
-                "no revert to the lagging forward prediction at {anim_time}"
+                "no revert to the forward prediction at {anim_time}"
             );
             assert!(heading.abs() <= EPSILON, "legs follow forward travel");
         }
@@ -5622,7 +6784,7 @@ mod tests {
                 )],
             ),
         );
-        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        client.sample_into_registry(&mut registry, 111.0, 1.0);
         let (state, heading) = presented_state_and_heading(&registry, &client, id);
         assert_eq!(state, "walk_backward");
         assert!(
@@ -5632,9 +6794,9 @@ mod tests {
 
         // After the crossfade the client's memory holds the backpedal in the band.
         resolve_pending_animation_stamps(&mut registry, 1.0);
-        client.sample_into_registry(&mut registry, 105.0, 1.06);
+        client.sample_into_registry(&mut registry, 111.0, 1.06);
         resolve_pending_animation_stamps(&mut registry, 1.06);
-        client.sample_into_registry(&mut registry, 105.0, 1.06);
+        client.sample_into_registry(&mut registry, 111.0, 1.06);
         let (state, heading) = presented_state_and_heading(&registry, &client, id);
         assert_eq!(state, "walk_backward");
         assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= EPSILON);

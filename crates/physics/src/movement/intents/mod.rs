@@ -4,6 +4,7 @@
 use glam::{Vec2, Vec3};
 
 use crate::movement::MovementInput;
+use crate::movement::substrate::pm_accelerate;
 use postretro_foundation::PlayerMovementComponent;
 
 mod crouching;
@@ -24,40 +25,78 @@ pub(super) use slide::sliding_intent;
 pub(super) use swim::{fluid_jump_input, leave_swim, swim_intent};
 pub(super) use vault::vault_intent;
 
-/// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
-/// stop/slide-threshold friction model. Value matches Quake's default
-/// `sv_friction` (6.0). Uses:
-///   - `Normal` step 6 / `apply_normal_horizontal_decay`: grounded with no
-///     movement input held — the stop-friction that bleeds idle speed. Gated
-///     on no-input because `pm_accelerate` already caps in-band grounded speed.
-///   - `dash_intent`'s `dash_drag == 0` grounded boost path: applied
-///     UNCONDITIONALLY (no no-input gate). The boost deliberately sits above
-///     the grounded cap, so the no-input gate cannot apply — a held stick must
-///     still bleed the over-cap boost rather than freezing it.
-///   - The push drift layer's grounded decay (`push::decay_drift`), also
-///     unconditional: drift is never voluntary, so a steady push settles at
-///     push / `GROUND_STOP_FRICTION`.
-///
-/// Promote to `GroundParams` if per-entity friction tuning becomes necessary.
-pub(super) const GROUND_STOP_FRICTION: f32 = 6.0;
+/// Ground friction on a horizontal velocity, in place. Each tick removes
+/// `max(speed, stop_speed) * friction * dt`, floored at zero: exponential decay
+/// above `stop_speed`, then a constant deceleration that ends at exactly zero.
+/// A `stop_speed` of zero is pure exponential decay. Uses:
+///   - [`ground_locomotion`]: every grounded tick of `Normal` and `Crouching`,
+///     with the descriptor's stop speed when no input is held and none otherwise.
+///   - [`apply_normal_horizontal_decay`]: the dash's retained base with no input
+///     held, with the descriptor's stop speed.
+///   - `dash_intent`'s `dash_drag == 0` grounded boost bleed and the push drift
+///     layer's grounded decay (`push::decay_drift`), both with no stop speed:
+///     the boost is above the cap, and a gentle steady drift must survive as
+///     push / friction rather than being braked to zero.
+pub(super) fn apply_ground_friction(velocity: &mut Vec3, friction: f32, stop_speed: f32, dt: f32) {
+    let speed = Vec2::new(velocity.x, velocity.z).length();
+    if speed > 0.0 {
+        let drop = speed.max(stop_speed) * friction * dt;
+        let scale = (speed - drop).max(0.0) / speed;
+        velocity.x *= scale;
+        velocity.z *= scale;
+    }
+}
 
-/// Fractional margin above the run cap before the held-input grounded
-/// over-speed bleed (`normal_intent` step 6) engages. `pm_accelerate`'s
-/// projection clamp leaves sub-unit floating-point overshoot just above the cap
-/// during normal running (~1e-4); reacting to that would perturb steady-state
-/// motion. Real banked momentum (a dash handing off above the cap) clears this
-/// margin by a wide margin, so 0.2 % cleanly separates signal from float noise.
-pub(super) const OVERSPEED_BLEED_MARGIN: f32 = 1.002;
+/// Grounded locomotion for `Normal` and `Crouching`: friction, then
+/// acceleration toward the wish (Quake's `PM_Friction` then `PM_Accelerate`).
+/// Friction runs whether or not input is held, so a turn sheds the old heading's
+/// momentum; the stop speed applies only with no input, when the pawn is
+/// stopping. Acceleration may turn the velocity but never lift ground speed past
+/// `wish_speed`, or past the speed friction left when that was already higher:
+/// ground speed cannot climb by sweeping the aim, and speed banked above the cap
+/// (a dash or slide exit) only bleeds. The airborne path is untouched, so
+/// bunny-hopping keeps its carried speed.
+pub(super) fn ground_locomotion(
+    component: &mut PlayerMovementComponent,
+    wish_dir_3d: Vec3,
+    wish_speed: f32,
+    control: f32,
+    dt: f32,
+) {
+    let ground = &component.ground_params;
+    let (friction, stop_speed, accel) = (ground.friction, ground.stop_speed, ground.accel);
+    if wish_dir_3d.length_squared() == 0.0 {
+        apply_ground_friction(&mut component.velocity, friction, stop_speed, dt);
+        return;
+    }
+    // The stop speed ends a stop; with input held it would brake a slow tier (or
+    // a pawn whose acceleration knockback control scales down) below its target
+    // every tick, pinning it at a creep instead of `accel / friction` of it.
+    apply_ground_friction(&mut component.velocity, friction, 0.0, dt);
+    let limit = Vec2::new(component.velocity.x, component.velocity.z)
+        .length()
+        .max(wish_speed);
+    pm_accelerate(
+        &mut component.velocity,
+        wish_dir_3d,
+        wish_speed,
+        accel * control,
+        dt,
+    );
+    let speed = Vec2::new(component.velocity.x, component.velocity.z).length();
+    if speed > limit {
+        let scale = limit / speed;
+        component.velocity.x *= scale;
+        component.velocity.z *= scale;
+    }
+}
 
-/// Apply `Normal`'s contextual horizontal decay to a horizontal velocity vector
-/// in place: when grounded, the no-input stop-friction branch of `Normal` step 6
-/// only; when airborne, the horizontal cap (mirroring steps 4/5). Step 6 has a
-/// second grounded branch — the held-input over-speed bleed above
-/// `OVERSPEED_BLEED_MARGIN` — which this helper deliberately omits: the vectors
-/// `dash_intent` passes in (the retained base; the boost only when
-/// `dash_drag == 0`) are already bounded below the run cap, so there is no
-/// over-cap residue for that branch to act on. Reads the grounded flag and
-/// friction params off the component.
+/// The dash's decay of its retained base (and, airborne, its zero-drag boost),
+/// in place: when grounded with no movement input, ground friction at the
+/// descriptor's rate and stop speed; when airborne, the horizontal cap
+/// (mirroring `Normal`'s air branch). The dash steers with its own
+/// acceleration, so unlike [`ground_locomotion`] a held stick leaves the base
+/// undecayed. Reads the grounded flag and friction params off the component.
 pub(super) fn apply_normal_horizontal_decay(
     velocity: &mut Vec3,
     component: &PlayerMovementComponent,
@@ -67,14 +106,8 @@ pub(super) fn apply_normal_horizontal_decay(
 ) {
     if component.is_grounded() {
         if input.wish_dir.length_squared() < 0.001 {
-            let h_speed = Vec2::new(velocity.x, velocity.z).length();
-            if h_speed > 0.0 {
-                let drop = h_speed * GROUND_STOP_FRICTION * dt;
-                let new_speed = (h_speed - drop).max(0.0);
-                let scale = new_speed / h_speed;
-                velocity.x *= scale;
-                velocity.z *= scale;
-            }
+            let ground = &component.ground_params;
+            apply_ground_friction(velocity, ground.friction, ground.stop_speed, dt);
         }
     } else if !component.air.bunny_hop {
         let h_speed = Vec2::new(velocity.x, velocity.z).length();

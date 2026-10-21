@@ -5,11 +5,11 @@ use glam::{Vec2, Vec3};
 
 use postretro_collision::{EnvironmentView, EnvironmentVolumes};
 use postretro_foundation::{
-    CrouchParams, MovementState, PlayerMovementComponent, PlayerMovementDescriptor, SlideParams,
+    CrouchParams, GroundParams, MovementState, PlayerMovementComponent, PlayerMovementDescriptor,
+    SlideParams,
 };
 
 use super::environment_tests::{descriptor, idle_input, push_box};
-use super::intents::GROUND_STOP_FRICTION;
 use super::{MovementInput, tick};
 use crate::collision::CollisionWorld;
 
@@ -188,14 +188,25 @@ fn grounded_player_stays_grounded_under_upward_push_weaker_than_gravity() {
     }
 }
 
-// A standing player drifts with a sideways push and settles.
+// A standing player drifts with a sideways push and settles at push / the
+// class's ground friction. Every steady drift here is below the stop speed, so
+// the drift layer's decay must not brake toward zero.
 #[test]
 fn standing_player_drifts_with_sideways_push_and_settles_at_steady_speed() {
+    for friction in [4.0, GroundParams::DEFAULT_FRICTION, 12.0] {
+        standing_drift_settles_at_push_over_friction(friction);
+    }
+}
+
+fn standing_drift_settles_at_push_over_friction(friction: f32) {
     let world = floor_world();
     let push = Vec3::new(8.0, 0.0, 0.0);
     let volumes = push_field(push, 50.0);
     let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
-    let (mut component, mut position) = grounded_pawn(&descriptor(), &world);
+    let mut desc = descriptor();
+    desc.ground.friction = friction;
+    assert!(push.x / friction < desc.ground.stop_speed);
+    let (mut component, mut position) = grounded_pawn(&desc, &world);
     let start = position;
 
     for _ in 0..299 {
@@ -219,9 +230,9 @@ fn standing_player_drifts_with_sideways_push_and_settles_at_steady_speed() {
         &idle_input(),
         &mut position,
     );
-    // Stop friction removes `GROUND_STOP_FRICTION * dt` of the speed each tick
-    // before the push adds `push * dt`, so the drift settles at push / friction.
-    let steady = push.x / GROUND_STOP_FRICTION;
+    // Friction removes `friction * dt` of the speed each tick before the push
+    // adds `push * dt`, so the drift settles at push / friction.
+    let steady = push.x / friction;
     assert!(
         (component.velocity.x - steady).abs() < 1.0e-3,
         "the drift settles at push / friction: vx={} expected {steady}",
@@ -366,7 +377,7 @@ fn drift_carries_out_of_wind_until_landing_then_ground_friction_decays_it() {
             &mut position,
         );
         let drift = component.push_velocity.x;
-        let expected = previous * (1.0 - GROUND_STOP_FRICTION * DT);
+        let expected = previous * (1.0 - descriptor().ground.friction * DT);
         assert!(
             (drift - expected).abs() < VEL_EPS,
             "grounded, friction bleeds the drift: {drift} expected {expected}"

@@ -195,11 +195,19 @@ pub(super) fn materialize_armed_local_pawn(
             let _ = registry.set_component(armed.entity_id, rebuilt);
         }
     } else {
+        // Every owner record re-arms the pawn, and a still pawn's arrive every
+        // snapshot, so only the install that left it inert warns.
         if rebuild_movement {
             let _ = registry
                 .remove_component::<postretro_foundation::PlayerMovementComponent>(armed.entity_id);
+            log::warn!(
+                "[Net] local pawn has no host movement tuning; movement prediction stays inert"
+            );
+        } else {
+            log::debug!(
+                "[Net] local pawn awaits host movement tuning; movement prediction stays inert"
+            );
         }
-        log::warn!("[Net] local pawn has no host movement tuning; movement prediction stays inert");
     }
     let _ = crate::scripting::builtins::net_descriptor::materialize_net_local_wieldable_inventory_from_tuning(
         entity_class,
@@ -413,6 +421,8 @@ mod tests {
                 accel: 10.0,
                 step_height: 0.3,
                 max_slope: 45.0,
+                friction: GroundParams::DEFAULT_FRICTION,
+                stop_speed: GroundParams::DEFAULT_STOP_SPEED,
             },
             air: AirParams {
                 forward_steer: 0.0,

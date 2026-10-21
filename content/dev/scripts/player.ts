@@ -64,6 +64,22 @@ export const playerEntity = defineEntity({
           crossfadeMs: 50,
           travelSpeed: 11.0,
         },
+        crouch_idle: { clip: "idle_crouching", loop: true, crossfadeMs: 50 },
+        crouch_forward: {
+          clip: "walk_crouching_forward",
+          loop: true,
+          crossfadeMs: 50,
+          travelSpeed: 3.0,
+        },
+        crouch_backward: {
+          clip: "walk_crouching_backward",
+          loop: true,
+          crossfadeMs: 50,
+          travelSpeed: 3.0,
+        },
+        jump_up: { clip: "jump_up", loop: false, crossfadeMs: 60 },
+        jump_loop: { clip: "jump_loop", loop: true, crossfadeMs: 60 },
+        jump_down: { clip: "jump_down", loop: false, crossfadeMs: 60 },
       },
       defaultState: "idle",
       locomotion: { speedScale: true },
@@ -72,9 +88,14 @@ export const playerEntity = defineEntity({
       capsule: { radius: 0.2, halfHeight: 0.8, eyeHeight: 0.5 },
       ground: {
         speed: { walk: 7.0, run: 11.0, crouch: 3.0 },
-        // Higher ground accel snaps horizontal velocity onto the new wish
-        // direction faster, tightening running turns instead of drifting.
+        // Accel sets how fast the player reaches speed and turns onto a new
+        // heading; below friction the speeds above are never reached.
         accel: 15.0,
+        // Friction runs every grounded tick: it sets how fast the player stops
+        // and how fast dash/slide speed above the cap bleeds away. With no input,
+        // below stopSpeed it brakes at a constant rate, so a stop ends at zero.
+        friction: 8.0,
+        stopSpeed: 2.5,
         stepHeight: 0.5,
         maxSlope: 45.0,
       },

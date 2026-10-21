@@ -204,7 +204,7 @@ struct PendingAnimationCorrection {
 }
 
 /// Host states queued per remote avatar. Snapshots outpace presentation by the
-/// interpolation delay (at most 250 ms, about 8 snapshots at the 2-tick cadence),
+/// interpolation delay (half the round trip plus 50–250 ms of buffer),
 /// and a resend of the newest queued state is not queued again, so the bound is
 /// reached only when the delay overruns; the oldest state, superseded by the
 /// rest, is dropped first.
@@ -2621,6 +2621,17 @@ impl ClientReplication {
             .states
             .admits_state(authoritative_state, phase)
         {
+            // The host has named another state, so a hold on an earlier one is
+            // stale; released, this client's own derivation, already in the
+            // matching phase, switches on the same frame.
+            if let Some(locomotion) = self.remote_player_locomotion.get_mut(&network_id)
+                && locomotion
+                    .authoritative_correction_state
+                    .as_deref()
+                    .is_some_and(|held| held != authoritative_state)
+            {
+                locomotion.authoritative_correction_state = None;
+            }
             return false;
         }
         let predicted_state = locomotion.client_derived_state.as_deref();
@@ -2729,9 +2740,7 @@ impl ClientReplication {
                 locomotion.resync_jump_phase = true;
                 false
             }
-            RemotePlayerPresentation::Interpolated => {
-                std::mem::take(&mut locomotion.resync_jump_phase)
-            }
+            RemotePlayerPresentation::Interpolated => locomotion.resync_jump_phase,
         };
         let speed_xz = horizontal_speed(velocity);
         let Some(animation) = registry
@@ -2741,6 +2750,10 @@ impl ClientReplication {
         else {
             return LocomotionDirection::Forward;
         };
+        // Consumed only once a mesh animation can take the resync.
+        if resync_jump_phase {
+            locomotion.resync_jump_phase = false;
+        }
         let reference = &locomotion.reference;
         let usable = |state: &str| animation.is_state_usable(state);
         let stored_direction = animation.locomotion_direction;
@@ -6446,6 +6459,47 @@ mod tests {
         resolve_pending_animation_stamps(&mut registry, 1.0);
         client.sample_into_registry(&mut registry, 110.0, 1.1);
         assert_eq!(presented_state(&registry), "walk_forward");
+    }
+
+    // A host one-shot refused because this client's phase has not reached it
+    // releases a hold on the host's earlier state, so the client's own
+    // derivation switches instead of playing the stale state through the jump.
+    #[test]
+    fn remote_player_refused_one_shot_releases_a_stale_hold() {
+        let (mut registry, mut client, id) = present_remote_player(
+            remote_player_mesh_with(&["run_forward", "jump_up", "jump_loop", "jump_down"]),
+            &[
+                "idle",
+                "walk_forward",
+                "run_forward",
+                "jump_up",
+                "jump_loop",
+                "jump_down",
+            ],
+            [60.0, 0.0, 0.0],
+            (60.0, 120.0),
+        );
+        let locomotion = client
+            .remote_player_locomotion
+            .get_mut(&NetworkId(7))
+            .unwrap();
+        locomotion.authoritative_correction_state = Some("run_forward".to_string());
+        locomotion.queue_correction(200, "jump_up");
+        client.apply_due_remote_player_correction(&mut registry, NetworkId(7), id, Some(200.0));
+        let locomotion = &client.remote_player_locomotion[&NetworkId(7)];
+        assert_eq!(locomotion.authoritative_correction_state, None);
+        assert!(locomotion.pending_corrections.is_empty());
+        assert_ne!(
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "jump_up",
+            "a refused one-shot is not entered"
+        );
     }
 
     // Regression: a host state applied on receipt led the presented body by the

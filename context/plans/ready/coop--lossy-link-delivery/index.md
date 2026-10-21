@@ -23,7 +23,7 @@ Owner playtest under the dev lag proxy (45 ms + 0–60 ms jitter + 5% loss each 
 - **One protocol bump covers the change.** The application protocol id moves for the channel layout and the families that change channel. `WIRE_VERSION` moves for layout. `SNAPSHOT_VERSION` does not move. The previous peer is refused at the handshake.
 - **Placement.** Channel layout and resend policy go in `postretro-net`, as does the wire vocabulary: the switch variants move from the Control enums to the Input `ClientMessage` and `ServerMessage`, and the host's Input classification gains them. Send-site routing and switch-lane intake from Input go in `postretro-netcode`. Host gap policy and catch-up stay as they are; they now handle only genuine outages.
 - **Non-goals.**
-  - Smooth client display of host-projected timed values, such as the reload meter stepping. The owner reported it in the same playtest, but its cause is sample rate, not loss: `drafts/coop--timed-slot-projection` owns it.
+  - Smooth client display of host-projected timed values, such as the reload meter stepping. The owner reported it in the same playtest, but its cause is sample rate, not loss: `ready/coop--timed-slot-projection` owns it.
   - Clipping the smoothed camera path against geometry. Corrections become small, and `movement--static-overlap-invariant` removed real embeds.
   - Lag compensation (`networking.md` §Non-goals).
   - Time dilation, steering the client's tick rate to hold the host's buffer depth. Buffer depth stays the gap and catch-up policy's, which this brief leaves unchanged.

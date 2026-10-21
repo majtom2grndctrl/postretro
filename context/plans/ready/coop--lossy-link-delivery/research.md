@@ -97,7 +97,7 @@ Sources (techniques public; no current encumbrance found; not legal advice):
 - Host→client: `NetClient::drain_input` epoch-filters only `WeaponCues`. `resolve_switch_outcome` refuses an outcome unless it matches the front of the pending chain by `declaration_id` and slot. `demote_client_state` and `reset_level_scoped_client_state` clear `pending_switch_declarations`; `next_switch_declaration_id` is set once at endpoint construction and only increments (`wrapping_add`). A stale outcome therefore meets an empty chain or a newer front.
 - Host lane removal: `HostCommandQueues::remove_client` on slot close and pawn loss.
 
-The reload-meter research moved to `drafts/coop--timed-slot-projection/research.md` with the scope.
+The reload-meter research moved to `ready/coop--timed-slot-projection/research.md` with the scope.
 
 ## Ordering pins
 

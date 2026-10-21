@@ -97,7 +97,7 @@ Sources (techniques public; no current encumbrance found; not legal advice):
 - Host→client: `NetClient::drain_input` epoch-filters only `WeaponCues`. `resolve_switch_outcome` refuses an outcome unless it matches the front of the pending chain by `declaration_id` and slot. `demote_client_state` and `reset_level_scoped_client_state` clear `pending_switch_declarations`; `next_switch_declaration_id` is set once at endpoint construction and only increments (`wrapping_add`). A stale outcome therefore meets an empty chain or a newer front.
 - Host lane removal: `HostCommandQueues::remove_client` on slot close and pawn loss.
 
-The reload-meter research moved to `drafts/ui-tween-clock/research.md` §Timed-value projection with the scope.
+The reload-meter research moved to `drafts/coop--timed-slot-projection/research.md` with the scope.
 
 ## Ordering pins
 
@@ -122,7 +122,7 @@ The reload-meter research moved to `drafts/ui-tween-clock/research.md` §Timed-v
 | P17 | Tuning across demotion | Tuning sent under E, then Holding, then re-promotion and a new payload | The old payload never installs after Holding. The new one installs |
 | P18 | Two corrections before decay | Correction A seeds the offset. B lands before A decays, possibly in the same frame | The presented eye is the same before and after B. The offset becomes A's remainder plus B. A teleport-class correction, a first-record adoption or a level reset clears it instead |
 
-Read at d6f3471 (`/review-brief`). P2's two outcomes depend on the open resend question.
+Read at d6f3471 (`/review-brief`). P2's first outcome is the chosen one: the gameplay resend is capped at one tick.
 
 ## Harness inventory
 

@@ -75,6 +75,12 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 - Nesting the Ghost track under SFX takes one of SFX's child-track slots, which are sized to the SFX voice headroom. `caps_within_capacity` with a 16 ghost cap totals 60 of 64.
 - Fluid colors are `[r, g, b]` arrays (`viewTint`, `fogColor` in content/dev/start-script.ts).
 
+## Presentation clocks
+- Clients present movers at the estimated host tick, and remote pawns at `render_server_tick`, the estimated server tick minus an adaptive delay (crates/netcode/src/interpolation.rs).
+- The host seat presents client pawns `PRESENTATION_DELAY_TICKS` (2) late (crates/netcode/src/host_presentation.rs, `networking.md` §Host-side remote-pawn presentation).
+- Bound presentation look ramps rebase to the host-now clock (crates/netcode/src/client/bindings.rs).
+- Snapshots go out every second host tick (crates/netcode/src/host.rs).
+
 ## Pin table
 | id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|

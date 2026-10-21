@@ -31,7 +31,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - An entity inside two armed links ghosts through each, one transform per link. A mover matching several of one link's tags ghosts once through it.
   - At level install, members of links armed on spawn present at full membership on the first frame.
 - **Ghost draw.**
-  - Unlit: the base color's saturation is scaled by `saturation` (1 keeps full color, 0 is grey), then multiplied by `tint`, and blended at the presented opacity.
+  - Unlit: the base color's saturation is scaled by `saturation` (1 keeps full color, 0 is grey), then multiplied by `tint`, and drawn translucent at the presented opacity.
   - Depth-tested without depth write; no shadows.
   - Culled at the mapped position against the viewer's visible cells, whatever the real position's visibility.
   - A projectile ghost gets the same treatment on its billboard or model body.
@@ -41,6 +41,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - Each ghost is one limiter channel: presented opacity is its strength and its link's tint is its redness, under the fluid view tint's rules and player-only toggle. Like the screen channels, it judges the change as if it covered the screen (`rendering_pipeline.md` §7.8).
   - A new ghost's membership starts at 0. Turning the limiter on starts every ghost fresh against its current value, as the screen channels start, so enabling it never dips a ghost. The membership ramp runs on presented-frame time, so it continues through a pause, while `setColorFilter` ramps follow script time.
   - The clamp applies on the presenting machine to the presented value, and nothing it holds reaches a script or the wire (I9).
+  - The per-ghost clamp is a reusable per-value clamp extracted from the screen-channel clamp on the same rules. It is not a ghost-only copy: `drafts/E23--photosensitivity-source-floor` reuses it for every other source.
 - **Look resolves per link, per field:** floor style, then the named style, then `setColorFilter`. `setColorFilter` ramps each field it names independently. An omitted field keeps its value and any ramp in flight. Presentation flags come from the style alone and never change at runtime.
 - **Ghost audio mirrors voices this machine plays.**
   - When a link's style sets `audio`, a sound this machine plays anchored at a member inside the volume also plays a second voice. The voice sits at the mapped fire-time point on the Ghost bus. Admission reads the fire-time point and armed state, not the presented ramp.
@@ -194,20 +195,18 @@ Pins are in `research.md`.
   - `defineFluid`, for styles.
   - `setSentiment`, for a target-less reaction body.
   - `resolve_authored_attenuation`, for the bus profile.
-- Rendering: translucent variants of the skinned-mesh and kinematic-brush passes; game logic hands the renderer extra instances with look values. A mover ghost needs its own instance path, because upload keys by `mover_id` and keeps one instance per id. Skinned ghosts ride the batch as extra instances with a ghost palette cache key.
-- Limiter: the per-channel tracked value in `flash_clamp.rs` is private and hard-wired to the three screen channels. Expose it, or build a per-value clamp on the same rules.
-- Audio:
-  - Voices need the bus they took, through `start_voice`, `AudioCore::play` and voice release.
-  - The Ghost track takes one of SFX's child-track slots and needs its own pool.
-  - A ghost voice uses a `Point` anchor.
-  - The chain is kira 0.12.5's built-in filter, distortion and volume effects, added with `add_effect` so their handles are kept. Drive is in decibels, so the 0..=1 value maps to a dB range.
-- Impact owner: the host's own shots carry a raw local pawn id until `publish_observer_weapon_cues` normalizes it, and `NetworkId(0)` is a real id. On the host, a partner client's projectile is a visual-only flight entity whose owner sits in a netcode-private table (`projectile_presentation.rs`).
-- Replication: links register at level install like teleporters. Look ramps rebase with the host-time rule bound presentation state uses, then present at each member's own presentation delay. Clients present movers at the estimated host tick and remote pawns at `render_server_tick`. The host seat presents client pawns `PRESENTATION_DELAY_TICKS` late.
+- Rendering: translucent variants of the skinned-mesh and kinematic-brush passes, with game logic handing the renderer extra instances and look values. Mover and skinned instance seams: `research.md` §Rendering.
+- Limiter: extract the private per-channel tracked value from `flash_clamp.rs` (`research.md` §Client-side facts).
+- Audio seams (bus-aware voice release, the SFX child-track slot, `Point` anchors, kira's built-in effects and the dB drive): `research.md` §Audio, §Audio capacity.
+- Impact and projectile owners on each role: `research.md` §Client-side facts. Normalize before reading membership.
+- Replication: links register at level install like teleporters. Look ramps rebase with the host-time rule bound presentation state uses, then present at each member's own clock (`research.md` §Presentation clocks).
 - Rivals weighed:
   - Ghosts as registry display copies: they enter hit, trigger, overlap and AI paths, and would need the filters room copies avoid.
   - Per-link look keys and flags: every link would repeat a game's taste.
   - Script-set membership at arm time: map data keeps membership off the wire.
   - A per-entity `ghost` KVP: it cannot vary by link.
+  - Two briefs, visuals now and ghost audio later: rejected because the owner treats ghost audio, `setGhostAudio` included, as core to designing the experience.
+  - Screen-door (dithered) transparency instead of alpha blending: it avoids sorting against the fluid and billboard passes and suits the retro look. The executor weighs it in the thin slice and reports the choice; the limiter's opacity strength reads the same either way.
 - Namespace: `postretro/ui` is the precedent for a virtual module: `luau_require.rs`, `luau_prelude.rs`, `staged_manifest.rs`, `typedef/luau.rs` and the `ui_sdk_module.d.ts` template. Dev `tsconfig.json` files map module ids to the generated declarations.
 - Split before extending: `crates/net/src/wire.rs`, `crates/netcode/src/replication.rs`, `crates/level-compiler/src/parse.rs`, `crates/renderer/src/render/mesh_pass.rs`.
 

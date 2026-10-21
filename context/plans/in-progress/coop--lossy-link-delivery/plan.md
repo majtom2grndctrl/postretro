@@ -1,7 +1,7 @@
 # coop--lossy-link-delivery — plan of record
 
 mode: resumable
-status: approved
+status: approved (build complete; results recorded)
 read at: 6c3adca4e
 
 Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the brief carries the new wording.
@@ -27,38 +27,38 @@ Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the b
 
 ## AC-to-proof
 
-| AC | Row | Proof | Status |
-|---|---|---|---|
-| 1 | Reproduces first; loss-off control | `steady_run_stays_in_ordinary_band_under_dev_profile` committed failing at base resend (148 above band, max 5.3 m Teleport; host Neutral 1365/3600, seeds 0x1502/0x1503); `steady_run_loss_off_records_no_oversized_correction` (P1) passes (all 0.000 m, 3600 Real) | stop gate passed |
-| 2 | Seeded-minute steady run, strafe, slides, vaults: nothing above Ordinary | `steady_run_stays_in_ordinary_band_under_dev_profile` (relay harness; same test as row 1, passes after task 2), `vault_course_stays_in_ordinary_band_under_dev_profile` (6 risers, review round 1) | achievable as stated |
-| 3 | Slide/vault entry on the same client tick, incl. lost entry datagram (P3) | `slide_entry_lost_datagram_enters_on_host_same_client_tick`, `vault_entry_lost_datagram_enters_on_host_same_client_tick`, no-loss twins | passes (task 2) |
-| 4 | Fixed delay, one scripted lost Input datagram: no hold/neutral/trim, Real on its own tick (P2) | `single_lost_input_datagram_resolves_real_on_its_own_tick` | passes (task 2) |
-| 5 | Grep gate: hold/target/max stay 3/2/8 | `gap_policy_keeps_hold_3_buffer_target_2_and_buffer_max_8` + grep in preflight | passes (task 2) |
-| 6 | 2 s outage: no disconnect; edges/switches exactly once in order; starts one terminal; no malformed switch (P12) | `conditioned_two_second_outage_delivers_every_lane_once_in_client_tick_order` (clean + mandated; 80 edges/switches once in order, 20 switches accepted, 12 starts delivered + 8 `Lagged`, no disconnect); `two_second_outage_falls_back_to_gap_policy_and_recovers_to_ordinary_corrections` | passes (task 5) |
-| 7 | Switch then later start, loss on switch datagram (P4); start on switch's own command (P5) | `conditioned_lost_switch_datagram_still_resolves_before_a_later_start` (P4), `conditioned_start_on_the_switchs_own_command_lands_after_it_across_a_loss` (P5, host order) | passes (task 4b) |
-| 8 | Switch outcomes in declaration order under loss and jitter | `conditioned_switch_outcomes_arrive_in_declaration_order_under_the_dev_profile` (4 seeds) | passes (task 5) |
-| 9 | Two edges on one tick both deliver; none twice (P11) | `conditioned_two_edges_on_one_tick_deliver_once_across_a_lost_datagram`, `…_under_seeded_loss` | passes (task 5) |
-| 10 | Refuse stale outcome across demote/relevel; permit current (P9, P10) | `client_switch_relay_test.rs`: `switch_outcome_in_the_current_participation_resolves_its_declaration`, `switch_outcome_landing_with_the_holding_that_retires_it_resolves_nothing`, `stale_switch_outcome_meets_a_newer_front_and_leaves_it_to_its_own_outcome`, `switch_outcome_from_before_a_level_unload_resolves_nothing` | passes (task 4b) |
-| 11 | Declaration across demote→re-promote never reaches lane; permit post-re-promotion (P6) | `declaration_sent_before_a_demotion_never_reaches_the_lane_after_repromotion` (+ permit) | passes (task 4b) |
-| 12 | Host-dropped declaration never leaves chain waiting; Holding + marker in one drain (P7) | `declaration_the_host_drops_by_epoch_never_leaves_the_chain_waiting`, `world_less_frame_discarding_a_switch_outcome_leaves_no_stuck_chain` | passes (task 4b) |
-| 13 | Switch retained in lane at demotion never applied after re-promotion (P8) | `switch_retained_in_the_lane_at_demotion_is_never_applied_after_repromotion` | passes (task 4b) |
-| 14 | Grep gate: no switch on Control | `switch_send_sites_put_declarations_and_outcomes_on_input_never_control` (source-text gate) + Control enums carry no switch variant | passes (task 4b) |
-| 15 | Relay pair, scripted single drop either direction ≤ largest one-way + 2 ticks (P2) | `single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions` | passes (task 2): 116.0 / 127.0 ms at conditioner arrival (116.7 / 133.3 frame-quantized) vs 138.3 ms bound |
-| 16 | New entity's baseline frozen ≤ one snapshot past a lost ack, ack on Input (P15) | `lost_ack_delays_a_new_entitys_first_delta_by_at_most_one_snapshot` (fixed 45 ms link: first Delta seq 24 clean, 25 lost) | passes (task 6); see Findings for the dev-profile sweep |
-| 17 | Sliced tuning on Control under loss delays no Input message (P16) | `sliced_tuning_under_loss_delays_no_input_message_past_the_single_loss_bound` (7-slice payload, slices 0 and 2 lost; 13 host→client Input messages, worst 113.7 ms vs 138.3 ms) | passes (task 6) |
-| 18 | Tuning sent before demote/relevel never applies after; permit post-re-promotion (P17) | `tuning_sent_before_a_demotion_never_applies_after_it_and_the_next_one_installs`, `tuning_sent_before_a_level_change_never_applies_after_it_and_the_next_one_installs` | passes (task 6) |
-| 19 | Client upstream ≤ 40 KB/s at 60 Hz under profile, reported | `client_upstream_bytes_under_dev_profile_stay_within_40_kb_per_second` | passes (task 6): 33,674 B/s renet-level (Input 33,032, acks 642; 120 datagrams/s); on-wire est. 39,434 B/s at 48 B/datagram netcode+UDP/IPv4. Reported beside it (review round 1): 41.0 KB/s at 144 Hz client polls, 57.4 KB/s at 250 ms RTT (60 Hz) |
-| 20 | Outage: offset within one tick, **no outage probe folds**, no reseed (P13) | `two_second_outage_keeps_offset_within_a_tick_and_gates_lengthened_probes` (drift 0.30 tick; 10 gated, 1 folded at +33 ms inside tolerance; no reseed) | passes (task 5) |
-| 21 | Probe lost once: one echo, RTT **≤ one resend** above unlost (P14) | `probe_lost_once_yields_one_echo_at_most_one_tick_late` (+16.666 ms, one echo) | passes (task 5) |
-| 22 | RTT estimate tracks true RTT within estimator tolerance | `rtt_estimate_tracks_the_realized_round_trip_under_dev_profile` (worst +54.3 ms vs 66.7 ms tolerance, 134 comparisons) | passes (task 5) |
-| 23 | Join: lost tuning slice delays inventory ≤ one Control resend + largest one-way | `lost_tuning_datagram_on_join_…` (+83.3 ms), `lost_tuning_slice_on_join_…` (90-fluid payload, slice 1 lost, +66.7 ms) vs 205 ms bound | passes (task 6) |
-| 24 | Two corrections before decay / same frame: presented eye continuous (P18) | `correction_before_previous_decayed_composes_and_presented_eye_stays_continuous`, `two_corrections_in_one_frame_leave_presented_eye_continuous` | passes (task 3) |
-| 25 | Refuse: teleport-class, first-record, level reset clear offset; composed ≥ floor snaps (P18) | `teleport_class_correction_clears_in_flight_offset_and_next_correction_does_not_compose`, `first_record_adoption_clears_…`, `level_unload_clears_…`, `composed_offset_at_teleport_floor_snaps_with_camera_cut_and_keeps_history` | passes (task 3) |
-| 26 | Previous protocol id or wire version refused; new pair admitted; snapshot version unmoved | `gameplay_channel_layout_refuses_prlb_and_wire_32_peers`, `admission_refuses_prlb_or_wire_32_and_admits_prlc_33` (gate 2), `netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one`, `netcode_handshake_never_connects_to_a_prlb_32_host` (live gate 1, loopback UDP) | passes (tasks 2, 8) |
-| 27 | Channel list: four in order, Control RO ~100 ms, Snapshot/Presentation unreliable, Input RO at gameplay resend; renet `=2.0.0` | `connection_config_pins_four_channels_with_gameplay_resend_under_one_tick`, `renet_stays_pinned_at_2_0_0` | passes (task 2) |
-| 28 | Manual: loopback recipe at 45/60/5 and 10% loss | owner, in-engine | manual |
-| 29 | Manual: two-client session, no bursts after loss | owner, in-engine | manual |
-| 30 | Manual: Network tab Off mid-session recovers | owner, in-engine | manual |
+| AC | Row | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Reproduces first; loss-off control | `steady_run_stays_in_ordinary_band_under_dev_profile` committed failing at base resend (148 above band, max 5.3 m Teleport; host Neutral 1365/3600, seeds 0x1502/0x1503); `steady_run_loss_off_records_no_oversized_correction` (P1) passes (all 0.000 m, 3600 Real) | stop gate passed | pass |
+| 2 | Seeded-minute steady run, strafe, slides, vaults: nothing above Ordinary | `steady_run_stays_in_ordinary_band_under_dev_profile` (relay harness; same test as row 1, passes after task 2), `vault_course_stays_in_ordinary_band_under_dev_profile` (6 risers, review round 1) | achievable as stated | pass |
+| 3 | Slide/vault entry on the same client tick, incl. lost entry datagram (P3) | `slide_entry_lost_datagram_enters_on_host_same_client_tick`, `vault_entry_lost_datagram_enters_on_host_same_client_tick`, no-loss twins | passes (task 2) | pass |
+| 4 | Fixed delay, one scripted lost Input datagram: no hold/neutral/trim, Real on its own tick (P2) | `single_lost_input_datagram_resolves_real_on_its_own_tick` | passes (task 2) | pass |
+| 5 | Grep gate: hold/target/max stay 3/2/8 | `gap_policy_keeps_hold_3_buffer_target_2_and_buffer_max_8` + grep in preflight | passes (task 2) | pass |
+| 6 | 2 s outage: no disconnect; edges/switches exactly once in order; starts one terminal; no malformed switch (P12) | `conditioned_two_second_outage_delivers_every_lane_once_in_client_tick_order` (clean + mandated; 80 edges/switches once in order, 20 switches accepted, 12 starts delivered + 8 `Lagged`, no disconnect); `two_second_outage_falls_back_to_gap_policy_and_recovers_to_ordinary_corrections` | passes (task 5) | pass |
+| 7 | Switch then later start, loss on switch datagram (P4); start on switch's own command (P5) | `conditioned_lost_switch_datagram_still_resolves_before_a_later_start` (P4), `conditioned_start_on_the_switchs_own_command_lands_after_it_across_a_loss` (P5, host order) | passes (task 4b) | pass |
+| 8 | Switch outcomes in declaration order under loss and jitter | `conditioned_switch_outcomes_arrive_in_declaration_order_under_the_dev_profile` (4 seeds) | passes (task 5) | pass |
+| 9 | Two edges on one tick both deliver; none twice (P11) | `conditioned_two_edges_on_one_tick_deliver_once_across_a_lost_datagram`, `…_under_seeded_loss` | passes (task 5) | pass |
+| 10 | Refuse stale outcome across demote/relevel; permit current (P9, P10) | `client_switch_relay_test.rs`: `switch_outcome_in_the_current_participation_resolves_its_declaration`, `switch_outcome_landing_with_the_holding_that_retires_it_resolves_nothing`, `stale_switch_outcome_meets_a_newer_front_and_leaves_it_to_its_own_outcome`, `switch_outcome_from_before_a_level_unload_resolves_nothing` | passes (task 4b) | pass |
+| 11 | Declaration across demote→re-promote never reaches lane; permit post-re-promotion (P6) | `declaration_sent_before_a_demotion_never_reaches_the_lane_after_repromotion` (+ permit) | passes (task 4b) | pass |
+| 12 | Host-dropped declaration never leaves chain waiting; Holding + marker in one drain (P7) | `declaration_the_host_drops_by_epoch_never_leaves_the_chain_waiting`, `world_less_frame_discarding_a_switch_outcome_leaves_no_stuck_chain` | passes (task 4b) | pass |
+| 13 | Switch retained in lane at demotion never applied after re-promotion (P8) | `switch_retained_in_the_lane_at_demotion_is_never_applied_after_repromotion` | passes (task 4b) | pass |
+| 14 | Grep gate: no switch on Control | `switch_send_sites_put_declarations_and_outcomes_on_input_never_control` (source-text gate) + Control enums carry no switch variant | passes (task 4b) | pass |
+| 15 | Relay pair, scripted single drop either direction ≤ largest one-way + 2 ticks (P2) | `single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions` | passes (task 2): 116.0 / 127.0 ms at conditioner arrival (116.7 / 133.3 frame-quantized) vs 138.3 ms bound | pass |
+| 16 | New entity's baseline frozen ≤ one snapshot past a lost ack, ack on Input (P15) | `lost_ack_delays_a_new_entitys_first_delta_by_at_most_one_snapshot` (fixed 45 ms link: first Delta seq 24 clean, 25 lost) | passes (task 6); see Findings for the dev-profile sweep | pass |
+| 17 | Sliced tuning on Control under loss delays no Input message (P16) | `sliced_tuning_under_loss_delays_no_input_message_past_the_single_loss_bound` (7-slice payload, slices 0 and 2 lost; 13 host→client Input messages, worst 113.7 ms vs 138.3 ms) | passes (task 6) | pass |
+| 18 | Tuning sent before demote/relevel never applies after; permit post-re-promotion (P17) | `tuning_sent_before_a_demotion_never_applies_after_it_and_the_next_one_installs`, `tuning_sent_before_a_level_change_never_applies_after_it_and_the_next_one_installs` | passes (task 6) | pass |
+| 19 | Client upstream ≤ 40 KB/s at 60 Hz under profile, reported | `client_upstream_bytes_under_dev_profile_stay_within_40_kb_per_second` | passes (task 6): 33,674 B/s renet-level (Input 33,032, acks 642; 120 datagrams/s); on-wire est. 39,434 B/s at 48 B/datagram netcode+UDP/IPv4. Reported beside it (review round 1): 41.0 KB/s at 144 Hz client polls, 57.4 KB/s at 250 ms RTT (60 Hz) | pass |
+| 20 | Outage: offset within one tick, **no outage probe folds**, no reseed (P13) | `two_second_outage_keeps_offset_within_a_tick_and_gates_lengthened_probes` (drift 0.30 tick; 10 gated, 1 folded at +33 ms inside tolerance; no reseed) | passes (task 5) | pass |
+| 21 | Probe lost once: one echo, RTT **≤ one resend** above unlost (P14) | `probe_lost_once_yields_one_echo_at_most_one_tick_late` (+16.666 ms, one echo) | passes (task 5) | pass |
+| 22 | RTT estimate tracks true RTT within estimator tolerance | `rtt_estimate_tracks_the_realized_round_trip_under_dev_profile` (worst +54.3 ms vs 66.7 ms tolerance, 134 comparisons) | passes (task 5) | pass |
+| 23 | Join: lost tuning slice delays inventory ≤ one Control resend + largest one-way | `lost_tuning_datagram_on_join_…` (+83.3 ms), `lost_tuning_slice_on_join_…` (90-fluid payload, slice 1 lost, +66.7 ms) vs 205 ms bound | passes (task 6) | pass |
+| 24 | Two corrections before decay / same frame: presented eye continuous (P18) | `correction_before_previous_decayed_composes_and_presented_eye_stays_continuous`, `two_corrections_in_one_frame_leave_presented_eye_continuous` | passes (task 3) | pass |
+| 25 | Refuse: teleport-class, first-record, level reset clear offset; composed ≥ floor snaps (P18) | `teleport_class_correction_clears_in_flight_offset_and_next_correction_does_not_compose`, `first_record_adoption_clears_…`, `level_unload_clears_…`, `composed_offset_at_teleport_floor_snaps_with_camera_cut_and_keeps_history` | passes (task 3) | pass |
+| 26 | Previous protocol id or wire version refused; new pair admitted; snapshot version unmoved | `gameplay_channel_layout_refuses_prlb_and_wire_32_peers`, `admission_refuses_prlb_or_wire_32_and_admits_prlc_33` (gate 2), `netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one`, `netcode_handshake_never_connects_to_a_prlb_32_host` (live gate 1, loopback UDP) | passes (tasks 2, 8) | pass |
+| 27 | Channel list: four in order, Control RO ~100 ms, Snapshot/Presentation unreliable, Input RO at gameplay resend; renet `=2.0.0` | `connection_config_pins_four_channels_with_gameplay_resend_under_one_tick`, `renet_stays_pinned_at_2_0_0` | passes (task 2) | pass |
+| 28 | Manual: loopback recipe at 45/60/5 and 10% loss | owner, in-engine | manual | outstanding: owner manual pass |
+| 29 | Manual: two-client session, no bursts after loss | owner, in-engine | manual | outstanding: owner manual pass |
+| 30 | Manual: Network tab Off mid-session recovers | owner, in-engine | manual | outstanding: owner manual pass |
 
 ### Restatements (owner-approved 2026-10-21)
 
@@ -75,6 +75,9 @@ fixed tick after the first copy. Its RTT comes out about one tick high, more tha
 10 ms resend. Proposed:
 
 > A probe whose datagram is lost once yields one echo, and its RTT sample is at most one fixed tick above the unlost round trip (P14).
+
+## Final gate
+- Preflight at 7dcb3e2e4: fmt, clippy (`-D warnings`, plain and `postretro/dev-tools`), `cargo check --release`, crate-graph all pass; `cargo test --workspace` 12027 passed / 57 ignored, with `postretro/dev-tools` 12130 passed / 60 ignored, 0 failed.
 
 ## Review loop
 - Round 1 (9 reviewers, 2 slices): no blocking code defect. Fixed: camera hold on cut-then-smoothed frame (F1), non-finite offset guard, no-owner switch declaration now refused, vault course added to row 2, independent RTT truth for row 22, content-checked scripted drops, P6 delivery proof, lag-refusal exemption keyed on outage, LoopbackHarness snapshot stamp (+1) and mover-only pre-predict stamp, upload scaling measured and documented, comment drift, fixture helper dedupe. Gate: net 304, netcode 871 + 2 ignored, postretro bin 1879 + 8 ignored, clippy/fmt clean.

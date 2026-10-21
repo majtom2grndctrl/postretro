@@ -6,16 +6,16 @@ use postretro_entities::components::mesh::LocomotionJumpPhase;
 use postretro_foundation::{MovementStateKind, PlayerMovementComponent};
 
 use super::{LocomotionInput, LocomotionPosture};
-use crate::sim::frame_timing::TICK_DURATION;
 
 const JUMP_UP_STATE: &str = "jump_up";
 const JUMP_LOOP_STATE: &str = "jump_loop";
 const JUMP_DOWN_STATE: &str = "jump_down";
 
-/// Airborne time without a jump before the body leaves its ground stride for
-/// `jump_loop`. Step-downs and ground-stick gaps last a tick or two; a walk off
-/// a ledge outlasts this.
-const FALL_DELAY_SECS: f32 = 0.15;
+/// Airborne ticks without a jump before the body leaves its ground stride for
+/// `jump_loop`: 0.15 s at the 60 Hz fixed tick. Step-downs and ground-stick gaps
+/// last a tick or two; a walk off a ledge outlasts this. Whole ticks, so the
+/// threshold never rests on float rounding.
+const FALL_DELAY_TICKS: u32 = 9;
 /// Round-off allowance on the walking-pace landing test, so a pawn landing at
 /// its capped walk speed still counts as walking.
 const WALK_PACE_TOLERANCE: f32 = 1.0e-3;
@@ -28,14 +28,17 @@ pub enum LocomotionFooting {
     #[default]
     Grounded,
     /// Off the ground in normal or crouched movement. `air_ticks` counts
-    /// consecutive airborne ticks; `jumped` is set once any jump fires this
-    /// airborne stretch.
+    /// consecutive airborne ticks. `jumped` means the jump is spent: a jump fired
+    /// this airborne stretch, or a teleport arrived into the air.
     Airborne {
         air_ticks: u32,
         vertical_speed: f32,
         jumped: bool,
     },
-    /// Swim, vault, dash or slide: the movement state presents its own vertical
+    /// Swimming: the water holds the body, so the jump sequence stays out of it,
+    /// and a jump out of the water takes off as one from the ground does.
+    Afloat,
+    /// Vault, dash or slide: the movement state presents its own vertical
     /// motion, so the jump sequence stays out of it.
     Unsequenced,
 }
@@ -55,10 +58,17 @@ impl LocomotionFooting {
                 vertical_speed,
                 jumped: jump_spent,
             },
-            MovementStateKind::Dash
-            | MovementStateKind::Slide
-            | MovementStateKind::Swim
-            | MovementStateKind::Vault => Self::Unsequenced,
+            MovementStateKind::Swim => Self::Afloat,
+            MovementStateKind::Dash | MovementStateKind::Slide | MovementStateKind::Vault => {
+                Self::Unsequenced
+            }
+        }
+    }
+
+    fn air_ticks(self) -> u32 {
+        match self {
+            Self::Airborne { air_ticks, .. } => air_ticks,
+            Self::Grounded | Self::Afloat | Self::Unsequenced => 0,
         }
     }
 
@@ -70,11 +80,7 @@ impl LocomotionFooting {
     }
 
     fn past_fall_delay(self) -> bool {
-        matches!(
-            self,
-            Self::Airborne { air_ticks, .. }
-                if air_ticks as f32 * TICK_DURATION.as_secs_f32() >= FALL_DELAY_SECS
-        )
+        matches!(self, Self::Airborne { air_ticks, .. } if air_ticks >= FALL_DELAY_TICKS)
     }
 }
 
@@ -132,6 +138,17 @@ impl JumpStates {
     /// `clip_secs` reports; a one-shot whose length is unknown counts as played
     /// through. Airborne overrides posture: a crouched body jumps and falls like a
     /// standing one, and lands into its crouch stance without `jump_down`.
+    ///
+    /// A takeoff needs a fresh airborne stretch: once past the fall delay the body
+    /// falls, so a spent jump still rising past it — an air dash or vault handing
+    /// back mid-rise, a teleport arrival spending the jump — never replays
+    /// `jump_up`. Only a jump out of the water takes off late, since the water held
+    /// the body.
+    ///
+    /// A phase that last saw more airborne ticks than the footing reports missed
+    /// a touchdown between two selections, as a presentation stepping past a
+    /// one-tick bunny-hop landing does; it lands and takes off again as if it had
+    /// seen the grounded tick. A peer that selects every tick never sees this.
     pub(super) fn advance(
         self,
         input: &LocomotionInput<'_>,
@@ -139,7 +156,7 @@ impl JumpStates {
         is_usable: impl Fn(&str) -> bool,
         clip_secs: impl Fn(&str) -> Option<f32>,
     ) -> LocomotionJumpPhase {
-        use LocomotionJumpPhase::{Falling, Grounded, Landing, Rising};
+        use LocomotionJumpPhase::{Afloat, Falling, Grounded, Landing, Rising};
         if !is_usable(self.airborne) {
             return Grounded;
         }
@@ -150,11 +167,14 @@ impl JumpStates {
                 .and_then(&clip_secs)
                 .is_some_and(|secs| now - since < f64::from(secs))
         };
+        let footing = input.footing;
+        let air_ticks = footing.air_ticks();
+        let falling = Falling { air_ticks };
         let rising = |since| {
             if playing(up, since) {
-                Rising { since }
+                Rising { since, air_ticks }
             } else {
-                Falling
+                falling
             }
         };
         let landing = |since| {
@@ -167,25 +187,74 @@ impl JumpStates {
                 Grounded
             }
         };
-        let footing = input.footing;
-        match (footing, input.jump_phase) {
+        // A missed touchdown lands first, as the unseen grounded tick would have.
+        let previous = match (footing, input.jump_phase) {
+            (
+                LocomotionFooting::Airborne { air_ticks, .. },
+                Rising {
+                    air_ticks: seen, ..
+                }
+                | Falling { air_ticks: seen },
+            ) if air_ticks < seen => landing(now),
+            (_, phase) => phase,
+        };
+        match (footing, previous) {
+            (LocomotionFooting::Afloat, _) => Afloat,
             (LocomotionFooting::Unsequenced, _) => Grounded,
-            (LocomotionFooting::Airborne { .. }, Rising { since }) => {
+            (LocomotionFooting::Airborne { .. }, Rising { since, .. }) => {
                 if footing.rising_from_jump() {
                     rising(since)
                 } else {
-                    Falling
+                    falling
                 }
             }
-            (LocomotionFooting::Airborne { .. }, Falling) => Falling,
+            (LocomotionFooting::Airborne { .. }, Falling { .. }) => falling,
+            // A jump out of the water; any other exit falls or keeps the stride.
+            (_, Afloat) if footing.rising_from_jump() => rising(now),
+            (_, Grounded | Landing { .. } | Afloat) if footing.past_fall_delay() => falling,
             // Taking off again cuts a landing short.
             (_, Grounded | Landing { .. }) if footing.rising_from_jump() => rising(now),
-            (_, Grounded | Landing { .. }) if footing.past_fall_delay() => Falling,
             // Touchdown. From here on the footing is grounded, or airborne too
             // briefly to leave the ground stride or a landing in progress.
-            (_, Rising { .. } | Falling) => landing(now),
+            (_, Rising { .. } | Falling { .. }) => landing(now),
             (_, Landing { since }) => landing(since),
-            (_, Grounded) => Grounded,
+            (_, Grounded | Afloat) => Grounded,
+        }
+    }
+
+    /// The phase a presentation with no history to advance from starts in, read
+    /// from its footing alone. No one-shot starts: a body rising from a jump or
+    /// past the fall delay is already in `jump_loop`, and a grounded one is not
+    /// landing.
+    pub(super) fn resync(
+        self,
+        footing: LocomotionFooting,
+        is_usable: impl Fn(&str) -> bool,
+    ) -> LocomotionJumpPhase {
+        if !is_usable(self.airborne) {
+            return LocomotionJumpPhase::Grounded;
+        }
+        match footing {
+            LocomotionFooting::Afloat => LocomotionJumpPhase::Afloat,
+            LocomotionFooting::Airborne { air_ticks, .. }
+                if footing.rising_from_jump() || footing.past_fall_delay() =>
+            {
+                LocomotionJumpPhase::Falling { air_ticks }
+            }
+            _ => LocomotionJumpPhase::Grounded,
+        }
+    }
+
+    /// Whether another peer's choice of `state` may play over `phase`. A one-shot
+    /// is accepted only while this peer's own phase plays it, so a late
+    /// correction never restarts one this peer has already left.
+    pub(super) fn admits(self, state: &str, phase: LocomotionJumpPhase) -> bool {
+        if self.up == Some(state) {
+            matches!(phase, LocomotionJumpPhase::Rising { .. })
+        } else if self.down == Some(state) {
+            matches!(phase, LocomotionJumpPhase::Landing { .. })
+        } else {
+            true
         }
     }
 
@@ -204,9 +273,9 @@ impl JumpStates {
                     .filter(|state| is_usable(state))
                     .unwrap_or(self.airborne),
             ),
-            LocomotionJumpPhase::Falling => Some(self.airborne),
+            LocomotionJumpPhase::Falling { .. } => Some(self.airborne),
             LocomotionJumpPhase::Landing { .. } => self.down.filter(|state| is_usable(state)),
-            LocomotionJumpPhase::Grounded => None,
+            LocomotionJumpPhase::Grounded | LocomotionJumpPhase::Afloat => None,
         }
     }
 }
@@ -503,15 +572,19 @@ mod tests {
             MovementStateKind::Swim,
             MovementStateKind::Vault,
         ] {
+            let unsequenced = if kind == MovementStateKind::Swim {
+                LocomotionFooting::Afloat
+            } else {
+                LocomotionFooting::Unsequenced
+            };
             for grounded in [false, true] {
                 assert_eq!(
                     LocomotionFooting::from_movement(kind, grounded, 30, 6.0, true),
-                    LocomotionFooting::Unsequenced,
+                    unsequenced,
                     "{kind:?}"
                 );
             }
             let posture = LocomotionPosture::from_movement_state(kind);
-            let unsequenced = LocomotionFooting::Unsequenced;
             let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
             let expected = if kind == MovementStateKind::Slide {
                 s("crouch_idle", LocomotionTierKind::Slide)
@@ -567,6 +640,158 @@ mod tests {
         assert!(states.state_names().all(|name| !name.starts_with("jump")));
         for name in ["jump_up", "jump_loop", "jump_down"] {
             assert_eq!(states.direction_of(name, |_| true), None);
+        }
+    }
+
+    // Regression: `jump_spent` outlives the airborne stretch, and an air dash
+    // reset the phase to grounded, so the dash handing back mid-rise replayed
+    // `jump_up` in mid-air.
+    #[test]
+    fn takeoff_needs_a_fresh_airborne_stretch() {
+        let dash = LocomotionFooting::Unsequenced;
+        // Jump, air dash with vertical speed preserved, dash ends still rising.
+        let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+        pawn.step(0.0, 3.0, GROUND);
+        assert_eq!(pawn.step(TICK, 3.0, air(1, 6.0, true)).0, "jump_up");
+        for air_ticks in 2..=13 {
+            pawn.step(f64::from(air_ticks) * TICK, 12.0, dash);
+        }
+        assert_eq!(
+            pawn.step(14.0 * TICK, 3.0, air(14, 3.0, true)),
+            s("jump_loop", Jump)
+        );
+        // A launch without a jump dashes, and a teleport arrival mid-dash spends
+        // the jump: the dash hands back rising, but nothing took off.
+        let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+        pawn.step(0.0, 3.0, GROUND);
+        assert_eq!(pawn.step(TICK, 3.0, air(1, 8.0, false)).0, "walk_forward");
+        for air_ticks in 2..=11 {
+            pawn.step(f64::from(air_ticks) * TICK, 12.0, dash);
+        }
+        assert_eq!(
+            pawn.step(12.0 * TICK, 3.0, air(12, 4.0, true)),
+            s("jump_loop", Jump)
+        );
+
+        // The boundary is the fall delay: a spent jump rising at 8 airborne
+        // ticks still takes off, at 9 it falls.
+        for (air_ticks, expected) in [(8, "jump_up"), (9, "jump_loop")] {
+            let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+            pawn.step(0.0, 3.0, dash);
+            assert_eq!(
+                pawn.step(TICK, 3.0, air(air_ticks, 3.0, true)).0,
+                expected,
+                "{air_ticks} airborne ticks"
+            );
+        }
+        // A coyote jump inside the default 100 ms window takes off.
+        let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+        pawn.step(0.0, 3.0, GROUND);
+        for air_ticks in 1..=6 {
+            pawn.step(
+                f64::from(air_ticks) * TICK,
+                3.0,
+                air(air_ticks, -0.3, false),
+            );
+        }
+        assert_eq!(pawn.step(7.0 * TICK, 3.0, air(7, 6.0, true)).0, "jump_up");
+        // A jump out of the water takes off however long the swimmer has been
+        // off the ground; leaving the water any other way does not.
+        for (footing, expected) in [
+            (air(240, 6.0, true), "jump_up"),
+            (air(240, 2.0, false), "jump_loop"),
+            (air(3, 2.0, false), "walk_forward"),
+        ] {
+            let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+            pawn.step(0.0, 3.0, LocomotionFooting::Afloat);
+            assert_eq!(pawn.phase, LocomotionJumpPhase::Afloat);
+            assert_eq!(pawn.step(TICK, 3.0, footing).0, expected, "{footing:?}");
+        }
+    }
+
+    // Regression: a presentation stepping two ticks at a time skipped a bunny
+    // hop's one grounded tick and kept falling through the next takeoff.
+    #[test]
+    fn missed_touchdown_lands_and_takes_off_again() {
+        // A fall that sees a shorter airborne stretch has landed: a spent jump
+        // rising again is a takeoff.
+        let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+        pawn.fall_from_a_jump();
+        assert_eq!(pawn.phase, LocomotionJumpPhase::Falling { air_ticks: 18 });
+        assert_eq!(pawn.step(0.5, 11.0, air(1, 6.0, true)), s("jump_up", Jump));
+        assert_eq!(
+            pawn.phase,
+            LocomotionJumpPhase::Rising {
+                since: 0.5,
+                air_ticks: 1
+            }
+        );
+        // A rise that sees one restarts `jump_up` from the new takeoff.
+        let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+        pawn.step(0.0, 3.0, GROUND);
+        pawn.step(TICK, 3.0, air(1, 6.0, true));
+        assert_eq!(pawn.step(0.15, 3.0, air(9, 3.0, true)).0, "jump_up");
+        assert_eq!(pawn.step(0.2, 3.0, air(2, 6.0, true)).0, "jump_up");
+        assert!(
+            matches!(pawn.phase, LocomotionJumpPhase::Rising { since, .. } if since == 0.2),
+            "{:?}",
+            pawn.phase
+        );
+        // Without a new jump the landing rule decides: a slow one plays
+        // `jump_down` through the ground-stick gap, a fast one the stride.
+        for (speed, expected) in [(0.0, s("jump_down", Jump)), (11.0, s("run_forward", Run))] {
+            let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+            pawn.fall_from_a_jump();
+            assert_eq!(pawn.step(0.5, speed, air(1, -0.2, false)), expected);
+        }
+        // An equal or longer stretch is the same fall.
+        let mut pawn = Pawn::new(&DECLARED, ALL_USABLE);
+        pawn.fall_from_a_jump();
+        assert_eq!(pawn.step(0.31, 3.0, air(18, -1.2, true)).0, "jump_loop");
+        assert_eq!(pawn.step(0.32, 3.0, air(19, 6.0, true)).0, "jump_loop");
+    }
+
+    #[test]
+    fn resync_reads_the_phase_from_footing_without_a_one_shot() {
+        use LocomotionJumpPhase::{Afloat, Falling, Grounded};
+        let states = PlayerLocomotionStates::from_declared(|state| DECLARED.contains(&state))
+            .expect("walk state declared");
+        for (footing, expected) in [
+            (GROUND, Grounded),
+            (air(2, 6.0, true), Falling { air_ticks: 2 }),
+            (air(8, -1.0, false), Grounded),
+            (air(9, -1.0, false), Falling { air_ticks: 9 }),
+            (LocomotionFooting::Afloat, Afloat),
+            (LocomotionFooting::Unsequenced, Grounded),
+        ] {
+            assert_eq!(
+                states.resync_jump_phase(footing, |_| true),
+                expected,
+                "{footing:?}"
+            );
+        }
+        assert_eq!(
+            states.resync_jump_phase(air(20, -1.0, false), |state| state != "jump_loop"),
+            Grounded
+        );
+    }
+
+    #[test]
+    fn a_jump_one_shot_is_admitted_only_while_its_own_phase_plays_it() {
+        use LocomotionJumpPhase::{Afloat, Falling, Grounded, Landing, Rising};
+        let states = PlayerLocomotionStates::from_declared(|state| DECLARED.contains(&state))
+            .expect("walk state declared");
+        let rising = Rising {
+            since: 0.0,
+            air_ticks: 3,
+        };
+        let landing = Landing { since: 0.0 };
+        for phase in [Grounded, rising, Falling { air_ticks: 3 }, landing, Afloat] {
+            assert_eq!(states.admits_state("jump_up", phase), phase == rising);
+            assert_eq!(states.admits_state("jump_down", phase), phase == landing);
+            for state in ["jump_loop", "walk_forward", "idle"] {
+                assert!(states.admits_state(state, phase), "{state} over {phase:?}");
+            }
         }
     }
 }

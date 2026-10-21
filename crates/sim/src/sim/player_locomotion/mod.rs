@@ -6,9 +6,9 @@ mod jump;
 
 use glam::Vec3;
 use postretro_entities::components::mesh::{
-    LocomotionDirection, LocomotionJumpPhase, MeshAnimation, MeshComponent,
+    LocomotionDirection, LocomotionJumpPhase, MeshAnimation,
 };
-use postretro_entities::{EntityId, EntityRegistry};
+use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::MovementStateKind;
 
 pub use jump::{JumpStates, LocomotionFooting, LocomotionStance};
@@ -90,17 +90,18 @@ pub fn store_locomotion_memory(
     direction: LocomotionDirection,
     jump: Option<LocomotionJumpPhase>,
 ) {
-    let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+    // Written in place: the mesh owns its declared states, which a clone per
+    // selection would copy only to store two words of memory.
+    let Ok(ComponentValue::Mesh(mesh)) = registry.get_component_value_mut(id, ComponentKind::Mesh)
+    else {
         return;
     };
     let Some(animation) = mesh.animation.as_mut() else {
         return;
     };
-    let jump = jump.unwrap_or(animation.locomotion_jump);
-    if animation.locomotion_direction != direction || animation.locomotion_jump != jump {
-        animation.locomotion_direction = direction;
+    animation.locomotion_direction = direction;
+    if let Some(jump) = jump {
         animation.locomotion_jump = jump;
-        let _ = registry.set_component(id, mesh);
     }
 }
 
@@ -241,7 +242,8 @@ pub struct CrouchTier {
 }
 
 /// The engine-selected player locomotion states a descriptor declares, beside
-/// its `defaultState` for idle. Names are recognized by convention; a missing or
+/// its `defaultState` for standing idle, which also stands in for a missing
+/// `crouch_idle`. Names are recognized by convention; a missing or
 /// unusable backward state falls back to its tier's forward state, so the forward
 /// clip shows where a backward clip is still owed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,6 +329,27 @@ impl PlayerLocomotionStates {
         self.jump.map_or(LocomotionJumpPhase::Grounded, |jump| {
             jump.advance(input, now, is_usable, clip_secs)
         })
+    }
+
+    /// The jump phase for a presentation with no history to advance from — a
+    /// remote avatar's first presented pose, or the older pose it steps back to
+    /// when a held newest pose hands over to interpolation — read from `footing`
+    /// alone, starting no one-shot.
+    pub fn resync_jump_phase(
+        &self,
+        footing: LocomotionFooting,
+        is_usable: impl Fn(&str) -> bool,
+    ) -> LocomotionJumpPhase {
+        self.jump.map_or(LocomotionJumpPhase::Grounded, |jump| {
+            jump.resync(footing, is_usable)
+        })
+    }
+
+    /// Whether another peer's choice of `state` may play over this peer's jump
+    /// `phase`: a jump one-shot only while `phase` still plays it, never once
+    /// this peer has moved past it. Every other state is admitted.
+    pub fn admits_state(&self, state: &str, phase: LocomotionJumpPhase) -> bool {
+        self.jump.is_none_or(|jump| jump.admits(state, phase))
     }
 
     /// Pick the target state: `None` is the descriptor's `defaultState`, which

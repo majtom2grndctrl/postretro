@@ -66,8 +66,9 @@ pub(super) fn materialize_remote_entities(
                         Some((state_name.to_string(), speed))
                     })
                     .collect();
-                // The same clip lookup the host's fixed tick makes, so both
-                // peers end a jump one-shot after the same length.
+                // Equivalent to the host fixed tick's clip lookup, which tries the
+                // resolved clip index first and the clip name after, so both peers
+                // end a jump one-shot after the same length.
                 let clip_durations = states
                     .one_shot_names()
                     .filter_map(|state_name| {

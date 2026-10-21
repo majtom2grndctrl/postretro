@@ -143,18 +143,23 @@ pub enum LocomotionDirection {
 
 /// A player's place in the engine's jump sequence. The `since` stamps are
 /// animation-clock instants on the peer that wrote them, so a one-shot clip's
-/// completion is judged from when this peer saw the motion begin.
+/// completion is judged from when this peer saw the motion begin. The airborne
+/// phases keep the last airborne tick count they saw: a later count that is
+/// lower began after a touchdown this peer never presented.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LocomotionJumpPhase {
     /// On the ground, or airborne too briefly to leave the ground stride.
     #[default]
     Grounded,
     /// Rising from a jump taken at `since`: `jump_up` plays.
-    Rising { since: f64 },
+    Rising { since: f64, air_ticks: u32 },
     /// Past the apex, or falling without a jump: `jump_loop` plays.
-    Falling,
+    Falling { air_ticks: u32 },
     /// Landed at walking pace at `since`: `jump_down` plays.
     Landing { since: f64 },
+    /// Swimming: the swim selection plays, and a jump out of the water takes off
+    /// however long the body has been off the ground.
+    Afloat,
 }
 
 impl MeshAnimation {

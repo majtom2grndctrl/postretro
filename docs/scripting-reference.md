@@ -259,7 +259,7 @@ crouching or sliding, and whether it is in the air.
 
 | State | Plays when |
 |-------|------------|
-| `defaultState` | The player stands still. |
+| `defaultState` | Standing idle: the player stands still. Also plays for crouching still and sliding when `crouch_idle` is missing. |
 | `walk_forward` (or `walk`) | Moving forward at walking speed. Required for any engine-driven locomotion. |
 | `walk_backward` | Backpedalling at walking speed. |
 | `run_forward` (or `run`) | Moving forward nearer run pace than walk pace, e.g. while sprinting. |
@@ -267,9 +267,14 @@ crouching or sliding, and whether it is in the air.
 | `crouch_idle` | Crouching while still, and for the whole of a slide. Needs `crouch_forward` beside it. |
 | `crouch_forward` | Moving forward while crouched, at any speed. Required for any crouch state. |
 | `crouch_backward` | Backpedalling while crouched. Needs `crouch_forward` beside it. |
-| `jump_up` | Taking off from a jump, until the apex or the clip's end. Declare with `loop: false`. Needs `jump_loop` beside it. |
+| `jump_up` | Taking off from a jump, until the apex or the clip's end. Plays once. Needs `jump_loop` beside it. |
 | `jump_loop` | In the air past the apex, or falling. Required for any jump state. |
-| `jump_down` | Landing at walking speed or slower, until the clip ends. Declare with `loop: false`. Needs `jump_loop` beside it. |
+| `jump_down` | Landing at walking speed or slower, until the clip ends. Plays once. Needs `jump_loop` beside it. |
+
+`loop` defaults to `false`, so declare `loop: true` on every state that repeats:
+`defaultState`, the walk and run states, `crouch_idle`, `crouch_forward`,
+`crouch_backward` and `jump_loop`. Leave `jump_up` and `jump_down` at the default;
+they play once.
 
 Travel more than 105° from where the player aims counts as backpedalling; travel
 within 75° counts as forward, and anything in between keeps the previous choice.
@@ -288,7 +293,8 @@ Crouching, not speed, picks the crouch states: a crouched player plays
 `crouch_idle` when still and `crouch_forward` or `crouch_backward` when moving,
 never a run state, and they scale their rate against `travelSpeed` just as the walk
 states do, falling back to `movement.ground.speed.crouch`. A slide holds
-`crouch_idle` at its authored rate for as long as it lasts. The fallbacks follow
+`crouch_idle` at its authored rate for as long as it lasts; `crouch_idle` and the
+jump states ignore `travelSpeed`. The fallbacks follow
 the same rule as backward states: a missing `crouch_backward` plays
 `crouch_forward`, and a missing `crouch_idle` plays `defaultState`. Without
 `crouch_forward`, or with one whose clip the model lacks, crouching and sliding
@@ -299,7 +305,9 @@ The jump states play in sequence. A jump plays `jump_up`, then `jump_loop` once 
 player passes the top of its arc or the `jump_up` clip ends, whichever comes first.
 Walking off a ledge keeps the walking or running stride for about 0.15 seconds
 before `jump_loop` takes over, so stairs and small step-downs never show a fall
-pose. A landing at or below `movement.ground.speed.walk` plays `jump_down` until
+pose. An air jump after takeoff keeps `jump_loop`, and a launch without a jump,
+such as knockback or a push volume, falls into `jump_loop` after the same delay. A
+landing at or below `movement.ground.speed.walk` plays `jump_down` until
 its clip ends, then returns to `defaultState` or the stride; jumping again or
 speeding up past walking speed ends it early. A faster landing, such as a running
 jump or a bunny hop, goes straight back to the stride. A crouched player jumps and
@@ -326,9 +334,9 @@ defineEntity({
         crouch_idle: { clip: "idle_crouching", loop: true },
         crouch_forward: { clip: "walk_crouching_forward", loop: true, travelSpeed: 3 },
         crouch_backward: { clip: "walk_crouching_backward", loop: true, travelSpeed: 3 },
-        jump_up: { clip: "jump_up", loop: false },
+        jump_up: { clip: "jump_up" },
         jump_loop: { clip: "jump_loop", loop: true },
-        jump_down: { clip: "jump_down", loop: false },
+        jump_down: { clip: "jump_down" },
       },
       defaultState: "idle",
     },

@@ -18,7 +18,7 @@ pub use commands::{ProjectileSource, projectile_model_body_rotation, spawn_proje
 pub(crate) use impact::apply_authorized_splash_impact_damage;
 pub use impact::apply_authorized_weapon_impact_damage;
 pub(super) use resource::tick_weapon_resources;
-pub(crate) use state::transition_to_idle;
+pub(crate) use state::{finish_lowering, transition_to_idle};
 
 #[cfg(test)]
 pub(super) fn deliver_reload_to_weapon(
@@ -1431,6 +1431,90 @@ mod tests {
             WieldableState::Idle
         );
         assert!(!registry.exists(target));
+    }
+
+    // A target that dies mid-lower ends the switch on the weapon still in hand,
+    // not on the lowest occupied slot.
+    #[test]
+    fn despawned_switch_target_keeps_the_origin_active_idle_and_able_to_fire() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, lowest, origin, target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let lowest = registry.spawn(Transform::default());
+            let origin = registry.spawn(Transform::default());
+            let target = registry.spawn(Transform::default());
+            registry
+                .set_component(lowest, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut origin_component = gate_weapon_component(FireMode::Semi, 100.0);
+            origin_component.state = WieldableState::Lowering;
+            origin_component.state_total_ms = 20;
+            origin_component.state_remaining_ms = 10;
+            registry.set_component(origin, origin_component).unwrap();
+            registry
+                .set_component(target, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(lowest);
+            inventory.wieldables[2] = Some(origin);
+            inventory.wieldables[3] = Some(target);
+            inventory.active_slot = 2;
+            inventory.switch_target = Some(3);
+            inventory.switch_origin = Some(2);
+            registry.set_component(pawn, inventory).unwrap();
+            registry.despawn(target).unwrap();
+            (pawn, lowest, origin, target)
+        };
+
+        let mut no_impact = ignore_impact;
+        let _ = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut no_impact,
+        );
+
+        let mut registry = registry.borrow_mut();
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.wieldables[3], None);
+        assert_eq!(
+            inventory.active_slot, 2,
+            "the origin weapon is still in hand"
+        );
+        assert_eq!(inventory.active_wieldable(), Some(origin));
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+        let origin_component = registry.get_component::<WeaponComponent>(origin).unwrap();
+        assert_eq!(origin_component.state, WieldableState::Idle);
+        assert_eq!(origin_component.state_remaining_ms, 0);
+        assert!(!registry.exists(target));
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(lowest)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+        assert_eq!(
+            tick_machine(
+                &mut registry,
+                Some(pawn),
+                origin,
+                false,
+                &fire_command(true, true),
+                0.016
+            )
+            .authorization,
+            WeaponFireAuthorization::Accepted
+        );
     }
 
     #[test]

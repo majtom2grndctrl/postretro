@@ -683,9 +683,30 @@ whatever is still pending, and at the lane's 64-switch bound the oldest is relea
 once, unordered. On a clean link a switch applies on its own command's resolution, so
 ordering adds no latency. Known gaps: a switch arriving after input stamped later than
 it cannot reorder that input; a drop pressed while the client is still lowering after a
-switch drops the new active slot; a reload squeezed by a stall can be interrupted by the
-following switch; and if Input stalls over 2 s while Control flows, a switch reads as
-stamped too far ahead and is refused as malformed.
+switch drops the new active slot (closed by the next paragraph, once built); a reload
+squeezed by a stall can be interrupted by the following switch; and if Input stalls over
+2 s while Control flows, a switch reads as stamped too far ahead and is refused as
+malformed.
+
+**A remote switch follows the client's lower and raise (decided, not yet built).** The
+host mirrors the client's equip timing in client ticks and runs no equip timer of its own,
+so observers no longer see the new weapon before the shooter does.
+- **Begin.** At the declaration's tick the host lowers the outgoing weapon as the local
+  machine does: fire and reload are refused, a non-blocking reload is abandoned, and the
+  active slot stays put.
+- **Repoint.** The host derives the client's lower-end tick from its own tuning and
+  repoints there, in client-tick order, before touch. Declarations stamped on or before
+  that tick apply first; later ones wait. Observers and owner-private samples change at
+  the repoint, so a drop during the lower releases the weapon in hand.
+- **Endings.** A pending lower ends only at the repoint, when a declaration stamped on or
+  before it supersedes it, when the outgoing weapon or the target leaves the inventory,
+  when a lane bound releases a later declaration early (the repoint applies first), or
+  at level change and demotion. Each declaration gets one reply, in declaration order.
+- **Raise.** Reload presses and starts are judged on their own client tick as the
+  client's machine would judge them: a reload is refused through the tick the raise
+  expires, a start is admitted on it.
+- **Resync.** The declaration names its kind, switch or resync, so a resync repoints at
+  once with no lower. This is a wire-layout change.
 
 **A diverged active slot re-converges on the client's.** Nothing else replicates the
 host's active slot to its owner. The tuning payload's spawn active slot keeps

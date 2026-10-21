@@ -2,7 +2,7 @@
 
 Parked `/draft-session` handoff — not yet a brief. Resume with `/draft-brief` from this handoff. Recheck the verified facts if source has moved past `Read at`.
 
-**Prerequisite:** the host switch-timing item (host honours `lowerMs`/`raiseMs` for remote pawns, closing the drop-while-lowering gap) must land before this item flips the `lowerMs`/`raiseMs` default. That item has its own draft session.
+**Prerequisite:** `coop--host-switch-timing` (drafts) (host honours `lowerMs`/`raiseMs` for remote pawns, closing the drop-while-lowering gap) must land before this item flips the `lowerMs`/`raiseMs` default. That item has its own draft session.
 
 ## Handoff
 ```markdown
@@ -24,7 +24,7 @@ Verified facts: (by symbol)
   - No per-frame look delta reaches the viewmodel. `look.yaw_delta/pitch_delta` live only in the gameplay-snapshot block. `presented_aim_pose` yaw includes mover carry yaw.
   - Local fire signal: `"activate"` entries in `pending_weapon_script_events` (frame_loop/mod.rs) are filled before `collect_viewmodel`, and the fire sound already reads them. On a host they include every pawn's shots, so filter to the local pawn. On a client, `run_client_fire_path_post_loop` pushes one per predicted shot (`ClientPullPresentation::Fire` only).
   - No recoil or kick exists anywhere (bloom is accuracy only). `movement--view-feel` (done) scoped weapon sway out.
-  - Placement rides `WieldableTuningPayload.placement` and feeds the fire origin and muzzle. The fire origin is "steady placement, no view-feel" (networking.md §Weapon placement is content). `TUNING_PAYLOAD_EPOCH` = 13.
+  - Placement rides `WieldableTuningPayload.placement` and feeds the fire origin and muzzle. The fire origin is "steady placement, no view-feel" (networking.md §Weapon placement is content). `TUNING_PAYLOAD_EPOCH` = 14 (was 13 at Read at; bumped by ad9dad20).
   - `defineWeaponPlacement` is a pure builder shared by weapon `placement` and manifest `defaultWeaponPlacement`. `resolve_weapon_placement` resolves whole values with fallbacks.
   - `presented_view_feel_scale` (options/resolved.rs) is 0 under reduce motion. player_options.md §5 enumerates the effects it covers. Viewmodel placement is never scaled today.
   - Drafts touched: `movement--state-view-pose` plans to fold `viewFeel.vault` into rate-based `pose` rows and still points at a separate weapon-lowering draft. `player-descriptor-composition` reserves a per-weapon `viewFeel` overlay that changes camera feel while wielded.
@@ -52,7 +52,7 @@ Non-goals:
   - Third-person or observer motion.
   - A raise on spawn, pickup or drop (those stay instant).
   - Switch rule changes: no reverse or cancel, no proportional restart.
-  - Host switch timing (prerequisite item).
+  - Host switch timing (`coop--host-switch-timing`).
   - HUD equip-state slots.
   - Camera recoil or aim change.
 Proof:

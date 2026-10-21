@@ -17,7 +17,9 @@ use postretro_net::harness::LinkConfig;
 use postretro_net::wire::{InputCommand, WireFireButtonState, WireMovementInput};
 
 use super::command_queue::ResolvedPawnCommand;
+use super::predict_reconcile_relay_link_test_fixtures::dev_profile;
 use crate::collision::CollisionWorld;
+use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
 use crate::movement::MovementInput;
 use crate::sim::SimCommand;
 use crate::weapon::FireButtonState;
@@ -25,7 +27,9 @@ use postretro_entities::components::health::HealthComponent;
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
 };
-use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
+use postretro_entities::{
+    ComponentKind, EntityId, EntityRegistry, EntityTypeDescriptor, Transform,
+};
 use postretro_foundation::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
     GroundParams, HealthDescriptor, NumberOrIr, PlayerMovementComponent, PlayerMovementDescriptor,
@@ -36,6 +40,9 @@ pub(crate) const DT: f32 = 1.0 / 60.0;
 /// "No corrections": every recorded correction is at
 /// most this many metres under [`light_link`].
 pub(crate) const NO_CORRECTION_M: f32 = 1.0e-4;
+/// How far a settled client pawn may sit from the host's once both are at rest
+/// after a run under a lossy link.
+pub(crate) const SETTLED_PAWN_TOLERANCE_M: f32 = 0.05;
 pub(crate) const GRAVITY: f32 = -20.0;
 pub(crate) const CLIENT_ID: u64 = 1;
 pub(crate) const START: Vec3 = Vec3::new(0.0, 1.21, 0.0);
@@ -53,16 +60,39 @@ pub(crate) const ROTATING_PLATFORM_RIDER_START: Vec3 = Vec3::new(1.0, 1.21, 0.0)
 /// whose geometric decay tail is unboundedly slow). See `drain_step`.
 pub(crate) const DRAIN_SETTLE_TICKS: u32 = 30;
 
-/// The mandated automated harness profile, applied in BOTH directions:
-/// 45 ms base + up to 60 ms jitter (a 45..105 ms one-way range, ≈150 ms mean RTT),
-/// 5% loss, fixed seed. Matches the Phase 2 latency harness profile exactly.
-pub(crate) fn mandated_link() -> LinkConfig {
-    LinkConfig {
-        delay: 45,
-        jitter: 60,
-        loss_probability: 0.05,
-        seed: 0x1502,
+/// The tick a harness host stamps on the snapshot it sends after `completed_ticks`
+/// fixed ticks. Production's `net_serialize_and_send` hands `host_replicate` the
+/// completed-tick counter plus one, and the client measures mover replay spans
+/// against that stamp; a harness stamping the bare counter replays every mover one
+/// tick further than production does.
+pub(crate) fn production_snapshot_stamp(completed_ticks: u32) -> u32 {
+    completed_ticks.wrapping_add(1)
+}
+
+/// The client's pre-predict mover tick, as production's
+/// `client_predict_loaded_movers_tick` runs it: only `KinematicMover` entities take
+/// previous = current before the driver steps them. The local pawn's stamp belongs
+/// to `client_predict_tick`, so a registry-wide stamp here would hide a missing one.
+pub(crate) fn client_tick_loaded_movers(
+    registry: &mut EntityRegistry,
+    mover_states: &mut MoverTickStateTable,
+    dt: f32,
+) {
+    let movers: Vec<EntityId> = registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .map(|(id, _)| id)
+        .collect();
+    for mover in movers {
+        registry.snapshot_transform(mover);
     }
+    run_kinematic_mover_tick(registry, mover_states, dt);
+}
+
+/// The dev profile ([`dev_profile`]) at a fixed seed, for the loopback
+/// scenarios that take one link config for both directions: a 45..105 ms
+/// one-way range, about 150 ms mean RTT, 5% loss.
+pub(crate) fn mandated_link() -> LinkConfig {
+    dev_profile(0x1502)
 }
 
 /// A near-perfect link for scenario tests that exercise the gap policy, stale and

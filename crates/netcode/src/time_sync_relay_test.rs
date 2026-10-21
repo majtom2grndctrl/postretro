@@ -4,45 +4,31 @@
 //
 // The probe and its echo ride the production reliable-ordered Input channel at
 // its 10 ms resend. Each echo's fate is read from the estimator's observation
-// log, so a test sees which samples folded and whether a reseed fired.
+// log, so a test sees which samples folded and whether a reseed fired; the
+// round trip the link realized is read from the conditioners.
 
 #![cfg(test)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use postretro_net::harness::{LinkConfig, ScriptedDrop};
+use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
 use postretro_net::timesync::{
     DEFAULT_MICROS_PER_TICK, EchoFate, EchoOutcome, RTT_WINDOW_SAMPLES, gate_tolerance_us,
 };
 use postretro_net::transport::Channel;
+use postretro_net::wire::{self, ClientMessage, ServerMessage};
 
+use super::SERVER_TICK_MICROS;
 use super::predict_reconcile_harness_test_fixtures::idle_command;
-use super::predict_reconcile_relay_link_test_fixtures::dev_profile;
+use super::predict_reconcile_relay_link_test_fixtures::{
+    LoggedDatagram, OUTAGE_MS, decode_client_input, dev_links, first_poll_frame, fixed_delay_link,
+    frame_start_us, input_messages, largest_one_way_us,
+};
 use super::predict_reconcile_relay_test_fixtures::RelayHarness;
-
-/// Frames the client may take to join and start predicting.
-const JOIN_FRAMES_MAX: u64 = 600;
-
-fn dev_links(seed: u64) -> (LinkConfig, LinkConfig) {
-    (dev_profile(seed), dev_profile(seed.wrapping_add(1)))
-}
-
-/// The profile's base one-way delay with no jitter and no loss.
-fn fixed_delay_link(seed: u64) -> LinkConfig {
-    LinkConfig {
-        delay: 45,
-        jitter: 0,
-        loss_probability: 0.0,
-        seed,
-    }
-}
 
 fn joined(to_server: LinkConfig, to_client: LinkConfig) -> RelayHarness {
     let mut h = RelayHarness::new(to_server, to_client);
-    assert!(
-        h.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
-        "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
-    );
+    h.join();
     h
 }
 
@@ -65,64 +51,197 @@ fn offset_error_ticks(h: &RelayHarness) -> f64 {
     estimate - f64::from(h.host_tick)
 }
 
+/// When each Input message on one direction of the link first reached its
+/// receiver, by renet message id: the earliest arrival among its copies, the
+/// first send and every resend. `None` while every copy so far was lost.
+fn first_arrivals(
+    log: &[LoggedDatagram],
+    link: &PacketConditioner,
+) -> BTreeMap<u64, Option<VirtualMillis>> {
+    let mut arrivals: BTreeMap<u64, Option<VirtualMillis>> = BTreeMap::new();
+    for datagram in log {
+        let messages = input_messages(datagram);
+        if messages.is_empty() {
+            continue;
+        }
+        let index = datagram
+            .index
+            .expect("an Input datagram has a channel index");
+        let arrives_at = link
+            .channel_datagram(Channel::Input, index)
+            .expect("a logged datagram was enqueued")
+            .arrives_at;
+        for (id, _) in messages {
+            let first = arrivals.entry(*id).or_insert(None);
+            *first = match (*first, arrives_at) {
+                (Some(earlier), Some(arrival)) => Some(earlier.min(arrival)),
+                (earlier, arrival) => earlier.or(arrival),
+            };
+        }
+    }
+    let ids: Vec<u64> = arrivals.keys().copied().collect();
+    assert!(
+        ids.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "the log holds every Input message from the first one flushed"
+    );
+    arrivals
+}
+
+/// The frame whose poll hands Input message `id` over. Input is
+/// reliable-ordered, so the message waits for itself and every earlier message
+/// to arrive, then for the receiver's next poll.
+fn handed_over_frame(arrivals: &BTreeMap<u64, Option<VirtualMillis>>, id: u64) -> u64 {
+    assert!(arrivals.contains_key(&id), "Input message {id} was flushed");
+    let released = arrivals
+        .range(..=id)
+        .map(|(earlier, arrival)| {
+            arrival
+                .unwrap_or_else(|| panic!("Input message {earlier}, at or ahead of {id}, arrived"))
+        })
+        .max()
+        .expect("the range holds the message itself");
+    first_poll_frame(released)
+}
+
+/// The uplink message id carrying each probe, by sample id.
+fn probe_messages(h: &RelayHarness) -> HashMap<u32, u64> {
+    let mut ids = HashMap::new();
+    for datagram in &h.up_log {
+        for (id, bytes) in input_messages(datagram) {
+            if let Some(ClientMessage::TimeSync(probe)) = decode_client_input(bytes) {
+                ids.entry(probe.sample_id).or_insert(*id);
+            }
+        }
+    }
+    ids
+}
+
+/// The downlink message id carrying each echo and the frame whose poll first
+/// flushed it, by sample id.
+fn echo_messages(h: &RelayHarness) -> HashMap<u32, (u64, u64)> {
+    let mut ids = HashMap::new();
+    for datagram in &h.down_log {
+        for (id, bytes) in input_messages(datagram) {
+            if let Ok(ServerMessage::TimeSync(echo)) = wire::decode::<ServerMessage>(bytes) {
+                ids.entry(echo.sample_id).or_insert((*id, datagram.frame));
+            }
+        }
+    }
+    ids
+}
+
+/// The echoes one frame's Input drain handed the estimator, and its smoothed
+/// RTT after them.
+struct EchoFrame {
+    echoes: Vec<EchoFate>,
+    estimate_us: f64,
+}
+
 const TRACK_SEED: u64 = 0x1507;
 /// Thirty seconds of probes: 150 at the 5 Hz cadence.
 const TRACK_FRAMES: u64 = 30 * 60;
 
 // Regression guard for the min-RTT gate under the profile: the smoothed RTT
-// stays within one gate tolerance of the true round trip. True RTT is the probe
-// round trip the relay realizes (conditioner arrival plus poll quantization),
-// timed here from the frame that sent the probe to the frame whose poll handed
-// its echo over, and compared at the minimum of the last window of probes.
+// stays within one gate tolerance of the true round trip, compared at the
+// minimum of the last window of probes. True RTT is read from the link, not
+// the estimator: each probe's and echo's first arrival among their copies
+// (`channel_datagram`), held for every earlier message on the ordered channel,
+// then quantized to the receiver's next poll, from the frame that sent the
+// probe to the frame whose poll handed its echo over.
 #[test]
 fn rtt_estimate_tracks_the_realized_round_trip_under_dev_profile() {
     let (to_server, to_client) = dev_links(TRACK_SEED);
-    let mut h = joined(to_server, to_client);
-    let mut sent_at: HashMap<u32, u64> = HashMap::new();
+    let mut h = RelayHarness::new(to_server, to_client);
+    h.log_datagrams = true;
+    h.join();
+    let mut sent_frame: HashMap<u32, u64> = HashMap::new();
     let mut issued = last_issued(&h);
     let mut seen = fates(&h).len();
-    let mut realized: Vec<f64> = Vec::new();
-    let mut compared = 0;
-    let mut worst: Option<(f64, f64, f64)> = None;
+    let mut echo_frames = Vec::new();
     for _ in 0..TRACK_FRAMES {
         h.frame(&idle_command());
-        let now = h.client_clock_us();
         let newly_issued = last_issued(&h);
         if newly_issued != issued {
             issued = newly_issued;
-            sent_at.insert(newly_issued.expect("a probe was issued"), now);
+            sent_frame.insert(newly_issued.expect("a probe was issued"), h.frame);
         }
         let all = fates(&h);
-        let mut arrived = false;
+        let mut echoes = Vec::new();
         for fate in &all[seen..] {
             assert_ne!(
                 fate.outcome,
                 EchoOutcome::Rejected,
                 "no echo arrives twice or unsent: {fate:?}"
             );
-            let Some(&send) = sent_at.get(&fate.sample_id) else {
-                continue;
-            };
-            let trip = (now - send) as f64;
-            assert_eq!(
-                trip, fate.rtt_us,
-                "the estimator measures the round trip the relay realized"
-            );
-            realized.push(trip);
-            arrived = true;
+            if sent_frame.contains_key(&fate.sample_id) {
+                echoes.push(*fate);
+            }
         }
         seen = all.len();
-        if !arrived || realized.len() < RTT_WINDOW_SAMPLES {
+        if !echoes.is_empty() {
+            echo_frames.push((
+                h.frame,
+                EchoFrame {
+                    echoes,
+                    estimate_us: h
+                        .time_sync()
+                        .rtt_micros()
+                        .expect("time sync is initialized"),
+                },
+            ));
+        }
+    }
+
+    let up = first_arrivals(&h.up_log, &h.to_server);
+    let down = first_arrivals(&h.down_log, &h.to_client);
+    let probes = probe_messages(&h);
+    let echo_ids = echo_messages(&h);
+    let true_rtt_us = |sample_id: u32| -> u64 {
+        let host_frame = handed_over_frame(&up, probes[&sample_id]);
+        let (echo, echo_flush) = echo_ids[&sample_id];
+        assert_eq!(
+            echo_flush,
+            host_frame + 1,
+            "the host echoes probe {sample_id} on the poll that hands it over, and its \
+             next poll flushes the echo"
+        );
+        frame_start_us(handed_over_frame(&down, echo)) - frame_start_us(sent_frame[&sample_id])
+    };
+
+    // The link bounds the window minimum. Below: no probe beats both
+    // directions' base delay. Above: both directions' largest delay, two frames
+    // and one 60 Hz resend poll, which the quickest of sixteen probes beats
+    // unless the relay held up every one of them.
+    let floor_us = (to_server.delay + to_client.delay) * 1000;
+    let ceiling_us =
+        largest_one_way_us(to_server) + largest_one_way_us(to_client) + 3 * SERVER_TICK_MICROS;
+    let mut realized: Vec<f64> = Vec::new();
+    let mut compared = 0;
+    let mut worst: Option<(f64, f64, f64)> = None;
+    for (frame, echo_frame) in &echo_frames {
+        for fate in &echo_frame.echoes {
+            let trip = true_rtt_us(fate.sample_id) as f64;
+            assert_eq!(
+                fate.rtt_us, trip,
+                "the estimator's sample for probe {} on frame {frame} is the round trip \
+                 the link realized",
+                fate.sample_id
+            );
+            realized.push(trip);
+        }
+        if realized.len() < RTT_WINDOW_SAMPLES {
             continue;
         }
         let window_min = realized[realized.len() - RTT_WINDOW_SAMPLES..]
             .iter()
             .copied()
             .fold(f64::INFINITY, f64::min);
-        let estimate = h
-            .time_sync()
-            .rtt_micros()
-            .expect("time sync is initialized");
+        assert!(
+            (floor_us as f64..=ceiling_us as f64).contains(&window_min),
+            "the true window minimum {window_min:.0} us on frame {frame} lies outside the \
+             link's {floor_us}..={ceiling_us} us"
+        );
+        let estimate = echo_frame.estimate_us;
         let tolerance = gate_tolerance_us(window_min);
         let error = estimate - window_min;
         compared += 1;
@@ -169,24 +288,26 @@ fn probe_trip(drop_probe: bool) -> ProbeTrip {
             (now != before).then_some(now).flatten()
         })
         .expect("the 5 Hz cadence sends a probe within 30 frames");
-    if drop_probe {
-        // The probe leaves at the next poll, in the Input datagram carrying
-        // this frame's command.
-        let index = h.to_server.enqueued_on_channel(Channel::Input);
-        h.to_server.script_drop(ScriptedDrop::NthOnChannel {
-            channel: Channel::Input,
-            index,
-        });
-    }
+    // The probe leaves at the next poll, in the Input datagram carrying this
+    // frame's command.
+    let dropped = drop_probe.then(|| h.drop_next_client_input_datagram());
     for _ in 0..60 {
         h.frame(&idle_command());
     }
-    if drop_probe {
+    if let Some(dropped) = dropped {
         assert_eq!(h.to_server.scripted_dropped(), 1);
         assert_eq!(
             h.to_server.dropped(),
             1,
             "the scripted drop is the only loss"
+        );
+        let lost = h.uplink_input(dropped);
+        assert!(
+            lost.iter().any(|message| matches!(
+                message,
+                ClientMessage::TimeSync(probe) if probe.sample_id == sample_id
+            )),
+            "the lost Input datagram {dropped} carried probe {sample_id}: {lost:?}"
         );
     }
     ProbeTrip {
@@ -230,7 +351,6 @@ fn probe_lost_once_yields_one_echo_at_most_one_tick_late() {
 const OUTAGE_SEED: u64 = 0x150a;
 /// Six seconds of probing settle the window and the estimate before the cut.
 const OUTAGE_SETTLE_FRAMES: u64 = 6 * 60;
-const OUTAGE_MS: u64 = 2_000;
 /// The outage and six seconds after it, so its probes roll out of the window.
 const OUTAGE_RUN_FRAMES: u64 = 8 * 60;
 

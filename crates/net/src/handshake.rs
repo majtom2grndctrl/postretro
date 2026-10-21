@@ -35,8 +35,11 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// Teleporters advance it to 32: the pawn teleport record in player movement
 /// state, the replicated teleporter armed state, and the input command's
 /// teleport yaw stamp share the bump.
-/// The gameplay channel layout (Input's one-tick resend, switches on Input)
-/// advances it to 33.
+/// Moving weapon switches from Control to Input advances it to 33: removing the
+/// switch variants from the middle of the Control enums renumbers the later
+/// positional tags (`ClientControlMessage` `JoinSeed` 3 to 2, `Revealed` 4 to 3;
+/// `ServerControlMessage` `SessionRoster` 5 to 3). Input's sub-tick resend is a
+/// sender-side setting and does not affect wire compatibility.
 pub const WIRE_VERSION: u32 = 33;
 
 #[must_use]
@@ -621,9 +624,10 @@ mod switch_tick_epoch_tests {
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 31);
     }
 
-    // A PRLB / wire-32 peer reads switches on Control and resends Input at
-    // 300 ms, so it cannot share the gameplay channel layout. Both gates refuse
-    // it; the snapshot layout did not change, so `SNAPSHOT_VERSION` stays.
+    // A PRLB / wire-32 peer carries weapon switches on Control, so it numbers
+    // the later Control tags differently (`JoinSeed`, `Revealed`, `SessionRoster`)
+    // and cannot share the gameplay channel layout. Both gates refuse it; the
+    // snapshot layout did not change, so `SNAPSHOT_VERSION` stays.
     #[test]
     fn gameplay_channel_layout_refuses_prlb_and_wire_32_peers() {
         const PRE_LAYOUT_PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"

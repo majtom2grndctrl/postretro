@@ -9,9 +9,9 @@ const START: u32 = 1000;
 impl Fixture {
     /// Drive client ticks `START..START + ticks` with `command(offset)`, then
     /// idle. Input commands stamped inside `stall`, and the switch declarations
-    /// made on them, are withheld until it ends, as when a lost packet stalls
-    /// the reliable Input stream. The backlog then lands at once, so the host's
-    /// playout and lanes, not arrival, decide what applies first.
+    /// made on them, are withheld until it ends, as in an outage or host hitch.
+    /// The backlog then lands at once, so the host's playout and lanes, not
+    /// arrival, decide what applies first.
     fn run_stalled(
         &mut self,
         ticks: u32,
@@ -537,7 +537,7 @@ impl Fixture {
             self.step(START + offset, command(offset));
         }
         self.cut_up = false;
-        assert!(self.cut_packets > 0, "the switch's datagram was lost");
+        assert!(self.cut_up_packets > 0, "the switch's datagram was lost");
         self.idle(START + ticks, 60);
     }
 

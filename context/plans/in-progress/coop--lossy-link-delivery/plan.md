@@ -30,7 +30,7 @@ Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the b
 | AC | Row | Proof | Status |
 |---|---|---|---|
 | 1 | Reproduces first; loss-off control | `steady_run_stays_in_ordinary_band_under_dev_profile` committed failing at base resend (148 above band, max 5.3 m Teleport; host Neutral 1365/3600, seeds 0x1502/0x1503); `steady_run_loss_off_records_no_oversized_correction` (P1) passes (all 0.000 m, 3600 Real) | stop gate passed |
-| 2 | Seeded-minute steady run, strafe, slides: nothing above Ordinary | `steady_run_stays_in_ordinary_band_under_dev_profile` (relay harness; same test as row 1, passes after task 2) | achievable as stated |
+| 2 | Seeded-minute steady run, strafe, slides, vaults: nothing above Ordinary | `steady_run_stays_in_ordinary_band_under_dev_profile` (relay harness; same test as row 1, passes after task 2), `vault_course_stays_in_ordinary_band_under_dev_profile` (6 risers, review round 1) | achievable as stated |
 | 3 | Slide/vault entry on the same client tick, incl. lost entry datagram (P3) | `slide_entry_lost_datagram_enters_on_host_same_client_tick`, `vault_entry_lost_datagram_enters_on_host_same_client_tick`, no-loss twins | passes (task 2) |
 | 4 | Fixed delay, one scripted lost Input datagram: no hold/neutral/trim, Real on its own tick (P2) | `single_lost_input_datagram_resolves_real_on_its_own_tick` | passes (task 2) |
 | 5 | Grep gate: hold/target/max stay 3/2/8 | `gap_policy_keeps_hold_3_buffer_target_2_and_buffer_max_8` + grep in preflight | passes (task 2) |
@@ -47,7 +47,7 @@ Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the b
 | 16 | New entity's baseline frozen ≤ one snapshot past a lost ack, ack on Input (P15) | `lost_ack_delays_a_new_entitys_first_delta_by_at_most_one_snapshot` (fixed 45 ms link: first Delta seq 24 clean, 25 lost) | passes (task 6); see Findings for the dev-profile sweep |
 | 17 | Sliced tuning on Control under loss delays no Input message (P16) | `sliced_tuning_under_loss_delays_no_input_message_past_the_single_loss_bound` (7-slice payload, slices 0 and 2 lost; 13 host→client Input messages, worst 113.7 ms vs 138.3 ms) | passes (task 6) |
 | 18 | Tuning sent before demote/relevel never applies after; permit post-re-promotion (P17) | `tuning_sent_before_a_demotion_never_applies_after_it_and_the_next_one_installs`, `tuning_sent_before_a_level_change_never_applies_after_it_and_the_next_one_installs` | passes (task 6) |
-| 19 | Client upstream ≤ 40 KB/s at 60 Hz under profile, reported | `client_upstream_bytes_under_dev_profile_stay_within_40_kb_per_second` | passes (task 6): 33,674 B/s renet-level (Input 33,032, acks 642; 120 datagrams/s); on-wire est. 39,434 B/s at 48 B/datagram netcode+UDP/IPv4 |
+| 19 | Client upstream ≤ 40 KB/s at 60 Hz under profile, reported | `client_upstream_bytes_under_dev_profile_stay_within_40_kb_per_second` | passes (task 6): 33,674 B/s renet-level (Input 33,032, acks 642; 120 datagrams/s); on-wire est. 39,434 B/s at 48 B/datagram netcode+UDP/IPv4. Reported beside it (review round 1): 41.0 KB/s at 144 Hz client polls, 57.4 KB/s at 250 ms RTT (60 Hz) |
 | 20 | Outage: offset within one tick, **no outage probe folds**, no reseed (P13) | `two_second_outage_keeps_offset_within_a_tick_and_gates_lengthened_probes` (drift 0.30 tick; 10 gated, 1 folded at +33 ms inside tolerance; no reseed) | passes (task 5) |
 | 21 | Probe lost once: one echo, RTT **≤ one resend** above unlost (P14) | `probe_lost_once_yields_one_echo_at_most_one_tick_late` (+16.666 ms, one echo) | passes (task 5) |
 | 22 | RTT estimate tracks true RTT within estimator tolerance | `rtt_estimate_tracks_the_realized_round_trip_under_dev_profile` (worst +54.3 ms vs 66.7 ms tolerance, 134 comparisons) | passes (task 5) |
@@ -75,6 +75,10 @@ fixed tick after the first copy. Its RTT comes out about one tick high, more tha
 10 ms resend. Proposed:
 
 > A probe whose datagram is lost once yields one echo, and its RTT sample is at most one fixed tick above the unlost round trip (P14).
+
+## Review loop
+- Round 1 (9 reviewers, 2 slices): no blocking code defect. Fixed: camera hold on cut-then-smoothed frame (F1), non-finite offset guard, no-owner switch declaration now refused, vault course added to row 2, independent RTT truth for row 22, content-checked scripted drops, P6 delivery proof, lag-refusal exemption keyed on outage, LoopbackHarness snapshot stamp (+1) and mover-only pre-predict stamp, upload scaling measured and documented, comment drift, fixture helper dedupe. Gate: net 304, netcode 871 + 2 ignored, postretro bin 1879 + 8 ignored, clippy/fmt clean.
+- Known harness limits (not fixed, no row affected): LoopbackHarness keeps its own apply/reconcile mirror and 60 Hz snapshots; host-polls-without-tick frames in `land_tuning`/`join_without_input`; no world-less frames; one shared poll grid.
 
 ## Findings outside scope
 - Engine relay fixture: a tick that both switches and starts predicts no client shot, while the host fires from the switched-to slot (clean link too, predates this brief). networking.md §Combat authority says the client's equip pass runs before its fire. Either client prediction or the fixture's prediction model disagrees with the doc; owner to route. P5's test asserts host order only.

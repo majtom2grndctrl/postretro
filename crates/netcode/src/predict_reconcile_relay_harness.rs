@@ -8,23 +8,27 @@ use glam::{Vec2, Vec3};
 use postretro_foundation::{MovementStateKind, VaultEntry, VaultTrigger};
 use postretro_net::harness::{LinkConfig, PacketConditioner, ScriptedDrop};
 use postretro_net::transport::Channel;
-use postretro_net::wire::{self, ActivationOutcome, ServerMessage, WireActivationToken};
+use postretro_net::wire::{
+    self, ActivationOutcome, ClientMessage, ServerMessage, WireActivationToken,
+};
 
 use super::SERVER_TICK_MICROS;
 use super::command_queue::ResolutionSource;
 use super::endpoint::NetEndpoint;
-use super::predict_reconcile_harness_test_fixtures::{CLIENT_ID, forward_command, idle_command};
-use super::predict_reconcile_harness_vault::{ledge_world, vault};
-use super::predict_reconcile_relay_link_test_fixtures::{dev_profile, frame_start_us};
+use super::predict_reconcile_harness_test_fixtures::{
+    CLIENT_ID, SETTLED_PAWN_TOLERANCE_M, forward_command, idle_command,
+};
+use super::predict_reconcile_harness_vault::{RISER_Z, TOP_Y, ledge_world, vault};
+use super::predict_reconcile_relay_link_test_fixtures::{
+    OUTAGE_MS, SINGLE_LOSS_BOUND_US, dev_links, first_poll_frame, fixed_delay_link, frame_start_us,
+};
 use super::predict_reconcile_relay_test_fixtures::{ClientCorrection, RelayHarness};
 use super::prediction::{CorrectionClass, ORDINARY_CORRECTION_MAX_M};
+use crate::collision::CollisionWorld;
 use crate::sim::SimCommand;
 
-/// Seed of the to-host link; the to-client link takes the next one, so the two
-/// directions lose and jitter independently.
+/// Seed of the to-host link; the to-client link takes the next one.
 const STEADY_RUN_SEED: u64 = 0x1502;
-/// Frames the client may take to join and start predicting.
-const JOIN_FRAMES_MAX: u64 = 600;
 /// A minute of the course at 60 Hz.
 const COURSE_FRAMES: u64 = 60 * 60;
 /// One course cycle: run, slide, strafe one way, strafe the other.
@@ -47,10 +51,6 @@ pub(crate) fn course_command(frame: u64) -> SimCommand {
     command
 }
 
-fn dev_links(seed: u64) -> (LinkConfig, LinkConfig) {
-    (dev_profile(seed), dev_profile(seed.wrapping_add(1)))
-}
-
 /// Idle frames after the course before the pawns are compared: past the
 /// hold window, deceleration to rest and a round trip under the profile.
 const SETTLE_FRAMES: u64 = 120;
@@ -69,27 +69,55 @@ struct SteadyRun {
     bystanders_alive: bool,
     /// The host pawn's settled position.
     host_final: Vec3,
+    /// The host pawn's movement state at the end of each course tick.
+    host_states: Vec<MovementStateKind>,
 }
 
+impl SteadyRun {
+    /// How many times the host pawn entered `kind` during the course.
+    fn host_entries(&self, kind: MovementStateKind) -> usize {
+        let mut previous = None;
+        self.host_states
+            .iter()
+            .filter(|&&state| {
+                let entered = state == kind && previous != Some(kind);
+                previous = Some(state);
+                entered
+            })
+            .count()
+    }
+}
+
+/// The floor course: a minute of [`course_command`], which slides on the host.
 fn steady_run(to_server: LinkConfig, to_client: LinkConfig) -> SteadyRun {
-    let mut h = RelayHarness::new(to_server, to_client);
-    assert!(
-        h.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
-        "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
+    let run = run_course(
+        RelayHarness::new(to_server, to_client),
+        &format!("steady run seed {:#x}", to_server.seed),
+        COURSE_FRAMES,
+        course_command,
     );
+    assert!(
+        run.host_entries(MovementStateKind::Slide) > 0,
+        "the course slides on the host"
+    );
+    run
+}
+
+/// Join, run `frames` frames of `command_at`, then settle idle.
+fn run_course(
+    mut h: RelayHarness,
+    label: &str,
+    frames: u64,
+    command_at: impl Fn(u64) -> SimCommand,
+) -> SteadyRun {
+    h.join();
     let course_start = h.frame + 1;
     let trace_start = h.host_trace.len();
-    for frame in 0..COURSE_FRAMES {
-        h.frame(&course_command(frame));
+    for frame in 0..frames {
+        h.frame(&command_at(frame));
     }
 
     let course_trace = &h.host_trace[trace_start..];
-    assert!(
-        course_trace
-            .iter()
-            .any(|trace| trace.movement_state == MovementStateKind::Slide),
-        "the course slides on the host"
-    );
     let corrections: Vec<ClientCorrection> = h
         .corrections
         .iter()
@@ -140,7 +168,11 @@ fn steady_run(to_server: LinkConfig, to_client: LinkConfig) -> SteadyRun {
         .windows(2)
         .map(|pair| (pair[1].position - pair[0].position).length())
         .sum();
-    eprintln!("[steady run] seed {:#x}: {summary}", to_server.seed);
+    eprintln!("[{label}] {summary}");
+    let host_states = course_trace
+        .iter()
+        .map(|trace| trace.movement_state)
+        .collect();
 
     for _ in 0..SETTLE_FRAMES {
         h.frame(&idle_command());
@@ -153,6 +185,7 @@ fn steady_run(to_server: LinkConfig, to_client: LinkConfig) -> SteadyRun {
         dropped: (h.to_server.dropped(), h.to_client.dropped()),
         bystanders_alive: h.bystanders_alive(),
         host_final: h.host_trace.last().expect("the host ticked").position,
+        host_states,
     }
 }
 
@@ -181,7 +214,15 @@ fn above_ordinary_band(run: &SteadyRun) -> Vec<String> {
 fn steady_run_stays_in_ordinary_band_under_dev_profile() {
     let (to_server, to_client) = dev_links(STEADY_RUN_SEED);
     let run = steady_run(to_server, to_client);
-    let oversized = above_ordinary_band(&run);
+    assert_ordinary_band_and_no_snap(&run);
+    assert_course_exercised_and_converged(&run);
+}
+
+/// No correction above the ordinary band, and none of Teleport class: a
+/// composed offset at the teleport floor snaps at an ordinary magnitude, so
+/// the band check alone would pass it.
+fn assert_ordinary_band_and_no_snap(run: &SteadyRun) {
+    let oversized = above_ordinary_band(run);
     assert!(
         oversized.is_empty(),
         "{} corrections above the {ORDINARY_CORRECTION_MAX_M} m ordinary band ({}):\n{}",
@@ -189,8 +230,6 @@ fn steady_run_stays_in_ordinary_band_under_dev_profile() {
         run.summary,
         oversized.join("\n"),
     );
-    // A composed offset at the teleport floor snaps at an ordinary magnitude,
-    // so the band check alone would pass it.
     let snaps: Vec<u64> = run
         .corrections
         .iter()
@@ -202,7 +241,6 @@ fn steady_run_stays_in_ordinary_band_under_dev_profile() {
         "Teleport-class corrections on frames {snaps:?} ({})",
         run.summary
     );
-    assert_course_exercised_and_converged(&run);
 }
 
 /// The run was not trivial: the pawn travelled, the seeded link lost datagrams
@@ -226,8 +264,8 @@ fn assert_course_exercised_and_converged(run: &SteadyRun) {
         "the client reconciled during the course"
     );
     assert!(
-        run.settled_error <= 0.05,
-        "the settled client pawn is within 0.05 m of the host's: {:.5} m",
+        run.settled_error <= SETTLED_PAWN_TOLERANCE_M,
+        "the settled client pawn is within {SETTLED_PAWN_TOLERANCE_M} m of the host's: {:.5} m",
         run.settled_error
     );
     assert!(
@@ -277,28 +315,126 @@ fn steady_run_loss_off_records_no_oversized_correction() {
     );
 }
 
-/// The dev profile's base one-way delay with no jitter and no loss, so the only
-/// loss is a scripted one.
-fn fixed_delay_link(seed: u64) -> LinkConfig {
-    LinkConfig {
-        delay: 45,
-        jitter: 0,
-        loss_probability: 0.0,
-        seed,
-    }
+const VAULT_COURSE_SEED: u64 = 0x150c;
+/// Risers on the vault course, each [`TOP_Y`] above the last.
+const VAULT_COURSE_RISERS: usize = 6;
+/// Run-up between risers. The first stands [`RISER_Z`] ahead of the start, as
+/// in `ledge_world`.
+const VAULT_COURSE_SPACING_M: f32 = 8.0;
+/// Ten seconds of running: the 46 m to the last riser and six vaults, with
+/// margin.
+const VAULT_COURSE_FRAMES: u64 = 10 * 60;
+
+/// One quad of a test world. A horizontal quad lists its far (-Z) edge first;
+/// a vertical one lists its bottom edge first and faces +Z.
+fn push_quad(
+    points: &mut Vec<Vec3>,
+    triangles: &mut Vec<[u32; 3]>,
+    corners: [Vec3; 4],
+    horizontal: bool,
+) {
+    let base = points.len() as u32;
+    points.extend(corners);
+    let local = if horizontal {
+        [[0, 2, 1], [0, 3, 2]]
+    } else {
+        [[0, 1, 2], [0, 2, 3]]
+    };
+    triangles.extend(local.map(|triangle| triangle.map(|corner| base + corner)));
 }
 
-/// Script the loss of the next Input datagram the client flushes: the one
-/// carrying the command it predicted this frame, which leaves at the next
-/// frame's poll. Returns that datagram's index among the client's Input
-/// datagrams.
-fn drop_next_client_input_datagram(h: &mut RelayHarness) -> u64 {
-    let index = h.to_server.enqueued_on_channel(Channel::Input);
-    h.to_server.script_drop(ScriptedDrop::NthOnChannel {
-        channel: Channel::Input,
-        index,
-    });
-    index
+/// `ledge_world` repeated: a step [`TOP_Y`] up at each riser, the first at
+/// [`RISER_Z`] and each next one [`VAULT_COURSE_SPACING_M`] further along -Z,
+/// all facing the pawn as it runs along -Z.
+fn riser_steps_world() -> CollisionWorld {
+    let (x0, x1) = (-500.0, 500.0);
+    let riser_z = |riser: usize| RISER_Z - riser as f32 * VAULT_COURSE_SPACING_M;
+    let mut points = Vec::new();
+    let mut triangles = Vec::new();
+    for level in 0..=VAULT_COURSE_RISERS {
+        let y = level as f32 * TOP_Y;
+        let near = if level == 0 {
+            500.0
+        } else {
+            riser_z(level - 1)
+        };
+        let far = if level == VAULT_COURSE_RISERS {
+            -500.0
+        } else {
+            riser_z(level)
+        };
+        push_quad(
+            &mut points,
+            &mut triangles,
+            [
+                Vec3::new(x0, y, far),
+                Vec3::new(x1, y, far),
+                Vec3::new(x1, y, near),
+                Vec3::new(x0, y, near),
+            ],
+            true,
+        );
+        if level < VAULT_COURSE_RISERS {
+            let z = riser_z(level);
+            push_quad(
+                &mut points,
+                &mut triangles,
+                [
+                    Vec3::new(x0, y, z),
+                    Vec3::new(x1, y, z),
+                    Vec3::new(x1, y + TOP_Y, z),
+                    Vec3::new(x0, y + TOP_Y, z),
+                ],
+                false,
+            );
+        }
+    }
+    CollisionWorld::from_triangles_for_test(points, triangles)
+}
+
+// Row 2's vault windows: a seeded run up a flight of risers under the dev
+// profile, vaulting each one, keeps every correction inside the ordinary band,
+// where the Dash band would otherwise pass up to 2 m.
+#[test]
+fn vault_course_stays_in_ordinary_band_under_dev_profile() {
+    let (to_server, to_client) = dev_links(VAULT_COURSE_SEED);
+    let mut h = RelayHarness::new(to_server, to_client).with_player_vault(vault(VaultEntry {
+        ground: Some(VaultTrigger::Auto),
+        ..VaultEntry::default()
+    }));
+    h.world = riser_steps_world();
+    let run = run_course(
+        h,
+        &format!("vault course seed {VAULT_COURSE_SEED:#x}"),
+        VAULT_COURSE_FRAMES,
+        |_| forward_command(false),
+    );
+    let vaults = run.host_entries(MovementStateKind::Vault);
+    let in_vault = run
+        .corrections
+        .iter()
+        .filter(|correction| correction.movement_state == Some(MovementStateKind::Vault))
+        .count();
+    eprintln!("[vault course] host vaults {vaults}; client corrections in a vault {in_vault}");
+    assert!(
+        vaults >= VAULT_COURSE_RISERS,
+        "the host vaulted {vaults} of {VAULT_COURSE_RISERS} risers"
+    );
+    assert_ordinary_band_and_no_snap(&run);
+    assert_course_exercised_and_converged(&run);
+}
+
+/// The `index`th uplink Input datagram, scripted lost, carried the client's
+/// command for `client_tick`.
+fn assert_lost_datagram_carried_command(h: &RelayHarness, index: u64, client_tick: u32) {
+    let messages = h.uplink_input(index);
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            ClientMessage::Input(command) if command.client_tick == client_tick
+        )),
+        "the lost Input datagram {index} carried command {client_tick}: {messages:?}"
+    );
 }
 
 /// The client tick a slide or vault started on, on each peer.
@@ -319,18 +455,16 @@ fn entry_ticks(
     command_at: impl Fn(u64) -> SimCommand,
     drop_entry: bool,
 ) -> EntryTicks {
-    assert!(
-        h.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
-        "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
-    );
+    h.join();
     let trace_start = h.host_trace.len();
     let mut client = None;
+    let mut dropped = None;
     for frame in 0..frames {
         h.frame(&command_at(frame));
         if client.is_none() && h.client_movement_state() == Some(kind) {
             client = h.last_client_tick;
             if drop_entry {
-                drop_next_client_input_datagram(&mut h);
+                dropped = Some(h.drop_next_client_input_datagram());
             }
         }
     }
@@ -341,12 +475,13 @@ fn entry_ticks(
         .and_then(|trace| trace.resolved.as_ref())
         .map(|resolved| resolved.client_tick)
         .unwrap_or_else(|| panic!("the host never entered {kind:?}"));
-    if drop_entry {
+    if let Some(dropped) = dropped {
         assert_eq!(
             h.to_server.scripted_dropped(),
             1,
             "the scripted drop, not the seeded link, lost the entry datagram"
         );
+        assert_lost_datagram_carried_command(&h, dropped, client);
     }
     EntryTicks { client, host }
 }
@@ -427,20 +562,18 @@ const AFTER_DROP_FRAMES: u64 = 120;
 #[test]
 fn single_lost_input_datagram_resolves_real_on_its_own_tick() {
     let mut h = RelayHarness::new(fixed_delay_link(0x1504), fixed_delay_link(0x1505));
-    assert!(
-        h.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
-        "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
-    );
+    h.join();
     for frame in 0..BUILD_UP_FRAMES {
         h.frame(&course_command(frame));
     }
     let window_start = h.host_trace.len();
     let lost_tick = h.last_client_tick.expect("the client predicts");
-    drop_next_client_input_datagram(&mut h);
+    let dropped = h.drop_next_client_input_datagram();
     for frame in BUILD_UP_FRAMES..BUILD_UP_FRAMES + AFTER_DROP_FRAMES {
         h.frame(&course_command(frame));
     }
     assert_eq!(h.to_server.scripted_dropped(), 1);
+    assert_lost_datagram_carried_command(&h, dropped, lost_tick);
     assert_eq!(
         h.to_server.dropped(),
         1,
@@ -475,9 +608,6 @@ fn single_lost_input_datagram_resolves_real_on_its_own_tick() {
     );
 }
 
-/// The profile's largest one-way delay plus two fixed ticks: one frame waiting
-/// for the poll that flushes the send, one for the poll that resends it.
-const SINGLE_LOSS_BOUND_US: u64 = 105_000 + 2 * SERVER_TICK_MICROS;
 const LATENCY_SEED: u64 = 0x1506;
 /// Frames the dropped messages may take to arrive before the test gives up.
 const DELIVERY_FRAMES_MAX: u64 = 60;
@@ -514,9 +644,7 @@ fn single_loss(
     let send_us = frame_start_us(send_frame);
     // The receiver polls at frame starts; the first poll at or past the
     // arrival hands it over, unless a later copy overtook it.
-    let first_poll = (send_frame..)
-        .find(|&frame| frame_start_us(frame) / 1000 >= arrives_at)
-        .expect("a poll follows the arrival");
+    let first_poll = first_poll_frame(arrives_at);
     assert!(
         receipt_frame <= first_poll,
         "the message is handed over by the first poll after its resend arrives \
@@ -534,10 +662,8 @@ fn single_loss(
 fn single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions() {
     let (to_server, to_client) = dev_links(LATENCY_SEED);
     let mut h = RelayHarness::new(to_server, to_client);
-    assert!(
-        h.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
-        "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
-    );
+    h.log_datagrams = true;
+    h.join();
     for frame in 0..BUILD_UP_FRAMES {
         h.frame(&course_command(frame));
     }
@@ -547,7 +673,7 @@ fn single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions() {
     // Input send before the next poll.
     let send_frame = h.frame;
     let command_tick = h.last_client_tick.expect("the client predicts");
-    let to_host_dropped = drop_next_client_input_datagram(&mut h);
+    let to_host_dropped = h.drop_next_client_input_datagram();
     let to_client_dropped = h.to_client.enqueued_on_channel(Channel::Input);
     h.to_client.script_drop(ScriptedDrop::NthOnChannel {
         channel: Channel::Input,
@@ -592,6 +718,15 @@ fn single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions() {
     }
     assert_eq!(h.to_server.scripted_dropped(), 1);
     assert_eq!(h.to_client.scripted_dropped(), 1);
+    assert_lost_datagram_carried_command(&h, to_host_dropped, command_tick);
+    let lost_down = h.downlink_input(to_client_dropped);
+    assert!(
+        lost_down.iter().any(|message| matches!(
+            message,
+            ServerMessage::ActivationOutcomes(outcomes) if outcomes.contains(&outcome)
+        )),
+        "the lost host Input datagram carried the outcome: {lost_down:?}"
+    );
 
     let to_host = single_loss(
         &h.to_server,
@@ -610,20 +745,27 @@ fn single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions() {
          receipt {} us; host->client arrival {} us, receipt {} us",
         to_host.arrival_us, to_host.receipt_us, to_client.arrival_us, to_client.receipt_us,
     );
+    // The receiver's poll takes an arrival up to one frame after it lands, so
+    // the message is handed over within the bound plus that frame.
+    let receipt_bound_us = SINGLE_LOSS_BOUND_US + SERVER_TICK_MICROS;
     for (direction, loss) in [("client->host", &to_host), ("host->client", &to_client)] {
         assert!(
             loss.arrival_us <= SINGLE_LOSS_BOUND_US,
             "{direction}: the resend arrives {} us after the send, past {SINGLE_LOSS_BOUND_US} us",
             loss.arrival_us,
         );
+        assert!(
+            loss.receipt_us <= receipt_bound_us,
+            "{direction}: the receiver's poll hands it over {} us after the send, past \
+             {receipt_bound_us} us",
+            loss.receipt_us,
+        );
     }
 }
 
 const OUTAGE_SEED: u64 = 0x150b;
-/// Frames of the course before the cut, and the cut itself: both directions
-/// for two seconds, longer than any redundancy.
+/// Frames of the course before the [`OUTAGE_MS`] cut.
 const OUTAGE_LEAD_FRAMES: u64 = 240;
-const OUTAGE_MS: u64 = 2_000;
 /// Frames of the course after the cut, the outage included.
 const OUTAGE_TAIL_FRAMES: u64 = 8 * 60;
 /// Frames after the link returns within which the client must be back to
@@ -638,18 +780,13 @@ const OUTAGE_RECOVERY_FRAMES: u64 = 60;
 fn two_second_outage_falls_back_to_gap_policy_and_recovers_to_ordinary_corrections() {
     let (to_server, to_client) = dev_links(OUTAGE_SEED);
     let mut h = RelayHarness::new(to_server, to_client);
-    assert!(
-        h.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
-        "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
-    );
+    h.join();
     for frame in 0..OUTAGE_LEAD_FRAMES {
         h.frame(&course_command(frame));
     }
     let trace_start = h.host_trace.len();
     let (_, link_returns_ms) = h.script_outage(OUTAGE_MS);
-    let return_frame = (h.frame..)
-        .find(|&frame| frame_start_us(frame) / 1000 >= link_returns_ms)
-        .expect("a frame follows the outage");
+    let return_frame = first_poll_frame(link_returns_ms);
     for frame in OUTAGE_LEAD_FRAMES..OUTAGE_LEAD_FRAMES + OUTAGE_TAIL_FRAMES {
         h.frame(&course_command(frame));
     }

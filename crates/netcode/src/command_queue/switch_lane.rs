@@ -24,17 +24,20 @@ use crate::prediction::client_tick_le;
 /// second of switching every tick through a stall.
 pub(super) const MAX_RETAINED_SWITCHES: usize = MAX_RETAINED_ACTIVATION_EDGES;
 
-/// Client ticks a switch may be stamped ahead of the newest command received.
-/// The client sends the switch just before the command it was made on, in the
-/// same Input stream, so a legitimate lead is a single tick. A tick further
-/// ahead than this bound is malformed: it would wait for a command that is not
-/// coming.
+/// Client ticks a switch may be stamped ahead of the newest command received
+/// before it is malformed. A legitimate lead is one tick: the declaration rides
+/// Input just before its own command, so the newest command received is the
+/// tick before it. The 120-tick bound is deliberate headroom, not an estimate
+/// of a real lead: it reuses the start lane's retention (`RETENTION_TICKS`),
+/// far past any lead a declaration riding ahead of its own command can have. A
+/// tick past it would wait for a command that is not coming.
 pub(crate) const SWITCH_LEAD_TICKS: u32 = RETENTION_TICKS;
 
 /// Host ticks a retained switch may wait from intake before it applies
 /// whatever is still pending ahead of it, as a switch did before it carried a
-/// tick. Covers the largest legitimate lead plus the start lane's two-second
-/// retention, so an ordinary stall never reaches it; a stopped stream does.
+/// tick. Covers the lead bound (`SWITCH_LEAD_TICKS`, headroom well above the
+/// one-tick lead of a real switch) plus the start lane's two-second retention,
+/// so an ordinary stall never reaches it; a stopped stream does.
 pub(crate) const SWITCH_WAIT_TICKS: u32 = SWITCH_LEAD_TICKS + RETENTION_TICKS;
 
 /// What a host fixed tick does with a switch the lane released.

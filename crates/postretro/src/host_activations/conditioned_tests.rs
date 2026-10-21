@@ -39,7 +39,8 @@ const DT: f32 = 1.0 / 60.0;
 const TARGET_HP: f32 = 10_000.0;
 const MAGAZINE: u32 = 32;
 
-/// The E16 mandated-link seed; its losses reach ordinary held commands.
+/// The E16 mandated-link seed. Input resends every 10 ms, so its single losses
+/// are absorbed; `TRIM_OUTAGE`, not this seed, carries the trim cells.
 const MANDATED_SEED: u64 = 0x1502;
 /// A genuine uplink outage that forces the catch-up trim: `(first stream
 /// offset, ticks)`. Input resends every 10 ms, so seeded loss alone no longer
@@ -300,7 +301,7 @@ struct Fixture {
     up: PacketConditioner,
     down: PacketConditioner,
     cut_up: bool,
-    cut_packets: usize,
+    cut_up_packets: usize,
     /// The downlink twin of `cut_up`: every host datagram flushed while set is lost.
     cut_down: bool,
     cut_down_packets: usize,
@@ -428,7 +429,7 @@ impl Fixture {
             up: PacketConditioner::new(link),
             down: PacketConditioner::new(down_link),
             cut_up: false,
-            cut_packets: 0,
+            cut_up_packets: 0,
             cut_down: false,
             cut_down_packets: 0,
             host: Rc::new(RefCell::new(host)),
@@ -557,7 +558,7 @@ impl Fixture {
         self.server.update_connections(dt);
         for packet in self.client.packets_to_send() {
             if self.cut_up {
-                self.cut_packets += 1;
+                self.cut_up_packets += 1;
             } else {
                 self.up.enqueue(packet);
             }
@@ -1587,7 +1588,7 @@ fn conditioned_activation_release_packet_outage_expires_without_host_damage_or_s
     fixture.step(536, release);
     fixture.idle(537, 160);
     assert!(
-        fixture.cut_packets > 0,
+        fixture.cut_up_packets > 0,
         "outage drops actual connection packets, including retransmissions"
     );
     fixture.assert_no_host_shot();
@@ -2412,24 +2413,24 @@ fn stall_refusals(fixture: &Fixture, report: &StreamReport) -> Result<Vec<(u32, 
 }
 
 /// A stream cell's parity: at least `floor` predicted shots, each authorized
-/// in order, none denied, none cut short. On a lossy link the shots of starts
-/// `stall_refusals` accepts are exempt: their input stalled past the catch-up
-/// allowance, as in an outage longer than the redundancy (a loss and its 10 ms
-/// resend both missing for 500 ms), and the 500 ms catch-up allowance
-/// (networking.md §Combat authority) refuses them. Seeded loss alone no longer
-/// stalls that long; the exemption covers only a genuine outage.
+/// in order, none denied, none cut short. In a cell with an uplink `outage`,
+/// the shots of starts `stall_refusals` accepts are exempt: their input stalled
+/// past the 500 ms catch-up allowance (networking.md §Combat authority), which
+/// refuses them. Any other cell fails on any refusal: Input resends every
+/// 10 ms, so seeded loss alone never stalls that long, and the cells' host
+/// hitches (200 ms) stay under the allowance.
 fn stream_parity(
-    link: LinkConfig,
+    outage: Option<(u32, u32)>,
     fixture: &Fixture,
     report: &StreamReport,
     floor: usize,
 ) -> Result<(), String> {
-    let refusals = if link.loss_probability > 0.0 {
+    let refusals = if outage.is_some() {
         stall_refusals(fixture, report)?
     } else if report.initiation_rejected.is_empty() {
         Vec::new()
     } else {
-        return Err("refused on a loss-free link".into());
+        return Err("refused without an outage".into());
     };
     let refused = |id: &ShotId| refusals.iter().any(|&(start, _)| start == id.start_tick);
     let kept: Vec<ShotId> = report
@@ -2451,17 +2452,18 @@ fn stream_parity(
     }
 }
 
-/// Why a stream cell fails `stream_parity` or its trim, if it does.
+/// Why a stream cell fails `stream_parity` or its trim, if it does. `hitch`
+/// and `outage` are the cell's [`HitchDriver`] schedules.
 fn stream_cell_failure(
     label: &str,
-    link: LinkConfig,
-    claims_trim: bool,
+    hitch: Option<(u32, u32)>,
+    outage: Option<(u32, u32)>,
     fixture: &Fixture,
     report: &StreamReport,
     floor: usize,
 ) -> Option<String> {
-    let verdict = stream_parity(link, fixture, report, floor).and_then(|()| {
-        if missed_its_trim(claims_trim, report) {
+    let verdict = stream_parity(outage, fixture, report, floor).and_then(|()| {
+        if missed_its_trim(claims_trim(hitch, outage), report) {
             Err("no catch-up trim".into())
         } else {
             Ok(())
@@ -2474,8 +2476,8 @@ fn stream_cell_failure(
 
 // Regression: during a steady hold, a connected client's predicted plasma bolts
 // vanished mid-flight although the host had resource to fire every one of them.
-// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
-// authority), held to `stall_refusals`.
+// Exempt: in the outage cell, a stall past the 500 ms catch-up allowance
+// (networking.md §Combat authority), held to `stall_refusals`.
 #[test]
 fn conditioned_steady_hold_keeps_every_resourced_predicted_bolt_to_its_natural_end() {
     let mut failures = Vec::new();
@@ -2488,8 +2490,8 @@ fn conditioned_steady_hold_keeps_every_resourced_predicted_bolt_to_its_natural_e
         let (fixture, report) = run_steady_hold(link, plasma_rifle(1.0e6), true, outage);
         failures.extend(stream_cell_failure(
             label,
-            link,
-            claims_trim(None, outage),
+            None,
+            outage,
             &fixture,
             &report,
             fired_floor(RIFLE_RECOVERY_TICKS, 1),
@@ -2527,8 +2529,8 @@ fn conditioned_steady_hold_host_hitch_on_clean_link_keeps_resourced_bolts() {
 
 // A refused hold restart is not projectile-specific: it retracts a hitscan
 // shot's muzzle flash and hitmarker the same way.
-// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
-// authority), held to `stall_refusals`.
+// Exempt: in the outage cell, a stall past the 500 ms catch-up allowance
+// (networking.md §Combat authority), held to `stall_refusals`.
 #[test]
 fn conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo() {
     let mut failures = Vec::new();
@@ -2540,8 +2542,8 @@ fn conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo() {
         let (fixture, report) = run_steady_hold(link, hitscan_rifle("hold", 130.0), false, outage);
         failures.extend(stream_cell_failure(
             label,
-            link,
-            claims_trim(None, outage),
+            None,
+            outage,
             &fixture,
             &report,
             fired_floor(RIFLE_RECOVERY_TICKS, 1),
@@ -2551,8 +2553,8 @@ fn conditioned_steady_hitscan_hold_is_never_refused_with_ample_ammo() {
 }
 
 // Same mechanism for a press trigger tapped at its recovery rate.
-// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
-// authority), held to `stall_refusals`.
+// Exempt: in the outage cell, a stall past the 500 ms catch-up allowance
+// (networking.md §Combat authority), held to `stall_refusals`.
 #[test]
 fn conditioned_rapid_press_taps_are_never_refused_with_ample_ammo() {
     // 9 ticks covers the 8-tick (130 ms) recovery.
@@ -2568,8 +2570,8 @@ fn conditioned_rapid_press_taps_are_never_refused_with_ample_ammo() {
             run_stream(link, tap.clone(), false, None, outage, Some(TAP_PERIOD));
         failures.extend(stream_cell_failure(
             &format!("press {label}"),
-            link,
-            claims_trim(None, outage),
+            None,
+            outage,
             &fixture,
             &report,
             fired_floor(TAP_PERIOD, 1),
@@ -2645,8 +2647,8 @@ fn rocket_launcher() -> WeaponDescriptor {
 // executed there was refused as a concurrent activation. Also: a host hitch ran
 // a whole burst before the client's last shot, and the client, cancelling its
 // burst on that completion, restarted inside the host's recovery.
-// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
-// authority), held to `stall_refusals`.
+// Exempt: in the outage cell, a stall past the 500 ms catch-up allowance
+// (networking.md §Combat authority), held to `stall_refusals`.
 #[test]
 fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
     let mut failures = Vec::new();
@@ -2665,8 +2667,8 @@ fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
             run_stream(link, burst_rifle("hold", 130.0), false, hitch, outage, None);
         failures.extend(stream_cell_failure(
             &format!("burst {label}"),
-            link,
-            claims_trim(hitch, outage),
+            hitch,
+            outage,
             &fixture,
             &report,
             fired_floor(BURST_PERIOD_TICKS, BURST_SHOTS),
@@ -2677,8 +2679,8 @@ fn conditioned_burst_hold_restarts_are_never_refused_under_loss_and_hitch() {
 
 // Regression: a release delivered mid-burst moved the burst's cadence clock to
 // the release, so the next tap at the authored rate was refused as cooling.
-// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
-// authority), held to `stall_refusals`.
+// Exempt: in the outage cell, a stall past the 500 ms catch-up allowance
+// (networking.md §Combat authority), held to `stall_refusals`.
 #[test]
 fn conditioned_burst_taps_released_mid_burst_are_never_refused() {
     let mut failures = Vec::new();
@@ -2719,8 +2721,8 @@ fn conditioned_burst_taps_released_mid_burst_are_never_refused() {
         }
         failures.extend(stream_cell_failure(
             label,
-            link,
-            claims_trim(hitch, outage),
+            hitch,
+            outage,
             &fixture,
             &report,
             BURST_SHOTS * taps,
@@ -3037,8 +3039,8 @@ fn conditioned_tick_stamping_client_cannot_exceed_the_host_cadence_bound() {
 // Also: a backlog's commands after the switch froze B's recovery under B's own
 // retained start, which then held A's start until its claim lagged past the
 // allowance.
-// Exempt: a stall past the 500 ms catch-up allowance (networking.md §Combat
-// authority), held to `stall_refusals`.
+// Exempt: in the outage cell, a stall past the 500 ms catch-up allowance
+// (networking.md §Combat authority), held to `stall_refusals`.
 #[test]
 fn conditioned_alternating_two_weapons_at_authored_rates_are_never_refused() {
     // A floor proving both weapons were exercised: each fires on most visits.
@@ -3097,12 +3099,7 @@ fn conditioned_alternating_two_weapons_at_authored_rates_are_never_refused() {
                 ));
             }
             failures.extend(stream_cell_failure(
-                &label,
-                link,
-                claims_trim(hitch, outage),
-                &fixture,
-                &report,
-                0,
+                &label, hitch, outage, &fixture, &report, 0,
             ));
         }
     }

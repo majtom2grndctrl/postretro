@@ -192,7 +192,7 @@ fn conditioned_two_edges_on_one_tick_deliver_once_across_a_lost_datagram() {
         }
         fixture.cut_up = false;
         assert!(
-            fixture.cut_packets > 0,
+            fixture.cut_up_packets > 0,
             "{label}: the pair's datagram was lost"
         );
         fixture.idle(START + 40, 60);
@@ -250,8 +250,8 @@ fn conditioned_two_edges_on_one_tick_deliver_once_under_seeded_loss() {
 const OUTAGE: std::ops::Range<u32> = 60..180;
 /// The schedule repeats every `CYCLE` ticks: a start, a use, a drop, a reload,
 /// then a switch to the other slot, each on its own tick. A weapon fires every
-/// second cycle, well past its 8-tick recovery, and eight starts a cycle apart
-/// keep the lane far under its 64-start bound.
+/// second cycle, well past its 8-tick recovery, and one start per cycle, eight
+/// in the outage, keeps the lane far under its 64-start bound.
 const CYCLE: u32 = 15;
 const RUN_TICKS: u32 = OUTAGE.end + 120;
 
@@ -325,7 +325,7 @@ fn conditioned_two_second_outage_delivers_every_lane_once_in_client_tick_order()
         fixture.cut_down = false;
         fixture.idle(START + RUN_TICKS, 240);
         assert!(
-            fixture.cut_packets > 0 && fixture.cut_down_packets > 0,
+            fixture.cut_up_packets > 0 && fixture.cut_down_packets > 0,
             "{label}: the outage cut both directions"
         );
         fixture.assert_both_participating(label);
@@ -423,7 +423,7 @@ fn conditioned_two_second_outage_delivers_every_lane_once_in_client_tick_order()
             sent.len(),
             fixture.sent_switches.len(),
             starts.len(),
-            fixture.cut_packets,
+            fixture.cut_up_packets,
             fixture.cut_down_packets,
         );
         assert!(

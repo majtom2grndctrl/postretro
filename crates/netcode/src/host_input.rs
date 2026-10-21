@@ -3,18 +3,16 @@
 
 use super::*;
 
-/// Drain and apply one accepted client's reliable `Channel::Input` messages on the
-/// host: replication acks advance that client's per-entity baseline / retire
-/// tombstones, baseline-refresh requests queue a `FullBaseline` for the named
-/// entity, a time-sync probe is echoed back on `Channel::Input` with the
-/// current `server_tick`, and a switch declaration from a pawn-owning client is
-/// retained in its switch lane. Corrupt or unknown-variant bytes are logged and
-/// dropped — never a panic.
+/// Drain one accepted client's `Channel::Input` messages and dispatch each to
+/// [`host_handle_client_message_inner`], which routes by message variant:
+/// replication acks and baseline-refresh requests, time-sync echoes, input
+/// commands (queued per client, not applied here), hit declarations, and
+/// switch declarations (one from a client with no pawn is refused at once).
+/// Corrupt or unknown-variant bytes are logged and dropped — never a panic.
 ///
 /// `server_tick` is the host's current monotonic sim tick (sampled at echo);
 /// `server_now_us` is the host's monotonic microseconds, carried in the echo as
-/// telemetry only. `InputCommand` messages are decoded but not yet applied
-/// (Phase 3 gameplay).
+/// telemetry only.
 #[allow(clippy::too_many_arguments)]
 pub fn host_handle_client_messages(
     server: &mut NetServer,
@@ -52,7 +50,7 @@ pub fn host_handle_client_messages(
     }
 }
 
-/// Apply one decoded `ClientMessage` from `client_id` (M15 Phase 3). An invalid
+/// Apply one decoded `ClientMessage` from `client_id`. An invalid
 /// `Input` (non-finite) is dropped at intake and mutates no queue or registry
 /// state.
 #[allow(clippy::too_many_arguments)]
@@ -77,7 +75,7 @@ pub(crate) fn host_handle_client_message_inner(
                 &ack.entity_baselines,
                 &ack.despawn_tombstones,
             );
-            // The same ack advances replicated-state baselines (M15 Phase 3.5), keyed
+            // The same ack advances replicated-state baselines, keyed
             // by `StateSlotId` rather than `NetworkId`. One ack, one server frame.
             state_slots.apply_ack(
                 client_id,
@@ -99,7 +97,7 @@ pub(crate) fn host_handle_client_message_inner(
                 wire::encode(&wire::ServerMessage::TimeSync(echo)),
             );
         }
-        // M15 Phase 3 Task 4: sanitize + queue the input command for this client.
+        // Sanitize + queue the input command for this client.
         // `ingest` rejects non-finite and out-of-window bootstrap commands, drops
         // stale/duplicate ones, and never mutates any other client's queue. The movement
         // stage resolves them per tick.
@@ -132,7 +130,7 @@ pub(crate) fn host_handle_client_message_inner(
                 }
             }
         }
-        // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
+        // A client missing a replicated state-slot baseline. The state
         // tracker schedules a full baseline for that slot in the client's next snapshot.
         // Keyed by `StateSlotId` (distinct from the entity `BaselineRefresh`).
         wire::ClientMessage::StateBaselineRefresh(req) => {
@@ -142,7 +140,7 @@ pub(crate) fn host_handle_client_message_inner(
         // client-tick order with this client's starts and presses. The Input
         // drain already dropped one framed under a retired participation epoch.
         wire::ClientMessage::SwitchDeclaration(declaration) => {
-            host_retain_switch_declaration(command_queues, owners, client_id, declaration);
+            host_retain_switch_declaration(server, command_queues, owners, client_id, declaration);
         }
     }
 }

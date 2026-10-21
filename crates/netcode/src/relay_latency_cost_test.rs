@@ -29,47 +29,17 @@ use postretro_net::wire::{
     WireActivationToken,
 };
 
-use super::SERVER_TICK_MICROS;
 use super::endpoint::NetEndpoint;
 use super::predict_reconcile_harness_test_fixtures::{CLIENT_ID, idle_command};
 use super::predict_reconcile_relay_harness::course_command;
 use super::predict_reconcile_relay_link_test_fixtures::{
-    LoggedDatagram, dev_profile, frame_start_us,
+    JOIN_FRAMES_MAX, LARGEST_ONE_WAY_US, LoggedDatagram, RELAY_FINGERPRINT, RELAY_LEVEL,
+    SINGLE_LOSS_BOUND_US, dev_links, dev_profile, fixed_delay_link, frame_start_us, server_inputs,
 };
 use super::predict_reconcile_relay_test_fixtures::{DrainedControl, RelayHarness};
 
-/// Frames the client may take to join and start predicting.
-const JOIN_FRAMES_MAX: u64 = 600;
-/// The dev profile's largest one-way delay: 45 ms plus 60 ms of jitter.
-const LARGEST_ONE_WAY_US: u64 = 105_000;
-/// The single-loss bound on an Input message: the largest one-way delay plus
-/// one frame waiting for the poll that flushes the send and one for the poll
-/// that resends it.
-const SINGLE_LOSS_BOUND_US: u64 = LARGEST_ONE_WAY_US + 2 * SERVER_TICK_MICROS;
 /// Control's resend (`connection_config`).
 const CONTROL_RESEND_US: u64 = 100_000;
-
-fn dev_links(seed: u64) -> (LinkConfig, LinkConfig) {
-    (dev_profile(seed), dev_profile(seed.wrapping_add(1)))
-}
-
-/// The profile's base one-way delay with no jitter and no loss, so a scripted
-/// drop is the only thing that moves an arrival.
-fn fixed_delay_link(seed: u64) -> LinkConfig {
-    LinkConfig {
-        delay: 45,
-        jitter: 0,
-        loss_probability: 0.0,
-        seed,
-    }
-}
-
-fn join(h: &mut RelayHarness) {
-    assert!(
-        h.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
-        "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
-    );
-}
 
 /// A level declaring `count` fluids with long names. Its table rides every
 /// tuning payload, so the payload grows past one 1200-byte slice while staying
@@ -150,22 +120,6 @@ fn snapshots(datagram: &LoggedDatagram) -> Vec<RawSnapshotMessage> {
     }
 }
 
-/// The client Input messages an uplink datagram carries, decoded.
-fn client_inputs(datagram: &LoggedDatagram) -> Vec<ClientMessage> {
-    match &datagram.contents {
-        Some(RenetDatagram::Reliable { messages, .. })
-            if datagram.channel == Some(Channel::Input) =>
-        {
-            messages
-                .iter()
-                .filter_map(|(_, bytes)| participation_frame_payload(bytes))
-                .filter_map(|payload| wire::decode::<ClientMessage>(&payload).ok())
-                .collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
 fn client_holds_baseline(h: &RelayHarness, network_id: NetworkId) -> bool {
     match &h.endpoint {
         NetEndpoint::Client { replication, .. } => {
@@ -201,7 +155,7 @@ fn new_entity_run(to_server: LinkConfig, to_client: LinkConfig, drop_ack: bool) 
     const FRAMES_MAX: u64 = 240;
     let mut h = RelayHarness::new(to_server, to_client);
     h.log_datagrams = true;
-    join(&mut h);
+    h.join();
     for _ in 0..30 {
         h.frame(&idle_command());
     }
@@ -223,15 +177,11 @@ fn new_entity_run(to_server: LinkConfig, to_client: LinkConfig, drop_ack: bool) 
         if ack_datagram.is_none() && client_holds_baseline(&h, network_id) {
             // The apply queued its ack on Input this frame; the next poll
             // flushes it in this Input datagram.
-            let index = h.to_server.enqueued_on_channel(Channel::Input);
-            if drop_ack {
-                h.to_server
-                    .script_drop(postretro_net::harness::ScriptedDrop::NthOnChannel {
-                        channel: Channel::Input,
-                        index,
-                    });
-            }
-            ack_datagram = Some(index);
+            ack_datagram = Some(if drop_ack {
+                h.drop_next_client_input_datagram()
+            } else {
+                h.to_server.enqueued_on_channel(Channel::Input)
+            });
         }
         let first_delta_sent = h.down_log[scanned..]
             .iter()
@@ -247,19 +197,10 @@ fn new_entity_run(to_server: LinkConfig, to_client: LinkConfig, drop_ack: bool) 
         }
     }
     let ack_datagram = ack_datagram.expect("the client applied the entity's baseline");
-    let acked = h
-        .up_log
-        .iter()
-        .find(|datagram| {
-            datagram.channel == Some(Channel::Input) && datagram.index == Some(ack_datagram)
-        })
-        .map(client_inputs)
-        .expect("the ack datagram was flushed")
-        .iter()
-        .any(|message| {
-            matches!(message, ClientMessage::Ack(ack)
+    let acked = h.uplink_input(ack_datagram).iter().any(|message| {
+        matches!(message, ClientMessage::Ack(ack)
                 if ack.entity_baselines.iter().any(|&(id, _)| id == network_id.0))
-        });
+    });
     assert!(
         acked,
         "the datagram carries the ack of the entity's baseline"
@@ -349,7 +290,9 @@ fn lost_ack_delays_a_new_entitys_first_delta_by_at_most_one_snapshot() {
     );
 }
 
-// Finding, not yet a contract (owner to route). Under the dev profile the
+// Finding, not yet a contract: "Baseline ack window" in
+// `context/plans/in-progress/coop--lossy-link-delivery/plan.md` §Findings
+// outside scope, which routes it. Under the dev profile the
 // snapshot carrying a new entity's FullBaseline can arrive after the next one.
 // The client then acks the newer sequence without the entity, and only then the
 // late baseline. An ack whose sequence covers the baseline's send but not its id
@@ -394,16 +337,11 @@ fn probe_outcome(token: WireActivationToken) -> ActivationOutcome {
 /// after its send call, and how many copies were lost before that.
 fn probe_arrival(h: &RelayHarness, probe: &HostInputProbe) -> (u64, usize) {
     let outcome = probe_outcome(probe.token);
-    let carries = |datagram: &&LoggedDatagram| match &datagram.contents {
-        Some(RenetDatagram::Reliable { messages, .. })
-            if datagram.channel == Some(Channel::Input) =>
-        {
-            messages.iter().any(|(_, bytes)| {
-                matches!(wire::decode::<ServerMessage>(bytes),
-                    Ok(ServerMessage::ActivationOutcomes(outcomes)) if outcomes.contains(&outcome))
-            })
-        }
-        _ => false,
+    let carries = |datagram: &&LoggedDatagram| {
+        server_inputs(datagram).iter().any(|message| {
+            matches!(message,
+                ServerMessage::ActivationOutcomes(outcomes) if outcomes.contains(&outcome))
+        })
     };
     // Copies in flush order: the first copy and each resend until acked. A
     // later copy can overtake an earlier one under jitter, so the message
@@ -447,7 +385,7 @@ fn sliced_tuning_under_loss_delays_no_input_message_past_the_single_loss_bound()
     let mut h =
         RelayHarness::new(to_server, to_client).with_host_fluids(many_fluids(SLICED_FLUIDS));
     h.log_datagrams = true;
-    join(&mut h);
+    h.join();
     for _ in 0..30 {
         h.frame(&idle_command());
     }
@@ -567,7 +505,6 @@ enum Retire {
     LevelChange,
 }
 
-const RETIRE_FINGERPRINT: [u8; 32] = [0x5a; 32];
 const NEXT_LEVEL: &str = "test-level-2";
 
 fn host_retires(h: &mut RelayHarness, retire: Retire) {
@@ -575,7 +512,7 @@ fn host_retires(h: &mut RelayHarness, retire: Retire) {
         Retire::Demotion => h.server.set_level_parity(None),
         Retire::LevelChange => {
             h.server
-                .set_level_parity(Some((NEXT_LEVEL.to_string(), RETIRE_FINGERPRINT)));
+                .set_level_parity(Some((NEXT_LEVEL.to_string(), RELAY_FINGERPRINT)));
             h.server.set_revealed_level(Some(NEXT_LEVEL.to_string()));
         }
     }
@@ -587,13 +524,13 @@ fn slot_returns(h: &mut RelayHarness, retire: Retire) {
     match retire {
         Retire::Demotion => h
             .server
-            .set_level_parity(Some(("test-level".to_string(), RETIRE_FINGERPRINT))),
+            .set_level_parity(Some((RELAY_LEVEL.to_string(), RELAY_FINGERPRINT))),
         Retire::LevelChange => {
             h.endpoint.reset_level_scoped_client_state();
             let NetEndpoint::Client { client, .. } = &mut h.endpoint else {
                 unreachable!("the relay endpoint is a client");
             };
-            client.set_level_parity(Some((NEXT_LEVEL.to_string(), RETIRE_FINGERPRINT)));
+            client.set_level_parity(Some((NEXT_LEVEL.to_string(), RELAY_FINGERPRINT)));
             client.set_revealed_level(Some(NEXT_LEVEL.to_string()));
         }
     }
@@ -609,7 +546,7 @@ fn tuning_across_retirement(retire: Retire) {
     let mut h = RelayHarness::new(fixed_delay_link(0x1630), fixed_delay_link(0x1631))
         .with_host_fluids(many_fluids(SLICED_FLUIDS));
     h.log_datagrams = true;
-    join(&mut h);
+    h.join();
     for _ in 0..20 {
         h.frame(&idle_command());
     }
@@ -723,8 +660,8 @@ fn tuning_sent_before_a_level_change_never_applies_after_it_and_the_next_one_ins
 // --- Upstream cost ---
 
 const UPSTREAM_SEED: u64 = 0x1640;
-/// A minute of the course at 60 Hz, past the 30 s the measurement needs to
-/// settle.
+/// A minute of the course at 60 Hz: fifteen course cycles, each with a slide
+/// and both strafes.
 const UPSTREAM_FRAMES: u64 = 60 * 60;
 /// The bound, in bytes per second (1 KB = 1000 B).
 const UPSTREAM_MAX_BYTES_PER_SECOND: f64 = 40_000.0;
@@ -734,28 +671,14 @@ const UPSTREAM_MAX_BYTES_PER_SECOND: f64 = 40_000.0;
 const NETCODE_OVERHEAD_BYTES: u64 = 1 + 3 + 16;
 /// UDP (8) and IPv4 (20) headers.
 const UDP_IPV4_OVERHEAD_BYTES: u64 = 28;
-/// A conservative per-datagram allowance for everything below renet:
-/// netcode ~52 B, UDP/IPv4 28 B, and the rest for link framing.
+/// A round, conservative per-datagram allowance for everything below renet:
+/// twice the 48 B netcode plus UDP/IPv4 estimate above, leaving room for link
+/// framing. A margin, not a measurement.
 const CONSERVATIVE_OVERHEAD_BYTES: u64 = 96;
 
-// The client's upstream under the dev profile with no outage: input commands,
-// acks, time-sync probes and renet acks, every unacked Input message resent on
-// each 60 Hz poll. Measured at renet's connection level, what the relay sees.
-#[test]
-fn client_upstream_bytes_under_dev_profile_stay_within_40_kb_per_second() {
-    let (to_server, to_client) = dev_links(UPSTREAM_SEED);
-    let mut h = RelayHarness::new(to_server, to_client);
-    join(&mut h);
-    for frame in 0..120 {
-        h.frame(&course_command(frame));
-    }
-    h.uplink_bytes = Default::default();
-    for frame in 120..120 + UPSTREAM_FRAMES {
-        h.frame(&course_command(frame));
-    }
-    assert!(h.both_participating());
-
-    let seconds = UPSTREAM_FRAMES as f64 / 60.0;
+/// The client's upstream since `h.uplink_bytes` was last reset, over `seconds`:
+/// the renet-level rate in bytes per second and a per-channel summary.
+fn upstream_report(h: &RelayHarness, seconds: f64, label: &str) -> (f64, String) {
     let rate = |bytes: u64| bytes as f64 / seconds;
     let up = h.uplink_bytes;
     let mut breakdown = String::new();
@@ -785,7 +708,7 @@ fn client_upstream_bytes_under_dev_profile_stay_within_40_kb_per_second() {
         renet_rate + datagram_rate * (NETCODE_OVERHEAD_BYTES + UDP_IPV4_OVERHEAD_BYTES) as f64;
     let conservative_rate = renet_rate + datagram_rate * CONSERVATIVE_OVERHEAD_BYTES as f64;
     let summary = format!(
-        "client upstream over {seconds:.0} s at 60 Hz: renet {renet_rate:.0} B/s \
+        "client upstream over {seconds:.0} s {label}: renet {renet_rate:.0} B/s \
          ({:.2} KB/s, 1 KB = 1000 B) in {datagram_rate:.1} datagrams/s, mean {:.1} B; \
          {breakdown}; estimated on the wire {wire_rate:.0} B/s at {} B/datagram \
          (netcode {NETCODE_OVERHEAD_BYTES} + UDP/IPv4 {UDP_IPV4_OVERHEAD_BYTES}), \
@@ -794,11 +717,89 @@ fn client_upstream_bytes_under_dev_profile_stay_within_40_kb_per_second() {
         up.bytes as f64 / up.datagrams as f64,
         NETCODE_OVERHEAD_BYTES + UDP_IPV4_OVERHEAD_BYTES,
     );
+    (renet_rate, summary)
+}
+
+/// Join over `to_server` / `to_client`, warm up two seconds of the course, then
+/// count a minute of the client's upstream with the client polling at
+/// `client_poll_hz` (60 is one poll per fixed tick, [`RelayHarness::frame`]).
+fn measure_upstream(
+    to_server: LinkConfig,
+    to_client: LinkConfig,
+    client_poll_hz: u64,
+    label: &str,
+) -> (f64, String) {
+    let mut h = RelayHarness::new(to_server, to_client);
+    h.join();
+    // The course starts at its first frame once joined, whatever the join took.
+    let joined = h.frame;
+    let run = |h: &mut RelayHarness, frames: std::ops::Range<u64>| {
+        if client_poll_hz == 60 {
+            for frame in frames {
+                h.frame(&course_command(frame));
+            }
+        } else {
+            h.run_with_client_poll_rate(frames.end - frames.start, client_poll_hz, |tick| {
+                course_command(tick - joined - 1)
+            });
+        }
+    };
+    run(&mut h, 0..120);
+    h.uplink_bytes = Default::default();
+    run(&mut h, 120..120 + UPSTREAM_FRAMES);
+    assert!(h.both_participating());
+    let (rate, summary) = upstream_report(&h, UPSTREAM_FRAMES as f64 / 60.0, label);
     eprintln!("[upstream] {summary}");
+    (rate, summary)
+}
+
+// The client's upstream under the dev profile with no outage: input commands,
+// acks, time-sync probes and renet acks, every unacked Input message resent on
+// each 60 Hz poll. Measured at renet's connection level, what the relay sees.
+#[test]
+fn client_upstream_bytes_under_dev_profile_stay_within_40_kb_per_second() {
+    let (to_server, to_client) = dev_links(UPSTREAM_SEED);
+    let (renet_rate, summary) = measure_upstream(to_server, to_client, 60, "at 60 Hz");
     assert!(
         renet_rate <= UPSTREAM_MAX_BYTES_PER_SECOND,
         "client upstream past 40 KB/s: {summary}"
     );
+}
+
+// Measurement only, beside the 60 Hz bound: the same course under the dev
+// profile with the client polling at 144 Hz. An unacked Input message is resent
+// on every poll at least 10 ms after its last send, so a faster renderer resends
+// more often. No bound is asserted; the figure is recorded in networking.md
+// §Channel model.
+#[test]
+fn client_upstream_bytes_at_144_hz_polls_are_reported() {
+    let (to_server, to_client) = dev_links(UPSTREAM_SEED);
+    let (renet_rate, _) = measure_upstream(to_server, to_client, 144, "at 144 Hz client polls");
+    assert!(renet_rate > 0.0);
+}
+
+/// About 250 ms RTT: 125 ms each way, no jitter, the dev profile's 5% loss.
+fn long_rtt_link(seed: u64) -> LinkConfig {
+    LinkConfig {
+        delay: 125,
+        jitter: 0,
+        ..dev_profile(seed)
+    }
+}
+
+// Measurement only, beside the 60 Hz bound: the same course at 60 Hz over a
+// 250 ms RTT link. Every Input message stays unacked for about one RTT and is
+// resent on each poll meanwhile, so upstream grows with RTT. No bound is
+// asserted; the figure is recorded in networking.md §Channel model.
+#[test]
+fn client_upstream_bytes_at_250_ms_rtt_are_reported() {
+    let (renet_rate, _) = measure_upstream(
+        long_rtt_link(UPSTREAM_SEED),
+        long_rtt_link(UPSTREAM_SEED.wrapping_add(1)),
+        60,
+        "at 60 Hz, 125 ms one-way, no jitter, 5% loss",
+    );
+    assert!(renet_rate > 0.0);
 }
 
 // --- Join: a lost tuning datagram ---

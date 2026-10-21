@@ -37,8 +37,9 @@ use super::command_queue::{
 use super::endpoint::ClientTimeSync;
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DRAIN_SETTLE_TICKS, DT, GRAVITY, HostTickTrace, MOVING_PLATFORM_ID,
-    NamedEnvironmentVolume, START, component, entity_descriptors, floor_world, net_slot_provenance,
-    resolve_environment_records, spawn_dead_bystander,
+    NamedEnvironmentVolume, START, client_tick_loaded_movers, component, entity_descriptors,
+    floor_world, net_slot_provenance, production_snapshot_stamp, resolve_environment_records,
+    spawn_dead_bystander,
 };
 use super::predict_reconcile_relay_link_test_fixtures::{
     CLIENT_CLOCK_ORIGIN_US, DatagramDrop, carries_tuning, flush, frame_start_us, relay_pair,
@@ -128,7 +129,6 @@ pub(crate) struct LoopbackHarness {
     pending_hit_declarations: PendingHitDeclarations,
     open_shots: OpenAuthorizedShots,
     pub(crate) server_tick: u32,
-    pub(crate) snapshot_sequence: u32,
     /// The production per-slot tuning change detector.
     pub(crate) host_last_sent_tuning: HashMap<u64, TuningPayload>,
 
@@ -160,7 +160,6 @@ pub(crate) struct LoopbackHarness {
     pub(crate) host_pawn_network_id: NetworkId,
     pub(crate) host_mover: Option<EntityId>,
     pub(crate) client_mover: Option<EntityId>,
-    pub(crate) mover_network_id: Option<NetworkId>,
     pub(crate) mover_colliders: Vec<MoverCollider>,
     pub(crate) host_mover_states: MoverTickStateTable,
     pub(crate) host_trigger_system: TriggerSystem,
@@ -215,8 +214,9 @@ pub(crate) struct LoopbackHarness {
     /// mirrors it from the ack stream to drive the drain condition without adding a
     /// production accessor.
     pub(crate) client_acked_server_tick: u32,
-    /// The frozen drain target: the host `server_tick` `DRAIN_SETTLE_TICKS` after the
-    /// resolved cursor reached `last_sent_client_tick`. `None` until that settle
+    /// The frozen drain target: the snapshot stamp of the host tick
+    /// `DRAIN_SETTLE_TICKS` after the resolved cursor reached
+    /// `last_sent_client_tick`. `None` until that settle
     /// completes. The client must ack at-or-past this fixed tick for the drain to be
     /// complete — it is not the (still-advancing) live `server_tick`.
     pub(crate) drain_target_tick: Option<u32>,
@@ -295,7 +295,6 @@ impl LoopbackHarness {
             pending_hit_declarations: PendingHitDeclarations::new(),
             open_shots: OpenAuthorizedShots::new(),
             server_tick: 0,
-            snapshot_sequence: 0,
             host_last_sent_tuning: HashMap::new(),
             client,
             time_sync,
@@ -312,7 +311,6 @@ impl LoopbackHarness {
             host_pawn_network_id,
             host_mover: None,
             client_mover: None,
-            mover_network_id: None,
             mover_colliders: Vec::new(),
             host_mover_states: MoverTickStateTable::default(),
             host_trigger_system: TriggerSystem::default(),
@@ -374,8 +372,7 @@ impl LoopbackHarness {
         command: &SimCommand,
         deliver: bool,
     ) {
-        self.client_registry.snapshot_transforms();
-        run_kinematic_mover_tick(&mut self.client_registry, &mut self.client_mover_states, DT);
+        client_tick_loaded_movers(&mut self.client_registry, &mut self.client_mover_states, DT);
 
         // The production predicted tick: stamp + send, then (once armed and tuned)
         // predict with the registry's bound teleporter armed state and write back.
@@ -633,12 +630,14 @@ impl LoopbackHarness {
         if !self.server.is_participating(CLIENT_ID) {
             return;
         }
+        // Stamped as production stamps it, so the client's mover replay span
+        // matches the shipped one.
         let sequence = self.server_replication.begin_batch();
-        self.snapshot_sequence = sequence;
-        if let Some(raw) =
-            self.server_replication
-                .encode_in_batch(CLIENT_ID, self.server_tick, sequence)
-        {
+        if let Some(raw) = self.server_replication.encode_in_batch(
+            CLIENT_ID,
+            production_snapshot_stamp(self.server_tick),
+            sequence,
+        ) {
             self.server.send_snapshot(CLIENT_ID, wire::encode(&raw));
         }
     }
@@ -1063,7 +1062,8 @@ impl LoopbackHarness {
                 if cursor_caught {
                     self.ticks_since_cursor_caught += 1;
                     if self.ticks_since_cursor_caught >= DRAIN_SETTLE_TICKS {
-                        self.drain_target_tick = Some(self.server_tick);
+                        // In snapshot-stamp space, as the client's acks are.
+                        self.drain_target_tick = Some(production_snapshot_stamp(self.server_tick));
                     }
                 }
             }

@@ -1694,13 +1694,13 @@ fn viewmodel_world_transform(
         )
 }
 
-/// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
-/// Phase 3 Task 5 local-pawn correction offset (the decaying difference between the
-/// predicted and reconciled pose); it is added to the gameplay-authoritative
-/// registry transform so the first-person eye glides smoothly across a reconcile
-/// correction without rubber-banding. The offset is always `Vec3::ZERO` at tick rate
-/// (both the single-player/host path and the connected-client tick path pass zero);
-/// the real offset is read from `ClientPrediction` at render rate by the render seam.
+/// Follow the camera to the local pawn's eye. `presentation_offset` is the local-pawn
+/// correction offset (the decaying composition of smoothed reconcile corrections); it
+/// is added to the gameplay-authoritative registry transform so the first-person eye
+/// glides across a reconcile correction without rubber-banding. Single-player and the
+/// host pass `Vec3::ZERO`. The connected client's predicted tick passes the live
+/// offset at tick rate, before its frame-timing push, so the render stage
+/// interpolates presented eyes and never re-adds it.
 fn follow_camera_to_local_pawn(
     camera: &mut Camera,
     registry: &postretro_entities::EntityRegistry,
@@ -4353,6 +4353,7 @@ impl App {
                     &mut self.pending_teleport_sounds,
                     &self.collision_world.teleporters,
                     &registry,
+                    prediction.presentation_offset(),
                     &apply_outcome.local_teleport_adoptions,
                     apply_outcome.local_first_record_hold,
                 );

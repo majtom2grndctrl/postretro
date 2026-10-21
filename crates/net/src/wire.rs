@@ -1235,13 +1235,13 @@ pub struct StateBaselineRefreshRequest {
 /// Discriminated client -> server envelope for the reliable-ordered
 /// `Channel::Input`, which multiplexes several message kinds (the input stream,
 /// replication acks, entity/state baseline-refresh requests, time-sync,
-/// client-declared hit results, and weapon-switch declarations). bitcode tags the enum, so the server decodes one
-/// `ClientMessage` and matches on the variant rather than guessing the type of an
-/// untagged payload. New kinds are added as **appended** variants to preserve the
-/// discriminant order of existing variants.
+/// client-declared hit results, and weapon-switch declarations). bitcode tags the
+/// enum, so the server decodes one `ClientMessage` and matches on the variant
+/// rather than guessing the type of an untagged payload. New kinds are added as
+/// **appended** variants to preserve the discriminant order of existing variants.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ClientMessage {
-    /// Per-tick input intent (round-tripped in Phase 1; applied in Phase 2/3).
+    /// Per-tick input intent.
     Input(InputCommand),
     /// Replication progress ack.
     Ack(AckMessage),
@@ -1312,9 +1312,10 @@ pub struct ShotVerdictsMessage {
     pub verdicts: Vec<ShotVerdict>,
 }
 
-/// Server -> client reliable input-channel envelope. This wraps time-sync echoes
-/// and future owner-private facts so clients can decode one tagged message family
-/// from `Channel::Input`.
+/// Server -> client reliable input-channel envelope. This wraps time-sync echoes,
+/// shot verdicts, activation outcomes, observer weapon cues, HIT refusals, and
+/// switch accepted/refused so clients can decode one tagged message family from
+/// `Channel::Input`.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ServerMessage {
     TimeSync(crate::timesync::TimeSyncEcho),

@@ -53,7 +53,7 @@ pub(crate) fn client_tick_le(a: u32, b: u32) -> bool {
 // never re-typed magic numbers.
 
 /// Ordinary correction cap: an offset magnitude at or below this (in metres) is a
-/// small mispredict smoothed over a few render frames. The common case under
+/// small mispredict smoothed over a few predicted fixed ticks. The common case under
 /// loopback latency.
 pub(crate) const ORDINARY_CORRECTION_MAX_M: f32 = 0.5;
 
@@ -71,12 +71,12 @@ pub(crate) const DASH_CORRECTION_MAX_M: f32 = 2.0;
 pub(crate) const TELEPORT_CORRECTION_MIN_M: f32 = 3.0;
 
 /// Fraction of the presentation offset retained per decay step as it decays to
-/// zero. `offset *= DECAY_PER_FRAME` once per predicted fixed tick, after that tick's
+/// zero. `offset *= DECAY_PER_STEP` once per predicted fixed tick, after that tick's
 /// camera pose has baked the offset in, so a smoothed correction converges over a
 /// bounded handful of ticks (≈10 to fall below ~3% of its initial magnitude at 0.7)
 /// — fast enough to feel responsive, slow enough to hide the snap. Smoothing is
 /// presentation, not simulation: the registry never carries it.
-const DECAY_PER_FRAME: f32 = 0.7;
+const DECAY_PER_STEP: f32 = 0.7;
 
 /// Below this magnitude (metres) the presentation offset is treated as fully
 /// converged and zeroed, so the decaying geometric tail does not leave a permanent
@@ -84,8 +84,9 @@ const DECAY_PER_FRAME: f32 = 0.7;
 const OFFSET_SETTLED_EPSILON_M: f32 = 1e-4;
 
 /// How a reconcile correction was classified. The classification drives whether
-/// the registry-snapped correction is smoothed (seeded as a decaying presentation
-/// offset) or snapped hard (teleport: offset cleared, prev == current stamped).
+/// the registry-snapped correction is smoothed (composed onto the decaying
+/// presentation offset) or snapped hard (teleport: offset cleared, prev == current
+/// stamped).
 /// Returned by the reconcile entry point so the harness can assert the class
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,11 +503,12 @@ impl ClientPrediction {
     /// too far to glide, so the offset is cleared and the caller cuts the camera, the
     /// same rule a single teleport-floor correction follows. A teleport-class
     /// correction, a first-record adoption and a level unload clear the offset
-    /// instead, so nothing composes across them.
+    /// instead, so nothing composes across them. A non-finite composed offset snaps
+    /// the same way: kept, it would never decay or settle.
     #[must_use = "a composed offset at the teleport floor snaps; the caller emits the camera cut"]
     pub(crate) fn seed_presentation_offset(&mut self, correction: Vec3) -> bool {
         let composed = self.presentation_offset + correction;
-        if composed.length() >= TELEPORT_CORRECTION_MIN_M {
+        if !composed.is_finite() || composed.length() >= TELEPORT_CORRECTION_MIN_M {
             self.presentation_offset = Vec3::ZERO;
             return true;
         }
@@ -522,20 +524,22 @@ impl ClientPrediction {
         self.presentation_offset = Vec3::ZERO;
     }
 
-    /// The current local-pawn presentation offset (decaying toward zero). The render
-    /// seam adds it to the registry transform to produce the presented first-person
-    /// pose; gameplay never reads it. `ZERO` when no correction is in flight.
-    pub(crate) fn presentation_offset(&self) -> Vec3 {
+    /// The current local-pawn presentation offset (decaying toward zero). Added to the
+    /// registry transform for the presented first-person eye: by the client's predicted
+    /// tick before its frame-timing push, and by the app's adoption camera hold after
+    /// snapshot apply. Gameplay never reads it. `ZERO` when no correction is in flight.
+    pub fn presentation_offset(&self) -> Vec3 {
         self.presentation_offset
     }
 
     /// Produce the presented local pose: the gameplay-authoritative `registry_pose`
     /// with the decaying correction offset added to its position. The
     /// presentation-pose accessor in `Transform` form — used wherever a full pose
-    /// (not just the offset) is convenient. The `main.rs` render seam folds the same
-    /// offset onto the interpolated *camera eye* via
-    /// [`presentation_offset`](Self::presentation_offset) (it works with the
-    /// interpolated position, not a registry Transform). Rotation/scale are not
+    /// (not just the offset) is convenient. Production folds the same offset onto the
+    /// camera eye at tick rate instead, via
+    /// [`presentation_offset`](Self::presentation_offset), before each predicted tick's
+    /// frame-timing push; the render stage interpolates those presented eyes and never
+    /// re-adds it. Rotation/scale are not
     /// corrected (Phase 3 is movement-only; orientation comes from the live look
     /// input, not the reconciled snapshot). Test-only presentation-pose accessor;
     /// no production caller.
@@ -550,14 +554,14 @@ impl ClientPrediction {
     /// Decay the presentation offset one step toward zero. Production calls it once
     /// per predicted fixed tick, after that tick's presented camera pose has baked
     /// the offset in (`client_decay_local_correction`); the render stage interpolates
-    /// those presented poses. Geometric decay by [`DECAY_PER_FRAME`]; snaps to exactly zero
+    /// those presented poses. Geometric decay by [`DECAY_PER_STEP`]; snaps to exactly zero
     /// once below [`OFFSET_SETTLED_EPSILON_M`] so the rendered eye fully converges
     /// rather than carrying a permanent sub-visible bias. No-op when already zero.
     pub(crate) fn decay_presentation_offset(&mut self) {
         if self.presentation_offset == Vec3::ZERO {
             return;
         }
-        self.presentation_offset *= DECAY_PER_FRAME;
+        self.presentation_offset *= DECAY_PER_STEP;
         if self.presentation_offset.length() < OFFSET_SETTLED_EPSILON_M {
             self.presentation_offset = Vec3::ZERO;
         }
@@ -1160,6 +1164,32 @@ mod tests {
         // Decaying a zero offset is a no-op.
         prediction.decay_presentation_offset();
         assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+    }
+
+    // Regression: a NaN correction composed into a NaN offset that never decayed or
+    // cleared, so the presented eye stayed NaN.
+    #[test]
+    fn non_finite_composed_offset_snaps_and_clears() {
+        for bad in [
+            Vec3::new(f32::NAN, 0.0, 0.0),
+            Vec3::new(0.0, f32::INFINITY, 0.0),
+        ] {
+            let mut prediction = ClientPrediction::new();
+            assert!(!prediction.seed_presentation_offset(Vec3::new(0.2, 0.0, 0.1)));
+            assert!(
+                prediction.seed_presentation_offset(bad),
+                "a non-finite composed offset snaps like the floor: {bad:?}"
+            );
+            assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+
+            let next = Vec3::new(0.0, 0.0, 0.3);
+            assert!(!prediction.seed_presentation_offset(next));
+            assert!(
+                (prediction.presentation_offset() - next).length() < EPSILON,
+                "the next correction composes from zero: {:?}",
+                prediction.presentation_offset()
+            );
+        }
     }
 
     // --- clear_presentation_offset / clear_history wipe state for the teleport +

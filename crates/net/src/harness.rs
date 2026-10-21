@@ -1,6 +1,5 @@
-// Dev-only latency-sim harness: an in-memory packet relay conditioner, plus
-// relay-pair participation fixtures (`reveal_both`). Gated on
-// `dev-tools` (and always built under `test`).
+// Dev-only latency-sim harness: relay conditioner with scripted drops and renet datagram
+// inspection, plus relay-pair fixtures (`reveal_both`). Gated on `dev-tools` or `test`.
 // See: context/lib/networking.md
 //
 // This is the in-process latency simulator for the transport's
@@ -112,14 +111,11 @@ impl LinkConfig {
 
 /// A test-scripted loss on top of the seeded link model: the datagram is
 /// dropped even when the loss coin passes it. A test that needs "the
-/// datagram carrying command t" lost targets it by enqueue index or by its
-/// position among one channel's datagrams; the conditioner sees only opaque
-/// packets.
+/// datagram carrying command t" lost targets it by its position among one
+/// channel's datagrams; `NthOnChannel` reads the renet channel byte through
+/// [`renet_packet_channel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptedDrop {
-    /// The `index`th datagram this conditioner enqueues (0-based), counting
-    /// every datagram whatever its fate.
-    Nth(u64),
     /// The `index`th datagram (0-based) whose renet header names `channel`
     /// ([`renet_packet_channel`]), counting every such datagram whatever its
     /// fate. An ack-only datagram carries no channel and never matches.
@@ -135,9 +131,8 @@ pub enum ScriptedDrop {
 }
 
 impl ScriptedDrop {
-    fn matches(self, index: u64, channel_index: Option<(u8, u64)>, now: VirtualMillis) -> bool {
+    fn matches(self, channel_index: Option<(u8, u64)>, now: VirtualMillis) -> bool {
         match self {
-            Self::Nth(target) => index == target,
             Self::NthOnChannel {
                 channel,
                 index: target,
@@ -348,8 +343,6 @@ pub struct PacketConditioner {
     scripted_dropped: u64,
     /// Scripted drops in force, applied after the seeded draw.
     scripted: Vec<ScriptedDrop>,
-    /// Datagrams enqueued so far, whatever their fate: the next one's index.
-    enqueued: u64,
     /// Per renet channel id, the fate of every datagram enqueued carrying it,
     /// in enqueue order: index `n` is the [`ScriptedDrop::NthOnChannel`] index.
     channel_datagrams: std::collections::HashMap<u8, Vec<DatagramFate>>,
@@ -367,7 +360,6 @@ impl PacketConditioner {
             dropped: 0,
             scripted_dropped: 0,
             scripted: Vec::new(),
-            enqueued: 0,
             channel_datagrams: std::collections::HashMap::new(),
         }
     }
@@ -410,8 +402,6 @@ impl PacketConditioner {
     /// `None` when it is dropped. The seeded draw runs first and unchanged, so a
     /// scripted drop never shifts the stream for later datagrams.
     fn schedule(&mut self, packet: &[u8]) -> Option<VirtualMillis> {
-        let index = self.enqueued;
-        self.enqueued += 1;
         let channel = renet_packet_channel(packet);
         let channel_index = channel.map(|channel| {
             let count = self.channel_datagrams.get(&channel).map_or(0, Vec::len);
@@ -426,7 +416,7 @@ impl PacketConditioner {
                 if self
                     .scripted
                     .iter()
-                    .any(|drop| drop.matches(index, channel_index, self.now)) =>
+                    .any(|drop| drop.matches(channel_index, self.now)) =>
             {
                 self.dropped += 1;
                 self.scripted_dropped += 1;
@@ -452,7 +442,8 @@ impl PacketConditioner {
         self.now
     }
 
-    /// How many packets have been dropped by the loss model so far.
+    /// How many packets have been dropped so far, seeded and scripted alike
+    /// (see [`Self::scripted_dropped`] for the scripted share).
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.dropped

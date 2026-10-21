@@ -1026,9 +1026,11 @@ pub fn client_receive_and_apply(
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
         // restore the transform, prune through the host ack, replay the unacked tail,
-        // snap the reconciled gameplay state, and seed the decaying presentation
-        // offset (or snap on a teleport). The registry-touching orchestration lives in
-        // `reconcile`; long-lived prediction/smoothing state lives in `prediction`.
+        // snap the reconciled gameplay state, and compose the correction onto the
+        // decaying presentation offset (or snap on a teleport, or when the composed
+        // offset reaches the teleport floor). The registry-touching orchestration
+        // lives in `reconcile`; long-lived prediction/smoothing state lives in
+        // `prediction`.
         // Replay runs under the host's installed level gravity; with no payload
         // installed there is no movement tuning to replay with either.
         if let Some(local) = &outcome.local_reconcile
@@ -1316,13 +1318,14 @@ pub(crate) fn client_predict_tick_with_sender<C: MovementCollisionSource>(
     }
 }
 
-/// The local-pawn presentation offset (M15 Phase 3 Task 5): the decaying correction
-/// added to the local pawn's gameplay-authoritative registry transform to produce the
-/// continuous first-person *presentation* pose. `Vec3::ZERO` for single-player, the
-/// host, or a client whose prediction is unarmed / fully converged. THE single accessor
-/// every local first-person render seam in `main.rs` reads (camera follow, view-feel
-/// eye, `RenderCamera`, portal visibility apex) so they all consume one continuous pose
-/// while gameplay reads the snapped registry transform.
+/// The local-pawn presentation offset: the decaying composition of smoothed reconcile
+/// corrections, added to the local pawn's gameplay-authoritative registry transform to
+/// produce the continuous first-person *presentation* eye. `Vec3::ZERO` for
+/// single-player, the host, or a client whose prediction is unarmed / fully converged.
+/// The connected client's predicted tick reads it at tick rate and folds it into the
+/// camera follow before the frame-timing push, so every render-rate consumer
+/// interpolates presented eyes and none re-adds it. Gameplay reads the snapped
+/// registry transform.
 pub fn client_local_presentation_offset(endpoint: Option<&NetEndpoint>) -> Vec3 {
     match endpoint {
         Some(NetEndpoint::Client { prediction, .. }) => prediction.presentation_offset(),
@@ -2432,11 +2435,13 @@ pub enum ClientShotFact {
     HitRefused(ShotId),
 }
 
-/// Drive one frame of the client time-sync exchange: emit a 5 Hz probe (stamped
-/// with the client's local sim tick and monotonic microseconds) over
-/// `Channel::Input`, then fold any echoes received this frame into the clock
-/// estimator. `client_tick` is the client's local monotonic sim tick. Corrupt or
-/// non-time-sync input bytes are dropped, never a panic.
+/// Drive one frame of the client's `Channel::Input` exchange: emit a 5 Hz time-sync
+/// probe (stamped with the client's local sim tick and monotonic microseconds), then
+/// drain every host message received this frame. Echoes fold into the clock
+/// estimator. Activation outcomes, weapon cues and switch outcomes are retained on
+/// `time_sync` for their own drains. Shot facts (verdicts and HIT refusals) return in
+/// arrival order for the caller to apply this frame. `client_tick` is the client's
+/// local monotonic sim tick. Undecodable bytes are logged and dropped, never a panic.
 ///
 /// The estimator and sender read time through the `ClientTimeSync` monotonic
 /// clock (wrapping the engine `Instant`), so this path never touches wall-clock.

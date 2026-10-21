@@ -26,9 +26,9 @@ use postretro_net::wire::{
 use super::movement_state::movement_state_to_wire;
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
-    ROTATING_PLATFORM_RIDER_START, component as player_component, downhill_facet_normal,
-    faceted_floor_height, faceted_slope_world, forward_command, gravity_box_volume, idle_command,
-    input_at, light_link, mandated_link, use_command,
+    NO_CORRECTION_M, ROTATING_PLATFORM_RIDER_START, component as player_component,
+    downhill_facet_normal, faceted_floor_height, faceted_slope_world, forward_command,
+    gravity_box_volume, idle_command, input_at, light_link, mandated_link, use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -69,6 +69,11 @@ fn loopback_link() -> LinkConfig {
 // Section A — Integrated scenario tests (drive the real seams end to end)
 // ---------------------------------------------------------------------------
 
+/// Two switch declarations through the host's apply and their outcomes through
+/// the client's chain. The bytes cross a bare `PacketConditioner` with no loss or
+/// jitter, so they arrive in send order by construction: this pins the apply and
+/// the chain's resolution, not the transport's ordering. Switch order on the
+/// production Input channel under loss is `client_switch_relay_test`'s.
 fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<CurrentSwitchResolution>) {
     let mut host_registry = postretro_entities::EntityRegistry::new();
     let host_pawn = host_registry.spawn(Transform::default());
@@ -207,7 +212,7 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
             resolve_switch_outcome(&mut pending, outcome)
         })
         .collect::<Vec<_>>();
-    assert!(pending.is_empty(), "both reliable outcomes settle in order");
+    assert!(pending.is_empty(), "both outcomes settle in order");
     let active_slot = host_registry
         .get_component::<Inventory>(host_pawn)
         .unwrap()
@@ -992,8 +997,8 @@ fn malformed_input_on_the_input_channel_is_rejected() {
 // `client_position()`, which read the registry's *current* Transform after the drain
 // settles. They never sample the render-rate PRESENTED eye — the interpolated transform
 // blended at a sub-tick alpha plus the decaying presentation offset — so the jitter is
-// invisible to them (the pre-fix headline gate still reports 0.00000 m). This test
-// samples that eye across render sub-steps under the real predict + reconcile cadence.
+// invisible to them. This test samples that eye across render sub-steps under the real
+// predict + reconcile cadence.
 //
 // Fix: `client_predict_tick` (mirrored in the harness `client_predict_and_send`) now
 // stamps `previous = current` for the local pawn each predicted tick via
@@ -1343,9 +1348,6 @@ const WIND_MAX: Vec3 = Vec3::new(50.0, 20.0, -16.0);
 const UPDRAFT_PUSH: Vec3 = Vec3::new(0.0, 30.0, 0.0);
 const UPDRAFT_MIN: Vec3 = Vec3::new(-50.0, -1.0, -40.0);
 const UPDRAFT_MAX: Vec3 = Vec3::new(50.0, 3.0, -32.0);
-/// "No corrections": every recorded correction is at most
-/// this many metres under `light_link`.
-const NO_CORRECTION_M: f32 = 1.0e-4;
 
 fn in_box(position: Vec3, (min, max): (Vec3, Vec3)) -> bool {
     position.cmpge(min).all() && position.cmple(max).all()
@@ -2231,7 +2233,8 @@ fn deliver_uplink(h: &mut LoopbackHarness) {
 }
 
 /// Resolve one command for `client_id` directly off the harness command queues —
-/// the host gap-policy resolution seam, used by the inject-at-seam scenario tests.
+/// the host gap-policy resolution seam — with no host movement tick, for the
+/// scenario tests that send messages over the link with `client_send_message`.
 fn run_resolve(
     h: &mut LoopbackHarness,
     client_id: u64,

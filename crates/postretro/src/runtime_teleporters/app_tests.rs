@@ -677,6 +677,7 @@ fn teleport_client_cues_follow_forward_tick_adoption_cue_and_observed_changes() 
             sounds,
             &teleporters,
             &registry,
+            Vec3::ZERO,
             &[adoption],
             None,
         );
@@ -704,6 +705,7 @@ fn teleport_client_cues_follow_forward_tick_adoption_cue_and_observed_changes() 
         &mut sounds,
         &teleporters,
         &registry,
+        Vec3::ZERO,
         &[],
         None,
     );
@@ -851,6 +853,7 @@ fn teleport_without_arrival_sound_plays_nothing_on_any_cue_path() {
             &mut sounds,
             &teleporters,
             &registry,
+            Vec3::ZERO,
             &[postretro_netcode::LocalTeleportAdoption {
                 entity_id: pawn,
                 yaw_delta: 0.0,
@@ -1029,6 +1032,7 @@ fn teleport_frame_adoptions_coalesce_to_the_last_cue_and_detach_carry_on_identit
         &mut sounds,
         &teleporters,
         &registry,
+        Vec3::ZERO,
         &[
             adoption(0.5, true, first, Some(0)),
             adoption(0.25, true, last, Some(1)),
@@ -1058,6 +1062,7 @@ fn teleport_frame_adoptions_coalesce_to_the_last_cue_and_detach_carry_on_identit
         &mut sounds,
         &teleporters,
         &registry,
+        Vec3::ZERO,
         &[adoption(0.0, false, last, None)],
         None,
     );
@@ -1077,6 +1082,88 @@ fn teleport_frame_adoptions_coalesce_to_the_last_cue_and_detach_carry_on_identit
             "the correction cut still holds"
         );
     }
+}
+
+// Regression: a camera cut followed by a smoothed correction in the same frame held
+// the bare registry eye, dropping the composed offset, so the next tick's presented
+// eye jumped back by the correction before gliding.
+#[test]
+fn teleport_cut_then_smoothed_correction_in_one_frame_holds_presented_eye() {
+    let cut_pose = Vec3::new(10.0, 1.2, 0.0);
+    // The smoothed reconcile after the cut moved the registry by -correction and left
+    // `correction` as the composed offset, so registry plus offset is the cut pose.
+    let correction = Vec3::new(0.3, 0.0, -0.2);
+    let teleporters =
+        postretro_physics::teleporters::Teleporters::from_section(&level(Vec::new()).teleporters);
+    let mut registry = EntityRegistry::new();
+    let pawn = registry.spawn(Transform {
+        position: cut_pose - correction,
+        ..Default::default()
+    });
+    let movement = movement();
+    let cut_eye = cut_pose + Vec3::Y * movement.capsule.eye_height;
+    registry.set_component(pawn, movement).unwrap();
+    registry.mark_local_player_pawn(pawn).unwrap();
+    // What the next predicted tick follows: registry plus offset plus eye height.
+    let presented = crate::local_pawn_eye_position(&registry, correction).unwrap();
+    assert!(
+        (presented - cut_eye).length() < 1.0e-5,
+        "fixture: the presented eye is the cut eye"
+    );
+    let cut = postretro_netcode::LocalTeleportAdoption {
+        entity_id: pawn,
+        yaw_delta: 0.0,
+        camera_cut: true,
+        identity_changed: false,
+        arrival: cut_pose,
+        cue_teleporter: None,
+    };
+    // Hold with `held_offset`, then run the next tick's follow and push at rest.
+    let rendered = |held_offset: Vec3| {
+        let mut camera = crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let mut timing = FrameTiming::new(InterpolableState::new(Vec3::ZERO));
+        let mut carry = GroundRef::World;
+        let mut sounds = Vec::new();
+        apply_local_adoptions(
+            &mut camera,
+            &mut timing,
+            &mut carry,
+            &mut sounds,
+            &teleporters,
+            &registry,
+            held_offset,
+            &[cut],
+            None,
+        );
+        let held = ALPHAS.map(|alpha| {
+            timing
+                .previous_state
+                .lerp(&timing.current_state, alpha)
+                .position
+        });
+        crate::follow_camera_to_local_pawn(&mut camera, &registry, correction);
+        timing.push_state(InterpolableState::new(camera.position));
+        let next = ALPHAS.map(|alpha| {
+            timing
+                .previous_state
+                .lerp(&timing.current_state, alpha)
+                .position
+        });
+        (held, next)
+    };
+    let (held, next) = rendered(correction);
+    for eye in held.into_iter().chain(next) {
+        assert!(
+            (eye - presented).length() < 1.0e-5,
+            "the held and next-tick eye stay on the presented eye: {eye} vs {presented}"
+        );
+    }
+    // Control: holding the bare registry eye bounces by the correction.
+    let (bare, _) = rendered(Vec3::ZERO);
+    assert!(
+        (bare[0] - (presented - correction)).length() < 1.0e-5,
+        "control: a bare registry hold omits the offset"
+    );
 }
 
 /// An animated avatar mesh, so the tick's pose pass writes its aim inputs.

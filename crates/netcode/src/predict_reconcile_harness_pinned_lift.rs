@@ -10,7 +10,7 @@ use crate::collision::moving::MoverCollider;
 use crate::collision::{CollisionCapsule, CollisionWorld, OVERLAP_TOLERANCE};
 use crate::kinematic_mover::apply_mover_command;
 use crate::predict_reconcile_harness_test_fixtures::{
-    LoopbackHarness, MOVING_PLATFORM_ID, idle_command, mandated_link,
+    LoopbackHarness, MOVING_PLATFORM_ID, SETTLED_PAWN_TOLERANCE_M, idle_command, mandated_link,
 };
 
 /// The lift's top stop, and a ceiling whose underside leaves 1.6 m of headroom
@@ -18,8 +18,6 @@ use crate::predict_reconcile_harness_test_fixtures::{
 const LIFT_TOP_Y: f32 = 3.0;
 const CEILING_Y: f32 = 4.6;
 const LIFT_SPEED_MPS: f32 = 2.0;
-/// The latency gate's post-drain convergence tolerance.
-const CONVERGED_M: f32 = 0.05;
 
 /// Closed axis-aligned box triangles, wound outward.
 fn box_triangles(points: &mut Vec<Vec3>, tris: &mut Vec<[u32; 3]>, min: Vec3, max: Vec3) {
@@ -205,7 +203,7 @@ fn client_riding_a_default_lift_into_a_low_ceiling_converges_on_the_host_hold() 
     assert!(h.is_drained(), "the harness must reach its drain condition");
     let error = h.position_error();
     assert!(
-        error <= CONVERGED_M,
+        error <= SETTLED_PAWN_TOLERANCE_M,
         "the client pawn converges to the host's pose on the held lift; error {error} m"
     );
     assert!(static_overlap(&h, false) <= OVERLAP_TOLERANCE);

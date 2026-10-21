@@ -12,9 +12,12 @@ use crate::command_queue::{HostCommandQueues, MovementOwners, SwitchDelivery, We
 /// Retain a client's switch declaration in its command queue's switch lane.
 /// The lane releases it on a later fixed tick, in client-tick order with the
 /// client's retained starts and presses; see [`host_apply_switch_deliveries`].
-/// A client that owns no pawn gets no reply, as a declaration has no meaning
-/// before its slot owns one.
+/// A client that owns no pawn gets an immediate refusal for the declaration's
+/// id and slot, through the same reply a refused slot uses: the client resolves
+/// its pending chain strictly in declaration order, so a dropped declaration
+/// would leave the front unresolved and discard every later outcome.
 pub fn host_retain_switch_declaration(
+    server: &mut NetServer,
     command_queues: &mut HostCommandQueues,
     owners: &MovementOwners,
     client_id: u64,
@@ -22,6 +25,13 @@ pub fn host_retain_switch_declaration(
 ) {
     if owners.iter().any(|(_, owner)| owner == client_id) {
         command_queues.retain_switch(client_id, declaration);
+    } else {
+        send_switch_refusal(
+            server,
+            client_id,
+            declaration.declaration_id,
+            declaration.slot,
+        );
     }
 }
 
@@ -152,4 +162,63 @@ fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u
             slot,
         })),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, UdpSocket};
+    use std::time::Duration;
+
+    use postretro_net::transport::NetClient;
+
+    use super::*;
+
+    #[test]
+    fn declaration_from_client_without_owner_entry_is_refused_once() {
+        let server_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = server_socket.local_addr().unwrap();
+        let mut server =
+            NetServer::new(server_socket, address, 2, Duration::from_secs(1), None).unwrap();
+        let client_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut client = NetClient::new(
+            client_socket,
+            address,
+            7,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .unwrap();
+        server.add_relay_connection(7, None);
+        client.set_connected();
+
+        let mut command_queues = HostCommandQueues::new();
+        host_retain_switch_declaration(
+            &mut server,
+            &mut command_queues,
+            &MovementOwners::default(),
+            7,
+            ClientSwitchDeclaration {
+                declaration_id: 41,
+                slot: 3,
+                client_tick: 100,
+            },
+        );
+
+        for packet in server.packets_to_send(7) {
+            client.process_packet(&packet);
+        }
+        let replies: Vec<ServerMessage> = client
+            .drain_input()
+            .iter()
+            .map(|bytes| wire::decode(bytes).unwrap())
+            .collect();
+        assert_eq!(
+            replies,
+            vec![ServerMessage::SwitchRefused(ServerSwitchRefused {
+                declaration_id: 41,
+                slot: 3,
+            })]
+        );
+    }
 }

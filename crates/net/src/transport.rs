@@ -1871,6 +1871,7 @@ mod tests {
             assert_eq!(layout, expected, "{side} channel layout");
         }
         assert_eq!(CONTROL_RESEND, Duration::from_millis(100));
+        assert_eq!(GAMEPLAY_RESEND, Duration::from_millis(10));
 
         // renet resends on the first poll at least one resend after the last
         // send. Below one fixed tick, with margin for a short frame, a lost

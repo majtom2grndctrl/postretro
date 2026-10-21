@@ -301,10 +301,10 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
                 );
             }
             if prediction.seed_presentation_offset(correction) {
-                // The composed offset reached the teleport floor: the eye snaps, by
-                // the rule a single correction there follows. Only the eye cuts. The
-                // reconcile was ordinary, so history stays, the teleport record did
-                // not move (no view turn or cue) and carry is kept.
+                // The composed offset reached the teleport floor (or was non-finite):
+                // the eye snaps, by the rule a single correction there follows. Only
+                // the eye cuts. The reconcile was ordinary, so history stays, the
+                // teleport record did not move (no view turn or cue) and carry is kept.
                 log::debug!(
                     "[Net] composed local correction offset reached the teleport floor; eye snaps"
                 );
@@ -686,11 +686,11 @@ mod tests {
             "the presented pose lags at the predicted pose the frame the correction lands"
         );
 
-        // It decays toward zero across render frames and converges.
+        // It decays toward zero across predicted fixed ticks and converges.
         let before = offset.length();
         prediction.decay_presentation_offset();
         let after = prediction.presentation_offset().length();
-        assert!(after < before, "the offset decays each render frame");
+        assert!(after < before, "the offset decays each fixed tick");
         for _ in 0..64 {
             prediction.decay_presentation_offset();
         }

@@ -3,10 +3,10 @@
 //
 // A renet relay pair with the production client endpoint and the host's Input
 // dispatch, switch lane and switch apply. Participation scopes switches with no
-// framing of their own: the host's Input drain drops a declaration framed under a
-// retired epoch, and demotion or level unload clears the client's chain while
-// declaration ids never reset, so a stale outcome meets an empty chain or a
-// newer front.
+// switch-specific framing: a declaration rides Input's participation frame, so the
+// host's Input drain drops one framed under a retired epoch; and demotion or level
+// unload clears the client's chain while declaration ids never reset, so a stale
+// outcome meets an empty chain or a newer front.
 
 #![cfg(test)]
 
@@ -17,7 +17,7 @@ use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::WeaponDescriptor;
-use postretro_net::harness::renet_packet_channel;
+use postretro_net::harness::{RenetDatagram, parse_renet_datagram, renet_packet_channel};
 use postretro_net::replication::ServerReplication;
 use postretro_net::slots::SlotEvent;
 use postretro_net::transport::{Channel, NetServer};
@@ -27,7 +27,9 @@ use super::command_queue::{HostCommandQueues, MovementOwners, ResolutionSource, 
 use super::endpoint::{ClientSessionStatus, ClientTimeSync, NetEndpoint};
 use super::interpolation::InterpolationDelayState;
 use super::predict_reconcile_harness_test_fixtures::{CLIENT_ID, input_at};
-use super::predict_reconcile_relay_link_test_fixtures::relay_pair;
+use super::predict_reconcile_relay_link_test_fixtures::{
+    RELAY_FINGERPRINT, RELAY_LEVEL, decode_client_input, relay_pair,
+};
 use super::prediction::ClientPrediction;
 use super::replication::ReplicableSet;
 use super::state_slots::{ClientStateApply, HostStateReplication};
@@ -39,8 +41,6 @@ use super::{
 };
 
 const FRAME: Duration = Duration::from_micros(16_667);
-const LEVEL: &str = "test-level";
-const FINGERPRINT: [u8; 32] = [0x5a; 32];
 
 /// More host ticks than a retained switch may wait before it applies whatever
 /// is still pending (`SWITCH_WAIT_TICKS`), so a declaration that reached the
@@ -101,6 +101,32 @@ struct SwitchRelay {
     hold_down: bool,
     /// Drop host datagrams on the Input channel only.
     cut_down_input: bool,
+    /// Every switch declaration message the client flushed, cut or not, as
+    /// `(renet message id, transport bytes)`.
+    declarations_flushed: Vec<(u64, Vec<u8>)>,
+    /// Every switch declaration message the host's poll took while the slot
+    /// participated, so that frame's Input drain read it.
+    declarations_drained: Vec<(u64, Vec<u8>)>,
+}
+
+/// The switch declaration messages a client datagram carries on Input, as
+/// `(renet message id, transport bytes)`.
+fn switch_declarations(packet: &[u8]) -> Vec<(u64, Vec<u8>)> {
+    let Some(RenetDatagram::Reliable { channel, messages }) = parse_renet_datagram(packet) else {
+        return Vec::new();
+    };
+    if channel != u8::from(Channel::Input) {
+        return Vec::new();
+    }
+    messages
+        .into_iter()
+        .filter(|(_, bytes)| {
+            matches!(
+                decode_client_input(bytes),
+                Some(wire::ClientMessage::SwitchDeclaration(_))
+            )
+        })
+        .collect()
 }
 
 impl SwitchRelay {
@@ -150,6 +176,8 @@ impl SwitchRelay {
             cut_up: false,
             hold_down: false,
             cut_down_input: false,
+            declarations_flushed: Vec::new(),
+            declarations_drained: Vec::new(),
         };
         relay.run_until_participating();
         relay.frames(10);
@@ -217,12 +245,14 @@ impl SwitchRelay {
 
     fn host_repromotes(&mut self) {
         self.server
-            .set_level_parity(Some((LEVEL.to_string(), FINGERPRINT)));
+            .set_level_parity(Some((RELAY_LEVEL.to_string(), RELAY_FINGERPRINT)));
     }
 
     fn host_frame(&mut self) {
         self.server.update_connections(FRAME);
+        let mut declarations = Vec::new();
         for packet in std::mem::take(&mut self.up) {
+            declarations.extend(switch_declarations(&packet));
             self.server.process_packet_from(&packet, CLIENT_ID);
         }
         let poll = self.server.poll_handshakes();
@@ -253,6 +283,9 @@ impl SwitchRelay {
                     );
                 }
             }
+        }
+        if self.server.is_participating(CLIENT_ID) {
+            self.declarations_drained.extend(declarations);
         }
         for client_id in self.server.participating_clients() {
             host_handle_client_messages(
@@ -358,6 +391,10 @@ impl SwitchRelay {
         }
         self.client_tick = tick.wrapping_add(1);
         let packets = self.client().packets_to_send();
+        for packet in &packets {
+            self.declarations_flushed
+                .extend(switch_declarations(packet));
+        }
         if !self.cut_up {
             self.up.extend(packets);
         }
@@ -512,6 +549,13 @@ fn declaration_sent_before_a_demotion_never_reaches_the_lane_after_repromotion()
     let declared_on = relay.client_tick;
     relay.declare(1);
     relay.frames(2);
+    // The client framed it before the demotion, under the retired epoch; every
+    // later copy is renet's resend of these bytes.
+    let stale: Vec<(u64, Vec<u8>)> = relay.declarations_flushed.clone();
+    assert!(
+        !stale.is_empty() && stale.iter().all(|declaration| *declaration == stale[0]),
+        "one declaration left before the demotion: {stale:?}"
+    );
     relay.host_demotes();
     relay.frames(3);
     assert_eq!(relay.holdings.len(), 1);
@@ -536,6 +580,10 @@ fn declaration_sent_before_a_demotion_never_reaches_the_lane_after_repromotion()
             .iter()
             .any(|&tick| tick > declared_on + 5),
         "the uplink backlog behind the declaration was delivered"
+    );
+    assert!(
+        relay.declarations_drained.contains(&stale[0]),
+        "the old-epoch declaration reached the participating host's Input drain"
     );
     assert!(relay.resolutions.is_empty(), "and is never answered");
     assert_eq!(relay.host_active_slot(), Some(0));

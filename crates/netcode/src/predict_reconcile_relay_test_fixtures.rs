@@ -27,8 +27,8 @@ use postretro_foundation::{MovementStateKind, PlayerMovementComponent, VaultPara
 use postretro_net::harness::{LinkConfig, PacketConditioner, ScriptedDrop, VirtualMillis};
 use postretro_net::replication::ServerReplication;
 use postretro_net::slots::SlotEvent;
-use postretro_net::transport::NetServer;
-use postretro_net::wire::{DivergenceReason, ServerControlMessage};
+use postretro_net::transport::{Channel, NetServer};
+use postretro_net::wire::{ClientMessage, DivergenceReason, ServerControlMessage, ServerMessage};
 
 use super::client::{ClientReplication, NoPresentationBindings};
 use super::command_queue::{
@@ -37,12 +37,13 @@ use super::command_queue::{
 use super::endpoint::{ClientSessionStatus, ClientTimeSync, LocalCorrectionSample, NetEndpoint};
 use super::interpolation::InterpolationDelayState;
 use super::predict_reconcile_harness_test_fixtures::{
-    CLIENT_ID, DT, GRAVITY, HostTickTrace, START, component, entity_descriptors, floor_world,
-    net_slot_provenance, spawn_dead_bystander,
+    CLIENT_ID, DT, GRAVITY, HostTickTrace, START, client_tick_loaded_movers, component,
+    entity_descriptors, floor_world, idle_command, net_slot_provenance, production_snapshot_stamp,
+    spawn_dead_bystander,
 };
 use super::predict_reconcile_relay_link_test_fixtures::{
-    CLIENT_CLOCK_ORIGIN_US, DatagramDrop, LinkBytes, LoggedDatagram, flush, frame_start_us,
-    relay_pair,
+    CLIENT_CLOCK_ORIGIN_US, DatagramDrop, JOIN_FRAMES_MAX, LinkBytes, LoggedDatagram,
+    client_inputs, flush, frame_start_us, relay_pair, server_inputs,
 };
 use super::prediction::ClientPrediction;
 use super::replication::ReplicableSet;
@@ -336,9 +337,63 @@ impl RelayHarness {
         self.client_frame(command);
     }
 
+    /// `frames` 60 Hz host frames while the client polls its transport at
+    /// `client_poll_hz`, as a client rendering faster than the fixed tick does.
+    /// Every client poll receives and reconciles; only the poll a fixed tick
+    /// falls due on predicts and sends `command(tick)`, `tick` counting the
+    /// client's fixed ticks as [`Self::frame`]'s frame index does. A host frame
+    /// and a client poll at one instant run host first, as in [`Self::frame`].
+    /// renet resends an unacked message on any poll at least its resend
+    /// interval after the last send, so this is the upstream cost of a fast
+    /// renderer. Measurement only: the run may end with the client a fixed tick
+    /// behind the host, and its records name the host frame.
+    pub(crate) fn run_with_client_poll_rate(
+        &mut self,
+        frames: u64,
+        client_poll_hz: u64,
+        mut command: impl FnMut(u64) -> SimCommand,
+    ) {
+        let start_us = frame_start_us(self.frame);
+        let end_us = frame_start_us(self.frame + frames);
+        let poll_us = |poll: u64| poll * 1_000_000 / client_poll_hz;
+        let mut next_poll = start_us * client_poll_hz / 1_000_000 + 1;
+        let (mut link_us, mut host_polled_us, mut client_polled_us) =
+            (start_us, start_us, start_us);
+        let mut client_ticks = self.frame;
+        loop {
+            let host_next_us = frame_start_us(self.frame + 1);
+            let client_next_us = poll_us(next_poll);
+            let now_us = host_next_us.min(client_next_us);
+            if now_us > end_us {
+                break;
+            }
+            let elapsed_ms: VirtualMillis = now_us / 1000 - link_us / 1000;
+            self.to_server.advance(elapsed_ms);
+            self.to_client.advance(elapsed_ms);
+            link_us = now_us;
+            self.client_clock_us
+                .store(CLIENT_CLOCK_ORIGIN_US + now_us, Ordering::Relaxed);
+            if host_next_us <= client_next_us {
+                self.frame += 1;
+                self.frame_dt = Duration::from_micros(now_us - host_polled_us);
+                host_polled_us = now_us;
+                self.host_frame();
+            } else {
+                next_poll += 1;
+                self.frame_dt = Duration::from_micros(now_us - client_polled_us);
+                client_polled_us = now_us;
+                self.client_poll_and_receive();
+                if frame_start_us(client_ticks + 1) <= now_us {
+                    client_ticks += 1;
+                    self.client_fixed_tick(&command(client_ticks));
+                }
+            }
+        }
+    }
+
     /// Run frames of `command` until the client predicts with an armed pawn and
-    /// the host has resolved one of its commands for real, or `max_frames`
-    /// pass. Returns whether it got there.
+    /// installed host tuning, and the host has resolved one of its commands for
+    /// real, or `max_frames` pass. Returns whether it got there.
     pub(crate) fn run_until_predicting(&mut self, command: &SimCommand, max_frames: u64) -> bool {
         for _ in 0..max_frames {
             self.frame(command);
@@ -352,6 +407,48 @@ impl RelayHarness {
             }
         }
         false
+    }
+
+    /// Join idle and start predicting within [`JOIN_FRAMES_MAX`] frames.
+    pub(crate) fn join(&mut self) {
+        assert!(
+            self.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
+            "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
+        );
+    }
+
+    /// Script the loss of the next Input datagram the client flushes: the one
+    /// carrying what it sent this frame, which leaves at the next frame's poll.
+    /// Turns datagram logging on, so [`Self::uplink_input`] can read the lost
+    /// datagram back. Returns its index among the client's Input datagrams.
+    pub(crate) fn drop_next_client_input_datagram(&mut self) -> u64 {
+        self.log_datagrams = true;
+        let index = self.to_server.enqueued_on_channel(Channel::Input);
+        self.to_server.script_drop(ScriptedDrop::NthOnChannel {
+            channel: Channel::Input,
+            index,
+        });
+        index
+    }
+
+    /// The client messages the `index`th uplink Input datagram carried, read
+    /// from the datagram log.
+    pub(crate) fn uplink_input(&self, index: u64) -> Vec<ClientMessage> {
+        client_inputs(Self::logged_input(&self.up_log, index))
+    }
+
+    /// The host messages the `index`th downlink Input datagram carried, read
+    /// from the datagram log.
+    pub(crate) fn downlink_input(&self, index: u64) -> Vec<ServerMessage> {
+        server_inputs(Self::logged_input(&self.down_log, index))
+    }
+
+    fn logged_input(log: &[LoggedDatagram], index: u64) -> &LoggedDatagram {
+        log.iter()
+            .find(|datagram| {
+                datagram.channel == Some(Channel::Input) && datagram.index == Some(index)
+            })
+            .unwrap_or_else(|| panic!("Input datagram {index} was flushed with logging on"))
     }
 
     /// The client's time sync: its clock and estimator.
@@ -495,7 +592,7 @@ impl RelayHarness {
             &self.weapon_owners,
             &self.command_queues,
             None,
-            self.host_tick.wrapping_add(1),
+            production_snapshot_stamp(self.host_tick),
             0.0,
             snapshot_due,
             &mut self.last_emitted_snapshot_tick,
@@ -564,6 +661,14 @@ impl RelayHarness {
     /// sync, snapshot receive and reconcile, then the fixed tick that predicts
     /// and sends `command` and decays the presentation offset once.
     fn client_frame(&mut self, command: &SimCommand) {
+        self.client_poll_and_receive();
+        self.client_fixed_tick(command);
+    }
+
+    /// The part of a client frame every render frame runs, fixed tick due or
+    /// not: the transport poll, Control, time sync, snapshot receive and
+    /// reconcile.
+    fn client_poll_and_receive(&mut self) {
         let controls = {
             let NetEndpoint::Client { client, .. } = &mut self.endpoint else {
                 unreachable!("the relay endpoint is a client");
@@ -610,9 +715,12 @@ impl RelayHarness {
         }
 
         self.client_receive();
+    }
 
-        self.client_registry.snapshot_transforms();
-        run_kinematic_mover_tick(&mut self.client_registry, &mut self.client_mover_states, DT);
+    /// The client's fixed tick: movers, then the predicted tick that sends
+    /// `command`, then one presentation-offset decay.
+    fn client_fixed_tick(&mut self, command: &SimCommand) {
+        client_tick_loaded_movers(&mut self.client_registry, &mut self.client_mover_states, DT);
         {
             let NetEndpoint::Client {
                 client,
@@ -709,12 +817,7 @@ impl RelayHarness {
                 *applied_movement_tuning_generation = *tuning_generation;
             }
         }
-        let movement_state = self.client_pawn.and_then(|pawn| {
-            self.client_registry
-                .get_component::<PlayerMovementComponent>(pawn)
-                .ok()
-                .map(|movement| movement.movement_state.kind())
-        });
+        let movement_state = self.client_movement_state();
         let frame = self.frame;
         self.corrections.extend(
             outcome

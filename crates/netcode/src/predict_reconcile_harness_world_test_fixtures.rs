@@ -237,7 +237,7 @@ impl LoopbackHarness {
             &mut h.replicable,
             &mut h.host_loaded_movers,
         );
-        h.mover_network_id = Some(h.allocator.stamp(host_mover));
+        h.allocator.stamp(host_mover);
         h.host_mover = Some(host_mover);
         h.client_mover = Some(client_mover);
         h
@@ -260,7 +260,7 @@ impl LoopbackHarness {
             &mut h.replicable,
             &mut h.host_loaded_movers,
         );
-        h.mover_network_id = Some(h.allocator.stamp(host_mover));
+        h.allocator.stamp(host_mover);
         h.host_mover = Some(host_mover);
         h.client_mover = Some(client_mover);
         h
@@ -297,7 +297,7 @@ impl LoopbackHarness {
             &mut h.replicable,
             &mut h.host_loaded_movers,
         );
-        h.mover_network_id = Some(h.allocator.stamp(host_mover));
+        h.allocator.stamp(host_mover);
         h.host_mover = Some(host_mover);
         h.client_mover = Some(client_mover);
         h
@@ -328,7 +328,7 @@ impl LoopbackHarness {
             &mut h.replicable,
             &mut h.host_loaded_movers,
         );
-        h.mover_network_id = Some(h.allocator.stamp(host_mover));
+        h.allocator.stamp(host_mover);
         h.host_mover = Some(host_mover);
         h.client_mover = Some(client_mover);
         h

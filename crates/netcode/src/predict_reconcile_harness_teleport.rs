@@ -773,11 +773,12 @@ fn teleport_divergent_command_frames_one_tick_skew_takes_no_cut_or_second_cue() 
     assert_converged(&rig);
 }
 
-// Under the lossy profile the client's commands around its seamless
-// teleport tick never reach the host. The host's held and neutral commands
-// (reusing the last real, pre-teleport facing and stamp) and the late real
-// commands after the gap all face and move in the post-teleport frame; the
-// avatar the host replicates never turns back to the old facing.
+// Under the lossy profile, with the uplink cut for six ticks across the
+// client's seamless teleport tick, its commands there never reach the host.
+// The host's held and neutral commands (reusing the last real, pre-teleport
+// facing and stamp) and the late real commands after the gap all face and
+// move in the post-teleport frame; the avatar the host replicates never turns
+// back to the old facing.
 #[test]
 fn teleport_gap_command_stamp_held_neutral_late_run_in_post_teleport_frame() {
     let mut rig = Rig::new(mandated_link(), &[seamless_entry()]);

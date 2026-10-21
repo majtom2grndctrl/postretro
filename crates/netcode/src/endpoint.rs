@@ -431,8 +431,10 @@ impl ClientTimeSync {
 }
 
 /// Old-world reliable facts must not wait for a replacement world. A switch
-/// outcome dropped here meets a chain the level unload or Holding already
-/// cleared, so no declaration is left waiting on it.
+/// outcome dropped here may reach a pending chain not yet cleared: a suspend
+/// retracts parity without an unload, and the Holding it provokes clears the
+/// chain at least a round trip later. Nothing stays stuck, because the host's
+/// epoch filter drops any declaration still on the old epoch.
 pub(crate) fn discard_world_less_input(client: &mut NetClient, time_sync: &mut ClientTimeSync) {
     let _ = client.drain_input();
     time_sync.clear_retired_input_facts();

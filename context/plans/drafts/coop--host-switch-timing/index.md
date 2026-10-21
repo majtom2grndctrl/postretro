@@ -35,17 +35,17 @@ Not verified:
   - Host reload on the holstered weapon (fact above): traced, not run.
   - Whether reconcile ever corrects the host-continued abandoned reload.
   - Seat carry (netcode/src/seat.rs), `normalize_inventory_liveness` and scripting builtins as readers of a parked switch target. Expected to repair through `Inventory::switch_target`, as `release_wieldable` already does.
-Decisions (recommended; owner said "write the handoff" without ruling on Q1–Q3):
+Decisions (owner-ruled 2026-10-21 unless noted; Q1–Q3 accepted as recommended):
   - Two-tick declaration: the client sends its lower-begin tick (existing `client_tick`) and its exact repoint tick, computed locally, including the `complete_reload_before_lower` case. `WIRE_VERSION` 32 → 33.
   - Host-side lowering marker: at the begin tick, in client-tick order, the host marks the old weapon lowering. Fire and reload are refused, and a non-blocking reload is abandoned exactly as the client's state.rs does. The marker ends on the repoint *event* at the repoint tick, never on a host-tick timer. The host then repoints, and observers swap.
-  - Raise stays unenforced on the host. The client is stricter, which is acceptable for PvE co-op. A host-tick raise reintroduces trim refusals.
-  - Validation: the repoint tick must equal begin + N − 1, or begin + N for the reload-completes-same-tick case, with N stepped from the host's own `lowerMs` for that slot's weapon. Otherwise it is refused as malformed, in order, and the client rolls back. The malformed-lead check stays on the begin tick, so a long `lowerMs` cannot trip it.
+  - Raise stays unenforced on the host. The client is stricter, which costs nothing in PvE co-op: PvP is a non-goal (index.md §1.1, §4). A host-tick raise reintroduces trim refusals.
+  - Validation: the repoint tick must equal begin + N − 1, or begin + N for the reload-completes-same-tick case, with N stepped from the host's own `lowerMs` for that slot's weapon. Otherwise it is refused as malformed, in order, and the client rolls back. The malformed-lead check stays on the begin tick, so a long `lowerMs` cannot trip it. This is a desync check, not a security gate: anti-cheat is a non-goal, and the client predicts with the host's tuning, so a mismatch can only be a bug. It fails loudly (a refusal plus a diagnostic naming the expected and declared ticks) rather than silently trusting the client.
   - `block_during_reload` refusal moves to the begin tick, where the client checked. At the repoint tick the host only re-checks that the target is still occupied (drop or hand-over), refusing otherwise.
   - Retarget mid-lower: the new declaration carries the same repoint tick, and the host replaces the pending target. One repoint, with no A→B→C flicker for observers.
   - A restart mid-raise is a fresh begin/repoint pair.
   - A resync re-declaration has begin == repoint and sets no lowering marker.
   - `drop_wieldables` honours the press slot, making networking.md's sentence true. Remove the known gaps this closes from §Switches keep the client's order.
-  - Sequence with `coop--lossy-link-delivery` (same message, same lane): whichever lands second rebases. Two wire bumps are fine pre-stable.
+  - (not ruled; open question 1) Sequence with `coop--lossy-link-delivery` (same message, same lane): whichever lands second rebases. Two wire bumps are fine pre-stable.
 Non-goals:
   - Host-side raise lockout.
   - Third-person lower/raise animation.
@@ -62,7 +62,7 @@ Proof:
     - A restart mid-raise gets a fresh pair.
     - lowerMs 0 is byte-identical to today: same ticks, same deliveries.
     - Under a catch-up trim, a start stamped on the first tick after the client's raise is admitted.
-    - A bad repoint tick (off by one either way, or beyond the host's N) is refused in order, and the client rolls back.
+    - A bad repoint tick (off by one either way, or beyond the host's N) is refused in order with a diagnostic naming both ticks, and the client rolls back.
     - A target emptied before the repoint tick is refused, and the client rolls back.
     - Owner-private samples name the old slot throughout the lower. No resync re-declaration fires during an in-flight switch.
     - The 240-tick release bound and the 64-switch lane bound still hold with parked switches.
@@ -70,11 +70,9 @@ Proof:
   Manual:
     - Loopback recipe (networking.md §Manual loopback recipe) at 45/60/5 and 10% loss, with lowerMs/raiseMs authored on a dev weapon: switch, drop mid-lower, reload mid-lower, rapid retargets. The observer sees one swap at roughly the shooter's swap.
 Open owner questions:
-  1. Approach: the two-tick declaration plus host lowering marker (recommended)? Alternatives: delay only (misses 2, 3 and the reload case), or full host lower/raise timers (trim refusals).
-  2. Leave the raise unenforced on the host (recommended)?
-  3. Validate the repoint tick against host tuning (recommended), or trust the client?
-  4. Ordering against `coop--lossy-link-delivery`: which lands first?
+  1. Ordering against `coop--lossy-link-delivery`: which lands first? A scheduling call; product goals don't decide it.
+Resolved 2026-10-21: the two-tick declaration plus host lowering marker (index.md §1.1 "Smooth PvE co-op ... done well" rules out the cheaper options, which leave defects 2 and 3); raise unenforced on the host; validate the repoint tick as a desync check.
 Route: brief (compact)
 Why this route: It bumps the wire version and changes the networking.md combat-authority contract, which should be reviewed before code. The decisions are few, one executor owns sim, netcode and client, and there are no phases.
-Next action: draft (`/draft-brief` from this handoff once Q1–Q3 are ruled)
+Next action: draft (`/draft-brief` from this handoff; settle the ordering question before the build)
 ```

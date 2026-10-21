@@ -7,7 +7,7 @@ Parked `/draft-session` handoff — not yet a brief. Resume with `/draft-brief` 
 ## Handoff
 ```markdown
 Problem: The first-person viewmodel never moves relative to the camera. `viewmodel_camera_space_transform` (main.rs) composes only `WeaponPlacementDescriptor` with the same view-feel offsets the camera gets, and `collect_viewmodel` (mesh_render.rs) draws it rigid. So nothing on screen shows weapon state, look, firing or landing — it reads as Doom II. The most visible case is switching: no shipped weapon authors `lowerMs`/`raiseMs` (both default 0), so a switch is a same-tick model swap. Even authored durations would be invisible, because the transform never reads `WieldableState::Lowering`/`Raising`.
-Outcome: A render-side viewmodel motion layer with four channels — lower/raise (weapon switch, and vault while it blocks fire), look lag, fire kick, landing kick — tuned per weapon through a reusable profile, scaled by view-feel scale and reduced motion. Every weapon gets it with no art. Switching takes a visible non-zero time by default.
+Outcome: A render-side viewmodel motion layer with four channels — lower/raise (weapon switch, and vault while it blocks fire), look lag, fire kick, landing kick — tuned per weapon through a reusable profile, scaled by view-feel scale and reduced motion. Every weapon gets lower/raise with no art or authoring, and can opt into the other channels with no art. Switching takes a visible non-zero time by default.
 Read at: 3197d201; rechecked against a4a9cd06 (contains main d6f3471c) after `movement--state-view-pose` and `movement--mover-pinned-rider` landed. Weapon, switch and placement code is unchanged since Read at; the vault view code was rewritten (facts and decisions marked "recheck" below).
 Verified facts: (by symbol)
   - No `lowerMs`/`raiseMs` under content/. `WeaponDescriptor.lower_ms/raise_ms` (foundation combat.rs) are `#[serde(default)] u32`. Both parser twins deserialize the whole weapon with serde (`weapon_descriptor_from_js`, `weapon_descriptor_from_lua`), so a serde default fn covers both. The host-resolved value reaches clients through `WieldableTuningPayload` (combat-model carried_loadout.rs), whose `weapon_descriptor()` is a struct literal.
@@ -27,19 +27,30 @@ Verified facts: (by symbol)
   - Local fire signal: `"activate"` entries in `pending_weapon_script_events` (frame_loop/mod.rs) are filled before `collect_viewmodel`, and the fire sound already reads them. On a host they include every pawn's shots, so filter to the local pawn. On a client, `run_client_fire_path_post_loop` pushes one per predicted shot (`ClientPullPresentation::Fire` only).
   - No recoil or kick exists anywhere (bloom is accuracy only). `movement--view-feel` (done) scoped weapon sway out.
   - Placement rides `WieldableTuningPayload.placement` and feeds the fire origin and muzzle. The fire origin is "steady placement, no view-feel" (networking.md §Weapon placement is content). `TUNING_PAYLOAD_EPOCH` = 14 (was 13 at Read at; bumped by ad9dad20).
-  - `defineWeaponPlacement` is a pure builder shared by weapon `placement` and manifest `defaultWeaponPlacement`. `resolve_weapon_placement` resolves whole values with fallbacks.
+  - `defineWeaponPlacement` is a pure builder shared by weapon `placement` and manifest `defaultWeaponPlacement`. `resolve_weapon_placement(mod_default, character, weapon, instance)` (foundation combat.rs) resolves whole values: instance > weapon > character > mod default > `LEGACY_WEAPON_PLACEMENT`. Character and instance are reserved parameters; v1 passes neither.
+  - `local_viewmodel_asset` (main.rs) resolves the viewmodel model from local descriptor content by the weapon's archetype ("Model selection remains local descriptor content"); only placement is swapped for host tuning on a connected client. A local profile resolves the same way.
+  - View feel is opt-in: `pose::evaluate` and the other evaluators output nothing when their block is absent, and the dev content turns bob, tilt and the rest on in content/dev/scripts/player.ts.
+  - docs/: weapon descriptors are documented in docs/scripting-reference.md §`components.weapon`. Neither `placement` nor `lowerMs`/`raiseMs` appears anywhere in docs/ today.
+  - The SDK already uses `motion` for UI and presentation tweens (`MotionVerb`, `motion: { rise, easing }`). `viewmodelMotion` appears nowhere.
   - `presented_view_feel_scale` (options/resolved.rs) is 0 under reduce motion. player_options.md §5 enumerates the effects it covers. Viewmodel placement is never scaled today.
   - Drafts touched: `movement--state-view-pose` is done (plans/done/). It kept the vault row progress-weighted, and nothing in it points at a weapon-lowering draft any more. `movement--vault` (done) still says on-screen lowering "is its own draft, which vault reuses once it lands": this item. `player-descriptor-composition` reserves a per-weapon `viewFeel` overlay that changes camera feel while wielded.
 Not verified:
   - Fire kick fires exactly once per predicted shot through every reconcile path. Traced only partially.
   - How look lag excludes mover carry yaw: input deltas, or presented aim minus carry.
-  - Engine default values for the lowered pose and channel strengths. Tune by playtest.
+  - The engine default lowered pose, and the dev content's lag and kick strengths. Tune by playtest.
+  - Doom's lower and raise run about 16 tics each (about 0.46 s) at 35 Hz. From memory of p_pspr.c, not checked; used only as an upper bound.
 Decisions (owner-ruled 2026-10-14 unless noted):
   - Scope: one viewmodel motion layer, four channels — lower/raise, look lag, fire kick, landing kick. A separate weapon bob is deferred (the weapon already follows camera bob).
   - Composition: viewmodel = camera-follow view feel (as today, pose eye drop included, pose pitch/roll excluded) ∘ placement ∘ motion-layer offsets. The layer never feeds the fire origin, muzzle terms, aim, the camera or the third-person mount. With all channels at rest the transform is bit-equal to today's.
-  - Per-weapon motion profile, set up like placement: a pure reusable builder, a weapon-level field, a mod-wide manifest default, and an engine fallback, so a value is defined once in script and reused. It holds the lowered pose (a placement-relative position/rotation delta) and the per-weapon lag and kick tuning. It must not be named `viewFeel`, which is reserved by player-descriptor-composition.
+  - Per-weapon motion profile, set up like placement: a pure reusable builder, a weapon-level field, a mod-wide manifest default, and an engine fallback, so a value is defined once in script and reused. It must not be named `viewFeel`, which is reserved by player-descriptor-composition.
+  - (owner-ruled 2026-10-21) Name: weapon field `viewmodelMotion`, builder `defineViewmodelMotion`, manifest key `defaultViewmodelMotion`. It names what it moves, and avoids both the reserved `viewFeel` and the SDK's existing UI `motion`.
+  - (owner-ruled 2026-10-21) Shape: five optional groups. `lowered` is a placement-relative delta in placement's own vocabulary (`positionFromCenter`, `rotation`), used by both the switch and the vault lower. `vault` holds the vault-lower `easeIn`/`easeOut` shares. `lookLag`, `fireKick` and `landingKick` hold their channel's tuning; the brief drafts their fields. Unknown keys reject, as `viewFeel.pose` does.
+  - (owner-ruled 2026-10-21) Resolution: placement's tier order (instance > weapon > character > mod default > engine), with character and instance as reserved parameters as placement has them. Unlike placement, each group resolves on its own, so a weapon that sets only `fireKick` keeps the mod's `lowered`. The `vault` group's fallback below the mod default is the halved pose shares (see the vault lower timing decision).
   - (owner-ruled 2026-10-21, replaces "host-resolved into the tuning payload with an epoch bump") The profile stays local to match view feel. It is presentation only, so it follows the view-feel and sound-key precedent: stripped from tuning and resolved from the client's own content, with no `TUNING_PAYLOAD_EPOCH` bump. Only `lowerMs`/`raiseMs`, which gate fire, stay host values (they already ride the payload). A client whose content differs sees its own motion, as it does its own view feel.
-  - `lowerMs`/`raiseMs` get a non-zero engine default (proposed 150/200 ms, tuned in playtest). An explicit 0 still means instant. Update the SDK .d.ts/.d.luau, the goldens and primitives/mod.rs docs. Gated on the host switch-timing prerequisite.
+  - `lowerMs`/`raiseMs` get a non-zero engine default. An explicit 0 still means instant. Update the SDK .d.ts/.d.luau, the goldens and primitives/mod.rs docs. Gated on the host switch-timing prerequisite.
+  - (owner-ruled 2026-10-21) Defaults split by what each channel does. Lower/raise shows a fire lockout, the retro lineage has it, and the non-zero duration default makes that lockout exist in every mod, so the engine fallback `lowered` pose is non-zero. Look lag, fire kick and landing kick are modern feel, which the product uses sparingly, and view feel is opt-in. Their engine fallback is 0, and the dev content's `defaultViewmodelMotion` turns them on subtly, as player.ts does for bob.
+  - (owner-ruled 2026-10-21) Durations: 150/200 ms, final values from playtest. Fast switching is core to the genre, so a switch stays well under Doom's (see Not verified).
+  - (owner-ruled 2026-10-21) Docs: no art guidance. The lowered pose is procedural and placement-relative, so it asks nothing of an artist. The primitive-surface contract needs SDK types and docs in the same change: document `viewmodelMotion`, its default, and the `lowerMs`/`raiseMs` default in docs/scripting-reference.md §`components.weapon`. Placement is undocumented there too; documenting it alongside is in bounds.
   - Scaling: every channel follows the presented view-feel scale and reduced motion, and integrators keep advancing at 0. Accepted consequence: with reduced motion on, a switch has a lockout with no visual cue.
   - Lowered weight: render-side, 0..1, presented with frame alpha. It never steps: a restart mid-raise continues from the current weight; a refusal or a snap to Idle releases from the last presented weight; overlapping sources take the max.
   - (recheck — new, follows the landed pose rule) Lowered values under a release: the outgoing and incoming weapons can have different lowered poses. A release fades the values last presented, and overlapping sources blend their value sets by weight, as `vault_row::present` does, so a model swap at full weight or a refusal mid-raise never steps the pose.
@@ -73,20 +84,19 @@ Proof:
     - A landing edge kicks.
     - All channels at rest give a transform bit-equal to today's `viewmodel_world_transform`. The fire origin and `client_fire_muzzle_terms` are unchanged under any channel.
     - Scale and reduced motion pin both sides: 0 gives none, 1 gives full, and the integrator resumes from its live state.
-    - JS/Luau parser twins handle the profile and the builder (accept and reject cases). Resolution order: weapon > mod default > engine.
+    - JS/Luau parser twins handle `viewmodelMotion`, `defineViewmodelMotion` and `defaultViewmodelMotion` (accept, unknown-key reject, range reject). Per-group resolution: weapon > mod default > engine for each group, and a weapon setting one group keeps the mod default's others.
+    - With no `viewmodelMotion` anywhere, a switch lowers to the engine `lowered` pose and look lag and both kicks are exactly zero.
     - The tuning payload carries no profile and the epoch is unchanged; a connected client resolves its own profile.
     - The `lowerMs`/`raiseMs` default applies when omitted, and an explicit 0 still means instant. Fix the tests that assumed a same-tick switch.
     - Connected-client harness: a predicted switch shows the lower. The archetype-fallback window gives weight 0.
   Manual:
-    - Playtest dev weapons: switching (rapid, mid-raise, retarget), look lag, fire kick, landing.
+    - Playtest dev weapons: switching (rapid, mid-raise, retarget), look lag, fire kick, landing. Settle the duration defaults and the dev strengths.
+    - A mod with no `viewmodelMotion` (engine fallback only) reads as lower/raise with no other motion.
     - A co-op client at realistic latency, including a refused switch.
     - Reduced motion on and off.
     - A vault with `allowFire` false and true.
-Open owner questions:
-  1. The profile's name and field shape.
-  2. Default durations (150/200 proposed) and whether channel strengths default to a subtle non-zero.
-  3. Whether the lowered pose's engine default needs per-mod art guidance in docs/.
+Open owner questions: none. All were ruled on 2026-10-14 and 2026-10-21; values left to playtest are under Not verified.
 Route: brief (likely resumable)
-Why this route: It adds a modder-facing descriptor surface, a gameplay default change gated on a prerequisite, a cross-draft amendment, and four channels with one shared helper. The decisions need review before code, and the work spans ordered phases.
+Why this route: It adds a modder-facing descriptor surface, a gameplay default change gated on a prerequisite, a refactor of landed vault-pose code, and four channels with one shared helper. The decisions need review before code, and the work spans ordered phases.
 Next action: draft (`/draft-brief` from this handoff; the build waits on the host switch-timing prerequisite)
 ```

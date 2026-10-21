@@ -44,6 +44,8 @@ use std::collections::VecDeque;
 
 use glam::{Quat, Vec3};
 
+use crate::sim::LocomotionPosture;
+
 use postretro_net::wire::NetworkId;
 
 use postretro_entities::Transform;
@@ -429,13 +431,16 @@ fn adaptive_interpolation_delay_ticks(
 /// `intrinsic_velocity` is the replicated player-movement velocity, which excludes
 /// mover carry and is used only for remote-player presentation. World-transform
 /// extrapolation derives velocity from adjacent transform samples. `aim_pitch` is the
-/// presentation pitch sampled with the transform from the same snapshot.
+/// presentation pitch sampled with the transform from the same snapshot. `posture`
+/// is the replicated movement state's stance, present exactly when
+/// `intrinsic_velocity` is: both come from the same movement payload.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TransformSample {
     pub(crate) teleport: Option<TeleportSample>,
     pub(crate) server_tick: u32,
     pub(crate) transform: Transform,
     pub(crate) intrinsic_velocity: Option<Vec3>,
+    pub(crate) posture: Option<LocomotionPosture>,
     pub(crate) aim_pitch: f32,
 }
 
@@ -461,7 +466,11 @@ fn crosses_teleport(a: &TransformSample, b: &TransformSample) -> bool {
         .is_some_and(|(a, b)| a.generation != b.generation)
 }
 
-fn cut_pose(sample: &TransformSample, holds_newest: bool) -> PresentedPose {
+fn cut_pose(
+    sample: &TransformSample,
+    posture: LocomotionPosture,
+    holds_newest: bool,
+) -> PresentedPose {
     PresentedPose {
         transform: sample.transform,
         source: PoseSource::TeleportCut,
@@ -469,6 +478,7 @@ fn cut_pose(sample: &TransformSample, holds_newest: bool) -> PresentedPose {
         speed_xz: 0.0,
         horizontal_velocity: Vec3::ZERO,
         intrinsic_velocity: sample.intrinsic_velocity,
+        posture,
         aim_pitch: sample.aim_pitch,
     }
 }
@@ -498,6 +508,10 @@ pub(crate) struct PresentedPose {
     /// [`Self::horizontal_velocity`]: a rider's transform can orbit with a mover
     /// while their player-controlled velocity remains stationary.
     pub(crate) intrinsic_velocity: Option<Vec3>,
+    /// Replicated stance at or before the presented tick. Discrete, so it steps
+    /// rather than blends: between two samples it is the earlier one's until
+    /// the target reaches the later. `Standing` when no movement state is known.
+    pub(crate) posture: LocomotionPosture,
     /// Interpolated remote camera pitch for avatar pose presentation.
     pub(crate) aim_pitch: f32,
 }
@@ -588,6 +602,7 @@ impl EntityBuffer {
                 speed_xz: 0.0,
                 horizontal_velocity: Vec3::ZERO,
                 intrinsic_velocity: self.intrinsic_velocity_at_or_before(oldest.server_tick),
+                posture: self.posture_at_or_before(oldest.server_tick),
                 aim_pitch: oldest.aim_pitch,
             });
         }
@@ -605,13 +620,17 @@ impl EntityBuffer {
         let mut a = samples.next().expect("non-empty buffer has a first sample");
         for b in samples {
             if f64::from(a.server_tick) <= target_tick && target_tick <= f64::from(b.server_tick) {
+                // Discrete fields take the earlier sample until the target
+                // reaches the later one.
+                let at = if target_tick < f64::from(b.server_tick) {
+                    a
+                } else {
+                    b
+                };
                 if crosses_teleport(a, b) {
                     return Some(cut_pose(
-                        if target_tick < f64::from(b.server_tick) {
-                            a
-                        } else {
-                            b
-                        },
+                        at,
+                        self.posture_at_or_before(at.server_tick),
                         false,
                     ));
                 }
@@ -630,6 +649,7 @@ impl EntityBuffer {
                     speed_xz: xz_speed_between(a, b),
                     horizontal_velocity: xz_velocity_between(a, b),
                     intrinsic_velocity: self.interpolated_intrinsic_velocity(a, b, alpha),
+                    posture: self.posture_at_or_before(at.server_tick),
                     aim_pitch: a.aim_pitch + (b.aim_pitch - a.aim_pitch) * alpha,
                 });
             }
@@ -645,6 +665,7 @@ impl EntityBuffer {
             speed_xz: 0.0,
             horizontal_velocity: Vec3::ZERO,
             intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
+            posture: self.posture_at_or_before(newest.server_tick),
             aim_pitch: newest.aim_pitch,
         })
     }
@@ -661,7 +682,7 @@ impl EntityBuffer {
             .nth(1)
             .is_some_and(|previous| crosses_teleport(previous, newest))
         {
-            return cut_pose(newest, true);
+            return cut_pose(newest, self.posture_at_or_before(newest.server_tick), true);
         }
         let overshoot_ticks = target_tick - f64::from(newest.server_tick);
         let overshoot_micros = overshoot_ticks * crate::netcode::SERVER_TICK_MICROS as f64;
@@ -690,6 +711,7 @@ impl EntityBuffer {
                     speed_xz: xz_speed(velocity),
                     horizontal_velocity: Vec3::new(velocity.x, 0.0, velocity.z),
                     intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
+                    posture: self.posture_at_or_before(newest.server_tick),
                     aim_pitch: newest.aim_pitch,
                 }
             }
@@ -702,6 +724,7 @@ impl EntityBuffer {
                 speed_xz: 0.0,
                 horizontal_velocity: Vec3::ZERO,
                 intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
+                posture: self.posture_at_or_before(newest.server_tick),
                 aim_pitch: newest.aim_pitch,
             },
         }
@@ -730,6 +753,23 @@ impl EntityBuffer {
     /// Movement-state deltas are sparse, so a Transform-only delta inherits the
     /// last authoritative movement velocity rather than becoming transform-only.
     fn intrinsic_velocity_at_or_before(&self, server_tick: u32) -> Option<Vec3> {
+        self.movement_field_at_or_before(server_tick, |sample| sample.intrinsic_velocity)
+    }
+
+    /// Most recent replicated posture at or before `server_tick`, inherited the
+    /// same way as [`Self::intrinsic_velocity_at_or_before`].
+    fn posture_at_or_before(&self, server_tick: u32) -> LocomotionPosture {
+        self.movement_field_at_or_before(server_tick, |sample| sample.posture)
+            .unwrap_or_default()
+    }
+
+    /// The newest movement-payload field at or before `server_tick`, never
+    /// reaching back across a teleport generation.
+    fn movement_field_at_or_before<T>(
+        &self,
+        server_tick: u32,
+        field: impl Fn(&TransformSample) -> Option<T>,
+    ) -> Option<T> {
         let mut samples = self
             .samples
             .iter()
@@ -740,7 +780,7 @@ impl EntityBuffer {
         std::iter::once(newest)
             .chain(samples)
             .take_while(|sample| sample.teleport.map(|teleport| teleport.generation) == generation)
-            .find_map(|sample| sample.intrinsic_velocity)
+            .find_map(field)
     }
 
     fn transform_at_or_before(&self, server_tick: u32) -> Option<Transform> {
@@ -858,12 +898,13 @@ impl RemoteInterpolationBuffer {
     /// Record a movement-only snapshot delta against the latest known transform.
     /// Player movement can change without a Transform delta (for example when a
     /// rider stops moving relative to a still-moving base), but avatar presentation
-    /// must still observe the new intrinsic velocity at that server tick.
+    /// must still observe the new intrinsic velocity and posture at that server tick.
     pub(crate) fn record_intrinsic_velocity(
         &mut self,
         network_id: NetworkId,
         server_tick: u32,
         intrinsic_velocity: Vec3,
+        posture: LocomotionPosture,
         aim_pitch: f32,
         teleport: Option<TeleportSample>,
     ) {
@@ -878,6 +919,7 @@ impl RemoteInterpolationBuffer {
             server_tick,
             transform,
             intrinsic_velocity: Some(intrinsic_velocity),
+            posture: Some(posture),
             aim_pitch,
         };
         self.record(network_id, sample);
@@ -911,6 +953,17 @@ impl RemoteInterpolationBuffer {
             .samples
             .back()
             .map(|sample| sample.transform)
+    }
+
+    /// The newest buffered posture, for a pre-time-sync held presentation.
+    pub(crate) fn newest_posture(&self, network_id: NetworkId) -> LocomotionPosture {
+        self.buffers
+            .get(&network_id)
+            .and_then(|buffer| {
+                let newest = buffer.samples.back()?;
+                Some(buffer.posture_at_or_before(newest.server_tick))
+            })
+            .unwrap_or_default()
     }
 
     /// Newest finite pitch for a pre-time-sync held presentation. No render tick
@@ -1043,6 +1096,7 @@ mod tests {
                 scale: Vec3::ONE,
             },
             intrinsic_velocity: None,
+            posture: None,
             aim_pitch: 0.0,
         }
     }
@@ -2223,6 +2277,7 @@ mod tests {
                 scale: Vec3::ONE,
             },
             intrinsic_velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
+            posture: None,
             aim_pitch: 0.0,
         };
         let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
@@ -2237,6 +2292,7 @@ mod tests {
                     scale: Vec3::ONE,
                 },
                 intrinsic_velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
+                posture: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2285,6 +2341,7 @@ mod tests {
                 scale: Vec3::ONE,
             },
             intrinsic_velocity: Some(Vec3::new(2.0, 0.0, 0.0)),
+            posture: None,
             aim_pitch: 0.0,
         };
         let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
@@ -2359,6 +2416,7 @@ mod tests {
                     scale: Vec3::ONE,
                 },
                 intrinsic_velocity: Some(Vec3::ZERO),
+                posture: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2373,6 +2431,7 @@ mod tests {
                     scale: Vec3::ONE,
                 },
                 intrinsic_velocity: Some(Vec3::ZERO),
+                posture: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2407,6 +2466,7 @@ mod tests {
                     scale: Vec3::ONE,
                 },
                 intrinsic_velocity: Some(intrinsic_velocity),
+                posture: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2421,6 +2481,7 @@ mod tests {
                     scale: Vec3::ONE,
                 },
                 intrinsic_velocity: Some(intrinsic_velocity),
+                posture: None,
                 aim_pitch: 0.0,
             },
         );

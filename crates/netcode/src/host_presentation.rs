@@ -88,6 +88,11 @@ pub fn record_client_pawn_poses(
                 server_tick: tick,
                 transform: *transform,
                 intrinsic_velocity: movement.map(|movement| movement.velocity),
+                posture: movement.map(|movement| {
+                    crate::sim::LocomotionPosture::from_movement_state(
+                        movement.movement_state.kind(),
+                    )
+                }),
                 aim_pitch,
             },
         );
@@ -308,6 +313,7 @@ mod tests {
                 speed_xz: velocity.length(),
                 horizontal_velocity: velocity,
                 intrinsic_velocity: Some(velocity),
+                posture: crate::sim::LocomotionPosture::Standing,
                 aim_pitch: 0.0,
             };
             present_avatar_pose_inputs(registry, pawn, &pose);

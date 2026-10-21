@@ -46,8 +46,9 @@ use crate::weapon::FireButtonState;
 pub use descriptor_health::install_descriptor_player_health_range;
 pub use mesh_bindings::{resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities};
 pub use player_locomotion::{
-    LocomotionInput, LocomotionTier, LocomotionTierKind, PlayerLocomotionStates,
-    classify_locomotion_direction, player_travel_heading_yaw, store_locomotion_direction,
+    CrouchTier, LocomotionInput, LocomotionPosture, LocomotionTier, LocomotionTierKind,
+    PlayerLocomotionStates, classify_locomotion_direction, player_travel_heading_yaw,
+    store_locomotion_direction,
 };
 use postretro_collision::EnvironmentView;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
@@ -1111,6 +1112,8 @@ pub fn update_player_animation_locomotion(
         let speed_xz = Vec3::new(velocity.x, 0.0, velocity.z).length();
         let walk_speed = movement.ground_params.speed.walk;
         let run_speed = movement.ground_params.speed.run;
+        let crouch_speed = movement.ground_params.speed.crouch;
+        let posture = LocomotionPosture::from_movement_state(movement.movement_state.kind());
         let Ok(&transform) = registry.get_component::<postretro_entities::Transform>(id) else {
             continue;
         };
@@ -1131,6 +1134,7 @@ pub fn update_player_animation_locomotion(
                 walk_speed,
                 run_speed,
                 direction,
+                posture,
                 current_state: &animation.current_state,
             };
             let selection = PlayerLocomotionStates::from_animation(animation).map(|states| {
@@ -1157,9 +1161,10 @@ pub fn update_player_animation_locomotion(
             )
         });
         let (moving, fallback_speed) = match tier {
-            LocomotionTierKind::Idle => (false, 1.0),
+            LocomotionTierKind::Idle | LocomotionTierKind::Slide => (false, 1.0),
             LocomotionTierKind::Walk => (true, walk_speed),
             LocomotionTierKind::Run => (true, run_speed),
+            LocomotionTierKind::Crouch => (true, crouch_speed),
         };
 
         let rate_input = registry
@@ -2692,6 +2697,107 @@ mod tests {
         );
         let (state_name, direction, _) = step(&mut registry, Vec3::Z * 5.0);
         assert_eq!((state_name.as_str(), direction), ("walk_forward", backward));
+    }
+
+    #[test]
+    fn player_locomotion_crouch_and_slide_select_crouch_states_by_movement_state() {
+        use postretro_foundation::MovementState;
+        let mut registry = EntityRegistry::new();
+        // Identity transform: aim yaw zero faces -Z, so +Z travel is a backpedal.
+        let pawn = registry.spawn(Transform::default());
+        let state = |clip: &str, clip_index, travel_speed| AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed,
+            clip_index: Some(clip_index),
+        };
+        let states = HashMap::from([
+            ("idle".to_string(), state("idle", 0, None)),
+            ("walk_forward".to_string(), state("walk_forward", 1, None)),
+            ("walk_backward".to_string(), state("walk_backward", 2, None)),
+            ("crouch_idle".to_string(), state("crouch_idle", 3, None)),
+            (
+                "crouch_forward".to_string(),
+                state("crouch_forward", 4, None),
+            ),
+            (
+                "crouch_backward".to_string(),
+                state("crouch_backward", 5, Some(2.0)),
+            ),
+        ]);
+        registry
+            .set_component(
+                pawn,
+                MeshComponent::animated(
+                    "player".to_string(),
+                    MeshAnimation::new(states, "idle".to_string()),
+                ),
+            )
+            .unwrap();
+        let step = |registry: &mut EntityRegistry, movement_state, velocity: Vec3| {
+            let mut movement = trigger_movement();
+            movement.movement_state = movement_state;
+            movement.velocity = velocity;
+            registry.set_component(pawn, movement).unwrap();
+            update_player_animation_locomotion(registry, &HitZoneStore::new(), 0.0);
+            let animation = registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            (
+                animation.current_state.clone(),
+                animation.locomotion_direction,
+                animation.rate,
+            )
+        };
+        let crouching = MovementState::Crouching { eye_current: 0.3 };
+        let sliding = MovementState::Sliding {
+            elapsed_ms: 40.0,
+            boost: Vec3::NEG_Z * 4.0,
+            eye_current: 0.3,
+        };
+
+        let (state_name, _, rate) = step(&mut registry, crouching, Vec3::ZERO);
+        assert_eq!(state_name, "crouch_idle");
+        assert!((rate - 1.0).abs() < 1.0e-5);
+        // `ground.speed.crouch` is 3: 2.4 m/s plays at 0.8, where walk speed's
+        // 7 would clamp the rate to its 0.5 floor.
+        let (state_name, direction, rate) = step(&mut registry, crouching, Vec3::NEG_Z * 2.4);
+        assert_eq!(
+            (state_name.as_str(), direction),
+            ("crouch_forward", LocomotionDirection::Forward)
+        );
+        assert!(
+            (rate - 0.8).abs() < 1.0e-5,
+            "rate-scaled against crouch speed, got {rate}"
+        );
+        let (state_name, direction, rate) = step(&mut registry, crouching, Vec3::Z * 2.4);
+        assert_eq!(
+            (state_name.as_str(), direction),
+            ("crouch_backward", LocomotionDirection::Backward)
+        );
+        assert!(
+            (rate - 1.2).abs() < 1.0e-5,
+            "rate-scaled by crouch_backward's own travelSpeed, got {rate}"
+        );
+        // A slide holds `crouch_idle` at the authored rate whatever its speed.
+        let (state_name, _, rate) = step(&mut registry, sliding, Vec3::NEG_Z * 12.0);
+        assert_eq!(state_name, "crouch_idle");
+        assert!(
+            (rate - 1.0).abs() < 1.0e-5,
+            "slide plays unscaled, got {rate}"
+        );
+        // Standing up returns to the walk tier.
+        let (state_name, direction, _) =
+            step(&mut registry, MovementState::Normal, Vec3::NEG_Z * 5.0);
+        assert_eq!(
+            (state_name.as_str(), direction),
+            ("walk_forward", LocomotionDirection::Forward)
+        );
     }
 
     fn trigger_component(on_fire: &str, armed: bool) -> TriggerVolumeComponent {

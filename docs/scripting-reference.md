@@ -254,7 +254,8 @@ The same keys work in Luau tables.
 
 A player descriptor's `components.mesh.animations` drives its third-person body
 through state names the engine recognizes. You do not switch these states yourself;
-the engine picks one each tick from the player's speed and direction.
+the engine picks one each tick from the player's speed, direction, and whether it
+is crouching or sliding.
 
 | State | Plays when |
 |-------|------------|
@@ -263,6 +264,9 @@ the engine picks one each tick from the player's speed and direction.
 | `walk_backward` | Backpedalling at walking speed. |
 | `run_forward` (or `run`) | Moving forward nearer run pace than walk pace, e.g. while sprinting. |
 | `run_backward` | Backpedalling nearer run pace than walk pace. Needs `run_forward` (or `run`) beside it. |
+| `crouch_idle` | Crouching while still, and for the whole of a slide. Needs `crouch_forward` beside it. |
+| `crouch_forward` | Moving forward while crouched, at any speed. Required for any crouch state. |
+| `crouch_backward` | Backpedalling while crouched. Needs `crouch_forward` beside it. |
 
 Travel more than 105° from where the player aims counts as backpedalling; travel
 within 75° counts as forward, and anything in between keeps the previous choice.
@@ -277,6 +281,17 @@ to the run states happens halfway between `movement.ground.speed.walk` and
 that speed does not flicker between clips. Each state scales its playback rate
 against its own `travelSpeed`.
 
+Crouching, not speed, picks the crouch states: a crouched player plays
+`crouch_idle` when still and `crouch_forward` or `crouch_backward` when moving,
+never a run state, and they scale their rate against `travelSpeed` just as the walk
+states do, falling back to `movement.ground.speed.crouch`. A slide holds
+`crouch_idle` at its authored rate for as long as it lasts. The fallbacks follow
+the same rule as backward states: a missing `crouch_backward` plays
+`crouch_forward`, and a missing `crouch_idle` plays `defaultState`. Without
+`crouch_forward`, or with one whose clip the model lacks, crouching and sliding
+pick from the walk and run states as standing does — the player walks while
+crouched until the crouch clip exists.
+
 ```typescript
 defineEntity({
   canonicalName: "player",
@@ -289,6 +304,9 @@ defineEntity({
         walk_backward: { clip: "walk_backward", loop: true, travelSpeed: 7 },
         run_forward: { clip: "run_forward", loop: true, travelSpeed: 11 },
         run_backward: { clip: "run_backward", loop: true, travelSpeed: 11 },
+        crouch_idle: { clip: "idle_crouching", loop: true },
+        crouch_forward: { clip: "walk_crouching_forward", loop: true, travelSpeed: 3 },
+        crouch_backward: { clip: "walk_crouching_backward", loop: true, travelSpeed: 3 },
       },
       defaultState: "idle",
     },

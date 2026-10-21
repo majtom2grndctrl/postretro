@@ -71,6 +71,7 @@ pub(super) fn materialize_remote_entities(
                     states,
                     walk_speed: movement.ground.speed.walk,
                     run_speed: movement.ground.speed.run,
+                    crouch_speed: movement.ground.speed.crouch,
                     derived_travel_speeds,
                 })
             });

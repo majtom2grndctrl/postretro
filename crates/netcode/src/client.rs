@@ -164,8 +164,8 @@ struct RemoteEnemyWalkPlayback {
 
 /// Descriptor-derived locomotion data for a remote player avatar. Remote player
 /// meshes deliberately remain presentation-only; this cache lets the client derive
-/// idle/walk/run and forward/backward from replicated intrinsic velocity without
-/// attaching PlayerMovement.
+/// idle/walk/run/crouch and forward/backward from replicated intrinsic velocity
+/// and posture without attaching PlayerMovement.
 #[derive(Debug, Clone)]
 struct RemotePlayerLocomotion {
     reference: RemotePlayerLocomotionReference,
@@ -188,6 +188,7 @@ pub(crate) struct RemotePlayerLocomotionReference {
     pub(crate) states: crate::sim::PlayerLocomotionStates,
     pub(crate) walk_speed: f32,
     pub(crate) run_speed: f32,
+    pub(crate) crouch_speed: f32,
     /// Load-derived clip travel speed per locomotion state. States whose clip
     /// derives none are absent.
     pub(crate) derived_travel_speeds: HashMap<String, f32>,
@@ -209,6 +210,7 @@ impl RemotePlayerLocomotionReference {
             .expect("a walk state is declared"),
             walk_speed,
             run_speed,
+            crouch_speed: 3.0,
             derived_travel_speeds: HashMap::new(),
         }
     }
@@ -1843,6 +1845,9 @@ impl ClientReplication {
         });
         let record_intrinsic_velocity =
             record_movement.map(|movement| Vec3::from_array(movement.velocity));
+        let record_posture = record_movement.map(|movement| {
+            super::movement_state::wire_locomotion_posture(movement.movement_state)
+        });
         let record_aim_pitch = record_movement.map_or(0.0, |movement| movement.aim_pitch);
         let record_teleport = record_movement.map(|movement| TeleportSample {
             generation: movement.teleport.generation,
@@ -1977,6 +1982,7 @@ impl ClientReplication {
                                 server_tick,
                                 transform,
                                 intrinsic_velocity: record_intrinsic_velocity,
+                                posture: record_posture,
                                 aim_pitch: record_aim_pitch,
                             },
                         );
@@ -2048,6 +2054,7 @@ impl ClientReplication {
         }
         if !record_has_transform
             && let Some(intrinsic_velocity) = record_intrinsic_velocity
+            && let Some(posture) = record_posture
             && !is_local
             && mover_apply.is_none()
             && !invalid_bound_mover_payload
@@ -2057,6 +2064,7 @@ impl ClientReplication {
                 network_id,
                 server_tick,
                 intrinsic_velocity,
+                posture,
                 record_aim_pitch,
                 record_teleport,
             );
@@ -2260,6 +2268,7 @@ impl ClientReplication {
                     network_id,
                     entity_id,
                     intrinsic_velocity.unwrap_or(Vec3::ZERO),
+                    pose.posture,
                     aim_yaw,
                     frame_anim_time,
                 );
@@ -2348,11 +2357,13 @@ impl ClientReplication {
                     .aim_pitches
                     .insert(network_id, aim_pitch);
             }
+            let posture = self.interp.newest_posture(network_id);
             self.update_remote_player_locomotion(
                 registry,
                 network_id,
                 entity_id,
                 Vec3::ZERO,
+                posture,
                 0.0,
                 frame_anim_time,
             );
@@ -2547,15 +2558,18 @@ impl ClientReplication {
 
     /// Derive one remote avatar's locomotion state and rate from the interpolated
     /// intrinsic player velocity, classified forward or backward against the
-    /// presented aim. The host's mesh state remains the correction authority; this
-    /// is only the responsive between-snapshot path. Returns the direction the
-    /// avatar's legs present this frame.
+    /// presented aim, and the replicated posture presented with it. The host's mesh
+    /// state remains the correction authority; this is only the responsive
+    /// between-snapshot path. Returns the direction the avatar's legs present this
+    /// frame.
+    #[allow(clippy::too_many_arguments)]
     fn update_remote_player_locomotion(
         &mut self,
         registry: &mut EntityRegistry,
         network_id: NetworkId,
         entity_id: EntityId,
         velocity: Vec3,
+        posture: crate::sim::LocomotionPosture,
         aim_yaw: f32,
         frame_anim_time: f64,
     ) -> LocomotionDirection {
@@ -2601,18 +2615,20 @@ impl ClientReplication {
                 walk_speed: reference.walk_speed,
                 run_speed: reference.run_speed,
                 direction,
+                posture,
                 current_state,
             },
             usable,
         );
         let target_state = target_state.unwrap_or(&reference.idle_state);
         let at_target = current_state == target_state;
-        let moving = tier != crate::sim::LocomotionTierKind::Idle;
         let tier_speed = match tier {
-            crate::sim::LocomotionTierKind::Idle => None,
+            crate::sim::LocomotionTierKind::Idle | crate::sim::LocomotionTierKind::Slide => None,
             crate::sim::LocomotionTierKind::Walk => Some(reference.walk_speed),
             crate::sim::LocomotionTierKind::Run => Some(reference.run_speed),
+            crate::sim::LocomotionTierKind::Crouch => Some(reference.crouch_speed),
         };
+        let moving = tier_speed.is_some();
         let derived_travel_speed =
             tier_speed.and_then(|_| reference.derived_travel_speeds.get(target_state).copied());
         let fallback_speed = tier_speed.unwrap_or(1.0);
@@ -3014,6 +3030,14 @@ mod tests {
         velocity: [f32; 3],
         aim_pitch: f32,
     ) -> ComponentPayload {
+        movement_payload_with(velocity, aim_pitch, WireMovementState::Normal)
+    }
+
+    fn movement_payload_with(
+        velocity: [f32; 3],
+        aim_pitch: f32,
+        movement_state: WireMovementState,
+    ) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
@@ -3024,7 +3048,7 @@ mod tests {
             air_dashes_remaining: 1,
             dash_cooldown_ms: 0.0,
             air_ticks: 0,
-            movement_state: WireMovementState::Normal,
+            movement_state,
             coyote_timer_ms: 0.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: false,
@@ -5288,6 +5312,17 @@ mod tests {
         mesh: MeshComponent,
         declared: &[&str],
         velocity: [f32; 3],
+        speeds: (f32, f32),
+    ) -> (EntityRegistry, ClientReplication, EntityId) {
+        map_remote_player_in(mesh, declared, velocity, WireMovementState::Normal, speeds)
+    }
+
+    /// [`map_remote_player`] with every snapshot replicating `movement_state`.
+    fn map_remote_player_in(
+        mesh: MeshComponent,
+        declared: &[&str],
+        velocity: [f32; 3],
+        movement_state: WireMovementState,
         (walk_speed, run_speed): (f32, f32),
     ) -> (EntityRegistry, ClientReplication, EntityId) {
         let mut registry = EntityRegistry::new();
@@ -5302,7 +5337,7 @@ mod tests {
                     1,
                     vec![
                         transform_payload_at([0.0, 0.0, 0.0], 0.0),
-                        movement_payload_with_velocity(velocity),
+                        movement_payload_with(velocity, 0.0, movement_state),
                     ],
                 )],
             ),
@@ -5326,7 +5361,7 @@ mod tests {
                     2,
                     vec![
                         transform_payload_at([1.0, 0.0, 1.0], 0.0),
-                        movement_payload_with_velocity(velocity),
+                        movement_payload_with(velocity, 0.0, movement_state),
                     ],
                 )],
             ),
@@ -5468,6 +5503,209 @@ mod tests {
                 "the host state at {velocity:?} needs no correction"
             );
         }
+    }
+
+    #[test]
+    fn remote_player_prediction_agrees_with_host_selection_for_crouch_and_slide() {
+        use postretro_foundation::{MovementState, PlayerMovementComponent};
+
+        let extra = [
+            "walk_backward",
+            "run_forward",
+            "crouch_idle",
+            "crouch_forward",
+            "crouch_backward",
+        ];
+        let declared = [
+            "idle",
+            "walk_forward",
+            "walk_backward",
+            "run_forward",
+            "crouch_idle",
+            "crouch_forward",
+            "crouch_backward",
+        ];
+        // Crouch states name no travel speed, so both peers rate-scale against
+        // `ground.speed.crouch` (3).
+        let mesh = || {
+            let mut mesh = remote_player_mesh_with(&extra);
+            let animation = mesh.animation.as_mut().unwrap();
+            for name in ["crouch_forward", "crouch_backward"] {
+                animation.states.get_mut(name).unwrap().travel_speed = None;
+            }
+            mesh
+        };
+        let crouching = (
+            MovementState::Crouching { eye_current: 0.3 },
+            WireMovementState::Crouching { eye_current: 0.3 },
+        );
+        let sliding = (
+            MovementState::Sliding {
+                elapsed_ms: 40.0,
+                boost: Vec3::NEG_Z * 4.0,
+                eye_current: 0.3,
+            },
+            WireMovementState::Sliding {
+                elapsed_ms: 40.0,
+                boost: [0.0, 0.0, -4.0],
+                eye_current: 0.3,
+                floor_normal: None,
+            },
+        );
+        let standing = (MovementState::Normal, WireMovementState::Normal);
+        // Aim faces -Z.
+        for ((host_movement_state, wire_movement_state), velocity, expected, rate) in [
+            (crouching, [0.0, 0.0, 0.0], "crouch_idle", 1.0),
+            (crouching, [0.0, 0.0, -2.4], "crouch_forward", 0.8),
+            (crouching, [0.0, 0.0, 2.4], "crouch_backward", 0.8),
+            // Posture, not speed, picks the tier: a crouched body never runs.
+            (crouching, [0.0, 0.0, -10.0], "crouch_forward", 1.5),
+            (sliding, [0.0, 0.0, -12.0], "crouch_idle", 1.0),
+            // Standing selects as before; run_forward's 60 m/s stride clamps
+            // the rate to its 0.5 floor.
+            (standing, [0.0, 0.0, -10.0], "run_forward", 0.5),
+        ] {
+            let mut host = EntityRegistry::new();
+            let pawn = host.spawn(Transform::default());
+            let mut movement = PlayerMovementComponent::from_descriptor(
+                &crate::snapshot_regression_harness_test::player_descriptor(),
+            );
+            movement.velocity = Vec3::from(velocity);
+            movement.movement_state = host_movement_state;
+            host.set_component(pawn, movement).unwrap();
+            host.set_component(pawn, mesh()).unwrap();
+            crate::sim::update_player_animation_locomotion(
+                &mut host,
+                &crate::scripting_systems::hit_zones::HitZoneStore::new(),
+                0.0,
+            );
+            let host_animation = host
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            assert_eq!(
+                host_animation.current_state, expected,
+                "host {host_movement_state:?} at {velocity:?}"
+            );
+
+            let (mut registry, mut client, id) = map_remote_player_in(
+                mesh(),
+                &declared,
+                velocity,
+                wire_movement_state,
+                (7.0, 11.0),
+            );
+            client.sample_into_registry(&mut registry, 105.0, 1.0);
+            let client_animation = registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            assert_eq!(
+                client_animation.current_state, host_animation.current_state,
+                "client {wire_movement_state:?} at {velocity:?}"
+            );
+            assert!(
+                (client_animation.rate - host_animation.rate).abs() <= EPSILON
+                    && (client_animation.rate - rate).abs() <= EPSILON,
+                "{expected} rate: host {} client {}",
+                host_animation.rate,
+                client_animation.rate
+            );
+
+            resolve_pending_animation_stamps(&mut registry, 1.0);
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(
+                    2,
+                    111,
+                    vec![delta(
+                        7,
+                        2,
+                        3,
+                        vec![mesh_animation_payload(&host_animation.current_state)],
+                    )],
+                ),
+            );
+            assert!(
+                client.remote_player_locomotion[&NetworkId(7)]
+                    .authoritative_correction_state
+                    .is_none(),
+                "the host state for {wire_movement_state:?} needs no correction"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_player_posture_steps_with_the_presented_sample() {
+        // Crouched at tick 100, standing from tick 110: the presented posture is
+        // the earlier sample's until the render target reaches the later one.
+        let mesh = remote_player_mesh_with(&["crouch_idle", "crouch_forward"]);
+        let declared = ["idle", "walk_forward", "crouch_idle", "crouch_forward"];
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        let velocity = [0.0, 0.0, -2.0];
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([0.0, 0.0, 0.0], 0.0),
+                        movement_payload_with(
+                            velocity,
+                            0.0,
+                            WireMovementState::Crouching { eye_current: 0.3 },
+                        ),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, mesh).unwrap();
+        client.cache_remote_player_locomotion(
+            NetworkId(7),
+            Some(RemotePlayerLocomotionReference::declaring(
+                &declared, 7.0, 11.0,
+            )),
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                110,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![
+                        transform_payload_at([0.0, 0.0, -0.33], 0.0),
+                        movement_payload_with(velocity, 0.0, WireMovementState::Normal),
+                    ],
+                )],
+            ),
+        );
+        let presented_state = |registry: &EntityRegistry| {
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state
+                .clone()
+        };
+        client.sample_into_registry(&mut registry, 109.0, 1.0);
+        assert_eq!(presented_state(&registry), "crouch_forward");
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.sample_into_registry(&mut registry, 110.0, 1.1);
+        assert_eq!(presented_state(&registry), "walk_forward");
     }
 
     #[test]

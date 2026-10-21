@@ -202,6 +202,12 @@ fn movement_state_enum_to_wire(state: MovementState) -> WireMovementState {
     }
 }
 
+/// The stance a replicated movement state presents on a remote avatar, which
+/// carries no local movement component to read it from.
+pub(crate) fn wire_locomotion_posture(state: WireMovementState) -> crate::sim::LocomotionPosture {
+    crate::sim::LocomotionPosture::from_movement_state(wire_to_movement_state_enum(state).kind())
+}
+
 /// Inverse of [`movement_state_enum_to_wire`]. Exhaustive (no `_` arm) for the
 /// same drift-guard reason.
 fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {

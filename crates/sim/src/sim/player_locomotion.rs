@@ -5,6 +5,7 @@
 use glam::Vec3;
 use postretro_entities::components::mesh::{LocomotionDirection, MeshAnimation, MeshComponent};
 use postretro_entities::{EntityId, EntityRegistry};
+use postretro_foundation::MovementStateKind;
 
 /// Travel farther than this from aim switches a forward-facing body to backward.
 const BACKWARD_ENTER_ANGLE: f32 = 105.0_f32.to_radians();
@@ -20,6 +21,10 @@ const WALK_BACKWARD_STATE: &str = "walk_backward";
 /// Run-tier forward state names, in lookup order.
 const RUN_FORWARD_STATES: [&str; 2] = ["run_forward", "run"];
 const RUN_BACKWARD_STATE: &str = "run_backward";
+/// Crouch-tier state names. The tier exists only beside a usable forward state.
+const CROUCH_IDLE_STATE: &str = "crouch_idle";
+const CROUCH_FORWARD_STATE: &str = "crouch_forward";
+const CROUCH_BACKWARD_STATE: &str = "crouch_backward";
 
 /// Classify a player's travel against its aim. Stationary or non-finite input
 /// holds `previous`: a stopped body faces aim whatever the memory says, and a
@@ -103,6 +108,30 @@ const MOVING_SPEED_EPSILON: f32 = 1.0e-4;
 /// the band keeps speed noise near the midpoint from flickering the clip.
 const RUN_TIER_BAND: f32 = 0.15;
 
+/// The stance a player's movement state puts its body in. It picks the crouch
+/// tier ahead of speed: a crouch-walk and a slow stand-walk travel alike, so only
+/// the movement state can tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LocomotionPosture {
+    #[default]
+    Standing,
+    Crouching,
+    Sliding,
+}
+
+impl LocomotionPosture {
+    pub fn from_movement_state(kind: MovementStateKind) -> Self {
+        match kind {
+            MovementStateKind::Crouch => Self::Crouching,
+            MovementStateKind::Slide => Self::Sliding,
+            MovementStateKind::Normal
+            | MovementStateKind::Dash
+            | MovementStateKind::Swim
+            | MovementStateKind::Vault => Self::Standing,
+        }
+    }
+}
+
 /// One player's motion this tick, for [`PlayerLocomotionStates::select`].
 #[derive(Debug, Clone, Copy)]
 pub struct LocomotionInput<'a> {
@@ -110,6 +139,7 @@ pub struct LocomotionInput<'a> {
     pub walk_speed: f32,
     pub run_speed: f32,
     pub direction: LocomotionDirection,
+    pub posture: LocomotionPosture,
     /// The active animation state: the tier hysteresis memory.
     pub current_state: &'a str,
 }
@@ -136,6 +166,18 @@ pub struct LocomotionTier {
 }
 
 impl LocomotionTier {
+    /// The tier's state for `direction`: an unusable backward state yields the
+    /// forward state.
+    fn directional(
+        self,
+        direction: LocomotionDirection,
+        is_usable: impl Fn(&str) -> bool,
+    ) -> &'static str {
+        self.backward
+            .filter(|state| direction == LocomotionDirection::Backward && is_usable(state))
+            .unwrap_or(self.forward)
+    }
+
     /// The direction `state` commits the body to within this tier: decided only
     /// when the tier has a usable backward state to tell the two apart.
     fn direction_of(
@@ -155,11 +197,22 @@ impl LocomotionTier {
 }
 
 /// Which tier a selection landed in; callers pick the tier's reference speed.
+/// `Idle` and `Slide` play at the authored rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocomotionTierKind {
     Idle,
     Walk,
     Run,
+    Crouch,
+    Slide,
+}
+
+/// The crouch tier's declared states: `moving` while a crouched body travels,
+/// `idle` while it stands still and for the whole of a slide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CrouchTier {
+    pub idle: Option<&'static str>,
+    pub moving: LocomotionTier,
 }
 
 /// The engine-selected player locomotion states a descriptor declares, beside
@@ -170,22 +223,31 @@ pub enum LocomotionTierKind {
 pub struct PlayerLocomotionStates {
     pub walk: LocomotionTier,
     pub run: Option<LocomotionTier>,
+    /// Absent unless `crouch_forward` is declared.
+    pub crouch: Option<CrouchTier>,
 }
 
 impl PlayerLocomotionStates {
     /// `None` when no walk-forward state is declared: the engine then drives no
     /// locomotion states for this player.
     pub fn from_declared(is_declared: impl Fn(&str) -> bool) -> Option<Self> {
-        let tier = |forward_names: [&'static str; 2], backward: &'static str| {
-            let forward = forward_names.into_iter().find(|name| is_declared(name))?;
+        let tier = |forward_names: &[&'static str], backward: &'static str| {
+            let forward = forward_names
+                .iter()
+                .copied()
+                .find(|name| is_declared(name))?;
             Some(LocomotionTier {
                 forward,
                 backward: is_declared(backward).then_some(backward),
             })
         };
         Some(Self {
-            walk: tier(WALK_FORWARD_STATES, WALK_BACKWARD_STATE)?,
-            run: tier(RUN_FORWARD_STATES, RUN_BACKWARD_STATE),
+            walk: tier(&WALK_FORWARD_STATES, WALK_BACKWARD_STATE)?,
+            run: tier(&RUN_FORWARD_STATES, RUN_BACKWARD_STATE),
+            crouch: tier(&[CROUCH_FORWARD_STATE], CROUCH_BACKWARD_STATE).map(|moving| CrouchTier {
+                idle: is_declared(CROUCH_IDLE_STATE).then_some(CROUCH_IDLE_STATE),
+                moving,
+            }),
         })
     }
 
@@ -194,23 +256,51 @@ impl PlayerLocomotionStates {
         Self::from_declared(|state| animation.states.contains_key(state))
     }
 
-    /// Every walk and run state name, for callers that precompute per-state data.
-    pub fn state_names(self) -> impl Iterator<Item = &'static str> {
+    fn moving_tiers(self) -> impl Iterator<Item = LocomotionTier> {
         std::iter::once(self.walk)
             .chain(self.run)
+            .chain(self.crouch.map(|crouch| crouch.moving))
+    }
+
+    /// Every rate-scaled state name — the walk, run and crouch tiers' moving
+    /// states — for callers that precompute per-state data.
+    pub fn state_names(self) -> impl Iterator<Item = &'static str> {
+        self.moving_tiers()
             .flat_map(|tier| std::iter::once(tier.forward).chain(tier.backward))
     }
 
     /// Pick the target state: `None` is the descriptor's `defaultState`, which
     /// the caller holds. `is_usable` reports whether a state's clip resolved; an
     /// unusable backward state yields the tier's forward state.
+    ///
+    /// Posture picks the crouch tier ahead of speed. A crouched body plays
+    /// `crouch_idle` still and its moving states otherwise; a slide holds
+    /// `crouch_idle` throughout. An unusable `crouch_idle` yields `defaultState`.
+    /// Without a usable crouch forward state the tier is absent and posture is
+    /// ignored, so crouching looks like walking until the clip exists.
     pub fn select(
         &self,
         input: &LocomotionInput<'_>,
         is_usable: impl Fn(&str) -> bool,
     ) -> (Option<&'static str>, LocomotionTierKind) {
         let speed = input.speed_xz;
-        if !speed.is_finite() || speed <= MOVING_SPEED_EPSILON {
+        let moving = speed.is_finite() && speed > MOVING_SPEED_EPSILON;
+        if let Some(crouch) = self
+            .crouch
+            .filter(|crouch| is_usable(crouch.moving.forward))
+        {
+            let idle = crouch.idle.filter(|state| is_usable(state));
+            match input.posture {
+                LocomotionPosture::Sliding => return (idle, LocomotionTierKind::Slide),
+                LocomotionPosture::Crouching if moving => {
+                    let state = crouch.moving.directional(input.direction, &is_usable);
+                    return (Some(state), LocomotionTierKind::Crouch);
+                }
+                LocomotionPosture::Crouching => return (idle, LocomotionTierKind::Idle),
+                LocomotionPosture::Standing => {}
+            }
+        }
+        if !moving {
             return (None, LocomotionTierKind::Idle);
         }
         // A run state whose clip did not resolve leaves the walk tier covering
@@ -221,23 +311,19 @@ impl PlayerLocomotionStates {
             }
             _ => (self.walk, LocomotionTierKind::Walk),
         };
-        let backward = tier
-            .backward
-            .filter(|state| input.direction == LocomotionDirection::Backward && is_usable(state));
-        (Some(backward.unwrap_or(tier.forward)), kind)
+        (Some(tier.directional(input.direction, is_usable)), kind)
     }
 
     /// The direction an entered state commits the body to, when it decides one: a
     /// backward state is backward, and a forward state whose tier has a usable
     /// backward state is forward. A forward state standing in for a missing
-    /// backward clip decides nothing.
+    /// backward clip decides nothing, nor does `crouch_idle`.
     pub fn direction_of(
         &self,
         state: &str,
         is_usable: impl Fn(&str) -> bool,
     ) -> Option<LocomotionDirection> {
-        std::iter::once(self.walk)
-            .chain(self.run)
+        self.moving_tiers()
             .find_map(|tier| tier.direction_of(state, &is_usable))
     }
 }
@@ -395,6 +481,7 @@ mod tests {
             walk_speed: 7.0,
             run_speed: 11.0,
             direction,
+            posture: LocomotionPosture::Standing,
             current_state,
         }
     }
@@ -497,6 +584,7 @@ mod tests {
             walk_speed: 7.0,
             run_speed: 7.0,
             direction: LocomotionDirection::Forward,
+            posture: LocomotionPosture::Standing,
             current_state: "walk_forward",
         };
         assert_eq!(all.select(&flat(7.0), usable).1, LocomotionTierKind::Walk);
@@ -526,5 +614,191 @@ mod tests {
         assert_eq!(forward_only.direction_of("walk_forward", usable), None);
         let unresolved = |state: &str| state != "walk_backward";
         assert_eq!(all.direction_of("walk_forward", unresolved), None);
+    }
+    /// Every crouch state beside the walk and run tiers.
+    const CROUCH_DECLARED: [&str; 7] = [
+        "walk_forward",
+        "walk_backward",
+        "run_forward",
+        "run_backward",
+        "crouch_idle",
+        "crouch_forward",
+        "crouch_backward",
+    ];
+
+    fn postured<'a>(
+        speed: f32,
+        direction: LocomotionDirection,
+        posture: LocomotionPosture,
+    ) -> LocomotionInput<'a> {
+        LocomotionInput {
+            posture,
+            ..input(speed, direction, "idle")
+        }
+    }
+
+    #[test]
+    fn crouch_posture_selects_crouch_states_by_stillness_and_direction() {
+        use LocomotionDirection::{Backward, Forward};
+        use LocomotionPosture::Crouching;
+        let all = states(&CROUCH_DECLARED);
+        let usable = |_: &str| true;
+        assert_eq!(
+            all.select(&postured(0.0, Backward, Crouching), usable),
+            (Some("crouch_idle"), LocomotionTierKind::Idle)
+        );
+        assert_eq!(
+            all.select(&postured(3.0, Forward, Crouching), usable),
+            (Some("crouch_forward"), LocomotionTierKind::Crouch)
+        );
+        assert_eq!(
+            all.select(&postured(3.0, Backward, Crouching), usable),
+            (Some("crouch_backward"), LocomotionTierKind::Crouch)
+        );
+        // Posture, not speed, picks the tier: a crouched body never runs.
+        assert_eq!(
+            all.select(&postured(11.0, Forward, Crouching), usable),
+            (Some("crouch_forward"), LocomotionTierKind::Crouch)
+        );
+    }
+
+    #[test]
+    fn slide_posture_holds_crouch_idle_at_any_speed() {
+        let all = states(&CROUCH_DECLARED);
+        let usable = |_: &str| true;
+        for speed in [0.0, 3.0, 14.0] {
+            for direction in [LocomotionDirection::Forward, LocomotionDirection::Backward] {
+                assert_eq!(
+                    all.select(
+                        &postured(speed, direction, LocomotionPosture::Sliding),
+                        usable
+                    ),
+                    (Some("crouch_idle"), LocomotionTierKind::Slide),
+                    "{speed} m/s {direction:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crouch_fallbacks_degrade_per_state() {
+        use LocomotionDirection::{Backward, Forward};
+        use LocomotionPosture::{Crouching, Sliding};
+        let usable = |_: &str| true;
+
+        // Missing or unresolved `crouch_backward` plays `crouch_forward`.
+        let no_backward = states(&[
+            "walk_forward",
+            "walk_backward",
+            "crouch_idle",
+            "crouch_forward",
+        ]);
+        assert_eq!(
+            no_backward.select(&postured(3.0, Backward, Crouching), usable),
+            (Some("crouch_forward"), LocomotionTierKind::Crouch)
+        );
+        let all = states(&CROUCH_DECLARED);
+        let unresolved_backward = |state: &str| state != "crouch_backward";
+        assert_eq!(
+            all.select(&postured(3.0, Backward, Crouching), unresolved_backward),
+            (Some("crouch_forward"), LocomotionTierKind::Crouch)
+        );
+
+        // Missing or unresolved `crouch_idle` yields `defaultState`, crouched or
+        // sliding.
+        let no_idle = states(&["walk_forward", "crouch_forward", "crouch_backward"]);
+        assert_eq!(
+            no_idle.select(&postured(0.0, Forward, Crouching), usable),
+            (None, LocomotionTierKind::Idle)
+        );
+        assert_eq!(
+            no_idle.select(&postured(9.0, Forward, Sliding), usable),
+            (None, LocomotionTierKind::Slide)
+        );
+        let unresolved_idle = |state: &str| state != "crouch_idle";
+        assert_eq!(
+            all.select(&postured(0.0, Forward, Crouching), unresolved_idle),
+            (None, LocomotionTierKind::Idle)
+        );
+
+        // Missing or unresolved `crouch_forward`: no crouch tier, so crouching
+        // and sliding select exactly as standing does — `crouch_idle` included.
+        let no_forward = states(&[
+            "walk_forward",
+            "walk_backward",
+            "run_forward",
+            "crouch_idle",
+            "crouch_backward",
+        ]);
+        let unresolved_forward = |state: &str| state != "crouch_forward";
+        for (declared, usable) in [
+            (&no_forward, &usable as &dyn Fn(&str) -> bool),
+            (&all, &unresolved_forward),
+        ] {
+            assert_eq!(
+                declared.select(&postured(3.0, Backward, Crouching), usable),
+                (Some("walk_backward"), LocomotionTierKind::Walk)
+            );
+            assert_eq!(
+                declared.select(&postured(0.0, Forward, Crouching), usable),
+                (None, LocomotionTierKind::Idle)
+            );
+            assert_eq!(
+                declared.select(&postured(11.0, Forward, Sliding), usable),
+                (Some("run_forward"), LocomotionTierKind::Run)
+            );
+        }
+    }
+
+    #[test]
+    fn standing_posture_ignores_declared_crouch_states() {
+        use LocomotionDirection::{Backward, Forward};
+        let all = states(&CROUCH_DECLARED);
+        let usable = |_: &str| true;
+        let standing = |speed, direction| {
+            all.select(
+                &postured(speed, direction, LocomotionPosture::Standing),
+                usable,
+            )
+        };
+        assert_eq!(standing(0.0, Forward), (None, LocomotionTierKind::Idle));
+        assert_eq!(
+            standing(3.0, Forward),
+            (Some("walk_forward"), LocomotionTierKind::Walk)
+        );
+        assert_eq!(
+            standing(3.0, Backward),
+            (Some("walk_backward"), LocomotionTierKind::Walk)
+        );
+        assert_eq!(
+            standing(11.0, Backward),
+            (Some("run_backward"), LocomotionTierKind::Run)
+        );
+    }
+
+    #[test]
+    fn crouch_states_commit_direction_like_walk_states() {
+        let all = states(&CROUCH_DECLARED);
+        let usable = |_: &str| true;
+        assert_eq!(
+            all.direction_of("crouch_backward", usable),
+            Some(LocomotionDirection::Backward)
+        );
+        assert_eq!(
+            all.direction_of("crouch_forward", usable),
+            Some(LocomotionDirection::Forward)
+        );
+        assert_eq!(all.direction_of("crouch_idle", usable), None);
+        let unresolved_backward = |state: &str| state != "crouch_backward";
+        assert_eq!(
+            all.direction_of("crouch_forward", unresolved_backward),
+            None
+        );
+        assert_eq!(
+            all.state_names()
+                .filter(|name| name.starts_with("crouch"))
+                .collect::<Vec<_>>(),
+            ["crouch_forward", "crouch_backward"]
+        );
     }
 }

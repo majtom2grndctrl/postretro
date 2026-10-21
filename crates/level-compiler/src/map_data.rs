@@ -103,6 +103,20 @@ pub struct BrushSide {
     pub tex_projection: TextureProjection,
 }
 
+/// A brush's resolved reflection-probe capture override, in canonical terms.
+/// The input adapter translates its own vocabulary into this; the probe stage
+/// reads it per brush (`resource_management.md` §5.2, Exclusion).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ReflectionCapture {
+    /// Follow the per-probe size, thinness and underside rule.
+    #[default]
+    Auto,
+    /// Keep in every probe's capture.
+    Always,
+    /// Exclude from every probe's capture.
+    Never,
+}
+
 #[derive(Debug, Clone)]
 pub struct EntityInfo {
     pub classname: String,

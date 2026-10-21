@@ -1,8 +1,16 @@
 # reflection-probe-capture-exclusion — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: d6f3471c0
+
+Owner approved 2026-10-20 ("Plan approved. Start the build.").
+
+## Shared contracts (integrating executor owns)
+- `map_data::ReflectionCapture { Auto (default), Always, Never }`: seeded with the approval commit.
+- `MapData::brush_reflection_capture: Vec<ReflectionCapture>`, index-aligned with `brush_volumes` (task 4 adds the field).
+- Face → brush table: `Vec<Option<u32>>`, index-aligned with the post-cut output faces (the `SurfaceHit::face` / `face_index_ranges` space), each entry indexing `MapData::brush_volumes`; `None` for a face the oversize cut emptied. Built in `extract_geometry`'s walk beside `GeometryResult`, remapped by `face_remap` (task 1).
+- Per-probe exclusion: a sorted, deduplicated `Vec<u32>` of excluded brush indices per placed probe (task 3 produces, tasks 1/2/5 consume). The capture derives its face mask from it through the face → brush table.
 
 Branch: `claude/reflection-probe-capture-exclusion`, cut from `main` at the claim commit. `fluid-ssr-reflections` has landed on main (PR #610), so every **[SSR]** fact in the brief was re-read against main.
 

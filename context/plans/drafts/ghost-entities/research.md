@@ -49,3 +49,18 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 - Tags: `_tags` is a whitespace-delimited KVP on movers and placements (`sdk/TrenchBroom/postretro.fgd`), and `getMapEntities` queries it through `worldQuery`. Teleporter and environment-volume `source_entity` is the raw `.map` index, not the id-29 ordinal.
 - FGD: `sdk/TrenchBroom/postretro.fgd` (`trigger_teleport`, `teleport_destination`, `kinematic_mover`).
 - Script kinds: `sdk/lib/map_entities.ts` `MAP_KIND_COMPONENTS` → `worldQuery`. Rust side: `entity_world_primitives.rs` `QueryFilter::Teleporter`, `collect_identity_snapshots_json`, `crates/entities/src/ffi.rs`, and the typedef templates `sdk_lib.*`.
+
+## Layer placement and the fluid precedent
+- `scripting.md` §1: "Engine owns the floor; scripts own the taste". The engine seeds a default; a game picks its point through data and script.
+- Fluids are the precedent for named, mod-wide presentation that a map volume references (`scripting.md` §Fluid declarations):
+  - `defineFluid` is a pure identity helper, and declaration order assigns the index.
+  - Warn-and-drop: a malformed entry, or a later duplicate name, drops with a warning naming `fluids[i].<field>`, and the first declaration stands.
+  - Staged reload re-resolves the level's volumes.
+  - Fluids stay out of the mod compatibility digest. Presentation fields resolve locally by name, and peers may see different opacity and murk (`networking.md` §What gates, and what replicates instead).
+- Mod-wide profiles with whole-default fallback: `audio.attenuation`, `render` (`scripting.md` §Mod render profile).
+
+## Impact owner
+- `WeaponEmission { shot_id, emitter, … }` (crates/entities/src/reactions/emitter.rs). `Emitter::Contacts` carries only point, normal and hit. The owner is `shot_id.pawn`, stamped from the owner pawn's `NetworkId` (`shot_id.pawn = allocator.stamp(owner_pawn).0`). An emission without a shot id has no owner.
+
+## Audio capacity
+- Bus voice caps (`BusId::voice_cap`, crates/audio/src/buses.rs): SFX 32, Music 4, UI 8. The manager budget has room for a 16-voice ghost cap without raising its capacity (`caps_within_capacity`).

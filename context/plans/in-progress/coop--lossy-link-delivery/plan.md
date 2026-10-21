@@ -1,11 +1,10 @@
 # coop--lossy-link-delivery — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: 6c3adca4e
 
-Blocked on two Acceptance restatements (AC rows 20 and 21 below). Everything else is
-planned; on the owner's wording this moves to `proposed`/`approved` without other change.
+Owner approved the plan and both restatements (rows 20, 21) on 2026-10-21; the brief carries the new wording.
 
 ## Corrections
 - Brief: switch variants live in "the Control enums" in wire.rs → they live in `crates/net/src/wire/control.rs` (`ClientControlMessage::SwitchDeclaration` at index 2, `ServerControlMessage::SwitchRefused`/`SwitchAccepted` at 3/4); wire.rs re-exports. Planning around it by moving them out of control.rs and appending `SwitchDeclaration` to `ClientMessage` and `SwitchAccepted`/`SwitchRefused` to `ServerMessage` (appends are safe under `observer_cue_append_preserves_shipped_server_message_tags`).
@@ -49,8 +48,8 @@ planned; on the owner's wording this moves to `proposed`/`approved` without othe
 | 17 | Sliced tuning on Control under loss delays no Input message (P16) | relay test: scripted slice drops, Input latency bound | achievable as stated |
 | 18 | Tuning sent before demote/relevel never applies after; permit post-re-promotion (P17) | relay test | achievable as stated |
 | 19 | Client upstream ≤ 40 KB/s at 60 Hz under profile, reported | `client_upstream_bytes_under_dev_profile` measurement (counter per Corrections) | achievable; measurement may fail — reported either way |
-| 20 | Outage: offset within one tick, **no outage probe folds**, no reseed (P13) | relay time-sync outage test | **needs restatement** |
-| 21 | Probe lost once: one echo, RTT **≤ one resend** above unlost (P14) | relay time-sync single-drop test | **needs restatement** |
+| 20 | Outage: offset within one tick, **no outage probe folds**, no reseed (P13) | relay time-sync outage test | achievable as restated |
+| 21 | Probe lost once: one echo, RTT **≤ one resend** above unlost (P14) | relay time-sync single-drop test | achievable as restated |
 | 22 | RTT estimate tracks true RTT within estimator tolerance | relay time-sync profile test (clarification per Corrections) | achievable as stated |
 | 23 | Join: lost tuning slice delays inventory ≤ one Control resend + largest one-way | relay join test, delay measured against the same seed without the drop | achievable as stated |
 | 24 | Two corrections before decay / same frame: presented eye continuous (P18) | prediction/reconcile offset tests | achievable as stated |
@@ -61,7 +60,7 @@ planned; on the owner's wording this moves to `proposed`/`approved` without othe
 | 29 | Manual: two-client session, no bursts after loss | owner, in-engine | manual |
 | 30 | Manual: Network tab Off mid-session recovers | owner, in-engine | manual |
 
-### Proposed restatements
+### Restatements (owner-approved 2026-10-21)
 
 **Row 20 (P13).** The min-RTT gate admits any sample within its tolerance
 (`max(20 ms, 0.5 × window_min)`, ~45–60 ms at this profile). A probe sent within that

@@ -103,6 +103,10 @@ mod predict_reconcile_harness_test_fixtures;
 mod predict_reconcile_relay_harness;
 #[cfg(test)]
 mod predict_reconcile_relay_test_fixtures;
+// Latency and cost over the relay: a lost ack, sliced tuning beside Input, tuning
+// across a demotion, upstream bytes, a lost tuning datagram on join.
+#[cfg(test)]
+mod relay_latency_cost_test;
 // Time sync over the relay: the min-RTT gate under loss, a lost probe, an outage.
 #[cfg(test)]
 mod time_sync_relay_test;

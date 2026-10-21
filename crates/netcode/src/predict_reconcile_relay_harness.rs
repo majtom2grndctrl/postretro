@@ -36,7 +36,7 @@ const TURN_PER_FRAME: f32 = TAU / 1200.0;
 
 /// The course at `frame`: sustained running on a steady turn, with a slide
 /// and both strafes every four seconds.
-fn course_command(frame: u64) -> SimCommand {
+pub(crate) fn course_command(frame: u64) -> SimCommand {
     let mut command = forward_command(false);
     command.movement.facing_yaw = (frame as f32 * TURN_PER_FRAME) % TAU;
     match frame % CYCLE_FRAMES {

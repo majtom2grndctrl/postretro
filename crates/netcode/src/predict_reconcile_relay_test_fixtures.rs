@@ -24,11 +24,14 @@ use postretro_entities::{
     SlotTable, Transform,
 };
 use postretro_foundation::{MovementStateKind, PlayerMovementComponent, VaultParams};
-use postretro_net::harness::{LinkConfig, PacketConditioner, ScriptedDrop, VirtualMillis};
+use postretro_net::harness::{
+    LinkConfig, PacketConditioner, RenetDatagram, ScriptedDrop, VirtualMillis,
+    parse_renet_datagram, renet_packet_channel,
+};
 use postretro_net::replication::ServerReplication;
 use postretro_net::slots::SlotEvent;
-use postretro_net::transport::{NetClient, NetServer};
-use postretro_net::wire::ServerControlMessage;
+use postretro_net::transport::{Channel, NetClient, NetServer};
+use postretro_net::wire::{DivergenceReason, ServerControlMessage};
 
 use super::client::{ClientReplication, NoPresentationBindings};
 use super::command_queue::{
@@ -73,6 +76,72 @@ const CLIENT_CLOCK_ORIGIN_US: u64 = 7_000_000;
 /// Virtual time at the start of frame `frame` of a 60 Hz run, in microseconds.
 pub(crate) fn frame_start_us(frame: u64) -> u64 {
     frame * 1_000_000 / 60
+}
+
+/// The relay's four channels by renet channel id.
+pub(crate) fn channel_from_id(id: u8) -> Option<Channel> {
+    [
+        Channel::Control,
+        Channel::Snapshot,
+        Channel::Input,
+        Channel::Presentation,
+    ]
+    .into_iter()
+    .find(|channel| u8::from(*channel) == id)
+}
+
+/// One datagram a peer flushed onto its link, read at the flush.
+#[derive(Debug, Clone)]
+pub(crate) struct LoggedDatagram {
+    /// The frame whose poll flushed it.
+    pub(crate) frame: u64,
+    pub(crate) channel: Option<Channel>,
+    /// Its index among `channel`'s datagrams on its link: the
+    /// [`ScriptedDrop::NthOnChannel`] index and the
+    /// [`PacketConditioner::channel_datagram`] key.
+    pub(crate) index: Option<u64>,
+    pub(crate) contents: Option<RenetDatagram>,
+}
+
+/// A datagram predicate: `true` drops it on the link (a scripted drop).
+pub(crate) type DatagramDrop = Box<dyn FnMut(&LoggedDatagram) -> bool>;
+
+/// renet connection-level bytes one peer emitted, by datagram kind: what the
+/// relay sees, renet payload plus renet headers, before netcode encryption
+/// and UDP.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LinkBytes {
+    pub(crate) datagrams: u64,
+    pub(crate) bytes: u64,
+    /// Per renet channel id: datagrams and bytes.
+    pub(crate) by_channel: [(u64, u64); 4],
+    /// renet's own ack packets: datagrams and bytes.
+    pub(crate) acks: (u64, u64),
+}
+
+impl LinkBytes {
+    fn count(&mut self, packet: &[u8]) {
+        let bytes = packet.len() as u64;
+        self.datagrams += 1;
+        self.bytes += bytes;
+        let slot = match renet_packet_channel(packet) {
+            Some(channel) => self.by_channel.get_mut(usize::from(channel)),
+            None => Some(&mut self.acks),
+        };
+        if let Some((datagrams, total)) = slot {
+            *datagrams += 1;
+            *total += bytes;
+        }
+    }
+}
+
+/// A Control message the client drained.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum DrainedControl {
+    /// A tuning payload, with the level gravity it carries when it decodes.
+    Tuning { level_gravity: Option<f32> },
+    /// The host's hold, which demotes the client.
+    Holding,
 }
 
 /// One own-pawn reconcile the client ran, with the frame it ran in and the
@@ -141,6 +210,16 @@ pub(crate) struct RelayHarness {
     // --- Link and clock ---
     pub(crate) to_server: PacketConditioner,
     pub(crate) to_client: PacketConditioner,
+    /// Record every flushed datagram in [`Self::up_log`] / [`Self::down_log`].
+    pub(crate) log_datagrams: bool,
+    pub(crate) up_log: Vec<LoggedDatagram>,
+    pub(crate) down_log: Vec<LoggedDatagram>,
+    /// Drops host datagrams by content at their flush, on top of the link model.
+    pub(crate) down_drop: Option<DatagramDrop>,
+    /// Everything the client has emitted, counted at its flush.
+    pub(crate) uplink_bytes: LinkBytes,
+    /// Every Control message the client drained, in order, with its frame.
+    pub(crate) drained_controls: Vec<(u64, DrainedControl)>,
     client_clock_us: Arc<AtomicU64>,
     /// Frames run so far.
     pub(crate) frame: u64,
@@ -231,6 +310,12 @@ impl RelayHarness {
             last_client_tick: None,
             to_server: PacketConditioner::new(to_server),
             to_client: PacketConditioner::new(to_client),
+            log_datagrams: false,
+            up_log: Vec::new(),
+            down_log: Vec::new(),
+            down_drop: None,
+            uplink_bytes: LinkBytes::default(),
+            drained_controls: Vec::new(),
             client_clock_us,
             frame: 0,
             frame_dt: Duration::ZERO,
@@ -256,6 +341,25 @@ impl RelayHarness {
             )
             .unwrap();
         self
+    }
+
+    /// Replace the host's fluid table, which rides every tuning payload: a
+    /// level declaring many fluids makes the payload span several slices.
+    pub(crate) fn with_host_fluids(mut self, fluids: FluidMovementTable) -> Self {
+        self.host_fluid_table = fluids;
+        self
+    }
+
+    /// Spawn a host entity that replicates to the client, at `transform`.
+    /// Returns it with its network id.
+    pub(crate) fn spawn_replicated_host_entity(
+        &mut self,
+        transform: Transform,
+    ) -> (EntityId, super::NetworkId) {
+        let entity = self.host_registry.spawn(transform);
+        self.replicable.register(entity);
+        let network_id = self.allocator.stamp(entity);
+        (entity, network_id)
     }
 
     /// The client pawn's predicted movement state, once armed.
@@ -362,17 +466,37 @@ impl RelayHarness {
             self.server.process_packet_from(&packet, CLIENT_ID);
         }
         let poll = self.server.poll_handshakes();
-        self.to_client
-            .enqueue_all(self.server.packets_to_send(CLIENT_ID));
+        let packets = self.server.packets_to_send(CLIENT_ID);
+        flush(
+            &mut self.to_client,
+            packets,
+            self.frame,
+            self.log_datagrams.then_some(&mut self.down_log),
+            self.down_drop.as_mut(),
+            None,
+        );
         for event in &poll.lifecycle {
-            // The pawn already exists; entry registers the slot for replication
-            // and sends its tuning, as production's participation entry does.
-            if let SlotEvent::Participating { client_id } = event
-                && self.server.is_current_participation_entry(event)
-            {
-                self.server_replication.register_client(*client_id);
-                self.server_state.register_client(*client_id);
-                self.host_send_tuning_if_changed();
+            match event {
+                // The pawn already exists; entry registers the slot for
+                // replication and sends its tuning, as production's
+                // participation entry does.
+                SlotEvent::Participating { client_id } => {
+                    if self.server.is_current_participation_entry(event) {
+                        self.server_replication.register_client(*client_id);
+                        self.server_state.register_client(*client_id);
+                        self.host_send_tuning_if_changed();
+                    }
+                }
+                // The slot-scoped half of production's exit cleanup
+                // (`host_handle_transport_disconnect`). The pawn stays, since
+                // this harness has no spawn path, but replication, the command
+                // queue and the tuning dedupe go, so re-entry sends afresh.
+                SlotEvent::Demoted { client_id, .. } | SlotEvent::Closed { client_id, .. } => {
+                    self.server_replication.remove_client(*client_id);
+                    self.server_state.remove_client(*client_id);
+                    self.command_queues.remove_client(*client_id);
+                    self.host_last_sent_tuning.remove(client_id);
+                }
             }
         }
         let server_tick = self.host_tick;
@@ -395,8 +519,11 @@ impl RelayHarness {
         self.host_fixed_tick();
         complete_host_fixed_tick(&mut self.host_tick, &mut snapshot_due);
 
-        // Serialize: changed tuning queues ahead of the snapshot it shapes.
-        self.host_send_tuning_if_changed();
+        // Serialize: changed tuning queues ahead of the snapshot it shapes, for
+        // a participating slot only, as `host_resend_changed_tuning` sends it.
+        if self.server.is_participating(CLIENT_ID) {
+            self.host_send_tuning_if_changed();
+        }
         host_replicate(
             &self.host_registry,
             &self.host_slot_table,
@@ -489,16 +616,39 @@ impl RelayHarness {
             for packet in self.to_client.take_ready() {
                 client.process_packet(&packet);
             }
-            self.to_server.enqueue_all(client.packets_to_send());
+            flush(
+                &mut self.to_server,
+                client.packets_to_send(),
+                self.frame,
+                self.log_datagrams.then_some(&mut self.up_log),
+                None,
+                Some(&mut self.uplink_bytes),
+            );
             client.drain_control()
         };
         for control in controls {
-            if let ServerControlMessage::Tuning(bytes) = control {
-                self.endpoint.install_tuning_payload(
-                    &bytes,
-                    &mut self.client_registry,
-                    &self.descriptors,
-                );
+            match control {
+                ServerControlMessage::Tuning(bytes) => {
+                    let level_gravity = super::tuning_payload::decode_tuning_payload(&bytes)
+                        .ok()
+                        .map(|payload| payload.environment.level_gravity);
+                    self.drained_controls
+                        .push((self.frame, DrainedControl::Tuning { level_gravity }));
+                    self.endpoint.install_tuning_payload(
+                        &bytes,
+                        &mut self.client_registry,
+                        &self.descriptors,
+                    );
+                }
+                // Production's Holding arm: demotion drops the installed
+                // tuning and every mapped entity, the armed pawn included.
+                ServerControlMessage::Divergence(DivergenceReason::Holding(_)) => {
+                    self.drained_controls
+                        .push((self.frame, DrainedControl::Holding));
+                    self.endpoint.demote_client_state(&mut self.client_registry);
+                    self.client_pawn = None;
+                }
+                _ => {}
             }
         }
 
@@ -619,6 +769,43 @@ impl RelayHarness {
                     movement_state,
                 }),
         );
+    }
+}
+
+/// Enqueue one peer's flush on `link`, logging each datagram with its channel
+/// index when `log` is given, dropping the ones `drop` picks, and counting
+/// bytes into `bytes`.
+fn flush(
+    link: &mut PacketConditioner,
+    packets: Vec<Vec<u8>>,
+    frame: u64,
+    mut log: Option<&mut Vec<LoggedDatagram>>,
+    mut drop: Option<&mut DatagramDrop>,
+    mut bytes: Option<&mut LinkBytes>,
+) {
+    for packet in packets {
+        if let Some(bytes) = bytes.as_deref_mut() {
+            bytes.count(&packet);
+        }
+        if log.is_some() || drop.is_some() {
+            let channel = renet_packet_channel(&packet).and_then(channel_from_id);
+            let datagram = LoggedDatagram {
+                frame,
+                channel,
+                index: channel.map(|channel| link.enqueued_on_channel(channel)),
+                contents: parse_renet_datagram(&packet),
+            };
+            if let (Some(drop), Some(channel), Some(index)) =
+                (drop.as_deref_mut(), datagram.channel, datagram.index)
+                && drop(&datagram)
+            {
+                link.script_drop(ScriptedDrop::NthOnChannel { channel, index });
+            }
+            if let Some(log) = log.as_deref_mut() {
+                log.push(datagram);
+            }
+        }
+        link.enqueue(packet);
     }
 }
 

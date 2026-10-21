@@ -166,6 +166,143 @@ pub fn renet_packet_channel(packet: &[u8]) -> Option<u8> {
     rest.get(varint_len).copied()
 }
 
+/// What one renet datagram carries, read back for test inspection: which
+/// messages a flush packed, which slice of a large message it is, or a renet
+/// ack. Message bytes are the transport's own (a participation or Control
+/// frame on most channels); [`participation_frame_payload`] and
+/// [`server_control_payload`] unwrap them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenetDatagram {
+    /// Small reliable messages for one channel, each with its renet message id.
+    Reliable {
+        channel: u8,
+        messages: Vec<(u64, Vec<u8>)>,
+    },
+    /// Small unreliable messages for one channel.
+    Unreliable { channel: u8, messages: Vec<Vec<u8>> },
+    /// One slice of a message larger than renet's 1200-byte slice size.
+    Slice {
+        channel: u8,
+        reliable: bool,
+        message_id: u64,
+        slice_index: u64,
+        num_slices: u64,
+    },
+    /// renet's own ack packet: no channel and no message.
+    Ack,
+}
+
+/// Parse one connection-level datagram. Couples to the pinned renet `=2.0.0`
+/// layout as [`renet_packet_channel`] does (`Packet::to_bytes`: type byte,
+/// QUIC-varint sequence, channel byte, then a big-endian `u16` message count
+/// with varint-length messages, or a slice header). `None` for anything that
+/// does not parse.
+#[must_use]
+pub fn parse_renet_datagram(packet: &[u8]) -> Option<RenetDatagram> {
+    let mut reader = DatagramReader(packet);
+    let kind = reader.u8()?;
+    if kind == 4 {
+        return Some(RenetDatagram::Ack);
+    }
+    let _sequence = reader.varint()?;
+    let channel = reader.u8()?;
+    let datagram = match kind {
+        0 => {
+            let count = reader.u16()?;
+            let mut messages = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                let message_id = reader.varint()?;
+                messages.push((message_id, reader.varint_bytes()?.to_vec()));
+            }
+            RenetDatagram::Reliable { channel, messages }
+        }
+        1 => {
+            let count = reader.u16()?;
+            let mut messages = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                messages.push(reader.varint_bytes()?.to_vec());
+            }
+            RenetDatagram::Unreliable { channel, messages }
+        }
+        2 | 3 => {
+            let message_id = reader.varint()?;
+            let slice_index = reader.varint()?;
+            let num_slices = reader.varint()?;
+            let _payload = reader.varint_bytes()?;
+            RenetDatagram::Slice {
+                channel,
+                reliable: kind == 2,
+                message_id,
+                slice_index,
+                num_slices,
+            }
+        }
+        _ => return None,
+    };
+    reader.0.is_empty().then_some(datagram)
+}
+
+/// The engine payload inside a Snapshot, client Input or Presentation message,
+/// with the transport's participation frame removed.
+#[must_use]
+pub fn participation_frame_payload(message: &[u8]) -> Option<Vec<u8>> {
+    crate::wire::decode::<crate::wire::ParticipationFrame>(message)
+        .ok()
+        .map(|frame| frame.payload)
+}
+
+/// The engine payload inside a server Control message, or `None` for the
+/// transport-only participation-start marker.
+#[must_use]
+pub fn server_control_payload(message: &[u8]) -> Option<Vec<u8>> {
+    crate::wire::decode::<crate::wire::ServerControlFrame>(message)
+        .ok()
+        .and_then(|frame| frame.payload)
+}
+
+/// A cursor over one datagram's bytes in renet's (octets') byte order.
+struct DatagramReader<'a>(&'a [u8]);
+
+impl<'a> DatagramReader<'a> {
+    fn take(&mut self, len: usize) -> Option<&'a [u8]> {
+        if self.0.len() < len {
+            return None;
+        }
+        let (head, rest) = self.0.split_at(len);
+        self.0 = rest;
+        Some(head)
+    }
+
+    fn u8(&mut self) -> Option<u8> {
+        self.take(1).map(|bytes| bytes[0])
+    }
+
+    fn u16(&mut self) -> Option<u16> {
+        self.take(2)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+    }
+
+    /// A QUIC varint: the top two bits of the first byte give its length.
+    fn varint(&mut self) -> Option<u64> {
+        let len = 1usize << (self.0.first()? >> 6);
+        let bytes = self.take(len)?;
+        Some(
+            bytes
+                .iter()
+                .enumerate()
+                .fold(0u64, |value, (index, &byte)| {
+                    let byte = if index == 0 { byte & 0x3f } else { byte };
+                    (value << 8) | u64::from(byte)
+                }),
+        )
+    }
+
+    fn varint_bytes(&mut self) -> Option<&'a [u8]> {
+        let len = usize::try_from(self.varint()?).ok()?;
+        self.take(len)
+    }
+}
+
 /// What became of one datagram the conditioner enqueued, read back by its
 /// position among one channel's datagrams ([`PacketConditioner::channel_datagram`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -867,6 +1004,121 @@ mod tests {
         arrivals.extend(cond.take_ready());
         assert_eq!(arrivals, vec![vec![0], vec![1], vec![4], vec![5]]);
         assert_eq!(cond.scripted_dropped(), 2);
+    }
+
+    // The datagram reader the relay fixtures tap flushes with, against real renet
+    // datagrams: packed Input messages with their ids, a Control payload past the
+    // slice size, a snapshot's participation frame, and renet's acks.
+    #[test]
+    fn datagram_reader_reads_real_renet_flushes() {
+        let (mut server, mut client) = relay_pair();
+        let mut cond = PacketConditioner::new(LinkConfig::perfect());
+        pump_client_to_server(&mut server, &mut client, &mut cond);
+        assert!(server.is_participating(CLIENT_ID));
+
+        // Incompressible bytes: bitcode packs a run, which would fit one datagram.
+        let mut rng = SplitMix64::new(0xC7);
+        let large_control: Vec<u8> = (0..3_000).map(|_| rng.next_u64() as u8).collect();
+        server.send_control(CLIENT_ID, large_control);
+        server.send_input(CLIENT_ID, vec![1; 24]);
+        server.send_input(CLIENT_ID, vec![2; 24]);
+        let snapshot = sample_snapshot();
+        assert!(server.send_snapshot(CLIENT_ID, wire::encode(&snapshot)));
+        server.update_connections(RELAY_DT);
+        let packets = server.packets_to_send(CLIENT_ID);
+        let datagrams: Vec<RenetDatagram> = packets
+            .iter()
+            .map(|packet| parse_renet_datagram(packet).expect("a renet datagram parses"))
+            .collect();
+
+        let input = u8::from(Channel::Input);
+        let input_messages: Vec<Vec<u8>> = datagrams
+            .iter()
+            .filter_map(|datagram| match datagram {
+                RenetDatagram::Reliable { channel, messages } if *channel == input => {
+                    Some(messages.iter().map(|(_, bytes)| bytes.clone()))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(input_messages, vec![vec![1; 24], vec![2; 24]]);
+
+        let control = u8::from(Channel::Control);
+        let slices: Vec<(u64, u64, u64)> = datagrams
+            .iter()
+            .filter_map(|datagram| match datagram {
+                RenetDatagram::Slice {
+                    channel,
+                    reliable: true,
+                    message_id,
+                    slice_index,
+                    num_slices,
+                } if *channel == control => Some((*message_id, *slice_index, *num_slices)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(slices.len(), 3, "3000 B of Control payload is three slices");
+        assert!(
+            slices
+                .iter()
+                .enumerate()
+                .all(|(index, &(id, slice, count))| id == slices[0].0
+                    && slice == index as u64
+                    && count == 3),
+            "{slices:?}"
+        );
+
+        let snapshot_channel = u8::from(Channel::Snapshot);
+        let snapshots: Vec<RawSnapshotMessage> = datagrams
+            .iter()
+            .filter_map(|datagram| match datagram {
+                RenetDatagram::Unreliable { channel, messages } if *channel == snapshot_channel => {
+                    Some(messages.iter().map(|message| {
+                        let payload = participation_frame_payload(message)
+                            .expect("a snapshot rides a participation frame");
+                        wire::decode::<RawSnapshotMessage>(&payload).expect("snapshot decodes")
+                    }))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(snapshots, vec![snapshot]);
+
+        // The client acks what it received in a renet ack packet, and a small
+        // Control message unwraps to the payload the host sent.
+        let small_control = vec![0x5c; 8];
+        server.send_control(CLIENT_ID, small_control.clone());
+        server.update_connections(RELAY_DT);
+        let control_payloads: Vec<Vec<u8>> = server
+            .packets_to_send(CLIENT_ID)
+            .iter()
+            .filter_map(|packet| match parse_renet_datagram(packet)? {
+                RenetDatagram::Reliable { channel, messages } if channel == control => Some(
+                    messages
+                        .into_iter()
+                        .filter_map(|(_, bytes)| server_control_payload(&bytes)),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            control_payloads.contains(&small_control),
+            "{control_payloads:?}"
+        );
+        for packet in &packets {
+            client.process_packet(packet);
+        }
+        client.update_connections(RELAY_DT);
+        let client_packets = client.packets_to_send();
+        assert!(
+            client_packets
+                .iter()
+                .any(|packet| parse_renet_datagram(packet) == Some(RenetDatagram::Ack)),
+            "the client's flush carries a renet ack"
+        );
     }
 
     // A non-conditioned sanity baseline: a perfect link relays the handshake and

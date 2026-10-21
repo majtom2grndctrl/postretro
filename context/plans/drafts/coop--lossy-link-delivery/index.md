@@ -35,36 +35,44 @@ Owner playtest under the dev lag proxy (45 ms + 0–60 ms jitter + 5% loss each 
 ## Acceptance
 ### Automated
 **Own-pawn movement under the dev profile** (production channel semantics, seeded)
-- [ ] Reproduces first, and gates the transport change. On the commit the build starts from, a steady-run scenario records at least one correction above the ordinary band, and the test is committed failing. That base includes `movement--static-overlap-invariant`, so a result is not confounded by the embeds it fixed. If it records none, stop and report before changing the transport. The presentation-offset row does not wait on it.
+- [ ] Reproduces first, and gates the transport change. On the commit the build starts from, a steady-run scenario records at least one correction above the ordinary band, and the test is committed failing. That base includes `movement--static-overlap-invariant`, so a result is not confounded by the embeds it fixed. If it records none, stop and report before changing the transport. The same seed with loss off and jitter kept records none (P1); if the loss-off run also records one, stop and report, since jitter, not loss, is then the cause. The presentation-offset row does not wait on it.
 - [ ] Steady run, sustained strafe and repeated slides over a seeded minute: no snap-class correction, and none above the ordinary band.
-- [ ] A slide or vault the client enters starts on the host on the same client tick.
-- [ ] A single lost Input datagram causes no host hold, neutral tick or trim.
+- [ ] A slide or vault the client enters starts on the host on the same client tick, including one whose entry command's datagram is lost (P3).
+- [ ] On a fixed-delay link with no jitter, one scripted lost Input datagram causes no host hold, neutral tick or trim, and its command resolves Real on its own tick (P2). The conditioner gains a test-only scripted drop.
+- [ ] Grep gate: `INPUT_HOLD_TICKS`, `INPUT_BUFFER_TARGET` and `INPUT_BUFFER_MAX` keep 3, 2 and 8.
 
 **Outage longer than the redundancy**
-- [ ] A two-second total outage, followed by recovery: no disconnect. Every edge, activation start and switch sent during it is delivered exactly once, in client-tick order. Movement falls back to the existing gap and catch-up policy.
+- [ ] A two-second total outage, followed by recovery: no disconnect. Every edge and switch sent during it is delivered exactly once, in client-tick order. Each start reaches one terminal: delivered, or refused for lag under the existing 500 ms allowance; none is dropped silently or minted twice. No switch is refused as malformed (P12). Movement falls back to the existing gap and catch-up policy.
 
 **Ordering and exactly-once** (regression guards)
-- [ ] A switch and a start stamped after it, sent across a loss, resolve in client-tick order.
+- [ ] A switch and a start stamped after it resolve in client-tick order when the loss falls on the datagram carrying the switch (P4). A start on the switch's own command lands after the switch in the same resolution across a loss (P5).
 - [ ] Switch outcomes arrive in declaration order under loss and jitter.
-- [ ] Two edges on one client tick both deliver, and no edge delivers twice under loss.
-- [ ] Refuse: a switch outcome from before a demotion or level change, delivered after it, resolves nothing, and a declaration pending in the new participation still resolves on its own outcome. Permit: an outcome in the current participation resolves its declaration.
-- [ ] A switch declaration sent before a demotion and delivered after re-promotion never reaches the host's switch lane.
+- [ ] Two edges on one client tick both deliver, and no edge delivers twice under loss (P11).
+- [ ] Refuse: a switch outcome from before a demotion or level change, delivered after it, resolves nothing, and a declaration pending in the new participation still resolves on its own outcome. Permit: an outcome in the current participation resolves its declaration (P9, P10).
+- [ ] A switch declaration sent before a demotion and delivered after re-promotion never reaches the host's switch lane (P6). Permit: one sent after re-promotion reaches the lane and is answered.
+- [ ] A declaration the host drops by epoch never leaves the client's chain waiting. Holding and the next participation marker in one Control drain still clear the chain before the first new declaration, and that declaration resolves on its own outcome (P7).
+- [ ] A switch retained in the host lane at demotion is never applied or answered after re-promotion (P8).
+- [ ] Grep gate: no send site puts a switch declaration or outcome on Control, and Control intake yields no switch declaration.
 
 **Latency and cost**
-- [ ] On a relay pair under the profile, a single loss on Input in either direction is delivered within one-way delay plus two ticks.
-- [ ] A newly spawned entity's first baseline is not frozen more than one snapshot past a single lost ack.
-- [ ] A tuning payload larger than one slice, sent on Control under loss, delays no Input message.
-- [ ] A tuning payload sent before a demotion or level change never applies after it.
+- [ ] On a relay pair under the profile, a scripted single drop on Input in either direction is delivered within the profile's largest one-way delay plus two ticks (P2).
+- [ ] A newly spawned entity's first baseline is not frozen more than one snapshot past a single lost ack, with the ack carried on the production Input channel (P15).
+- [ ] A tuning payload larger than one slice, sent on Control under loss, delays no Input message: every Input message sent while its slices are in flight meets the single-loss latency bound (P16).
+- [ ] A tuning payload sent before a demotion or level change never applies after it (P17). Permit: the payload sent after re-promotion installs.
 - [ ] Client upstream bytes under the profile stay within the bound the executor sets, and the measurement is reported.
 
 **Time sync**
 - [ ] The RTT estimate tracks the true RTT within the existing estimator tolerance under the profile.
+- [ ] Across the two-second outage the server-tick offset stays within one tick, no outage probe folds into the estimate, and no reseed fires (P13).
+- [ ] A probe whose datagram is lost once yields one echo, and its RTT sample is at most one resend above the unlost round trip (P14).
 
 **Presentation offset**
-- [ ] Two corrections landing before the first has decayed leave the presented eye position continuous.
+- [ ] Two corrections landing before the first has decayed, or in one frame, leave the presented eye position continuous (P18).
+- [ ] Refuse: a teleport-class correction, a first-record adoption or a level reset still clears an in-flight offset, and nothing composes across it (P18).
 
 **Version gate**
-- [ ] A peer on the previous protocol id or wire version is refused at the handshake.
+- [ ] A peer on the previous protocol id or wire version is refused at the handshake. Permit: a peer on the new pair is admitted. `SNAPSHOT_VERSION` does not move.
+- [ ] The channel-list test pins four channels in order: Control reliable-ordered at about 100 ms, Snapshot and Presentation unreliable, Input reliable-ordered at the chosen gameplay resend. renet stays pinned at `=2.0.0`.
 
 ### Manual
 - [ ] Loopback recipe (`networking.md` §Manual loopback recipe), client conditioned at 45/60/5, then at 10% loss: a run, slide and vault course with no visible pull-back. Spawned projectiles and enemies don't freeze. Weapon switches land promptly. The Network tab RTT is plausible.

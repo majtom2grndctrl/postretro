@@ -133,9 +133,12 @@ pub(crate) struct ProbeExclusion<'a> {
     /// Their surviving faces.
     mask: FaceMask,
     /// Per excluded brush, parallel to `excluded`: the brushes whose bounds
-    /// touch its own, among those touching the projection box. An exit point
-    /// or a covering side's crossing lies within [`CONTACT_TOLERANCE_M`] of
-    /// the hull, so any brush holding one is among these; one off the box
+    /// touch its own within [`CONTACT_TOLERANCE_M`], among those touching the
+    /// projection box. An exit point or a covering side's crossing lies within
+    /// that tolerance of the hull's planes, which the padded bounds hold at
+    /// every corner of 84° or more; past an acute edge (a thin wedge's tip) a
+    /// brush a few millimetres off can be missed, and the ray re-traces. One
+    /// off the box
     /// could only place the ray outside it, where the leak guard reads the
     /// same surface whatever that brush is.
     contacts: Vec<Contacts>,

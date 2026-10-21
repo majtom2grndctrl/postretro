@@ -2562,6 +2562,8 @@ pub(crate) fn load_prl_from_container(
         }
         None => Vec::new(),
     };
+    let teleporters =
+        crate::prl_teleporters::decode_teleporters(read_section(SectionId::Teleporters)?)?;
     let touch_trigger_count = trigger_volumes
         .iter()
         .filter(|trigger| trigger.activation == 0)
@@ -2597,6 +2599,14 @@ pub(crate) fn load_prl_from_container(
     let environment_volumes = crate::prl_environment::decode_environment_volumes(read_section(
         SectionId::EnvironmentVolumes,
     )?)?;
+    let environment_push_forces = crate::prl_environment::decode_push_forces(
+        read_section(SectionId::PushForces)?,
+        &environment_volumes,
+    )?;
+    let reflection_probes = crate::prl_environment::decode_reflection_probes(
+        read_section(SectionId::ReflectionProbes)?,
+        &environment_volumes,
+    )?;
 
     // Required — carries the worldspawn fog pixel scale even with no fog volumes.
     let (fog_volumes, fog_pixel_scale): (Vec<FogVolumeRecord>, u32) =
@@ -2956,7 +2966,7 @@ pub(crate) fn load_prl_from_container(
             .map(|index| index.owners.as_slice()),
     );
     let prl_read_counters = container.read_counters().cloned();
-    Ok(LevelWorld {
+    let world = LevelWorld {
         vertices,
         indices,
         face_meta,
@@ -2999,16 +3009,21 @@ pub(crate) fn load_prl_from_container(
         map_entities,
         kinematic_geometry,
         trigger_volumes,
+        teleporters,
         fog_volumes,
         fog_pixel_scale,
         environment_volumes,
+        environment_push_forces,
+        reflection_probes,
         fog_cell_masks,
         navmesh,
         cell_draw_index,
         cluster_directory: lighting.cluster_directory,
         cell_residency_set,
         prl_read_counters,
-    })
+    };
+    crate::prl_environment::validate_reflection_probe_lights(&world)?;
+    Ok(world)
 }
 
 #[cfg(test)]

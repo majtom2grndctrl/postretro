@@ -32,10 +32,16 @@ use crate::render::sh_volume::ShVolumeResources;
 mod bindings;
 mod capacity;
 #[cfg(test)]
+#[path = "gpu/fluid_lattice_tests.rs"]
+mod fluid_lattice_tests;
+#[cfg(test)]
 mod geometry_tests;
 mod growth;
 mod indirect;
 mod isolated_tiles;
+#[cfg(test)]
+#[path = "gpu/load_fixture.rs"]
+mod load_fixture;
 mod setup;
 mod upload;
 #[cfg(test)]

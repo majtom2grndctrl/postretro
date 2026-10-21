@@ -1,17 +1,17 @@
-// Client-side movement prediction state for M15 Phase 3: the command-log ring for
-// the local pawn (commands only — the registry is the pose chain), the armed
+// Client-side movement prediction state: the command-log ring for the local pawn
+// (commands only — the registry is the pose chain), the armed
 // `NetworkId -> EntityId` baseline, the forward-prediction tick, prune-through-ack,
-// and the side-effect-free movement-only replay helper shared with Task 5's
-// reconciliation.
+// and the side-effect-free movement-only replay helper shared with reconciliation.
 // See: context/lib/networking.md · context/lib/movement.md
 //
 // Boundary: the replay helper lives HERE (not in `sim/`) because production
-// movement prediction is a netcode concern and `movement::tick` is reachable from
-// this module via `crate::movement`. Co-locating it with the prediction storage
-// keeps the whole prediction seam in one place. It is the inverse of `sim/`'s
-// `predict_reconcile.rs` dev harness: that one drives the FULL `simulate_tick`
-// (AI/weapons/death) through two local sims; this is the movement-only production
-// path that NEVER runs those systems and NEVER touches the `EntityRegistry`.
+// movement prediction is a netcode concern. Co-locating it with the prediction
+// storage keeps the whole prediction seam in one place. It is the inverse of
+// `sim/`'s `predict_reconcile.rs` dev harness: that one drives the FULL
+// `simulate_tick` (AI/weapons/death) through two local sims; this is the
+// movement-only production path that NEVER runs those systems. Its only registry
+// read is the caller's teleporter armed-state closure (replicated armed state);
+// it never writes the registry.
 
 use std::collections::VecDeque;
 
@@ -20,7 +20,7 @@ use glam::Vec3;
 use postretro_net::wire::{InputCommand, NetworkId};
 
 use crate::movement::{self, MovementCollisionSource, MovementEvents, MovementInput};
-use crate::netcode::wire_convert::input_command_to_sim;
+use crate::netcode::wire_convert::input_command_to_sim_at_yaw;
 use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, Transform};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -43,7 +43,7 @@ pub(crate) fn client_tick_le(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) <= 0
 }
 
-// --- Correction classification thresholds (M15 Phase 3 Task 5 AC) ---
+// --- Correction classification thresholds ---
 //
 // A reconcile correction is the displacement between the pre-reconcile predicted
 // pose and the post-reconcile authoritative pose. Its magnitude classifies how the
@@ -80,11 +80,11 @@ const DECAY_PER_FRAME: f32 = 0.7;
 /// sub-visible bias on the rendered eye.
 const OFFSET_SETTLED_EPSILON_M: f32 = 1e-4;
 
-/// How a reconcile correction was classified by displacement magnitude. The
-/// classification drives whether the registry-snapped correction is smoothed
-/// (seeded as a decaying presentation offset) or snapped hard (teleport: offset
-/// cleared, history cleared, prev == current stamped). Returned by the reconcile
-/// entry point so Task 6's harness can assert the class directly.
+/// How a reconcile correction was classified. The classification drives whether
+/// the registry-snapped correction is smoothed (seeded as a decaying presentation
+/// offset) or snapped hard (teleport: offset cleared, prev == current stamped).
+/// Returned by the reconcile entry point so the harness can assert the class
+/// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CorrectionClass {
     /// `<= ORDINARY_CORRECTION_MAX_M`: a small mispredict, smoothed.
@@ -92,7 +92,12 @@ pub(crate) enum CorrectionClass {
     /// `<= DASH_CORRECTION_MAX_M` on an `included_dash` tick: a larger but expected
     /// wider-tolerance-state correction, smoothed.
     Dash,
-    /// `>= TELEPORT_CORRECTION_MIN_M`: snapped, not smoothed.
+    /// Snapped, not smoothed. Taken at any distance when the post-replay teleport
+    /// record (generation, accumulated yaw or last teleporter) differs from the
+    /// prediction: that identity change keeps the unacked history, since stamped
+    /// rotation keeps its replay valid. A plain correction at or past
+    /// `TELEPORT_CORRECTION_MIN_M` takes it too, and clears the history. Either
+    /// way reconcile reports a [`LocalTeleportAdoption`] for the app's camera hold.
     Teleport,
     /// In the gap between the smoothed caps and the teleport floor (or a dash-sized
     /// correction on a non-dash tick): smoothed like an ordinary correction, but the
@@ -135,7 +140,7 @@ pub(crate) fn classify_correction(magnitude: f32, included_dash: bool) -> Correc
 /// next prediction chained off the stale pre-reconcile pose).
 //
 // `client_tick`/`command`/`included_dash` are read by this module's tests and the
-// Task 5 reconciliation (`reconcile.rs`) that walks the history.
+// reconciliation (`reconcile.rs`) that walks the history.
 #[derive(Debug, Clone)]
 pub(crate) struct PredictedTick {
     /// The monotonic client command-frame number this tick was predicted at.
@@ -161,6 +166,26 @@ pub(crate) struct ArmedPawn {
     pub(crate) entity_id: EntityId,
 }
 
+/// App-facing presentation facts from a teleport-class own-pawn correction. A
+/// fixed arrival point prevents cues from resolving a delayed render pose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocalTeleportAdoption {
+    pub entity_id: EntityId,
+    /// View turn: post-replay accumulated teleport yaw minus the prediction's.
+    pub yaw_delta: f32,
+    /// The camera holds across the snap rather than blending to it.
+    pub camera_cut: bool,
+    /// The post-replay teleport record (generation, accumulated yaw or last
+    /// teleporter) differs from the prediction: the pawn was relocated by a
+    /// teleport the client mispredicted, so mover carry detaches. `false` for a
+    /// plain correction at or past the teleport floor, which keeps its carry.
+    pub identity_changed: bool,
+    pub arrival: Vec3,
+    /// The authoritative last teleporter whose cue plays once, for an adoption
+    /// whose generation is ahead of the prediction.
+    pub cue_teleporter: Option<u16>,
+}
+
 /// Client-side movement prediction state for the local pawn. Owns the outbound
 /// command-log ring and the armed baseline identity. Long-lived prediction state
 /// lives here, not on `App` — the source-layout gate keeps it out of the 6k-line
@@ -174,6 +199,12 @@ pub(crate) struct ArmedPawn {
 /// `history` and `replay` seams this module exposes.
 #[derive(Debug, Default)]
 pub struct ClientPrediction {
+    first_record_pending: bool,
+    pub(crate) teleport_adoptions: Vec<LocalTeleportAdoption>,
+    /// Set when a reconcile wrote the pawn while its first record was still
+    /// pending: the camera snaps to that authoritative eye rather than blending
+    /// from the stale gated pose. A hold only — no cue, view turn or carry change.
+    pub(crate) first_record_hold: Option<EntityId>,
     /// The armed local-pawn identity, or `None` until a `local_player` baseline
     /// has been applied AND mapped. Prediction does nothing while this is `None`.
     armed: Option<ArmedPawn>,
@@ -188,7 +219,7 @@ pub struct ClientPrediction {
     /// increasing `client_tick` stream. Lives here (not on `App`) so the send-stamp
     /// allocator stays with the prediction state it feeds.
     next_client_tick: u32,
-    /// Local-pawn correction smoothing (Task 5). The decaying difference between the
+    /// Local-pawn correction smoothing. The decaying difference between the
     /// pre-reconcile predicted pose and the reconciled authoritative pose, in world
     /// space. The registry transform always snaps to the authoritative result
     /// (gameplay/collision/AI read it); only the local first-person *presentation*
@@ -209,6 +240,9 @@ impl ClientPrediction {
     /// Drop level-scoped prediction state after a connected-client level unload.
     /// The outbound command tick is connection-scoped and remains monotonic.
     pub(crate) fn reset_for_level_unload(&mut self) {
+        self.first_record_pending = false;
+        self.teleport_adoptions.clear();
+        self.first_record_hold = None;
         self.armed = None;
         self.history.clear();
         self.presentation_offset = Vec3::ZERO;
@@ -229,7 +263,20 @@ impl ClientPrediction {
             return;
         }
         self.armed = Some(next);
+        self.first_record_pending = true;
+        self.teleport_adoptions.clear();
+        self.first_record_hold = None;
         self.history.clear();
+    }
+
+    /// Whether the newly armed pawn's first record is still to be adopted.
+    /// Arming sets it; only reconcile's first merged movement record clears it.
+    pub(crate) fn first_record_pending(&self) -> bool {
+        self.first_record_pending
+    }
+
+    pub(crate) fn mark_first_record_adopted(&mut self) {
+        self.first_record_pending = false;
     }
 
     /// The armed local-pawn identity, or `None` if prediction is not yet armed.
@@ -257,7 +304,7 @@ impl ClientPrediction {
     }
 
     /// Diagnostics: one same-frame zero-tick fire `Input` send
-    /// (`client_send_input_command`).
+    /// (`client_send_input_command_in_registry`).
     pub(crate) fn diag_record_fire_send(&mut self) {
         self.send_diag.record_fire_path_send();
     }
@@ -278,7 +325,7 @@ impl ClientPrediction {
     }
 
     /// Advance the local pawn one predicted fixed tick: run the movement-only
-    /// [`replay`] from `prev` through `command`, log the command in the history
+    /// [`replay_with_armed`] from `prev` through `command`, log the command in the history
     /// ring, and return the resulting `(Transform, PlayerMovementComponent)` for the
     /// caller to write back into the registry. Returns `None` (and records nothing)
     /// when prediction is not armed — the before-baseline inert contract.
@@ -289,9 +336,8 @@ impl ClientPrediction {
     /// N wrote, and a reconcile that snapped the registry to the authoritative pose
     /// is the pose the very next prediction builds on (the history ring stores no
     /// pose to chain off, so a correction can no longer be silently overwritten).
-    /// Pure with respect to the registry: the caller owns reading `prev` and writing
-    /// the result back; this never touches the registry, AI, weapons, death, or
-    /// reactions.
+    /// The caller owns reading `prev` and writing the result back; this never
+    /// writes the registry or runs AI, weapons, death, or reactions.
     #[cfg(test)]
     pub(crate) fn predict_tick(
         &mut self,
@@ -305,10 +351,11 @@ impl ClientPrediction {
             .map(|(transform, movement, _)| (transform, movement))
     }
 
-    /// The production forward-prediction form of [`Self::predict_tick`]. It
-    /// preserves the tick's movement events for the local frame drain; callers
-    /// performing reconciliation continue to use [`replay`] directly and discard
-    /// its events by construction.
+    /// [`Self::predict_tick`] keeping the tick's movement events. Test-only: it
+    /// reads each teleporter's `enabled_on_spawn`, never replicated armed state.
+    /// Production forward prediction (`client_predict_tick`) and reconcile replay
+    /// supply the registry's bound armed state through the `_and_armed` forms.
+    #[cfg(test)]
     pub(crate) fn predict_tick_with_events(
         &mut self,
         command: InputCommand,
@@ -317,12 +364,41 @@ impl ClientPrediction {
         environment: EnvironmentView<'_>,
         dt: f32,
     ) -> Option<(Transform, PlayerMovementComponent, MovementEvents)> {
+        let world = collision.combined_collision();
+        self.predict_tick_with_events_and_armed(
+            command,
+            prev,
+            collision,
+            environment,
+            dt,
+            |index| world.static_world.teleporters.records()[index].enabled_on_spawn,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn predict_tick_with_events_and_armed(
+        &mut self,
+        command: InputCommand,
+        prev: (Transform, PlayerMovementComponent),
+        collision: &impl MovementCollisionSource,
+        environment: EnvironmentView<'_>,
+        dt: f32,
+        armed: impl FnMut(usize) -> bool,
+    ) -> Option<(Transform, PlayerMovementComponent, MovementEvents)> {
         // Inert until armed: before the local_player baseline, drive no pawn.
+        // Inert too until the pawn's first record has merged: a joiner whose
+        // arming record could not merge (its tuning installed later) holds no
+        // teleport record yet, and predicting from an empty one would fire an
+        // arrival region the host has it latched in, then cut back. Reconcile
+        // alone clears the flag, so that record still adopts silently.
         self.armed?;
+        if self.first_record_pending {
+            return None;
+        }
 
         let (start_transform, start_movement) = prev;
 
-        let sim = input_command_to_sim(&command);
+        let sim = input_command_to_sim_at_yaw(&command, start_movement.teleport.accumulated_yaw);
         // The command's dash request and the movement states around this tick
         // together cover every wider-tolerance window: the request bit catches a
         // dash's entry tick (before the state has transitioned), the resulting
@@ -331,14 +407,18 @@ impl ClientPrediction {
         // allow these states' larger visible correction during a rewound replay.
         let dash_requested = command.movement.dash_pressed;
         let started_in_vault = matches!(start_movement.movement_state, MovementState::Vault { .. });
-        let (transform, movement, events) = replay(
+        let (transform, movement, events) = replay_with_armed(
             start_transform,
             start_movement,
             sim.movement,
             collision,
             environment,
             dt,
+            armed,
         );
+        if events.teleport.is_some() {
+            self.clear_presentation_offset();
+        }
 
         // A vault's path follows movers and death, so it shares dash's wider
         // tolerance for a replay that lands it somewhere a little different. The
@@ -355,8 +435,8 @@ impl ClientPrediction {
 
         if self.history.len() == MAX_HISTORY {
             // Drop the oldest unacked tick: a stalled ack must never grow history
-            // unbounded. Task 5's reconciliation tolerates an ack older than the
-            // ring (it simply finds no matching entry and trusts the authority).
+            // unbounded. Reconciliation tolerates an ack older than the ring (it
+            // simply finds no matching entry and trusts the authority).
             self.history.pop_front();
         }
         self.history.push_back(PredictedTick {
@@ -371,8 +451,7 @@ impl ClientPrediction {
     /// Prune every history entry whose `client_tick` is at or below `acked_tick`.
     /// The host has resolved those commands authoritatively, so their predictions
     /// are settled and need not be replayed again. Entries *after* the ack remain
-    /// for Task 5 to replay on top of the authoritative baseline. Mechanism only:
-    /// this task builds the prune; Task 5 invokes it as part of reconciliation.
+    /// for reconciliation to replay on top of the authoritative baseline.
     pub(crate) fn prune_through_ack(&mut self, acked_tick: u32) {
         while self
             .history
@@ -386,8 +465,9 @@ impl ClientPrediction {
     /// Clear all predicted history. Used by the reconcile path for the two cases that
     /// invalidate every retained prediction at once: an authoritative `None`-ack
     /// reset (the host has not resolved any of the client's commands, so the baseline
-    /// supersedes the whole ring) and a teleport-class correction (the predicted
-    /// trajectory diverged too far to replay onto).
+    /// supersedes the whole ring) and a teleport-floor-sized plain correction (the
+    /// predicted trajectory diverged too far to replay onto). A teleport identity
+    /// change keeps the ring.
     pub(crate) fn clear_history(&mut self) {
         self.history.clear();
     }
@@ -460,36 +540,69 @@ impl ClientPrediction {
     }
 }
 
-/// Movement-only replay: advance one `(Transform, PlayerMovementComponent)` pair
-/// through a single `movement::tick` and return the new pair plus the tick's
-/// `MovementEvents`. Side-effect-free and registry-blind by construction — it
-/// takes OWNED state and has NO `EntityRegistry` parameter, so it provably cannot
-/// run AI, weapons, the death sweep, or reactions (the guard the plan asks for is
-/// the signature itself).
-///
-/// Shared by this module's forward prediction and Task 5's reconciliation replay.
-/// The `position` `movement::tick` consumes/returns is the `Transform.position`;
-/// this helper threads it through so callers only ever see the `Transform`.
+/// [`replay_with_armed`] reading each teleporter's `enabled_on_spawn`. Test-only:
+/// production replays with the registry's bound, replicated armed state.
+#[cfg(test)]
 pub(crate) fn replay(
+    transform: Transform,
+    movement: PlayerMovementComponent,
+    input: MovementInput,
+    collision: &impl MovementCollisionSource,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> (Transform, PlayerMovementComponent, MovementEvents) {
+    let world = collision.combined_collision();
+    replay_with_armed(
+        transform,
+        movement,
+        input,
+        collision,
+        environment,
+        dt,
+        |index| world.static_world.teleporters.records()[index].enabled_on_spawn,
+    )
+}
+
+/// Movement-only replay: advance one `(Transform, PlayerMovementComponent)` pair
+/// through a single `movement::tick_with_immersion_and_armed` and return the new
+/// pair plus the tick's `MovementEvents`. Side-effect-free — it takes OWNED state
+/// and has NO `EntityRegistry` parameter, so it cannot run AI, weapons, the death
+/// sweep, or reactions (the guard is the signature itself). Teleporter armed state
+/// comes from `armed`, which production backs with the registry's replicated state.
+///
+/// Shared by forward prediction and reconciliation replay. The movement position
+/// is the `Transform.position`; this helper threads it through so callers only
+/// ever see the `Transform`. A tick that teleports writes the arrival rotation
+/// (facing plus the teleport's yaw delta).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn replay_with_armed(
     transform: Transform,
     mut movement: PlayerMovementComponent,
     input: MovementInput,
     collision: &impl MovementCollisionSource,
     environment: EnvironmentView<'_>,
     dt: f32,
+    armed: impl FnMut(usize) -> bool,
 ) -> (Transform, PlayerMovementComponent, MovementEvents) {
-    let (new_position, events) = movement::tick(
+    let (new_position, events, _) = movement::tick_with_immersion_and_armed(
         &mut movement,
         &input,
         collision,
         environment,
         dt,
         transform.position,
+        armed,
     );
     let mut new_transform = transform;
     new_transform.position = new_position;
     if input.facing_yaw.is_finite() {
-        new_transform.rotation = glam::Quat::from_rotation_y(input.facing_yaw);
+        new_transform.rotation = glam::Quat::from_rotation_y(
+            input.facing_yaw
+                + events
+                    .teleport
+                    .as_ref()
+                    .map_or(0.0, |event| event.yaw_delta),
+        );
     }
     (new_transform, movement, events)
 }
@@ -620,6 +733,7 @@ mod tests {
     /// Forward command at the given monotonic client tick, dash optional.
     fn forward_command(client_tick: u32, dash_pressed: bool) -> InputCommand {
         InputCommand {
+            teleport_yaw_stamp: 0.0,
             secondary_button: postretro_net::wire::WireFireButtonState {
                 pressed: false,
                 active: false,
@@ -718,6 +832,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(7), EntityId::from_raw(3));
+        prediction.mark_first_record_adopted();
 
         // Chain `prev` forward each tick exactly as `client_predict_tick` does
         // (read current state, predict, write back). The registry — here the local
@@ -773,8 +888,21 @@ mod tests {
             "unarmed prediction records no history (no local pawn driven)"
         );
 
-        // After arming, the same call drives the pawn and records history.
+        // Armed, it stays inert until the pawn's first record has merged: the
+        // client holds no authoritative teleport record to predict from yet.
         prediction.arm(NetworkId(1), EntityId::from_raw(0));
+        let out = prediction.predict_tick(
+            forward_command(0, false),
+            prev.clone(),
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
+        assert!(out.is_none(), "no prediction before the first record");
+        assert!(prediction.history().is_empty());
+
+        // Once it has, the same call drives the pawn and records history.
+        prediction.mark_first_record_adopted();
         let out = prediction.predict_tick(
             forward_command(0, false),
             prev,
@@ -792,6 +920,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(2), EntityId::from_raw(1));
+        prediction.mark_first_record_adopted();
 
         let prev = (start_transform(), component());
         for tick in 0..6u32 {
@@ -836,6 +965,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(9), EntityId::from_raw(4));
+        prediction.mark_first_record_adopted();
 
         // A dash command advances movement state to Dash WITHOUT any weapon/AI/death
         // system running — there is no registry to run them against. The recorded
@@ -872,6 +1002,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(10), EntityId::from_raw(5));
+        prediction.mark_first_record_adopted();
 
         let output = prediction.predict_tick(
             forward_command(0, false),
@@ -899,6 +1030,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(11), EntityId::from_raw(6));
+        prediction.mark_first_record_adopted();
 
         let mut vaulting = component();
         vaulting.movement_state = MovementState::Vault {
@@ -1011,6 +1143,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(1), EntityId::from_raw(0));
+        prediction.mark_first_record_adopted();
         prediction.predict_tick(
             forward_command(0, false),
             (start_transform(), component()),
@@ -1037,6 +1170,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(5), EntityId::from_raw(2));
+        prediction.mark_first_record_adopted();
 
         let prev = (start_transform(), component());
         prediction.predict_tick(
@@ -1057,6 +1191,7 @@ mod tests {
 
         // A periodic re-baseline for the SAME pawn must not wipe unacked predictions.
         prediction.arm(NetworkId(5), EntityId::from_raw(2));
+        prediction.mark_first_record_adopted();
         assert_eq!(
             prediction.history().len(),
             2,
@@ -1065,6 +1200,7 @@ mod tests {
 
         // Arming a DIFFERENT pawn drops the stale ring.
         prediction.arm(NetworkId(6), EntityId::from_raw(8));
+        prediction.mark_first_record_adopted();
         assert!(
             prediction.history().is_empty(),
             "arming a new pawn clears the old pawn's history"
@@ -1103,6 +1239,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(11), EntityId::from_raw(5));
+        prediction.mark_first_record_adopted();
 
         // Log commands straddling the wrap: u32::MAX-1, u32::MAX, 0, 1.
         let ticks = [u32::MAX - 1, u32::MAX, 0, 1];
@@ -1130,6 +1267,152 @@ mod tests {
             remaining,
             vec![0, 1],
             "only the pre-wrap prefix is pruned; the post-wrap tail survives"
+        );
+    }
+
+    /// Quads for the replay course along +X, each facing `normal`.
+    fn course_world() -> CollisionWorld {
+        let mut points = Vec::new();
+        let mut tris = Vec::new();
+        let mut quad = |corners: [Vec3; 4], normal: Vec3| {
+            let base = points.len() as u32;
+            points.extend(corners);
+            let face = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+            if face.dot(normal) >= 0.0 {
+                tris.extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+            } else {
+                tris.extend([[base, base + 2, base + 1], [base, base + 3, base + 2]]);
+            }
+        };
+        let (z0, z1) = (-20.0, 20.0);
+        let floor = |x0: f32, x1: f32, y: f32| {
+            [
+                Vec3::new(x0, y, z0),
+                Vec3::new(x1, y, z0),
+                Vec3::new(x1, y, z1),
+                Vec3::new(x0, y, z1),
+            ]
+        };
+        let riser = |x: f32, y0: f32, y1: f32| {
+            [
+                Vec3::new(x, y0, z0),
+                Vec3::new(x, y1, z0),
+                Vec3::new(x, y1, z1),
+                Vec3::new(x, y0, z1),
+            ]
+        };
+        // Floor, a step up at x = 3, a vault ledge at x = 8 whose lip is a
+        // convex edge, its top, and a drop back down a step at x = 12.
+        quad(floor(-20.0, 3.0, 0.0), Vec3::Y);
+        quad(riser(3.0, 0.0, 0.25), Vec3::NEG_X);
+        quad(floor(3.0, 8.0, 0.25), Vec3::Y);
+        quad(riser(8.0, 0.25, 1.25), Vec3::NEG_X);
+        quad(floor(8.0, 12.0, 1.25), Vec3::Y);
+        quad(riser(12.0, 1.0, 1.25), Vec3::X);
+        quad(floor(12.0, 40.0, 1.0), Vec3::Y);
+        // A wall along the course at z = -0.45, against the capsule's side.
+        quad(
+            [
+                Vec3::new(-20.0, 0.0, -0.45),
+                Vec3::new(40.0, 0.0, -0.45),
+                Vec3::new(40.0, 4.0, -0.45),
+                Vec3::new(-20.0, 4.0, -0.45),
+            ],
+            Vec3::Z,
+        );
+        CollisionWorld::from_triangles_for_test(points, tris)
+    }
+
+    // Host movement and the client predictor run the same pure tick: replaying
+    // the recorded commands reproduces the host's poses bit for bit, through a
+    // step-up, a vault across a convex lip under held then neutral input, and a
+    // ground-stick drop beside a wall.
+    #[test]
+    fn predictor_replay_reproduces_host_poses_exactly_over_a_vault_step_up_and_ground_stick() {
+        use crate::sim::run_host_movement_tick;
+        use postretro_entities::EntityRegistry;
+        use postretro_foundation::{VaultEntry, VaultParams, VaultTrigger};
+
+        let mut desc = descriptor();
+        desc.vault = Some(VaultParams {
+            max_height: 1.6,
+            swim_max_height: 0.9,
+            duration_ms: 320.0,
+            from: VaultEntry {
+                ground: Some(VaultTrigger::Auto),
+                ..VaultEntry::default()
+            },
+            allow_fire: false,
+        });
+        let world = course_world();
+        let environment = postretro_collision::EnvironmentView::level_only(GRAVITY);
+        let start = Transform {
+            position: Vec3::new(0.0, 1.22, -0.03),
+            ..Transform::default()
+        };
+        let pawn_component = PlayerMovementComponent::from_descriptor(&desc);
+
+        // Forward along +X (yaw -pi/2), walking: held into the ledge until the
+        // vault exits (tick 91), neutral just after, then on over the drop.
+        const NEUTRAL: std::ops::Range<u32> = 92..120;
+        let mut commands = Vec::new();
+        for tick in 0..240u32 {
+            let mut command = forward_command(tick, false);
+            command.movement.facing_yaw = -std::f32::consts::FRAC_PI_2;
+            command.movement.running = false;
+            if NEUTRAL.contains(&tick) {
+                command.movement.wish_dir = [0.0, 0.0];
+            }
+            commands.push(command);
+        }
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(start);
+        registry
+            .set_component(pawn, pawn_component.clone())
+            .unwrap();
+        let mut host = Vec::new();
+        for command in &commands {
+            let yaw = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .teleport
+                .accumulated_yaw;
+            let input = input_command_to_sim_at_yaw(command, yaw).movement;
+            run_host_movement_tick(&mut registry, &world, environment, &[(pawn, input)], DT);
+            host.push(registry.get_component::<Transform>(pawn).unwrap().position);
+        }
+
+        let mut prediction = ClientPrediction::new();
+        prediction.arm(NetworkId(7), pawn);
+        prediction.mark_first_record_adopted();
+        let mut prev = (start, pawn_component);
+        let mut states = Vec::new();
+        for (command, host_position) in commands.iter().zip(&host) {
+            prev = prediction
+                .predict_tick(*command, prev, &world, environment, DT)
+                .expect("armed prediction advances the pawn");
+            assert_eq!(
+                prev.0.position.to_array(),
+                host_position.to_array(),
+                "client tick {}: the replay diverged from the host",
+                command.client_tick
+            );
+            states.push(prev.1.movement_state.kind());
+        }
+        let vault_ticks: Vec<usize> = (0..states.len())
+            .filter(|&tick| states[tick] == MovementStateKind::Vault)
+            .collect();
+        assert!(
+            vault_ticks
+                .last()
+                .is_some_and(|&last| last + 1 < NEUTRAL.start as usize),
+            "the course vaults under held input and exits before the neutral window"
+        );
+        let end = host.last().unwrap();
+        assert!(
+            end.x > 13.0 && (end.y - 2.22).abs() < 1.0e-3,
+            "the course ends past the drop, at {end:?}"
         );
     }
 }

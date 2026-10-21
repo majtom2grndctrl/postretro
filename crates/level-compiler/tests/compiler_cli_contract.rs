@@ -36,6 +36,7 @@ const SUMMARY_LABELS: &[&str] = &[
     "AnimLightChunks",
     "AnimWeightMaps",
     "TextureMips",
+    "Reflection Probes",
     "ClusterDirectory",
     "Packing",
     "Total",
@@ -713,7 +714,7 @@ fn warren_zero_budget_projects_current_membership_before_base_sh_bake() {
         .arg("1.0")
         .arg("--lightmap-density")
         .arg("0.25")
-        .arg("--sh-delta-working-set-max-size")
+        .arg("--working-set-max-size")
         .arg("0")
         .output()
         .expect("spawn current-policy warren projection");
@@ -849,6 +850,44 @@ fn plain_cli_is_deterministic_and_preserves_progress_summary_contracts() {
     assert_eq!(
         warning_counts[0], warning_counts[1],
         "throttling must not change the warning tally",
+    );
+}
+
+// Acceptance row 8: reflection-probe capture, light share included, is
+// independent of the worker count. The fixture holds a pool under an
+// animated light, an animated sdf light and a bake-only animated light.
+#[test]
+#[ignore = "two cold prl-build bakes; run on demand with -- --ignored"]
+fn reflection_probes_are_byte_identical_at_one_and_four_jobs() {
+    let temp = TempBuildDir::new();
+    let maps = temp.0.join("maps");
+    std::fs::create_dir(&maps).expect("create fixture maps directory");
+    let input = maps.join("reflection_probe_lights.map");
+    std::fs::write(&input, include_str!("fixtures/reflection_probe_lights.map"))
+        .expect("write fixture map");
+    let serial_prl = temp.0.join("serial.prl");
+    let parallel_prl = temp.0.join("parallel.prl");
+
+    let serial = compile_fixture(&input, &serial_prl, 1);
+    assert_success(&serial, 1);
+    let parallel = compile_fixture(&input, &parallel_prl, 4);
+    assert_success(&parallel, 4);
+
+    let id = postretro_level_format::SectionId::ReflectionProbes as u32;
+    let serial = section_payloads(&serial_prl);
+    let parallel = section_payloads(&parallel_prl);
+    let probes = serial.get(&id).expect("the pool emits section 54");
+    let decoded =
+        postretro_level_format::reflection_probes::ReflectionProbesSection::from_bytes(&probes.1)
+            .expect("section 54 decodes");
+    assert!(
+        decoded.probes[0].lights.iter().any(|light| light.is_used()),
+        "the capture stores light shares"
+    );
+    assert_eq!(
+        Some(probes),
+        parallel.get(&id),
+        "-j 1 and -j 4 must emit byte-identical section 54"
     );
 }
 

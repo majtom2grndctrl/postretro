@@ -814,6 +814,7 @@ mod tests {
     #[test]
     fn streamed_write_matches_legacy_container_bytes_and_file_readback() {
         let output = temp_output_path("streamed-pack", "prl");
+        let lightmap = postretro_level_format::lightmap::LightmapSection::empty(2);
         let legacy_sections = vec![
             postretro_level_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
@@ -823,7 +824,7 @@ mod tests {
             postretro_level_format::SectionBlob {
                 section_id: SectionId::Lightmap as u32,
                 version: 1,
-                data: vec![0xAA, 0xBB],
+                data: lightmap.to_bytes(),
             },
         ];
         let mut expected = Vec::new();
@@ -836,7 +837,12 @@ mod tests {
                 PlannedSection::new(SectionId::Geometry as u32, 1, 3, || {
                     Ok(vec![0x01, 0x02, 0x03])
                 }),
-                PlannedSection::new(SectionId::Lightmap as u32, 1, 2, || Ok(vec![0xAA, 0xBB])),
+                PlannedSection::with_writer(
+                    SectionId::Lightmap as u32,
+                    1,
+                    lightmap.byte_len() as u64,
+                    |writer| Ok(lightmap.write_to(writer)?),
+                ),
             ],
         )
         .expect("streamed PRL should write and read back");

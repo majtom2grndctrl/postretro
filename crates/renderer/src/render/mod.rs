@@ -15,6 +15,8 @@ mod direct_sh_compose;
 mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
+mod fluid_reflection_probes;
+mod fluid_scene_inputs;
 mod fluid_surface;
 mod fog_pass;
 mod frame_timing;
@@ -36,6 +38,10 @@ mod sh_compose;
 mod sh_compose_dispatch;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
+#[cfg(feature = "dev-tools")]
+mod sh_diagnostics_grid;
+#[cfg(all(test, feature = "dev-tools"))]
+mod sh_diagnostics_perf;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics_residency;
 mod sh_indirection;
@@ -78,6 +84,14 @@ mod shadowmask_union_test;
 mod world_specular_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
+#[cfg(test)]
+mod fluid_baked_frame_test;
+#[cfg(test)]
+mod fluid_baked_frame_test_fixtures;
+#[cfg(test)]
+mod fluid_reflection_frame_test;
+#[cfg(test)]
+mod fluid_reflection_frame_test_fixtures;
 #[cfg(test)]
 mod fluid_surface_frame_test;
 mod geometry_install_marks;
@@ -250,7 +264,7 @@ pub use rigid_occluder_depth::MoverOccluderAabb;
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{
     AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow, LightmapStreamingTab,
-    TriggerDiagnosticsRow, draw_diagnostics_panel,
+    NetworkLagLever, NetworkSessionRole, TriggerDiagnosticsRow, draw_diagnostics_panel,
 };
 #[cfg(feature = "dev-tools")]
 pub use frame_timing::FrameTimingSnapshot;

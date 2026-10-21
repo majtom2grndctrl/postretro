@@ -387,6 +387,8 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         cluster_count: 0,
         grid_dimensions: [4, 4, 4],
         generation: 0,
+        #[cfg(feature = "dev-tools")]
+        probe_readback: Default::default(),
         targets: BTreeSet::new(),
         dense_owner: Vec::new(),
         dense_node: Vec::new(),

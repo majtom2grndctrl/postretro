@@ -13,6 +13,7 @@
 pub(crate) mod lead_map;
 pub(crate) mod portal_distance;
 pub(crate) mod pvs_sampling;
+pub mod teleport_routes;
 
 #[cfg(test)]
 pub(crate) mod test_fixtures;
@@ -31,7 +32,9 @@ use lead_map::{
     LeadSources, MAX_LEAD_METERS, build_lead_map, dilate_one_hop, meters_fixed, portal_neighbours,
 };
 use portal_distance::{Neighbors, portal_graph_from_sections, recompute_pairs};
+use postretro_level_format::teleporters::TeleportersSection;
 use pvs_sampling::{SamplingStats, sample_pvs};
+use teleport_routes::{TeleportResidencyInput, arrival_origins, build_routes};
 
 pub const CELL_RESIDENCY_SET_STAGE_ID: &str = "cell_residency_set";
 /// Bump when sampling, dilation, the lead metric, the maximum lead, the
@@ -39,7 +42,8 @@ pub const CELL_RESIDENCY_SET_STAGE_ID: &str = "cell_residency_set";
 ///
 /// v2: the key hashes the Cells fields the walk reads instead of the encoded
 /// section, so per-cell face ranges no longer participate.
-pub const CELL_RESIDENCY_SET_STAGE_VERSION: u32 = 2;
+/// v3: canonical teleporter section data and zero-length arrival routes.
+pub const CELL_RESIDENCY_SET_STAGE_VERSION: u32 = 3;
 
 /// Camera cells: every cell the camera can stand in (not solid, not
 /// exterior), charted or not. Ascending.
@@ -60,6 +64,7 @@ pub fn cell_residency_set_bake_cached(
     cells: &CellsSection,
     portals: &PortalsSection,
     locator: &CellLocatorSection,
+    teleporters: Option<TeleportResidencyInput<'_>>,
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<Option<CellResidencySetSection>> {
@@ -70,7 +75,19 @@ pub fn cell_residency_set_bake_cached(
     let cameras = camera_cells(cells);
     control.publish_total(cameras.len());
 
-    let key = cache.map(|_| cell_residency_set_cache_key(cells, portals, locator));
+    let empty_teleporters = TeleportersSection::default();
+    let section = teleporters
+        .map(|input| input.section)
+        .unwrap_or(&empty_teleporters);
+    let key = cache.map(|_| {
+        cell_residency_set_cache_key(
+            cells,
+            portals,
+            locator,
+            section,
+            teleporters.map(|input| input.tree),
+        )
+    });
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
         match cache.get(key) {
             Some(data) => match CellResidencySetSection::from_bytes(&data, cells.cells.len()) {
@@ -89,7 +106,11 @@ pub fn cell_residency_set_bake_cached(
         }
     }
 
-    let section = bake(&world, cells, portals, &cameras, control);
+    let routes = teleporters
+        .map(|input| build_routes(input, cells, &world))
+        .transpose()?
+        .unwrap_or_default();
+    let section = bake(&world, cells, portals, &cameras, &routes, control);
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
         cache.put(key, &section.to_bytes());
     }
@@ -127,6 +148,7 @@ fn bake(
     cells: &CellsSection,
     portals: &PortalsSection,
     cameras: &[u32],
+    routes: &[teleport_routes::TeleportResidencyRoute],
     control: &BakeControl,
 ) -> CellResidencySetSection {
     let started = std::time::Instant::now();
@@ -137,10 +159,12 @@ fn bake(
     let pvs = sample_pvs(world, cameras, control);
     log_sampling(&pvs.stats);
     let visible = dilate_one_hop(&pvs.dense, &portal_neighbours(&graph));
+    let arrival_origins = arrival_origins(routes, &neighbors, cameras, cell_count, max_lead);
     let map = build_lead_map(
         &LeadSources {
             neighbors: &neighbors,
             visible: &visible,
+            arrival_origins: &arrival_origins,
             cell_count,
         },
         cameras,
@@ -187,15 +211,41 @@ pub(crate) fn cell_residency_set_cache_key(
     cells: &CellsSection,
     portals: &PortalsSection,
     locator: &CellLocatorSection,
+    teleporters: &TeleportersSection,
+    tree: Option<&crate::partition::BspTree>,
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
     for bytes in [
         walk_cell_bytes(cells),
         portals.to_bytes(),
         locator.to_bytes(),
+        teleporters.to_bytes(),
     ] {
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
+    }
+    // Exact classification reads f64 leaf geometry, which the encoded f32
+    // locator and Cells bounds alone cannot distinguish near a contact.
+    if !teleporters.teleporters.is_empty() {
+        let tree = tree.expect("nonempty teleporters require final BSP geometry");
+        hasher.update(&(tree.leaves.len() as u64).to_le_bytes());
+        for leaf in &tree.leaves {
+            for value in leaf
+                .bounds
+                .min
+                .to_array()
+                .into_iter()
+                .chain(leaf.bounds.max.to_array())
+            {
+                hasher.update(&value.to_le_bytes());
+            }
+            hasher.update(&(leaf.defining_planes.len() as u64).to_le_bytes());
+            for &(normal, distance) in &leaf.defining_planes {
+                for value in normal.to_array().into_iter().chain([distance]) {
+                    hasher.update(&value.to_le_bytes());
+                }
+            }
+        }
     }
     hasher.update(&meters_fixed(MAX_LEAD_METERS).to_le_bytes());
     hasher.update(&postretro_visibility::PORTAL_WALK_EPOCH.to_le_bytes());

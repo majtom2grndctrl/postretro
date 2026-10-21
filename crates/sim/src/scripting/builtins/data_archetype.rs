@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use super::MapEntity;
 use postretro_combat_model::{CarriedState, restore_carried_health};
@@ -691,6 +691,34 @@ fn ai_aggro_armed_on_spawn(entity: &MapEntity) -> bool {
     }
 }
 
+/// Which way a descriptor instance faces at spawn. A placed enemy, prop or
+/// pickup faces with its model's `+Z` front; a player pawn's transform carries
+/// its camera yaw, which looks along `-Z`. Both read the authored arrow; only
+/// the local front axis differs. A loadout weapon is a model too: it keeps this
+/// rotation while carried and drops with it, so it must face like a pickup
+/// placed at its pawn's start.
+pub(super) fn descriptor_spawn_rotation(
+    entity: &MapEntity,
+    spawn_path: DescriptorSpawnPath,
+) -> Quat {
+    match spawn_path {
+        DescriptorSpawnPath::MapPlacement | DescriptorSpawnPath::DefaultWeapon => {
+            entity.model_rotation_quat()
+        }
+        DescriptorSpawnPath::PlayerSpawn | DescriptorSpawnPath::NetworkSlot => {
+            entity.rotation_quat()
+        }
+        // No caller today: an `entity_spawner` copy takes the spawner's own
+        // Transform, and a projectile flight entity spawns through netcode's
+        // `spawn_presentation_entity`. A synthetic `angles: ZERO` placement would
+        // silently face `Ry(π)` here, so a new caller must pick a frame.
+        DescriptorSpawnPath::RuntimeSpawn | DescriptorSpawnPath::ProjectilePresentation => {
+            debug_assert!(false, "no spawn frame chosen for {spawn_path:?}");
+            entity.model_rotation_quat()
+        }
+    }
+}
+
 pub(super) fn spawn_descriptor_instance(
     registry: &mut EntityRegistry,
     descriptor: &EntityTypeDescriptor,
@@ -702,7 +730,7 @@ pub(super) fn spawn_descriptor_instance(
     let origin_shift = ai_capsule_center_from_feet_offset(descriptor, agent_params);
     let transform = Transform {
         position: entity.origin + origin_shift,
-        rotation: entity.rotation_quat(),
+        rotation: descriptor_spawn_rotation(entity, spawn_path),
         scale: Vec3::ONE,
     };
 
@@ -3154,6 +3182,54 @@ mod tests {
             .map(|(id, _)| reg.get_component::<BrainComponent>(id).unwrap().aggro_armed)
             .collect();
         assert_eq!(gates, vec![true, true]);
+    }
+
+    /// Map yaw 90 is the TrenchBroom arrow along Quake `+Y` (engine `-X`). A
+    /// placed enemy or prop points its model's `+Z` front that way; a player
+    /// spawned at the same yaw looks that way along `-Z`, its transform
+    /// unchanged from the plain authored frame.
+    #[test]
+    fn map_yaw_faces_placed_model_fronts_and_player_view_along_the_arrow() {
+        let yaw_90 = Vec3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0);
+        let descriptors = vec![
+            behavior_enemy_descriptor("arrow_enemy"),
+            mesh_descriptor("arrow_prop", false),
+        ];
+        let placements: Vec<MapEntity> = ["arrow_enemy", "arrow_prop"]
+            .into_iter()
+            .map(|classname| {
+                let mut entity = placement(classname, &[("enabled_on_spawn", "true")]);
+                entity.angles = yaw_90;
+                entity
+            })
+            .collect();
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
+        let fronts: Vec<Vec3> = reg
+            .iter_with_kind(ComponentKind::Mesh)
+            .map(|(id, _)| reg.get_component::<Transform>(id).unwrap().rotation * Vec3::Z)
+            .collect();
+        assert_eq!(fronts.len(), 2, "enemy and prop both spawn");
+        for front in fronts {
+            assert!(front.abs_diff_eq(Vec3::NEG_X, 1e-6), "model front {front}");
+        }
+
+        let mut reg = EntityRegistry::new();
+        let start = spawn_point_at(Vec3::ZERO, yaw_90, &[]);
+        spawn_from_player_starts(
+            std::slice::from_ref(&start),
+            &[player_with_movement("player")],
+            &mut reg,
+            None,
+        );
+        let pawn = reg.local_player_pawn().expect("movement pawn spawns");
+        let rotation = reg.get_component::<Transform>(pawn).unwrap().rotation;
+        assert_eq!(
+            rotation,
+            start.rotation_quat(),
+            "player spawn keeps the view frame"
+        );
+        assert!((rotation * Vec3::NEG_Z).abs_diff_eq(Vec3::NEG_X, 1e-6));
     }
 
     #[test]

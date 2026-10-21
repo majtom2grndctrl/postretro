@@ -1,0 +1,281 @@
+// Fluid reflection probe resources: the probe array, share table and distance
+// array that join the fluid pass's level-scoped group 4, created at level install.
+// See: context/lib/rendering_pipeline.md §7.3a, §10 · context/lib/resource_management.md §5
+
+use std::num::NonZeroU64;
+
+use wgpu::util::DeviceExt;
+
+use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
+use postretro_level_format::reflection_probes::ReflectionProbesSection;
+use postretro_render_cpu::fluid_surface::FluidFaceDriftMap;
+use postretro_render_cpu::fluid_surface::reflection::{
+    FLUID_PROBE_TABLE_BYTES, FLUID_REFLECTION_NO_PROBE, fill_probe_indices, pack_probe_table,
+    usable_probe_section,
+};
+
+/// Group 4 binding of the probe array: one capture tile per layer.
+pub(crate) const FLUID_PROBE_ARRAY_BINDING: u32 = 1;
+/// Group 4 binding of the share table: one non-dynamic uniform at the cap.
+pub(crate) const FLUID_PROBE_TABLE_BINDING: u32 = 2;
+/// Group 4 binding of the distance array: one R16Float distance tile per
+/// probe, in the probe array's layers.
+pub(crate) const FLUID_PROBE_DISTANCE_BINDING: u32 = 3;
+
+/// A filterable, fragment-visible 2D-array texture entry of group 4.
+fn filterable_array_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+/// The probe array, share table and distance array entries of group 4. Both
+/// arrays sample through the SH atlas's linear-clamp sampler (group 3
+/// binding 2), so the pass adds no sampler.
+pub(crate) fn fluid_probe_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
+    [
+        filterable_array_entry(FLUID_PROBE_ARRAY_BINDING),
+        wgpu::BindGroupLayoutEntry {
+            binding: FLUID_PROBE_TABLE_BINDING,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(FLUID_PROBE_TABLE_BYTES as u64),
+            },
+            count: None,
+        },
+        filterable_array_entry(FLUID_PROBE_DISTANCE_BINDING),
+    ]
+}
+
+/// The section whose probes this renderer installs: render-cpu's usable one
+/// (some probe within the cap, a tile dimension and border the decoder
+/// accepts, one probe per layer, a tile format the array uploads, colour and
+/// distance payloads matching the header), mapped to a texture format. The
+/// loader refuses anything else; a hand-built section that slips past is
+/// dropped whole and reflects nothing rather than failing texture creation.
+/// The draw predicate's bound face reads the same usable answer, and install
+/// feeds this one to the table, the probe indices and the arrays, so a face
+/// never draws for or samples a probe that is not there.
+pub(crate) fn installable_probe_section(
+    section: Option<&ReflectionProbesSection>,
+) -> Option<&ReflectionProbesSection> {
+    usable_probe_section(section).filter(|section| probe_array_format(section).is_some())
+}
+
+/// The fluid mesh's third vertex buffer: one probe index per vertex of the
+/// mesh `face_maps` describe, written once here and never again; and whether
+/// any face is probe-bound, which keys the screen-space reflection target.
+pub(crate) fn create_probe_index_buffer(
+    device: &wgpu::Device,
+    volumes: &[EnvironmentVolumeRecord],
+    face_maps: &[Option<FluidFaceDriftMap>],
+    vertex_count: usize,
+    section: Option<&ReflectionProbesSection>,
+) -> (wgpu::Buffer, bool) {
+    let mut indices = vec![FLUID_REFLECTION_NO_PROBE; vertex_count];
+    fill_probe_indices(volumes, face_maps, section, &mut indices);
+    let has_probe_bound_face = indices
+        .iter()
+        .any(|&index| index != FLUID_REFLECTION_NO_PROBE);
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Fluid Surface Probe Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    (buffer, has_probe_bound_face)
+}
+
+/// BC6H tiles stay compressed through upload, as the SH atlases do: the
+/// device requires `TEXTURE_COMPRESSION_BC` at init (see
+/// `renderer_init_resources.rs`), so no adapter reaches here without it. The
+/// uncompressed debug tag uploads as `Rgba16Float` through the same binding.
+fn probe_array_format(section: &ReflectionProbesSection) -> Option<wgpu::TextureFormat> {
+    match section.atlas_format {
+        IRRADIANCE_FORMAT_BC6H if section.tile_dimension.is_multiple_of(4) => {
+            Some(wgpu::TextureFormat::Bc6hRgbUfloat)
+        }
+        IRRADIANCE_FORMAT_RGBA16F => Some(wgpu::TextureFormat::Rgba16Float),
+        _ => None,
+    }
+}
+
+/// One level's probe array, share table and distance array. Owned by the
+/// installed fluid surfaces, so all three drop with them at clear and unload.
+pub(crate) struct FluidProbeResources {
+    // Held so the level, not the bind group alone, owns the textures' life.
+    _array: wgpu::Texture,
+    array_view: wgpu::TextureView,
+    table: wgpu::Buffer,
+    _distance: wgpu::Texture,
+    distance_view: wgpu::TextureView,
+}
+
+impl FluidProbeResources {
+    /// Upload `section` (already [`installable_probe_section`]); `None`
+    /// builds the dummies group 4's fixed layout needs: a 1×1 one-layer
+    /// zero array, a zeroed table and a 1×1 one-layer zero distance array,
+    /// read by no fragment since every probe index is then the no-probe
+    /// value.
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        section: Option<&ReflectionProbesSection>,
+    ) -> Self {
+        let array = match section.and_then(|section| Some((section, probe_array_format(section)?)))
+        {
+            Some((section, format)) => {
+                let array = device.create_texture_with_data(
+                    queue,
+                    &array_descriptor(
+                        "Fluid Reflection Probe Array",
+                        format,
+                        section.tile_dimension,
+                        section.probes.len() as u32,
+                    ),
+                    wgpu::util::TextureDataOrder::LayerMajor,
+                    &section.tiles,
+                );
+                log::info!(
+                    "[Renderer] Fluid reflection probes installed: {} probes, {} {}² tiles \
+                     ({} B), R16Float distance tiles ({} B), {} bound faces, share table {} B",
+                    section.probes.len(),
+                    format_label(format),
+                    section.tile_dimension,
+                    section.tiles.len(),
+                    section.distances.len(),
+                    section.bindings.len(),
+                    FLUID_PROBE_TABLE_BYTES,
+                );
+                array
+            }
+            None => device.create_texture_with_data(
+                queue,
+                &array_descriptor(
+                    "Fluid Reflection Probe Array Dummy",
+                    wgpu::TextureFormat::Rgba16Float,
+                    1,
+                    1,
+                ),
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &[0u8; 8],
+            ),
+        };
+        let array_view = array.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Fluid Reflection Probe Array View"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let table = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Fluid Reflection Probe Table"),
+            contents: &pack_probe_table(section),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        // One distance tile per probe in the colour tiles' layers, uploaded
+        // as stored (little-endian f16); 0 is no surface.
+        let distance = match section.filter(|section| probe_array_format(section).is_some()) {
+            Some(section) => device.create_texture_with_data(
+                queue,
+                &array_descriptor(
+                    "Fluid Reflection Probe Distance Array",
+                    wgpu::TextureFormat::R16Float,
+                    section.tile_dimension,
+                    section.probes.len() as u32,
+                ),
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &section.distances,
+            ),
+            None => device.create_texture_with_data(
+                queue,
+                &array_descriptor(
+                    "Fluid Reflection Probe Distance Array Dummy",
+                    wgpu::TextureFormat::R16Float,
+                    1,
+                    1,
+                ),
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &[0u8; 2],
+            ),
+        };
+        let distance_view = distance.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Fluid Reflection Probe Distance Array View"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        Self {
+            _array: array,
+            array_view,
+            table,
+            _distance: distance,
+            distance_view,
+        }
+    }
+
+    /// Group 4's probe array, share table and distance array entries.
+    pub(crate) fn bind_group_entries(&self) -> [wgpu::BindGroupEntry<'_>; 3] {
+        [
+            wgpu::BindGroupEntry {
+                binding: FLUID_PROBE_ARRAY_BINDING,
+                resource: wgpu::BindingResource::TextureView(&self.array_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: FLUID_PROBE_TABLE_BINDING,
+                resource: self.table.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: FLUID_PROBE_DISTANCE_BINDING,
+                resource: wgpu::BindingResource::TextureView(&self.distance_view),
+            },
+        ]
+    }
+
+    /// The probe array's tile width, height and layer count.
+    #[cfg(test)]
+    pub(crate) fn array_size(&self) -> wgpu::Extent3d {
+        self._array.size()
+    }
+
+    /// The distance array's tile width, height and layer count.
+    #[cfg(test)]
+    pub(crate) fn distance_size(&self) -> wgpu::Extent3d {
+        self._distance.size()
+    }
+}
+
+fn array_descriptor(
+    label: &'static str,
+    format: wgpu::TextureFormat,
+    dimension: u32,
+    layers: u32,
+) -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: dimension,
+            height: dimension,
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }
+}
+
+fn format_label(format: wgpu::TextureFormat) -> &'static str {
+    match format {
+        wgpu::TextureFormat::Bc6hRgbUfloat => "BC6H",
+        _ => "Rgba16Float",
+    }
+}

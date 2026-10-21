@@ -88,7 +88,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
 | **Decal selection** | Planned. |
-| **Environment-mapped reflections** | Planned. See §5. |
+| **Environment-mapped reflections** | Fluid surfaces only (§5). No material reads probes: the forward pass has no free sampled-texture binding. |
 
 Each behavior is a property of the material enum variant. Which prefixes carry which flags is a content concern — the engine provides the mechanism.
 
@@ -249,26 +249,42 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
 
 ---
 
-## 5. Cubemap Handling
+## 5. Reflection Probes
 
-### 5.1 Entity Format
+A reflection probe is a compile-time capture of the static world, stored for distance-corrected, box-projected lookup. The record is reflector-agnostic: a capture point, a world-space projection box, a full-sphere octahedral colour tile and a distance tile beside it. Both tiles share a fixed engine tile size (128, carried in the section header, so a later authored size is additive) and the SH atlas's direction mapping and border convention (`rendering_pipeline.md` §4, Indirect). Water is its only reader (`rendering_pipeline.md` §7.3a); a later glass or polished-stone reader takes its base reflectance from its material.
 
-`env_cubemap` is a point entity placed in TrenchBroom. It marks a position where a cubemap should be baked. Properties:
+### 5.1 Placement
 
-| Property | Description |
-|----------|-------------|
-| origin | Bake position (inherited from entity placement) |
-| size | Resolution per face in pixels (default: 256) |
+- **Derived by default.** prl-build gives a probe to every up-facing fluid face no authored box claims, so existing maps' water reflects after a rebuild. Each face fits a box, clamped to the hull, to what its water sees: a pool sunk below its room's floor fits the room. Faces of one fluid entity at one height whose boxes match share a probe, stored with their union box. The fit is a heuristic over upper-hemisphere rays from each face's area centroid, and its limits are accepted: a wrong fit is fixed with an authored box, not another fit rule. Known: under an overhanging lip with a tray below, a side the pool lies toward can snap to the tray riser; an opening spanning a room's whole side under a lintel lets the box reach the far room's wall (the distance search still finds the lintel); a broad full-height pillar beside a ring pool splits it into a probe per side.
+- **Authored override.** A `reflection_volume` brush's AABB is its projection box and influence region (`build_pipeline.md` §Custom FGD). An up-facing face binds the smallest authored box containing its area centroid, ties going to the earlier box in map entity order; volumes within a small relative tolerance tie, so float rounding of equal boxes never decides. Side and sloped faces bind nothing.
+- **Capture point.** Stored, 2 mm above a water plane at or below every plane its probe binds, so lookups stay in the upper hemisphere. A derived probe's point is the horizontal area centroid of its group's water; an authored box's is that of the up-facing water on the lowest plane inside the box, fixed before binding so it sits over real water even when a smaller box claims that basin. Either moves onto the water when the centroid falls off it. `_capture_offset` shifts an authored point horizontally, clear of a pillar standing in the water or toward a better vantage. A box binding planes at more than one height keeps its probe and warns, naming the heights.
+- **Drops and cap.** A point within 1 cm of a wall moves 1 cm clear of it when it can stay inside its box and over its water, so no capture ray starts on a wall. A probe drops with a warning naming the entity when its point lies in solid, inside any fluid or outside the hull, or lies in open space but cannot clear a wall: crowded (the move would leave its box or its water) or wedged (walls within 1 cm on both sides of an axis, or under 2 cm apart). Only a point in a solid leaf reports as in solid. An authored box binding no face drops too, warning. A dropped box's faces bind as if it were absent; a dropped derived probe's faces bind nothing. Order: authored capture points, then binding among the kept boxes, then boxes left binding no face, then derived probes for unclaimed faces and their drops, then the cap, so a dropped probe never takes a slot. The per-level cap is the probe array's portable layer limit, 256: authored probes past it refuse the build, and derived probes past it drop, largest bound surface area kept (equal within the same tolerance, the earlier kept), with one warning.
 
-### 5.2 Bake Pipeline
+### 5.2 Capture
 
-> **Not yet implemented.** Entity format defined; bake tool deferred.
+Captured in its own cached prl-build stage against the static world (`build_pipeline.md` §Compiler pipeline): movers never appear, `switch` brushes do, and small brushes may be excluded (Exclusion, below). Load-time GPU capture would be runtime render-to-texture for mirrors (§9). Shading is albedo × (direct + indirect) + emissive, as the runtime would draw it at a reference state: the static lightmap, every animated light's weight map, the SDF-shadowed lights the runtime's per-fragment selection picks at each hit, and SH indirect with every animated light's delta. An animated light enters at the cycle mean of its runtime clamped curve, a curveless one at its authored colour, whether or not it starts active. No specular, no dynamic lights. Coupled to the renderer by parity: the indirect weight and per-prefix emissive multipliers must equal the renderer's production values, and the SDF light selection and shading mirror the forward pass's as drawn, quirks included: point and directional SDF lights draw at half brightness (a zero aim meets the cone term), and an animated SDF light's direct is static (only its delta SH animates). Tests pin each, so a runtime change there updates the capture and bumps the capture stage's cache epoch (`build_pipeline.md` §Build Cache); the key hashes no shader text, so without the bump warm builds keep stale tiles. A runtime-tuned dev indirect weight mismatches the bake.
 
-A separate offline tool bakes one cubemap per `env_cubemap` entity position. Baked output lives alongside the map file. See `build_pipeline.md` when this is planned.
+- **Colour tile.** BC6H, each texel the mean of four rotated-grid rays.
+- **Distance tile.** R16F, each texel the mean over the same rays of 1/|hit − capture point|₁. Inverse L1 is affine across an octahedral octant on a plane, so bilinear filtering reconstructs a wall exactly. 0 means the ray hit nothing, and no finite hit stores 0, so a later sky term can fill exactly the directions the capture saw nothing.
+- **Light share.** Each probe stores its top four animated lights by contribution, each with its roster index, RGB reference value and RGB share of the capture over the upper hemisphere per direction lobe (up and four horizontal), the only directions water reads, so light on a pool floor never moves the reflection; the runtime scales the capture by them live (`rendering_pipeline.md` §7.3a). A light's identity is its animated-light roster index, the same in compiler and runtime. The compiler logs each probe's covered share.
+- **Exclusion (decided; not built, follows the fluid screen-space reflection layer).** Each probe's primary rays skip static brushes small relative to its water, which then reflect only through the screen-space layer, at screen resolution with true parallax. Shadow rays and the box fit still see every brush, so placement and captured shadows are unchanged.
+  - **Rule, per probe.** W = √(bound water area). A brush is excluded when its longest extent in the reflector's plane is below t = p(W)·W: p = 0.85 up to 10 m, then a power law through 0.33 at 50 m, continuing. These anchors are initial values, tuned visually.
+  - **Always kept:** a brush thinner along the reflector normal than one coarsest SSR march stride at view distance W; a brush with a downward face above and over the probe's water, since the camera never sees an underside; a brush set to `always` (`build_pipeline.md` §Custom FGD). `never` excludes.
+  - **No leaks.** A ray through an excluded brush reads what lies behind it, the kept surface CSG removed where they touched (filled from that surface's material and lighting), or the excluded brush itself. It never misses or ends outside the projection box, whose floor the test ignores.
+  - **Runtime-blind.** Exclusion changes only what the capture holds. No section format, runtime input or camera dependence follows. Where the screen-space layer does not run, excluded brushes do not reflect.
 
-### 5.3 Runtime Consumption
+### 5.3 Residency
 
-Reflective surfaces (wet floors, chrome, glass) sample from the nearest `env_cubemap` probe by world-space distance.
+PRL id 54 carries probes, tiles and face bindings (`build_pipeline.md` §PRL section IDs); absent means no probes. Probes load whole-resident at level install, with the fluid surfaces, and release with them at unload; no streaming. GPU records, all owned by the installed fluid surfaces:
+
+| Record | Form |
+|---|---|
+| Colour array | BC6H `texture_2d_array`, one tile per layer |
+| Distance array | R16Float `texture_2d_array`, the same layers |
+| Share table | One uniform laid out at the cap, written once at install: per probe its box, capture point and layer, then its light entries with shares packed unorm10 RGB per lobe |
+| Probe index | Third fluid vertex buffer, one probe index per vertex, written once at install from the face bindings |
+
+At the cap the arrays cost 12 MiB (colour 4 194 304 B BC6H, distance 8 388 608 B) and the table 61 456 B; the probe-index buffer costs 4 B per fluid vertex. A level with fluid surfaces and no usable id 54 binds a 1×1 one-layer dummy for each array and a zeroed table, and no face samples them.
 
 ---
 
@@ -361,8 +377,7 @@ Renderer uses handles to bind textures and buffers during draw calls. If a handl
 
 - **Import-time model normalization.** Models render at their authored glTF scale — no fit-to-size, unit conversion, or auto-rescale at load. Author geometry at final world size (§7).
 - **WAD file support.** All textures are PNGs. No Quake/Half-Life WAD import or export.
-- **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras.
+- **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras. Reflection probes capture at compile time (§5). Fluid screen-space reflections march the frame already drawn and render no second view (`rendering_pipeline.md` §7.3a).
 - **GPU asset hot-reload.** Textures and models are loaded once per level. Descriptor tuning may refresh, but visual asset path changes wait for the next level install.
 - **Procedural textures.** No noise-based or shader-generated textures. All surfaces use authored PNGs.
 - **Material texture streaming / virtual textures.** All material textures for a level load upfront, with no partial or on-demand loading. Baked lighting (SH clusters, lightmap and shadowmask cell blocks) does stream; see §8.2.
-- **Cubemap bake tool.** The entity format and runtime consumption path are defined. The offline bake tool is deferred.

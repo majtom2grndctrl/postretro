@@ -54,6 +54,9 @@ mod host_switch;
 mod host_presentation;
 mod interpolation;
 mod join_seed;
+// Dev-tools `POSTRETRO_NET_LAG` launch seed for the lag proxy.
+#[cfg(feature = "dev-tools")]
+mod lag_seed;
 mod lifecycle;
 mod movement_state;
 mod netdiag;
@@ -66,6 +69,8 @@ mod remote_materialize;
 mod replication;
 mod seat;
 mod snapshot_apply;
+#[cfg(test)]
+mod teleport_tests;
 pub mod weapon_cues;
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
@@ -74,6 +79,10 @@ pub mod weapon_cues;
 mod state_slots;
 mod tuning_payload;
 pub mod wire_convert;
+
+// A connected client's inventory composes only from the host's tuning payload.
+#[cfg(test)]
+mod client_tuning_install_tests;
 
 // M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
 // its shared test scaffolding. Both are test-only — they drive the real Task 1-5 seams
@@ -95,6 +104,13 @@ mod predict_reconcile_harness_vault;
 // replay or the wire merge.
 #[cfg(test)]
 mod predict_reconcile_harness_immersion;
+// Teleporter co-op proofs: prediction, host arming, refusal, stamped frames.
+#[cfg(test)]
+mod predict_reconcile_harness_teleport;
+#[cfg(test)]
+mod predict_reconcile_harness_teleport_join;
+#[cfg(test)]
+mod predict_reconcile_harness_teleport_rig;
 // M15 Phase 3 regression: the connected-client boot-spawn gate (the boot → baseline
 // arm sequence the harness above otherwise skips). Pins "client owns no local pawn
 // until baseline".
@@ -124,10 +140,14 @@ mod ingest_hit_harness_test;
 mod snapshot_regression_harness_test;
 
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
+#[cfg(any(test, feature = "test-support"))]
+pub use command_queue::host_resolve_remote_commands;
 pub use command_queue::{
     CadenceVerdict, HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand,
-    WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands,
+    WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands_in_registry,
 };
+#[cfg(feature = "dev-tools")]
+pub use endpoint::LagProfile;
 pub use endpoint::{
     ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,
     NetEndpoint, PendingSwitchDeclaration, SwitchOutcome, WorldLessPoll,
@@ -141,15 +161,20 @@ pub use host::{
 };
 pub use host_presentation::{
     present_client_pawns as host_present_client_pawns,
+    probe_presented_client_pawn_feet as host_probe_presented_client_pawn_feet,
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
+    take_client_pawn_teleports as host_take_client_pawn_teleports,
 };
 #[cfg(test)]
 use host_switch::{HostSwitchDecision, apply_host_switch_declaration};
 pub use host_switch::{host_apply_switch_deliveries, host_retain_switch_declaration};
+#[cfg(feature = "dev-tools")]
+pub use lag_seed::seed_lag_profile_from_environment;
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub use host_address::{dialable_host_address, probe_lan_address};
+pub use interpolation::ObservedTeleport;
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState, RemoteInterpolationBuffer};
 pub use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
@@ -168,6 +193,7 @@ pub use state_slots::{HostStateReplication, ReplicatedSlotIdentity};
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
 // directly against the pinned AC thresholds); production code uses the direct submodule path.
+pub use prediction::LocalTeleportAdoption;
 #[allow(unused_imports)]
 pub(crate) use prediction::{
     CorrectionClass, DASH_CORRECTION_MAX_M, ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M,
@@ -184,7 +210,8 @@ pub(crate) use replication::produce_owned_snapshots;
 pub use replication::produce_owned_snapshots_with_host_aim;
 pub use replication::{
     ReplicableSet, host_register_descriptor_entities, host_register_descriptor_entity,
-    host_register_loaded_movers, host_register_presentation_overrides,
+    host_register_loaded_movers, host_register_loaded_teleporters,
+    host_register_presentation_overrides,
 };
 pub use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
@@ -448,10 +475,16 @@ fn resolve_switch_outcome(
         .pop_front()
         .expect("the non-empty declaration chain was checked");
     let (settled_active, settled_last_weapon) = if accepted {
-        (
-            usize::from(settled.target_slot),
-            Some(settled.held_origin_slot),
-        )
+        // A declaration naming the slot the client held when it made it is the
+        // active-slot re-sync: the local switch machine never emits one, and a
+        // round trip back (0 -> 1 -> 0) holds the intermediate slot as its
+        // origin. Accepting it makes no last-weapon history.
+        let last_weapon = if usize::from(settled.target_slot) == settled.held_origin_slot {
+            settled.rollback_last_weapon_slot
+        } else {
+            Some(settled.held_origin_slot)
+        };
+        (usize::from(settled.target_slot), last_weapon)
     } else {
         (settled.rollback_slot, settled.rollback_last_weapon_slot)
     };
@@ -697,6 +730,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::HitVolume => postretro_net::wire::COMPONENT_KIND_HIT_VOLUME,
         ComponentKind::MapOrdinal => postretro_net::wire::COMPONENT_KIND_MAP_ORDINAL,
         ComponentKind::Immersion => postretro_net::wire::COMPONENT_KIND_IMMERSION,
+        ComponentKind::Teleporter => postretro_net::wire::COMPONENT_KIND_TELEPORTER,
     }
 }
 
@@ -746,6 +780,9 @@ fn wire_transform_is_finite(t: &WireTransform) -> bool {
 fn payload_is_finite(payload: &ComponentPayload) -> bool {
     match payload {
         ComponentPayload::Transform(wire) => wire_transform_is_finite(wire),
+        ComponentPayload::TeleporterState(state) => {
+            state.index != postretro_net::wire::NO_WIRE_TELEPORTER
+        }
         // The movement payload is received and validated here but not yet applied
         // to any local `PlayerMovementComponent` — the authoritative mover is
         // Transform-only. Validate its floats now so a non-finite payload is
@@ -773,6 +810,9 @@ fn kinematic_mover_is_finite(m: &WireKinematicMoverState) -> bool {
 /// Every f32 field of a wire movement payload is finite. Mirrors the untrusted-
 /// wire guard `wire_transform_is_finite` applies to poses.
 fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
+    if !m.teleport.is_valid() {
+        return false;
+    }
     let state_finite = match m.movement_state {
         WireMovementState::Normal | WireMovementState::Swim { .. } => true,
         WireMovementState::Dash { elapsed_ms, boost } => {
@@ -1030,6 +1070,12 @@ pub fn client_receive_and_apply(
                 tick_dt,
             );
         }
+        frame_outcome
+            .local_teleport_adoptions
+            .append(&mut prediction.teleport_adoptions);
+        if let Some(pawn) = prediction.first_record_hold.take() {
+            frame_outcome.local_first_record_hold = Some(pawn);
+        }
         for buffer in client::encode_client_messages(&outcome) {
             client.send_input(buffer);
         }
@@ -1045,6 +1091,23 @@ pub fn client_receive_and_apply(
         presentation_bindings,
     );
 
+    // A record that could not merge (no tuning yet) leaves the pawn without its
+    // teleport record; prediction stays inert and a full baseline is requested
+    // until one merges. Judged per frame, not per received record: an idle pawn's
+    // stream may carry no record once its tuning lands. Nothing is asked for while
+    // no merge could succeed: without tuning, or while the host's tuning gives the
+    // pawn no movement component.
+    let unmerged_wanted = prediction.first_record_pending()
+        && client_environment_view(host_tuning, environment_volumes).is_some()
+        && prediction.armed().is_some_and(|pawn| {
+            registry
+                .get_component::<PlayerMovementComponent>(pawn.entity_id)
+                .is_ok()
+        });
+    if let Some(req) = replication.refresh_unmerged_local_pawn(unmerged_wanted) {
+        client.send_input(wire::encode(&wire::ClientMessage::BaselineRefresh(req)));
+    }
+
     // Resend pending baseline-refresh requests on the 5 Hz cadence. A request is one
     // BaselineRefresh ClientMessage on the reliable Input channel; the matching full
     // baseline clears the pending entry so the resend stops.
@@ -1053,6 +1116,7 @@ pub fn client_receive_and_apply(
         let buffer = wire::encode(&wire::ClientMessage::BaselineRefresh(req));
         client.send_input(buffer);
     }
+    frame_outcome.observed_teleports = replication.take_observed_teleports();
     frame_outcome
 }
 
@@ -1124,6 +1188,23 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     prediction: &mut ClientPrediction,
     context: ClientPredictionTickContext<'_, C>,
 ) -> ClientPredictionTickResult {
+    client_predict_tick_with_sender(
+        registry,
+        &mut |bytes| client.send_input(bytes),
+        prediction,
+        context,
+    )
+}
+
+/// [`client_predict_tick`] with the transport send injected. The conditioned-link
+/// harness drives this same body, so its proofs exercise the production stamp,
+/// armed-state read and registry write rather than a mirror of them.
+pub(crate) fn client_predict_tick_with_sender<C: MovementCollisionSource>(
+    registry: &mut EntityRegistry,
+    send_input: &mut dyn FnMut(Vec<u8>),
+    prediction: &mut ClientPrediction,
+    context: ClientPredictionTickContext<'_, C>,
+) -> ClientPredictionTickResult {
     let ClientPredictionTickContext {
         command,
         collision,
@@ -1134,9 +1215,9 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     // 1. Send exactly one Input command for this predicted tick, stamped with the
     //    next monotonic client_tick. Sent even before the baseline arms prediction
     //    so the host's command stream starts immediately on connect.
-    let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
-    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
+    let input = stamped_client_input(prediction, command, registry);
+    let client_tick = input.client_tick;
+    send_input(wire::encode(&wire::ClientMessage::Input(input)));
     prediction.diag_record_predict_send();
 
     // 2. Before the local baseline arms prediction, or before the host's tuning
@@ -1177,14 +1258,36 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
 
     // 4. Advance the local pawn one predicted tick through the movement-only helper
     //    and record it in the history ring.
-    let Some((transform, movement, movement_events)) =
-        prediction.predict_tick_with_events(input, prev, collision, environment, tick_dt)
+    let Some((transform, movement, movement_events)) = prediction
+        .predict_tick_with_events_and_armed(
+            input,
+            prev,
+            collision,
+            environment,
+            tick_dt,
+            |index| {
+                collision
+                    .combined_collision()
+                    .static_world
+                    .teleporters
+                    .armed(registry, index)
+            },
+        )
     else {
         return ClientPredictionTickResult {
             client_tick,
             movement_events: MovementEvents::default(),
         };
     };
+
+    if let Some(overlap) = &movement_events.static_overlap {
+        crate::sim::report_static_overlap(
+            collision.combined_collision().static_world,
+            registry,
+            armed.entity_id,
+            overlap,
+        );
+    }
 
     // 5. Stamp previous = current for the local pawn BEFORE writing the new predicted
     //    pose — the per-tick transform-history bookkeeping the render path needs. The
@@ -1199,7 +1302,11 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     // 6. Write the predicted state back to the registry so camera follow, collision,
     //    and the next predicted tick read it. Task 5 reconciles this against the
     //    authoritative snapshot.
-    let _ = registry.set_component(armed.entity_id, transform);
+    if movement_events.teleport.is_some() {
+        let _ = registry.set_presentation_transform(armed.entity_id, transform);
+    } else {
+        let _ = registry.set_component(armed.entity_id, transform);
+    }
     let _ = registry.set_component(armed.entity_id, movement);
     ClientPredictionTickResult {
         client_tick,
@@ -1228,9 +1335,14 @@ pub fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u
     }
 }
 
-pub fn client_send_input_command(
+/// Zero-tick sends must sample the same pawn teleport frame as their facing.
+/// The prediction identity is armed throughout the first-record gate; until that
+/// record merges the pawn's movement component is absent or descriptor-default,
+/// so the stamp is zero.
+pub fn client_send_input_command_in_registry(
     endpoint: Option<&mut NetEndpoint>,
     command: &SimCommand,
+    registry: &EntityRegistry,
 ) -> Option<u32> {
     let Some(NetEndpoint::Client {
         client, prediction, ..
@@ -1238,11 +1350,33 @@ pub fn client_send_input_command(
     else {
         return None;
     };
-    let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
+    let input = stamped_client_input(prediction, command, registry);
+    let client_tick = input.client_tick;
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
     prediction.diag_record_fire_send();
     Some(client_tick)
+}
+
+/// Allocate the next command tick and stamp it with the teleport frame its facing
+/// was sampled in: the armed pawn's accumulated teleport yaw, read from the same
+/// registry state the camera follows. Before the client's first record for its pawn
+/// (and after a level unload disarms prediction) nothing has turned the facing, so
+/// the stamp is zero. Every outbound movement command goes through here.
+pub(crate) fn stamped_client_input(
+    prediction: &mut ClientPrediction,
+    command: &SimCommand,
+    registry: &EntityRegistry,
+) -> wire::InputCommand {
+    let mut input = sim_command_to_input(command, prediction.next_client_tick());
+    input.teleport_yaw_stamp = prediction
+        .armed()
+        .and_then(|pawn| {
+            registry
+                .get_component::<PlayerMovementComponent>(pawn.entity_id)
+                .ok()
+        })
+        .map_or(0.0, |movement| movement.teleport.accumulated_yaw);
+    input
 }
 
 pub fn client_local_pawn_network_id(endpoint: Option<&NetEndpoint>) -> Option<NetworkId> {
@@ -1384,8 +1518,12 @@ pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
 /// buffers) and **before** the render collectors read entities, so the renderer stays
 /// read-only over the registry.
 ///
-/// The render target is `estimated_server_tick - interpolation_delay`. Jitter sets
-/// the baseline delay; recent held-newest starvation temporarily adds headroom.
+/// The render target is `estimated_server_tick - interpolation_delay`. Half the
+/// smoothed RTT covers snapshot transit, jitter sets the buffer delay on top, and
+/// recent held-newest starvation temporarily adds headroom. The delay never drops
+/// below the decaying peak of measured snapshot arrival lag plus one snapshot
+/// interval, and the render target slews toward its new value when the delay steps
+/// (see `InterpolationDelayState`).
 /// Before the time-sync estimator has folded its first echo (`estimated_server_tick`
 /// is `None`), there is no trustworthy clock to render against, so the buffers are
 /// left unsampled and remote entities stay at their last-applied snapshot pose. Their
@@ -1397,7 +1535,8 @@ pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
 ///
 /// `frame_dt_secs` is the frame's wall-clock delta (the same per-frame delta the frame
 /// loop computes); it drives the framerate-independent starvation feedback so the
-/// adaptive delay's time-constant does not scale with frame rate.
+/// adaptive delay's time-constant does not scale with frame rate, and it is the
+/// render target's nominal playback, so an estimate jump slews rather than jumps.
 /// `frame_anim_time` is the slow-mo/freeze-gated animation clock used by mesh sampling;
 /// remote walk-rate rebases must use this exact clock for clip-time continuity.
 pub fn client_sample_interpolation(
@@ -1415,10 +1554,26 @@ pub fn client_sample_interpolation(
         replication.apply_held_remote_player_presentation(registry, frame_anim_time);
         return replication.presented_player_inputs().clone();
     };
-    // Jitter is available whenever the estimate is; default to 0 defensively.
+    // Jitter and RTT are available whenever the estimate is; default to 0 defensively.
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
-    let render_server_tick =
-        interpolation_delay.render_server_tick(estimated_tick, jitter, SERVER_TICK_MICROS);
+    let rtt = time_sync.rtt_micros().unwrap_or(0.0);
+    // Measured arrival lag of the newest accepted snapshot. This runs in the same
+    // frame as `client_receive_and_apply`, so the estimate is read at receive time
+    // to within the frame; a snapshot already folded is skipped.
+    if let Some(newest_snapshot_tick) = replication.latest_server_tick() {
+        interpolation_delay.observe_newest_snapshot(
+            estimated_tick,
+            newest_snapshot_tick,
+            SERVER_TICK_MICROS,
+        );
+    }
+    let render_server_tick = interpolation_delay.render_server_tick(
+        estimated_tick,
+        frame_dt_secs,
+        jitter,
+        rtt,
+        SERVER_TICK_MICROS,
+    );
     let stats = replication.sample_into_registry(registry, render_server_tick, frame_anim_time);
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
@@ -1430,8 +1585,9 @@ pub fn client_sample_interpolation(
 /// The wieldable rows come from its live inventory, not the authored loadout: a
 /// descriptor refresh retunes existing instances, while loadout changes wait for
 /// the next pawn install. `environment` is the host's current level state
-/// ([`host_environment_tuning`]), shared by every pawn's payload. The net crate
-/// carries the resulting JSON bytes without learning this vocabulary.
+/// ([`host_environment_tuning`]), shared by every pawn's payload. The payload's
+/// `spawn_active_slot` is the inventory's composition-time selection. The net
+/// crate carries the resulting JSON bytes without learning this vocabulary.
 pub fn tuning_payload_for_pawn(
     registry: &EntityRegistry,
     pawn: EntityId,
@@ -1500,7 +1656,13 @@ pub fn tuning_payload_for_pawn(
             })
         })
         .unwrap_or_else(|| std::array::from_fn(|_| None));
+    // The composition-time selection, not the live active slot: a switch must
+    // never read as changed tuning under the whole-struct dedupe.
+    let spawn_active_slot = registry
+        .get_component::<Inventory>(pawn)
+        .map_or(0, |inventory| inventory.spawn_active_slot);
     TuningPayload::new(movement, wieldables, environment.clone())
+        .with_spawn_active_slot(spawn_active_slot)
 }
 
 /// The host's current level state for the tuning payload, read live at every
@@ -2777,6 +2939,97 @@ mod tests {
         assert!(pending.is_empty());
     }
 
+    // The active-slot re-sync declares the slot the client already holds. Its
+    // accept leaves last-weapon memory as it was; its refusal rolls back to
+    // that same slot, so neither outcome changes what the player holds.
+    #[test]
+    fn same_slot_resync_declaration_settles_without_moving_selection_or_history() {
+        let resync = |declaration_id| PendingSwitchDeclaration {
+            declaration_id,
+            target_slot: 0,
+            held_origin_slot: 0,
+            rollback_slot: 0,
+            rollback_last_weapon_slot: Some(2),
+        };
+        let mut pending = VecDeque::from([resync(41)]);
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Accepted(ServerSwitchAccepted {
+                    declaration_id: 41,
+                    slot: 0,
+                }),
+            ),
+            CurrentSwitchResolution::Accepted {
+                last_weapon_slot: Some(2),
+            }
+        );
+        assert!(pending.is_empty());
+
+        let mut pending = VecDeque::from([resync(42)]);
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Refused(ServerSwitchRefused {
+                    declaration_id: 42,
+                    slot: 0,
+                }),
+            ),
+            CurrentSwitchResolution::Refused {
+                target_slot: 0,
+                rollback_slot: 0,
+                last_weapon_slot: Some(2),
+            }
+        );
+        assert!(pending.is_empty());
+    }
+
+    // A round trip back (0 -> 1 -> 0) also ends on the slot the chain started
+    // from, but each declaration holds the slot it switched away from as its
+    // origin, so the return is an ordinary switch: its accept remembers the
+    // intermediate slot, never the re-sync's unchanged history.
+    #[test]
+    fn round_trip_switch_chain_is_not_mistaken_for_a_resync() {
+        let mut pending = VecDeque::from([
+            PendingSwitchDeclaration {
+                declaration_id: 1,
+                target_slot: 1,
+                held_origin_slot: 0,
+                rollback_slot: 0,
+                rollback_last_weapon_slot: Some(2),
+            },
+            PendingSwitchDeclaration {
+                declaration_id: 2,
+                target_slot: 0,
+                held_origin_slot: 1,
+                rollback_slot: 1,
+                rollback_last_weapon_slot: Some(0),
+            },
+        ]);
+        for (declaration_id, slot, expected) in [
+            (1, 1, CurrentSwitchResolution::None),
+            (
+                2,
+                0,
+                CurrentSwitchResolution::Accepted {
+                    last_weapon_slot: Some(1),
+                },
+            ),
+        ] {
+            assert_eq!(
+                resolve_switch_outcome(
+                    &mut pending,
+                    SwitchOutcome::Accepted(ServerSwitchAccepted {
+                        declaration_id,
+                        slot,
+                    }),
+                ),
+                expected
+            );
+        }
+        assert!(pending.is_empty());
+    }
+
     #[test]
     fn host_liveness_repoint_marks_attachment_dirty_before_already_active_acceptance() {
         // Regression: declaration-time liveness repair repointed the active slot,
@@ -3005,6 +3258,57 @@ mod tests {
         );
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);
+    }
+
+    // The payload names the slot the pawn was composed active with, never its
+    // live selection: a switch after spawn must leave the whole-struct dedupe
+    // quiet, or every switch would resend (and reinstall) the pawn's tuning.
+    #[test]
+    fn tuning_payload_spawn_active_slot_is_fixed_at_composition_across_switches() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        for (slot, name) in [(0, "shotgun"), (2, "plasma")] {
+            let weapon_id = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon_id, test_weapon(10.0, 96.0))
+                .unwrap();
+            registry
+                .set_component(
+                    weapon_id,
+                    DescriptorProvenance {
+                        canonical_name: name.to_string(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .unwrap();
+            inventory.wieldables[slot] = Some(weapon_id);
+        }
+        // As composition leaves a carried plasma selection.
+        inventory.active_slot = 2;
+        inventory.spawn_active_slot = 2;
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        let payload = |registry: &EntityRegistry| {
+            tuning_payload_for_pawn(registry, pawn, &[], None, &test_environment())
+        };
+
+        let mut last_sent = HashMap::new();
+        assert_eq!(payload(&registry).spawn_active_slot, 2);
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_some());
+
+        // Mid-switch, then switched to the shotgun: nothing to resend.
+        inventory.switch_target = Some(0);
+        inventory.switch_origin = Some(2);
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_none());
+        inventory.active_slot = 0;
+        inventory.switch_target = None;
+        inventory.switch_origin = None;
+        registry.set_component(pawn, inventory).unwrap();
+        assert_eq!(payload(&registry).spawn_active_slot, 2);
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_none());
     }
 
     // Regression: connected clients resolved first-person placement from their
@@ -3485,8 +3789,7 @@ mod tests {
             tilt: None,
             sway: None,
             impulse: None,
-            slide: None,
-            vault: None,
+            pose: None,
         });
         let descriptors = [local_descriptor.clone()];
         let mut registry = EntityRegistry::new();
@@ -5193,6 +5496,7 @@ mod tests {
         let mut queues = HostCommandQueues::new();
         let token = fixture.shot_id.activation().token;
         let start = wire::InputCommand {
+            teleport_yaw_stamp: 0.0,
             client_tick: token.start_tick,
             movement: wire::WireMovementInput {
                 wish_dir: [0.0, 0.0],
@@ -5225,6 +5529,7 @@ mod tests {
         };
         assert!(queues.ingest(7, &start));
         let follow = wire::InputCommand {
+            teleport_yaw_stamp: 0.0,
             client_tick: token.start_tick.wrapping_add(1),
             activation: wire::WireActivationInput::default(),
             ..start
@@ -5427,6 +5732,7 @@ mod tests {
         let token = fixture.shot_id.activation().token;
         let command = |client_tick, initiation: Option<postretro_foundation::ActivationToken>| {
             wire::InputCommand {
+                teleport_yaw_stamp: 0.0,
                 client_tick,
                 movement: wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -6414,12 +6720,12 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            31,
+            32,
             "the vault movement state requires wire version 31"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            20,
+            21,
             "the vault movement state requires snapshot version 20"
         );
     }
@@ -6980,7 +7286,8 @@ mod tests {
                 ComponentKind::Projectile => Some(ComponentKind::HitVolume),
                 ComponentKind::HitVolume => Some(ComponentKind::MapOrdinal),
                 ComponentKind::MapOrdinal => Some(ComponentKind::Immersion),
-                ComponentKind::Immersion => None,
+                ComponentKind::Immersion => Some(ComponentKind::Teleporter),
+                ComponentKind::Teleporter => None,
             }
         }
 
@@ -7176,6 +7483,7 @@ mod tests {
     fn pre_sync_interpolation_exposes_only_newest_held_remote_player_pitch() {
         let movement_payload = |aim_pitch| {
             ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                teleport: Default::default(),
                 knockback_velocity: [0.0; 3],
                 push_velocity: [0.0; 3],
                 velocity: [12.0, 0.0, 4.0],
@@ -7241,15 +7549,7 @@ mod tests {
         );
         replication.cache_remote_player_locomotion(
             NetworkId(7),
-            Some(client::RemotePlayerLocomotionReference {
-                idle_state: "idle".to_string(),
-                walk_state: "walk_forward".to_string(),
-                run_state: None,
-                walk_speed: 60.0,
-                run_speed: 60.0,
-                walk_derived_travel_speed: None,
-                run_derived_travel_speed: None,
-            }),
+            Some(client::RemotePlayerLocomotionReference::idle_and_walk_forward(60.0)),
         );
 
         let inputs = client_sample_interpolation(
@@ -7791,6 +8091,7 @@ mod tests {
                                     scale: [1.0, 1.0, 1.0],
                                 }),
                                 ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                                    teleport: Default::default(),
                                     knockback_velocity: [0.0; 3],
                                     push_velocity: [0.0; 3],
                                     velocity: [0.0, 0.0, 0.0],

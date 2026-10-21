@@ -38,6 +38,11 @@ const SDK_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/lib");
 /// `MEMBER_WRAPPER_SOURCES`. `(wrapper global, source, path)`.
 const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
     (
+        "wrapTeleporterEntity",
+        include_str!("../../../sdk/lib/entities/teleporters.luau"),
+        "sdk/lib/entities/teleporters.luau",
+    ),
+    (
         "wrapLightEntity",
         include_str!("../../../sdk/lib/entities/lights.luau"),
         "sdk/lib/entities/lights.luau",
@@ -111,7 +116,7 @@ const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 const MAX_VIRTUAL_MODULE_COPY_DEPTH: usize = 32;
 
 /// First build-side id of a non-light map member (mover, trigger volume,
-/// spawner). Map-light ids are their raw `MapData::lights` indexes, so the two
+/// teleporter, spawner). Map-light ids are their raw `MapData::lights` indexes, so the two
 /// ranges never meet: a member id cannot resolve to a light, or change which
 /// light a step names. Members answer identity snapshots (`id`, `position`,
 /// `tags`, plus `spawnedTags` on a spawner) so a script that indexes one
@@ -121,7 +126,7 @@ pub const MAP_MEMBER_ID_BASE: u32 = 0x8000_0000;
 /// Evaluate a compiled data script against `light_table` and derive the
 /// map-light membership sidecar. The script path selects QuickJS for `.ts` /
 /// `.js` input and Luau for `.luau` input; callers pass the already compiled
-/// bytes represented as UTF-8 source. Mover, trigger and spawner queries
+/// bytes represented as UTF-8 source. Mover, trigger, teleporter and spawner queries
 /// answer from `light_table.map_members` when the table supplies them (a
 /// lights-only table stubs them); light records do not depend on it.
 pub fn emit_light_membership_manifest(
@@ -931,6 +936,7 @@ pub const MIRRORED_GAME_STATE_LEAVES: &[(&str, &str, bool)] = &[
     ("options.shadowQuality", "enum", false),
     ("options.fogQuality", "enum", false),
     ("options.surfaceDepthQuality", "enum", false),
+    ("options.reflectionQuality", "enum", false),
     ("options.windowMode", "enum", false),
     ("window.displayModeCanApply", "boolean", false),
     ("window.displayModeWidth", "number", false),
@@ -1028,6 +1034,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "fog_volume",
     "kinematic_mover",
     "trigger_volume",
+    "teleporter",
     "spawner",
     "particle",
     "sprite_visual",
@@ -1206,7 +1213,7 @@ fn collect_membership(
             let light = lights_by_id.get(&id).ok_or_else(|| {
                 if id >= MAP_MEMBER_ID_BASE {
                     anyhow!(
-                        "setLightAnimation targets id {id}, which names a map member (mover, trigger volume or spawner), not a light; animate a member from getMapEntities(\"light\")"
+                        "setLightAnimation targets id {id}, which names a map member (mover, trigger volume, teleporter or spawner), not a light; animate a member from getMapEntities(\"light\")"
                     )
                 } else {
                     anyhow!(
@@ -1335,9 +1342,11 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
 /// Mirrors the runtime parser's `validate_subject_token_primitive`.
 fn subject_token_carries(target: &str, primitive: &str) -> bool {
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
+    let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
     match target {
-        "@activators" | "@player" => !arms_a_trigger,
+        "@activators" | "@player" => !arms_a_trigger && !arms_a_teleporter,
         "@trigger" => arms_a_trigger,
+        "@teleporter" => arms_a_teleporter,
         _ => false,
     }
 }
@@ -1494,6 +1503,11 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<JsonValue> {
                 let mut values = JsonMap::new();
                 for entry in table.pairs::<String, LuaValue>() {
                     let (key, value) = entry?;
+                    // A method field (an impact event's `override`) is not
+                    // manifest data; the runtime manifest reader ignores it.
+                    if matches!(value, LuaValue::Function(_)) {
+                        continue;
+                    }
                     values.insert(key, lua_to_json_inner(value, depth + 1)?);
                 }
                 Ok(JsonValue::Object(values))
@@ -1872,7 +1886,7 @@ mod tests {
     }
 
     // Kinds the build carries no table for (fog, emitter) degrade to `[]` and
-    // land in the stub inventory. Mover, trigger and spawner queries answer
+    // land in the stub inventory. Mover, trigger, teleporter and spawner queries answer
     // from the member table, so an empty one is an authoritative `[]`, not a
     // stub.
     #[test]
@@ -1942,6 +1956,27 @@ mod tests {
             &table(),
         )
         .expect("empty Luau reaction table is the empty dense array");
+        assert!(manifest.lights.is_empty());
+    }
+
+    #[test]
+    fn teleport_fixture_luau_level_returning_impact_event_handles_is_valid() {
+        // Regression: an impact-event handle carries an `override` method; the
+        // teleporters dev level returns one under `events`.
+        let manifest = emit_light_membership_manifest(
+            r#"
+            local Postretro = require("postretro")
+            local base = Postretro.defineImpactEvent("enemy-death", { tag = "enemy" }, function(_) return {} end)
+            local special = base:override({ tag = "closet" }, function(impact)
+              return { { ["do"] = { impact.target:despawn() } } }
+            end)
+            function setupLevel(_) return { reactions = {}, events = { special } } end
+            "#,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("method fields are skipped, not manifest data");
         assert!(manifest.lights.is_empty());
     }
 
@@ -2354,11 +2389,11 @@ mod tests {
         assert_eq!(baseline_js, baseline_luau);
 
         let sdk_js = evaluate(
-            &quickjs("on.activators.grantHealth(5), on.trigger.disarm(),"),
+            &quickjs("on.activators.grantHealth(5), on.trigger.disarm(), on.teleporter.arm(),"),
             "fixture.ts",
         );
         let sdk_luau = evaluate(
-            &luau("on.activators:grantHealth(5), on.trigger:disarm(),"),
+            &luau("on.activators:grantHealth(5), on.trigger:disarm(), on.teleporter:arm(),"),
             "fixture.luau",
         );
         assert_eq!(sdk_js, baseline_js);
@@ -2625,6 +2660,89 @@ mod tests {
 
         // With an empty member table the same kinds answer `[]`, so indexing
         // a member throws: the table is what makes the script evaluate.
+        assert!(
+            emit_light_membership_manifest(
+                quickjs,
+                Path::new("fixture.ts"),
+                Path::new("."),
+                &table()
+            )
+            .is_err()
+        );
+    }
+
+    // The independent wrapper inventory must route the teleporter kind: a
+    // teleporter member answers with identity snapshots and its `arm`, `disarm`
+    // and `on("teleport")` wrappers evaluate at build in both hosts, leaving the
+    // light records as the light step alone reserves them.
+    #[test]
+    fn teleport_members_evaluate_at_build_in_both_hosts() {
+        let quickjs = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              const gate = getMapEntities("teleporter", { tag: "gate" })[0];
+              if (gate.position.z !== 3 || gate.tags[0] !== "gate") throw new Error("snapshot");
+              if (gate.id < 2147483648) throw new Error("member id in the light range");
+              const bind = gate.on("teleport", ["levelLoad"]);
+              return {
+                reactions: [defineReaction("levelLoad", { sequence: [
+                  { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+                  ...gate.arm(),
+                  ...gate.disarm(),
+                ] })],
+                teleportEvents: [bind],
+              };
+            }
+        "#;
+        let luau = r#"
+            function setupLevel(_)
+              local light = getMapEntities("light", { tag = "wave" })[1]
+              local gate = getMapEntities("teleporter", { tag = "gate" })[1]
+              if gate.position.z ~= 3 or gate.tags[1] ~= "gate" then error("snapshot") end
+              if gate.id < 2147483648 then error("member id in the light range") end
+              local bind = gate:on("teleport", { "levelLoad" })
+              return {
+                reactions = { defineReaction("levelLoad", { sequence = {
+                  { id = light.id, primitive = "setLightAnimation", args = { startActive = false } },
+                  gate:arm()[1],
+                  gate:disarm()[1],
+                } }) },
+                teleportEvents = { bind },
+              }
+            end
+        "#;
+        let baseline = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: [defineReaction("levelLoad", { sequence: [
+                { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+              ] })] };
+            }
+        "#;
+        let with_members = table().with_map_members(vec![MapMember {
+            kind: MapMemberKind::Teleporter,
+            tags: vec!["gate".to_string()],
+            position: [1.0, 2.0, 3.0],
+            spawned_tags: Vec::new(),
+        }]);
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &with_members)
+                .unwrap_or_else(|error| panic!("{path} evaluates with a teleporter: {error:#}"))
+        };
+        let baseline = evaluate(baseline, "fixture.ts");
+        let quickjs_manifest = evaluate(quickjs, "fixture.ts");
+        let luau_manifest = evaluate(luau, "fixture.luau");
+        assert_eq!(baseline.lights.len(), 1);
+        assert_eq!(quickjs_manifest.lights, baseline.lights);
+        assert_eq!(luau_manifest.lights, baseline.lights);
+        assert!(
+            quickjs_manifest.stubbed_primitives.is_empty()
+                && luau_manifest.stubbed_primitives.is_empty(),
+            "teleporter members are answered, not stubbed: {:?} / {:?}",
+            quickjs_manifest.stubbed_primitives,
+            luau_manifest.stubbed_primitives,
+        );
+        // Without the member table the kind answers `[]` and indexing throws.
         assert!(
             emit_light_membership_manifest(
                 quickjs,

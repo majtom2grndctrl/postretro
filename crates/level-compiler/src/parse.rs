@@ -31,16 +31,26 @@ mod authoring_regions;
 mod environment_volume_tests;
 #[path = "parse/environment_volumes.rs"]
 mod environment_volumes;
+#[path = "parse/map_source.rs"]
+mod map_source;
+#[cfg(test)]
+#[path = "parse/reflection_volume_tests.rs"]
+mod reflection_volume_tests;
+#[path = "parse/reflection_volumes.rs"]
+mod reflection_volumes;
 #[path = "parse/streaming_hint_source.rs"]
 mod streaming_hint_source;
 #[cfg(test)]
 #[path = "parse/streaming_hint_tests.rs"]
 mod streaming_hint_tests;
+#[path = "parse/teleporters.rs"]
+mod teleporters;
 
 use authoring_regions::{
     BrushRegionBounds, resolve_brush_region_bounds, resolve_lightmap_scale_region,
     resolve_sh_protect_aabb, resolve_streaming_hint_region, resolve_streaming_priority_region,
 };
+use map_source::{normalize_map_source, parse_complete_map};
 use streaming_hint_source::reject_invalid_streaming_hint_source_hulls;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
@@ -690,12 +700,16 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // quoted material fields to a sentinel here so shalrath sees one token; the
     // name is decoded back to its space-containing form at the texture-read
     // boundary below. See `context/lib/build_pipeline.md` §Texture name resolution.
-    let map_text = encode_quoted_brush_textures(&raw_map_text);
+    //
+    // Layout shalrath's grammar cannot take (blank, indented and comment lines,
+    // CRLF) is normalized away first, because at the top level it ends the
+    // entity list silently. The quote encoding rewrites line for line, so the
+    // normalized line numbers still map back to the source for parse errors.
+    let source = normalize_map_source(&raw_map_text);
+    let map_text = encode_quoted_brush_textures(&source.text);
     reject_invalid_streaming_hint_source_hulls(&map_text, scale)?;
 
-    let shalrath_map: shambler::shalrath::repr::Map = map_text
-        .parse()
-        .map_err(|e| anyhow::anyhow!("failed to parse .map syntax: {e}"))?;
+    let shalrath_map = parse_complete_map(&source, &map_text)?;
 
     let geo_map = GeoMap::new(shalrath_map);
 
@@ -839,9 +853,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut stream_priority_regions: Vec<MapStreamingPriorityRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
     let mut environment_volumes = Vec::new();
+    let mut teleporters = teleporters::TeleporterParser::default();
     // Parallel to `environment_volumes`: each volume's authored brush ids, kept
     // until the fluid volumes' textured sides are built in one pass.
     let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
+    // Authored reflection-probe boxes, in map entity order.
+    let mut reflection_volumes = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
     // AABB `[minx,miny,minz,maxx,maxy,maxz]` in engine meters. Unioned with the
@@ -1103,6 +1120,23 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // paths. Editor groups are already flattened into static world brushes.
         let has_brushes = !brush_ids.is_empty();
 
+        if matches!(
+            classname.as_str(),
+            "trigger_teleport" | "teleport_destination"
+        ) {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            teleporters.extract(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
+                &classname,
+                entities.len() - 1,
+                &mut map_entities,
+            )?;
+            continue;
+        }
+
         // Environment volumes are non-solid: their brushes never join the
         // static world set, so they seal no cell and reach no bake.
         if environment_volumes::is_environment_volume_classname(&classname) {
@@ -1116,6 +1150,22 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 entities.len() - 1,
             )?);
             environment_volume_brush_ids.push(brush_ids);
+            continue;
+        }
+
+        // Reflection volumes are compiler-only boxes for the reflection-probe
+        // stage. They stay out of `is_environment_volume_classname` so id 52
+        // never sees them, and out of the world set so no geometry, BVH or SH
+        // input changes when one is added.
+        if classname == reflection_volumes::REFLECTION_VOLUME {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            reflection_volumes.push(reflection_volumes::resolve_reflection_volume(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
+                entities.len() - 1,
+            )?);
             continue;
         }
 
@@ -1576,6 +1626,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Lights: {}", lights.len());
     log::info!("Map entities (classname dispatch): {}", map_entities.len());
     log::info!("Environment volumes: {}", environment_volumes.len());
+    log::info!("Reflection volumes: {}", reflection_volumes.len());
 
     Ok(MapData {
         brush_volumes,
@@ -1593,6 +1644,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         kinematic_waypoints,
         trigger_volumes,
         environment_volumes,
+        reflection_volumes,
+        teleporters: teleporters.finish()?,
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,
@@ -4265,17 +4318,17 @@ mod tests {
             "spin_speed(float) : \"Initial spin speed (degrees per second)\" : \"0\"",
             "spin_accel(float) : \"Spin acceleration (degrees per second squared)\" : \"0\"",
             "carry_yaw(choices) : \"Carry world-up player yaw while rotating; never pitch or roll\" : 0 =",
-            "block_policy(choices) : \"Host-authoritative response when this mover contacts an entity\" : \"displace\" =",
+            "block_policy(choices) : \"Response to a player or enemy in its way: displace pushes, stop holds, reverse backs off. A player it would press into geometry or another mover makes it hold (reverse backs off if it can); crush keeps moving and deals crush_damage\" : \"displace\" =",
             "crush_damage(float) : \"Damage per crusher hit\" : \"0\"",
             "crush_interval_ms(float) : \"Milliseconds between crusher hits (0 hits every tick)\" : \"0\"",
             "auto_close_ms(float) : \"Milliseconds before automatic close; blank inherits the mod default, 0 disables\" : \"\"",
             "open_event(string) : \"Named event when the mover reaches its open terminus\" : \"\"",
             "close_event(string) : \"Named event when the mover reaches its closed terminus\" : \"\"",
-            "blocked_event(string) : \"Named event when a blocking mover reacts to contact\" : \"\"",
+            "blocked_event(string) : \"Named event when a blocking mover reacts to contact, or when any non-crush mover first holds or backs off for a pinned player; once per hold\" : \"\"",
             "crush_event(string) : \"Named event when a crusher deals damage\" : \"\"",
             "open_sound(string) : \"Sound key played when the mover reaches its open terminus\" : \"\"",
             "close_sound(string) : \"Sound key played when the mover reaches its closed terminus\" : \"\"",
-            "blocked_sound(string) : \"Sound key played when a blocking mover reacts to contact\" : \"\"",
+            "blocked_sound(string) : \"Sound key played when a blocking mover reacts to contact, or when any non-crush mover first holds or backs off for a pinned player; once per hold\" : \"\"",
             "crush_sound(string) : \"Sound key played when a crusher deals damage\" : \"\"",
         ] {
             assert!(
@@ -6975,7 +7028,7 @@ mod tests {
     fn parse_map_file_rejects_malformed_or_non_finite_initial_gravity() {
         for value in ["not-a-number", "NaN", "inf"] {
             let map_data = format!(
-                "\\
+                "\
 // entity 0
 {{
 \"classname\" \"worldspawn\"

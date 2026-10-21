@@ -23,9 +23,21 @@
 //   - FullBaseline, mapped + live: update in place, clear pending repair, ack.
 //   - FullBaseline, mapped + stale entity: drop the stale mapping, request refresh;
 //     do not ack the entity baseline.
-//   - Delta, baseline_ref held: apply, advance the stored baseline, ack.
-//   - Delta, baseline_ref unknown: request refresh, leave state untouched, and do
-//     not ack the entity baseline.
+//   - Delta, some baseline held, new_baseline_id newer: apply regardless of
+//     baseline_ref (a delta carries the full component set), advance the stored
+//     baseline, ack. Newest wins: the host keeps naming its last acked ref while
+//     the client's acks are in flight.
+//   - Delta, new_baseline_id equal to the held one: a metadata-only resend (the
+//     host refreshes authority metadata without bumping an unchanged baseline).
+//     Re-run the metadata consumers (reconcile capture, arming, materialize
+//     retry); no component re-apply, no refresh, no ack. A presentation-bound
+//     entity has no metadata consumers and skips it.
+//   - Delta, new_baseline_id older than the held one: inside an accepted newest
+//     snapshot this breaks newest-wins (a namespace regression, or a gap past
+//     half the id range), so request refresh, leave state untouched, and do not
+//     ack.
+//   - Delta, no held baseline or no live mapping: request refresh, leave state
+//     untouched, and do not ack the entity baseline.
 //   - Despawn: retire the network identity and ack its tombstone. Despawn a
 //     replication-created copy; only unbind an authored presentation entity.
 //   - Older snapshot: only a first baseline for an unseen identity may apply.
@@ -41,7 +53,7 @@ use postretro_net::wire::{
 };
 
 use postretro_entities::components::mesh::{
-    MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
+    LocomotionDirection, MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
 };
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{
@@ -49,7 +61,9 @@ use postretro_entities::{
     KinematicMoverMode, Transform,
 };
 
-use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSample};
+use super::interpolation::{
+    ObservedTeleport, RemoteInterpolationBuffer, TeleportSample, TransformSample,
+};
 use super::{payload_is_finite, wire_to_transform};
 use crate::collision::moving::{MoverPose, MoverPoseSource};
 use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_current_phase};
@@ -61,6 +75,9 @@ mod late_baselines;
 #[cfg(test)]
 mod presentation_tests;
 mod replay_poses;
+#[cfg(test)]
+mod teleporter_tests;
+mod teleporters;
 use bindings::{ClientBindings, is_presentation_payload};
 use late_baselines::LateBaselineHistory;
 use postretro_entities::presentation_binding::PresentationBindingResolver;
@@ -96,17 +113,42 @@ pub(crate) struct InterpolationSampleStats {
 
 /// Reason code carried in a `BaselineRefreshRequest`. Diagnostic only — the server
 /// repair path keys on entity + missing ref, not the reason (net wire contract).
+/// A `Delta` arrived with no held baseline, or a regressed one.
 const REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 /// Reason: a `FullBaseline` named a `NetworkId` whose mapped `EntityId` was stale.
 const REFRESH_REASON_STALE_MAPPING: u8 = 1;
 /// Reason: local level unload cleared registry-backed entities but kept the transport.
 const REFRESH_REASON_LEVEL_RELOAD: u8 = 2;
+/// Reason: the armed local pawn's first record has not merged (its host tuning
+/// installed after the record arrived), so the client asks for it again.
+pub(crate) const REFRESH_REASON_UNMERGED_LOCAL_PAWN: u8 = 3;
 
 /// Repair-request resend cadence: one `BaselineRefreshRequest` per pending entity
 /// every 200 ms (5 Hz) until the matching full baseline arrives and clears it. The
 /// reliable `Channel::Input` makes a single request sufficient in the common case;
 /// the cadence covers the entity falling out of and back into the pending set.
 const REPAIR_RESEND_INTERVAL_MS: f32 = 200.0;
+
+/// Whether `candidate` was issued after `held` by a host baseline allocator. Ids
+/// are `u32` from `wrapping_add` allocators that never restart for an endpoint's
+/// lifetime, so this is a serial-number comparison. Full-state deltas apply on
+/// this rule; a `FullBaseline` replaces the held id unconditionally. The host's
+/// ack paths compare with plain `>`, which disagrees only past a `u32` wrap.
+pub(crate) fn baseline_is_newer(candidate: u32, held: u32) -> bool {
+    (candidate.wrapping_sub(held) as i32) > 0
+}
+
+/// How [`ClientReplication::apply_delta`] disposed of one `Delta`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeltaApply {
+    /// Components applied and the stored baseline advanced; ack it.
+    Applied,
+    /// Same baseline id as held: a metadata-only resend. Metadata consumers run;
+    /// nothing re-applies or acks.
+    MetadataRefresh,
+    /// Nothing applied: a refresh was queued, or a payload failed to apply.
+    Rejected,
+}
 
 /// Descriptor-immutable locomotion reference data for a remote enemy. The host
 /// replicates only its changing pose and mesh state; the client reads this from the
@@ -122,22 +164,18 @@ struct RemoteEnemyWalkPlayback {
 
 /// Descriptor-derived locomotion data for a remote player avatar. Remote player
 /// meshes deliberately remain presentation-only; this cache lets the client derive
-/// idle/walk/run from replicated intrinsic velocity without attaching PlayerMovement.
+/// idle/walk/run and forward/backward from replicated intrinsic velocity without
+/// attaching PlayerMovement.
 #[derive(Debug, Clone)]
 struct RemotePlayerLocomotion {
-    idle_state: String,
-    walk_state: String,
-    run_state: Option<String>,
-    walk_speed: f32,
-    run_speed: f32,
-    walk_derived_travel_speed: Option<f32>,
-    run_derived_travel_speed: Option<f32>,
+    reference: RemotePlayerLocomotionReference,
     /// Last state selected from the interpolated intrinsic player velocity. Snapshot application
     /// compares its authoritative state against this prediction before correcting.
     client_derived_state: Option<String>,
-    /// Server state currently being honored through its authored crossfade window.
-    /// The render-order velocity derivation must not switch away from this state in
-    /// the same frame that snapshot apply entered it.
+    /// Server state currently honored over this client's prediction. Snapshot
+    /// state leads the interpolated pose, so the velocity derivation does not
+    /// switch away from it until the derivation agrees with it or the host names
+    /// another state.
     authoritative_correction_state: Option<String>,
 }
 
@@ -147,12 +185,33 @@ struct RemotePlayerLocomotion {
 #[derive(Debug, Clone)]
 pub(crate) struct RemotePlayerLocomotionReference {
     pub(crate) idle_state: String,
-    pub(crate) walk_state: String,
-    pub(crate) run_state: Option<String>,
+    pub(crate) states: crate::sim::PlayerLocomotionStates,
     pub(crate) walk_speed: f32,
     pub(crate) run_speed: f32,
-    pub(crate) walk_derived_travel_speed: Option<f32>,
-    pub(crate) run_derived_travel_speed: Option<f32>,
+    /// Load-derived clip travel speed per locomotion state. States whose clip
+    /// derives none are absent.
+    pub(crate) derived_travel_speeds: HashMap<String, f32>,
+}
+
+#[cfg(test)]
+impl RemotePlayerLocomotionReference {
+    /// An `idle` + `walk_forward` avatar with no derived clip speeds.
+    pub(crate) fn idle_and_walk_forward(speed: f32) -> Self {
+        Self::declaring(&["idle", "walk_forward"], speed, speed)
+    }
+
+    pub(crate) fn declaring(states: &[&str], walk_speed: f32, run_speed: f32) -> Self {
+        Self {
+            idle_state: "idle".to_string(),
+            states: crate::sim::PlayerLocomotionStates::from_declared(|state| {
+                states.contains(&state)
+            })
+            .expect("a walk state is declared"),
+            walk_speed,
+            run_speed,
+            derived_travel_speeds: HashMap::new(),
+        }
+    }
 }
 
 /// Per-frame interpolation results consumed by the presentation pose-input pass.
@@ -191,6 +250,13 @@ pub(crate) enum IgnoredPayload {
     /// A movement payload referenced a ground mover id this client did not load.
     /// The ground reference is engine-owned validation for the same reason.
     UnknownGroundMover { network_id: u32, mover_id: u32 },
+    /// A teleporter baseline named an index and source entity no installed
+    /// teleporter carries. Nothing binds; the region keeps its local armed state.
+    UnknownTeleporter {
+        network_id: u32,
+        index: u16,
+        source_entity: u32,
+    },
 }
 
 /// One pending baseline-repair entry: the entity needs a full baseline re-sent and
@@ -218,8 +284,9 @@ pub struct ClientReplication {
     /// their target on the wire.
     reverse_map: HashMap<EntityId, NetworkId>,
     /// `NetworkId -> stored baseline_id`. The baseline the client currently holds for
-    /// each mapped entity; a `Delta`'s `baseline_ref` must match this to apply, and a
-    /// successful apply advances it. Kept in lockstep with `map`.
+    /// each mapped entity. A `Delta` applies when its `new_baseline_id` is newer than
+    /// this (see [`baseline_is_newer`]), whatever its `baseline_ref`, and a successful
+    /// apply advances it. Kept in lockstep with `map`.
     baselines: HashMap<NetworkId, u32>,
     /// Last active-weapon archetype applied for each replicated movement pawn. This
     /// is presentation state only: it detects shared-visible equip changes without
@@ -234,6 +301,9 @@ pub struct ClientReplication {
     /// resends a `BaselineRefreshRequest` on the 5 Hz cadence; the matching
     /// `FullBaseline` apply clears it.
     pending_repairs: HashMap<NetworkId, PendingRepair>,
+    /// The local pawn whose unmerged-first-record refresh has already sent its one
+    /// immediate request; later requests for it wait on the resend cadence.
+    unmerged_refresh_sent: Option<NetworkId>,
     /// Highest accepted snapshot sequence. Late first entity baselines may apply
     /// without advancing this cursor or any snapshot-wide state.
     latest_sequence: Option<u32>,
@@ -493,13 +563,15 @@ pub(crate) struct ApplyOutcome {
     pub(crate) accepted_newest_snapshot: bool,
     /// The ack for accepted progress, or `None` for an ignored snapshot.
     /// Per-entity entries acknowledge applied baselines, deliberately
-    /// rejected presentation bindings, and despawn tombstones. Unknown-baseline deltas
-    /// request repair without acknowledging their entity baseline.
+    /// rejected presentation bindings, and despawn tombstones. A delta with no held
+    /// baseline, or a regressed one, requests repair without acknowledging its
+    /// entity baseline.
     pub(crate) ack: Option<AckMessage>,
     /// Written state applies after the entire frame batch has materialized.
     pub(crate) presentation_payloads: Vec<(NetworkId, ComponentPayload)>,
-    /// Refresh requests triggered by this snapshot (unknown-baseline deltas, stale
-    /// mappings). Sent immediately; the pending set also resends them on cadence.
+    /// Refresh requests triggered by this snapshot (deltas with no held baseline or
+    /// a regressed one, stale mappings). Sent immediately; the pending set also
+    /// resends them on cadence.
     pub(crate) refresh_requests: Vec<BaselineRefreshRequest>,
     /// Typed diagnostics for payloads received but deliberately not applied.
     pub(crate) ignored: Vec<IgnoredPayload>,
@@ -549,6 +621,14 @@ pub struct MoverCorrection {
 }
 
 impl ClientReplication {
+    /// Generation changes accepted since the last call, for observer arrival
+    /// cues: one per accepted sample whose generation changed, in arrival order
+    /// per pawn. Allocates nothing when none arrived.
+    pub fn take_observed_teleports(&mut self) -> Vec<ObservedTeleport> {
+        let mappings = &self.map;
+        self.interp
+            .take_observed_teleports(|network_id| mappings.get(&network_id).copied())
+    }
     /// Estimate the host script clock from the accepted snapshot anchor and RTT.
     /// Shared presentation state waits for the same clock readiness as bindings.
     #[must_use]
@@ -599,7 +679,9 @@ impl ClientReplication {
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
+        self.unmerged_refresh_sent = None;
         self.bindings.mover_network_ids.clear();
+        self.bindings.teleporter_network_ids.clear();
         self.bindings.clear_presentation();
         self.mover_history.clear();
 
@@ -645,7 +727,9 @@ impl ClientReplication {
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
+        self.unmerged_refresh_sent = None;
         self.bindings.mover_network_ids.clear();
+        self.bindings.teleporter_network_ids.clear();
         self.bindings.clear_presentation();
         self.mover_history.clear();
     }
@@ -656,6 +740,15 @@ impl ClientReplication {
     #[cfg(test)]
     pub(crate) fn map(&self) -> &HashMap<NetworkId, EntityId> {
         &self.map
+    }
+
+    /// Map `entity_id` as this client's armed local pawn without a snapshot
+    /// (tests that drive the endpoint's tuning install directly).
+    #[cfg(test)]
+    pub(crate) fn arm_local_pawn_for_test(&mut self, network_id: NetworkId, entity_id: EntityId) {
+        self.map.insert(network_id, entity_id);
+        self.reverse_map.insert(entity_id, network_id);
+        self.local_pawn = Some(network_id);
     }
 
     /// Resolve a client-local entity to the host-assigned `NetworkId`, if this
@@ -825,8 +918,8 @@ impl ClientReplication {
             ..ApplyOutcome::default()
         };
         // Applied records and terminal tombstones are acked. Rejected presentation
-        // bindings are also acked so the host can retire them; unknown-baseline
-        // records request repair without an entity-baseline ack.
+        // bindings are also acked so the host can retire them; deltas with no held
+        // baseline or a regressed one request repair without an entity-baseline ack.
         let mut acked_baselines: Vec<(u32, u32)> = Vec::new();
         let mut acked_tombstones: Vec<(u32, u32)> = Vec::new();
 
@@ -966,72 +1059,79 @@ impl ClientReplication {
                             acked_baselines.push((*network_id, *new_baseline_id));
                             continue;
                         }
-                        if self.baselines.get(&nid) == Some(baseline_ref)
-                            && self.map.get(&nid).is_some_and(|id| registry.exists(*id))
-                        {
-                            self.baselines.insert(nid, *new_baseline_id);
-                            collect_presentation_payloads(&mut outcome, nid, components);
-                            acked_baselines.push((*network_id, *new_baseline_id));
-                        } else {
-                            self.queue_repair(
+                        let live = self.map.get(&nid).is_some_and(|id| registry.exists(*id));
+                        let held = self.baselines.get(&nid).copied().filter(|_| live);
+                        match held {
+                            Some(held) if baseline_is_newer(*new_baseline_id, held) => {
+                                self.baselines.insert(nid, *new_baseline_id);
+                                collect_presentation_payloads(&mut outcome, nid, components);
+                                acked_baselines.push((*network_id, *new_baseline_id));
+                            }
+                            // A metadata-only resend: a bound authored entity has no
+                            // metadata consumers.
+                            Some(held) if *new_baseline_id == held => {}
+                            // No held baseline or live mapping, or a regressed id.
+                            _ => self.queue_repair(
                                 &mut outcome.refresh_requests,
                                 snapshot.sequence,
                                 nid,
                                 *baseline_ref,
                                 REFRESH_REASON_UNKNOWN_BASELINE,
-                            );
+                            ),
                         }
                         continue;
                     }
-                    if self.apply_delta(
+                    let disposition = self.apply_delta(
                         registry,
                         snapshot.sequence,
                         snapshot.server_tick,
                         mover_target_tick,
                         mover_tick_dt,
-                        NetworkId(*network_id),
+                        nid,
                         *baseline_ref,
                         *new_baseline_id,
                         components,
                         *local_player,
                         entity_class.as_deref(),
                         &mut outcome,
-                    ) {
-                        collect_presentation_payloads(
-                            &mut outcome,
-                            NetworkId(*network_id),
-                            components,
-                        );
+                    );
+                    if disposition == DeltaApply::Rejected {
+                        continue;
+                    }
+                    if disposition == DeltaApply::Applied {
+                        collect_presentation_payloads(&mut outcome, nid, components);
                         self.retain_projectile_presentation(
                             registry,
-                            NetworkId(*network_id),
+                            nid,
                             *projectile_presentation,
                         );
                         acked_baselines.push((*network_id, *new_baseline_id));
-                        self.maybe_surface_active_weapon_attachment(
-                            NetworkId(*network_id),
-                            *local_player,
-                            entity_class.as_deref(),
-                            active_weapon_archetype.clone(),
-                            components,
-                            &mut outcome,
-                        );
-                        self.maybe_arm_local_pawn(
-                            registry,
-                            NetworkId(*network_id),
-                            *local_player,
-                            entity_class.clone(),
-                            &mut outcome,
-                        );
-                        self.capture_local_reconcile(
-                            NetworkId(*network_id),
-                            *local_player,
-                            components,
-                            snapshot.server_tick,
-                            *last_processed_client_tick,
-                            &mut outcome,
-                        );
                     }
+                    // A metadata-only resend still carries the refreshed reconcile
+                    // cursor and ownership, so these run for it too.
+                    self.maybe_surface_active_weapon_attachment(
+                        nid,
+                        *local_player,
+                        entity_class.as_deref(),
+                        active_weapon_archetype.clone(),
+                        components,
+                        &mut outcome,
+                    );
+                    self.maybe_arm_local_pawn(
+                        registry,
+                        nid,
+                        *local_player,
+                        entity_class.clone(),
+                        &mut outcome,
+                    );
+                    self.capture_local_reconcile(
+                        nid,
+                        *local_player,
+                        components,
+                        snapshot.server_tick,
+                        *last_processed_client_tick,
+                        &mut outcome,
+                    );
                 }
                 EntityRecord::Despawn {
                     network_id,
@@ -1119,8 +1219,13 @@ impl ClientReplication {
                 )
                 .map(|(entity, _)| entity)
         } else {
-            first_mover_state(components)
-                .and_then(|state| bindings::find_loaded_mover_entity(registry, state.mover_id))
+            teleporters::first_state(components)
+                .and_then(|state| teleporters::find_loaded(registry, state))
+                .or_else(|| {
+                    first_mover_state(components).and_then(|state| {
+                        bindings::find_loaded_mover_entity(registry, state.mover_id)
+                    })
+                })
         };
         target.is_none_or(|entity| !self.reverse_map.contains_key(&entity))
     }
@@ -1194,6 +1299,19 @@ impl ClientReplication {
             // Unmapped: a spawn. Requires a Transform to seed the entity; a baseline
             // without one is invalid and does not spawn.
             None => {
+                if let Some(state) = teleporters::first_state(components) {
+                    return self.bind_teleporter_baseline(
+                        registry,
+                        network_id,
+                        baseline_id,
+                        state,
+                        server_tick,
+                        mover_target_tick,
+                        mover_tick_dt,
+                        components,
+                        outcome,
+                    );
+                }
                 if let Some(mover_state) = first_mover_state(components) {
                     let Some(id) =
                         bindings::find_loaded_mover_entity(registry, mover_state.mover_id)
@@ -1228,6 +1346,7 @@ impl ClientReplication {
                         self.remove_mapping(network_id);
                         self.baselines.remove(&network_id);
                         self.bindings.mover_network_ids.remove(&network_id);
+                        self.bindings.teleporter_network_ids.remove(&network_id);
                         return false;
                     }
                     return true;
@@ -1281,8 +1400,8 @@ impl ClientReplication {
         }
     }
 
-    /// Apply a `Delta`. Returns `true` if applied (ackable), `false` if it requested
-    /// a refresh (unknown baseline ref). See the module state machine.
+    /// Apply a `Delta` and report how it was disposed of. See the module state
+    /// machine.
     #[allow(clippy::too_many_arguments)]
     fn apply_delta(
         &mut self,
@@ -1298,26 +1417,45 @@ impl ClientReplication {
         local_player: bool,
         entity_class: Option<&str>,
         outcome: &mut ApplyOutcome,
-    ) -> bool {
-        // The client must hold the referenced baseline and a live mapped entity. If
-        // the stored baseline does not match (lost/old snapshot), or the entity is
-        // gone, request a refresh and leave current state untouched.
+    ) -> DeltaApply {
+        // The client must hold some baseline and a live mapped entity. A delta
+        // carries the full component set, so any held baseline older than
+        // `new_baseline_id` suffices. Deltas reach here only from an accepted newest
+        // snapshot, whose ids never run backward, so a regressed id is a broken
+        // invariant: skipping it would leave the host resending forever.
         let held = self.baselines.get(&network_id).copied();
         let mapped = self.map.get(&network_id).copied();
-        let appliable = matches!((held, mapped), (Some(b), Some(id))
-            if b == baseline_ref && registry.exists(id));
-        if !appliable {
-            self.queue_repair(
-                &mut outcome.refresh_requests,
-                sequence,
-                network_id,
-                baseline_ref,
-                REFRESH_REASON_UNKNOWN_BASELINE,
+        let (held, id) = match (held, mapped) {
+            (Some(held), Some(id))
+                if registry.exists(id)
+                    && (new_baseline_id == held || baseline_is_newer(new_baseline_id, held)) =>
+            {
+                (held, id)
+            }
+            _ => {
+                self.queue_repair(
+                    &mut outcome.refresh_requests,
+                    sequence,
+                    network_id,
+                    baseline_ref,
+                    REFRESH_REASON_UNKNOWN_BASELINE,
+                );
+                return DeltaApply::Rejected;
+            }
+        };
+        if new_baseline_id == held {
+            // The host refreshes authority metadata every tick without bumping an
+            // unchanged baseline, so this resend's components are already applied.
+            // Only the materialize retry runs here; the caller runs the rest.
+            self.maybe_surface_remote_entity_materialize(
+                id,
+                local_player,
+                entity_class,
+                components,
+                outcome,
             );
-            return false;
+            return DeltaApply::MetadataRefresh;
         }
-        // Safe: `appliable` proved both are Some and the entity is live.
-        let id = mapped.expect("appliable delta has a mapped entity");
         if !self.apply_components_to(
             registry,
             network_id,
@@ -1328,7 +1466,7 @@ impl ClientReplication {
             components,
             outcome,
         ) {
-            return false;
+            return DeltaApply::Rejected;
         }
         self.maybe_surface_remote_entity_materialize(
             id,
@@ -1337,12 +1475,12 @@ impl ClientReplication {
             components,
             outcome,
         );
-        // Advance the stored baseline so the next delta chains from this one. An
-        // empty-component delta is a valid no-op apply: it still advances the baseline
-        // (the server bumped the baseline id even if the mirrors did not change the
-        // applied set), so the client stays in step.
+        // Advance the stored baseline so newest-wins can skip a duplicate and refresh
+        // on a regression. An empty-component delta is a valid no-op apply: it still
+        // advances the baseline (the server bumped the baseline id even if the
+        // mirrors did not change the applied set), so the client stays in step.
         self.baselines.insert(network_id, new_baseline_id);
-        true
+        DeltaApply::Applied
     }
 
     fn maybe_surface_remote_entity_materialize(
@@ -1517,6 +1655,7 @@ impl ClientReplication {
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
         self.bindings.mover_network_ids.remove(&network_id);
+        self.bindings.teleporter_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
             entity_id,
@@ -1561,7 +1700,7 @@ impl ClientReplication {
             return;
         };
         let movement = components.iter().find_map(|p| match p {
-            ComponentPayload::PlayerMovementState(m) => Some(*m),
+            ComponentPayload::PlayerMovementState(m) => Some(m.clone()),
             _ => None,
         });
         outcome.local_reconcile = Some(LocalReconcileInput {
@@ -1597,7 +1736,11 @@ impl ClientReplication {
                 transform,
             })
         });
-        let bound = self.bindings.is_presentation_bound(network_id);
+        let bound = self.bindings.is_presentation_bound(network_id)
+            || self
+                .bindings
+                .teleporter_network_ids
+                .contains_key(&network_id);
         if let Some(id) = self.clear_identity_state(network_id)
             && !bound
         {
@@ -1627,9 +1770,11 @@ impl ClientReplication {
         self.remote_entity_classes.remove(&network_id);
         self.projectile_presentations.remove(&network_id);
         self.bindings.mover_network_ids.remove(&network_id);
+        self.bindings.teleporter_network_ids.remove(&network_id);
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
             self.local_pawn_entity_class = None;
+            self.unmerged_refresh_sent = None;
         }
         entity_id
     }
@@ -1693,12 +1838,16 @@ impl ClientReplication {
         // stamps the Transform sample for bounded extrapolation and keeps player
         // locomotion separate from mover-carried world-transform displacement.
         let record_movement = components.iter().find_map(|payload| match payload {
-            ComponentPayload::PlayerMovementState(m) if payload_is_finite(payload) => Some(*m),
+            ComponentPayload::PlayerMovementState(m) if payload_is_finite(payload) => Some(m),
             _ => None,
         });
         let record_intrinsic_velocity =
             record_movement.map(|movement| Vec3::from_array(movement.velocity));
         let record_aim_pitch = record_movement.map_or(0.0, |movement| movement.aim_pitch);
+        let record_teleport = record_movement.map(|movement| TeleportSample {
+            generation: movement.teleport.generation,
+            last_teleporter: movement.teleport.last_teleporter,
+        });
         let record_has_transform = components
             .iter()
             .any(|payload| matches!(payload, ComponentPayload::Transform(_)));
@@ -1713,6 +1862,17 @@ impl ClientReplication {
         // drops the one interpolation sample.
         let is_local = self.local_pawn == Some(network_id);
         let bound_mover_id = self.bindings.mover_network_ids.get(&network_id).copied();
+        let bound_teleporter = self
+            .bindings
+            .teleporter_network_ids
+            .get(&network_id)
+            .copied();
+        if let Some(state) = teleporters::first_state(components)
+            && (bound_teleporter != Some(state.index) || !teleporters::matches(registry, id, state))
+        {
+            log::warn!("[Net] rejecting mismatched teleporter binding for {network_id:?}");
+            return false;
+        }
         if let Some(mover_id) = unknown_ground_mover_id(registry, components) {
             outcome.ignored.push(IgnoredPayload::UnknownGroundMover {
                 network_id: network_id.0,
@@ -1782,12 +1942,16 @@ impl ClientReplication {
                 continue;
             }
             match payload {
+                ComponentPayload::TeleporterState(state) => {
+                    teleporters::apply(registry, id, *state)
+                }
                 ComponentPayload::Transform(wire) => {
                     let transform = wire_to_transform(wire);
                     if !is_local {
                         if mover_apply.is_some()
                             || invalid_bound_mover_payload
                             || bound_mover_id.is_some()
+                            || bound_teleporter.is_some()
                         {
                             continue;
                         }
@@ -1804,10 +1968,12 @@ impl ClientReplication {
                         && mover_apply.is_none()
                         && !invalid_bound_mover_payload
                         && bound_mover_id.is_none()
+                        && bound_teleporter.is_none()
                     {
                         self.interp.record(
                             network_id,
                             TransformSample {
+                                teleport: record_teleport,
                                 server_tick,
                                 transform,
                                 intrinsic_velocity: record_intrinsic_velocity,
@@ -1892,6 +2058,7 @@ impl ClientReplication {
                 server_tick,
                 intrinsic_velocity,
                 record_aim_pitch,
+                record_teleport,
             );
         }
         true
@@ -1924,6 +2091,64 @@ impl ClientReplication {
             missing_baseline_ref,
             reason,
         });
+    }
+
+    /// Until the armed local pawn's first record has merged, keep a full baseline
+    /// of it requested. A record that arrives before the host tuning installs
+    /// cannot merge, since reconcile replays with that tuning, and an idle pawn's
+    /// later deltas carry no movement; without a fresh baseline the client would
+    /// predict from no teleport record at all.
+    ///
+    /// `wanted` is false once the record has merged, and while no merge could
+    /// succeed (no host tuning, or tuning with no movement leaves the pawn without a
+    /// movement component); either way a pending request of this kind is dropped.
+    /// Only the first request for a pawn sends now, returned for the caller to
+    /// send. The answering full baseline clears the pending entry, so a merge that
+    /// still fails re-enters it without sending and the 5 Hz resend cadence paces
+    /// the retries: a forced refresh bypasses the join baseline budget, and must
+    /// not repeat every round trip. Called once per frame.
+    pub(crate) fn refresh_unmerged_local_pawn(
+        &mut self,
+        wanted: bool,
+    ) -> Option<BaselineRefreshRequest> {
+        let network_id = self.local_pawn?;
+        if !wanted {
+            if self
+                .pending_repairs
+                .get(&network_id)
+                .is_some_and(|repair| repair.reason == REFRESH_REASON_UNMERGED_LOCAL_PAWN)
+            {
+                self.pending_repairs.remove(&network_id);
+            }
+            return None;
+        }
+        if self.pending_repairs.contains_key(&network_id) {
+            return None;
+        }
+        let sequence = self.latest_sequence.unwrap_or(0);
+        let baseline = self.baselines.get(&network_id).copied().unwrap_or(0);
+        if self.unmerged_refresh_sent == Some(network_id) {
+            self.pending_repairs.insert(
+                network_id,
+                PendingRepair {
+                    missing_baseline_ref: baseline,
+                    snapshot_sequence: sequence,
+                    reason: REFRESH_REASON_UNMERGED_LOCAL_PAWN,
+                    since_last_request_ms: 0.0,
+                },
+            );
+            return None;
+        }
+        self.unmerged_refresh_sent = Some(network_id);
+        let mut requests = Vec::with_capacity(1);
+        self.queue_repair(
+            &mut requests,
+            sequence,
+            network_id,
+            baseline,
+            REFRESH_REASON_UNMERGED_LOCAL_PAWN,
+        );
+        requests.pop()
     }
 
     /// Advance the pending-repair cadence by `dt_ms` and return the refresh requests
@@ -1986,7 +2211,11 @@ impl ClientReplication {
             if self.local_pawn == Some(network_id) {
                 continue;
             }
-            if self.bindings.mover_network_ids.contains_key(&network_id)
+            if (self.bindings.mover_network_ids.contains_key(&network_id)
+                || self
+                    .bindings
+                    .teleporter_network_ids
+                    .contains_key(&network_id))
                 || self.bindings.is_presentation_bound(network_id)
             {
                 continue;
@@ -2025,24 +2254,26 @@ impl ClientReplication {
                 let intrinsic_velocity = pose
                     .intrinsic_velocity
                     .filter(|velocity| velocity.is_finite());
-                let intrinsic_speed_xz = intrinsic_velocity.map_or(0.0, horizontal_speed);
+                let (aim_yaw, _, _) = pose.transform.rotation.to_euler(glam::EulerRot::YXZ);
+                let direction = self.update_remote_player_locomotion(
+                    registry,
+                    network_id,
+                    entity_id,
+                    intrinsic_velocity.unwrap_or(Vec3::ZERO),
+                    aim_yaw,
+                    frame_anim_time,
+                );
                 if let Some(velocity) = intrinsic_velocity.filter(is_horizontal_motion) {
-                    let heading_yaw = crate::sim::player_travel_heading_yaw(velocity, 0.0);
+                    let heading_yaw =
+                        crate::sim::player_travel_heading_yaw(velocity, direction, 0.0);
                     self.presented_player_inputs
                         .heading_yaws
                         .insert(network_id, heading_yaw);
                 }
-                self.update_remote_player_locomotion(
-                    registry,
-                    network_id,
-                    entity_id,
-                    intrinsic_speed_xz,
-                    frame_anim_time,
-                );
             }
             // Diagnostic: a HeldNewest after sustained starvation is the visible
             // freeze the buffer falls back to; logged sparingly at trace.
-            if matches!(pose.source, PoseSource::HeldNewest) {
+            if pose.holds_newest {
                 stats.held_newest += 1;
                 if self
                     .interp
@@ -2069,7 +2300,11 @@ impl ClientReplication {
         for (&network_id, &entity_id) in &self.map {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
-                || self.bindings.mover_network_ids.contains_key(&network_id)
+                || (self.bindings.mover_network_ids.contains_key(&network_id)
+                    || self
+                        .bindings
+                        .teleporter_network_ids
+                        .contains_key(&network_id))
                 || self.bindings.is_presentation_bound(network_id)
             {
                 continue;
@@ -2098,7 +2333,11 @@ impl ClientReplication {
         for (network_id, entity_id) in mapped {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
-                || self.bindings.mover_network_ids.contains_key(&network_id)
+                || (self.bindings.mover_network_ids.contains_key(&network_id)
+                    || self
+                        .bindings
+                        .teleporter_network_ids
+                        .contains_key(&network_id))
                 || self.bindings.is_presentation_bound(network_id)
                 || !self.remote_player_locomotion.contains_key(&network_id)
             {
@@ -2113,6 +2352,7 @@ impl ClientReplication {
                 registry,
                 network_id,
                 entity_id,
+                Vec3::ZERO,
                 0.0,
                 frame_anim_time,
             );
@@ -2176,25 +2416,44 @@ impl ClientReplication {
         reference: Option<RemotePlayerLocomotionReference>,
     ) {
         match reference {
-            Some(reference) => {
-                self.remote_player_locomotion.insert(
-                    network_id,
-                    RemotePlayerLocomotion {
-                        idle_state: reference.idle_state,
-                        walk_state: reference.walk_state,
-                        run_state: reference.run_state,
-                        walk_speed: reference.walk_speed,
-                        run_speed: reference.run_speed,
-                        walk_derived_travel_speed: reference.walk_derived_travel_speed,
-                        run_derived_travel_speed: reference.run_derived_travel_speed,
-                        client_derived_state: None,
-                        authoritative_correction_state: None,
-                    },
-                );
-            }
+            // Re-materializing a mapped avatar (a weapon swap) refreshes the
+            // descriptor data and keeps any correction it is honoring.
+            Some(reference) => match self.remote_player_locomotion.get_mut(&network_id) {
+                Some(locomotion) => locomotion.reference = reference,
+                None => {
+                    self.remote_player_locomotion.insert(
+                        network_id,
+                        RemotePlayerLocomotion {
+                            reference,
+                            client_derived_state: None,
+                            authoritative_correction_state: None,
+                        },
+                    );
+                }
+            },
             None => {
                 self.remote_player_locomotion.remove(&network_id);
             }
+        }
+    }
+
+    /// Seed a freshly materialized remote avatar's forward/backward memory from
+    /// the host's state. Inside the dead zone the memory decides, so an unseeded
+    /// joiner would first derive the opposite fold and flip once the next delta
+    /// corrects it. Names are checked as declared: the host enters a backward
+    /// state only when its clip resolves.
+    pub(crate) fn seed_remote_player_direction(
+        &self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        entity_id: EntityId,
+        state: &str,
+    ) {
+        let Some(locomotion) = self.remote_player_locomotion.get(&network_id) else {
+            return;
+        };
+        if let Some(direction) = locomotion.reference.states.direction_of(state, |_| true) {
+            crate::sim::store_locomotion_direction(registry, entity_id, direction);
         }
     }
 
@@ -2287,64 +2546,92 @@ impl ClientReplication {
     }
 
     /// Derive one remote avatar's locomotion state and rate from the interpolated
-    /// intrinsic player velocity. The host's mesh state remains the correction
-    /// authority; this is only the responsive between-snapshot path.
+    /// intrinsic player velocity, classified forward or backward against the
+    /// presented aim. The host's mesh state remains the correction authority; this
+    /// is only the responsive between-snapshot path. Returns the direction the
+    /// avatar's legs present this frame.
     fn update_remote_player_locomotion(
         &mut self,
         registry: &mut EntityRegistry,
         network_id: NetworkId,
         entity_id: EntityId,
-        speed_xz: f32,
+        velocity: Vec3,
+        aim_yaw: f32,
         frame_anim_time: f64,
-    ) {
-        const MOVING_SPEED_EPSILON: f32 = 1.0e-4;
-
-        let Some(reference) = self.remote_player_locomotion.get_mut(&network_id) else {
-            return;
+    ) -> LocomotionDirection {
+        let Some(locomotion) = self.remote_player_locomotion.get_mut(&network_id) else {
+            return LocomotionDirection::Forward;
         };
-        let moving = speed_xz.is_finite() && speed_xz > MOVING_SPEED_EPSILON;
-        let (target_state, derived_travel_speed, fallback_speed) = if !moving {
-            (reference.idle_state.clone(), None, 1.0)
-        } else if let Some(run_state) = reference
-            .run_state
-            .as_ref()
-            .filter(|_| speed_xz > reference.walk_speed)
-        {
-            (
-                run_state.clone(),
-                reference.run_derived_travel_speed,
-                reference.run_speed,
-            )
-        } else {
-            (
-                reference.walk_state.clone(),
-                reference.walk_derived_travel_speed,
-                reference.walk_speed,
-            )
-        };
-        reference.client_derived_state = Some(target_state.clone());
-
-        let animation_state = registry
+        let speed_xz = horizontal_speed(velocity);
+        let Some(animation) = registry
             .get_component::<MeshComponent>(entity_id)
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
-            .map(|animation| {
-                (
-                    animation.current_state.clone(),
-                    animation.entered_at.is_none() || animation.previous_state.is_some(),
-                )
-            });
-        let correction_in_flight = reference
+        else {
+            return LocomotionDirection::Forward;
+        };
+        let reference = &locomotion.reference;
+        let usable = |state: &str| animation.is_state_usable(state);
+        let stored_direction = animation.locomotion_direction;
+        let current_state = animation.current_state.as_str();
+        // A host correction leads the interpolated pose by about the interpolation
+        // delay, so it is honored until this client's own derivation agrees with
+        // it rather than for its crossfade alone: releasing earlier reverts to the
+        // lagging prediction, and the next delta corrects again.
+        let correction_held = locomotion
             .authoritative_correction_state
             .as_deref()
-            .zip(animation_state.as_ref())
-            .is_some_and(|(authoritative, (current, fading))| authoritative == current && *fading);
-        if !correction_in_flight {
-            reference.authoritative_correction_state = None;
+            .is_some_and(|authoritative| authoritative == current_state);
+        // The held state seeds the classification rather than overriding it:
+        // inside the dead zone the legs fold with the corrected clip, and outside
+        // it travel still decides, keeping the twist bounded while the presented
+        // motion catches up.
+        let previous = if correction_held {
+            reference
+                .states
+                .direction_of(current_state, usable)
+                .unwrap_or(stored_direction)
+        } else {
+            stored_direction
+        };
+        let direction = crate::sim::classify_locomotion_direction(velocity, aim_yaw, previous);
+        let (target_state, tier) = reference.states.select(
+            &crate::sim::LocomotionInput {
+                speed_xz,
+                walk_speed: reference.walk_speed,
+                run_speed: reference.run_speed,
+                direction,
+                current_state,
+            },
+            usable,
+        );
+        let target_state = target_state.unwrap_or(&reference.idle_state);
+        let at_target = current_state == target_state;
+        let moving = tier != crate::sim::LocomotionTierKind::Idle;
+        let tier_speed = match tier {
+            crate::sim::LocomotionTierKind::Idle => None,
+            crate::sim::LocomotionTierKind::Walk => Some(reference.walk_speed),
+            crate::sim::LocomotionTierKind::Run => Some(reference.run_speed),
+        };
+        let derived_travel_speed =
+            tier_speed.and_then(|_| reference.derived_travel_speeds.get(target_state).copied());
+        let fallback_speed = tier_speed.unwrap_or(1.0);
+
+        if locomotion.client_derived_state.as_deref() != Some(target_state) {
+            locomotion.client_derived_state = Some(target_state.to_string());
         }
-        let current_state = animation_state.as_ref().map(|(state, _)| state.as_str());
-        if !correction_in_flight && current_state != Some(target_state.as_str()) {
-            let _ = switch_animation_state(registry, entity_id, &target_state);
+        if !correction_held || at_target {
+            locomotion.authoritative_correction_state = None;
+        }
+        // A held correction plays the host's state at its authored rate.
+        let target_reached = at_target
+            || (!correction_held
+                && matches!(
+                    switch_animation_state(registry, entity_id, target_state),
+                    SwitchResult::Switched | SwitchResult::AlreadyInState
+                ));
+        if direction != stored_direction {
+            crate::sim::store_locomotion_direction(registry, entity_id, direction);
         }
 
         let raw_ratio = registry
@@ -2352,10 +2639,10 @@ impl ClientReplication {
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
             .and_then(|animation| {
-                if !moving || animation.current_state != target_state || !animation.speed_scale {
+                if !moving || !target_reached || !animation.speed_scale {
                     return Some(1.0);
                 }
-                let state = animation.states.get(&target_state)?;
+                let state = animation.states.get(target_state)?;
                 let effective = state.effective_travel_speed(derived_travel_speed);
                 Some(MeshAnimation::locomotion_rate_ratio(
                     speed_xz.max(0.0),
@@ -2363,25 +2650,21 @@ impl ClientReplication {
                     fallback_speed,
                 ))
             });
-        let Some(raw_ratio) = raw_ratio else {
-            return;
-        };
-        let needs_rebase = registry
-            .get_component::<MeshComponent>(entity_id)
-            .ok()
-            .and_then(|mesh| mesh.animation.as_ref())
-            .is_some_and(|animation| animation.playback_rate_needs_update(raw_ratio));
-        if !needs_rebase {
-            return;
+        let needs_rebase = raw_ratio.is_some_and(|raw_ratio| {
+            registry
+                .get_component::<MeshComponent>(entity_id)
+                .ok()
+                .and_then(|mesh| mesh.animation.as_ref())
+                .is_some_and(|animation| animation.playback_rate_needs_update(raw_ratio))
+        });
+        if let Some(raw_ratio) = raw_ratio.filter(|_| needs_rebase)
+            && let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity_id).cloned()
+            && let Some(animation) = mesh.animation.as_mut()
+        {
+            animation.update_playback_rate(raw_ratio, frame_anim_time);
+            let _ = registry.set_component(entity_id, mesh);
         }
-        let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity_id).cloned() else {
-            return;
-        };
-        let Some(animation) = mesh.animation.as_mut() else {
-            return;
-        };
-        animation.update_playback_rate(raw_ratio, frame_anim_time);
-        let _ = registry.set_component(entity_id, mesh);
+        direction
     }
 
     /// Maps each live client-local entity id back to its network identity for the
@@ -2407,7 +2690,7 @@ impl ClientReplication {
         &self,
         network_id: NetworkId,
         render_server_tick: f64,
-    ) -> Option<PoseSource> {
+    ) -> Option<super::interpolation::PoseSource> {
         self.interp
             .presented_pose(network_id, render_server_tick)
             .map(|p| p.source)
@@ -2426,6 +2709,12 @@ impl ClientReplication {
     #[cfg(test)]
     pub(crate) fn sample_count(&self, network_id: NetworkId) -> usize {
         self.interp.sample_count(network_id)
+    }
+
+    /// The newest interpolation sample's transform for a remote entity (tests).
+    #[cfg(test)]
+    pub(crate) fn newest_sample_transform(&self, network_id: NetworkId) -> Option<Transform> {
+        self.interp.newest_transform(network_id)
     }
 
     #[cfg(test)]
@@ -2681,6 +2970,7 @@ fn collect_presentation_payloads(
 
 #[cfg(test)]
 mod tests {
+    use super::super::interpolation::PoseSource;
     use super::*;
     use glam::Quat;
     use glam::Vec3;
@@ -2725,6 +3015,7 @@ mod tests {
         aim_pitch: f32,
     ) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+            teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
             velocity,
@@ -2949,6 +3240,151 @@ mod tests {
     }
 
     // --- Join-in-progress: full baseline spawns + maps, then deltas converge. ---
+    #[test]
+    fn teleport_armed_binding_updates_installed_region_and_demotion_preserves_it() {
+        use postretro_entities::TeleporterComponent;
+        use postretro_net::wire::WireTeleporterState;
+        let mut registry = EntityRegistry::new();
+        let installed = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                installed,
+                TeleporterComponent {
+                    index: 0,
+                    source_entity: 10,
+                    armed: true,
+                    arrival_sound: "local/cue".into(),
+                    on_teleport: "local.event".into(),
+                },
+            )
+            .unwrap();
+        let mut client = ClientReplication::new();
+        let state = |armed| {
+            ComponentPayload::TeleporterState(WireTeleporterState {
+                index: 0,
+                source_entity: 10,
+                armed,
+            })
+        };
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                1,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(100.0), state(false)],
+                )],
+            ),
+        );
+        assert_eq!(client.entity_for_network_id(NetworkId(7)), Some(installed));
+        let local = registry
+            .get_component::<TeleporterComponent>(installed)
+            .unwrap();
+        assert!(!local.armed);
+        assert_eq!(local.arrival_sound, "local/cue");
+        assert!(
+            entity_pos(&registry, installed).length() < 1.0e-6,
+            "arming never overwrites authored transform"
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(2, 2, vec![delta(7, 1, 2, vec![state(true)])]),
+        );
+        assert!(
+            registry
+                .get_component::<TeleporterComponent>(installed)
+                .unwrap()
+                .armed
+        );
+        client.despawn_all_mapped(&mut registry);
+        client.reset_for_demotion();
+        assert!(registry.exists(installed));
+        assert!(client.entity_for_network_id(NetworkId(7)).is_none());
+    }
+
+    #[test]
+    fn teleport_client_observes_accepted_generations_and_cues_before_delayed_render_arrives() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        let movement = |generation, last| {
+            let mut movement = movement_payload();
+            let ComponentPayload::PlayerMovementState(ref mut wire) = movement else {
+                unreachable!()
+            };
+            wire.teleport =
+                postretro_net::wire::WireTeleportState::new(generation, 0.0, last, &[]).unwrap();
+            movement
+        };
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                10,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(0.0), movement(0, u16::MAX)],
+                )],
+            ),
+        );
+        assert!(client.take_observed_teleports().is_empty());
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                20,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![transform_payload(100.0), movement(1, 0)],
+                )],
+            ),
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                3,
+                30,
+                vec![full_baseline(
+                    7,
+                    3,
+                    vec![transform_payload(200.0), movement(2, 1)],
+                )],
+            ),
+        );
+        client.sample_into_registry(&mut registry, 15.0, 0.0);
+        let entity = client.entity_for_network_id(NetworkId(7)).unwrap();
+        assert!(entity_pos(&registry, entity).length() < 1.0e-6);
+        // Two accepted generation changes in one frame are two cues, in order,
+        // each at its own accepted arrival point.
+        let cues = client.take_observed_teleports();
+        assert_eq!(cues.len(), 2);
+        assert_eq!((cues[0].generation, cues[0].last_teleporter), (1, 0));
+        assert!((cues[0].arrival.x - 100.0).abs() < 1.0e-6);
+        assert_eq!((cues[1].generation, cues[1].last_teleporter), (2, 1));
+        assert!((cues[1].arrival.x - 200.0).abs() < 1.0e-6);
+        assert!(client.take_observed_teleports().is_empty());
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                20,
+                vec![full_baseline(
+                    7,
+                    2,
+                    vec![transform_payload(100.0), movement(1, 0)],
+                )],
+            ),
+        );
+        assert!(
+            client.take_observed_teleports().is_empty(),
+            "stale known-identity records cannot replay cues"
+        );
+    }
+
     #[test]
     fn full_baseline_spawns_and_delta_converges_with_stable_mapping() {
         let mut registry = EntityRegistry::new();
@@ -3437,10 +3873,10 @@ mod tests {
         );
     }
 
-    // --- Unknown-baseline delta: not applied, pending repair set, refresh requested,
-    // unrelated state untouched. ---
+    // --- Delta with no held baseline: not applied, pending repair set, refresh
+    // requested, unrelated state untouched. ---
     #[test]
-    fn delta_with_unknown_baseline_requests_refresh_and_leaves_state() {
+    fn delta_without_held_baseline_requests_refresh_and_leaves_state() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         // Spawn entity 7 at baseline 1.
@@ -3454,19 +3890,23 @@ mod tests {
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
 
-        // A delta referencing baseline 5 (the client holds 1): unappliable.
+        // A delta for entity 8, which the client never mapped: unappliable however
+        // new its baseline id is.
         let out = client.apply_snapshot(
             &mut registry,
-            &snapshot(1, 2, vec![delta(7, 5, 6, vec![transform_payload(99.0)])]),
+            &snapshot(1, 2, vec![delta(8, 5, 6, vec![transform_payload(99.0)])]),
         );
-        // State untouched: position unchanged, baseline still 1.
+        // State untouched: entity 8 not spawned, entity 7 unchanged.
+        assert!(!client.map().contains_key(&NetworkId(8)));
+        assert_eq!(client.stored_baseline(NetworkId(8)), None);
         assert!((entity_pos(&registry, id).x - 0.0).abs() < EPSILON);
         assert_eq!(client.stored_baseline(NetworkId(7)), Some(1));
         // Pending repair + a refresh request emitted, not acked.
-        assert!(client.is_pending_repair(NetworkId(7)));
+        assert!(client.is_pending_repair(NetworkId(8)));
+        assert!(!client.is_pending_repair(NetworkId(7)));
         assert_eq!(out.refresh_requests.len(), 1);
         let req = out.refresh_requests[0];
-        assert_eq!(req.network_id, 7);
+        assert_eq!(req.network_id, 8);
         assert_eq!(req.missing_baseline_ref, 5);
         // The ack carries the sequence advance but NO baseline for the unappliable
         // entity.
@@ -3477,8 +3917,8 @@ mod tests {
         );
     }
 
-    // --- Empty delta is a no-op only when its baseline ref is known: it advances the
-    // baseline (held ref) but errors-to-repair otherwise. ---
+    // --- An empty delta newer than the held baseline is a valid no-op apply that
+    // advances the baseline; resent at the held id it acks nothing. ---
     #[test]
     fn empty_delta_is_noop_apply_when_baseline_known() {
         let mut registry = EntityRegistry::new();
@@ -3509,14 +3949,125 @@ mod tests {
         assert!(!client.is_pending_repair(NetworkId(7)));
         assert_eq!(out.ack.unwrap().entity_baselines, vec![(7, 2)]);
 
-        // An empty delta whose ref is NOT held requests a refresh instead.
-        let out2 = client.apply_snapshot(
+        // A repeated empty delta for the baseline already held is a metadata-only
+        // resend: no refresh, no ack.
+        let out2 =
+            client.apply_snapshot(&mut registry, &snapshot(2, 3, vec![delta(7, 1, 2, vec![])]));
+        assert!(!client.is_pending_repair(NetworkId(7)));
+        assert!(out2.refresh_requests.is_empty());
+        assert!(out2.ack.unwrap().entity_baselines.is_empty());
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(2));
+    }
+
+    // --- Newest wins: a delta carries the full component set, so the host naming
+    // its last *acked* baseline (while newer client acks are in flight) must not
+    // starve the client. ---
+    #[test]
+    fn deltas_from_one_acked_ref_apply_in_order_without_refresh() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
             &mut registry,
-            &snapshot(2, 3, vec![delta(7, 99, 100, vec![])]),
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+
+        // The host has only seen the ack for baseline 1, so both deltas name it.
+        let out_b = client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 2, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
+        );
+        let out_c = client.apply_snapshot(
+            &mut registry,
+            &snapshot(2, 3, vec![delta(7, 1, 3, vec![transform_payload(3.0)])]),
+        );
+        assert!((entity_pos(&registry, id).x - 3.0).abs() < EPSILON);
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(3));
+        assert!(out_b.refresh_requests.is_empty());
+        assert!(out_c.refresh_requests.is_empty());
+        assert!(!client.is_pending_repair(NetworkId(7)));
+        assert_eq!(out_b.ack.unwrap().entity_baselines, vec![(7, 2)]);
+        assert_eq!(out_c.ack.unwrap().entity_baselines, vec![(7, 3)]);
+    }
+
+    // Reordering and duplication inside the accepted-newest stream: a late
+    // snapshot is dropped by the sequence gate and a duplicate id is skipped, but a
+    // regressed id inside a newer snapshot breaks newest-wins and requests repair.
+    #[test]
+    fn duplicate_delta_skips_and_regressed_delta_requests_refresh() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+
+        // C (baseline 3) arrives first and applies.
+        let out_c = client.apply_snapshot(
+            &mut registry,
+            &snapshot(2, 3, vec![delta(7, 1, 3, vec![transform_payload(3.0)])]),
+        );
+        assert_eq!(out_c.ack.unwrap().entity_baselines, vec![(7, 3)]);
+
+        // B (baseline 2) in its older snapshot is dropped by the sequence gate.
+        let late_b = client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 2, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
+        );
+        // A duplicate C, resent before the host saw the ack for 3.
+        let dup_c = client.apply_snapshot(
+            &mut registry,
+            &snapshot(3, 4, vec![delta(7, 1, 3, vec![transform_payload(30.0)])]),
+        );
+        for out in [&late_b, &dup_c] {
+            assert!(out.refresh_requests.is_empty());
+            assert!(
+                out.ack
+                    .as_ref()
+                    .is_none_or(|ack| ack.entity_baselines.is_empty()),
+                "a skipped delta is not acked"
+            );
+        }
+        assert!(!client.is_pending_repair(NetworkId(7)));
+
+        // B's baseline in a newer snapshot is older than the held one: repair.
+        let regressed_b = client.apply_snapshot(
+            &mut registry,
+            &snapshot(4, 5, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
+        );
+        assert_eq!(regressed_b.refresh_requests.len(), 1);
+        assert_eq!(regressed_b.refresh_requests[0].network_id, 7);
+        assert_eq!(
+            regressed_b.refresh_requests[0].reason,
+            REFRESH_REASON_UNKNOWN_BASELINE
         );
         assert!(client.is_pending_repair(NetworkId(7)));
-        assert_eq!(out2.refresh_requests.len(), 1);
-        assert!(out2.ack.unwrap().entity_baselines.is_empty());
+        assert!(
+            regressed_b.ack.unwrap().entity_baselines.is_empty(),
+            "a regressed delta is not acked"
+        );
+
+        // No state moved: the held baseline and pose are C's.
+        assert!((entity_pos(&registry, id).x - 3.0).abs() < EPSILON);
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(3));
+    }
+
+    #[test]
+    fn baseline_newness_wraps_like_the_host_allocators() {
+        assert!(baseline_is_newer(2, 1));
+        assert!(!baseline_is_newer(1, 1));
+        assert!(!baseline_is_newer(1, 2));
+        assert!(baseline_is_newer(1, u32::MAX));
+        assert!(!baseline_is_newer(u32::MAX, 1));
     }
 
     // Known identities never roll back; duplicate snapshots remain ignored.
@@ -3643,15 +4194,7 @@ mod tests {
                 movement_payload_with_velocity_and_pitch([12.0, 0.0, 4.0], aim_pitch),
             ],
         };
-        let locomotion = || RemotePlayerLocomotionReference {
-            idle_state: "idle".to_string(),
-            walk_state: "walk_forward".to_string(),
-            run_state: None,
-            walk_speed: 60.0,
-            run_speed: 60.0,
-            walk_derived_travel_speed: None,
-            run_derived_travel_speed: None,
-        };
+        let locomotion = || RemotePlayerLocomotionReference::idle_and_walk_forward(60.0);
 
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
@@ -3729,22 +4272,16 @@ mod tests {
     fn full_baseline_refresh_response_clears_pending_and_remaps() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
-        // Spawn, then receive an unknown-baseline delta to enter the pending set.
-        client.apply_snapshot(
-            &mut registry,
-            &snapshot(
-                0,
-                1,
-                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
-            ),
-        );
+        // A delta for an identity whose first baseline was lost enters the pending
+        // set.
         client.apply_snapshot(
             &mut registry,
             &snapshot(1, 2, vec![delta(7, 99, 100, vec![transform_payload(5.0)])]),
         );
         assert!(client.is_pending_repair(NetworkId(7)));
+        assert!(!client.map().contains_key(&NetworkId(7)));
 
-        // The refresh response arrives as a FullBaseline: applies in place, clears
+        // The refresh response arrives as a FullBaseline: spawns and maps, clears
         // pending, acks.
         let out = client.apply_snapshot(
             &mut registry,
@@ -3758,6 +4295,7 @@ mod tests {
             !client.is_pending_repair(NetworkId(7)),
             "refresh cleared pending"
         );
+        assert!(client.map().contains_key(&NetworkId(7)));
         assert_eq!(client.stored_baseline(NetworkId(7)), Some(100));
         assert_eq!(out.ack.unwrap().entity_baselines, vec![(7, 100)]);
     }
@@ -3935,15 +4473,7 @@ mod tests {
     fn pending_repair_resends_at_5hz_until_cleared() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
-        client.apply_snapshot(
-            &mut registry,
-            &snapshot(
-                0,
-                1,
-                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
-            ),
-        );
-        // Enter pending via an unknown-baseline delta.
+        // Enter pending via a delta for an identity with no held baseline.
         client.apply_snapshot(
             &mut registry,
             &snapshot(1, 2, vec![delta(7, 99, 100, vec![transform_payload(1.0)])]),
@@ -4016,16 +4546,13 @@ mod tests {
     fn ack_carries_only_applied_records() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
-        // Pre-map entity 9 so its despawn applies, and entity 10 at baseline 1.
+        // Pre-map entity 9 so its despawn applies.
         client.apply_snapshot(
             &mut registry,
             &snapshot(
                 0,
                 1,
-                vec![
-                    full_baseline(9, 1, vec![transform_payload(0.0)]),
-                    full_baseline(10, 2, vec![transform_payload(0.0)]),
-                ],
+                vec![full_baseline(9, 1, vec![transform_payload(0.0)])],
             ),
         );
 
@@ -4037,8 +4564,8 @@ mod tests {
                 vec![
                     // Applies: a fresh spawn.
                     full_baseline(11, 5, vec![transform_payload(1.0)]),
-                    // Does not apply: unknown baseline ref for entity 10 (holds 2).
-                    delta(10, 99, 100, vec![transform_payload(9.0)]),
+                    // Does not apply: entity 12 has no held baseline.
+                    delta(12, 99, 100, vec![transform_payload(9.0)]),
                     // Applies: despawn of mapped entity 9.
                     EntityRecord::Despawn {
                         network_id: 9,
@@ -4060,7 +4587,7 @@ mod tests {
             "applied despawn acked"
         );
         assert!(
-            client.is_pending_repair(NetworkId(10)),
+            client.is_pending_repair(NetworkId(12)),
             "unappliable delta -> pending"
         );
         assert_eq!(out.refresh_requests.len(), 1);
@@ -4106,7 +4633,14 @@ mod tests {
         );
         let out = client.apply_snapshot(
             &mut registry,
-            &snapshot(1, 2, vec![delta(7, 99, 100, vec![transform_payload(1.0)])]),
+            &snapshot(
+                1,
+                2,
+                vec![
+                    delta(7, 1, 2, vec![transform_payload(1.0)]),
+                    delta(8, 99, 100, vec![transform_payload(1.0)]),
+                ],
+            ),
         );
         let buffers = encode_client_messages(&out);
         assert_eq!(buffers.len(), 2, "ack + one refresh");
@@ -4431,15 +4965,7 @@ mod tests {
         registry.set_component(id, remote_player_mesh()).unwrap();
         client.cache_remote_player_locomotion(
             NetworkId(7),
-            Some(RemotePlayerLocomotionReference {
-                idle_state: "idle".to_string(),
-                walk_state: "walk_forward".to_string(),
-                run_state: None,
-                walk_speed: 60.0,
-                run_speed: 60.0,
-                walk_derived_travel_speed: None,
-                run_derived_travel_speed: None,
-            }),
+            Some(RemotePlayerLocomotionReference::idle_and_walk_forward(60.0)),
         );
 
         // The player stays still relative to the platform while their world Transform
@@ -4531,15 +5057,7 @@ mod tests {
         registry.set_component(id, remote_player_mesh()).unwrap();
         client.cache_remote_player_locomotion(
             NetworkId(7),
-            Some(RemotePlayerLocomotionReference {
-                idle_state: "idle".to_string(),
-                walk_state: "walk_forward".to_string(),
-                run_state: None,
-                walk_speed: 60.0,
-                run_speed: 60.0,
-                walk_derived_travel_speed: None,
-                run_derived_travel_speed: None,
-            }),
+            Some(RemotePlayerLocomotionReference::idle_and_walk_forward(60.0)),
         );
         client.apply_snapshot(
             &mut registry,
@@ -4614,7 +5132,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_player_locomotion_uses_intrinsic_velocity_and_crossfades_authoritative_mismatch() {
+    fn remote_player_locomotion_holds_an_authoritative_mismatch_until_the_derivation_agrees() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         client.apply_snapshot(
@@ -4636,15 +5154,7 @@ mod tests {
         registry.set_component(id, remote_player_mesh()).unwrap();
         client.cache_remote_player_locomotion(
             NetworkId(7),
-            Some(RemotePlayerLocomotionReference {
-                idle_state: "idle".to_string(),
-                walk_state: "walk_forward".to_string(),
-                run_state: None,
-                walk_speed: 60.0,
-                run_speed: 60.0,
-                walk_derived_travel_speed: None,
-                run_derived_travel_speed: None,
-            }),
+            Some(RemotePlayerLocomotionReference::idle_and_walk_forward(60.0)),
         );
 
         client.apply_snapshot(
@@ -4721,9 +5231,413 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .current_state,
-            "walk_forward",
-            "velocity derivation resumes after the correction crossfade completes"
+            "idle",
+            "the host's state outlasts its crossfade: reverting to the lagging \
+             prediction would only be corrected again by the next delta"
         );
+
+        // The host comes round to walking; the client already derives walk, so
+        // the correction releases and velocity derivation resumes.
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                3,
+                112,
+                vec![delta(7, 3, 4, vec![mesh_animation_payload("walk_forward")])],
+            ),
+        );
+        resolve_pending_animation_stamps(&mut registry, 1.1);
+        client.sample_into_registry(&mut registry, 105.0, 1.1);
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "walk_forward"
+        );
+        assert!(
+            client.remote_player_locomotion[&NetworkId(7)]
+                .authoritative_correction_state
+                .is_none()
+        );
+    }
+
+    /// [`remote_player_mesh`] plus resolved states named `extra`.
+    fn remote_player_mesh_with(extra: &[&str]) -> MeshComponent {
+        let mut mesh = remote_player_mesh();
+        let animation = mesh.animation.as_mut().unwrap();
+        for (index, name) in extra.iter().enumerate() {
+            let mut state = animation.states["walk_forward"].clone();
+            state.clip = name.to_string();
+            state.clip_index = Some(2 + index);
+            animation.states.insert(name.to_string(), state);
+        }
+        mesh
+    }
+
+    fn remote_player_backpedal_mesh() -> MeshComponent {
+        remote_player_mesh_with(&["walk_backward"])
+    }
+
+    /// Map remote player 7 facing yaw zero (-Z), install `mesh`, and buffer it
+    /// travelling at `velocity` across snapshots at ticks 100 and 110.
+    fn map_remote_player(
+        mesh: MeshComponent,
+        declared: &[&str],
+        velocity: [f32; 3],
+        (walk_speed, run_speed): (f32, f32),
+    ) -> (EntityRegistry, ClientReplication, EntityId) {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([0.0, 0.0, 0.0], 0.0),
+                        movement_payload_with_velocity(velocity),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, mesh).unwrap();
+        client.cache_remote_player_locomotion(
+            NetworkId(7),
+            Some(RemotePlayerLocomotionReference::declaring(
+                declared, walk_speed, run_speed,
+            )),
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                110,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![
+                        transform_payload_at([1.0, 0.0, 1.0], 0.0),
+                        movement_payload_with_velocity(velocity),
+                    ],
+                )],
+            ),
+        );
+        (registry, client, id)
+    }
+
+    /// [`map_remote_player`], then present it at render tick 105.
+    fn present_remote_player(
+        mesh: MeshComponent,
+        declared: &[&str],
+        velocity: [f32; 3],
+        speeds: (f32, f32),
+    ) -> (EntityRegistry, ClientReplication, EntityId) {
+        let (mut registry, mut client, id) = map_remote_player(mesh, declared, velocity, speeds);
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        (registry, client, id)
+    }
+
+    fn presented_state_and_heading(
+        registry: &EntityRegistry,
+        client: &ClientReplication,
+        id: EntityId,
+    ) -> (String, f32) {
+        let state = registry
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .current_state
+            .clone();
+        let heading = client.presented_player_inputs().heading_yaws[&NetworkId(7)];
+        (state, heading)
+    }
+
+    #[test]
+    fn remote_player_backpedal_keeps_legs_facing_aim() {
+        // Aim faces -Z; +Z travel is a backpedal.
+        let (registry, client, id) = present_remote_player(
+            remote_player_backpedal_mesh(),
+            &["idle", "walk_forward", "walk_backward"],
+            [0.0, 0.0, 60.0],
+            (60.0, 60.0),
+        );
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward");
+        assert!(
+            heading.abs() <= EPSILON,
+            "legs face aim, not travel: {heading}"
+        );
+
+        // Without a backward clip the forward clip plays, legs still forward.
+        let (registry, client, id) = present_remote_player(
+            remote_player_mesh(),
+            &["idle", "walk_forward"],
+            [0.0, 0.0, 60.0],
+            (60.0, 60.0),
+        );
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_forward");
+        assert!(
+            heading.abs() <= EPSILON,
+            "legs face aim, not travel: {heading}"
+        );
+    }
+
+    #[test]
+    fn remote_player_prediction_agrees_with_host_selection_across_tiers_and_directions() {
+        use postretro_foundation::PlayerMovementComponent;
+
+        let extra = ["walk_backward", "run_forward", "run_backward"];
+        let declared = [
+            "idle",
+            "walk_forward",
+            "walk_backward",
+            "run_forward",
+            "run_backward",
+        ];
+        // Aim faces -Z. Ground walk 7, run 11.
+        for (velocity, expected) in [
+            ([0.0, 0.0, 5.0], "walk_backward"),
+            ([0.0, 0.0, 10.0], "run_backward"),
+            // 8.5 m/s sits inside the walk/run band; from rest it stays walk
+            // (the run tier enters above 9.6).
+            ([6.0, 0.0, 6.0], "walk_backward"),
+            ([8.0, 0.0, 8.0], "run_backward"),
+            ([0.0, 0.0, -10.0], "run_forward"),
+            ([-3.0, 0.0, -4.0], "walk_forward"),
+            // Pure strafe from rest sits in the dead zone and starts forward.
+            ([5.0, 0.0, 0.0], "walk_forward"),
+        ] {
+            let mut host = EntityRegistry::new();
+            let pawn = host.spawn(Transform::default());
+            let mut movement = PlayerMovementComponent::from_descriptor(
+                &crate::snapshot_regression_harness_test::player_descriptor(),
+            );
+            movement.velocity = Vec3::from(velocity);
+            host.set_component(pawn, movement).unwrap();
+            host.set_component(pawn, remote_player_mesh_with(&extra))
+                .unwrap();
+            crate::sim::update_player_animation_locomotion(
+                &mut host,
+                &crate::scripting_systems::hit_zones::HitZoneStore::new(),
+                0.0,
+            );
+            let host_state = host
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state
+                .clone();
+            assert_eq!(host_state, expected, "host at {velocity:?}");
+
+            let (mut registry, mut client, id) = present_remote_player(
+                remote_player_mesh_with(&extra),
+                &declared,
+                velocity,
+                (7.0, 11.0),
+            );
+            let (client_state, _) = presented_state_and_heading(&registry, &client, id);
+            assert_eq!(client_state, host_state, "client at {velocity:?}");
+
+            resolve_pending_animation_stamps(&mut registry, 1.0);
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(
+                    2,
+                    111,
+                    vec![delta(7, 2, 3, vec![mesh_animation_payload(&host_state)])],
+                ),
+            );
+            assert!(
+                client.remote_player_locomotion[&NetworkId(7)]
+                    .authoritative_correction_state
+                    .is_none(),
+                "the host state at {velocity:?} needs no correction"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_player_correction_leading_forward_travel_keeps_legs_toward_travel() {
+        // The host has already reversed into a backpedal while the interpolated
+        // velocity still runs forward along aim (-Z).
+        let (mut registry, mut client, id) = present_remote_player(
+            remote_player_backpedal_mesh(),
+            &["idle", "walk_forward", "walk_backward"],
+            [0.0, 0.0, -60.0],
+            (60.0, 60.0),
+        );
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![mesh_animation_payload("walk_backward")],
+                )],
+            ),
+        );
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward", "the correction's clip holds");
+        assert!(
+            heading.abs() <= EPSILON,
+            "legs face forward travel, not 180° behind aim: {heading}"
+        );
+    }
+
+    #[test]
+    fn remote_player_reversal_correction_holds_until_the_presented_travel_reverses() {
+        let declared = ["idle", "walk_forward", "walk_backward"];
+        let (mut registry, mut client, id) = present_remote_player(
+            remote_player_backpedal_mesh(),
+            &declared,
+            [0.0, 0.0, -60.0],
+            (60.0, 60.0),
+        );
+        // The host reverses into a backpedal a full interpolation delay ahead of
+        // the presented pose, and resends that state with every delta.
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![mesh_animation_payload("walk_backward")],
+                )],
+            ),
+        );
+        for anim_time in [1.0, 1.06, 1.2] {
+            client.sample_into_registry(&mut registry, 105.0, anim_time);
+            resolve_pending_animation_stamps(&mut registry, anim_time);
+            let (state, heading) = presented_state_and_heading(&registry, &client, id);
+            assert_eq!(
+                state, "walk_backward",
+                "no revert to the lagging forward prediction at {anim_time}"
+            );
+            assert!(heading.abs() <= EPSILON, "legs follow forward travel");
+        }
+        // Once the presented travel reverses, the derivation agrees and the
+        // correction releases with the legs folded toward aim.
+        for (sequence, tick, baseline, next) in [(3, 120, 3, 4), (4, 130, 4, 5)] {
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(
+                    sequence,
+                    tick,
+                    vec![delta(
+                        7,
+                        baseline,
+                        next,
+                        vec![
+                            transform_payload_at([0.0, 0.0, 0.0], 0.0),
+                            movement_payload_with_velocity([0.0, 0.0, 60.0]),
+                            mesh_animation_payload("walk_backward"),
+                        ],
+                    )],
+                ),
+            );
+        }
+        client.sample_into_registry(&mut registry, 125.0, 1.3);
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward");
+        assert!(heading.abs() <= EPSILON, "+Z travel folds to face aim");
+        assert!(
+            client.remote_player_locomotion[&NetworkId(7)]
+                .authoritative_correction_state
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn remote_player_join_seeds_direction_from_the_host_state() {
+        // A joiner meets a player strafing in the dead zone whose host state is
+        // the backpedal; the first presented frame keeps that fold.
+        let (mut registry, mut client, id) = map_remote_player(
+            remote_player_backpedal_mesh(),
+            &["idle", "walk_forward", "walk_backward"],
+            [60.0, 0.0, 0.0],
+            (60.0, 60.0),
+        );
+        assert!(apply_mesh_animation_state(
+            &mut registry,
+            id,
+            "walk_backward",
+            true
+        ));
+        client.seed_remote_player_direction(&mut registry, NetworkId(7), id, "walk_backward");
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward");
+        assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= EPSILON);
+    }
+
+    #[test]
+    fn remote_player_backward_correction_turns_legs_with_the_corrected_clip() {
+        // +X travel is 90° off aim: inside the dead zone, so the client's fresh
+        // classification stays forward and faces travel (yaw -π/2).
+        let (mut registry, mut client, id) = present_remote_player(
+            remote_player_backpedal_mesh(),
+            &["idle", "walk_forward", "walk_backward"],
+            [60.0, 0.0, 0.0],
+            (60.0, 60.0),
+        );
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_forward");
+        assert!((heading + std::f32::consts::FRAC_PI_2).abs() <= EPSILON);
+
+        // The host, whose memory says backpedal, corrects to `walk_backward`.
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![mesh_animation_payload("walk_backward")],
+                )],
+            ),
+        );
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward");
+        assert!(
+            (heading - std::f32::consts::FRAC_PI_2).abs() <= EPSILON,
+            "legs fold with the corrected backward clip: {heading}"
+        );
+
+        // After the crossfade the client's memory holds the backpedal in the band.
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.06);
+        resolve_pending_animation_stamps(&mut registry, 1.06);
+        client.sample_into_registry(&mut registry, 105.0, 1.06);
+        let (state, heading) = presented_state_and_heading(&registry, &client, id);
+        assert_eq!(state, "walk_backward");
+        assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= EPSILON);
     }
 
     // --- Starvation after sampling: a Transform-only remote (no velocity) holds its
@@ -5064,6 +5978,75 @@ mod tests {
             Some(4),
             "the host command ack is preserved for prune/replay"
         );
+    }
+
+    // The host refreshes the reconcile cursor every tick without bumping an unchanged
+    // pawn's baseline, so while its ack is in flight it resends Delta(A->N) with a
+    // newer `last_processed_client_tick`. That equal-id resend must still advance the
+    // reconcile cursor, without re-acking or requesting repair.
+    #[test]
+    fn equal_id_local_delta_refreshes_reconcile_cursor_without_refresh_or_ack() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![local_player_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(0.0), movement_payload()],
+                )],
+            ),
+        );
+        let applied = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                12,
+                vec![local_player_delta(
+                    7,
+                    1,
+                    2,
+                    Some(4),
+                    vec![transform_payload(2.0), movement_payload()],
+                )],
+            ),
+        );
+        assert_eq!(applied.ack.unwrap().entity_baselines, vec![(7, 2)]);
+
+        let resend = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                14,
+                vec![local_player_delta(
+                    7,
+                    1,
+                    2,
+                    Some(6),
+                    vec![transform_payload(2.0), movement_payload()],
+                )],
+            ),
+        );
+
+        let reconcile = resend
+            .local_reconcile
+            .expect("the metadata-only resend is captured for reconcile");
+        assert_eq!(reconcile.acked_tick, Some(6), "the cursor advanced");
+        assert_eq!(reconcile.server_tick, 14);
+        assert!(
+            (reconcile.transform.position - Vec3::new(2.0, 0.0, 0.0)).length() < EPSILON,
+            "the resend carries the already-applied pose"
+        );
+        assert!(resend.refresh_requests.is_empty(), "no repair requested");
+        assert!(!client.is_pending_repair(NetworkId(7)));
+        assert!(
+            resend.ack.unwrap().entity_baselines.is_empty(),
+            "the held baseline is not re-acked"
+        );
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(2));
     }
 
     // Regression: the dev-tools "remote" capsule overlay used the raw client

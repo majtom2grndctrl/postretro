@@ -64,7 +64,7 @@
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
 - **Per-player events / `players().on` / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
-- **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
+- **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md` · simulated lag, dev lag proxy, `POSTRETRO_NET_LAG`, Network tab: §Testing the conditioned link
 - **What reaches clients in co-op / networked-by-default classification / display copies / host-only light, fog, emitter changes as replicated state / join baseline budget / trigger presentation `audience`** → `networking.md` §Current contract · §Presentation events vs. replicated state · `scripting.md` §12 (Entity addressing)
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel
 - **Joining a session / admission vs content parity / slot lifecycle / revealed term and revealed holds / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
@@ -72,7 +72,7 @@
 - **Projectile fire origin / muzzle point / where a shot spawns / camera-eye vs barrel** → `networking.md` §Weapon placement is content (Fire origin composes on placement)
 - **Weapon descriptor vocabulary / one canonical weapon type / no player-vs-enemy weapon kind / wield restriction as attribute** → `entity_model.md` §Components (Weapon vocabulary)
 - **Remote fire rate under lag / activation start lane / client-tick cadence admission / starts, use, or drop lost to the playout trim** → `networking.md` §Combat authority · §Host input command queue
-- **Weapon switch ordering / switch lane / switch declaration client tick (`WIRE_VERSION` 26) / input applied in client-tick order after a stall** → `networking.md` §Combat authority · §Host input command queue · §Version gates
+- **Weapon switch ordering / switch lane / switch declaration client tick (`WIRE_VERSION` 26) / input applied in client-tick order after a stall / host and client active slot diverged (spawn active slot, active-slot re-sync)** → `networking.md` §Combat authority · §Host input command queue · §Version gates
 - **Weapon resources / ammo vs heat vs cell / overheat lockout / cell regen / holstered weapons cooling / weapon-resource HUD slots** → `entity_model.md` §Components (Weapon resources) · connected-client prediction: `networking.md` §Combat authority
 - **Dynamic weapon accuracy / spread / bloom / recoil-as-accuracy-loss / movement inaccuracy / crosshair spread ring** → `entity_model.md` §Components (Weapon vocabulary — Dynamic accuracy) · `networking.md` §engine-randomness carve-out
 - **Splash / AoE / area damage / blast radius / distance falloff / rocket explosion** → `entity_model.md` §Components (Splash / area effects)
@@ -83,12 +83,14 @@
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)
 - **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake
 - **Multi-threaded AI pathfinding readiness / scheduling blocker** → `ai_pathfinding_mt_readiness.md`
-- **Player movement / movement states / FPS feel / slide camera dip and FOV** → `movement.md`
-- **Vault / mantle / ledge probe and its cast bound / vault path / leaving water by a ledge / held vault camera pose** → `movement.md` §4 (Vault), §1 · wire and correction band: `networking.md` §Snapshot apply ordering
+- **Player movement / movement states / FPS feel / slide camera dip and FOV / sustained view pose (`viewFeel.pose`) / ledge focus** → `movement.md` (§1 for view feel)
+- **Vault / mantle / ledge probe and its cast bound / vault path / leaving water by a ledge / vault camera pose (`pose.vault`, ledge focus)** → `movement.md` §4 (Vault), §1 · wire and correction band: `networking.md` §Snapshot apply ordering
 - **Fire blocked by movement state / vault fire gate / vault entry cancelling a burst or charge / `charge.interruptedBy` / held presses and releases over a vault** → `movement.md` §4 (Vault, Firing) · host-remote ordering: `networking.md` §Combat authority · charge vocabulary: `entity_model.md` §Components (Weapon vocabulary)
-- **Water / swimming / fluid, gravity and push volumes / environment resolution / fluid surfaces / underwater tint and muffle** → `entity_model.md` §7 (Environment Volumes) · `movement.md` §4 (Environment resolution, Swim), §6 (Regional gravity and push) · authoring and id 52: `build_pipeline.md` §Custom FGD, §PRL section IDs · `rendering_pipeline.md` §7.3a, §7.8 · `audio.md` §1 · co-op: `networking.md` §What gates, and what replicates instead
+- **Water / swimming / fluid, gravity and push volumes / push `force` / environment resolution / fluid surfaces, their motion, drift, wave, depth fog and reflections / fluid screen-space reflections (SSR), the screen march and `reflection_quality` tiers / fluid baked light per vertex, install-time SH-lattice grid and its vertex cap / reflection probes and `reflection_volume` / underwater tint and muffle** → `entity_model.md` §7 (Environment Volumes) · `movement.md` §4 (Environment resolution, Swim), §6 (Regional gravity and push, Steady drift) · authoring, face splitting, probe capture and ids 52–54: `build_pipeline.md` §Custom FGD, §Compiler pipeline, §PRL section IDs · `rendering_pipeline.md` §7.3a, §7.8 · reflection tier option: `player_options.md` §4 · probe records: `resource_management.md` §5 · `audio.md` §1 · co-op: `networking.md` §What gates, and what replicates instead
+- **Teleporters / teleport / `trigger_teleport` / `teleport_destination` / classic vs seamless teleport / arm-disarm teleporter / `teleport` event / teleport reconcile, yaw stamp and observer cut / arrival sound** → `movement.md` §6 (Teleport) · `entity_model.md` §7 (Environment Volumes) · script surface: `scripting.md` §12 · co-op: `networking.md` §Current contract, §Snapshot apply ordering (incl. Joiner gate), §Host input command queue, §Host-side remote-pawn presentation · FGD and ids 51/55: `build_pipeline.md` §Custom FGD, §PRL section IDs · `audio.md` §4
+- **Entity facing / map yaw / `angle` `angles` `mangle` / model front vs view forward / `rotation_quat` vs `model_rotation_quat`** → `entity_model.md` §4 (Facing convention) · `build_pipeline.md` §Supported Map Formats
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
-- **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / Mac perf measurement confounders / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
+- **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / perf measurement confounders / timed runs beside bakes / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Settling / level reveal / settle chokepoint and timeout / presented pose / first complete frame** → `boot_sequence.md` §1 (Settling) · streamed settle sets: `rendering_pipeline.md` §4 · co-op reveal: `networking.md` §Slot lifecycle
 - **Level-load timing / log line C / per-stage install, texture, geometry and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
@@ -111,7 +113,7 @@
 
 Design inputs for every renderer, baker, and netcode decision, not stretch goals.
 
-- **Pre-RTX.** No dependence on hardware ray-tracing APIs. Lightweight ray work is in bounds when bounded and either offline in the baker or a cheap runtime trace against baked structures (BVH, SDF, probe volumes). Mac/Metal is a perf target.
+- **Pre-RTX.** No dependence on hardware ray-tracing APIs. Lightweight ray work is in bounds when bounded and either offline in the baker, a cheap runtime trace against baked structures (BVH, SDF, probe volumes), or a screen-space march against the current frame's depth on gated fragments under a fixed step budget. Each screen-space use needs owner sign-off; fluid reflections are the first (`rendering_pipeline.md` §7.3a). Mac/Metal is a perf target.
 - **Ambitious perf inside that era.** Bake over compute. Bound every bake and pass to where the player can be and see: no probes or texels in the void outside the hull, no bake rays through solid geometry or past a light's reach. Measure, don't assume.
 - **2 GB VRAM.** A loaded level's resident GPU memory fits 2 GB. Every large allocation draws on that one pool.
 - **Smooth PvE co-op.** Prediction, reconciliation, and interpolation done well, validated at realistic latency. PvP, live service, and full lag compensation stay non-goals (§4).
@@ -150,7 +152,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Indirect lighting | SH L2 irradiance volume baked from canonical lights |
 | Fog volumes | FGD fog entities + `FogCellMasks` over runtime cells |
 | Acoustic zones | FGD brush entities intended to resolve through runtime cells for reverb |
-| Reflection probes | FGD point entities → baked cubemaps |
+| Reflection probes | prl-build: probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time into colour and distance tiles |
 
 Full detail (section inventory, SectionId registry): `build_pipeline.md`.
 

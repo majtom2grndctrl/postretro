@@ -1,0 +1,149 @@
+# fluid-surface-t-junction-closure — research
+
+Read at `64d069e19` on the `fluid-base-pass-cost` branch; rechecked at `8bb02a18c`, after that brief and its grid landed on `main`.
+
+## Current behaviour (code)
+
+- **Builder.** `encode_environment_volumes_section` (`level-compiler/src/environment_volumes.rs`) maps each volume to its faces in one pass: `fluid_surface_pieces` (`environment_volumes/surface.rs`), then `surface_face` per piece. That function encodes positions as f32 and derives texel UVs from the piece's own side (`brush_side_texel_uv`). The stage is uncached and runs on every build, warm and cold, just before TextureMips (`build_pipeline.md` §Fluid surfaces).
+- **Per side.** The side is subtracted by nearby solids (`SolidIndex`, an AABB tree with ascending results) and by sibling brushes (all-pairs over the volume's brushes, AABB-culled). It is then split along push brushes (`PushBrushes::split`, `push_split.rs`, `DRIFT_SAMPLE_DEPTH` 2 mm).
+- **Closure gate.** `close_t_junctions` runs only when `push_cut` is set. The comment states the reason: "a volume no push cut keeps its subtraction output exactly". The gate came from `plans/done/fluid-surface-motion` review round 2: closing changed id-52 bytes for burial-only maps against that plan's byte-identity row A11.
+- **`close_t_junctions`.** Pairs every piece of one volume with every other (AABB pre-check, O(n²) in the volume's pieces). Each piece's *original* vertices are tested against every other piece's edges (`edge_holding`), then inserted, sorted by edge and position along it. So:
+  - the result does not depend on piece order;
+  - the inserted vertex is the neighbour's own DVec3, so it encodes to the identical f32 on both sides;
+  - consecutive inserts within the tolerance dedupe.
+- **Constants.**
+  - `T_JUNCTION_EPSILON` = `SPLIT_EPSILON` = 1e-4 m (0.1 mm), for both the on-line distance and the near-corner exclusion.
+  - `FLUSH_EPSILON` 1e-3 m.
+  - `MIN_PIECE_AREA` 1e-6 m².
+  - `WELD_EPSILON` 1e-6 m, which collapses consecutive duplicates only, within one piece.
+- **Shared corners.** No step makes corners shared by two pieces identical. Each corner is the f64 result of its own clip sequence, so identical f32 encoding is likely for axis-aligned integer brushes but not guaranteed. The first slice measures it.
+- **Renderer coupling.** `COLLINEAR_DISTANCE` = 2e-4 m (`render-cpu/src/fluid_surface/mod.rs`). Its comment reads: "The compiler inserts a T-junction vertex within 0.1 mm of its edge's line; twice that also covers f32 position rounding." The grid's `PLANE_TOLERANCE` equals it (`grid.rs`). Widening the compiler tolerance would break both.
+- **Test pins today.**
+  - `volumes_no_push_cuts_keep_their_subtraction_output_with_no_inserted_vertex` (`surface_tests.rs`) asserts burial and unequal-sibling T-junctions stay open.
+  - The `t_junctions` helper checks one record only.
+  - `adjacent_fluid_entities_each_draw_their_shared_face` counts faces, so closure does not change it.
+  - No integration test compares id-52 bytes across builds. `environment_volumes_compile.rs` pins every *other* section byte-identical.
+
+## First slice
+
+Measured at `0ca951403` with a level-wide checker using closure's own distance test on encoded positions, from a build attempt parked before review. An open seam is a face vertex within 0.1 mm of another fluid face's boundary that is not one of its vertices bit for bit.
+
+| Map | Faces | Open before closure | Near a corner | Open after | Welded | Inserted | Largest weld move |
+|---|---|---|---|---|---|---|---|
+| e24-environment-test | 27 | 0 | 0 | 0 | 0 | 0 | — |
+| stress-env-volumes | 5,063 | 6,173 | 2,286 | 0 | 832 | 2,389 | 0.034 mm |
+
+- **e24 is already closed**, even with the push-cut closure removed, so it cannot fail before closure. It proves only that closure moves nothing there.
+- **The weld fixes rounding, not authoring.** Its largest move on the stress map is a third of the tolerance.
+- **P18's insert lands 0.18 mm from the face's boundary before closure**, within 0.1 mm of the edge as the first insert bent it. Prior art inserts the neighbour's own point the same way, so the move bound covers weld moves, and inserts are bounded against the bent edge.
+- **The runtime drift resolve's f32 vertex mean fails P13**, as reported by the parked attempt's test and not re-run: a piece clear of a push drifted at 3 m/s once thousands of inserts pulled its mean onto the push boundary.
+
+## The grid case
+
+`fluid-base-pass-cost` landed with its own pin P13 as an owner-accepted limit (plan of record A3; `rendering_pipeline.md` §7.3a, "Accepted limit"): an edge at a shallow angle θ to a lattice plane passing within tolerance of an open T-vertex. The long side gains a crossing up to (tolerance + T offset)/sin θ from T. A probe measured this at 0.4 m. The crack lies on the open edge's line, so it is no wider than the T-junction itself. The pin is `an_open_t_junction_keeps_its_vertex_and_the_crossings_agree_within_tolerance` (`grid_tests.rs`).
+
+With closure, both faces hold P→T→Q with T bit-identical. Crossings are a function of an edge and a plane alone (`grid::crossing`, from the lexicographically lower endpoint), so the case disappears. `faces_sharing_an_edge_carry_identical_vertices_along_it` already compares with `assert_eq!`, which needs bit-identical endpoints. That is why the brief asks for bit-identity and not just "within tolerance".
+
+## Consumers of id-52 surface faces
+
+| Consumer | Reads | Effect of closure |
+|---|---|---|
+| Fluid pack (`pack_fluid_surfaces`) | positions, UVs, order | More collinear vertices. An ungridded face takes the centroid fan (`triangulate_convex_face`), a gridded one is cut at each lattice plane (`cut_face`, which copies the remaining polygon per plane, O(V·P) for P planes) and ear-clips (`triangulate_convex`, O(n²) in a part's vertices). Already handles inserts. |
+| Drift maps (`drift::volume_drift_maps`) | positions, UVs, per volume | Inserted vertices lie on the face's own plane within 0.1 mm (fit tolerance 1 mm) and carry their own side's UV, so split parts keep sharing one map. Risk: `FaceMap::fit` searches every vertex triple, O(n³) in a face's vertex count. |
+| Runtime drift resolve (`resolve_fluid_surface_drift`, `postretro/src/fluid_presentation/drift.rs`) | vertex-mean centroid in f32, 2 mm in | The mean moves with inserts but stays inside the convex piece in exact arithmetic. Thousands of inserts on one edge pull it to within about a millimetre of that edge, where an f32 sum far from the origin can err by more; P13 pins it. Each piece is wholly under or clear of each push by its 2 mm samples, so the resolved push is unchanged. The edge case is a push touching a piece by under 1 mm², which the split leaves whole. |
+| Cull bounds (`surface_bounds`) | vertex bounds | Grow by ≤ 0.1 mm at most. |
+| Probe placement (`reflection_probes/placement.rs`) | area centroid, Newell normal, (x, z) outline, (volume, face) numbering | The area centroid is already documented as unmoved by inserts. Outline bounds may move by ≤ 0.1 mm, so box fit and capture bytes may shift by that much. Face numbering is unchanged as long as faces are neither added nor dropped. |
+| Capture-visibility warning (`capture_visibility::seen_fraction`) | outline fan from vertex 0, sub-triangle samples | Samples redistribute and the fraction can shift slightly. Advisory warning only. |
+| id-54 stage key (`reflection_probes/stage_key.rs`) | the whole id-52 bytes | Changed id-52 bytes miss the cache once per affected map, which recaptures the probes. No ongoing cost. |
+| Loader binding check (`level-loader/src/prl_environment.rs`) | face count per volume | Unchanged. |
+| Level content digest (`runtime_movers.rs` `hash_environment_volumes`) | skips `surface_faces` | No co-op, admission or wire effect (`networking.md` §Level identity and level content digest). |
+| Physics, environment resolution | brush leaves only | None. |
+
+The 2 mm split depth is a depth along the face normal and is untouched by in-plane vertex insertion. The test pinning it to the runtime constant is unaffected.
+
+## Bake cost
+
+- **Today.**
+  - At E24 landing, `stress-env-volumes` had 5,063 fluid faces, and subtraction took 24 ms of a 76 s compile (`plans/done/E24--water-and-environment-volumes/plan.md`, task 9).
+  - Closure is per-volume all-pairs and runs only in push-cut volumes.
+- **Generalised naively.** Level-wide all-pairs on 5k faces is about 25M AABB tests, which is tolerable there. It is quadratic for an authored ocean of many abutting brushes, and the stage runs on every warm build. The index must be output-sensitive.
+- **Index precedents in-tree.**
+  - `SolidIndex`: an AABB tree with deterministic ascending results.
+  - `partition/manifold.rs`: groups edges by quantized supporting line (`ANCHOR_QUANTUM` 1e-4). Quantized keys alone split near-equal points across a cell boundary, so a closure lookup must also probe neighbouring cells (dmap's `GetHashVert` comment, below).
+- **Install.** No new install pass. Closure raises per-face vertex counts, and three install steps are superlinear in them: the drift fit (cubic), the gridded ear clip (quadratic per part), and the grid cut, quadratic where a long edge holds many inserts and many planes cross it. A large face bordered by many small pieces is the case to bound.
+
+## Prior art
+
+Units: 1 Quake map unit is 0.0254 m here (`UNIT` in `surface_tests.rs`). Rows marked † come from a research agent's reading of source and were not re-read this session. All other values were re-read from source this session.
+
+| Tool | Where | Tolerance / quantization | Slivers, degenerates | Across objects |
+|---|---|---|---|---|
+| Quake qbsp `TJUNC.C` | compile | `EQUAL_EPSILON` 0.001 u, `T_EPSILON` 0.01 u along the edge. Edges canonicalised to lines ("wedges") in a 1024-bucket XY hash. No vertex snapping. | Faces past `MAXPOINTS` (28) split at real corners † | One BSP tree per call † |
+| ericw-tools `qbsp/tjunc.cc` | compile | `PointOnEdge` uses `DEFAULT_ON_EPSILON` 0.1 u (2.5 mm). Works on an already-shared output vertex list †. Candidates come from BSP nodes overlapping the edge's AABB grown by 1 u. | Minimum-weight triangulation rejecting angles under 0.01°, then start-vertex rotation, then retopologize into fans, then the superface as-is. `maxedges` (64) splits fragments † | `Welds()`: same contents weld; translucent never welds to opaque; backfaces never weld. A FIXME notes liquids are not fully handled. Each model tree is separate † |
+| Source vbsp `faces.cpp` | compile | `INTEGRAL_EPSILON` 0.01 (snap to integer), `POINT_EPSILON` 0.1 (vertex merge in a global table †), `OFF_EPSILON` 0.25 (on-edge), `HASH_BITS` 7 (128 u XY cells), `MAX_SUPERVERTS` 512 | Start-vertex choice; with none, `badstartvert`, and world faces get an explicit triangle list | Global vertex table merges across the map †; the triangle-list sewing is world-only |
+| q3map2 `tjunction.c` † | compile | `LINE_POSITION_EPSILON` and `POINT_ON_LINE_EPSILON` 0.25. Edge lines found by a linear scan, so no hash. `MAX_SURFACE_VERTS` 256 | Start-vertex rotation; `FixBrokenSurface` removes near-coincident vertices | Per draw surface; scope unverified |
+| Doom 3 dmap `tritjunction.cpp` (identical in dhewm3 and RBDOOM-3-BFG †) | compile | Snaps to 1/32 u (`SNAP_FRACTIONS`); `COLINEAR_EPSILON` 1.8/32 u (1.4 mm); merges with neighbouring snapped cells; `HASH_BINS` 16³ over the bounds | Rejects a split whose two triangles' normals disagree; drops triangles that collapse on snapping. "T junction fixing never creates more xyz points." | `FixGlobalTjunctions` hashes every area group of the world and adds `func_static` model vertices as splitters; skips `IsDiscrete` materials |
+| GLQuake † / Xash3D FWGS `gl_rsurf.c` | load (reverse) | Removes collinear points per face (0.001 per axis of normalized directions) unless `gl_keeptjunctions` is set. | — | Skips `SURF_UNDERWATER`, so liquids keep the compiler's T-junction vertices |
+| Godot 4.4+ CSG `csg_shape.cpp` | build (editor/runtime) | Manifold `mesh.tolerance = 2 * FLT_EPSILON`, then `Merge()` | Manifold guarantees a manifold output | Per CSG tree |
+| func_godot | import | `_VERTEX_EPSILON` 0.008 snap; optional per-entity `vertex_merge_distance` (default 0) | Drops consecutive duplicates in a winding | No T-junction step; nothing across brushes or entities † |
+| Unreal BSP | — | Unverified (source not public) | — | — |
+
+**Bearing on the brief.**
+- **Close globally, on a shared vertex set.** dmap's global pass, vbsp's global vertex table and ericw's shared vertex list all close across faces from different sources against one vertex set. This supports both cross-volume scope and bit-identity: weld near-coincident points to one canonical position, then insert.
+- **Spatial hashing everywhere.** Every surveyed compiler bounds lookup with a hash or tree, except q3map2's linear line scan. Bucket choice must handle points near a cell boundary: dmap probes neighbouring cells; vbsp snaps first.
+- **Tolerance.** ericw-tools, vbsp and q3map2 use 2.5 to 6.4 mm, and dmap snaps at 0.8 mm with a 1.4 mm colinear test. Those are sized in map units around snapping, integer snapping in vbsp's case. The original qbsp is tighter (0.025 mm on equality). Ours clips in f64 from f32 map coordinates at 0.1 mm, and the renderer's collinear tolerance and the grid's plane tolerance are derived from it. Keep it.
+- **Slivers are a triangulation problem.** The compilers above emit triangles or fans and fight slivers at triangulation. PostRetro's compiler emits convex polygons. The renderer already keeps inserted vertices as corners: the centroid fan for ungridded faces, ear clipping for gridded parts. The compiler's duty is no degenerate polygon and no lost area.
+- **Translucent versus opaque.** ericw never welds translucent faces to opaque ones, and Quake-lineage renderers keep liquid T-junction vertices. Fluid-to-world welding is unnecessary, because the opaque, depth-written wall behind a fluid edge fills any crack.
+- **Per-face vertex limits.** qbsp, ericw, vbsp and q3map2 all cap vertices per face, by splitting or by error (†: qbsp `MAXPOINTS` 28, ericw `maxedges` 64, vbsp `MAXEDGES` 32, q3map2 `MAX_SURFACE_VERTS` 256). PostRetro has no cap, so the install consumers that scale superlinearly must be bounded instead. Splitting faces would change face numbering for no gain, since drift maps already share across parts.
+- **No surveyed engine closes T-junctions at load.** The load-time precedent (GLQuake, Xash) goes the other way: it removes collinear points and exempts liquids.
+
+Sources:
+- https://raw.githubusercontent.com/id-Software/Quake-Tools/master/qutils/QBSP/TJUNC.C
+- https://raw.githubusercontent.com/ericwa/ericw-tools/main/qbsp/tjunc.cc · `include/common/qvec.hh` (`DEFAULT_ON_EPSILON`)
+- https://raw.githubusercontent.com/ValveSoftware/source-sdk-2013/master/src/utils/vbsp/faces.cpp
+- https://raw.githubusercontent.com/TTimo/GtkRadiant/master/tools/quake3/q3map2/tjunction.c
+- https://raw.githubusercontent.com/id-Software/DOOM-3/master/neo/tools/compilers/dmap/tritjunction.cpp · `dmap.cpp`
+- https://raw.githubusercontent.com/id-Software/Quake/master/WinQuake/gl_rsurf.c
+- https://raw.githubusercontent.com/FWGS/xash3d-fwgs/master/ref/gl/gl_rsurf.c
+- https://raw.githubusercontent.com/godotengine/godot/master/modules/csg/csg_shape.cpp
+- https://raw.githubusercontent.com/func-godot/func_godot_plugin/main/addons/func_godot/src/util/func_godot_util.gd · `src/core/geometry_generator.gd`
+
+Not covered: ZHLT/VHLT `hlbsp` tjunc, Xash3D and PrimeXT compile tools, Unreal, and library repair (CGAL `stitch_borders` and snap rounding, libigl, meshoptimizer), which are known only from memory and not cited.
+
+## Rivals
+
+| Shape | For | Against |
+|---|---|---|
+| Close in the compiler, every face, level-wide (chosen) | Bake over compute (`index.md` §2). One closure rule replaces a gated special case. f64 positions and clip context are available. Zero install cost. Every surveyed BSP compiler closes at bake. | id-52 bytes change and the byte-identity row retires. Adds to every build, since the stage is uncached. Maps must be rebuilt to benefit. |
+| Weld at fluid install in render-cpu, before the grid cut | No format change or rebake; about 150–250 lines; a few ms at install | Runs every load, against near-instant boot. Works on f32 positions with no clip context. Leaves two closure owners (compiler for push cuts, renderer for the rest). Gating it on an active grid leaves ungridded levels cracked. No precedent found for load-time closure. |
+| Status quo plus the grid's P13 exception | No work | Hairline cracks stay at burial edges, unequal siblings and volume seams. The surface is translucent, so they can show as sparkles at grazing angles. |
+| Split over-long faces (qbsp-style vertex cap) instead of bounding consumers | Bounds per-face vertex counts | Changes face count and order for no correctness gain |
+
+## Pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | volume with burial and a push cut | subtract → push split → close | closure sees the split pieces; every split corner on a neighbour's edge is inserted |
+| P2 | two volumes sharing an edge, the second later in map order | every volume's pieces built, then one closure pass, then encode | each volume gains the other's vertices on its edges, whichever comes first |
+| P3 | corner of A within 0.1 mm of corner of B, not equal in f32 | weld before insert | one encoded position on both faces |
+| P4 | vertex within 0.1 mm of a corner and also within 0.1 mm of a neighbouring edge | weld first | merged into the corner; no extra vertex beside it, unless the corner already holds another vertex of the same face (P17) |
+| P5 | texture interning while encoding | closure precedes encode; encode keeps volume then face order | texture indices and TextureNames order unchanged |
+| P6 | first warm build after landing on a map with an open T-junction | id-52 bytes change, so the id-54 stage key misses | probes recapture once; the next warm build hits |
+| P7 | PRL built before the change | load | loads; its cracks remain until rebuilt; no version check |
+| P8 | weld would collapse a face (edge under 0.1 mm across) | weld judged per pair | no face drops below three distinct vertices or loses more than tolerance × perimeter of area |
+| P9 | a corner 0.15 mm from a neighbour's corner, and another 0.15 mm from a neighbour's edge interior | closure | no weld and no insert; both faces keep their vertices bit for bit |
+| P10 | corners of three faces in a line, A–B and B–C each 0.06 mm apart, A–C 0.12 mm | weld; no merge carries a vertex past the tolerance | no vertex moves more than 0.1 mm, and the shared-boundary check holds |
+| P11 | corners of faces 1 and 2 within 0.1 mm of each other, not equal, both within 0.1 mm of face 3's edge interior | weld, then insert on welded positions | face 3 gains one vertex, bit-identical to the welded corner on faces 1 and 2 |
+| P12 | a corner 0.14 mm from face 3's edge that its weld moves to 0.06 mm from it, and one the weld moves from 0.06 mm to 0.14 mm | insert candidates judged after the weld | face 3 gains the first and not the second |
+| P13 | a piece clear of a push, at least 100 m from the origin, whose edge on the push boundary carries thousands of inserted vertices | closure inserts; the runtime resolves drift at the face's f32 vertex mean | the same push as the same piece without the inserts |
+| P14 | an up-facing piece whose corner welds to a neighbour corner on another plane, 0.1 mm off its own: once ~1 mm², once a 6 mm square | weld after push split, before id-54 placement | both keep a normal and three distinct vertices; the 6 mm square stays up-facing and id-54 binds it as before; the ~1 mm² piece may tilt past 1° and lose its probe |
+| P15 | a dry, push or wholly buried fluid volume between two fluid volumes in entity order; a level with one fluid face; a level with none | every volume's faces gathered, closed, returned by (volume, face) | each face returns to its own volume and index; per-volume counts unchanged; one face or none is left as it was |
+| P16 | a vertex just over 0.1 mm from a neighbour's edge in f64 that f32 encoding brings under 0.1 mm | closure judges on f32-rounded copies; positions and UVs stay f64 until encode | closure inserts it, and the level-wide check, reading the same encoded positions, agrees |
+| P17 | a triangle with a 0.05 mm edge whose two corners lie within 0.1 mm of a neighbour's edge, once with one of them the neighbour's corner | weld never merges two vertices of one face; inserts dedupe on bit-identity, not distance | the triangle keeps three distinct vertices; the neighbour holds both corners bit for bit; the check holds |
+| P18 | a corner inserted 0.09 mm off a face's edge, and another face's corner 0.18 mm from that edge and more than 0.1 mm from the insert, but within 0.1 mm of the edge as the insert bends it | the check reads each face's boundary after every insert | the check holds; no vertex moves more than 0.1 mm |
+| P19 | a vertex just under 0.1 mm from a neighbour's edge in f64 that f32 encoding puts just over | closure judges on f32-rounded copies | no insert; the neighbour keeps its vertices bit for bit, and the check, reading the same encoded positions, agrees |
+| P20 | a weld moves the endpoint of face G's edge while another face's corner lies within 0.1 mm of that edge | weld, then insert against the edge as the weld leaves it | the corner ends bit-identical to a vertex of G, or more than 0.1 mm from G's boundary; no vertex moves more than 0.1 mm |
+| P21 | five corners of different faces in a line, each 0.06 mm from the next, 0.24 mm end to end | weld; no merge carries a vertex past the tolerance | no vertex moves more than 0.1 mm, and the shared-boundary check holds |
+| P22 | face A's edge holds two neighbours' corners on opposite sides of its line, each 0.09 mm off it and far apart along it, so inserting either first leaves the other more than 0.1 mm from the bent edge | inserts judged against the edge as the weld leaves it, then again as inserts bend it (P18), with the two neighbours in either entity order | A gains both, in order along the edge, whichever neighbour comes first; the check holds |
+| P23 | a neighbour's corner within 0.1 mm of two edges of one face, near an acute corner of a sloped piece but more than 0.1 mm from it | insert | the face gains the corner once, on one edge, in order along its boundary; the angle about its centroid strictly increases around the boundary; the check holds |
+| P24 | a face whose long edge carries thousands of inserted vertices, crossed along that edge by every lattice plane, at two edge lengths, so vertex count and plane count both double | closure inserts; install cuts the face at every plane, then triangulates and fits | install work, by count, grows no faster than n log n in the face's vertex count, the per-plane cut included |

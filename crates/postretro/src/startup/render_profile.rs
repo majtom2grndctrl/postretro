@@ -1,13 +1,17 @@
 // App-boundary mappings from player/mod options to renderer-owned settings.
-// See: context/lib/rendering_pipeline.md §7.8
+// See: context/lib/rendering_pipeline.md §7.3a, §7.8 · context/lib/player_options.md §4
 
-use postretro_scripting_core::runtime::{ModBloomResolution, ModRenderProfile};
+use postretro_scripting_core::runtime::{ModBloomResolution, ModReflectionStyle, ModRenderProfile};
 
+use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::render_extent::RenderResolutionPolicy;
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality as RendererSurfaceDepthQuality;
 
 use crate::App;
-use crate::options::{FogQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality};
+use crate::options::{
+    FogQuality, ReflectionQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality,
+};
 use crate::render::{BloomRenderProfile, BloomResolution};
 
 /// Translate the persisted shadow tier into the spot-shadow allocation used by
@@ -44,6 +48,23 @@ pub(crate) const fn renderer_surface_depth_quality(
     match quality {
         SurfaceDepthQuality::Off => RendererSurfaceDepthQuality::Off,
         SurfaceDepthQuality::On => RendererSurfaceDepthQuality::On,
+    }
+}
+
+/// Translate the persisted reflection tier into the renderer's own vocabulary.
+/// The `match` is exhaustive with no `_` arm: a new tier must fail to compile
+/// here rather than silently pick a target fraction. The two enums are
+/// separate for Surface Depth's reason: render-cpu carries no serde.
+pub(crate) const fn renderer_reflection_quality(
+    quality: ReflectionQuality,
+) -> FluidReflectionQuality {
+    match quality {
+        ReflectionQuality::Off => FluidReflectionQuality::Off,
+        ReflectionQuality::Low => FluidReflectionQuality::Low,
+        ReflectionQuality::Medium => FluidReflectionQuality::Medium,
+        ReflectionQuality::High => FluidReflectionQuality::High,
+        ReflectionQuality::VeryHigh => FluidReflectionQuality::VeryHigh,
+        ReflectionQuality::Ultra => FluidReflectionQuality::Ultra,
     }
 }
 
@@ -87,6 +108,16 @@ pub(crate) fn renderer_bloom_profile(profile: ModRenderProfile) -> BloomRenderPr
     }
 }
 
+/// Translate the authored fluid reflection style into the renderer's. The
+/// `match` is exhaustive with no `_` arm: a new authored style must fail to
+/// compile here rather than silently draw pixel.
+pub(crate) const fn renderer_reflection_style(style: ModReflectionStyle) -> FluidReflectionStyle {
+    match style {
+        ModReflectionStyle::Pixel => FluidReflectionStyle::Pixel,
+        ModReflectionStyle::Smooth => FluidReflectionStyle::Smooth,
+    }
+}
+
 impl App {
     /// Retain the player's spot-shadow tier in renderer boot state. A live full
     /// renderer is deliberately left untouched; `install_level_geometry`
@@ -124,6 +155,19 @@ impl App {
         }
     }
 
+    /// Apply the player's fluid reflection tier. Live, and safe before full init
+    /// and with no level loaded: the renderer keeps the tier in boot state, and
+    /// full init and each fluid install consult it. Setting the tier it already
+    /// holds builds nothing, so the install-time re-apply is free.
+    ///
+    /// A `None` renderer (pre-window boot, or suspended) is a no-op; resume
+    /// replays full init, which re-applies the tier from `PlayerOptions`.
+    pub(crate) fn apply_player_reflection_quality(&mut self, quality: ReflectionQuality) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_reflection_quality(renderer_reflection_quality(quality));
+        }
+    }
+
     /// Apply the player's render resolution. The renderer only records it; the
     /// next frame start rebuilds once if either extent changed, so this is safe
     /// before and after full init and on a boot-only renderer.
@@ -150,13 +194,28 @@ impl App {
             renderer.set_bloom_render_profile(renderer_bloom_profile(profile));
         }
     }
+
+    /// Commit a mod's fluid reflection style (`render.reflections.style`) to
+    /// the renderer, which retains it across a full-renderer rebuild and
+    /// uploads it only when it changed. Called beside the bloom commit at boot
+    /// and on every committed staged reload; a committed reload with no start
+    /// script restores pixel, the default.
+    ///
+    /// A `None` renderer is a no-op for the same reason as the bloom profile:
+    /// resume replays splash frame one, which re-applies the committed style.
+    pub(crate) fn apply_mod_reflection_profile(&mut self, profile: ModRenderProfile) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer
+                .set_fluid_reflection_style(renderer_reflection_style(profile.reflections.style));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use postretro_render_cpu::render_extent::{Extent, RenderExtents, resolve_divisor};
-    use postretro_scripting_core::runtime::ModBloomProfile;
+    use postretro_scripting_core::runtime::{ModBloomProfile, ModReflectionProfile};
 
     fn authored(resolution: ModBloomResolution, pixelated: bool) -> ModRenderProfile {
         ModRenderProfile {
@@ -164,7 +223,188 @@ mod tests {
                 resolution,
                 pixelated,
             },
+            ..ModRenderProfile::default()
         }
+    }
+
+    // Drift guard both ways: the chokepoint's match is exhaustive over the
+    // authored styles, and walking the renderer's own `ALL` back through an
+    // exhaustive match makes a new renderer style a compile error here too.
+    #[test]
+    fn every_authored_reflection_style_maps_to_its_renderer_style() {
+        for authored in ModReflectionStyle::ALL {
+            let expected = match authored {
+                ModReflectionStyle::Pixel => FluidReflectionStyle::Pixel,
+                ModReflectionStyle::Smooth => FluidReflectionStyle::Smooth,
+            };
+            assert_eq!(renderer_reflection_style(authored), expected);
+        }
+        for renderer_style in FluidReflectionStyle::ALL {
+            let authored = match renderer_style {
+                FluidReflectionStyle::Pixel => ModReflectionStyle::Pixel,
+                FluidReflectionStyle::Smooth => ModReflectionStyle::Smooth,
+            };
+            assert_eq!(renderer_reflection_style(authored), renderer_style);
+        }
+        // An omitted style draws what a renderer no manifest has spoken to
+        // draws (frame capture's): pixel.
+        assert_eq!(
+            renderer_reflection_style(ModRenderProfile::default().reflections.style),
+            FluidReflectionStyle::default(),
+        );
+        assert_eq!(FluidReflectionStyle::default(), FluidReflectionStyle::Pixel);
+        let smooth = ModRenderProfile {
+            reflections: ModReflectionProfile {
+                style: ModReflectionStyle::Smooth,
+            },
+            ..ModRenderProfile::default()
+        };
+        assert_eq!(
+            renderer_reflection_style(smooth.reflections.style),
+            FluidReflectionStyle::Smooth
+        );
+    }
+
+    // The style commits beside bloom at both points a mod's render profile
+    // lands: boot mod init and a committed staged reload.
+    #[test]
+    fn the_reflection_style_commits_beside_bloom_at_boot_and_on_staged_reload() {
+        let code_only = |source: &str| -> String {
+            source
+                .lines()
+                .map(|line| line.split("//").next().unwrap_or(""))
+                .collect::<String>()
+                .split_whitespace()
+                .collect()
+        };
+        let boot = code_only(include_str!("splash_lifecycle.rs"));
+        assert!(boot.contains(
+            "self.apply_mod_bloom_render_profile(committed_render_profile);\
+             self.apply_mod_reflection_profile(committed_render_profile);"
+        ));
+        let reload = code_only(include_str!("staged_manifest_lifecycle.rs"));
+        assert!(reload.contains(
+            "self.apply_mod_bloom_render_profile(render_profile);\
+             self.apply_mod_reflection_profile(render_profile);"
+        ));
+        // Frame capture loads no manifest: it may set the style from its own
+        // scene file, never from a mod's render profile.
+        for capture in [
+            include_str!("../capture/mod.rs"),
+            include_str!("../capture/prepared.rs"),
+            include_str!("../capture/driver.rs"),
+            include_str!("../capture/setup.rs"),
+            include_str!("../capture/scene.rs"),
+        ] {
+            let code = code_only(capture);
+            assert!(!code.contains("apply_mod_reflection_profile"));
+            assert!(!code.contains("ModRenderProfile"));
+            assert!(!code.contains("ModReflection"));
+        }
+        let prepared = code_only(include_str!("../capture/prepared.rs"));
+        assert!(prepared.contains(
+            "ifletSome(style)=scene.reflection_style{\
+             renderer.set_fluid_reflection_style(style.renderer());}"
+        ));
+    }
+
+    // The kept tier reaches the renderer before anything sizes a reflection
+    // target from it: before full init builds, before each level's fluid
+    // install, and live from the options bridge. Frame capture reads no
+    // player options: it draws at the renderer's default tier (high) unless
+    // its own scene file names one.
+    #[test]
+    fn the_reflection_tier_is_applied_before_full_init_and_each_fluid_install() {
+        let splash = include_str!("splash_lifecycle.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("splash_lifecycle test module marker remains present")
+            .0;
+        let full_init = splash
+            .split("fn finish_renderer_full_init(")
+            .nth(1)
+            .expect("finish_renderer_full_init exists");
+        let apply = full_init
+            .find("self.apply_player_reflection_quality(reflection_quality);")
+            .expect("full init applies the saved reflection tier");
+        let full_ready = full_init
+            .find(".ensure_full_ready()")
+            .expect("full init calls ensure_full_ready");
+        assert!(apply < full_ready, "applied before full init builds");
+
+        let lifecycle = include_str!("lifecycle.rs")
+            .split("#[cfg(test)]\npub(crate) mod tests")
+            .next()
+            .unwrap();
+        let install = lifecycle
+            .split("fn install_level_payload(")
+            .nth(1)
+            .expect("install_level_payload exists")
+            .split("\n    fn ")
+            .next()
+            .unwrap();
+        let apply = install
+            .find("self.apply_player_reflection_quality(reflection_quality);")
+            .expect("level install re-applies the kept reflection tier");
+        let fluid = install
+            .find("renderer.install_fluid_surfaces(")
+            .expect("level install installs fluid surfaces");
+        assert!(
+            apply < fluid,
+            "applied before the fluid install sizes the target"
+        );
+        assert_eq!(
+            install.matches("apply_player_reflection_quality").count(),
+            1,
+            "once per install"
+        );
+
+        assert!(
+            include_str!("../app/options_menu.rs")
+                .contains("self.apply_player_reflection_quality(quality);"),
+            "an accepted menu change applies live"
+        );
+
+        // Walk the directory so a new capture file is covered without an edit.
+        fn capture_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("capture directory is readable") {
+                let path = entry.expect("capture directory entry is readable").path();
+                if path.is_dir() {
+                    capture_sources(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut capture_files = Vec::new();
+        capture_sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capture"),
+            &mut capture_files,
+        );
+        assert!(!capture_files.is_empty(), "capture sources were found");
+        for path in capture_files {
+            let capture = std::fs::read_to_string(&path).expect("capture source is readable");
+            for player in [
+                "PlayerOptions",
+                "player_options",
+                "apply_player_",
+                "options::",
+            ] {
+                assert!(
+                    !capture.contains(player),
+                    "{} reaches player options through `{player}`: capture reads its own \
+                     scene file, never the player's settings",
+                    path.display()
+                );
+            }
+        }
+        // The tier capture sets comes from its scene file alone.
+        let prepared = include_str!("../capture/prepared.rs");
+        let code: String = prepared.split_whitespace().collect();
+        assert_eq!(code.matches("set_reflection_quality(").count(), 1);
+        assert!(code.contains(
+            "ifletSome(quality)=scene.reflection_quality{\
+             renderer.set_reflection_quality(quality.renderer());}"
+        ));
     }
 
     #[test]
@@ -259,6 +499,52 @@ mod tests {
         assert_eq!(
             RendererSurfaceDepthQuality::default(),
             RendererSurfaceDepthQuality::On,
+        );
+    }
+
+    #[test]
+    fn every_reflection_tier_maps_to_its_renderer_tier() {
+        for (persisted, expected) in [
+            (ReflectionQuality::Off, FluidReflectionQuality::Off),
+            (ReflectionQuality::Low, FluidReflectionQuality::Low),
+            (ReflectionQuality::Medium, FluidReflectionQuality::Medium),
+            (ReflectionQuality::High, FluidReflectionQuality::High),
+            (
+                ReflectionQuality::VeryHigh,
+                FluidReflectionQuality::VeryHigh,
+            ),
+            (ReflectionQuality::Ultra, FluidReflectionQuality::Ultra),
+        ] {
+            assert_eq!(renderer_reflection_quality(persisted), expected);
+        }
+        // Drift guard both ways: walk the renderer's own `ALL` back to the
+        // persisted enum through an exhaustive match (no `_` arm), so a tier
+        // added to either side without the other fails to compile here.
+        for renderer_tier in FluidReflectionQuality::ALL {
+            let persisted = match renderer_tier {
+                FluidReflectionQuality::Off => ReflectionQuality::Off,
+                FluidReflectionQuality::Low => ReflectionQuality::Low,
+                FluidReflectionQuality::Medium => ReflectionQuality::Medium,
+                FluidReflectionQuality::High => ReflectionQuality::High,
+                FluidReflectionQuality::VeryHigh => ReflectionQuality::VeryHigh,
+                FluidReflectionQuality::Ultra => ReflectionQuality::Ultra,
+            };
+            assert_eq!(renderer_reflection_quality(persisted), renderer_tier);
+        }
+    }
+
+    #[test]
+    fn reflection_quality_defaults_to_high_on_both_sides() {
+        // A player who never opens the menu draws what a renderer no option
+        // has spoken to draws (frame capture's, absent a scene tier): high,
+        // below very high and ultra.
+        assert_eq!(
+            renderer_reflection_quality(ReflectionQuality::default()),
+            FluidReflectionQuality::High,
+        );
+        assert_eq!(
+            FluidReflectionQuality::default(),
+            FluidReflectionQuality::High,
         );
     }
 

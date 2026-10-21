@@ -21,12 +21,13 @@ use postretro_render_cpu::flash_clamp::ChannelClamp;
 use postretro_render_cpu::flash_limiter::{
     HITCH_CEILING_SECONDS, LimiterFrameInput, flash_limiter_enabled,
 };
-use postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector;
+use postretro_render_cpu::fluid_surface::fog::{FLUID_FOG_BAND, fog_layer_opacity, fog_proximity};
+use postretro_render_cpu::fluid_surface::{FluidSurfaceLook, FluidSurfaceRenderCollector};
 use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
 use postretro_visibility::VisibleCells;
 
 use super::eye::{EYE_FLUID_MARGIN, FLUID_PRESENTATION_RAMP_SECONDS, FluidEye, FluidLook};
-use super::{collect_fluid_surface_draws, local_fluid_presentation};
+use super::{collect_fluid_surface_draws, local_fluid_presentation, surface_look};
 use crate::App;
 use crate::startup::lifecycle::tests::{level_world, script_ctx, test_app};
 
@@ -66,6 +67,7 @@ fn pool() -> EnvironmentVolumes {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(0),
         brushes: vec![axis_leaf(
             Vec3::new(-50.0, -10.0, -50.0),
@@ -80,6 +82,7 @@ fn water_volume(brushes: Vec<ConvexLeaf>) -> EnvironmentVolume {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(0),
         brushes,
     }
@@ -168,8 +171,7 @@ fn bob_offsets(bob: &BobParams, speed: f32, fps: f32, seconds: f32) -> Vec<f32> 
         tilt: None,
         sway: None,
         impulse: None,
-        slide: None,
-        vault: None,
+        pose: None,
     };
     let mut state = crate::view_feel::ViewFeelState::default();
     let dt = 1.0 / fps;
@@ -608,6 +610,12 @@ fn descriptor(name: &str, surface_opacity: f32) -> FluidDescriptor {
         surface_opacity,
         enter_sound: None,
         exit_sound: None,
+        fog_distance: None,
+        fog_color: None,
+        wave_period: None,
+        wave_amplitude: 8.0,
+        wave_length: [64.0, 80.0],
+        surface_reflectivity: 1.0,
     }
 }
 
@@ -642,7 +650,7 @@ fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation()
     .to_vec();
     assert_eq!(draws.len(), 1, "{draws:?}");
     assert_eq!(draws[0].volume_index, 0);
-    assert!((draws[0].surface_opacity - 0.6).abs() < 1e-6);
+    assert!((draws[0].params.opacity() - 0.6).abs() < 1e-6);
 
     // A connected client resolves the host's table: `sludge` exists there but
     // not in this machine's manifest, so it shows none.
@@ -662,6 +670,7 @@ fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation()
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(fluid),
         brushes: vec![axis_leaf(
             Vec3::new(x, 0.0, 0.0),
@@ -678,7 +687,10 @@ fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation()
         &VisibleCells::DrawAll,
         |_| None,
         Vec3::ZERO,
-        |v| local_fluid_presentation(&volumes, &host_table, &local, v).map(|f| f.surface_opacity),
+        |v| {
+            local_fluid_presentation(&volumes, &host_table, &local, v)
+                .map(|fluid| surface_look(fluid, false))
+        },
     );
     assert_eq!(draws.len(), 1);
     assert_eq!(draws[0].volume_index, 0);
@@ -724,6 +736,7 @@ fn eye_moving_between_adjacent_fluid_volumes_switches_once_at_the_band() {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(fluid),
         brushes: vec![axis_leaf(
             Vec3::new(min_x, -10.0, -10.0),
@@ -960,4 +973,645 @@ fn eye_swaying_across_a_pools_side_face_above_a_lower_basin_stays_on_inside_the_
     // Past the band sideways it turns off, though the basin lies below.
     eye.update(view, Vec3::new(0.09, y, 0.0), dt, |_| Some(WATER));
     assert_eq!(eye.active_volume(), None);
+}
+
+// --- Depth fog: the frame fog weight, per-face proximity, and the look -------
+
+/// Whether `eye` is inside the union every [`pools`] shape covers (a face
+/// counts as inside, as `fluid_at_eye` reads it).
+fn in_pool(eye: Vec3) -> bool {
+    eye.x.abs() <= 50.0 && eye.z.abs() <= 50.0 && (-10.0..=SURFACE_Y).contains(&eye.y)
+}
+
+/// The frame weight contract: 0 while contained, else one minus the ramp.
+fn assert_frame_weight(eye: &FluidEye, contained: bool, context: &str) {
+    if contained {
+        assert_eq!(eye.fog_weight(), 0.0, "{context}: contained");
+    } else {
+        assert_eq!(eye.fog_weight(), 1.0 - eye.ramp(), "{context}: dry");
+    }
+}
+
+// Sinking through the plane, the eye is contained before the trigger turns on
+// and while the ramp rises; the weight is 0 throughout. Climbing out, it rises
+// as the ramp falls. A side entry already a metre down is contained from its
+// first frame inside, through the whole ramp-in.
+#[test]
+fn frame_fog_weight_is_zero_while_the_eye_is_contained_and_one_minus_the_ramp_otherwise() {
+    let dt = 1.0 / 60.0;
+    for (shape, volumes) in pools() {
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        let mut eye = FluidEye::default();
+        let down = (0..=500).map(|n| SURFACE_Y + 0.5 - n as f32 * 0.002);
+        let hold = std::iter::repeat_n(SURFACE_Y - 0.5, 30);
+        let up = (0..=500).map(|n| SURFACE_Y - 0.5 + n as f32 * 0.002);
+        let dry = std::iter::repeat_n(SURFACE_Y + 0.5, 30);
+        let (mut under_the_trigger, mut fading_in) = (0, 0);
+        let mut previous_dry: Option<f32> = None;
+        for y in down.chain(hold).chain(up).chain(dry) {
+            let at = eye_at(y);
+            eye.update(view, at, dt, |_| Some(WATER));
+            let contained = in_pool(at);
+            assert_frame_weight(&eye, contained, &format!("{shape}, y = {y}"));
+            if contained && eye.active_volume().is_none() {
+                under_the_trigger += 1;
+            }
+            if !contained && eye.ramp() > 0.0 {
+                fading_in += 1;
+                if let Some(previous) = previous_dry {
+                    assert!(eye.fog_weight() >= previous, "{shape}: murk fades in");
+                }
+            }
+            previous_dry = (!contained).then_some(eye.fog_weight());
+        }
+        assert!(
+            under_the_trigger > 0,
+            "{shape}: the path crosses between the plane and the trigger depth"
+        );
+        assert!(fading_in > 0, "{shape}: the exit ramps the tint out");
+        assert_eq!(eye.fog_weight(), 1.0, "{shape}: fully dry");
+
+        // Side entry, a metre down: on at the face, ramping in from 0.
+        let mut eye = FluidEye::default();
+        let mut ramping_in = 0;
+        for n in 0..60 {
+            let at = Vec3::new(50.3 - n as f32 * 0.02, SURFACE_Y - 1.0, 0.0);
+            eye.update(view, at, dt, |_| Some(WATER));
+            let contained = in_pool(at);
+            assert_frame_weight(&eye, contained, &format!("{shape}, side x = {}", at.x));
+            if contained && eye.ramp() < 1.0 {
+                ramping_in += 1;
+            }
+        }
+        assert!(ramping_in > 1, "{shape}: the side entry ramps in");
+    }
+}
+
+// Pin P7: after a dive, an eye bobbing about dev water's surface at dev head
+// bob (±0.05 m) keeps the frame weight at 0: below the plane it is contained,
+// and above it the trigger stays on inside its band, so the ramp holds at 1.
+#[test]
+fn eye_bobbing_about_the_surface_after_a_dive_keeps_the_frame_fog_weight_at_zero() {
+    let bob = dev_head_bob();
+    let full = bob.speed_threshold + crate::view_feel::BOB_EASE_IN_BAND;
+    for (shape, volumes) in pools() {
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        for speed in [full, full + 5.0] {
+            for fps in [30.0, 60.0, 144.0] {
+                let dt = 1.0 / fps;
+                let mut eye = FluidEye::default();
+                for _ in 0..(fps as usize) {
+                    eye.update(view, eye_at(SURFACE_Y - 1.0), dt, |_| Some(WATER));
+                }
+                assert_eq!(eye.ramp(), 1.0, "{shape}: dived in");
+                let offsets = bob_offsets(&bob, speed, fps, 10.0);
+                assert!(offsets.iter().any(|&o| o > 0.0) && offsets.iter().any(|&o| o < 0.0));
+                for offset in offsets {
+                    let y = SURFACE_Y + offset;
+                    eye.update(view, eye_at(y), dt, |_| Some(WATER));
+                    assert_eq!(eye.ramp(), 1.0, "{shape}, y = {y}: the tint holds");
+                    assert_eq!(
+                        eye.fog_weight(),
+                        0.0,
+                        "{shape}, y = {y}, {speed} m/s, {fps} fps"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// Pin P8: a swimmer in volume A facing the shared face of volume B (same
+// fluid or another, side by side or stacked) has frame weight 0, so B's face,
+// outside-facing toward the camera at full proximity, draws no fog.
+#[test]
+fn swimmer_facing_the_shared_face_of_a_second_fluid_volume_has_frame_fog_weight_zero() {
+    let volume = |fluid: u16, min: Vec3, max: Vec3| EnvironmentVolume {
+        fluid: Some(fluid),
+        ..water_volume(vec![axis_leaf(min, max)])
+    };
+    let side_by_side = |b_fluid: u16| {
+        EnvironmentVolumes::build(vec![
+            volume(
+                0,
+                Vec3::new(-10.0, -10.0, -10.0),
+                Vec3::new(0.0, SURFACE_Y, 10.0),
+            ),
+            volume(
+                b_fluid,
+                Vec3::new(0.0, -10.0, -10.0),
+                Vec3::new(10.0, SURFACE_Y, 10.0),
+            ),
+        ])
+    };
+    let stacked = |b_fluid: u16| {
+        EnvironmentVolumes::build(vec![
+            volume(
+                0,
+                Vec3::new(-10.0, 0.0, -10.0),
+                Vec3::new(10.0, SURFACE_Y, 10.0),
+            ),
+            volume(
+                b_fluid,
+                Vec3::new(-10.0, -10.0, -10.0),
+                Vec3::new(10.0, 0.0, 10.0),
+            ),
+        ])
+    };
+    let sludge = FluidLook {
+        tint: [0.25, 0.3, 0.08, 0.85],
+        muffle: 0.95,
+    };
+    // (case, volumes, eye in A, a point on B's shared face, B's outward normal)
+    let cases = [
+        (
+            "same fluid, side by side",
+            side_by_side(0),
+            Vec3::new(-0.5, SURFACE_Y - 1.0, 0.0),
+            Vec3::new(0.0, SURFACE_Y - 1.5, 1.0),
+            Vec3::NEG_X,
+        ),
+        (
+            "another fluid, side by side",
+            side_by_side(1),
+            Vec3::new(-0.5, SURFACE_Y - 1.0, 0.0),
+            Vec3::new(0.0, SURFACE_Y - 1.5, 1.0),
+            Vec3::NEG_X,
+        ),
+        (
+            "same fluid, stacked",
+            stacked(0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(2.0, 0.0, 3.0),
+            Vec3::Y,
+        ),
+        (
+            "water over sludge",
+            stacked(1),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(2.0, 0.0, 3.0),
+            Vec3::Y,
+        ),
+    ];
+    let dt = 1.0 / 60.0;
+    for (case, volumes, at, face, outward) in cases {
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        let proximity = fog_proximity(at, face, outward);
+        assert_eq!(
+            proximity, 1.0,
+            "{case}: B's face is outside-facing and near"
+        );
+        let mut eye = FluidEye::default();
+        for frame in 0..60 {
+            eye.update(view, at, dt, |volume| {
+                Some(if volume == 0 { WATER } else { sludge })
+            });
+            assert_eq!(eye.fog_weight(), 0.0, "{case}, frame {frame}");
+            for transmittance in [0.0, 0.05, 0.5] {
+                assert_eq!(
+                    fog_layer_opacity(eye.fog_weight(), proximity, transmittance),
+                    0.0,
+                    "{case}: B's face draws no fog"
+                );
+            }
+        }
+    }
+}
+
+/// A water volume reaching 2 m under its surface face at y = 1.
+fn deep_water_record() -> EnvironmentVolumeRecord {
+    EnvironmentVolumeRecord {
+        brushes: vec![box_brush(
+            Vec3::new(0.0, -2.0, 0.0),
+            Vec3::new(1.0, 1.0, 1.0),
+        )],
+        ..fluid_record("water", 0.0)
+    }
+}
+
+// Pin P11: an eye placed a metre under on one frame (teleport, respawn, or a
+// level install after unload reset the ramp) has frame weight 0 on that first
+// frame while the tint ramp is still near 0; and an eye crossing into an
+// adjacent fluid this machine does not present stays at 0 through the whole
+// ramp-out.
+#[test]
+fn eye_placed_under_a_fluid_or_in_an_unpresented_one_has_frame_fog_weight_zero_whatever_the_ramp() {
+    let dt = 1.0 / 60.0;
+    let first_step = dt / FLUID_PRESENTATION_RAMP_SECONDS;
+    for (shape, volumes) in pools() {
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        let mut eye = FluidEye::default();
+        eye.update(view, eye_at(SURFACE_Y - 1.0), dt, |_| Some(WATER));
+        assert!(
+            (eye.ramp() - first_step).abs() < 1e-6,
+            "{shape}: ramp near 0"
+        );
+        assert_eq!(eye.fog_weight(), 0.0, "{shape}: first frame");
+    }
+
+    // Through the App: a level installs with the eye already a metre under,
+    // and again after unload has reset the ramp.
+    let mut app = test_app();
+    script_ctx(&app).data_registry.borrow_mut().fluids =
+        FluidRegistry::from_declarations("test", [Ok(descriptor("water", 0.6))]);
+    let under = Vec3::new(0.5, 0.0, 0.5);
+    for install in ["first install", "after unload"] {
+        let mut world = level_world("pool", 1);
+        world.environment_volumes = EnvironmentVolumesSection {
+            level_gravity: LEVEL_GRAVITY,
+            volumes: vec![deep_water_record()],
+        };
+        install_environment(&mut app, world);
+        assert_eq!(app.fluid_eye.ramp(), 0.0, "{install}: the ramp starts dry");
+        app.update_fluid_eye(under, dt);
+        assert!((app.fluid_eye.ramp() - first_step).abs() < 1e-6);
+        assert_eq!(app.fluid_eye.fog_weight(), 0.0, "{install}: first frame");
+        app.unload_level();
+        assert_eq!(app.fluid_eye.fog_weight(), 1.0, "unload reads dry");
+    }
+
+    // Into a neighbour with no local presentation: the held look ramps out,
+    // and the weight stays 0 through all of it and after.
+    let pool_at = |fluid: u16, min_x: f32, max_x: f32| EnvironmentVolume {
+        fluid: Some(fluid),
+        ..water_volume(vec![axis_leaf(
+            Vec3::new(min_x, -10.0, -10.0),
+            Vec3::new(max_x, SURFACE_Y, 10.0),
+        )])
+    };
+    let volumes = EnvironmentVolumes::build(vec![pool_at(0, -10.0, 0.0), pool_at(1, 0.0, 10.0)]);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+    let look_of = |volume: usize| (volume == 0).then_some(WATER);
+    let deep = SURFACE_Y - 1.0;
+    let mut eye = FluidEye::default();
+    for _ in 0..30 {
+        eye.update(view, Vec3::new(-1.0, deep, 0.0), dt, look_of);
+    }
+    assert_eq!(eye.ramp(), 1.0);
+    let mut ramping_out = 0;
+    for frame in 0..30 {
+        eye.update(view, Vec3::new(1.0, deep, 0.0), dt, look_of);
+        ramping_out += usize::from(eye.ramp() > 0.0);
+        assert_eq!(eye.fog_weight(), 0.0, "frame {frame}, ramp {}", eye.ramp());
+    }
+    assert!(
+        ramping_out > 10,
+        "the held look ramps out over several frames"
+    );
+    assert_eq!(eye.ramp(), 0.0);
+}
+
+// The fog's proximity band is the tint's hysteresis band, so murk crossfades
+// with the tint over the same depth.
+#[test]
+fn the_fog_proximity_band_is_the_eye_tint_band() {
+    assert_eq!(FLUID_FOG_BAND, EYE_FLUID_MARGIN);
+}
+
+// An eye lowered from one band-width above dev water's surface to the plane,
+// before the tint triggers, takes the surface's proximity from 1 to 0
+// monotonically at frame weight 1. An eye bobbing across the plane at dev
+// head bob from a standing start has proximity 0 at every sample under the
+// plane, and proximity (and the fog factor) moves between frames by at most
+// the height change ÷ the band width.
+#[test]
+fn surface_proximity_ramps_monotonically_to_the_plane_and_never_jumps_under_head_bob() {
+    let face = Vec3::new(3.0, SURFACE_Y, -2.0);
+    let dt = 1.0 / 60.0;
+    for (shape, volumes) in pools() {
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        let mut eye = FluidEye::default();
+        let steps = 80;
+        let mut proximities = Vec::new();
+        for k in 0..=steps {
+            let y = SURFACE_Y + FLUID_FOG_BAND * (steps - k) as f32 / steps as f32;
+            eye.update(view, eye_at(y), dt, |_| Some(WATER));
+            assert_eq!(
+                eye.active_volume(),
+                None,
+                "{shape}: the tint never triggers"
+            );
+            if k < steps {
+                assert_eq!(eye.fog_weight(), 1.0, "{shape}, y = {y}");
+            }
+            proximities.push(fog_proximity(eye_at(y), face, Vec3::Y));
+        }
+        assert!((proximities[0] - 1.0).abs() < 1e-5, "{proximities:?}");
+        assert_eq!(proximities.last(), Some(&0.0));
+        for pair in proximities.windows(2) {
+            assert!(pair[1] <= pair[0], "{shape}: monotone {pair:?}");
+        }
+    }
+
+    let bob = dev_head_bob();
+    let full = bob.speed_threshold + crate::view_feel::BOB_EASE_IN_BAND;
+    for (shape, volumes) in pools() {
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        for fps in [30.0, 60.0, 144.0] {
+            let mut eye = FluidEye::default();
+            let mut previous: Option<(f32, f32, f32)> = None;
+            let mut below = 0;
+            for offset in bob_offsets(&bob, full, fps, 10.0) {
+                let y = SURFACE_Y + offset;
+                eye.update(view, eye_at(y), 1.0 / fps, |_| Some(WATER));
+                assert_eq!(eye.active_volume(), None, "{shape}: the bob never triggers");
+                let proximity = fog_proximity(eye_at(y), face, Vec3::Y);
+                let factor = eye.fog_weight() * proximity;
+                if y < SURFACE_Y {
+                    below += 1;
+                    assert_eq!(proximity, 0.0, "{shape}, y = {y}");
+                }
+                if let Some((last_y, last_proximity, last_factor)) = previous {
+                    let bound = (y - last_y).abs() / FLUID_FOG_BAND + 1e-4;
+                    assert!(
+                        (proximity - last_proximity).abs() <= bound,
+                        "{shape}, {fps} fps: proximity {last_proximity} -> {proximity}"
+                    );
+                    assert!(
+                        (factor - last_factor).abs() <= bound,
+                        "{shape}, {fps} fps: fog factor {last_factor} -> {factor}"
+                    );
+                }
+                previous = Some((y, proximity, factor));
+            }
+            assert!(below > 0, "{shape}: the bob crosses the plane");
+        }
+    }
+}
+
+// The weight rides every presented frame beside the fluid view tint, from the
+// same eye update, and unload writes the dry weight back.
+#[test]
+fn frame_fog_weight_is_sent_beside_the_view_tint_every_frame_and_reset_at_unload() {
+    let frame_loop = include_str!("../frame_loop/mod.rs");
+    let tint = "set_fluid_view_tint(";
+    let weight = "set_fluid_fog_weight(";
+    assert_eq!(
+        frame_loop.matches(tint).count(),
+        1,
+        "one per-frame tint write"
+    );
+    assert_eq!(
+        frame_loop.matches(weight).count(),
+        1,
+        "one per-frame weight write"
+    );
+    // Both writes sit in one block: a few lines apart, no brace between.
+    let (first, second) = {
+        let (a, b) = (
+            frame_loop.find(tint).unwrap(),
+            frame_loop.find(weight).unwrap(),
+        );
+        (a.min(b), a.max(b))
+    };
+    let between = &frame_loop[first..second];
+    assert!(
+        between.matches('\n').count() <= 4 && !between.contains(['{', '}']),
+        "the weight is written beside the tint"
+    );
+
+    let presentation = include_str!("mod.rs");
+    let start = presentation
+        .find("fn clear_fluid_eye_presentation(")
+        .expect("unload clears the eye presentation");
+    let body = &presentation[start..];
+    let body = &body[..body.find("\n    }\n").unwrap_or(body.len())];
+    assert!(
+        body.contains("renderer.set_fluid_fog_weight(self.fluid_eye.fog_weight());"),
+        "unload sends the reset weight"
+    );
+
+    let mut app = test_app();
+    app.fluid_eye = {
+        let volumes = pool();
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        let mut eye = FluidEye::default();
+        for _ in 0..30 {
+            eye.update(view, eye_at(SURFACE_Y - 1.0), 1.0 / 60.0, |_| Some(WATER));
+        }
+        eye
+    };
+    assert_eq!(app.fluid_eye.fog_weight(), 0.0);
+    app.clear_fluid_eye_presentation();
+    assert_eq!(app.fluid_eye.fog_weight(), 1.0, "the dry weight");
+}
+
+/// content/dev's water as its manifest declares it: `fogDistance` 3,
+/// `fogColor` [0.16, 0.22, 0.19], `wavePeriod` 7.875, amplitude and length at
+/// their defaults.
+fn dev_water() -> FluidDescriptor {
+    FluidDescriptor {
+        view_tint: [0.1, 0.3, 0.4, 0.35],
+        fog_distance: Some(3.0),
+        fog_color: Some([0.16, 0.22, 0.19]),
+        wave_period: Some(7.875),
+        ..descriptor("water", 0.75)
+    }
+}
+
+// The local declaration maps to the packed row the shader reads: fog
+// extinction, the murk albedo, and the wave. An omitted fog colour follows
+// the view tint, so a reload changing only the tint changes the row.
+#[test]
+fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follows_the_tint() {
+    assert_eq!(
+        surface_look(&dev_water(), false),
+        FluidSurfaceLook {
+            surface_opacity: 0.75,
+            fog_distance: Some(3.0),
+            fog_color: [0.16, 0.22, 0.19],
+            wave_period: Some(7.875),
+            wave_amplitude: 8.0,
+            wave_length: [64.0, 80.0],
+            surface_reflectivity: 1.0,
+            has_bound_face: false,
+        }
+    );
+    let row = surface_look(&dev_water(), false).pack();
+    assert_eq!(row.surface, [0.75, 1.0, 0.0, 0.0]);
+    for (packed, colour) in row.fog_albedo.iter().zip([0.16, 0.22, 0.19]) {
+        assert!(
+            (packed - colour * 0.25).abs() < 1e-7,
+            "{:?}",
+            row.fog_albedo
+        );
+    }
+    assert_eq!(row.wave, [1.0 / 7.875, 8.0, 64.0, 80.0]);
+
+    let clear = FluidDescriptor {
+        fog_distance: None,
+        fog_color: None,
+        ..dev_water()
+    };
+    let look = surface_look(&clear, false);
+    assert_eq!(look.fog_color, [0.1, 0.3, 0.4], "fogColor follows viewTint");
+    let row = look.pack();
+    assert_eq!(row.fog_extinction(), 0.0);
+
+    let retinted = FluidDescriptor {
+        view_tint: [0.5, 0.1, 0.2, 0.35],
+        ..clear.clone()
+    };
+    let changed = surface_look(&retinted, false).pack();
+    assert_ne!(
+        changed, row,
+        "a tint-only reload re-uploads the fluid's slots"
+    );
+    assert_eq!(changed.surface, row.surface);
+    assert_eq!(changed.wave, row.wave);
+    for (packed, colour) in changed.fog_albedo.iter().zip([0.5, 0.1, 0.2]) {
+        assert!((packed - colour * 0.25).abs() < 1e-7);
+    }
+    // A declared fog colour does not follow the tint.
+    let declared = FluidDescriptor {
+        view_tint: [0.5, 0.1, 0.2, 0.35],
+        ..dev_water()
+    };
+    assert_eq!(
+        surface_look(&declared, false).pack(),
+        surface_look(&dev_water(), false).pack()
+    );
+}
+
+// A fluid with `surfaceOpacity` 0 and `fogDistance` 1 draws its visible
+// volumes, for the murk alone; with fog omitted it draws nothing.
+#[test]
+fn a_zero_opacity_fluid_draws_only_when_it_declares_fog() {
+    for (fog_distance, expected) in [(Some(1.0), 1), (None, 0)] {
+        let mut app = test_app();
+        let water = FluidDescriptor {
+            fog_distance,
+            ..descriptor("water", 0.0)
+        };
+        script_ctx(&app).data_registry.borrow_mut().fluids =
+            FluidRegistry::from_declarations("test", [Ok(water)]);
+        let mut world = level_world("pool", 1);
+        world.environment_volumes = EnvironmentVolumesSection {
+            level_gravity: LEVEL_GRAVITY,
+            volumes: vec![fluid_record("water", 0.0)],
+        };
+        install_environment(&mut app, world);
+        let local = script_ctx(&app).data_registry.borrow().fluids.clone();
+        assert_eq!(local.descriptors().len(), 1, "the declaration validates");
+        let draws = collect_fluid_surface_draws(
+            &mut app.fluid_surface_render,
+            app.level.as_ref().expect("installed"),
+            &VisibleCells::DrawAll,
+            Vec3::ZERO,
+            &app.environment_volumes,
+            &app.environment_fluids,
+            &local,
+        )
+        .to_vec();
+        assert_eq!(draws.len(), expected, "fog {fog_distance:?}: {draws:?}");
+        if let Some(draw) = draws.first() {
+            assert_eq!(draw.params.opacity(), 0.0);
+            assert_eq!(draw.params.fog_extinction(), 3.0);
+        }
+    }
+}
+
+// Acceptance row 27: frame capture, which loads no manifest, reflects at
+// reflectivity 1 wherever a face binds a probe, and packs none elsewhere.
+// Its style is the renderer default, pixel (`render_profile` tests that
+// capture never sets one; the renderer's adapter test that a renderer no
+// manifest has spoken to draws pixel).
+#[test]
+fn frame_capture_reflects_as_water_wherever_a_face_binds_a_probe() {
+    use super::{CAPTURE_FLUID_SURFACE_OPACITY, capture_surface_look};
+    let bound = capture_surface_look(true);
+    assert_eq!(bound.surface_reflectivity, 1.0);
+    assert_eq!(bound.surface_opacity, CAPTURE_FLUID_SURFACE_OPACITY);
+    assert_eq!(bound.fog_distance, None);
+    assert_eq!(bound.wave_period, None);
+    let row = bound.pack();
+    assert_eq!(row.reflectivity(), 1.0);
+    assert_eq!(row.fog_extinction(), 0.0);
+    assert_eq!(row.wave, [0.0; 4]);
+    assert_eq!(capture_surface_look(false).pack().reflectivity(), 0.0);
+    let prepared = include_str!("../capture/prepared.rs");
+    assert!(prepared.contains("crate::fluid_presentation::capture_surface_look("));
+}
+
+// The descriptor's reflectivity limits and render-cpu's packing live in crates
+// that cannot see each other: a validated maximum past the packing clamp
+// would silently flatten, and a look built without a manifest would reflect
+// unlike an authored fluid that omits the field. Exact equality is the
+// contract.
+#[test]
+fn descriptor_reflectivity_limits_match_the_surface_look_packing() {
+    use postretro_render_cpu::fluid_surface::reflection::FLUID_REFLECTIVITY_MAX;
+    assert_eq!(
+        FluidDescriptor::MAX_SURFACE_REFLECTIVITY,
+        FLUID_REFLECTIVITY_MAX
+    );
+    assert_eq!(
+        FluidSurfaceLook::surface_only(1.0).surface_reflectivity,
+        FluidDescriptor::DEFAULT_SURFACE_REFLECTIVITY
+    );
+}
+
+// Pins P2 and P23 through the App's look: a fog-free fluid at `surfaceOpacity`
+// 0 draws its reflection alone once its volume has a face the level's
+// section 54 binds to a probe, and draws nothing while no face binds.
+#[test]
+fn a_zero_opacity_fog_free_fluid_draws_only_where_a_face_binds_a_probe() {
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeBinding, ReflectionProbeLightShare,
+        ReflectionProbeRecord, ReflectionProbesSection,
+    };
+    let probes = ReflectionProbesSection {
+        tile_dimension: 4,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_BC6H,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 1,
+            box_min: [0.0; 3],
+            box_max: [5.0; 3],
+            capture_point: [0.5, 1.002, 0.5],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        // Only volume 1's face binds.
+        bindings: vec![ReflectionProbeBinding {
+            volume: 1,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: vec![0; 16],
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(1, 4),
+    };
+    for (section, expected) in [(None, Vec::<u32>::new()), (Some(probes), vec![1])] {
+        let mut app = test_app();
+        script_ctx(&app).data_registry.borrow_mut().fluids =
+            FluidRegistry::from_declarations("test", [Ok(descriptor("water", 0.0))]);
+        let mut world = level_world("pool", 1);
+        world.environment_volumes = EnvironmentVolumesSection {
+            level_gravity: LEVEL_GRAVITY,
+            volumes: vec![fluid_record("water", 0.0), fluid_record("water", 4.0)],
+        };
+        world.reflection_probes = section;
+        install_environment(&mut app, world);
+        let local = script_ctx(&app).data_registry.borrow().fluids.clone();
+        let draws = collect_fluid_surface_draws(
+            &mut app.fluid_surface_render,
+            app.level.as_ref().expect("installed"),
+            &VisibleCells::DrawAll,
+            Vec3::ZERO,
+            &app.environment_volumes,
+            &app.environment_fluids,
+            &local,
+        )
+        .to_vec();
+        let volumes: Vec<u32> = draws.iter().map(|draw| draw.volume_index).collect();
+        assert_eq!(volumes, expected, "{draws:?}");
+        for draw in &draws {
+            assert_eq!(draw.params.opacity(), 0.0);
+            assert_eq!(draw.params.fog_extinction(), 0.0);
+            assert_eq!(draw.params.reflectivity(), 1.0);
+        }
+    }
 }

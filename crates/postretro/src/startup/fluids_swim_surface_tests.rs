@@ -119,9 +119,16 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
                 viscosity: 2.0,
                 view_tint: [0.1, 0.3, 0.4, 0.35],
                 muffle: 0.8,
-                surface_opacity: 0.6,
+                surface_opacity: 0.75,
                 enter_sound: Some("fixtures/land".into()),
                 exit_sound: Some("fixtures/jump".into()),
+                fog_distance: Some(3.0),
+                fog_color: Some([0.16, 0.22, 0.19]),
+                wave_period: Some(7.875),
+                // Amplitude and length left to their defaults.
+                wave_amplitude: 8.0,
+                wave_length: [64.0, 80.0],
+                surface_reflectivity: 1.0,
             },
             FluidDescriptor {
                 name: "sludge".into(),
@@ -131,6 +138,12 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
                 surface_opacity: 0.95,
                 enter_sound: Some("fixtures/land".into()),
                 exit_sound: None,
+                fog_distance: None,
+                fog_color: None,
+                wave_period: None,
+                wave_amplitude: 8.0,
+                wave_length: [64.0, 80.0],
+                surface_reflectivity: 1.0,
             },
         ]
     );
@@ -229,6 +242,40 @@ fn fluids_swim_twin_with_negative_water_viscosity_drops_water_naming_the_field()
                 && record
                     .message
                     .contains("fluids[0].viscosity must be a finite value >= 0")
+                && record.message.contains("fluid 'water' was rejected")
+        })
+        .map(|record| record.message)
+        .collect();
+    assert_eq!(rejections.len(), 2, "one per runtime: {rejections:?}");
+}
+
+// At the fixture: dev water's fog and wave settings reach the production
+// runtime in both twins, so an out-of-range value there drops water naming
+// the field; sludge stands.
+#[test]
+fn fluids_swim_twin_with_a_too_short_water_wave_period_drops_water_naming_the_field() {
+    let capture = LogCapture::start();
+    let ts = run_manifest(
+        "start-script.js",
+        &mutate(&bundled_ts_twin(), "wavePeriod: 7.875", "wavePeriod: 5"),
+    )
+    .expect("a rejected fluid never rejects the TS manifest");
+    let luau = run_manifest(
+        "start-script.luau",
+        &mutate(&luau_twin(), "wavePeriod = 7.875", "wavePeriod = 5"),
+    )
+    .expect("a rejected fluid never rejects the Luau manifest");
+    for manifest in [&ts, &luau] {
+        assert_eq!(manifest.fluids.names(), ["sludge"]);
+    }
+    let rejections: Vec<String> = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Warn
+                && record
+                    .message
+                    .contains("fluids[0].wavePeriod must be a finite value >= 6")
                 && record.message.contains("fluid 'water' was rejected")
         })
         .map(|record| record.message)

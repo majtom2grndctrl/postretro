@@ -229,6 +229,22 @@ pub enum SectionId {
     /// (gravity, push, fluid) as convex brush leaves. Always emitted.
     /// See `environment_volumes::EnvironmentVolumesSection`.
     EnvironmentVolumes = 52,
+
+    /// Optional per-environment-volume current force, one `f32` per
+    /// EnvironmentVolumes record in record order. Written only when some push
+    /// volume authors a force other than 1; absence means every force is 1.
+    /// See `push_forces::PushForcesSection`.
+    PushForces = 53,
+
+    /// Optional compile-time reflection probes: box, capture point and
+    /// per-light shares per probe, (volume, face) bindings into
+    /// EnvironmentVolumes, and one octahedral colour tile and one distance
+    /// tile per probe. Absent means no probes.
+    /// See `reflection_probes::ReflectionProbesSection`.
+    ReflectionProbes = 54,
+
+    /// Optional predictive teleporter regions and resolved arrival poses.
+    Teleporters = 55,
 }
 
 impl SectionId {
@@ -274,6 +290,9 @@ impl SectionId {
             50 => Some(Self::ClusterShPayloads),
             51 => Some(Self::CellResidencySet),
             52 => Some(Self::EnvironmentVolumes),
+            53 => Some(Self::PushForces),
+            54 => Some(Self::ReflectionProbes),
+            55 => Some(Self::Teleporters),
             _ => None,
         }
     }
@@ -326,6 +345,9 @@ mod tests {
             SectionId::ClusterShPayloads,
             SectionId::CellResidencySet,
             SectionId::EnvironmentVolumes,
+            SectionId::PushForces,
+            SectionId::ReflectionProbes,
+            SectionId::Teleporters,
         ];
 
         for section_id in registered {
@@ -333,6 +355,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(53), None);
+        assert_eq!(SectionId::from_u32(56), None);
     }
 }

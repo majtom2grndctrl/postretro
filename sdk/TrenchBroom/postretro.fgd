@@ -319,7 +319,7 @@
     = prop_mesh : "Static Mesh Prop"
 [
     origin(origin)
-    angles(angles) : "Orientation (pitch yaw roll, degrees)" : "0 0 0"
+    angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
     model(string) : "Model path (relative to content root, e.g. models/x/scene.gltf)" : ""
 ]
 
@@ -366,7 +366,7 @@
         0 : "Off"
         1 : "On"
     ]
-    block_policy(choices) : "Host-authoritative response when this mover contacts an entity" : "displace" =
+    block_policy(choices) : "Response to a player or enemy in its way: displace pushes, stop holds, reverse backs off. A player it would press into geometry or another mover makes it hold (reverse backs off if it can); crush keeps moving and deals crush_damage" : "displace" =
     [
         "displace" : "Displace"
         "reverse" : "Reverse"
@@ -378,11 +378,11 @@
     auto_close_ms(float) : "Milliseconds before automatic close; blank inherits the mod default, 0 disables" : ""
     open_event(string) : "Named event when the mover reaches its open terminus" : ""
     close_event(string) : "Named event when the mover reaches its closed terminus" : ""
-    blocked_event(string) : "Named event when a blocking mover reacts to contact" : ""
+    blocked_event(string) : "Named event when a blocking mover reacts to contact, or when any non-crush mover first holds or backs off for a pinned player; once per hold" : ""
     crush_event(string) : "Named event when a crusher deals damage" : ""
     open_sound(string) : "Sound key played when the mover reaches its open terminus" : ""
     close_sound(string) : "Sound key played when the mover reaches its closed terminus" : ""
-    blocked_sound(string) : "Sound key played when a blocking mover reacts to contact" : ""
+    blocked_sound(string) : "Sound key played when a blocking mover reacts to contact, or when any non-crush mover first holds or backs off for a pinned player; once per hold" : ""
     crush_sound(string) : "Sound key played when a crusher deals damage" : ""
     move_mode(choices) : "Move mode" : "once" =
     [
@@ -405,6 +405,39 @@
     origin(origin)
     name(string) : "Stable waypoint name" : ""
     next(string) : "Next waypoint name" : ""
+]
+
+// Teleporter brushwork is a non-solid union; only player body points fire it.
+@SolidClass
+    color(140 100 240)
+    = trigger_teleport : "Player teleporter region"
+[
+    name(string) : "Teleporter name" : ""
+    _tags(string) : "Space-delimited tags" : ""
+    mode(choices) : "Mode" : "classic" =
+    [
+        "classic" : "Classic (exact destination and facing)"
+        "seamless" : "Seamless (relative to landmark)"
+    ]
+    target(string) : "Destination name" : "" : "Required teleport_destination name."
+    landmark(string) : "Source landmark name" : "" : "Required in seamless mode; forbidden in classic. Must differ from target."
+    enabled_on_spawn(choices) : "Armed on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    arrival_sound(string) : "Arrival sound key" : "" : "Optional key under sounds/, without extension. Blank is silent."
+    on_teleport(string) : "Reaction on teleport" : "" : "Authoritative reaction once per travelling player."
+]
+
+@PointClass
+    color(140 100 240)
+    size(-6 -6 -6, 6 6 6)
+    = teleport_destination : "Teleporter destination or source landmark"
+[
+    origin(origin)
+    name(string) : "Unique destination name" : ""
+    angles(angles) : "Pitch yaw roll (degrees)" : "0 0 0" : "Only yaw is used; pitch or roll emits a compile warning."
 ]
 
 @SolidClass
@@ -584,8 +617,22 @@
     color(120 220 80)
     = push_volume : "Regional push: updraft, wind or current (brush)"
 [
-    push(string) : "Push (m/s², map axes)" : "" : "Required. Three numbers, an acceleration in map axes in m/s². \"0 0 25\" is an updraft, \"8 0 0\" a wind along +X. A push never changes which way is down. \"0 0 0\" carves a calm pocket inside a stronger push. Pair with a coincident fluid_volume for a current. Blank, or any count but three numbers, fails the build."
+    push(string) : "Push (m/s², map axes)" : "" : "Required. Three numbers, an acceleration in map axes in m/s². \"0 0 25\" is an updraft, \"8 0 0\" a wind along +X. A push never changes which way is down. \"0 0 0\" carves a calm pocket inside a stronger push. Pair with a coincident fluid_volume for a current; the fluid's surface drifts the way the push points, at the speed the push alone carries a swimmer at force 1, but only where the push holds the water 2 mm below the surface: a current must reach within 2 mm of the waterline, a push from above must dip at least 2 mm into the water, and a push wholly beneath moves swimmers and leaves the surface still. A vertical push looks still from above. Blank, or any count but three numbers, fails the build."
+    force(float) : "Force" : 1 : "Default 1. How hard the push shoves a player, who feels push times force; the push itself keeps its direction and look, so a current's surface drifts and particles flow the same at any force. \"0\" is decorative: a river that drifts and carries foam but pushes nothing. Above 1 shoves harder than the current looks. Any finite number from 0 up; negative, infinite or not a number fails the build."
     priority(integer) : "Overlap priority" : 0 : "Default 0. Where volumes setting the same field overlap, the highest priority wins; on a tie the smaller volume wins, then the earlier entity in map order."
+]
+
+// Reflection volume: an authored reflection-probe box, compiler-only. Water
+// reflects with no authoring: the compiler fits a probe to each pool's room.
+// Draw one of these around a room when the fitted box is wrong. Its bounds
+// are the box the water's reflection projects onto, and the region it
+// claims: an up-facing fluid face whose centre lies inside binds the
+// smallest such box. It never renders, collides or changes the lighting.
+@SolidClass
+    color(120 200 230)
+    = reflection_volume : "Reflection probe box (brush)"
+[
+    _capture_offset(string) : "Capture offset (map units)" : "" : "Optional. Two numbers on the map's horizontal axes, such as \"32 -16\", moving the capture point from the middle of the lowest water inside the box, clear of a pillar standing in the water there. Its height stays 2 mm above that water. A third number, anything but two numbers, or an offset that leaves the box fails the build."
 ]
 
 // Per-region volumetric fog brush.

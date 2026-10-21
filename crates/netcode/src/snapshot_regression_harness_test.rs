@@ -19,7 +19,7 @@ use postretro_sim::sim::update_player_animation_locomotion;
 
 use crate::{HostCommandQueues, MovementOwners, NetworkIdAllocator, ReplicableSet};
 
-fn player_descriptor() -> PlayerMovementDescriptor {
+pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
         sounds: None,
         knockback: Default::default(),

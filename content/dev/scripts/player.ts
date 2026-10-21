@@ -46,6 +46,24 @@ export const playerEntity = defineEntity({
           crossfadeMs: 50,
           travelSpeed: 7.0,
         },
+        walk_backward: {
+          clip: "walk_backward",
+          loop: true,
+          crossfadeMs: 50,
+          travelSpeed: 7.0,
+        },
+        run_forward: {
+          clip: "run_forward",
+          loop: true,
+          crossfadeMs: 50,
+          travelSpeed: 11.0,
+        },
+        run_backward: {
+          clip: "run_backward",
+          loop: true,
+          crossfadeMs: 50,
+          travelSpeed: 11.0,
+        },
       },
       defaultState: "idle",
       locomotion: { speedScale: true },
@@ -140,12 +158,6 @@ export const playerEntity = defineEntity({
       // Landing and jumping sounds, played at the local pawn (`audio.md` §4).
       sounds: positionalSoundMovementSounds,
       viewFeel: {
-        slide: {
-          eyeDrop: 0.15,
-          fovIncrease: 5,
-          enterRate: 18,
-          exitRate: 12,
-        },
         bob: {
           verticalFrequency: 0.25,
           lateralFrequency: 0.125,
@@ -179,15 +191,29 @@ export const playerEntity = defineEntity({
             },
           },
         },
-        // Held while vaulting: a downward look at the ledge that eases in over
-        // the first 15% of durationMs, rests through the climb, and levels
-        // out over the last 20% as the pawn moves onto the top.
-        vault: {
-          pitch: -38.5, // degrees; + looks up
-          roll: 10,
-          fov: -30, // horizontal degrees added to the base FOV
-          easeIn: 0.33, // share of durationMs spent easing in
-          easeOut: 0.33, // share spent easing back at the end
+        // Camera poses held while a movement state lasts. Rows add, each on
+        // its own timing.
+        pose: {
+          // A dip and a wider view for the whole slide, eased by rates.
+          slide: {
+            eyeDrop: 0.15,
+            fov: 5,
+            enterRate: 18, // 1/sec
+            exitRate: 12,
+          },
+          // Weighted by the climb: eases in over the first half, holds, and
+          // levels out over the last 30% as the pawn steps onto the top.
+          vault: {
+            // Pull the view toward the landing spot: 95% of the way from the
+            // aim at entry down to the ledge line. The cap sits at the 89°
+            // limit, so it never clips the pull; a cap much below it would
+            // hold every ledge at the same angle.
+            ledgeFocus: { strength: 0.95, maxPitch: 89 },
+            roll: 10, // degrees
+            fov: -30, // horizontal degrees added to the base FOV
+            easeIn: 0.5, // share of the climb spent easing in
+            easeOut: 0.3, // share spent easing back at the end
+          },
         },
       },
     },

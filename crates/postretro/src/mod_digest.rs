@@ -883,29 +883,36 @@ pub(crate) mod tests {
         }
     }
 
+    fn fluid(name: &str, viscosity: f32) -> postretro_foundation::FluidDescriptor {
+        postretro_foundation::FluidDescriptor {
+            name: name.to_string(),
+            viscosity,
+            view_tint: [0.1, 0.3, 0.4, 0.35],
+            muffle: 0.8,
+            surface_opacity: 0.6,
+            enter_sound: None,
+            exit_sound: None,
+            fog_distance: None,
+            fog_color: None,
+            wave_period: None,
+            wave_amplitude: 8.0,
+            wave_length: [64.0, 80.0],
+            surface_reflectivity: 1.0,
+        }
+    }
+
+    fn fluids(
+        entries: Vec<postretro_foundation::FluidDescriptor>,
+    ) -> postretro_foundation::FluidRegistry {
+        postretro_foundation::FluidRegistry::from_declarations(
+            "digest",
+            entries.into_iter().map(Ok),
+        )
+    }
+
     // Fluid declarations never demote a client whose fluids differ from the host's.
     #[test]
     fn digest_ignores_adding_removing_reordering_and_retuning_fluids() {
-        fn fluid(name: &str, viscosity: f32) -> postretro_foundation::FluidDescriptor {
-            postretro_foundation::FluidDescriptor {
-                name: name.to_string(),
-                viscosity,
-                view_tint: [0.1, 0.3, 0.4, 0.35],
-                muffle: 0.8,
-                surface_opacity: 0.6,
-                enter_sound: None,
-                exit_sound: None,
-            }
-        }
-        fn fluids(
-            entries: Vec<postretro_foundation::FluidDescriptor>,
-        ) -> postretro_foundation::FluidRegistry {
-            postretro_foundation::FluidRegistry::from_declarations(
-                "digest",
-                entries.into_iter().map(Ok),
-            )
-        }
-
         let mut baseline = manifest();
         baseline.fluids = fluids(vec![fluid("water", 2.0), fluid("sludge", 6.0)]);
         let expected = manifest_digest(&baseline);
@@ -934,6 +941,44 @@ pub(crate) mod tests {
                 expected,
                 manifest_digest(&changed),
                 "{edit} fluids are intentionally outside the mod digest"
+            );
+        }
+    }
+
+    // Fog, wave and reflectivity fields are local presentation: two
+    // manifests that differ only there agree on the digest.
+    #[test]
+    fn digest_ignores_fluid_fog_and_wave_fields() {
+        let murky = postretro_foundation::FluidDescriptor {
+            fog_distance: Some(1.0),
+            fog_color: Some([0.16, 0.22, 0.19]),
+            wave_period: Some(63.0),
+            wave_amplitude: 6.0,
+            wave_length: [48.0, 80.0],
+            ..fluid("water", 2.0)
+        };
+        let mut clear = manifest();
+        clear.fluids = fluids(vec![fluid("water", 2.0), fluid("sludge", 2.0)]);
+        let mut fogged = manifest();
+        fogged.fluids = fluids(vec![murky, fluid("sludge", 2.0)]);
+        assert_ne!(clear.fluids, fogged.fluids, "the manifests differ");
+        assert_eq!(manifest_digest(&clear), manifest_digest(&fogged));
+
+        // Acceptance row 28: only `surfaceReflectivity` differs.
+        for reflectivity in [0.0, 2.0, 50.0] {
+            let mut mirrored = manifest();
+            mirrored.fluids = fluids(vec![
+                postretro_foundation::FluidDescriptor {
+                    surface_reflectivity: reflectivity,
+                    ..fluid("water", 2.0)
+                },
+                fluid("sludge", 2.0),
+            ]);
+            assert_ne!(clear.fluids, mirrored.fluids, "the manifests differ");
+            assert_eq!(
+                manifest_digest(&clear),
+                manifest_digest(&mirrored),
+                "reflectivity {reflectivity}"
             );
         }
     }

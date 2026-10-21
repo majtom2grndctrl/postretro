@@ -577,6 +577,7 @@ fn plan_movement_replace(
         _ => MovementState::Normal,
     };
     refreshed.swim_reentry_latched = live.swim_reentry_latched;
+    refreshed.teleport = live.teleport.clone();
     refreshed.break_off_vault();
     refreshed.leave_swim_without_swim_block();
     Ok(ComponentValue::PlayerMovement(Box::new(refreshed)))
@@ -2195,6 +2196,7 @@ mod tests {
             fade_source: FadeSourceKind::Clip,
             interrupted_outgoing: None,
             speed_scale: true,
+            locomotion_direction: Default::default(),
         };
         let live = MeshComponent {
             model: "decraniated".into(),

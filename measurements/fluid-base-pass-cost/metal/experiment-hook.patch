@@ -1,0 +1,20 @@
+diff --git a/crates/renderer/src/render/fluid_surface.rs b/crates/renderer/src/render/fluid_surface.rs
+index 4a91fd003..723c5cac6 100644
+--- a/crates/renderer/src/render/fluid_surface.rs
++++ b/crates/renderer/src/render/fluid_surface.rs
+@@ -247,7 +247,14 @@ impl FluidSurfacePass {
+     ) -> Self {
+         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+             label: Some("Fluid Surface Shader"),
+-            source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
++            // EXPERIMENT ONLY (never commit): whole-source override for ablation.
++            source: wgpu::ShaderSource::Wgsl(match std::env::var("POSTRETRO_FLUID_WGSL_EXPERIMENT") {
++                Ok(path) => {
++                    log::warn!("[Renderer] fluid shader override from {path}");
++                    std::fs::read_to_string(path).expect("fluid override").into()
++                }
++                Err(_) => SHADER_SOURCE.into(),
++            }),
+         });
+         let params_bind_group_layout =
+             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

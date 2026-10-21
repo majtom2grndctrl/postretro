@@ -30,6 +30,14 @@ pub struct VolumeTriggerEventDescriptor {
     pub fire: Vec<String>,
 }
 
+/// Level-local teleporter member event; bound only to its installed entity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TeleportEventDescriptor {
+    pub teleporter: EntityId,
+    pub event: String,
+    pub fire: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriggerPoolDescriptor {
     pub tag: String,
@@ -115,6 +123,8 @@ pub enum SequenceTarget {
     Group(GroupTarget),
     Activators,
     FiredTrigger,
+    /// `on.teleporter`: the teleporter that fired an authoritative relocation.
+    FiredTeleporter,
     /// `on.player`: the player a player event fires for.
     EventPlayer,
     /// Control step: `wait`. Enrolls the remainder of the body with the host-only

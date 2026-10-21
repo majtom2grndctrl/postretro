@@ -1,5 +1,9 @@
-// Fluid surface pass: translucent, two-sided, turbulently warped fluid faces,
-// lit per fragment by baked SH indirect, baked direct SH, and dynamic lights.
+// Fluid surface pass: translucent, two-sided fluid faces moving in whole texels,
+// lit by baked SH indirect and baked direct SH per grid vertex and by dynamic
+// lights per fragment, and mirroring their room through distance-corrected
+// box-projected reflection probes (fluid_reflection.wgsl), with the screen-space
+// layer, which the reflection pass resolves first (fluid_reflection_pass.wgsl),
+// composited over them. Motion lives in fluid_motion.wgsl.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // --- Group 0: camera uniforms (shared with forward and billboard) ---
@@ -92,27 +96,96 @@ struct AnimationDescriptor {
     direction_offset: u32,
     direction_count: u32,
 };
+// Per animated-baked light compose descriptors, roster-indexed (the loader
+// refuses section 54 unless the roster-to-descriptor table is identity): the
+// reflection's live lighting reads them as SH compose does.
+@group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 // Curve samples and per-dynamic-light descriptors, as the forward pass reads
 // them, so a scripted light pulses on the water as it does on the walls.
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
-// Baked direct SH. Fluid takes baked direct from here per fragment, never from
+// Baked direct SH. Fluid takes baked direct from here per vertex (`vs_main`), never from
 // the VERTEX-only billboard scatter volume (binding 17).
 @group(3) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
 // --- Group 4: per-volume parameters, one uniform window of draw slots ---
-// x = surface opacity, yzw reserved. The window rides a dynamic offset; the
-// draw's instance index picks the slot inside it.
+// Mirrors render-cpu `FluidParamsRow`, packed CPU-side. The window rides a
+// dynamic offset; the draw's instance index picks the slot inside it.
+struct FluidVolumeRow {
+    // x = surface opacity, y = fog extinction (3 / fogDistance, 0 = no fog),
+    // z = reflectivity (0 for a volume with no probe-bound face), w spare.
+    surface: vec4<f32>,
+    // rgb = fog albedo (fogColor scaled), w spare.
+    fog_albedo: vec4<f32>,
+    // x = 1 / wavePeriod, y = amplitude, z = length min, w = length max; all 0 = no wave.
+    wave: vec4<f32>,
+};
 struct FluidVolumeParams {
-    slots: array<vec4<f32>, 4096>,
+    slots: array<FluidVolumeRow, 1360>,
 };
 @group(4) @binding(0) var<uniform> fluid_volumes: FluidVolumeParams;
+
+// The level's reflection probes: one capture tile per array layer, sampled at
+// level 0 through the SH atlas's linear-clamp sampler, and the share table,
+// written once at install. Mirrors render-cpu `fluid_surface::reflection`'s
+// `FluidProbeLightGpu`, `FluidProbeGpu` and table header.
+struct FluidProbeLight {
+    reference: vec3<f32>,
+    roster_index: u32,
+    // One unorm10x3 RGB share per lobe, red lowest; the tail pads.
+    shares: array<vec4<u32>, 2>,
+};
+struct FluidProbe {
+    box_min: vec3<f32>,
+    _pad0: u32,
+    box_max: vec3<f32>,
+    _pad1: u32,
+    capture_point: vec3<f32>,
+    layer: u32,
+    lights: array<FluidProbeLight, 4>,
+};
+struct FluidProbeTable {
+    // x = tile dimension, y = tile border, z = probe count, w spare.
+    tile: vec4<u32>,
+    probes: array<FluidProbe, 256>,
+};
+@group(4) @binding(1) var fluid_probe_array: texture_2d_array<f32>;
+@group(4) @binding(2) var<uniform> fluid_probes: FluidProbeTable;
+// Beside each capture tile, in the same layer, mapping and border: the mean
+// inverse L1 distance from the capture point to what each texel saw, 0 where
+// it saw nothing. Sampled at level 0 through the same sampler.
+@group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;
+
+// --- Group 5: fluid scene inputs, rebuilt with the scene targets and the reflection target ---
+// Scene depth, loaded under the pass's read-only depth attachment.
+@group(5) @binding(0) var scene_depth: texture_depth_2d;
+struct FluidSceneInputs {
+    // The frame's eye fog weight.
+    fog_weight: f32,
+    // The mod's reflection style: FLUID_REFLECTION_STYLE_SMOOTH, else pixel.
+    reflection_style: u32,
+    // The reflection target's extent over the scene's, per axis; 0 while
+    // only its 1x1 placeholder is bound.
+    ssr_scale: vec2<f32>,
+};
+@group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;
+// The screen-space reflection layer, premultiplied (c x SSR, c), written this
+// frame by the reflection pass, which clears it to c = 0 first. Only
+// fs_main_reflecting reads it, so the reflection-free entry declares nothing
+// new.
+@group(5) @binding(2) var reflection_target: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // Second vertex buffer: the face's drift in texture periods per second,
+    // rewritten in place whenever drift re-resolves.
+    @location(3) drift_rate: vec2<f32>,
+    // Third vertex buffer: the face's reflection probe, written at install;
+    // FLUID_REFLECTION_NO_PROBE for a face no binding names.
+    @location(4) probe: u32,
 };
 
 struct VertexOutput {
@@ -121,6 +194,12 @@ struct VertexOutput {
     @location(1) world_normal: vec3<f32>,
     @location(2) world_position: vec3<f32>,
     @location(3) @interpolate(flat) slot: u32,
+    // The face's drift scroll this frame, texture periods in [-0.5, 0.5).
+    @location(4) @interpolate(flat) drift_scroll: vec2<f32>,
+    @location(5) @interpolate(flat) probe: u32,
+    // Ambient floor, SH indirect and baked direct SH at the vertex, masked and
+    // scaled (`fluid_baked_light`), interpolated across the face's grid.
+    @location(6) baked: vec3<f32>,
 };
 
 @vertex
@@ -131,17 +210,55 @@ fn vs_main(in: VertexInput, @builtin(instance_index) slot: u32) -> VertexOutput 
     out.world_normal = in.normal;
     out.world_position = in.position;
     out.slot = slot;
+    out.drift_scroll = fluid_drift_scroll(in.drift_rate, uniforms.time);
+    out.probe = in.probe;
+    out.baked = fluid_baked_light(in.position, in.normal);
     return out;
 }
 
-// Quake's turbulent warp in texture-tile units: each axis shifts by a sine of
-// the other, 8 texels of a 64-texel tile at 0.125 rad per texel, 1 rad/s.
-const FLUID_WARP_AMPLITUDE: f32 = 0.125;
-const FLUID_WARP_FREQUENCY: f32 = 8.0;
-const FLUID_WARP_SPEED: f32 = 1.0;
+// Depth fog. Mirrors `postretro_render_cpu::fluid_surface::fog`: each fog
+// function and constant here is pinned to it, and `fluid_shade`'s tail inlines its
+// `fog_fragment`. The extinction constants are CPU-only, used in packing.
+const FLUID_FOG_BAND: f32 = 0.08;
+const FLUID_FOG_PATH_MAX: f32 = 1.0e4;
+const FLUID_FOG_DENOM_EPSILON: f32 = 1.0e-8;
+const FLUID_FOG_ALPHA_EPSILON: f32 = 1.0e-4;
 
-fn fluid_warp_uv(uv: vec2<f32>, time: f32) -> vec2<f32> {
-    return uv + FLUID_WARP_AMPLITUDE * sin(uv.yx * FLUID_WARP_FREQUENCY + vec2<f32>(time * FLUID_WARP_SPEED));
+// Metres the view ray runs past the fragment to the scene depth behind it.
+// The ray is linear in clip space, so solving its NDC depth needs no inverse.
+fn fluid_fog_path(view_proj: mat4x4<f32>, camera: vec3<f32>, frag: vec3<f32>, depth: f32) -> f32 {
+    let c0 = view_proj * vec4<f32>(camera, 1.0);
+    let c1 = view_proj * vec4<f32>(frag, 1.0);
+    let denom = (c1.z - c0.z) - depth * (c1.w - c0.w);
+    let s = select(FLUID_FOG_PATH_MAX, (depth * c0.w - c0.z) / denom,
+        abs(denom) > FLUID_FOG_DENOM_EPSILON);
+    return clamp(s - 1.0, 0.0, FLUID_FOG_PATH_MAX) * length(frag - camera);
+}
+
+fn fluid_fog_transmittance(extinction: f32, path: f32) -> f32 {
+    return exp(-extinction * path);
+}
+
+// 0 at and below the face's own plane, 1 one band above it along the
+// outward normal, so an eye bobbing at a plane never flips the murk.
+fn fluid_fog_proximity(camera: vec3<f32>, frag: vec3<f32>, outward: vec3<f32>) -> f32 {
+    return clamp(dot(camera - frag, outward) / FLUID_FOG_BAND, 0.0, 1.0);
+}
+
+fn fluid_fog_seen_from_outside(outward: vec3<f32>, view: vec3<f32>) -> bool {
+    return dot(outward, view) > 0.0;
+}
+
+fn fluid_fog_layer_opacity(weight: f32, proximity: f32, transmittance: f32) -> f32 {
+    return weight * proximity * (1.0 - transmittance);
+}
+
+// Surface over fog over scene, as one straight-alpha output.
+fn fluid_fog_composite(rgb: vec3<f32>, alpha: f32, fog_rgb: vec3<f32>, fog_opacity: f32) -> vec4<f32> {
+    let total = 1.0 - (1.0 - alpha) * (1.0 - fog_opacity);
+    let out = (rgb * alpha + fog_rgb * ((1.0 - alpha) * fog_opacity))
+        / max(total, FLUID_FOG_ALPHA_EPSILON);
+    return vec4<f32>(out, total);
 }
 
 // Post Retro sample, the same body as kinematic_brush.wgsl (pinned by a parity
@@ -190,6 +307,34 @@ fn fluid_sample_sh(world_pos: vec3<f32>, n: vec3<f32>, want_direct: bool) -> ShD
         gi, gfrac, offset_world, n, n, true, probe_occlusion,
     );
     return result;
+}
+
+// The baked terms at one grid vertex: ambient floor, SH indirect and baked
+// direct SH under the frame's mask and scales. The field varies at probe
+// spacing and the grid cuts every face at sub-probe spacing, so evaluating it
+// per vertex and interpolating buys what per fragment did, at a fraction of
+// the cost. The lookup lifts along the viewer-side normal, as the fragment's
+// runtime lights shade: for a planar face every vertex takes the same side.
+// Static/animated isolation happens in the compose passes; the composed
+// direct atlas already has promoted static lights removed while dynamic
+// direct is on, so the fragment's runtime loop adds them back.
+fn fluid_baked_light(world_pos: vec3<f32>, outward: vec3<f32>) -> vec3<f32> {
+    var n = normalize(outward);
+    if dot(n, uniforms.camera_position - world_pos) < 0.0 {
+        n = -n;
+    }
+    const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;
+    const LIGHT_TERM_INDIRECT_STATIC: u32 = 0x02u;
+    const LIGHT_TERM_INDIRECT_ANIMATED: u32 = 0x04u;
+    let light_terms = uniforms.light_term_mask;
+    let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;
+    let use_indirect = (light_terms & (LIGHT_TERM_INDIRECT_STATIC | LIGHT_TERM_INDIRECT_ANIMATED)) != 0u;
+    let sh = fluid_sample_sh(world_pos, n, has_direct_sh());
+    var lighting = select(vec3<f32>(0.0), vec3<f32>(uniforms.ambient_floor), use_ambient_floor);
+    if use_indirect {
+        lighting = lighting + sh.a * uniforms.indirect_scale;
+    }
+    return lighting + sh.b * uniforms.direct_scale;
 }
 
 // One runtime light's diffuse contribution. Scripted descriptors exist only
@@ -257,40 +402,47 @@ fn fluid_light(light_idx: u32, world_pos: vec3<f32>, n: vec3<f32>, scripted: boo
     return effective_color * attenuation * max(dot(n, L), 0.0);
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+// What the reflection tail needs from the shared shading. Only
+// `fs_main_reflecting` reads past `surface`.
+struct FluidShaded {
+    surface: vec4<f32>,
+    outward: vec3<f32>,
+    view_dir: vec3<f32>,
+    uv_dx_texels: vec2<f32>,
+    uv_dy_texels: vec2<f32>,
+    dims: vec2<f32>,
+    texels_per_pixel: f32,
+    reflectivity: f32,
+};
+
+// Everything up to and including the fog composite. Both fragment entry
+// points share it, so they match pixel for pixel wherever the reflecting
+// gate is shut.
+fn fluid_shade(in: VertexOutput) -> FluidShaded {
     // Derivatives in uniform control flow, from the unwarped UV.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    let uv = fluid_warp_uv(in.uv, uniforms.time);
+    let dims = vec2<f32>(textureDimensions(base_texture, 0));
+    let texels_per_pixel = max(length(ddx * dims), length(ddy * dims));
+    let row = fluid_volumes.slots[in.slot];
+    let uv = fluid_warp_uv(in.uv, in.drift_scroll, dims, row.wave, uniforms.time, texels_per_pixel);
     let albedo = sample_post_retro(base_texture, aniso_sampler, uv, ddx, ddy);
 
     // Two-sided: shade the side the camera sees. For a planar face this is
-    // exactly the back-face test, and it holds whatever the winding.
+    // exactly the back-face test, and it holds whatever the winding. Fog reads
+    // the outward normal, never this viewer-flipped one.
     let V = normalize(uniforms.camera_position - in.world_position);
-    var n = normalize(in.world_normal);
+    let outward = normalize(in.world_normal);
+    var n = outward;
     if dot(n, V) < 0.0 {
         n = -n;
     }
 
-    const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;
-    const LIGHT_TERM_INDIRECT_STATIC: u32 = 0x02u;
-    const LIGHT_TERM_INDIRECT_ANIMATED: u32 = 0x04u;
     const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;
-    let light_terms = uniforms.light_term_mask;
-    let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;
-    let use_indirect = (light_terms & (LIGHT_TERM_INDIRECT_STATIC | LIGHT_TERM_INDIRECT_ANIMATED)) != 0u;
-    let use_dynamic = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
+    let use_dynamic = (uniforms.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
 
-    // Baked terms. Static/animated isolation happens in the compose passes;
-    // the composed direct atlas already has promoted static lights removed
-    // while dynamic direct is on, so the loop below adds them back.
-    let sh = fluid_sample_sh(in.world_position, n, has_direct_sh());
-    var lighting = select(vec3<f32>(0.0), vec3<f32>(uniforms.ambient_floor), use_ambient_floor);
-    if use_indirect {
-        lighting = lighting + sh.a * uniforms.indirect_scale;
-    }
-    lighting = lighting + sh.b * uniforms.direct_scale;
+    // Baked terms arrive per vertex, interpolated across the grid.
+    var lighting = in.baked;
 
     // Runtime lights: the dynamic prefix, then the promoted-static suffix. The
     // mover-only animated-baked tail between them is skipped; fluid takes those
@@ -313,6 +465,97 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         rgb = rgb + sample_post_retro(emissive_texture, aniso_sampler, uv, ddx, ddy).rgb
             * material.emissive_strength;
     }
-    let opacity = clamp(fluid_volumes.slots[in.slot].x, 0.0, 1.0);
-    return vec4<f32>(rgb, albedo.a * opacity);
+    let opacity = clamp(row.surface.x, 0.0, 1.0);
+    let alpha = albedo.a * opacity;
+    // Seen from outside a fogged fluid, the scene behind the face lies under
+    // it: composite surface over fog over scene in one output. Clear fluids
+    // and faces seen from inside keep exactly the surface.
+    var surface = vec4<f32>(rgb, alpha);
+    let extinction = row.surface.y;
+    if extinction > 0.0 && fluid_fog_seen_from_outside(outward, V) {
+        let depth = textureLoad(scene_depth, vec2<i32>(in.clip_position.xy), 0);
+        let path = fluid_fog_path(uniforms.view_proj, uniforms.camera_position, in.world_position,
+            depth);
+        let transmittance = fluid_fog_transmittance(extinction, path);
+        let proximity = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
+        let fog_opacity = fluid_fog_layer_opacity(fluid_scene.fog_weight, proximity, transmittance);
+        surface = fluid_fog_composite(rgb, alpha, row.fog_albedo.rgb * lighting, fog_opacity);
+    }
+    return FluidShaded(surface, outward, V, ddx * dims, ddy * dims, dims, texels_per_pixel,
+        row.surface.z);
+}
+
+// Reflection-free entry: the shading alone. It is its own entry point, not an
+// override branch, so naga leaves the reflection globals out of its signature.
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return fluid_shade(in).surface;
+}
+
+// The screen-space layer this fragment composites. Smooth reads the target
+// bilinearly at its own screen position; pixel reads it nearest at its water
+// texel cell's centre projected to the screen, so a reduced target never lays
+// a screen-aligned grid over the cell's block, and a centre off screen reads
+// c = 0. Level-0 reads only: this runs past the reflecting gate.
+fn fluid_reflection_screen_layer(style: u32, frag_xy: vec2<f32>, texel_uv: vec2<f32>,
+                                 world_position: vec3<f32>, axes: FluidTexelAxes) -> vec4<f32> {
+    let extent = vec2<f32>(textureDimensions(scene_depth));
+    if style == FLUID_REFLECTION_STYLE_SMOOTH {
+        return textureSampleLevel(reflection_target, sh_atlas_sampler, frag_xy / extent, 0.0);
+    }
+    let centre = fluid_reflection_cell_centre(texel_uv, world_position, axes);
+    let clip = uniforms.view_proj * vec4<f32>(centre, 1.0);
+    if !(clip.w > 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let ndc = clip.xy / clip.w;
+    let pixel = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * extent;
+    if any(pixel < vec2<f32>(0.0)) || any(pixel >= extent) {
+        return vec4<f32>(0.0);
+    }
+    let last = textureDimensions(reflection_target) - vec2<u32>(1u);
+    return textureLoad(reflection_target, min(vec2<u32>(pixel * fluid_scene.ssr_scale), last), 0);
+}
+
+@fragment
+fn fs_main_reflecting(in: VertexOutput) -> @location(0) vec4<f32> {
+    // The world position's derivatives, for the pixel reflection style's
+    // texel axes, in uniform control flow before the first branch.
+    let ddx_world = dpdx(in.world_position);
+    let ddy_world = dpdy(in.world_position);
+    let shaded = fluid_shade(in);
+    let surface = shaded.surface;
+    let outward = shaded.outward;
+    let V = shaded.view_dir;
+    let dims = shaded.dims;
+    let texels_per_pixel = shaded.texels_per_pixel;
+    // A probe-bound face seen from above under the all-terms mask mirrors its
+    // probe, with the screen-space layer over it, at union coverage; every
+    // other fragment is unchanged. The reflection starts from the style's
+    // point and sees the eye from there.
+    let reflectivity = shaded.reflectivity;
+    if !fluid_reflection_gate(in.probe, outward, V, uniforms.light_term_mask, reflectivity) {
+        return surface;
+    }
+    let axes = fluid_reflection_texel_axes(shaded.uv_dx_texels, shaded.uv_dy_texels, ddx_world, ddy_world);
+    // One style for both layers: the probe's cell point and the target read.
+    let style = fluid_scene.reflection_style;
+    let point = fluid_reflection_point(style, in.uv * dims, in.world_position,
+        outward, axes, uniforms.time, texels_per_pixel, fluid_probes.probes[in.probe].box_min,
+        fluid_probes.probes[in.probe].box_max, fluid_probes.probes[in.probe].capture_point);
+    let view = normalize(uniforms.camera_position - point.position);
+    // IP rule (owner review to change, rendering_pipeline.md §7.3a): the probe
+    // lookup is keyed to its own search from this fragment or cell point, never
+    // to the screen-space hit, its depth or its screen position.
+    let reflection = fluid_reflection_sample(in.probe, point.position, view, point.normal);
+    // From above, an eye within the fog's band of the plane scales the term
+    // by its height through the band, the fog's own proximity, reaching 0 at
+    // the plane: an eye bobbing there never flips the mirror. F is unshadowed;
+    // the capture shadow scales the probe's share alone.
+    let band = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
+    let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity) * band;
+    let screen = fluid_reflection_screen_layer(style, in.clip_position.xy, in.uv * dims,
+        in.world_position, axes);
+    return fluid_reflection_layered_composite(surface, reflection.capture, reflection.weight, screen,
+        fresnel);
 }

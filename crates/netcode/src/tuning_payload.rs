@@ -41,7 +41,8 @@ pub(crate) fn encode_tuning_payload(payload: &TuningPayload) -> Vec<u8> {
         payload.movement.clone(),
         payload.wieldables.clone(),
         payload.environment.clone(),
-    );
+    )
+    .with_spawn_active_slot(payload.spawn_active_slot);
     serde_json::to_vec(&canonical)
         .expect("tuning payload only contains validated descriptor values")
 }
@@ -88,9 +89,9 @@ mod tests {
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FluidRegistry,
-        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode,
-        SlideParams, SlideViewParams, SpeedParams, VaultEntry, VaultParams, VaultTrigger,
-        ViewFeelParams, WeaponPlacementDescriptor,
+        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, PoseChannels,
+        PoseParams, PoseRow, ResolutionMode, SlideParams, SpeedParams, VaultEntry, VaultParams,
+        VaultTrigger, ViewFeelParams, WeaponPlacementDescriptor,
     };
 
     use super::*;
@@ -174,13 +175,19 @@ mod tests {
                 tilt: None,
                 sway: None,
                 impulse: None,
-                slide: Some(SlideViewParams {
-                    eye_drop: 0.15,
-                    fov_increase: 5.0,
-                    enter_rate: 18.0,
-                    exit_rate: 12.0,
+                pose: Some(PoseParams {
+                    slide: Some(PoseRow {
+                        channels: PoseChannels {
+                            pitch: 0.0,
+                            roll: 0.0,
+                            eye_drop: 0.15,
+                            fov: 5.0,
+                        },
+                        enter_rate: 18.0,
+                        exit_rate: 12.0,
+                    }),
+                    vault: None,
                 }),
-                vault: None,
             }),
         }
     }
@@ -296,6 +303,26 @@ mod tests {
             weapon_slots(),
             host_environment(),
         )
+        .with_spawn_active_slot(2)
+    }
+
+    // The client composes its install selection from this slot, so it must
+    // survive canonical encoding rather than reset to the constructor default.
+    #[test]
+    fn payload_round_trips_spawn_active_slot() {
+        let encoded = encode_tuning_payload(&full_payload());
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["spawn_active_slot"], 2);
+        let decoded = decode_tuning_payload(&encoded).unwrap();
+        assert_eq!(decoded.spawn_active_slot, 2);
+        assert_eq!(decoded, full_payload());
+
+        let mut missing = json;
+        missing.as_object_mut().unwrap().remove("spawn_active_slot");
+        assert!(matches!(
+            decode_tuning_payload(&serde_json::to_vec(&missing).unwrap()),
+            Err(TuningPayloadError::Malformed { .. })
+        ));
     }
 
     #[test]
@@ -311,7 +338,7 @@ mod tests {
             entry_boost: 2.0,
             min_duration_ms: 120.0,
         });
-        assert!(descriptor.view_feel.as_ref().unwrap().slide.is_some());
+        assert!(descriptor.view_feel.as_ref().unwrap().pose.is_some());
         descriptor.sounds = Some(postretro_foundation::MovementSounds {
             land: Some("sfx/land".to_string()),
             jump: Some("sfx/jump".to_string()),
@@ -618,6 +645,25 @@ mod tests {
             Err(TuningPayloadError::EpochMismatch {
                 expected: TUNING_PAYLOAD_EPOCH,
                 received: 12,
+            })
+        ));
+    }
+
+    // Epoch 13 predates `spawn_active_slot`. A payload stamped 13 must report
+    // the stale epoch rather than fail as a shape error on the field.
+    #[test]
+    fn payload_rejects_epoch_13_before_spawn_active_slot() {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
+        json["epoch"] = serde_json::json!(13);
+        json.as_object_mut().unwrap().remove("spawn_active_slot");
+        let previous_epoch = serde_json::to_vec(&json).unwrap();
+
+        assert!(matches!(
+            decode_tuning_payload(&previous_epoch),
+            Err(TuningPayloadError::EpochMismatch {
+                expected: TUNING_PAYLOAD_EPOCH,
+                received: 13,
             })
         ));
     }

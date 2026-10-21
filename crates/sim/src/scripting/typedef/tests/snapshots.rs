@@ -203,6 +203,11 @@ fn rust_to_ts_known_types() {
         rust_to_ts("BehaviorActivities"),
         "{ readonly [activity: string]: BehaviorActivityDescriptor }"
     );
+    // `defineFluid`'s `waveLength`: one number or a `[min, max]` pair.
+    assert_eq!(
+        rust_to_ts("NumberOrRange"),
+        "number | readonly [number, number]"
+    );
 }
 
 #[test]
@@ -230,6 +235,7 @@ fn rust_to_luau_known_types() {
         rust_to_luau("BehaviorActivities"),
         "{ [string]: BehaviorActivityDescriptor }"
     );
+    assert_eq!(rust_to_luau("NumberOrRange"), "number | {number}");
 }
 
 #[test]

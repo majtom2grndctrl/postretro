@@ -2,18 +2,35 @@
 // See: context/lib/testing_guide.md
 
 use super::*;
+use postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES;
 use postretro_render_cpu::fluid_surface::{FLUID_SLOTS_PER_WINDOW, FluidSurfaceVertex};
 
+/// The fluid shader's own text, split by responsibility, without the shared
+/// SH and light snippets `SHADER_SOURCE` appends.
+const FLUID_WGSL: &str = concat!(
+    include_str!("../shaders/fluid_surface.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_motion.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection_ray.wgsl"),
+);
+
 fn validated_module() -> naga::Module {
+    validated_module_and_info().0
+}
+
+fn validated_module_and_info() -> (naga::Module, naga::valid::ModuleInfo) {
     let module = naga::front::wgsl::parse_str(composed_shader_source())
         .expect("fluid surface shader must parse as WGSL");
-    naga::valid::Validator::new(
+    let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
     )
     .validate(&module)
     .expect("fluid surface shader must pass naga validation");
-    module
+    (module, info)
 }
 
 fn struct_span(module: &naga::Module, name: &str) -> u32 {
@@ -22,6 +39,23 @@ fn struct_span(module: &naga::Module, name: &str) -> u32 {
         .iter()
         .find_map(|(_, ty)| match (&ty.name, &ty.inner) {
             (Some(ty_name), naga::TypeInner::Struct { span, .. }) if ty_name == name => Some(*span),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("fluid shader should declare struct {name}"))
+}
+
+/// Each member of struct `name`, with its byte offset.
+fn struct_member_offsets(module: &naga::Module, name: &str) -> Vec<(String, u32)> {
+    module
+        .types
+        .iter()
+        .find_map(|(_, ty)| match (&ty.name, &ty.inner) {
+            (Some(ty_name), naga::TypeInner::Struct { members, .. }) if ty_name == name => Some(
+                members
+                    .iter()
+                    .map(|member| (member.name.clone().unwrap_or_default(), member.offset))
+                    .collect(),
+            ),
             _ => None,
         })
         .unwrap_or_else(|| panic!("fluid shader should declare struct {name}"))
@@ -64,13 +98,367 @@ fn fluid_shader_passes_naga_validation() {
     validated_module();
 }
 
+/// The module one stage of `variant`'s pipeline compiles: the shader
+/// compacted to `entry_point`, as wgpu compiles it. The shader has no
+/// override constants; the variant is the entry point.
+fn variant_stage_module(
+    variant: FluidShaderVariant,
+    stage: naga::ShaderStage,
+    entry_point: &str,
+) -> naga::Module {
+    let (module, info) = validated_module_and_info();
+    let (processed, _) = naga::back::pipeline_constants::process_overrides(
+        &module,
+        &info,
+        Some((stage, entry_point)),
+        &naga::back::PipelineConstants::default(),
+    )
+    .unwrap_or_else(|error| panic!("{variant:?} {entry_point} compacts: {error}"));
+    processed.into_owned()
+}
+
+/// What one function can reach when it runs: the functions it calls and the
+/// globals it reads directly, following a branch whose condition folded to a
+/// constant only on its taken side and stopping a block at a return.
+#[derive(Default)]
+struct ReachedCode {
+    calls: Vec<naga::Handle<naga::Function>>,
+    globals: Vec<naga::Handle<naga::GlobalVariable>>,
+}
+
+fn folded_bool(
+    module: &naga::Module,
+    function: &naga::Function,
+    expr: naga::Handle<naga::Expression>,
+) -> Option<bool> {
+    match function.expressions[expr] {
+        naga::Expression::Literal(naga::Literal::Bool(value)) => Some(value),
+        naga::Expression::Constant(constant) => {
+            match module.global_expressions[module.constants[constant].init] {
+                naga::Expression::Literal(naga::Literal::Bool(value)) => Some(value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Walk `block`; returns whether it always ends in a return or kill.
+fn reach_block(
+    module: &naga::Module,
+    function: &naga::Function,
+    block: &naga::Block,
+    reached: &mut ReachedCode,
+) -> bool {
+    let global_of = |expr: naga::Handle<naga::Expression>| match function.expressions[expr] {
+        naga::Expression::GlobalVariable(global) => Some(global),
+        _ => None,
+    };
+    for statement in block.iter() {
+        match statement {
+            naga::Statement::Emit(range) => {
+                for expr in range.clone() {
+                    let operands: &[naga::Handle<naga::Expression>] = match &function.expressions
+                        [expr]
+                    {
+                        naga::Expression::Load { pointer } => &[*pointer],
+                        naga::Expression::Access { base, .. }
+                        | naga::Expression::AccessIndex { base, .. } => &[*base],
+                        naga::Expression::ImageSample { image, sampler, .. } => &[*image, *sampler],
+                        naga::Expression::ImageLoad { image, .. }
+                        | naga::Expression::ImageQuery { image, .. } => &[*image],
+                        naga::Expression::ArrayLength(array) => &[*array],
+                        _ => &[],
+                    };
+                    reached
+                        .globals
+                        .extend(operands.iter().filter_map(|&operand| global_of(operand)));
+                }
+            }
+            naga::Statement::Call {
+                function: callee,
+                arguments,
+                ..
+            } => {
+                reached.calls.push(*callee);
+                reached
+                    .globals
+                    .extend(arguments.iter().filter_map(|&argument| global_of(argument)));
+            }
+            naga::Statement::Block(inner) => {
+                if reach_block(module, function, inner, reached) {
+                    return true;
+                }
+            }
+            naga::Statement::If {
+                condition,
+                accept,
+                reject,
+            } => {
+                let ends = match folded_bool(module, function, *condition) {
+                    Some(true) => reach_block(module, function, accept, reached),
+                    Some(false) => reach_block(module, function, reject, reached),
+                    None => {
+                        let accept_ends = reach_block(module, function, accept, reached);
+                        reach_block(module, function, reject, reached) && accept_ends
+                    }
+                };
+                if ends {
+                    return true;
+                }
+            }
+            naga::Statement::Switch { cases, .. } => {
+                for case in cases {
+                    reach_block(module, function, &case.body, reached);
+                }
+            }
+            naga::Statement::Loop {
+                body, continuing, ..
+            } => {
+                reach_block(module, function, body, reached);
+                reach_block(module, function, continuing, reached);
+            }
+            naga::Statement::Return { .. } | naga::Statement::Kill => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Names of every function and global `entry_point` reaches in `module`,
+/// callees included.
+fn reached_names(module: &naga::Module, entry_point: &str) -> (Vec<String>, Vec<String>) {
+    let entry = module
+        .entry_points
+        .iter()
+        .find(|entry| entry.name == entry_point)
+        .unwrap_or_else(|| panic!("module keeps {entry_point}"));
+    reached_from(module, &entry.function)
+}
+
+/// Names of every function and global `function` reaches in `module`,
+/// callees included.
+fn reached_from(module: &naga::Module, function: &naga::Function) -> (Vec<String>, Vec<String>) {
+    let mut reached = ReachedCode::default();
+    reach_block(module, function, &function.body, &mut reached);
+    let mut walked = Vec::new();
+    while let Some(callee) = reached
+        .calls
+        .iter()
+        .copied()
+        .find(|callee| !walked.contains(callee))
+    {
+        walked.push(callee);
+        let function = &module.functions[callee];
+        reach_block(module, function, &function.body, &mut reached);
+    }
+    let functions = walked
+        .iter()
+        .map(|&callee| module.functions[callee].name.clone().unwrap_or_default())
+        .collect();
+    let globals = reached
+        .globals
+        .iter()
+        .map(|&global| {
+            module.global_variables[global]
+                .name
+                .clone()
+                .unwrap_or_default()
+        })
+        .collect();
+    (functions, globals)
+}
+
+// Two fluid pipelines, one entry point each: the reflection-free entry reaches
+// no reflection function (the distance search included) and reads none of the
+// probe array, the probe table, the distance array, the animation
+// descriptors or the screen-space reflection target; everything up to the
+// surface it returns stays (lighting, fog, the warp). The reflecting entry
+// reaches the probe term and its search, so the walk is not vacuous. The
+// shader has no override constant: a branch folded by one would leave its
+// globals in the entry's Metal signature, which naga declares from the
+// entry's `global_uses`; the next test pins those.
+#[test]
+fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path() {
+    let source = code_only(FLUID_WGSL);
+    assert!(
+        !source.contains("override"),
+        "the shader selects its variant by entry point, not an override"
+    );
+    for variant in FluidShaderVariant::ALL {
+        assert_eq!(FluidShaderVariant::ALL[variant as usize], variant);
+    }
+    assert_eq!(
+        fluid_fragment_entry_point(FluidShaderVariant::ReflectionFree),
+        "fs_main"
+    );
+    assert_eq!(
+        fluid_fragment_entry_point(FluidShaderVariant::Reflecting),
+        "fs_main_reflecting"
+    );
+
+    let reflection_free = variant_stage_module(
+        FluidShaderVariant::ReflectionFree,
+        naga::ShaderStage::Fragment,
+        "fs_main",
+    );
+    let (functions, globals) = reached_names(&reflection_free, "fs_main");
+    for kept in [
+        "fluid_shade",
+        "fluid_warp_uv",
+        "fluid_light",
+        "fluid_fog_composite",
+    ] {
+        assert!(
+            functions.iter().any(|name| name == kept),
+            "reaches {kept}: {functions:?}"
+        );
+    }
+    let reflecting_functions: Vec<_> = functions
+        .iter()
+        .filter(|name| name.starts_with("fluid_reflection_"))
+        .collect();
+    assert!(
+        reflecting_functions.is_empty(),
+        "the reflection-free variant calls {reflecting_functions:?}"
+    );
+    for probe_global in REFLECTION_GLOBALS {
+        assert!(
+            !globals.iter().any(|name| name == probe_global),
+            "the reflection-free variant reads {probe_global}: {globals:?}"
+        );
+    }
+
+    let reflecting = variant_stage_module(
+        FluidShaderVariant::Reflecting,
+        naga::ShaderStage::Fragment,
+        "fs_main_reflecting",
+    );
+    let (functions, globals) = reached_names(&reflecting, "fs_main_reflecting");
+    for reached in [
+        "fluid_shade",
+        "fluid_reflection_gate",
+        "fluid_reflection_sample",
+        "fluid_reflection_search",
+        "fluid_reflection_search_h",
+        "fluid_reflection_shadow_fade",
+        "fluid_reflection_shadow_edge",
+        "fluid_reflection_shadow_tap",
+        "fluid_reflection_ratio",
+    ] {
+        assert!(
+            functions.iter().any(|name| name == reached),
+            "reaches {reached}: {functions:?}"
+        );
+    }
+    for probe_global in REFLECTION_GLOBALS {
+        assert!(
+            globals.iter().any(|name| name == probe_global),
+            "the reflecting variant reads {probe_global}: {globals:?}"
+        );
+    }
+}
+
+const REFLECTION_GLOBALS: [&str; 5] = [
+    "fluid_probes",
+    "fluid_probe_array",
+    "fluid_probe_distance",
+    "anim_descriptors",
+    "reflection_target",
+];
+
+// What naga's MSL writer declares as entry-point arguments: the globals in the
+// entry's `global_uses`. The reflection-free entry uses none of the five
+// reflection globals, the reflection target included; the reflecting entry
+// uses each. An override-folded branch would still count as a use, so this
+// fails against a shader that selects the variant by override constant.
+#[test]
+fn the_reflection_free_entry_declares_none_of_the_reflection_globals() {
+    let (module, info) = validated_module_and_info();
+    let uses_of = |entry_name: &str, global_name: &str| {
+        let index = module
+            .entry_points
+            .iter()
+            .position(|entry| entry.name == entry_name)
+            .unwrap_or_else(|| panic!("shader declares entry point {entry_name}"));
+        let (handle, _) = module
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.name.as_deref() == Some(global_name))
+            .unwrap_or_else(|| panic!("shader declares global {global_name}"));
+        info.get_entry_point(index)[handle]
+    };
+    for global in REFLECTION_GLOBALS {
+        assert!(
+            uses_of("fs_main", global).is_empty(),
+            "fs_main must not use {global}"
+        );
+        assert!(
+            !uses_of("fs_main_reflecting", global).is_empty(),
+            "fs_main_reflecting must use {global}"
+        );
+    }
+}
+
+// Pixel parity: where the reflecting gate is shut, both entry points return
+// `fluid_shade(in).surface`. `fs_main` is that call alone. `FluidShaded`'s
+// fields run in the order `fluid_shade` constructs them, so no reordered
+// field of a shared type hands the reflection tail one value under another's
+// name.
+#[test]
+fn both_fluid_entry_points_return_the_shared_shading_where_the_gate_is_shut() {
+    let source = FLUID_WGSL;
+    assert_eq!(
+        code_only(wgsl_fn(source, "fs_main")),
+        "fnfs_main(in:VertexOutput)->@location(0)vec4<f32>{returnfluid_shade(in).surface;}"
+    );
+    assert!(code_only(source).contains(
+        "structFluidShaded{surface:vec4<f32>,outward:vec3<f32>,view_dir:vec3<f32>,\
+         uv_dx_texels:vec2<f32>,uv_dy_texels:vec2<f32>,dims:vec2<f32>,texels_per_pixel:f32,\
+         reflectivity:f32,};"
+    ));
+}
+
 // Every resource the shader binds must exist in the layout the pipeline is
 // built from, visible to the fragment stage that reads it. A mismatch would
 // only surface as a pipeline-creation panic on a real GPU.
+//
+// Both pipelines: each variant's vertex and fragment entry point, as the
+// pipeline compiles them, binds only what the one shared layout holds.
 #[test]
 fn fluid_shader_bindings_are_present_in_the_pipeline_layout() {
-    let module = validated_module();
     let groups = fluid_pipeline_bind_group_layout_entries();
+    for variant in FluidShaderVariant::ALL {
+        for (stage, visibility, entry_point) in [
+            (
+                naga::ShaderStage::Vertex,
+                wgpu::ShaderStages::VERTEX,
+                "vs_main",
+            ),
+            (
+                naga::ShaderStage::Fragment,
+                wgpu::ShaderStages::FRAGMENT,
+                fluid_fragment_entry_point(variant),
+            ),
+        ] {
+            let module = variant_stage_module(variant, stage, entry_point);
+            let bound = assert_bindings_in_layout(&module, &groups, visibility);
+            assert!(bound >= 1, "{variant:?} {entry_point} binds nothing");
+        }
+    }
+    // The whole module, every stage's bindings at once, is fragment-visible.
+    let bound =
+        assert_bindings_in_layout(&validated_module(), &groups, wgpu::ShaderStages::FRAGMENT);
+    assert!(bound >= 14, "expected the full binding set, saw {bound}");
+}
+
+/// Every binding `module` declares is in `groups`, visible to `stage`;
+/// returns how many there are.
+fn assert_bindings_in_layout(
+    module: &naga::Module,
+    groups: &[Vec<wgpu::BindGroupLayoutEntry>],
+    stage: wgpu::ShaderStages,
+) -> usize {
     let mut bound = 0;
     for (_, global) in module.global_variables.iter() {
         let Some(binding) = &global.binding else {
@@ -90,13 +478,13 @@ fn fluid_shader_bindings_are_present_in_the_pipeline_layout() {
                 )
             });
         assert!(
-            entry.visibility.contains(wgpu::ShaderStages::FRAGMENT),
-            "@group({}) @binding({}) must be fragment-visible",
+            entry.visibility.contains(stage),
+            "@group({}) @binding({}) must be visible to {stage:?}",
             binding.group,
             binding.binding
         );
     }
-    assert!(bound >= 14, "expected the full binding set, saw {bound}");
+    bound
 }
 
 #[test]
@@ -106,11 +494,47 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         struct_span(&module, "FluidVolumeParams") as u64,
         FLUID_PARAMS_WINDOW_BYTES
     );
+    // One row is the CPU `FluidParamsRow`: three vec4, stride 48.
+    assert_eq!(
+        struct_span(&module, "FluidVolumeRow") as usize,
+        FLUID_PARAMS_STRIDE
+    );
+    assert_eq!(
+        std::mem::size_of::<postretro_render_cpu::fluid_surface::FluidParamsRow>(),
+        FLUID_PARAMS_STRIDE
+    );
+    // Member for member: swapping two vec4 on one side keeps the stride but
+    // feeds the shader the wrong row.
+    {
+        use postretro_render_cpu::fluid_surface::FluidParamsRow;
+        assert_eq!(
+            struct_member_offsets(&module, "FluidVolumeRow"),
+            [
+                (
+                    "surface".to_owned(),
+                    std::mem::offset_of!(FluidParamsRow, surface) as u32
+                ),
+                (
+                    "fog_albedo".to_owned(),
+                    std::mem::offset_of!(FluidParamsRow, fog_albedo) as u32
+                ),
+                (
+                    "wave".to_owned(),
+                    std::mem::offset_of!(FluidParamsRow, wave) as u32
+                ),
+            ]
+        );
+    }
+    assert_eq!(
+        struct_span(&module, "FluidSceneInputs") as u64,
+        FLUID_SCENE_UNIFORM_BYTES
+    );
     assert_eq!(
         FLUID_PARAMS_WINDOW_BYTES / FLUID_PARAMS_STRIDE as u64,
         u64::from(FLUID_SLOTS_PER_WINDOW)
     );
-    let param_entry = &fluid_params_bind_group_layout_entries()[0];
+    let [param_entry, probe_array, probe_table, probe_distance] =
+        fluid_params_bind_group_layout_entries();
     assert!(matches!(
         param_entry.ty,
         wgpu::BindingType::Buffer {
@@ -119,6 +543,123 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
             ..
         }
     ));
+    // The probe array and the share table: one sampled texture and one
+    // non-dynamic uniform, level-scoped like the params window.
+    assert_eq!(probe_array.binding, 1);
+    assert!(matches!(
+        probe_array.ty,
+        wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        }
+    ));
+    assert_eq!(probe_table.binding, 2);
+    assert!(matches!(
+        probe_table.ty,
+        wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: Some(size),
+        } if size.get() == FLUID_PROBE_TABLE_BYTES as u64
+    ));
+    // The distance array: a second filterable sampled texture, read through
+    // the same sampler as the probe array.
+    assert_eq!(probe_distance.binding, 3);
+    assert!(matches!(
+        probe_distance.ty,
+        wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        }
+    ));
+    for entry in [&probe_array, &probe_table, &probe_distance] {
+        assert_eq!(entry.visibility, wgpu::ShaderStages::FRAGMENT);
+    }
+    let source = FLUID_WGSL;
+    assert!(source.contains("@group(4) @binding(1) var fluid_probe_array: texture_2d_array<f32>;"));
+    assert!(source.contains("@group(4) @binding(2) var<uniform> fluid_probes: FluidProbeTable;"));
+    assert!(
+        source.contains("@group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;")
+    );
+    // Every distance tap is an explicit level-0 sample through the probe
+    // array's sampler.
+    let code = code_only(source);
+    assert_eq!(
+        code.matches("fluid_probe_distance").count(),
+        2,
+        "declaration + one tap"
+    );
+    assert!(code.contains("textureSampleLevel(fluid_probe_distance,sh_atlas_sampler,"));
+
+    // The share table is the CPU layout member for member, at the cap.
+    {
+        use postretro_render_cpu::fluid_surface::reflection::{
+            FLUID_PROBE_LIGHT_STRIDE, FLUID_PROBE_STRIDE, FluidProbeGpu, FluidProbeLightGpu,
+            FluidProbeTableHeader,
+        };
+        assert_eq!(
+            struct_span(&module, "FluidProbeTable") as usize,
+            FLUID_PROBE_TABLE_BYTES
+        );
+        assert_eq!(
+            struct_span(&module, "FluidProbe") as usize,
+            FLUID_PROBE_STRIDE
+        );
+        assert_eq!(
+            struct_span(&module, "FluidProbeLight") as usize,
+            FLUID_PROBE_LIGHT_STRIDE
+        );
+        let offsets = |members: &[(&str, usize)]| -> Vec<(String, u32)> {
+            members
+                .iter()
+                .map(|&(name, offset)| (name.to_owned(), offset as u32))
+                .collect()
+        };
+        assert_eq!(
+            struct_member_offsets(&module, "FluidProbeTable"),
+            offsets(&[
+                ("tile", 0),
+                ("probes", std::mem::size_of::<FluidProbeTableHeader>()),
+            ])
+        );
+        assert_eq!(
+            struct_member_offsets(&module, "FluidProbe"),
+            offsets(&[
+                ("box_min", std::mem::offset_of!(FluidProbeGpu, box_min)),
+                ("_pad0", 12),
+                ("box_max", std::mem::offset_of!(FluidProbeGpu, box_max)),
+                ("_pad1", 28),
+                (
+                    "capture_point",
+                    std::mem::offset_of!(FluidProbeGpu, capture_point)
+                ),
+                ("layer", std::mem::offset_of!(FluidProbeGpu, layer)),
+                ("lights", std::mem::offset_of!(FluidProbeGpu, lights)),
+            ])
+        );
+        assert_eq!(
+            struct_member_offsets(&module, "FluidProbeLight"),
+            offsets(&[
+                (
+                    "reference",
+                    std::mem::offset_of!(FluidProbeLightGpu, reference)
+                ),
+                (
+                    "roster_index",
+                    std::mem::offset_of!(FluidProbeLightGpu, roster_index)
+                ),
+                ("shares", std::mem::offset_of!(FluidProbeLightGpu, shares)),
+            ])
+        );
+        assert_eq!(
+            std::mem::offset_of!(FluidProbeTableHeader, tile_dimension),
+            0
+        );
+        assert_eq!(std::mem::offset_of!(FluidProbeTableHeader, tile_border), 4);
+        assert_eq!(std::mem::offset_of!(FluidProbeTableHeader, probe_count), 8);
+    }
 
     // Vertex attributes sit at the CPU struct's field offsets.
     let offsets: Vec<u64> = VERTEX_ATTRIBUTES.iter().map(|a| a.offset).collect();
@@ -136,31 +677,88 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
     );
 }
 
-// The water lights per fragment so a dynamic light near a large face shades
-// it smoothly: every light evaluation lives in fs_main, none in vs_main. Baked
-// direct comes from direct SH, never from the VERTEX-only billboard scatter.
+// Baked light is per vertex: the ambient floor, SH indirect and baked direct
+// SH evaluate in vs_main and reach the fragment interpolated, so no fragment
+// entry samples the SH volume. Dynamic and promoted-static runtime lights
+// stay per fragment, so a dynamic light near a large face shades it smoothly.
+// Baked direct comes from direct SH, never from the VERTEX-only billboard
+// scatter.
 #[test]
-fn fluid_lighting_is_evaluated_per_fragment_from_direct_sh() {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
+fn fluid_baked_light_is_per_vertex_and_runtime_lights_per_fragment() {
+    let source = FLUID_WGSL;
     let vertex = code_only(wgsl_fn(source, "vs_main"));
-    let fragment = code_only(wgsl_fn(source, "fs_main"));
-    for call in ["fluid_sample_sh(", "fluid_light(", "fluid_warp_uv("] {
-        assert!(fragment.contains(call), "fs_main must call {call}");
+    let baked = code_only(wgsl_fn(source, "fluid_baked_light"));
+    let fragment = code_only(wgsl_fn(source, "fluid_shade"));
+    assert!(vertex.contains("out.baked=fluid_baked_light(in.position,in.normal);"));
+    assert!(baked.contains("fluid_sample_sh("));
+    assert!(fragment.contains("varlighting=in.baked;"));
+    for call in ["fluid_light(", "fluid_warp_uv("] {
+        assert!(fragment.contains(call), "fluid_shade must call {call}");
         assert!(!vertex.contains(call), "vs_main must not call {call}");
     }
+    assert!(!fragment.contains("fluid_sample_sh("));
+    assert!(!fragment.contains("fluid_baked_light("));
+    // The viewer side, as the fragment's runtime lights take it.
+    assert!(baked.contains("ifdot(n,uniforms.camera_position-world_pos)<0.0{n=-n;}"));
     assert!(source.contains("@group(3) @binding(15) var sh_direct_atlas"));
     assert!(!source.contains("billboard_direct_scatter"));
     assert!(!source.contains("@binding(17)"));
     // The opacity is the per-volume slot's, read in the fragment.
-    assert!(fragment.contains("fluid_volumes.slots[in.slot].x"));
+    assert!(fragment.contains("letrow=fluid_volumes.slots[in.slot];"));
+    assert!(fragment.contains("letopacity=clamp(row.surface.x,0.0,1.0);"));
+}
+
+/// The SH volume's sampled resources: both atlases, the probe-depth moments
+/// and the grid uniform.
+const SH_SAMPLED_GLOBALS: [&str; 4] = [
+    "sh_total_atlas",
+    "sh_direct_atlas",
+    "sh_depth_moments",
+    "sh_grid",
+];
+
+// What each entry point's compiled signature declares (naga's `global_uses`,
+// which the MSL writer turns into entry arguments): vs_main uses every SH
+// sampled resource and neither fragment entry uses any, under any gate. Both
+// fragment entries keep the runtime lights; the reflecting entry keeps the
+// shared linear-clamp sampler for its probe reads.
+#[test]
+fn only_the_vertex_entry_samples_the_sh_volume() {
+    let (module, info) = validated_module_and_info();
+    let uses_of = |entry_name: &str, global_name: &str| {
+        let index = module
+            .entry_points
+            .iter()
+            .position(|entry| entry.name == entry_name)
+            .unwrap_or_else(|| panic!("shader declares entry point {entry_name}"));
+        let (handle, _) = module
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.name.as_deref() == Some(global_name))
+            .unwrap_or_else(|| panic!("shader declares global {global_name}"));
+        !info.get_entry_point(index)[handle].is_empty()
+    };
+    for global in SH_SAMPLED_GLOBALS {
+        assert!(uses_of("vs_main", global), "vs_main must use {global}");
+        for fragment in ["fs_main", "fs_main_reflecting"] {
+            assert!(
+                !uses_of(fragment, global),
+                "{fragment} must not use {global}"
+            );
+        }
+    }
+    assert!(uses_of("vs_main", "sh_atlas_sampler"));
+    for fragment in ["fs_main", "fs_main_reflecting"] {
+        for global in ["lights", "light_influence"] {
+            assert!(uses_of(fragment, global), "{fragment} must use {global}");
+        }
+    }
+    assert!(uses_of("fs_main_reflecting", "sh_atlas_sampler"));
 }
 
 #[test]
 fn fluid_post_retro_sampling_matches_the_mover_shader() {
-    let fluid = code_only(wgsl_fn(
-        include_str!("../shaders/fluid_surface.wgsl"),
-        "sample_post_retro",
-    ));
+    let fluid = code_only(wgsl_fn(FLUID_WGSL, "sample_post_retro"));
     let mover = code_only(wgsl_fn(
         include_str!("../shaders/kinematic_brush.wgsl"),
         "sample_post_retro",
@@ -186,19 +784,39 @@ fn fluid_pipeline_blends_over_the_scene_two_sided_without_writing_depth() {
 }
 
 // The pass draws after skinned meshes and before billboards, on its own gate.
+// The reflection pass records between skinned meshes and the fluid pass,
+// inside the fluid gate and on its own reflecting-draw gate, so it reads scene
+// colour holding the opaque scene alone (P13).
 #[test]
 fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
     let frame = include_str!("renderer_render_frame.rs");
     let skinned = frame
         .find("label: Some(\"Skinned Mesh Pass\")")
         .expect("skinned mesh pass");
+    let reflection = frame
+        .find("self.record_fluid_reflection_pass(")
+        .expect("reflection pass");
     let fluid = frame
         .find("label: Some(\"Fluid Surface Pass\")")
         .expect("fluid surface pass");
     let billboard = frame
         .find("label: Some(\"Billboard Sprite Pass\")")
         .expect("billboard pass");
-    assert!(skinned < fluid && fluid < billboard);
+    assert!(skinned < reflection && reflection < fluid && fluid < billboard);
+    assert_eq!(
+        frame.matches("self.record_fluid_reflection_pass(").count(),
+        1
+    );
+    let reflection_gate = code_only(&frame[skinned..reflection]);
+    assert!(
+        reflection_gate.ends_with(
+            "ifself.full().fluid_surface.has_reflecting_draws(frame_light_term_mask,\
+             frame_reflection_quality){"
+        ),
+        "{reflection_gate}"
+    );
+    let pass = include_str!("fluid_surface/reflection_pass.rs");
+    assert!(pass.contains("label: Some(\"Fluid Reflection Pass\")"));
 
     let gate_start = frame[..fluid]
         .rfind("if render_world")
@@ -207,4 +825,4166 @@ fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
     assert!(gate.contains("fluid_surface.has_draws()"), "{gate}");
     assert!(!gate.contains("has_any_sheet"), "{gate}");
     assert!(!gate.contains("particle_collections"), "{gate}");
+}
+
+/// The literal of `const name: ty = literal;` in the fluid shader's code, so a
+/// commented-out declaration cannot shadow the live one.
+fn shader_const(name: &str, ty: &str) -> String {
+    shader_const_in(FLUID_WGSL, name, ty)
+}
+
+/// [`shader_const`] over any shader text.
+fn shader_const_in(source: &str, name: &str, ty: &str) -> String {
+    let code = code_only(source);
+    let needle = format!("const{name}:{ty}=");
+    let at = code
+        .find(&needle)
+        .unwrap_or_else(|| panic!("the shader must declare {name}: {ty}"));
+    let rest = &code[at + needle.len()..];
+    rest[..rest.find(';').expect("const terminates")].to_owned()
+}
+
+fn shader_f32(name: &str) -> f32 {
+    shader_const(name, "f32")
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} must be an f32 literal"))
+}
+
+fn shader_i32(name: &str) -> i32 {
+    shader_const(name, "i32")
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} must be an i32 literal"))
+}
+
+fn shader_u32(name: &str) -> u32 {
+    let literal = shader_const(name, "u32");
+    let digits = literal
+        .strip_suffix('u')
+        .unwrap_or_else(|| panic!("{name} must be a u32 literal"));
+    match digits.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16),
+        None => digits.parse(),
+    }
+    .unwrap_or_else(|_| panic!("{name} literal `{literal}` must parse"))
+}
+
+#[test]
+fn fluid_motion_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::motion as m;
+    assert_eq!(shader_f32("FLUID_MOTION_STEP_HZ"), m::FLUID_MOTION_STEP_HZ);
+    assert_eq!(
+        shader_i32("FLUID_SHIMMER_AMPLITUDE"),
+        m::FLUID_SHIMMER_AMPLITUDE
+    );
+    assert_eq!(shader_i32("FLUID_RING_AMPLITUDE"), m::FLUID_RING_AMPLITUDE);
+    assert_eq!(
+        shader_i32("FLUID_RING_BLOCK_SHIFT"),
+        m::FLUID_RING_BLOCK_SHIFT
+    );
+    assert_eq!(
+        shader_i32("FLUID_RING_LIFETIME_STEPS"),
+        m::FLUID_RING_LIFETIME_STEPS
+    );
+    assert_eq!(shader_i32("FLUID_RING_MARGIN"), m::FLUID_RING_MARGIN);
+    assert_eq!(
+        shader_f32("FLUID_RING_STEP_TEXELS"),
+        m::FLUID_RING_STEP_TEXELS
+    );
+    assert_eq!(
+        shader_f32("FLUID_FADE_START_TEXELS_PER_PIXEL"),
+        m::FLUID_FADE_START_TEXELS_PER_PIXEL
+    );
+    assert_eq!(
+        shader_f32("FLUID_FADE_END_TEXELS_PER_PIXEL"),
+        m::FLUID_FADE_END_TEXELS_PER_PIXEL
+    );
+    assert_eq!(shader_u32("FLUID_SALT_CELL"), m::FLUID_SALT_CELL);
+    assert_eq!(shader_u32("FLUID_SALT_SHIMMER"), m::FLUID_SALT_SHIMMER);
+    assert_eq!(shader_u32("FLUID_SALT_FADE"), m::FLUID_SALT_FADE);
+    assert_eq!(shader_u32("FLUID_SALT_BLOCK"), m::FLUID_SALT_BLOCK);
+    assert_eq!(shader_u32("FLUID_SALT_DROP"), m::FLUID_SALT_DROP);
+    assert_eq!(shader_u32("FLUID_SALT_WAVE_U"), m::FLUID_SALT_WAVE_U);
+    assert_eq!(shader_u32("FLUID_SALT_WAVE_V"), m::FLUID_SALT_WAVE_V);
+    assert_eq!(shader_i32("FLUID_WAVE_PAIRS"), m::FLUID_WAVE_PAIRS);
+    assert_eq!(
+        shader_f32("FLUID_WAVE_ARC_LINEAR"),
+        m::FLUID_WAVE_ARC_LINEAR
+    );
+    assert_eq!(
+        shader_f32("FLUID_WAVE_ARC_QUADRATIC"),
+        m::FLUID_WAVE_ARC_QUADRATIC
+    );
+    assert_eq!(shader_u32("FLUID_HASH_MUL_A"), m::FLUID_HASH_MUL_A);
+    assert_eq!(shader_u32("FLUID_HASH_MUL_B"), m::FLUID_HASH_MUL_B);
+}
+
+#[test]
+fn fluid_shade_samples_albedo_and_emissive_at_the_warped_uv() {
+    let fragment = code_only(wgsl_fn(FLUID_WGSL, "fluid_shade"));
+    // The warp reads the unwarped UV and its derivatives' footprint.
+    assert!(fragment.contains("letddx=dpdx(in.uv);"));
+    assert!(fragment.contains("letddy=dpdy(in.uv);"));
+    // The fade input: texels one pixel spans, from the unwarped footprint.
+    assert!(fragment.contains("letdims=vec2<f32>(textureDimensions(base_texture,0));"));
+    assert!(
+        fragment.contains("lettexels_per_pixel=max(length(ddx*dims),length(ddy*dims));"),
+        "{fragment}"
+    );
+    // The wave reads the draw's own row.
+    assert!(fragment.contains(
+        "letuv=fluid_warp_uv(in.uv,in.drift_scroll,dims,row.wave,uniforms.time,texels_per_pixel);"
+    ));
+    assert!(fragment.contains("sample_post_retro(base_texture,aniso_sampler,uv,ddx,ddy)"));
+    assert!(fragment.contains("sample_post_retro(emissive_texture,aniso_sampler,uv,ddx,ddy)"));
+    assert!(!fragment.contains("sample_post_retro(base_texture,aniso_sampler,in.uv"));
+}
+
+#[test]
+fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
+    let code = code_only(FLUID_WGSL);
+    assert!(
+        !code.contains("sin("),
+        "fluid_surface.wgsl must not call sin"
+    );
+    assert!(
+        !code.contains("cos("),
+        "fluid_surface.wgsl must not call cos"
+    );
+
+    // Cells floor the UNWARPED texel UV, before any scroll joins it.
+    let warp = code_only(wgsl_fn(FLUID_WGSL, "fluid_warp_uv"));
+    let texel = warp
+        .find("lettexel_uv=uv*dims;")
+        .expect("texel UV from the unwarped UV");
+    let cell = warp
+        .find("letcell=vec2<i32>(floor(texel_uv));")
+        .expect("cell floored from the unwarped texel UV");
+    assert!(texel < cell);
+    assert!(
+        !warp[texel..cell].contains("drift"),
+        "the scroll must not reach the cell index"
+    );
+
+    // Both offsets are whole texels before they move the sample point: the
+    // drift is floored, and the cell offset is an integer vector.
+    assert!(warp.contains("letdrift_texels=floor(drift_scroll*dims);"));
+    assert!(
+        warp.contains(
+            "letcell_texels=vec2<f32>(fluid_displayed_offset(cell,time,texels_per_pixel));"
+        )
+    );
+    // The wave is whole texels on the same fixed grid, beside drift and
+    // outside the displayed offset the flash guards measure.
+    assert!(warp.contains("letwave_texels=vec2<f32>(fluid_wave_offset(cell,time,wave));"));
+    assert!(warp.contains("return(texel_uv+drift_texels+wave_texels+cell_texels)/dims;"));
+    let displayed_body = code_only(wgsl_fn(FLUID_WGSL, "fluid_displayed_offset"));
+    assert!(!displayed_body.contains("wave"));
+    let wave = code_only(wgsl_fn(FLUID_WGSL, "fluid_wave_offset"));
+    assert!(wave.contains("->vec2<i32>{"));
+    let displayed = code_only(wgsl_fn(FLUID_WGSL, "fluid_displayed_offset"));
+    assert!(displayed.contains("->vec2<i32>{"));
+}
+
+/// The shader's warp: its whole-texel motion file (shimmer, rings, fade,
+/// drift scroll, wave and the warped UV), and the vertex stage that scrolls
+/// drift.
+fn fluid_warp_source() -> String {
+    let source = FLUID_WGSL;
+    let block = include_str!("../shaders/fluid_motion.wgsl");
+    assert!(block.contains("const FLUID_MOTION_STEP_HZ"), "motion block");
+    for warp_fn in [
+        "fn fluid_warp_uv(",
+        "fn fluid_displayed_offset(",
+        "fn fluid_shimmer_offset(",
+        "fn fluid_ring_offset(",
+        "fn fluid_faded_flat(",
+        "fn fluid_drift_scroll(",
+        "fn fluid_wave_offset(",
+    ] {
+        assert!(
+            block.contains(warp_fn),
+            "the motion block holds `{warp_fn}`"
+        );
+    }
+    format!("{block}{}", wgsl_fn(source, "vs_main"))
+}
+
+// Water motion is world animation, not view feel: no reduce-motion,
+// accessibility or author render-profile input reaches the warp. The Look
+// Decision makes reflection style the author's, so the render-profile scan
+// covers the warp alone; the style reaches only the reflection tail.
+#[test]
+fn fluid_warp_reads_no_reduce_motion_accessibility_or_render_profile_input() {
+    let warp = fluid_warp_source();
+    let sources = [
+        warp.as_str(),
+        include_str!("../../../render-cpu/src/fluid_surface/motion.rs"),
+        include_str!("../../../render-cpu/src/fluid_surface/drift.rs"),
+        include_str!("../../../postretro/src/fluid_presentation/drift.rs"),
+    ];
+    for source in sources {
+        let code = code_only(source).to_lowercase();
+        for forbidden in [
+            "reduce_motion",
+            "reducemotion",
+            "accessibility",
+            "render_profile",
+            "renderprofile",
+            "bloom",
+            "reflection_style",
+            "reflectionstyle",
+            "fluid_scene",
+        ] {
+            assert!(!code.contains(forbidden), "fluid warp reads `{forbidden}`");
+        }
+    }
+    // Nothing in the fluid shader reads reduce motion or accessibility.
+    let shader = code_only(FLUID_WGSL).to_lowercase();
+    for forbidden in ["reduce_motion", "reducemotion", "accessibility"] {
+        assert!(
+            !shader.contains(forbidden),
+            "fluid shader reads `{forbidden}`"
+        );
+    }
+    // The author's style is read once, by the reflection tail.
+    assert_eq!(shader.matches("fluid_scene.reflection_style").count(), 1);
+    let tail = fs_main_reflection_tail();
+    assert!(tail.contains("letstyle=fluid_scene.reflection_style;"));
+    assert!(tail.contains("fluid_reflection_point(style,"));
+}
+
+#[test]
+fn fluid_probe_index_rides_a_third_vertex_buffer_at_location_four_read_flat() {
+    use postretro_render_cpu::fluid_surface::FLUID_PROBE_INDEX_STRIDE;
+    assert_eq!(PROBE_INDEX_ATTRIBUTES.len(), 1);
+    assert_eq!(PROBE_INDEX_ATTRIBUTES[0].shader_location, 4);
+    assert_eq!(PROBE_INDEX_ATTRIBUTES[0].format, wgpu::VertexFormat::Uint32);
+    assert_eq!(FLUID_PROBE_INDEX_STRIDE, std::mem::size_of::<u32>());
+    let source = FLUID_WGSL;
+    let code = code_only(source);
+    assert!(code.contains("@location(4)probe:u32,"));
+    assert!(code.contains("@location(5)@interpolate(flat)probe:u32,"));
+    assert!(code_only(wgsl_fn(source, "vs_main")).contains("out.probe=in.probe;"));
+    // Written once at install and bound beside the drift buffer; nothing
+    // rewrites it.
+    let pass = include_str!("fluid_surface.rs");
+    assert!(
+        code_only(wgsl_fn(pass, "record_draws"))
+            .contains("pass.set_vertex_buffer(2,installed.probe_index_buffer.slice(..));")
+    );
+    assert!(!code_only(pass).contains("probe_index_buffer,0,"));
+    let probes = include_str!("fluid_reflection_probes.rs");
+    let create = code_only(wgsl_fn(probes, "create_probe_index_buffer"));
+    assert!(
+        create.contains("usage:wgpu::BufferUsages::VERTEX,"),
+        "{create}"
+    );
+    assert!(!create.contains("COPY_DST"));
+}
+
+#[test]
+fn fluid_drift_rides_a_second_vertex_buffer_at_location_three() {
+    use postretro_render_cpu::fluid_surface::FLUID_DRIFT_RATE_STRIDE;
+    assert_eq!(DRIFT_ATTRIBUTES.len(), 1);
+    assert_eq!(DRIFT_ATTRIBUTES[0].shader_location, 3);
+    assert_eq!(DRIFT_ATTRIBUTES[0].format, wgpu::VertexFormat::Float32x2);
+    assert_eq!(FLUID_DRIFT_RATE_STRIDE, std::mem::size_of::<[f32; 2]>());
+    let source = FLUID_WGSL;
+    assert!(code_only(source).contains("@location(3)drift_rate:vec2<f32>,"));
+}
+
+// Drift re-resolves at install, reload commit and fluid-table or tuning
+// refreshes. Some of those points assert an empty upload batch, and nothing
+// ever batch-writes the drift buffer, so a direct write is safe at every one.
+#[test]
+fn fluid_drift_writes_directly_so_every_re_resolve_point_stays_unbatched() {
+    let source = include_str!("fluid_surface.rs");
+    let body = code_only(wgsl_fn(source, "set_drift"));
+    assert!(
+        body.contains("queue.direct_write_buffer(&installed.drift_buffer,"),
+        "set_drift must write the drift buffer with direct_write_buffer"
+    );
+    assert!(
+        !body.contains("queue.write_buffer("),
+        "set_drift must not batch its write"
+    );
+    // The direct write asserts no pending batched write touches its target,
+    // which holds only while nothing batches the drift buffer elsewhere.
+    let code = code_only(source);
+    assert_eq!(code.matches("&installed.drift_buffer,0,").count(), 1);
+    assert!(!code.contains("queue.write_buffer(&installed.drift_buffer"));
+}
+
+// The drift scroll is the CPU mirror's `exact_fract_product` and
+// `drift_scroll_periods` in WGSL. A silent edit to either side would desync
+// the displayed scroll from the CPU reference, so the exact text is pinned.
+#[test]
+fn fluid_drift_scroll_wgsl_matches_the_cpu_mirror() {
+    let source = FLUID_WGSL;
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    assert_eq!(
+        function("fluid_high_half"),
+        "fnfluid_high_half(x:f32)->f32{returnbitcast<f32>(bitcast<u32>(x)&0xFFFFF000u);}"
+    );
+    assert_eq!(
+        function("fluid_exact_fract_product"),
+        "fnfluid_exact_fract_product(a:f32,b:f32)->f32{\
+         leta_hi=fluid_high_half(a);\
+         letb_hi=fluid_high_half(b);\
+         leta_lo=a-a_hi;\
+         letb_lo=b-b_hi;\
+         returnfract(fract(a_hi*b_hi)+fract(a_hi*b_lo)+fract(a_lo*b_hi)+fract(a_lo*b_lo));}"
+    );
+    assert_eq!(
+        function("fluid_drift_scroll"),
+        "fnfluid_drift_scroll(rate:vec2<f32>,time:f32)->vec2<f32>{\
+         letperiods=vec2<f32>(\
+         fluid_exact_fract_product(time,rate.x),\
+         fluid_exact_fract_product(time,rate.y),\
+         )+vec2<f32>(0.5);\
+         returnperiods-floor(periods)-vec2<f32>(0.5);}"
+    );
+    assert!(
+        function("vs_main")
+            .contains("out.drift_scroll=fluid_drift_scroll(in.drift_rate,uniforms.time);")
+    );
+
+    // Both sides keep the high 12 significant bits.
+    assert!(source.contains("0xFFFFF000u"));
+    let mirror = include_str!("../../../render-cpu/src/fluid_surface/motion.rs");
+    assert!(code_only(mirror).contains("x.to_bits()&0xFFFF_F000"));
+}
+
+// The hash, shimmer, ring and fade functions are the CPU reference's
+// `motion.rs` in WGSL. The constants alone cannot catch a changed shift amount
+// or direction table, so each body is pinned as exact comment-free text.
+#[test]
+fn fluid_motion_wgsl_bodies_match_the_cpu_reference() {
+    let source = FLUID_WGSL;
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    assert_eq!(
+        function("fluid_hash_u32"),
+        "fnfluid_hash_u32(value:u32)->u32{\
+         varx=value;\
+         x=x^(x>>16u);\
+         x=x*FLUID_HASH_MUL_A;\
+         x=x^(x>>15u);\
+         x=x*FLUID_HASH_MUL_B;\
+         x=x^(x>>16u);\
+         returnx;}"
+    );
+    assert_eq!(
+        function("fluid_hash3"),
+        "fnfluid_hash3(a:u32,b:u32,c:u32)->u32{\
+         returnfluid_hash_u32(a^fluid_hash_u32(b^fluid_hash_u32(c)));}"
+    );
+    assert_eq!(
+        function("fluid_hash_unit"),
+        "fnfluid_hash_unit(h:u32)->f32{returnf32(h>>8u)*(1.0/16777216.0);}"
+    );
+    assert_eq!(
+        function("fluid_cell_seed"),
+        "fnfluid_cell_seed(cell:vec2<i32>)->u32{\
+         returnfluid_hash3(bitcast<u32>(cell.x),bitcast<u32>(cell.y),FLUID_SALT_CELL);}"
+    );
+    assert_eq!(
+        function("fluid_floor_div"),
+        "fnfluid_floor_div(a:i32,b:i32)->i32{\
+         letq=a/b;\
+         returnselect(q,q-1,(a%b)!=0&&a<0);}"
+    );
+    assert_eq!(
+        function("fluid_cell_step"),
+        "fnfluid_cell_step(seed:u32,time:f32)->i32{\
+         returni32(floor(time*FLUID_MOTION_STEP_HZ+fluid_hash_unit(seed)));}"
+    );
+    assert_eq!(
+        function("fluid_shimmer_offset"),
+        "fnfluid_shimmer_offset(seed:u32,step:i32)->vec2<i32>{\
+         letposition=step&3;\
+         if(position&1)==0{returnvec2<i32>(0);}\
+         leth=fluid_hash_u32(seed^FLUID_SALT_SHIMMER);\
+         letdirection=(h>>8u)%9u;\
+         letd=vec2<i32>(i32(direction%3u)-1,i32(direction/3u)-1);\
+         returnselect(-d,d,position==1);}"
+    );
+    assert_eq!(
+        function("fluid_ring_offset"),
+        "fnfluid_ring_offset(cell:vec2<i32>,step:i32)->vec2<i32>{\
+         letblock_shift=u32(FLUID_RING_BLOCK_SHIFT);\
+         letblock=cell>>vec2<u32>(block_shift);\
+         letseed=fluid_hash3(bitcast<u32>(block.x),bitcast<u32>(block.y),FLUID_SALT_BLOCK);\
+         letshifted=step+i32(seed%u32(FLUID_RING_LIFETIME_STEPS));\
+         letepoch=fluid_floor_div(shifted,FLUID_RING_LIFETIME_STEPS);\
+         letage=shifted-epoch*FLUID_RING_LIFETIME_STEPS;\
+         ifage==0{returnvec2<i32>(0);}\
+         letposition=fluid_hash_u32(seed^fluid_hash_u32(bitcast<u32>(epoch)^FLUID_SALT_DROP));\
+         letspan=u32((1<<block_shift)-2*FLUID_RING_MARGIN);\
+         letcenter=(block<<vec2<u32>(block_shift))\
+         +vec2<i32>(FLUID_RING_MARGIN)\
+         +vec2<i32>(i32(position%span),i32((position>>16u)%span));\
+         letdiff=vec2<f32>(cell-center);\
+         letdistance_sq=dot(diff,diff);\
+         letradius=f32(age)*FLUID_RING_STEP_TEXELS;\
+         ifdistance_sq<=(radius-0.5)*(radius-0.5)||distance_sq>=(radius+0.5)*(radius+0.5){\
+         returnvec2<i32>(0);}\
+         returnvec2<i32>(floor(diff/sqrt(distance_sq)+0.5));}"
+    );
+    assert_eq!(
+        function("fluid_faded_flat"),
+        "fnfluid_faded_flat(seed:u32,texels_per_pixel:f32)->bool{\
+         letthreshold=FLUID_FADE_START_TEXELS_PER_PIXEL\
+         +(FLUID_FADE_END_TEXELS_PER_PIXEL-FLUID_FADE_START_TEXELS_PER_PIXEL)\
+         *fluid_hash_unit(fluid_hash_u32(seed^FLUID_SALT_FADE));\
+         returntexels_per_pixel>threshold;}"
+    );
+    assert_eq!(
+        function("fluid_displayed_offset"),
+        "fnfluid_displayed_offset(cell:vec2<i32>,time:f32,texels_per_pixel:f32)->vec2<i32>{\
+         letseed=fluid_cell_seed(cell);\
+         iffluid_faded_flat(seed,texels_per_pixel){returnvec2<i32>(0);}\
+         letstep=fluid_cell_step(seed,time);\
+         returnfluid_shimmer_offset(seed,step)+fluid_ring_offset(cell,step);}"
+    );
+    assert_eq!(
+        function("fluid_warp_uv"),
+        "fnfluid_warp_uv(uv:vec2<f32>,drift_scroll:vec2<f32>,dims:vec2<f32>,wave:vec4<f32>,\
+         time:f32,texels_per_pixel:f32)->vec2<f32>{\
+         lettexel_uv=uv*dims;\
+         letcell=vec2<i32>(floor(texel_uv));\
+         letdrift_texels=floor(drift_scroll*dims);\
+         letwave_texels=vec2<f32>(fluid_wave_offset(cell,time,wave));\
+         letcell_texels=vec2<f32>(fluid_displayed_offset(cell,time,texels_per_pixel));\
+         return(texel_uv+drift_texels+wave_texels+cell_texels)/dims;}"
+    );
+}
+
+// The other half of the pin above. The WGSL bodies are held to exact text, so
+// the CPU reference must be too: a change to a shift amount, the `% 9`
+// direction table or the ring band in `motion.rs` alone would leave the
+// property tests green while the shader and its reference disagree. Each
+// expected body is the CPU source as it stands, comment-free.
+#[test]
+fn fluid_motion_cpu_reference_bodies_are_pinned() {
+    let source = include_str!("../../../render-cpu/src/fluid_surface/motion.rs");
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    let pinned: [(&str, &str); 13] = [
+        (
+            "hash_u32",
+            "fnhash_u32(mutx:u32)->u32{\
+             x^=x>>16;\
+             x=x.wrapping_mul(FLUID_HASH_MUL_A);\
+             x^=x>>15;\
+             x=x.wrapping_mul(FLUID_HASH_MUL_B);\
+             x^=x>>16;\
+             x}",
+        ),
+        (
+            "hash3",
+            "fnhash3(a:u32,b:u32,c:u32)->u32{hash_u32(a^hash_u32(b^hash_u32(c)))}",
+        ),
+        (
+            "hash_unit",
+            "fnhash_unit(h:u32)->f32{(h>>8)asf32*(1.0/16_777_216.0)}",
+        ),
+        (
+            "cell_seed",
+            "fncell_seed(cell:IVec2)->u32{hash3(cell.xasu32,cell.yasu32,FLUID_SALT_CELL)}",
+        ),
+        (
+            "texel_cell",
+            "fntexel_cell(texel_uv:Vec2)->IVec2{texel_uv.floor().as_ivec2()}",
+        ),
+        (
+            "cell_step",
+            "fncell_step(cell:IVec2,time:f32)->i32{\
+             letphase=hash_unit(cell_seed(cell));\
+             (time*FLUID_MOTION_STEP_HZ+phase).floor()asi32}",
+        ),
+        (
+            "shimmer_offset",
+            "fnshimmer_offset(cell:IVec2,step:i32)->IVec2{\
+             letposition=step&3;\
+             ifposition&1==0{returnIVec2::ZERO;}\
+             leth=hash_u32(cell_seed(cell)^FLUID_SALT_SHIMMER);\
+             letdirection=(h>>8)%9;\
+             letd=IVec2::new((direction%3)asi32-1,(direction/3)asi32-1);\
+             ifposition==1{d}else{-d}}",
+        ),
+        (
+            "ring_offset",
+            "fnring_offset(cell:IVec2,step:i32)->IVec2{\
+             letblock=cell>>FLUID_RING_BLOCK_SHIFT;\
+             letseed=hash3(block.xasu32,block.yasu32,FLUID_SALT_BLOCK);\
+             letshifted=step+(seed%FLUID_RING_LIFETIME_STEPSasu32)asi32;\
+             letepoch=shifted.div_euclid(FLUID_RING_LIFETIME_STEPS);\
+             letage=shifted.rem_euclid(FLUID_RING_LIFETIME_STEPS);\
+             ifage==0{returnIVec2::ZERO;}\
+             letposition=hash_u32(seed^hash_u32(epochasu32^FLUID_SALT_DROP));\
+             letspan=((1<<FLUID_RING_BLOCK_SHIFT)-2*FLUID_RING_MARGIN)asu32;\
+             letcenter=(block<<FLUID_RING_BLOCK_SHIFT)\
+             +IVec2::splat(FLUID_RING_MARGIN)\
+             +IVec2::new((position%span)asi32,((position>>16)%span)asi32);\
+             letdiff=(cell-center).as_vec2();\
+             letdistance_sq=diff.length_squared();\
+             letradius=ageasf32*FLUID_RING_STEP_TEXELS;\
+             ifdistance_sq<=(radius-0.5)*(radius-0.5)\
+             ||distance_sq>=(radius+0.5)*(radius+0.5){returnIVec2::ZERO;}\
+             (diff/distance_sq.sqrt()+0.5).floor().as_ivec2()}",
+        ),
+        (
+            "faded_flat",
+            "fnfaded_flat(cell:IVec2,texels_per_pixel:f32)->bool{\
+             letthreshold=FLUID_FADE_START_TEXELS_PER_PIXEL\
+             +(FLUID_FADE_END_TEXELS_PER_PIXEL-FLUID_FADE_START_TEXELS_PER_PIXEL)\
+             *hash_unit(hash_u32(cell_seed(cell)^FLUID_SALT_FADE));\
+             texels_per_pixel>threshold}",
+        ),
+        (
+            "displayed_offset",
+            "fndisplayed_offset(cell:IVec2,time:f32,texels_per_pixel:f32)->IVec2{\
+             iffaded_flat(cell,texels_per_pixel){returnIVec2::ZERO;}\
+             letstep=cell_step(cell,time);\
+             shimmer_offset(cell,step)+ring_offset(cell,step)}",
+        ),
+        (
+            "high_half",
+            "fnhigh_half(x:f32)->f32{f32::from_bits(x.to_bits()&0xFFFF_F000)}",
+        ),
+        (
+            "exact_fract_product",
+            "fnexact_fract_product(a:f32,b:f32)->f32{\
+             let(a_hi,b_hi)=(high_half(a),high_half(b));\
+             let(a_lo,b_lo)=(a-a_hi,b-b_hi);\
+             letfract=|x:f32|x-x.floor();\
+             fract(fract(a_hi*b_hi)+fract(a_hi*b_lo)+fract(a_lo*b_hi)+fract(a_lo*b_lo))}",
+        ),
+        (
+            "drift_scroll_periods",
+            "fndrift_scroll_periods(rate:Vec2,time:f32)->Vec2{\
+             letwrap=|rate:f32|{\
+             letperiods=exact_fract_product(time,rate)+0.5;\
+             periods-periods.floor()-0.5};\
+             Vec2::new(wrap(rate.x),wrap(rate.y))}",
+        ),
+    ];
+    for (name, expected) in pinned {
+        assert_eq!(function(name), expected, "CPU `{name}` body drifted");
+    }
+}
+
+// The wave is the CPU twin's `exact_split_product`, `wave_crest`, `wave_arc`,
+// `wave_value` and `wave_offset` in WGSL, `if` branches as `select` and the
+// tuple as a struct. Both sides are pinned as exact comment-free text, so an
+// edit to either alone fails here while the property tests stay green.
+#[test]
+fn fluid_wave_wgsl_bodies_match_the_cpu_twin() {
+    let source = FLUID_WGSL;
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    let pinned: [(&str, &str); 5] = [
+        (
+            "fluid_exact_split_product",
+            "fnfluid_exact_split_product(a:f32,b:f32)->FluidSplit{\
+             leta_hi=fluid_high_half(a);letb_hi=fluid_high_half(b);\
+             leta_lo=a-a_hi;letb_lo=b-b_hi;letp0=a_hi*b_hi;\
+             letp1=a_hi*b_lo;letp2=a_lo*b_hi;letp3=a_lo*b_lo;\
+             letf0=floor(p0);letf1=floor(p1);letf2=floor(p2);\
+             letf3=floor(p3);letfraction=(p0-f0)+(p1-f1)+(p2-f2)+(p3-f3);\
+             letcarry=floor(fraction);letcount=i32(f0)+i32(f1)+i32(f2)+i32(f3)+i32(carry);\
+             returnFluidSplit(count,fraction-carry);}",
+        ),
+        (
+            "fluid_wave_crest",
+            "fnfluid_wave_crest(position:f32,phase:FluidSplit,wave:vec4<f32>,salt:u32)->vec2<f32>{\
+             letcount=phase.count&(2*FLUID_WAVE_PAIRS-1);\
+             letpairs=count>>1u;letparity=f32(count&1);\
+             letpair_length=wave.z+wave.w;\
+             letpair_position=position/pair_length-(parity+phase.fraction)*0.5;\
+             letwhole=floor(pair_position);letpair=(i32(whole)-pairs)&(FLUID_WAVE_PAIRS-1);\
+             letinto_pair=(pair_position-whole)*pair_length;\
+             letd=(2.0*fluid_hash_unit(fluid_hash_u32(bitcast<u32>(pair)^salt))-1.0)\
+             *(wave.w-wave.z)*0.5;\
+             letfirst=0.5*pair_length+d;\
+             returnselect(vec2<f32>(into_pair-first,pair_length-first),\
+             vec2<f32>(into_pair,first),into_pair<first);}",
+        ),
+        (
+            "fluid_wave_arc",
+            "fnfluid_wave_arc(crest:vec2<f32>)->f32{lethalf=0.5*crest.y;\
+             letsecond=crest.x>=half;letx=(crest.x-select(0.0,half,second))/half;\
+             letg=x*(1.0-x);leth=g*(FLUID_WAVE_ARC_LINEAR+FLUID_WAVE_ARC_QUADRATIC*g);\
+             returnselect(h,-h,second);}",
+        ),
+        (
+            // A real guard: an unwritten or no-wave row has zero lengths, and
+            // the crest divides by their sum.
+            "fluid_wave_value",
+            "fnfluid_wave_value(position:f32,phase:FluidSplit,wave:vec4<f32>,salt:u32)->f32{\
+             ifwave.y==0.0||wave.x==0.0{return0.0;}\
+             returnwave.y*fluid_wave_arc(fluid_wave_crest(position,phase,wave,salt));}",
+        ),
+        (
+            "fluid_wave_offset",
+            "fnfluid_wave_offset(cell:vec2<i32>,time:f32,wave:vec4<f32>)->vec2<i32>{\
+             letphase=fluid_exact_split_product(time,wave.x);\
+             letshift=vec2<f32>(\
+             fluid_wave_value(f32(cell.y)+0.5,phase,wave,FLUID_SALT_WAVE_U),\
+             fluid_wave_value(f32(cell.x)+0.5,phase,wave,FLUID_SALT_WAVE_V),);\
+             returnvec2<i32>(floor(shift+vec2<f32>(0.5)));}",
+        ),
+    ];
+    for (name, expected) in pinned {
+        assert_eq!(function(name), expected, "WGSL `{name}` body drifted");
+    }
+    // `round` is half-to-even in WGSL; the twin rounds half up.
+    assert!(!code_only(source).contains("round("));
+}
+
+#[test]
+fn fluid_wave_cpu_twin_bodies_are_pinned() {
+    let source = include_str!("../../../render-cpu/src/fluid_surface/motion.rs");
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    let pinned: [(&str, &str); 7] = [
+        (
+            "exact_split_product",
+            "fnexact_split_product(a:f32,b:f32)->(i32,f32){\
+             let(a_hi,b_hi)=(high_half(a),high_half(b));\
+             let(a_lo,b_lo)=(a-a_hi,b-b_hi);\
+             let(p0,p1,p2,p3)=(a_hi*b_hi,a_hi*b_lo,a_lo*b_hi,a_lo*b_lo);\
+             let(f0,f1,f2,f3)=(p0.floor(),p1.floor(),p2.floor(),p3.floor());\
+             letfraction=(p0-f0)+(p1-f1)+(p2-f2)+(p3-f3);\
+             letcarry=fraction.floor();\
+             letcount=f0asi32+f1asi32+f2asi32+f3asi32+carryasi32;\
+             (count,fraction-carry)}",
+        ),
+        (
+            "wave_crest",
+            "fnwave_crest(position:f32,phase:(i32,f32),wave:FluidWaveParams,salt:u32)->Vec2{\
+             let(count,fraction)=phase;\
+             letcount=count&(2*FLUID_WAVE_PAIRS-1);letpairs=count>>1;\
+             letparity=(count&1)asf32;letpair_length=wave.length_min+wave.length_max;\
+             letpair_position=position/pair_length-(parity+fraction)*0.5;\
+             letwhole=pair_position.floor();letpair=(wholeasi32-pairs)&(FLUID_WAVE_PAIRS-1);\
+             letinto_pair=(pair_position-whole)*pair_length;\
+             letd=(2.0*hash_unit(hash_u32(pairasu32^salt))-1.0)\
+             *(wave.length_max-wave.length_min)*0.5;\
+             letfirst=0.5*pair_length+d;\
+             ifinto_pair<first{Vec2::new(into_pair,first)}\
+             else{Vec2::new(into_pair-first,pair_length-first)}}",
+        ),
+        (
+            "wave_arc",
+            "fnwave_arc(crest:Vec2)->f32{lethalf=0.5*crest.y;\
+             letsecond=crest.x>=half;\
+             letx=(crest.x-ifsecond{half}else{0.0})/half;\
+             letg=x*(1.0-x);leth=g*(FLUID_WAVE_ARC_LINEAR+FLUID_WAVE_ARC_QUADRATIC*g);\
+             ifsecond{-h}else{h}}",
+        ),
+        (
+            "wave_value",
+            "fnwave_value(position:f32,phase:(i32,f32),wave:FluidWaveParams,salt:u32)->f32{\
+             ifwave.amplitude==0.0||wave.inv_period==0.0{return0.0;}\
+             wave.amplitude*wave_arc(wave_crest(position,phase,wave,salt))}",
+        ),
+        (
+            "wave_offset",
+            "fnwave_offset(cell:IVec2,time:f32,wave:FluidWaveParams)->IVec2{\
+             letphase=exact_split_product(time,wave.inv_period);\
+             letshift=Vec2::new(\
+             wave_value(cell.yasf32+0.5,phase,wave,FLUID_SALT_WAVE_U),\
+             wave_value(cell.xasf32+0.5,phase,wave,FLUID_SALT_WAVE_V),);\
+             (shift+0.5).floor().as_ivec2()}",
+        ),
+        (
+            // `fluid_warp_uv` inlines this as `floor(drift_scroll * dims)`.
+            "drift_texels",
+            "fndrift_texels(rate:Vec2,time:f32,dims:Vec2)->Vec2{\
+             (drift_scroll_periods(rate,time)*dims).floor()}",
+        ),
+        (
+            "warped_texel_uv",
+            "fnwarped_texel_uv(texel_uv:Vec2,drift_rate:Vec2,dims:Vec2,wave:FluidWaveParams,\
+             time:f32,texels_per_pixel:f32,)->Vec2{\
+             letcell=texel_cell(texel_uv);\
+             texel_uv+drift_texels(drift_rate,time,dims)\
+             +wave_offset(cell,time,wave).as_vec2()\
+             +displayed_offset(cell,time,texels_per_pixel).as_vec2()}",
+        ),
+    ];
+    for (name, expected) in pinned {
+        assert_eq!(function(name), expected, "CPU `{name}` body drifted");
+    }
+}
+
+#[test]
+fn fluid_fog_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::fog as f;
+    assert_eq!(shader_f32("FLUID_FOG_BAND"), f::FLUID_FOG_BAND);
+    assert_eq!(shader_f32("FLUID_FOG_PATH_MAX"), f::FLUID_FOG_PATH_MAX);
+    assert_eq!(
+        shader_f32("FLUID_FOG_DENOM_EPSILON"),
+        f::FLUID_FOG_DENOM_EPSILON
+    );
+    assert_eq!(
+        shader_f32("FLUID_FOG_ALPHA_EPSILON"),
+        f::FLUID_FOG_ALPHA_EPSILON
+    );
+}
+
+// The fog path solve, transmittance, proximity, outside gate, layer opacity
+// and composite are the CPU fog reference in WGSL, pinned on both sides.
+#[test]
+fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = FLUID_WGSL;
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/fog.rs");
+    let pinned: [(&str, &str, &str, &str); 6] = [
+        (
+            "fluid_fog_path",
+            "fnfluid_fog_path(view_proj:mat4x4<f32>,camera:vec3<f32>,frag:vec3<f32>,depth:f32)\
+             ->f32{\
+             letc0=view_proj*vec4<f32>(camera,1.0);letc1=view_proj*vec4<f32>(frag,1.0);\
+             letdenom=(c1.z-c0.z)-depth*(c1.w-c0.w);\
+             lets=select(FLUID_FOG_PATH_MAX,(depth*c0.w-c0.z)/denom,\
+             abs(denom)>FLUID_FOG_DENOM_EPSILON);\
+             returnclamp(s-1.0,0.0,FLUID_FOG_PATH_MAX)*length(frag-camera);}",
+            "fog_path",
+            "fnfog_path(view_proj:Mat4,camera:Vec3,frag:Vec3,depth:f32)->f32{\
+             letc0=view_proj*camera.extend(1.0);letc1=view_proj*frag.extend(1.0);\
+             letdenom=(c1.z-c0.z)-depth*(c1.w-c0.w);\
+             lets=ifdenom.abs()>FLUID_FOG_DENOM_EPSILON{(depth*c0.w-c0.z)/denom}\
+             else{FLUID_FOG_PATH_MAX};\
+             (s-1.0).clamp(0.0,FLUID_FOG_PATH_MAX)*(frag-camera).length()}",
+        ),
+        (
+            "fluid_fog_transmittance",
+            "fnfluid_fog_transmittance(extinction:f32,path:f32)->f32{\
+             returnexp(-extinction*path);}",
+            "fog_transmittance",
+            "fnfog_transmittance(extinction:f32,path:f32)->f32{(-extinction*path).exp()}",
+        ),
+        (
+            "fluid_fog_proximity",
+            "fnfluid_fog_proximity(camera:vec3<f32>,frag:vec3<f32>,outward:vec3<f32>)->f32{\
+             returnclamp(dot(camera-frag,outward)/FLUID_FOG_BAND,0.0,1.0);}",
+            "fog_proximity",
+            "fnfog_proximity(camera:Vec3,frag:Vec3,outward:Vec3)->f32{\
+             ((camera-frag).dot(outward)/FLUID_FOG_BAND).clamp(0.0,1.0)}",
+        ),
+        (
+            "fluid_fog_seen_from_outside",
+            "fnfluid_fog_seen_from_outside(outward:vec3<f32>,view:vec3<f32>)->bool{\
+             returndot(outward,view)>0.0;}",
+            "fog_seen_from_outside",
+            "fnfog_seen_from_outside(outward:Vec3,view:Vec3)->bool{outward.dot(view)>0.0}",
+        ),
+        (
+            "fluid_fog_layer_opacity",
+            "fnfluid_fog_layer_opacity(weight:f32,proximity:f32,transmittance:f32)->f32{\
+             returnweight*proximity*(1.0-transmittance);}",
+            "fog_layer_opacity",
+            "fnfog_layer_opacity(weight:f32,proximity:f32,transmittance:f32)->f32{\
+             weight*proximity*(1.0-transmittance)}",
+        ),
+        (
+            "fluid_fog_composite",
+            "fnfluid_fog_composite(rgb:vec3<f32>,alpha:f32,fog_rgb:vec3<f32>,fog_opacity:f32)\
+             ->vec4<f32>{\
+             lettotal=1.0-(1.0-alpha)*(1.0-fog_opacity);\
+             letout=(rgb*alpha+fog_rgb*((1.0-alpha)*fog_opacity))\
+             /max(total,FLUID_FOG_ALPHA_EPSILON);\
+             returnvec4<f32>(out,total);}",
+            "fog_composite",
+            "fnfog_composite(rgb:Vec3,alpha:f32,fog_rgb:Vec3,fog_opacity:f32)->Vec4{\
+             lettotal=1.0-(1.0-alpha)*(1.0-fog_opacity);\
+             letout=(rgb*alpha+fog_rgb*((1.0-alpha)*fog_opacity))\
+             /total.max(FLUID_FOG_ALPHA_EPSILON);\
+             out.extend(total)}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+}
+
+// `fluid_shade`'s tail is the CPU references' `fog_fragment`, and
+// `fs_main_reflecting`'s is `reflection_fragment`: no fog or an inside view
+// keeps the surface; otherwise one depth load, then path, transmittance,
+// proximity, layer and composite. The reflection gate then returns that
+// unchanged, or wraps it in the probe's union composite, for the fog branch
+// and the clear path alike, at Fresnel times the search's weight times the
+// eye's band (the fog's own proximity). The fog part is pinned in order in
+// `fluid_shade`, its hand-off exactly; the reflecting entry point, whole, is
+// pinned exactly. The outside gate, the proximity, the band and the
+// reflection read the interpolated outward normal, never the viewer-flipped
+// shading normal `n`, which always faces the camera.
+#[test]
+fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the_composite() {
+    let shade = code_only(wgsl_fn(FLUID_WGSL, "fluid_shade"));
+    let reflecting = code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"));
+    let fragment = format!("{shade}{reflecting}");
+    let tail = [
+        "letoutward=normalize(in.world_normal);",
+        "varn=outward;",
+        "letalpha=albedo.a*opacity;",
+        "varsurface=vec4<f32>(rgb,alpha);",
+        "letextinction=row.surface.y;",
+        "ifextinction>0.0&&fluid_fog_seen_from_outside(outward,V){",
+        "letdepth=textureLoad(scene_depth,vec2<i32>(in.clip_position.xy),0);",
+        "letpath=fluid_fog_path(uniforms.view_proj,uniforms.camera_position,in.world_position,\
+         depth);",
+        "lettransmittance=fluid_fog_transmittance(extinction,path);",
+        "letproximity=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);",
+        "letfog_opacity=fluid_fog_layer_opacity(fluid_scene.fog_weight,proximity,transmittance);",
+        "surface=fluid_fog_composite(rgb,alpha,row.fog_albedo.rgb*lighting,fog_opacity);}",
+    ];
+    let mut at = 0;
+    for line in tail {
+        let found = shade[at..]
+            .find(line)
+            .unwrap_or_else(|| panic!("fluid_shade must contain, in order: {line}\n{shade}"));
+        at += found + line.len();
+    }
+    assert_eq!(
+        &shade[at..],
+        "returnFluidShaded(surface,outward,V,ddx*dims,ddy*dims,dims,texels_per_pixel,\
+         row.surface.z);}",
+        "fluid_shade ends by handing the reflection tail its inputs"
+    );
+    assert_eq!(
+        reflecting,
+        "fnfs_main_reflecting(in:VertexOutput)->@location(0)vec4<f32>{\
+         letddx_world=dpdx(in.world_position);\
+         letddy_world=dpdy(in.world_position);\
+         letshaded=fluid_shade(in);\
+         letsurface=shaded.surface;\
+         letoutward=shaded.outward;\
+         letV=shaded.view_dir;\
+         letdims=shaded.dims;\
+         lettexels_per_pixel=shaded.texels_per_pixel;\
+         letreflectivity=shaded.reflectivity;\
+         if!fluid_reflection_gate(in.probe,outward,V,uniforms.light_term_mask,reflectivity){\
+         returnsurface;}\
+         letaxes=fluid_reflection_texel_axes(shaded.uv_dx_texels,shaded.uv_dy_texels,\
+         ddx_world,ddy_world);\
+         letstyle=fluid_scene.reflection_style;\
+         letpoint=fluid_reflection_point(style,in.uv*dims,\
+         in.world_position,outward,axes,uniforms.time,texels_per_pixel,\
+         fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
+         fluid_probes.probes[in.probe].capture_point);\
+         letview=normalize(uniforms.camera_position-point.position);\
+         letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);\
+         letband=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);\
+         letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity)*band;\
+         letscreen=fluid_reflection_screen_layer(style,in.clip_position.xy,in.uv*dims,\
+         in.world_position,axes);\
+         returnfluid_reflection_layered_composite(surface,reflection.capture,reflection.weight,\
+         screen,fresnel);}",
+        "the reflecting entry point"
+    );
+    for flipped in [
+        "fluid_fog_seen_from_outside(n,",
+        "in.world_position,n)",
+        "normalize(n)",
+        "fluid_reflection_gate(in.probe,n,",
+        ",V,n)",
+        "dot(V,n)",
+    ] {
+        assert!(!fragment.contains(flipped), "fog reads `{flipped}`");
+    }
+
+    let cpu = code_only(wgsl_fn(
+        include_str!("../../../render-cpu/src/fluid_surface/fog.rs"),
+        "fog_fragment",
+    ));
+    assert_eq!(
+        cpu,
+        "fnfog_fragment(rgb:Vec3,alpha:f32,fragment:&FluidFogFragment)->Vec4{\
+         letview=(fragment.camera-fragment.world_position).normalize_or_zero();\
+         letoutward=fragment.outward.normalize();\
+         if!(fragment.extinction>0.0&&fog_seen_from_outside(outward,view)){\
+         returnrgb.extend(alpha);}\
+         letpath=fog_path(fragment.view_proj,fragment.camera,fragment.world_position,\
+         fragment.scene_depth,);\
+         lettransmittance=fog_transmittance(fragment.extinction,path);\
+         letproximity=fog_proximity(fragment.camera,fragment.world_position,outward);\
+         letfog_opacity=fog_layer_opacity(fragment.weight,proximity,transmittance);\
+         fog_composite(rgb,alpha,fragment.fog_albedo*fragment.lighting,fog_opacity,)}"
+    );
+}
+
+// The renderer installs exactly the section render-cpu deems usable, mapped
+// to a texture format, and the draw predicate's bound face reads that same
+// answer: a section with a bad payload length, tile format, tile header or
+// probe layer is dropped whole by both, so no fluid draws for a probe that
+// is not installed.
+#[test]
+fn the_install_filter_and_the_bound_face_predicate_agree() {
+    use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
+        ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+        reflection_probe_zero_distances,
+    };
+    use postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face;
+    let section = |atlas_format: u32, dimension: u32, tile_bytes: usize| ReflectionProbesSection {
+        tile_dimension: dimension,
+        tile_border: 1,
+        atlas_format,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 0,
+            box_min: [-1.0; 3],
+            box_max: [1.0; 3],
+            capture_point: [0.0, 0.002, 0.0],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: vec![0; tile_bytes],
+        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: reflection_probe_zero_distances(1, dimension),
+    };
+    let bc6h = section(IRRADIANCE_FORMAT_BC6H, 8, 4 * 16);
+    let mut long_distances = bc6h.clone();
+    long_distances.distances.extend([0, 0]);
+    let wide_border = ReflectionProbesSection {
+        tile_border: 2,
+        ..bc6h.clone()
+    };
+    let mut layer_past = bc6h.clone();
+    layer_past.probes[0].layer = 1;
+    let cases = [
+        ("BC6H", bc6h, true),
+        (
+            "RGBA16F",
+            section(IRRADIANCE_FORMAT_RGBA16F, 8, 8 * 8 * 8),
+            true,
+        ),
+        (
+            "RGBA16F tile of partial 4×4 blocks",
+            section(IRRADIANCE_FORMAT_RGBA16F, 6, 6 * 6 * 8),
+            false,
+        ),
+        (
+            "colour payload a byte short",
+            section(IRRADIANCE_FORMAT_BC6H, 8, 4 * 16 - 1),
+            false,
+        ),
+        ("distance payload a texel long", long_distances, false),
+        (
+            "BC6H tile of partial 4×4 blocks",
+            section(IRRADIANCE_FORMAT_BC6H, 6, 16),
+            false,
+        ),
+        ("unknown colour format", section(0xBAD, 8, 4 * 16), false),
+        (
+            "tile dimension 0",
+            section(IRRADIANCE_FORMAT_RGBA16F, 0, 0),
+            false,
+        ),
+        ("tile border 2", wide_border, false),
+        ("probe layer past the probe count", layer_past, false),
+    ];
+    for (what, section, usable) in &cases {
+        assert_eq!(
+            installable_probe_section(Some(section)).is_some(),
+            *usable,
+            "{what}"
+        );
+        assert_eq!(volume_has_bound_face(Some(section), 0), *usable, "{what}");
+    }
+}
+
+#[test]
+fn fluid_reflection_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::reflection as r;
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_BASE_F0"),
+        r::FLUID_REFLECTION_BASE_F0
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_NO_PROBE"),
+        r::FLUID_REFLECTION_NO_PROBE
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_ALL_TERMS"),
+        postretro_render_cpu::frame_uniforms::LightTermMask::ALL.bits()
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_ALL_TERMS"),
+        r::FLUID_REFLECTION_ALL_TERMS
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_DIRECTION_EPSILON"),
+        r::FLUID_REFLECTION_DIRECTION_EPSILON
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_COVERAGE_EPSILON"),
+        r::FLUID_REFLECTION_COVERAGE_EPSILON
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_REFERENCE_FLOOR"),
+        r::FLUID_REFLECTION_REFERENCE_FLOOR
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_UNORM10_MAX"),
+        r::FLUID_REFLECTION_UNORM10_MAX
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_RAY_MIN_Y"),
+        r::FLUID_REFLECTION_RAY_MIN_Y
+    );
+    // The distance search's K, M, capture-shadow fade and epsilon.
+    {
+        use postretro_render_cpu::fluid_surface::reflection_search as s;
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_SEARCH_STEPS"),
+            s::FLUID_REFLECTION_SEARCH_STEPS
+        );
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_SEARCH_REFINEMENTS"),
+            s::FLUID_REFLECTION_SEARCH_REFINEMENTS
+        );
+        assert_eq!(
+            shader_f32("FLUID_REFLECTION_SHADOW_FADE_TEXELS"),
+            s::FLUID_REFLECTION_SHADOW_FADE_TEXELS
+        );
+        assert_eq!(
+            shader_f32("FLUID_REFLECTION_SHADOW_GATE_START"),
+            s::FLUID_REFLECTION_SHADOW_GATE_START
+        );
+        assert_eq!(
+            shader_f32("FLUID_REFLECTION_SHADOW_GATE_FULL"),
+            s::FLUID_REFLECTION_SHADOW_GATE_FULL
+        );
+        assert_eq!(
+            shader_f32("FLUID_REFLECTION_SHADOW_MARGIN"),
+            s::FLUID_REFLECTION_SHADOW_MARGIN
+        );
+        assert_eq!(
+            shader_f32("FLUID_REFLECTION_HALF_TURN"),
+            s::FLUID_REFLECTION_HALF_TURN
+        );
+        assert_eq!(
+            shader_f32("FLUID_REFLECTION_SEARCH_EPSILON"),
+            s::FLUID_REFLECTION_SEARCH_EPSILON
+        );
+    }
+    {
+        use postretro_level_format::reflection_probes::{
+            REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT,
+            REFLECTION_PROBE_NO_LIGHT,
+        };
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_NO_LIGHT"),
+            REFLECTION_PROBE_NO_LIGHT
+        );
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_LIGHTS_PER_PROBE") as usize,
+            REFLECTION_PROBE_LIGHTS_PER_PROBE
+        );
+        // The lobe blend's `array<f32, 5>` and the entry's two `vec4<u32>` of
+        // shares are the format's lobe count.
+        assert_eq!(REFLECTION_PROBE_LOBE_COUNT, 5);
+        assert_eq!(r::FLUID_PROBE_SHARE_WORDS, 8);
+    }
+}
+
+// The mask, underside and probe gates, the mirror and its upper-hemisphere
+// floor (a ray clear of it unchanged), the slab test (a slab exited at or
+// behind the origin skipped), the lookup's horizon clamp, the tile UV,
+// Fresnel and the layered composite (the screen-space layer over the probe
+// term, s scaling the probe's share alone) are the CPU reflection reference
+// in WGSL, pinned on both sides. The sample chain is the reference's
+// `reflection_fragment` body, whose tail is `fs_main_reflecting`'s: F
+// unshadowed, s and the screen sample into the layered composite; the style's
+// point held to the face's probe box, the ray floored above the horizon, the
+// layer read from the probe table by the face's probe index, and the tile
+// sampled at level 0 through the SH atlas sampler.
+#[test]
+fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = FLUID_WGSL;
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
+    let pinned: [(&str, &str, &str, &str); 10] = [
+        (
+            "fluid_reflection_mask_on",
+            "fnfluid_reflection_mask_on(mask:u32)->bool{\
+             return(mask&FLUID_REFLECTION_ALL_TERMS)==FLUID_REFLECTION_ALL_TERMS;}",
+            "reflection_mask_on",
+            "fnreflection_mask_on(mask:u32)->bool{\
+             (mask&FLUID_REFLECTION_ALL_TERMS)==FLUID_REFLECTION_ALL_TERMS}",
+        ),
+        (
+            "fluid_reflection_seen_from_above",
+            "fnfluid_reflection_seen_from_above(outward:vec3<f32>,view:vec3<f32>)->bool{\
+             returndot(outward,view)>0.0;}",
+            "reflection_seen_from_above",
+            "fnreflection_seen_from_above(outward:Vec3,view:Vec3)->bool{outward.dot(view)>0.0}",
+        ),
+        (
+            "fluid_reflection_gate",
+            "fnfluid_reflection_gate(probe:u32,outward:vec3<f32>,view:vec3<f32>,mask:u32,\
+             reflectivity:f32)->bool{\
+             returnprobe!=FLUID_REFLECTION_NO_PROBE&&reflectivity>0.0\
+             &&fluid_reflection_seen_from_above(outward,view)&&fluid_reflection_mask_on(mask);}",
+            "reflection_gate",
+            "fnreflection_gate(probe:u32,outward:Vec3,view:Vec3,mask:u32,reflectivity:f32,)->bool{\
+             probe!=FLUID_REFLECTION_NO_PROBE&&reflectivity>0.0\
+             &&reflection_seen_from_above(outward,view)&&reflection_mask_on(mask)}",
+        ),
+        (
+            "fluid_reflection_mirror",
+            "fnfluid_reflection_mirror(view:vec3<f32>,outward:vec3<f32>)->vec3<f32>{\
+             returnoutward*(2.0*dot(view,outward))-view;}",
+            "reflection_mirror",
+            "fnreflection_mirror(view:Vec3,outward:Vec3)->Vec3{outward*(2.0*view.dot(outward))-view}",
+        ),
+        (
+            "fluid_reflection_above_horizon",
+            "fnfluid_reflection_above_horizon(ray:vec3<f32>)->vec3<f32>{\
+             ifray.y>=FLUID_REFLECTION_RAY_MIN_Y{returnray;}\
+             returnnormalize(vec3<f32>(ray.x,FLUID_REFLECTION_RAY_MIN_Y,ray.z));}",
+            "reflection_above_horizon",
+            "fnreflection_above_horizon(ray:Vec3)->Vec3{\
+             ifray.y>=FLUID_REFLECTION_RAY_MIN_Y{returnray;}\
+             Vec3::new(ray.x,FLUID_REFLECTION_RAY_MIN_Y,ray.z).normalize()}",
+        ),
+        (
+            "fluid_reflection_box_hit",
+            "fnfluid_reflection_box_hit(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
+             box_max:vec3<f32>)->vec3<f32>{\
+             letnudged=select(vec3<f32>(FLUID_REFLECTION_DIRECTION_EPSILON),\
+             vec3<f32>(-FLUID_REFLECTION_DIRECTION_EPSILON),ray<vec3<f32>(0.0));\
+             letsafe=select(ray,nudged,abs(ray)<vec3<f32>(FLUID_REFLECTION_DIRECTION_EPSILON));\
+             lett0=(box_min-origin)/safe;lett1=(box_max-origin)/safe;\
+             letfar=max(t0,t1);\
+             letlead=max(far.x,max(far.y,far.z));\
+             letahead=select(vec3<f32>(lead),far,far>vec3<f32>(0.0));\
+             lett=max(min(ahead.x,min(ahead.y,ahead.z)),0.0);\
+             returnorigin+ray*t;}",
+            "reflection_box_hit",
+            "fnreflection_box_hit(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3)->Vec3{\
+             letnudged=Vec3::select(ray.cmplt(Vec3::ZERO),\
+             Vec3::splat(-FLUID_REFLECTION_DIRECTION_EPSILON),\
+             Vec3::splat(FLUID_REFLECTION_DIRECTION_EPSILON),);\
+             letsafe=Vec3::select(ray.abs().cmplt(Vec3::splat(FLUID_REFLECTION_DIRECTION_EPSILON)),\
+             nudged,ray,);\
+             lett0=(box_min-origin)/safe;lett1=(box_max-origin)/safe;\
+             letfar=t0.max(t1);\
+             letlead=far.x.max(far.y.max(far.z));\
+             letahead=Vec3::select(far.cmpgt(Vec3::ZERO),far,Vec3::splat(lead));\
+             lett=ahead.x.min(ahead.y.min(ahead.z)).max(0.0);\
+             origin+ray*t}",
+        ),
+        (
+            "fluid_reflection_lookup",
+            "fnfluid_reflection_lookup(hit:vec3<f32>,capture_point:vec3<f32>,ray:vec3<f32>)\
+             ->vec3<f32>{\
+             lettoward=hit-capture_point;\
+             letlevel=vec3<f32>(toward.x,max(toward.y,0.0),toward.z);\
+             returnselect(level,vec3<f32>(ray.x,max(ray.y,0.0),ray.z),\
+             dot(level,level)<FLUID_REFLECTION_DIRECTION_EPSILON);}",
+            "reflection_lookup",
+            "fnreflection_lookup(hit:Vec3,capture_point:Vec3,ray:Vec3)->Vec3{\
+             lettoward=hit-capture_point;\
+             letlevel=Vec3::new(toward.x,toward.y.max(0.0),toward.z);\
+             iflevel.dot(level)<FLUID_REFLECTION_DIRECTION_EPSILON{\
+             Vec3::new(ray.x,ray.y.max(0.0),ray.z)}else{level}}",
+        ),
+        (
+            "fluid_reflection_tile_uv",
+            "fnfluid_reflection_tile_uv(direction:vec3<f32>,tile_dimension:u32,tile_border:u32)\
+             ->vec2<f32>{\
+             letdimension=f32(tile_dimension);letborder=f32(tile_border);\
+             letinterior=dimension-2.0*border;\
+             return(vec2<f32>(border)+oct_encode_unquantized(direction)*interior)/dimension;}",
+            "reflection_tile_uv",
+            "fnreflection_tile_uv(direction:Vec3,tile_dimension:u32,tile_border:u32)->Vec2{\
+             letdimension=tile_dimensionasf32;letborder=tile_borderasf32;\
+             letinterior=dimension-2.0*border;\
+             letoct=Vec2::from(encode_unquantized_uv(direction.x,direction.y,direction.z));\
+             (Vec2::splat(border)+oct*interior)/dimension}",
+        ),
+        (
+            "fluid_reflection_fresnel",
+            "fnfluid_reflection_fresnel(cos_theta:f32,reflectivity:f32)->f32{\
+             letf0=min(FLUID_REFLECTION_BASE_F0*reflectivity,1.0);\
+             letm=1.0-clamp(cos_theta,0.0,1.0);letm2=m*m;\
+             returnf0+(1.0-f0)*(m2*m2*m);}",
+            "reflection_fresnel",
+            "fnreflection_fresnel(cos_theta:f32,reflectivity:f32)->f32{\
+             letf0=(FLUID_REFLECTION_BASE_F0*reflectivity).min(1.0);\
+             letm=1.0-cos_theta.clamp(0.0,1.0);letm2=m*m;\
+             f0+(1.0-f0)*(m2*m2*m)}",
+        ),
+        (
+            "fluid_reflection_layered_composite",
+            "fnfluid_reflection_layered_composite(surface:vec4<f32>,probe:vec3<f32>,shadow:f32,\
+             screen:vec4<f32>,fresnel:f32)->vec4<f32>{\
+             letconfidence=screen.a;\
+             letprobe_share=(1.0-confidence)*shadow;\
+             letreflected=fresnel*(screen.rgb+probe*probe_share);\
+             letweight=fresnel*(confidence+probe_share);\
+             letcoverage=weight+(1.0-weight)*surface.a;\
+             letrgb=(reflected+surface.rgb*((1.0-weight)*surface.a))\
+             /max(coverage,FLUID_REFLECTION_COVERAGE_EPSILON);\
+             returnvec4<f32>(rgb,coverage);}",
+            "reflection_layered_composite",
+            "fnreflection_layered_composite(surface:Vec4,probe:Vec3,shadow:f32,screen:Vec4,\
+             fresnel:f32,)->Vec4{\
+             letconfidence=screen.w;\
+             letprobe_share=(1.0-confidence)*shadow;\
+             letreflected=fresnel*(screen.truncate()+probe*probe_share);\
+             letweight=fresnel*(confidence+probe_share);\
+             letcoverage=weight+(1.0-weight)*surface.w;\
+             letrgb=(reflected+surface.truncate()*((1.0-weight)*surface.w))\
+             /coverage.max(FLUID_REFLECTION_COVERAGE_EPSILON);\
+             rgb.extend(coverage)}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+
+    // The sample chain: the ray floored above the horizon, then the search
+    // runs first and ends, then one colour tap and the ratio read its lookup;
+    // the search's weight rides out beside the capture for `fs_main_reflecting`
+    // to scale Fresnel by, with the eye's band.
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_sample")),
+        "fnfluid_reflection_sample(probe:u32,world_position:vec3<f32>,view:vec3<f32>,\
+         outward:vec3<f32>)->FluidReflectionSample{\
+         letray=fluid_reflection_above_horizon(fluid_reflection_mirror(view,outward));\
+         letlayer=fluid_probes.probes[probe].layer;\
+         letsearch=fluid_reflection_search(world_position,ray,fluid_probes.probes[probe].box_min,\
+         fluid_probes.probes[probe].box_max,fluid_probes.probes[probe].capture_point,\
+         fluid_probes.tile.xy,layer);\
+         letuv=fluid_reflection_tile_uv(search.lookup,fluid_probes.tile.x,fluid_probes.tile.y);\
+         letcapture=textureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0).rgb;\
+         returnFluidReflectionSample(capture*fluid_reflection_ratio(probe,search.lookup),\
+         search.weight);}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_fragment")),
+        "fnreflection_fragment(surface:Vec4,screen:Vec4,fragment:&FluidReflectionFragment,\
+         probes:&[ReflectionProbeRecord],tile:[u32;2],lights:&FluidReflectionLights<'_>,\
+         sample:implFn(u32,Vec2)->Vec3,distance:implFn(u32,Vec2)->f32,)->Vec4{\
+         letview=(fragment.camera-fragment.world_position).normalize_or_zero();\
+         letoutward=fragment.outward.normalize();\
+         if!reflection_gate(fragment.probe,outward,view,fragment.light_term_mask,\
+         fragment.reflectivity,){returnsurface;}\
+         letprobe=&probes[fragment.probeasusize];\
+         letpoint=reflection_point(fragment.style,fragment.texel_uv,fragment.world_position,\
+         outward,fragment.axes,fragment.time,fragment.texels_per_pixel,\
+         Vec3::from(probe.box_min),Vec3::from(probe.box_max),Vec3::from(probe.capture_point),);\
+         letview=(fragment.camera-point.position).normalize_or_zero();\
+         letray=reflection_above_horizon(reflection_mirror(view,point.normal));\
+         letsearch=reflection_search(point.position,ray,Vec3::from(probe.box_min),\
+         Vec3::from(probe.box_max),Vec3::from(probe.capture_point),tile,\
+         |uv|distance(probe.layer,uv),);\
+         letcapture=sample(probe.layer,reflection_tile_uv(search.lookup,tile[0],tile[1]),)\
+         *reflection_ratio(&FluidProbeGpu::pack(probe).lights,search.lookup,lights);\
+         letband=fog_proximity(fragment.camera,fragment.world_position,outward);\
+         letfresnel=reflection_fresnel(view.dot(outward),fragment.reflectivity)*band;\
+         reflection_layered_composite(surface,capture,search.weight,screen,fresnel)}"
+    );
+}
+
+// The distance search is the CPU `reflection_search` reference in WGSL,
+// pinned on both sides: h, the capture-shadow fade (its angle from the tile,
+// the turned tap, each side's gated edge, the fade), then the search (from
+// the unclamped origin: two independent taps, the depth margin and the fade,
+// K sphere steps, the box-hit bracket, M false-position estimates). The CPU's
+// `ends_at` closure is the WGSL's three returns through
+// `fluid_reflection_lookup`; its `Option` back end is the WGSL's back end
+// starting at the box hit, which a closing sphere step overwrites. The status
+// and the hit point are CPU diagnostics; the shader keeps the lookup and the
+// weight.
+#[test]
+fn fluid_reflection_search_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = FLUID_WGSL;
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_search.rs");
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_search_h")),
+        "fnfluid_reflection_search_h(q:vec3<f32>,capture_point:vec3<f32>,tile:vec2<u32>,\
+         layer:u32)->f32{\
+         lettoward=q-capture_point;\
+         letlevel=vec3<f32>(toward.x,max(toward.y,0.0),toward.z);\
+         letl1=abs(level.x)+abs(level.y)+abs(level.z);\
+         ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}\
+         returnl1*textureSampleLevel(fluid_probe_distance,sh_atlas_sampler,\
+         fluid_reflection_tile_uv(level,tile.x,tile.y),layer,0.0).r-1.0;}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_search_h")),
+        "fnreflection_search_h(q:Vec3,capture_point:Vec3,tile:[u32;2],\
+         distance:&implFn(Vec2)->f32,)->f32{\
+         lettoward=q-capture_point;\
+         letlevel=Vec3::new(toward.x,toward.y.max(0.0),toward.z);\
+         letl1=level.abs().element_sum();\
+         ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}\
+         l1*distance(reflection_tile_uv(level,tile[0],tile[1]))-1.0}"
+    );
+    // GLSL smoothstep on the CPU side; WGSL's builtin is the same polynomial.
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "smoothstep")),
+        "fnsmoothstep(edge0:f32,edge1:f32,x:f32)->f32{\
+         lett=((x-edge0)/(edge1-edge0)).clamp(0.0,1.0);t*t*(3.0-2.0*t)}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_shadow_fade_angle")),
+        "fnfluid_reflection_shadow_fade_angle(tile:vec2<u32>)->f32{\
+         returnFLUID_REFLECTION_SHADOW_FADE_TEXELS*FLUID_REFLECTION_HALF_TURN\
+         /(f32(tile.x)-2.0*f32(tile.y));}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_shadow_fade_angle")),
+        "fnreflection_shadow_fade_angle(tile:[u32;2])->f32{\
+         FLUID_REFLECTION_SHADOW_FADE_TEXELS*FLUID_REFLECTION_HALF_TURN\
+         /(tile[0]asf32-2.0*tile[1]asf32)}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_shadow_tap")),
+        "fnfluid_reflection_shadow_tap(capture_point:vec3<f32>,toward:vec3<f32>,turn:f32,\
+         tile:vec2<u32>,layer:u32)->f32{letturn2=turn*turn;\
+         letsine=turn*(1.0-turn2/6.0*(1.0-turn2/20.0));\
+         letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
+         letturned=vec3<f32>(toward.x*cosine+toward.z*sine,toward.y,\
+         toward.z*cosine-toward.x*sine);returnfluid_reflection_search_h(capture_point+turned,\
+         capture_point,tile,layer);}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_shadow_tap")),
+        "fnreflection_shadow_tap(capture_point:Vec3,toward:Vec3,turn:f32,tile:[u32;2],\
+         distance:&implFn(Vec2)->f32,)->f32{letturn2=turn*turn;\
+         letsine=turn*(1.0-turn2/6.0*(1.0-turn2/20.0));\
+         letcosine=1.0-turn2/2.0*(1.0-turn2/12.0);\
+         letturned=Vec3::new(toward.x*cosine+toward.z*sine,toward.y,\
+         toward.z*cosine-toward.x*sine,);reflection_search_h(capture_point+turned,\
+         capture_point,tile,distance)}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_shadow_edge")),
+        "fnfluid_reflection_shadow_edge(capture_point:vec3<f32>,toward:vec3<f32>,angle:f32,\
+         side:f32,h_origin:f32,h_far:f32,h_opposite:f32,tile:vec2<u32>,layer:u32)->f32{\
+         letstep=(h_far-h_opposite)/max(1.0+h_opposite,FLUID_REFLECTION_SEARCH_EPSILON);\
+         leth_lit=min(h_origin,0.0);\
+         letgate=smoothstep(FLUID_REFLECTION_SHADOW_GATE_START*angle,\
+         FLUID_REFLECTION_SHADOW_GATE_FULL*angle,step);ifh_far<=0.0||gate<=0.0{returnangle;}\
+         leth_half=fluid_reflection_shadow_tap(capture_point,toward,0.5*side,tile,layer);\
+         varcrossing:f32;ifh_half>0.0{crossing=0.5*angle*h_lit/(h_lit-h_half);}else{\
+         crossing=0.5*angle+0.5*angle*h_half/(h_half-h_far);}\
+         returnangle+(crossing-angle)*gate;}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_shadow_edge")),
+        "fnreflection_shadow_edge(capture_point:Vec3,toward:Vec3,angle:f32,side:f32,\
+         h_origin:f32,h_far:f32,h_opposite:f32,tile:[u32;2],distance:&implFn(Vec2)->f32,\
+         )->f32{\
+         letstep=(h_far-h_opposite)/(1.0+h_opposite).max(FLUID_REFLECTION_SEARCH_EPSILON);\
+         leth_lit=h_origin.min(0.0);\
+         letgate=smoothstep(FLUID_REFLECTION_SHADOW_GATE_START*angle,\
+         FLUID_REFLECTION_SHADOW_GATE_FULL*angle,step,);ifh_far<=0.0||gate<=0.0{returnangle;}\
+         leth_half=reflection_shadow_tap(capture_point,toward,0.5*side,tile,distance);\
+         letcrossing=ifh_half>0.0{0.5*angle*h_lit/(h_lit-h_half)}else{\
+         0.5*angle+0.5*angle*h_half/(h_half-h_far)};angle+(crossing-angle)*gate}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_shadow_fade")),
+        "fnfluid_reflection_shadow_fade(origin:vec3<f32>,capture_point:vec3<f32>,\
+         tile:vec2<u32>,h_origin:f32,layer:u32)->f32{\
+         letangle=fluid_reflection_shadow_fade_angle(tile);lettoward=origin-capture_point;\
+         leth_plus=fluid_reflection_shadow_tap(capture_point,toward,angle,tile,layer);\
+         leth_minus=fluid_reflection_shadow_tap(capture_point,toward,-angle,tile,layer);\
+         letedge=min(fluid_reflection_shadow_edge(capture_point,toward,angle,angle,h_origin,\
+         h_plus,h_minus,tile,layer),fluid_reflection_shadow_edge(capture_point,toward,angle,\
+         -angle,h_origin,h_minus,h_plus,tile,layer));returnsmoothstep(0.0,angle,edge);}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_shadow_fade")),
+        "fnreflection_shadow_fade(origin:Vec3,capture_point:Vec3,tile:[u32;2],h_origin:f32,\
+         distance:&implFn(Vec2)->f32,)->f32{letangle=reflection_shadow_fade_angle(tile);\
+         lettoward=origin-capture_point;leth_plus=reflection_shadow_tap(capture_point,toward,\
+         angle,tile,distance);leth_minus=reflection_shadow_tap(capture_point,toward,-angle,\
+         tile,distance);letedge=reflection_shadow_edge(capture_point,toward,angle,angle,\
+         h_origin,h_plus,h_minus,tile,distance,).min(reflection_shadow_edge(capture_point,\
+         toward,angle,-angle,h_origin,h_minus,h_plus,tile,distance,));smoothstep(0.0,angle,\
+         edge)}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_search")),
+        "fnfluid_reflection_search(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
+         box_max:vec3<f32>,capture_point:vec3<f32>,tile:vec2<u32>,\
+         layer:u32)->FluidReflectionSearch{letbox_hit=fluid_reflection_box_hit(origin,ray,\
+         box_min,box_max);lett_box=dot(box_hit-origin,ray);\
+         leth_origin=fluid_reflection_search_h(origin,capture_point,tile,layer);\
+         leth_box=fluid_reflection_search_h(box_hit,capture_point,tile,layer);\
+         ifh_origin>=FLUID_REFLECTION_SHADOW_MARGIN{\
+         returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,capture_point,ray),0.0);\
+         }letweight=fluid_reflection_shadow_fade(origin,capture_point,tile,h_origin,\
+         layer)*(1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));\
+         ifh_origin>=0.0{returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,\
+         capture_point,ray),weight);}vart_front=0.0;varh_front=h_origin;vart_back=t_box;\
+         varh_back=h_box;letfrom_capture=origin-capture_point;letb=dot(from_capture,ray);\
+         for(vari:u32=0u;i<FLUID_REFLECTION_SEARCH_STEPS;i=i+1u){ifh_front<=-1.0{break;}\
+         letq=origin+ray*t_front;lettoward=q-capture_point;letlevel=vec3<f32>(toward.x,\
+         max(toward.y,0.0),toward.z);letradius=length(level)/(h_front+1.0);\
+         letdisc=b*b-(dot(from_capture,from_capture)-radius*radius);ifdisc<0.0{break;}\
+         lett_next=-b+sqrt(disc);ift_next<=t_front||t_next>=t_box{break;}\
+         leth_next=fluid_reflection_search_h(origin+ray*t_next,capture_point,tile,layer);\
+         ifh_next>=0.0{t_back=t_next;h_back=h_next;break;}t_front=t_next;h_front=h_next;}\
+         if!(h_back>=0.0){returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,\
+         capture_point,ray),weight);}vart_hit=t_back;for(varrefinement:u32=0u;\
+         refinement<FLUID_REFLECTION_SEARCH_REFINEMENTS;refinement=refinement+1u){\
+         ifh_back!=h_front{t_hit=t_front-h_front*(t_back-t_front)/(h_back-h_front);}else{\
+         t_hit=t_back;}ifrefinement+1u==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}\
+         leth_hit=fluid_reflection_search_h(origin+ray*t_hit,capture_point,tile,layer);\
+         ifh_hit>=0.0{t_back=t_hit;h_back=h_hit;}else{t_front=t_hit;h_front=h_hit;}}\
+         returnFluidReflectionSearch(fluid_reflection_lookup(origin+ray*t_hit,capture_point,\
+         ray),weight);}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_search")),
+        "fnreflection_search(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3,\
+         capture_point:Vec3,tile:[u32;2],distance:implFn(Vec2)->f32,)->FluidReflectionSearch{\
+         leth=|q:Vec3|reflection_search_h(q,capture_point,tile,&distance);\
+         letbox_hit=reflection_box_hit(origin,ray,box_min,box_max);\
+         lett_box=(box_hit-origin).dot(ray);leth_origin=h(origin);leth_box=h(box_hit);\
+         letends_at=|point:Vec3,status,weight|FluidReflectionSearch{point,\
+         lookup:reflection_lookup(point,capture_point,ray),status,weight,};\
+         ifh_origin>=FLUID_REFLECTION_SHADOW_MARGIN{returnends_at(box_hit,\
+         FluidReflectionSearchStatus::CaptureShadow,0.0);}\
+         letweight=reflection_shadow_fade(origin,capture_point,tile,h_origin,\
+         &distance)*(1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));\
+         ifh_origin>=0.0{returnends_at(box_hit,FluidReflectionSearchStatus::CaptureShadow,\
+         weight);}let(mutt_front,muth_front)=(0.0,h_origin);letmutback=None;\
+         letfrom_capture=origin-capture_point;letb=from_capture.dot(ray);\
+         for_in0..FLUID_REFLECTION_SEARCH_STEPS{ifh_front<=-1.0{break;}\
+         letq=origin+ray*t_front;lettoward=q-capture_point;letlevel=Vec3::new(toward.x,\
+         toward.y.max(0.0),toward.z);letradius=level.length()/(h_front+1.0);\
+         letdisc=b*b-(from_capture.dot(from_capture)-radius*radius);ifdisc<0.0{break;}\
+         lett_next=-b+disc.sqrt();ift_next<=t_front||t_next>=t_box{break;}\
+         leth_next=h(origin+ray*t_next);ifh_next>=0.0{back=Some((t_next,h_next));break;}\
+         (t_front,h_front)=(t_next,h_next);}let(mutt_back,muth_back)=matchback{\
+         Some(sample)=>sample,Noneifh_box>=0.0=>(t_box,h_box),None=>returnends_at(box_hit,\
+         FluidReflectionSearchStatus::BeyondBox,weight),};letmutt_hit=t_back;\
+         forrefinementin0..FLUID_REFLECTION_SEARCH_REFINEMENTS{t_hit=ifh_back!=h_front{\
+         t_front-h_front*(t_back-t_front)/(h_back-h_front)}else{t_back};\
+         ifrefinement+1==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}\
+         leth_hit=h(origin+ray*t_hit);ifh_hit>=0.0{(t_back,h_back)=(t_hit,h_hit);}else{\
+         (t_front,h_front)=(t_hit,h_hit);}}ends_at(origin+ray*t_hit,\
+         FluidReflectionSearchStatus::Hit,weight,)}"
+    );
+}
+
+#[test]
+fn fluid_reflection_style_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::reflection_style as r;
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_STYLE_PIXEL"),
+        r::FLUID_REFLECTION_STYLE_PIXEL
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_STYLE_SMOOTH"),
+        r::FLUID_REFLECTION_STYLE_SMOOTH
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_PIXEL_TILT"),
+        r::FLUID_REFLECTION_PIXEL_TILT
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_AXES_EPSILON"),
+        r::FLUID_REFLECTION_AXES_EPSILON
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_RIM_INSET"),
+        r::FLUID_REFLECTION_RIM_INSET
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_RIM_INSET_MIN"),
+        r::FLUID_REFLECTION_RIM_INSET_MIN
+    );
+    for style in r::FluidReflectionStyle::ALL {
+        let shader = match style {
+            r::FluidReflectionStyle::Pixel => shader_u32("FLUID_REFLECTION_STYLE_PIXEL"),
+            r::FluidReflectionStyle::Smooth => shader_u32("FLUID_REFLECTION_STYLE_SMOOTH"),
+        };
+        assert_eq!(style.uniform_value(), shader);
+    }
+}
+
+// The pixel style's texel axes, cell centre, its pull back into the probe's
+// box at a wall rim, tilted cell normal and style switch are the CPU
+// reflection-style reference in WGSL, pinned on both sides.
+#[test]
+fn fluid_reflection_style_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = FLUID_WGSL;
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_style.rs");
+    let pinned: [(&str, &str, &str, &str); 6] = [
+        (
+            "fluid_reflection_texel_axes",
+            "fnfluid_reflection_texel_axes(ddx_texel:vec2<f32>,ddy_texel:vec2<f32>,\
+             ddx_world:vec3<f32>,ddy_world:vec3<f32>)->FluidTexelAxes{\
+             letdet=ddx_texel.x*ddy_texel.y-ddy_texel.x*ddx_texel.y;letscale=dot(ddx_texel,\
+             ddx_texel)*dot(ddy_texel,ddy_texel);ifdet*det<=FLUID_REFLECTION_AXES_EPSILON*scale{\
+             returnFluidTexelAxes(vec3<f32>(0.0),vec3<f32>(0.0));}\
+             returnFluidTexelAxes((ddx_world*ddy_texel.y-ddy_world*ddx_texel.y)/det,\
+             (ddy_world*ddx_texel.x-ddx_world*ddy_texel.x)/det);}",
+            "reflection_texel_axes",
+            "fnreflection_texel_axes(ddx_texel:Vec2,ddy_texel:Vec2,ddx_world:Vec3,ddy_world:Vec3,\
+             )->FluidTexelAxes{letdet=ddx_texel.x*ddy_texel.y-ddy_texel.x*ddx_texel.y;\
+             letscale=ddx_texel.dot(ddx_texel)*ddy_texel.dot(ddy_texel);\
+             ifdet*det<=FLUID_REFLECTION_AXES_EPSILON*scale{returnFluidTexelAxes{u:Vec3::ZERO,\
+             v:Vec3::ZERO,};}FluidTexelAxes{u:(ddx_world*ddy_texel.y-ddy_world*ddx_texel.y)/det,\
+             v:(ddy_world*ddx_texel.x-ddx_world*ddy_texel.x)/det,}}",
+        ),
+        (
+            "fluid_reflection_cell_centre",
+            "fnfluid_reflection_cell_centre(texel_uv:vec2<f32>,world_position:vec3<f32>,\
+             axes:FluidTexelAxes)->vec3<f32>{\
+             letto_centre=floor(texel_uv)+vec2<f32>(0.5)-texel_uv;\
+             returnworld_position+axes.u*to_centre.x+axes.v*to_centre.y;}",
+            "reflection_cell_centre",
+            "fnreflection_cell_centre(texel_uv:Vec2,world_position:Vec3,\
+             axes:FluidTexelAxes)->Vec3{letto_centre=texel_uv.floor()+Vec2::splat(0.5)-texel_uv;\
+             world_position+axes.u*to_centre.x+axes.v*to_centre.y}",
+        ),
+        (
+            "fluid_reflection_unit_or_zero",
+            "fnfluid_reflection_unit_or_zero(v:vec3<f32>)->vec3<f32>{letlength_sq=dot(v,v);\
+             returnselect(vec3<f32>(0.0),v*inverseSqrt(length_sq),length_sq>0.0);}",
+            "reflection_unit_or_zero",
+            "fnreflection_unit_or_zero(v:Vec3)->Vec3{letlength_sq=v.dot(v);iflength_sq>0.0{\
+             v*length_sq.sqrt().recip()}else{Vec3::ZERO}}",
+        ),
+        (
+            "fluid_reflection_cell_normal",
+            "fnfluid_reflection_cell_normal(outward:vec3<f32>,axes:FluidTexelAxes,\
+             offset:vec2<i32>)->vec3<f32>{\
+             lettilt=fluid_reflection_unit_or_zero(axes.u)*f32(offset.x)+fluid_reflection_unit_or_zero(axes.v)*f32(offset.y);\
+             returnnormalize(outward+tilt*FLUID_REFLECTION_PIXEL_TILT);}",
+            "reflection_cell_normal",
+            "fnreflection_cell_normal(outward:Vec3,axes:FluidTexelAxes,offset:IVec2)->Vec3{\
+             lettilt=reflection_unit_or_zero(axes.u)*offset.xasf32+reflection_unit_or_zero(axes.v)*offset.yasf32;\
+             (outward+tilt*FLUID_REFLECTION_PIXEL_TILT).normalize()}",
+        ),
+        (
+            "fluid_reflection_cell_within_box",
+            "fnfluid_reflection_cell_within_box(centre:vec3<f32>,axes:FluidTexelAxes,\
+             box_min:vec3<f32>,box_max:vec3<f32>,capture_point:vec3<f32>)->vec3<f32>{\
+             letpast=centre-clamp(centre,box_min,box_max);\
+             letlength_past=length(vec3<f32>(past.x,0.0,past.z));\
+             lethalf_cell=0.5*max(length(axes.u+axes.v),length(axes.u-axes.v));\
+             lettoward=centre-capture_point;\
+             letinset=max(FLUID_REFLECTION_RIM_INSET*(abs(toward.x)+abs(toward.z)),\
+             FLUID_REFLECTION_RIM_INSET_MIN);\
+             letmargin=vec3<f32>(inset,0.0,inset);\
+             lettarget_point=max(min(centre,box_max-margin),box_min+margin);\
+             letpull=vec3<f32>(centre.x-target_point.x,0.0,centre.z-target_point.z);\
+             varkeep=0.0;\
+             ifhalf_cell>0.0{keep=clamp((2.0*half_cell-length_past)/half_cell,0.0,1.0);}\
+             returncentre-pull*keep;}",
+            "reflection_cell_within_box",
+            "fnreflection_cell_within_box(centre:Vec3,axes:FluidTexelAxes,box_min:Vec3,\
+             box_max:Vec3,capture_point:Vec3,)->Vec3{\
+             letpast=centre-centre.clamp(box_min,box_max);\
+             letlength_past=Vec3::new(past.x,0.0,past.z).length();\
+             lethalf_cell=0.5*(axes.u+axes.v).length().max((axes.u-axes.v).length());\
+             lettoward=centre-capture_point;\
+             letinset=(FLUID_REFLECTION_RIM_INSET*(toward.x.abs()+toward.z.abs()))\
+             .max(FLUID_REFLECTION_RIM_INSET_MIN);\
+             letmargin=Vec3::new(inset,0.0,inset);\
+             lettarget_point=centre.min(box_max-margin).max(box_min+margin);\
+             letpull=Vec3::new(centre.x-target_point.x,0.0,centre.z-target_point.z);\
+             letkeep=ifhalf_cell>0.0{((2.0*half_cell-length_past)/half_cell).clamp(0.0,1.0)\
+             }else{0.0};\
+             centre-pull*keep}",
+        ),
+        (
+            "fluid_reflection_point",
+            "fnfluid_reflection_point(style:u32,texel_uv:vec2<f32>,world_position:vec3<f32>,\
+             outward:vec3<f32>,axes:FluidTexelAxes,time:f32,texels_per_pixel:f32,\
+             box_min:vec3<f32>,box_max:vec3<f32>,capture_point:vec3<f32>)->FluidReflectionPoint{\
+             ifstyle==FLUID_REFLECTION_STYLE_SMOOTH{\
+             returnFluidReflectionPoint(world_position,outward);}\
+             letoffset=fluid_displayed_offset(vec2<i32>(floor(texel_uv)),time,texels_per_pixel);\
+             letcentre=fluid_reflection_cell_centre(texel_uv,world_position,axes);\
+             returnFluidReflectionPoint(fluid_reflection_cell_within_box(centre,axes,box_min,\
+             box_max,capture_point),fluid_reflection_cell_normal(outward,axes,offset));}",
+            "reflection_point",
+            "fnreflection_point(style:u32,texel_uv:Vec2,world_position:Vec3,outward:Vec3,\
+             axes:FluidTexelAxes,time:f32,texels_per_pixel:f32,box_min:Vec3,box_max:Vec3,\
+             capture_point:Vec3,)->FluidReflectionPoint{\
+             ifstyle==FLUID_REFLECTION_STYLE_SMOOTH{returnFluidReflectionPoint{\
+             position:world_position,normal:outward,};}\
+             letoffset=displayed_offset(texel_cell(texel_uv),time,texels_per_pixel);\
+             letcentre=reflection_cell_centre(texel_uv,world_position,axes);\
+             FluidReflectionPoint{position:reflection_cell_within_box(centre,axes,box_min,\
+             box_max,capture_point),normal:reflection_cell_normal(outward,axes,offset),}}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+}
+
+// The pixel style keys on the unwarped cell: `fs_main_reflecting` hands it the
+// unwarped texel UV (never the warped sample UV), the warp's own clock and
+// fade footprint, and the face's texel axes from derivatives taken at the top
+// of `fluid_shade` and `fs_main_reflecting`, in uniform control flow. The
+// reflection-free `fs_main` takes none of its own. No style function reads
+// drift or the wave, so neither moves a cell's reflection direction.
+#[test]
+fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
+    let main = code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"));
+    let shade = code_only(wgsl_fn(FLUID_WGSL, "fluid_shade"));
+    let derivatives = main
+        .find("letddx_world=dpdx(in.world_position);letddy_world=dpdy(in.world_position);")
+        .expect("world derivatives in fs_main_reflecting");
+    let first_branch = main.find("if").expect("a branch");
+    assert!(
+        derivatives < first_branch,
+        "the derivatives precede every branch"
+    );
+    let shade_derivatives = shade.find("letddx=dpdx(in.uv);").expect("uv derivatives");
+    assert!(
+        shade_derivatives < shade.find("if").expect("a branch"),
+        "the derivatives precede every branch"
+    );
+    assert_eq!(
+        main.matches("dpdx(").count() + shade.matches("dpdx(").count(),
+        2
+    );
+    assert_eq!(
+        main.matches("dpdy(").count() + shade.matches("dpdy(").count(),
+        2
+    );
+    let free = code_only(wgsl_fn(FLUID_WGSL, "fs_main"));
+    assert!(!free.contains("dpdx(") && !free.contains("dpdy("), "{free}");
+    let tail = fs_main_reflection_tail();
+    assert!(tail.contains("in.uv*dims"));
+    assert!(!tail.contains("(uv*dims") && !tail.contains(",uv*dims"));
+    assert!(!tail.contains("drift") && !tail.contains("row.wave"));
+    for name in [
+        "fluid_reflection_texel_axes",
+        "fluid_reflection_cell_centre",
+        "fluid_reflection_cell_within_box",
+        "fluid_reflection_unit_or_zero",
+        "fluid_reflection_cell_normal",
+        "fluid_reflection_point",
+    ] {
+        let body = code_only(wgsl_fn(FLUID_WGSL, name));
+        for forbidden in ["drift", "wave", "fluid_warp_uv", "dpdx", "dpdy"] {
+            assert!(!body.contains(forbidden), "`{name}` reads `{forbidden}`");
+        }
+    }
+    let point = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_point"));
+    assert!(
+        point.contains("fluid_displayed_offset(vec2<i32>(floor(texel_uv)),time,texels_per_pixel)")
+    );
+}
+
+// Live lighting by light share: the lobe blend, the reserved-entry guard, the
+// live value, the share unpack and blend, the per-channel change and the
+// ratio are the CPU reference in WGSL, pinned on both sides. The lobe blend's
+// CPU side is level-format's, the function the compiler split the capture's
+// light by; the live value's is render-cpu `sh_compose::animated_light_scale`.
+#[test]
+fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = FLUID_WGSL;
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
+    let format = include_str!("../../../level-format/src/reflection_probes.rs");
+    let compose = include_str!("../../../render-cpu/src/sh_compose.rs");
+    let pinned: [(&str, &str, &str, &str, &str); 7] = [
+        (
+            "fluid_reflection_lobe_weights",
+            "fnfluid_reflection_lobe_weights(direction:vec3<f32>)->array<f32,5>{\
+             letpositive=max(direction,vec3<f32>(0.0));\
+             letnegative=max(-direction,vec3<f32>(0.0));\
+             letdown=negative.y*negative.y*0.25;\
+             letweights=array<f32,5>(positive.y*positive.y,positive.x*positive.x+down,\
+             negative.x*negative.x+down,positive.z*positive.z+down,\
+             negative.z*negative.z+down,);\
+             letsum=weights[0]+weights[1]+weights[2]+weights[3]+weights[4];\
+             if!(sum>0.0){returnarray<f32,5>(1.0,0.0,0.0,0.0,0.0);}\
+             returnarray<f32,5>(weights[0]/sum,weights[1]/sum,weights[2]/sum,weights[3]/sum,\
+             weights[4]/sum);}",
+            format,
+            "reflection_probe_lobe_weights",
+            "fnreflection_probe_lobe_weights(direction:[f32;3])->[f32;\
+             REFLECTION_PROBE_LOBE_COUNT]{let[x,y,z]=direction;\
+             letpos=|v:f32|{letc=v.max(0.0);c*c};letdown=pos(-y)*0.25;\
+             letweights=[pos(y),pos(x)+down,pos(-x)+down,pos(z)+down,pos(-z)+down,];\
+             letsum:f32=weights.iter().sum();\
+             if!(sum.is_finite()&&sum>0.0){return[1.0,0.0,0.0,0.0,0.0];}\
+             weights.map(|w|w/sum)}",
+        ),
+        (
+            "fluid_reflection_light_present",
+            "fnfluid_reflection_light_present(roster_index:u32)->bool{\
+             returnroster_index!=FLUID_REFLECTION_NO_LIGHT\
+             &&roster_index<arrayLength(&anim_descriptors);}",
+            cpu,
+            "reflection_light_present",
+            "fnreflection_light_present(lights:&FluidReflectionLights<'_>,\
+             roster_index:u32)->bool{\
+             roster_index!=REFLECTION_PROBE_NO_LIGHT\
+             &&(roster_indexasusize)<lights.descriptors.len()}",
+        ),
+        (
+            "fluid_reflection_light_value",
+            "fnfluid_reflection_light_value(roster_index:u32)->vec3<f32>{\
+             letdesc=anim_descriptors[roster_index];\
+             if(desc.is_active==0u){returnvec3<f32>(0.0);}\
+             lett=animation_curve_t(desc.period,desc.phase,uniforms.time);\
+             letbrightness=max(sample_curve_catmull_rom(desc.brightness_offset,\
+             desc.brightness_count,t),0.0,);\
+             varcolor=desc.base_color;\
+             if(desc.color_count>0u){\
+             color=max(sample_color_catmull_rom(desc.color_offset,desc.color_count,t,\
+             vec3<f32>(1.0)),vec3<f32>(0.0),)*desc.base_color;}\
+             returncolor*brightness;}",
+            cpu,
+            "reflection_light_value",
+            "fnreflection_light_value(lights:&FluidReflectionLights<'_>,roster_index:u32)->Vec3{\
+             Vec3::from(animated_light_scale(Some(lights.descriptors[roster_indexasusize]),\
+             lights.time,))}",
+        ),
+        (
+            "fluid_reflection_unpack_unorm10x3",
+            "fnfluid_reflection_unpack_unorm10x3(word:u32)->vec3<f32>{\
+             letfield=FLUID_REFLECTION_UNORM10_MAX;\
+             returnvec3<f32>(f32(word&field),f32((word>>10u)&field),f32((word>>20u)&field))\
+             /f32(field);}",
+            cpu,
+            "reflection_unpack_unorm10x3",
+            "fnreflection_unpack_unorm10x3(word:u32)->Vec3{\
+             letfield=FLUID_REFLECTION_UNORM10_MAX;\
+             Vec3::new((word&field)asf32,((word>>10)&field)asf32,((word>>20)&field)asf32,)\
+             /fieldasf32}",
+        ),
+        (
+            "fluid_reflection_light_share",
+            "fnfluid_reflection_light_share(shares:array<vec4<u32>,2>,lobes:array<f32,5>)\
+             ->vec3<f32>{\
+             returnfluid_reflection_unpack_unorm10x3(shares[0].x)*lobes[0]\
+             +fluid_reflection_unpack_unorm10x3(shares[0].y)*lobes[1]\
+             +fluid_reflection_unpack_unorm10x3(shares[0].z)*lobes[2]\
+             +fluid_reflection_unpack_unorm10x3(shares[0].w)*lobes[3]\
+             +fluid_reflection_unpack_unorm10x3(shares[1].x)*lobes[4];}",
+            cpu,
+            "reflection_light_share",
+            "fnreflection_light_share(shares:&[u32;FLUID_PROBE_SHARE_WORDS],\
+             lobes:&[f32;REFLECTION_PROBE_LOBE_COUNT],)->Vec3{\
+             letmutshare=Vec3::ZERO;\
+             for(word,weight)inshares.iter().zip(lobes){\
+             share+=reflection_unpack_unorm10x3(*word)**weight;}share}",
+        ),
+        (
+            "fluid_reflection_light_change",
+            "fnfluid_reflection_light_change(current:vec3<f32>,reference:vec3<f32>)->vec3<f32>{\
+             returnselect(vec3<f32>(0.0),\
+             current/max(reference,vec3<f32>(FLUID_REFLECTION_REFERENCE_FLOOR))-vec3<f32>(1.0),\
+             reference>vec3<f32>(0.0));}",
+            cpu,
+            "reflection_light_change",
+            "fnreflection_light_change(current:Vec3,reference:Vec3)->Vec3{\
+             Vec3::select(reference.cmpgt(Vec3::ZERO),\
+             current/reference.max(Vec3::splat(FLUID_REFLECTION_REFERENCE_FLOOR))-Vec3::ONE,\
+             Vec3::ZERO,)}",
+        ),
+        (
+            "fluid_reflection_ratio",
+            "fnfluid_reflection_ratio(probe:u32,direction:vec3<f32>)->vec3<f32>{\
+             letlobes=fluid_reflection_lobe_weights(direction);\
+             varratio=vec3<f32>(1.0);\
+             for(vari:u32=0u;i<FLUID_REFLECTION_LIGHTS_PER_PROBE;i=i+1u){\
+             letlight=fluid_probes.probes[probe].lights[i];\
+             if!fluid_reflection_light_present(light.roster_index){continue;}\
+             letcurrent=fluid_reflection_light_value(light.roster_index);\
+             ratio=ratio+fluid_reflection_light_share(light.shares,lobes)\
+             *fluid_reflection_light_change(current,light.reference);}\
+             returnmax(ratio,vec3<f32>(0.0));}",
+            cpu,
+            "reflection_ratio",
+            "fnreflection_ratio(probe_lights:&[FluidProbeLightGpu;\
+             REFLECTION_PROBE_LIGHTS_PER_PROBE],direction:Vec3,\
+             lights:&FluidReflectionLights<'_>,)->Vec3{\
+             letlobes=reflection_probe_lobe_weights(direction.to_array());\
+             letmutratio=Vec3::ONE;\
+             forlightinprobe_lights{\
+             if!reflection_light_present(lights,light.roster_index){continue;}\
+             letcurrent=reflection_light_value(lights,light.roster_index);\
+             ratio+=reflection_light_share(&light.shares,&lobes)\
+             *reflection_light_change(current,Vec3::from(light.reference));}\
+             ratio.max(Vec3::ZERO)}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_source, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu_source, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+
+    // The live value's CPU side: clamped colour × clamped brightness, 0 while
+    // inactive.
+    assert_eq!(
+        code_only(wgsl_fn(compose, "animated_light_scale")),
+        "fnanimated_light_scale(descriptor:Option<AnimatedLightScaleDescriptor<'_>>,time:f32,\
+         )->[f32;3]{\
+         letSome(descriptor)=descriptor.filter(|descriptor|descriptor.is_active)else{\
+         return[0.0;3];};\
+         letcycle_t=animation_curve_t(descriptor.period,descriptor.phase,time);\
+         letbrightness=sample_curve_catmull_rom(descriptor.brightness,cycle_t).max(0.0);\
+         letcolor=ifdescriptor.color.is_empty(){descriptor.base_color}else{\
+         letsampled=sample_color_catmull_rom(descriptor.color,cycle_t);\
+         [sampled[0].max(0.0)*descriptor.base_color[0],\
+         sampled[1].max(0.0)*descriptor.base_color[1],\
+         sampled[2].max(0.0)*descriptor.base_color[2],]};\
+         [color[0]*brightness,color[1]*brightness,color[2]*brightness,]}"
+    );
+}
+
+// The fluid port of the live value is `sh_compose.wgsl`'s
+// `animated_light_scale` from its descriptor fetch on, token for token; only
+// the fetch differs, indexing the roster-indexed descriptors directly where SH
+// compose goes through its delta-light index table. It is not
+// `animated_direct_sh_compose.wgsl`'s form, which multiplies the promotion
+// weight and gates on the lighting mask and its debug override.
+#[test]
+fn fluid_reflection_light_value_ports_the_sh_compose_light_scale() {
+    let fluid = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_light_value"));
+    let compose = code_only(wgsl_fn(
+        include_str!("../shaders/sh_compose.wgsl"),
+        "animated_light_scale",
+    ));
+    let fluid_fetch = "letdesc=anim_descriptors[roster_index];";
+    let compose_fetch = "letdesc=descriptors[descriptor_index];";
+    let fluid_tail = &fluid[fluid.find(fluid_fetch).expect("fluid fetch") + fluid_fetch.len()..];
+    let compose_tail =
+        &compose[compose.find(compose_fetch).expect("compose fetch") + compose_fetch.len()..];
+    assert_eq!(fluid_tail, compose_tail);
+
+    let promoted = code_only(wgsl_fn(
+        include_str!("../shaders/animated_direct_sh_compose.wgsl"),
+        "animated_light_scale",
+    ));
+    assert!(promoted.contains("animated_compose_weight(light_index)"));
+    assert!(!fluid.contains("animated_compose_weight"));
+}
+
+/// Every `fn fluid_reflection_*` in the fluid shader, by name, with its body
+/// as code only.
+fn fluid_reflection_functions() -> Vec<(String, String)> {
+    let source = FLUID_WGSL;
+    source
+        .match_indices("fn fluid_reflection_")
+        .map(|(at, _)| {
+            let name_start = at + "fn ".len();
+            let name_end = name_start + source[name_start..].find('(').expect("fn name");
+            let name = &source[name_start..name_end];
+            (name.to_owned(), code_only(wgsl_fn(source, name)))
+        })
+        .collect()
+}
+
+/// The probe term's part of `fs_main_reflecting`: from the reflectivity read
+/// to the composite.
+fn fs_main_reflection_tail() -> String {
+    let main = code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"));
+    let start = main
+        .find("letreflectivity=shaded.reflectivity;")
+        .expect("reflection tail");
+    main[start..].to_owned()
+}
+
+// Pin P1, by source: the reflection's light evaluation reads no promotion
+// weight, crossfade array, lighting mask or debug override, and the fluid
+// shader declares none of the promotion-side bindings. Promotion crossfades a
+// light by its compose weight and never rewrites its descriptor, so the
+// reflection does not move while it promotes.
+#[test]
+fn fluid_reflection_light_evaluation_reads_no_promotion_weight_or_debug_override() {
+    let functions = fluid_reflection_functions();
+    let names: Vec<&str> = functions.iter().map(|(name, _)| name.as_str()).collect();
+    for expected in [
+        "fluid_reflection_ratio",
+        "fluid_reflection_light_value",
+        "fluid_reflection_light_present",
+        "fluid_reflection_light_share",
+        "fluid_reflection_light_change",
+        "fluid_reflection_lobe_weights",
+        "fluid_reflection_sample",
+    ] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+    for (name, body) in &functions {
+        for forbidden in [
+            "animated_compose_weight",
+            "compose_weight",
+            "animated_light_scale_uniform",
+            "debug_override",
+            "DebugOverride",
+            "promot",
+            "crossfade",
+            "animation_descriptor_indices",
+            "scripted_light_descriptors",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "`{name}` must not read `{forbidden}`"
+            );
+        }
+    }
+    // The live-light evaluation proper reads no lighting mask either: the
+    // gate's all-terms test is the only mask read on the probe path.
+    for (name, body) in functions.iter().filter(|(name, _)| {
+        !matches!(
+            name.as_str(),
+            "fluid_reflection_gate" | "fluid_reflection_mask_on"
+        )
+    }) {
+        assert!(!body.contains("mask"), "`{name}` must not read the mask");
+        assert!(!body.contains("LIGHT_TERM"), "`{name}`");
+    }
+    let code = code_only(FLUID_WGSL);
+    for binding in [
+        "animated_light_scale_uniform",
+        "compose_weights",
+        "debug_override",
+        "animation_descriptor_indices",
+        "MAX_ANIMATED_BAKED_LIGHTS",
+    ] {
+        assert!(
+            !code.contains(binding),
+            "the fluid shader declares no `{binding}`"
+        );
+    }
+}
+
+// The probe term takes no SH read: no reflection function, and no part of
+// `fs_main_reflecting`'s reflection tail, touches the SH atlases, grid, depth
+// moments or sampler chain, or the SH-lit surface lighting. Its only group-3 reads are
+// the descriptors and curve samples (and the SH atlas's linear-clamp sampler,
+// which reads no SH data), so a pool whose capture point's cells are not
+// resident still follows a switch (P5).
+#[test]
+fn fluid_reflection_term_takes_no_sh_read() {
+    let mut scanned = fluid_reflection_functions();
+    scanned.push((
+        "fs_main_reflecting reflection tail".to_owned(),
+        fs_main_reflection_tail(),
+    ));
+    for (name, body) in &scanned {
+        for forbidden in [
+            "sh_total_atlas",
+            "sh_direct_atlas",
+            "sh_grid",
+            "sh_depth_moments",
+            "fluid_sample_sh",
+            "sample_sh",
+            "ShDirPair",
+            "probe_indirection",
+            "sh.a",
+            "sh.b",
+            "lighting",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "`{name}` must not read `{forbidden}`"
+            );
+        }
+    }
+    let ratio = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_light_value"));
+    assert!(ratio.contains("anim_descriptors[roster_index]"));
+    assert!(ratio.contains("uniforms.time"));
+}
+
+// The fluid shader reads the live descriptors through the shared group 3 it
+// already binds, at binding 11: a FRAGMENT-visible read-only storage entry of
+// the SH layout, so declaring it spends no budget, and its struct is the
+// 48-byte descriptor record the flush uploads, `is_active` at its offset.
+#[test]
+fn fluid_reflection_reads_descriptors_from_the_shared_group_3_binding_11() {
+    use postretro_render_cpu::sh_volume::{
+        ANIMATION_DESCRIPTOR_ACTIVE_OFFSET, ANIMATION_DESCRIPTOR_SIZE, BIND_ANIM_DESCRIPTORS,
+    };
+    let source = FLUID_WGSL;
+    assert!(source.contains(
+        "@group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;"
+    ));
+    assert_eq!(BIND_ANIM_DESCRIPTORS, 11);
+    let groups = fluid_pipeline_bind_group_layout_entries();
+    let entry = groups[3]
+        .iter()
+        .find(|entry| entry.binding == BIND_ANIM_DESCRIPTORS)
+        .expect("group 3 binds the descriptors");
+    assert!(entry.visibility.contains(wgpu::ShaderStages::FRAGMENT));
+    assert!(matches!(
+        entry.ty,
+        wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            ..
+        }
+    ));
+    let module = validated_module();
+    assert_eq!(
+        struct_span(&module, "AnimationDescriptor") as usize,
+        ANIMATION_DESCRIPTOR_SIZE
+    );
+    let is_active = struct_member_offsets(&module, "AnimationDescriptor")
+        .into_iter()
+        .find(|(name, _)| name == "is_active")
+        .expect("is_active");
+    assert_eq!(is_active.1 as usize, ANIMATION_DESCRIPTOR_ACTIVE_OFFSET);
+    // The fluid pass binds the same group-3 bind group the flush's buffer
+    // sits in.
+    assert!(
+        code_only(fluid_pass_block())
+            .contains("fluid_pass.set_bind_group(3,self.full().sh_bind_group(),&[]);")
+    );
+}
+
+// Pins P4, P5 and P25, by source order. Script writes reach the descriptors'
+// CPU mirror only (the light bridge's `write_descriptor`), on any frame and
+// whatever the SH residency; the frame's one flush,
+// `upload_descriptors_if_dirty` in `update_per_frame_uniforms`, uploads the
+// whole level's descriptors; and every frame path runs that flush before it
+// records the scene passes, the fluid pass among them. So the frame a script
+// switches a light off already reflects it off: on a pool entering the draw
+// set that frame (P4), on a pool across a vista whose SH is not resident (P5;
+// the term reads no SH), and on the first revealed frame after a levelLoad
+// reaction (P25), where the same flush precedes the world's animated
+// lightmap compose too.
+#[test]
+fn the_frames_one_descriptor_flush_precedes_the_fluid_pass() {
+    // One flush, in the per-frame uniform update.
+    let frame_update = include_str!("renderer_frame.rs");
+    assert_eq!(
+        frame_update
+            .matches("upload_descriptors_if_dirty(queue)")
+            .count(),
+        1
+    );
+    assert!(
+        code_only(wgsl_fn(frame_update, "update_per_frame_uniforms"))
+            .contains(".animation.upload_descriptors_if_dirty(queue);")
+    );
+    // The flush writes the buffer group 3 binds at binding 11, from the
+    // mirror script writes land in.
+    let sh = include_str!("sh_volume.rs");
+    assert!(
+        code_only(wgsl_fn(sh, "upload_descriptors_if_dirty"))
+            .contains("queue.write_buffer(&self.descriptors,0,&self.descriptor_mirror);")
+    );
+    assert!(code_only(wgsl_fn(sh, "write_descriptor")).contains("self.dirty=true;"));
+    assert!(code_only(wgsl_fn(sh, "set_active")).contains("self.dirty=true;"));
+    let lighting = include_str!("renderer_lighting.rs");
+    assert!(
+        code_only(wgsl_fn(lighting, "upload_light_bridge_snapshot"))
+            .contains(".animation.write_descriptor(*slotasusize,bytes);")
+    );
+    for (file, source) in [
+        (
+            "renderer_render_frame.rs",
+            include_str!("renderer_render_frame.rs"),
+        ),
+        ("renderer_capture.rs", include_str!("renderer_capture.rs")),
+        (
+            "renderer_pre_scene.rs",
+            include_str!("renderer_pre_scene.rs"),
+        ),
+    ] {
+        // Production code only; the files' own tests name the flush.
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let code = code_only(production);
+        for write in [
+            "upload_descriptors_if_dirty",
+            "write_descriptor(",
+            "set_active(",
+        ] {
+            assert!(
+                !code.contains(write),
+                "{file} must not write descriptors mid-frame"
+            );
+        }
+    }
+
+    // Both scene recorders reach the fluid pass through `record_scene_passes`.
+    let render = include_str!("renderer_render_frame.rs");
+    let scene = code_only(wgsl_fn(render, "record_scene_passes"));
+    assert!(scene.contains("ifrender_world&&self.full().fluid_surface.has_draws()"));
+    assert!(
+        code_only(wgsl_fn(render, "render_frame_indirect")).contains("self.record_scene_passes(")
+    );
+
+    // Capture flushes first in each recorder.
+    let capture = code_only(
+        include_str!("renderer_capture.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production code"),
+    );
+    let flushes: Vec<usize> = capture
+        .match_indices("self.update_per_frame_uniforms(")
+        .map(|(at, _)| at)
+        .collect();
+    let records: Vec<usize> = capture
+        .match_indices("self.record_scene_passes(")
+        .map(|(at, _)| at)
+        .collect();
+    assert!(!records.is_empty() && flushes.len() == records.len());
+    for (flush, record) in flushes.iter().zip(&records) {
+        assert!(flush < record, "capture must flush before recording");
+    }
+
+    // The app: script light writes, then the flush, then the frame.
+    for (file, source, writes) in [
+        (
+            "frame_loop/mod.rs",
+            include_str!("../../../postretro/src/frame_loop/mod.rs"),
+            Some("renderer.upload_light_bridge_snapshot("),
+        ),
+        (
+            "app/world_less_frame.rs",
+            include_str!("../../../postretro/src/app/world_less_frame.rs"),
+            None,
+        ),
+    ] {
+        let code = code_only(source);
+        let flush = code
+            .find("renderer.update_per_frame_uniforms(")
+            .unwrap_or_else(|| panic!("{file} flushes"));
+        let draw = code
+            .find("renderer.render_frame_indirect(")
+            .unwrap_or_else(|| panic!("{file} renders"));
+        assert!(flush < draw, "{file}: the flush precedes the frame");
+        if let Some(writes) = writes {
+            let at = code.find(writes).expect("light bridge upload");
+            assert!(at < flush, "{file}: script writes precede the flush");
+        }
+    }
+}
+
+/// The frame's fluid pass block: from its gate to the end of its draws.
+fn fluid_pass_block() -> &'static str {
+    let frame = include_str!("renderer_render_frame.rs");
+    let start = frame
+        .find("if render_world && self.full().fluid_surface.has_draws()")
+        .expect("fluid pass gate");
+    let end = start
+        + frame[start..]
+            .find("fluid_surface.record_draws(")
+            .expect("fluid draws");
+    &frame[start..end]
+}
+
+// Two fluid pipelines: the frame's fluid draws pick their shader variants by
+// the mask the frame's group-0 uniform carries, the one the reflecting
+// variant's per-fragment gate reads, never the live UI mask, and by the
+// reflection tier read once beside it. The reflection pass takes its draws
+// and its gate by the same two values, so both passes of a frame agree on
+// every draw's variant (fluid-ssr-reflections acceptance row 3, P9, P13).
+#[test]
+fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
+    let frame = code_only(include_str!("renderer_render_frame.rs"));
+    let snapshot = frame
+        .find(
+            "letframe_light_term_mask=self.frame_light_term_mask();\
+             letframe_reflection_quality=self.reflection_quality();",
+        )
+        .expect("the frame snapshots its mask, then its tier beside it");
+    // The tier is read once per frame, and nothing else reads the kept one.
+    assert_eq!(frame.matches("reflection_quality()").count(), 1, "{frame}");
+    assert!(!frame.contains("kept_reflection_quality"));
+    assert!(!frame.contains("self.reflection_quality,"));
+    let record = frame
+        .find(
+            "fluid_surface.record_draws(&mutfluid_pass,&self.full().gpu_textures,\
+             frame_light_term_mask,frame_reflection_quality,);",
+        )
+        .expect("the fluid pass records with the frame's mask and tier");
+    assert!(snapshot < record, "the mask is snapshotted before the pass");
+    // The reflection pass takes its gate and its draws by the same snapshot.
+    let gate = frame
+        .find(
+            "fluid_surface.has_reflecting_draws(frame_light_term_mask,\
+             frame_reflection_quality)",
+        )
+        .expect("the reflection gate reads the frame's mask and tier");
+    let reflection = frame
+        .find(
+            "self.record_fluid_reflection_pass(encoder,frame_light_term_mask,\
+             frame_reflection_quality,);",
+        )
+        .expect("the reflection pass records with the frame's mask and tier");
+    assert!(snapshot < gate && gate < reflection && reflection < record);
+    assert_eq!(frame.matches("frame_reflection_quality").count(), 4);
+
+    let source = include_str!("fluid_surface.rs");
+    let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
+    let pass = code_only(reflection_source);
+    assert!(pass.contains(
+        "fluid.record_reflection_draws(&mutpass,&full.gpu_textures,light_term_mask,quality);"
+    ));
+    assert!(pass.contains(
+        "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits(),quality){\
+         if!variant.reflections(){continue;}"
+    ));
+    assert!(code_only(wgsl_fn(source, "record_draws")).contains(
+        "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits(),quality){"
+    ));
+    let reflecting = code_only(wgsl_fn(reflection_source, "has_reflecting_draws"));
+    // The pass records only at a tier that runs the screen-space layer:
+    // Low takes the reflecting variant but records no pass.
+    assert!(
+        reflecting.starts_with(
+            "fnhas_reflecting_draws(&self,light_term_mask:LightTermMask,\
+             quality:FluidReflectionQuality,)->bool{quality.runs_screen_space()&&"
+        ),
+        "{reflecting}"
+    );
+    assert!(!reflecting.contains("draws_probe_term"), "{reflecting}");
+    assert!(
+        reflecting.contains(".frame_draws(light_term_mask.bits(),quality)"),
+        "{reflecting}"
+    );
+    // Every per-frame reader takes the tier as its argument, never the kept
+    // tier, so one frame cannot see two.
+    for (file, name) in [
+        (source, "record_draws"),
+        (reflection_source, "record_reflection_draws"),
+        (reflection_source, "has_reflecting_draws"),
+        (reflection_source, "record_fluid_reflection_pass"),
+    ] {
+        let body = code_only(wgsl_fn(file, name));
+        assert!(body.contains("quality:FluidReflectionQuality"), "{name}");
+        assert!(
+            !body.contains("reflection.quality"),
+            "{name} reads the kept tier"
+        );
+        assert!(
+            !body.contains("reflection_quality"),
+            "{name} reads the kept tier"
+        );
+    }
+}
+
+// The pass opens depth read-only so group 5 can load the same texture; it
+// tests depth and never writes it.
+#[test]
+fn fluid_pass_opens_depth_read_only() {
+    let block = code_only(fluid_pass_block());
+    let attachment = &block[block
+        .find("depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{")
+        .expect("fluid pass depth attachment")..];
+    let attachment = &attachment[..attachment.find("}),").expect("attachment closes")];
+    assert!(attachment.contains("view:&self.full().depth_view,"));
+    assert!(attachment.contains("depth_ops:None,"), "{attachment}");
+    assert!(attachment.contains("stencil_ops:None,"), "{attachment}");
+    assert_eq!(
+        fluid_depth_stencil_state(DEPTH_FORMAT).depth_write_enabled,
+        Some(false)
+    );
+}
+
+// Group 5's rebuild points (fluid-ssr-reflections' widened Pin P4): it is
+// built at full init and rebuilt at exactly these points, where what it binds
+// changes:
+//   - full init (`FluidSurfacePass::new`), level or not, over the placeholder;
+//   - the scene-target rebuild (`rebuild_scene_inputs`);
+//   - a fluid install or a tier change that creates or drops the reflection
+//     target, or resizes it, since a resized target is a new view (medium to
+//     high, say), and the capture's fraction override, which resizes it as a
+//     tier change would: all reach `set_reflection_target`, the one
+//     rebinding path;
+//   - unload, through the clear, which rebinds the placeholder.
+// Setting the tier it already holds builds nothing, nor does an extent the
+// target already has: two screen-space tiers with one fraction (high to
+// very high, say) change the reflection uniform alone. Never in the frame;
+// never on a reflectivity change (P17). The uniforms upload before the reflection pass, so both passes of
+// one frame draw one style (P8).
+// "Scene targets" in the name also covers reflection-target create, resize
+// and release.
+#[test]
+fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets() {
+    let block = fluid_pass_block();
+    assert!(!block.contains("create_bind_group"), "{block}");
+    assert!(!block.contains("rebuild_scene_inputs"), "{block}");
+    let frame_block = code_only(block);
+    let upload = frame_block
+        .find("fluid_surface.upload_scene_inputs(queue);")
+        .expect("scene inputs upload in the fluid gate");
+    let reflection = frame_block
+        .find(
+            "self.record_fluid_reflection_pass(encoder,frame_light_term_mask,\
+             frame_reflection_quality,);",
+        )
+        .expect("reflection pass in the fluid gate");
+    assert!(upload < reflection, "{frame_block}");
+
+    let source = include_str!("fluid_surface.rs");
+    let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
+    let record = code_only(wgsl_fn(source, "record_draws"));
+    assert!(!record.contains("create_bind_group"));
+    assert!(record.contains(
+        "pass.set_bind_group(FLUID_SCENE_INPUTS_GROUP,self.scene_inputs.bind_group(),&[],);"
+    ));
+    let record_reflection = code_only(wgsl_fn(reflection_source, "record_reflection_draws"));
+    assert!(!record_reflection.contains("create_bind_group"));
+    assert!(!record_reflection.contains("FLUID_SCENE_INPUTS_GROUP"));
+    // Both uniforms upload together, each only on change.
+    let upload = code_only(wgsl_fn(source, "upload_scene_inputs"));
+    assert_eq!(
+        upload,
+        "fnupload_scene_inputs(&mutself,queue:&crate::render::uploads::UploadQueue){\
+         self.scene_inputs.upload(queue);self.upload_reflection_inputs(queue);}"
+    );
+    // Group 5's own module builds its bind group in `new` and `rebuild` only.
+    let inputs = include_str!("fluid_scene_inputs.rs");
+    assert_eq!(
+        code_only(inputs)
+            .matches("device.create_bind_group(")
+            .count(),
+        1
+    );
+    assert_eq!(code_only(inputs).matches("=create_bind_group(").count(), 2);
+    for builder in ["new", "rebuild"] {
+        assert!(code_only(wgsl_fn(inputs, builder)).contains("create_bind_group(device,"));
+    }
+    for per_frame in [
+        "upload",
+        "set_fog_weight",
+        "set_reflection_style",
+        "set_ssr_scale",
+        "bind_group",
+    ] {
+        assert!(!code_only(wgsl_fn(inputs, per_frame)).contains("create_bind_group"));
+    }
+
+    // Exactly two callers rebuild group 5: the scene-target follow-up and a
+    // reflection target change.
+    let pass_code = format!("{}{}", code_only(source), code_only(reflection_source));
+    assert_eq!(pass_code.matches("self.scene_inputs.rebuild(").count(), 2);
+    let follow = code_only(wgsl_fn(reflection_source, "rebuild_scene_inputs"));
+    let target_first = follow
+        .find("letsuperseded=self.reflection.resize(device,scene_depth,scene_color);")
+        .expect("the target follows the scene first");
+    let group_5 = follow
+        .find("self.scene_inputs.rebuild(device,scene_depth,self.reflection.bound_view());")
+        .expect("group 5 over the new depth and target");
+    let superseded_dropped = follow
+        .find("drop(superseded);")
+        .expect("the superseded target drops");
+    assert!(
+        target_first < group_5 && group_5 < superseded_dropped,
+        "the superseded target outlives group 5's rebuild over its successor: {follow}"
+    );
+    // P2: the scene-target rebuild recreates a live target first, at the
+    // kept tier's fraction of the new extent, then the reflection inputs,
+    // and hands the superseded target back to drop after group 5.
+    let resize = code_only(wgsl_fn(reflection_source, "resize"));
+    assert!(resize.ends_with("superseded}"), "{resize}");
+    let recreated = resize
+        .find(
+            "letsuperseded=self.target.take();\
+             ifsuperseded.is_some()&&letSome(extent)=self.tier_target_extent(){\
+             self.create_target(device,extent);}",
+        )
+        .expect("target recreated at the tier's extent");
+    assert!(
+        resize
+            .find("self.scene_extent=texture_extent(scene_color);")
+            .unwrap()
+            < recreated
+            && recreated
+                < resize
+                    .find("self.inputs_bind_group=")
+                    .expect("inputs rebuilt"),
+        "{resize}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(reflection_source, "tier_target_extent")),
+        "fntier_target_extent(&self)->Option<(u32,u32)>{\
+         self.fraction.map(|fraction|reflection_target_extent(self.scene_extent,fraction))}"
+    );
+    assert!(
+        code_only(wgsl_fn(reflection_source, "rebind_reflection_target")).contains(
+            "self.scene_inputs.rebuild(device,&scene_depth,self.reflection.bound_view());"
+        )
+    );
+    // A target change (create, resize or release) rebinds once; the extent it
+    // already has builds nothing; a replaced or released target drops only
+    // after group 5 holds its successor or the placeholder (P6).
+    let change = code_only(wgsl_fn(reflection_source, "set_reflection_target"));
+    assert!(change.starts_with(
+        "fnset_reflection_target(&mutself,device:&wgpu::Device,wanted:Option<(u32,u32)>,){\
+         ifwanted==self.reflection.live_target_extent(){return;}"
+    ));
+    let created = change
+        .find("ifletSome(extent)=wanted{self.reflection.create_target(device,extent);}")
+        .expect("create at the wanted extent");
+    let taken = change
+        .find("letreleased=self.reflection.target.take();")
+        .expect("take");
+    let rebound = change
+        .find("self.rebind_reflection_target(device);")
+        .expect("rebind");
+    let dropped = change.find("drop(released);").expect("drop");
+    assert!(
+        taken < created && created < rebound && rebound < dropped,
+        "{change}"
+    );
+    assert_eq!(
+        pass_code
+            .matches("self.rebind_reflection_target(device)")
+            .count(),
+        1
+    );
+    // Exactly four callers change the target: install keys it to a
+    // probe-bound face and the kept tier after starting from a clear; clear
+    // (level change and unload) drops it; a tier change and the capture's
+    // fraction override re-key it.
+    assert_eq!(pass_code.matches(".set_reflection_target(").count(), 4);
+    assert!(
+        code_only(wgsl_fn(reflection_source, "set_reflection_target_fraction"))
+            .contains("self.set_reflection_target(device,self.wanted_reflection_target());")
+    );
+    let install = code_only(wgsl_fn(source, "install"));
+    assert!(install.starts_with(
+        "fninstall(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
+    ));
+    assert!(install.contains("self.clear(device);"));
+    assert!(
+        install.ends_with("self.set_reflection_target(device,self.wanted_reflection_target());}")
+    );
+    assert!(
+        code_only(wgsl_fn(source, "clear"))
+            .contains("self.installed=None;self.set_reflection_target(device,None);")
+    );
+    assert_eq!(
+        code_only(wgsl_fn(reflection_source, "set_reflection_quality")),
+        "fnset_reflection_quality(&mutself,device:&wgpu::Device,quality:FluidReflectionQuality,){\
+         ifself.reflection.quality==quality{return;}self.reflection.apply_preset(quality);\
+         self.set_reflection_target(device,self.wanted_reflection_target());}",
+        "the tier it already holds builds nothing (P5)"
+    );
+    // The wanted target is keyed to probe binding and the tier alone, never
+    // reflectivity, which only switches variants per frame (P17). Only a
+    // tier that runs the screen-space layer wants one: Off and Low keep the
+    // placeholder.
+    let wanted = code_only(wgsl_fn(reflection_source, "wanted_reflection_target"));
+    assert!(wanted.contains("is_some_and(InstalledFluidSurfaces::has_probe_bound_face)"));
+    assert!(
+        wanted
+            .contains("if!probe_bound||!self.reflection.quality.runs_screen_space(){returnNone;}"),
+        "{wanted}"
+    );
+    assert!(
+        wanted.ends_with("self.reflection.tier_target_extent()}"),
+        "{wanted}"
+    );
+    assert!(!wanted.contains("reflectivity"), "{wanted}");
+    let set_draws = code_only(wgsl_fn(source, "set_draws"));
+    for rebuild in ["set_reflection_target", "rebind", "scene_inputs", "create_"] {
+        assert!(
+            !set_draws.contains(rebuild),
+            "set_draws reaches `{rebuild}`"
+        );
+    }
+    // The renderer's setter keeps the tier in boot state, returns on the
+    // tier it holds, and reaches the pass only on a full renderer. Full init
+    // hands the rebuilt pass the kept tier; no other renderer file sets it.
+    let setter = code_only(wgsl_fn(source, "set_reflection_quality"));
+    assert!(
+        setter.starts_with(
+            "fnset_reflection_quality(&mutself,quality:FluidReflectionQuality){\
+             ifself.reflection_quality==quality{return;}self.reflection_quality=quality;"
+        ),
+        "{setter}"
+    );
+    assert!(setter.contains(
+        "ifletSome(full)=full.as_mut(){full.fluid_surface.set_reflection_quality(device,quality);}"
+    ));
+    let init = code_only(include_str!("renderer_init.rs"));
+    let full_init = code_only(wgsl_fn(
+        include_str!("renderer_init.rs"),
+        "finish_full_init",
+    ));
+    assert!(
+        full_init.find("letfull=build_full_renderer(").unwrap()
+            < full_init
+                .find(".fluid_surface.set_reflection_quality(device,quality);")
+                .expect("full init hands the pass the kept tier"),
+        "{full_init}"
+    );
+    assert_eq!(init.matches(".set_reflection_quality(").count(), 1);
+    for other in [
+        include_str!("renderer_render_frame.rs"),
+        include_str!("renderer_extent.rs"),
+        include_str!("renderer_resources.rs"),
+        include_str!("renderer_full_init.rs"),
+    ] {
+        assert!(!code_only(other).contains("set_reflection_quality("));
+    }
+
+    // The scene-target rebuild: after the scene depth and colour are
+    // recreated, and the fog pass rebinds the depth.
+    let extent = include_str!("renderer_extent.rs");
+    let rebuild = code_only(wgsl_fn(extent, "rebuild_scene_targets"));
+    let depth = rebuild
+        .find("full.depth_view=depth_view;")
+        .expect("depth recreated");
+    let colour = rebuild
+        .find("full.screen_effects.resize(device,scene);")
+        .expect("scene colour recreated");
+    let fog = rebuild.find("full.fog.resize(").expect("fog resize");
+    let fluid = rebuild
+        .find(
+            "full.fluid_surface.rebuild_scene_inputs(device,&full.depth_view,\
+             full.screen_effects.scene_color_view(),);",
+        )
+        .expect("fluid group 5 rebuild");
+    assert!(depth < colour && colour < fog && fog < fluid);
+    // Unload, and every level change, reaches group 5 only through the clear.
+    let resources = code_only(include_str!("renderer_resources.rs"));
+    assert!(!resources.contains("rebuild_scene_inputs"));
+    assert!(resources.contains("full.fluid_surface.clear(device);"));
+
+    // Full init builds it over the scene depth and the placeholder, level or
+    // not, beside the reflection pipeline.
+    let init = code_only(include_str!("renderer_full_init.rs"));
+    let new = init
+        .find("fluid_surface::FluidSurfacePass::new(")
+        .expect("fluid pass built at full init");
+    assert!(init[new..].starts_with(
+        "fluid_surface::FluidSurfacePass::new(device,DEPTH_FORMAT,&uniform_bind_group_layout,\
+         &texture_bind_group_layout,&lighting_bind_group_layout,\
+         &sh_volume_resources.bind_group_layout,&depth_view,screen_effects.scene_color_view(),);"
+    ));
+    let pass_new = code_only(wgsl_fn(source, "new"));
+    assert!(pass_new.contains("letreflection=reflection_pass::FluidReflectionPass::new("));
+    assert!(pass_new.contains(
+        "letscene_inputs=FluidSceneInputs::new(device,scene_depth,reflection.bound_view());"
+    ));
+}
+
+#[test]
+fn fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform() {
+    let entries = fluid_scene_inputs_bind_group_layout_entries();
+    assert!(matches!(
+        entries[0].ty,
+        wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        }
+    ));
+    assert!(matches!(
+        entries[1].ty,
+        wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            ..
+        }
+    ));
+    // The reflection target: filterable, so smooth style reads it through
+    // the shared linear-clamp sampler.
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[2].binding, 2);
+    assert!(matches!(
+        entries[2].ty,
+        wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        }
+    ));
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.visibility == wgpu::ShaderStages::FRAGMENT)
+    );
+    assert_eq!(FLUID_SCENE_UNIFORM_BYTES, 16);
+    // Member for member, the CPU uniform the upload writes.
+    {
+        use crate::render::fluid_scene_inputs::FluidSceneUniform;
+        assert_eq!(
+            struct_member_offsets(&validated_module(), "FluidSceneInputs"),
+            [
+                (
+                    "fog_weight".to_owned(),
+                    std::mem::offset_of!(FluidSceneUniform, fog_weight) as u32
+                ),
+                (
+                    "reflection_style".to_owned(),
+                    std::mem::offset_of!(FluidSceneUniform, reflection_style) as u32
+                ),
+                (
+                    "ssr_scale".to_owned(),
+                    std::mem::offset_of!(FluidSceneUniform, ssr_scale) as u32
+                ),
+            ]
+        );
+    }
+    // The upload writes when either input changed, never on the fog weight
+    // alone.
+    let upload = code_only(wgsl_fn(include_str!("fluid_scene_inputs.rs"), "upload"));
+    assert!(upload.contains("letuniform=self.pending();"), "{upload}");
+    assert!(
+        upload.contains("ifuniform==self.uploaded{return;}"),
+        "{upload}"
+    );
+    let pending = code_only(wgsl_fn(include_str!("fluid_scene_inputs.rs"), "pending"));
+    assert!(
+        pending.contains(
+            "FluidSceneUniform::from_inputs(self.fog_weight,self.reflection_style,self.ssr_scale)"
+        ),
+        "{pending}"
+    );
+    assert_eq!(
+        FLUID_SCENE_INPUTS_GROUP as usize,
+        FLUID_BIND_GROUP_COUNT - 1
+    );
+    let source = FLUID_WGSL;
+    assert!(source.contains("@group(5) @binding(0) var scene_depth: texture_depth_2d;"));
+    assert!(source.contains("@group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;"));
+    assert!(source.contains("@group(5) @binding(2) var reflection_target: texture_2d<f32>;"));
+}
+
+// Reflection-probes acceptance row 31, grep gate: the fluid shader and pass
+// keep no history and no precomputed intersection data. The shader's binding
+// inventory is closed, so any previous-frame, reprojection or intersection
+// resource is a new binding this list refuses; no binding name or pass
+// identifier names one; the pass's own groups (4 and 5) hold exactly the
+// params window, the probe array, table and distance array (the probe's own
+// capture data, not an intersection table), and the scene depth, inputs and
+// this frame's reflection target. The reflection pass and its march scan the
+// same.
+#[test]
+fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
+    let module = validated_module();
+    let mut declared: Vec<(u32, u32, String)> = module
+        .global_variables
+        .iter()
+        .filter_map(|(_, global)| {
+            let binding = global.binding.as_ref()?;
+            Some((
+                binding.group,
+                binding.binding,
+                global.name.clone().unwrap_or_default(),
+            ))
+        })
+        .collect();
+    declared.sort();
+    let expected: Vec<(u32, u32, String)> = [
+        (0, 0, "uniforms"),
+        (1, 0, "base_texture"),
+        (1, 1, "emissive_texture"),
+        (1, 3, "material"),
+        (1, 5, "aniso_sampler"),
+        (2, 0, "lights"),
+        (2, 1, "light_influence"),
+        (3, 1, "sh_total_atlas"),
+        (3, 2, "sh_atlas_sampler"),
+        (3, 10, "sh_grid"),
+        (3, 11, "anim_descriptors"),
+        (3, 12, "anim_samples"),
+        (3, 13, "scripted_light_descriptors"),
+        (3, 14, "sh_depth_moments"),
+        (3, 15, "sh_direct_atlas"),
+        (4, 0, "fluid_volumes"),
+        (4, 1, "fluid_probe_array"),
+        (4, 2, "fluid_probes"),
+        (4, 3, "fluid_probe_distance"),
+        (5, 0, "scene_depth"),
+        (5, 1, "fluid_scene"),
+        (5, 2, "reflection_target"),
+    ]
+    .into_iter()
+    .map(|(group, binding, name)| (group, binding, name.to_owned()))
+    .collect();
+    assert_eq!(declared, expected, "the fluid shader's binding inventory");
+
+    let forbidden = [
+        "history",
+        "previous",
+        "prev_",
+        "last_frame",
+        "reproject",
+        "temporal",
+        "intersection",
+        "hit_buffer",
+        "hit_table",
+    ];
+    for (_, _, name) in &declared {
+        for word in forbidden {
+            assert!(!name.to_lowercase().contains(word), "binding `{name}`");
+        }
+    }
+    for (file, source) in [
+        ("fluid_surface.wgsl", FLUID_WGSL),
+        ("fluid_surface.rs", include_str!("fluid_surface.rs")),
+        (
+            "fluid_reflection_probes.rs",
+            include_str!("fluid_reflection_probes.rs"),
+        ),
+        (
+            "fluid_scene_inputs.rs",
+            include_str!("fluid_scene_inputs.rs"),
+        ),
+        (
+            "fluid_surface/reflection_pass.rs",
+            include_str!("fluid_surface/reflection_pass.rs"),
+        ),
+        (
+            "fluid_reflection_pass.wgsl",
+            composed_reflection_shader_source(),
+        ),
+    ] {
+        let code = code_only(source).to_lowercase();
+        for word in forbidden {
+            assert!(!code.contains(word), "{file} names `{word}` in code");
+        }
+    }
+
+    let groups = fluid_pipeline_bind_group_layout_entries();
+    let bindings =
+        |group: usize| -> Vec<u32> { groups[group].iter().map(|entry| entry.binding).collect() };
+    assert_eq!(
+        bindings(4),
+        [0, 1, 2, 3],
+        "group 4: params, probe array, table, distance array"
+    );
+    assert_eq!(
+        bindings(5),
+        [0, 1, 2],
+        "group 5: scene depth, scene inputs, reflection target"
+    );
+}
+
+// Acceptance row 31, source scan: the probe's array layer derives from the
+// face's binding input alone. The flat `probe` varying, written from the
+// install-time probe-index vertex buffer, is the only probe index
+// `fs_main_reflecting` passes on or reads the table by (its tail reads the face's box for the
+// pixel-style cell); every other probe-table read indexes by that `probe`
+// parameter; the
+// one probe-array tap reads `fluid_probes.probes[probe].layer`, and no
+// lookup-direction value (the lookup, box hit, reflected ray, tile UV or
+// view) reaches that expression. The distance search takes that same layer
+// as a parameter and only passes it on, unchanged, to its one distance tap.
+// The lookup reaches only the tile UV and the ratio, and the ratio's
+// direction only its lobe weights.
+#[test]
+fn fluid_probe_layer_derives_from_the_face_binding_alone() {
+    let source = FLUID_WGSL;
+    let code = code_only(source);
+    assert!(code_only(wgsl_fn(source, "vs_main")).contains("out.probe=in.probe;"));
+
+    let tail = fs_main_reflection_tail();
+    for call in [
+        "fluid_reflection_gate(in.probe,",
+        "fluid_reflection_sample(in.probe,",
+    ] {
+        assert!(
+            tail.contains(call),
+            "fs_main_reflecting passes the varying: `{call}`"
+        );
+    }
+    assert_eq!(tail.matches("probe,").count(), 2, "{tail}");
+    assert!(!tail.contains("letprobe") && !tail.contains("varprobe"));
+
+    // Every table read is indexed by the face's probe: the `probe`
+    // parameter, or in `fs_main_reflecting`'s tail the varying itself, read
+    // there only for the box and capture point the pixel-style cell is held to.
+    let table_reads = code.matches("fluid_probes.probes[").count();
+    assert!(table_reads >= 7, "{table_reads}");
+    assert_eq!(
+        tail.matches("fluid_probes.probes[in.probe]").count(),
+        3,
+        "{tail}"
+    );
+    assert!(tail.contains(
+        "fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
+         fluid_probes.probes[in.probe].capture_point);"
+    ));
+    assert_eq!(
+        code.matches("fluid_probes.probes[probe]").count() + 3,
+        table_reads
+    );
+    for function in ["fluid_reflection_sample", "fluid_reflection_ratio"] {
+        let body = code_only(wgsl_fn(source, function));
+        assert!(body.contains(&format!("fn{function}(probe:u32,")), "{body}");
+        assert!(!body.contains("letprobe") && !body.contains("varprobe"));
+    }
+
+    // The single array tap, and the layer it reads.
+    assert_eq!(
+        code.matches("fluid_probe_array").count(),
+        2,
+        "declaration + one tap"
+    );
+    let sample = code_only(wgsl_fn(source, "fluid_reflection_sample"));
+    assert!(sample.contains("textureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0)"));
+    let layer_at = sample.find("letlayer=").expect("layer binding");
+    let layer = &sample[layer_at..layer_at + sample[layer_at..].find(';').expect(";") + 1];
+    assert_eq!(layer, "letlayer=fluid_probes.probes[probe].layer;");
+    for direction_value in [
+        "lookup",
+        "hit",
+        "ray",
+        "uv",
+        "view",
+        "world_position",
+        "outward",
+    ] {
+        assert!(
+            !layer.contains(direction_value),
+            "the layer must not read `{direction_value}`"
+        );
+    }
+    // The layer binding, the colour tap, and the search it is handed to.
+    assert_eq!(sample.matches("layer").count(), 4, "{sample}");
+    assert!(sample.contains("fluid_probes.tile.xy,layer);"), "{sample}");
+    assert_eq!(
+        sample.matches("lookup").count() - sample.matches("_lookup").count(),
+        2,
+        "lookup feeds only the tile UV and the ratio: {sample}"
+    );
+    assert!(sample.contains("fluid_reflection_tile_uv(search.lookup,"));
+    assert!(sample.contains("fluid_reflection_ratio(probe,search.lookup)"));
+
+    // The search, its h and the capture-shadow fade's functions take the
+    // layer as a parameter, never bind or assign it, and only pass it on:
+    // every other mention is a `,layer)` argument to h or to a fade function,
+    // or h's one distance tap.
+    for (function, passes) in [
+        ("fluid_reflection_search", ",layer)"),
+        ("fluid_reflection_shadow_fade", ",layer)"),
+        ("fluid_reflection_shadow_edge", ",layer)"),
+        ("fluid_reflection_shadow_tap", ",layer)"),
+        ("fluid_reflection_search_h", ",layer,0.0)"),
+    ] {
+        let body = code_only(wgsl_fn(source, function));
+        assert!(body.contains("layer:u32)"), "{body}");
+        for bound in ["letlayer", "varlayer", "layer="] {
+            assert!(!body.contains(bound), "`{function}` binds `{bound}`");
+        }
+        assert_eq!(
+            body.matches("layer").count(),
+            body.matches(passes).count() + 1,
+            "`{function}` only passes the layer on: {body}"
+        );
+    }
+    let search_h = code_only(wgsl_fn(source, "fluid_reflection_search_h"));
+    assert!(search_h.contains(
+        "textureSampleLevel(fluid_probe_distance,sh_atlas_sampler,\
+         fluid_reflection_tile_uv(level,tile.x,tile.y),layer,0.0)"
+    ));
+
+    let ratio = code_only(wgsl_fn(source, "fluid_reflection_ratio"));
+    assert_eq!(ratio.matches("direction").count(), 2, "{ratio}");
+    assert!(ratio.contains("letlobes=fluid_reflection_lobe_weights(direction);"));
+}
+
+// P3 and P4: the fluid grid takes the lattice the SH sampler reads. A
+// streamed level's base wins over its legacy resources' placeholder; a level
+// whose legacy volume is absent or refused (not present) has none; an
+// unusable lattice is none.
+#[test]
+fn the_fluid_grid_takes_the_lattice_the_sh_sampler_reads() {
+    use super::super::renderer_types::sh_sampler_lattice;
+    use postretro_render_cpu::fluid_surface::FluidGridLattice;
+    let streamed = ([3.0, -1.0, 2.5], [0.75, 1.0, 0.75]);
+    let section = ([0.5, 0.0, 0.5], [1.0, 1.0, 1.0]);
+    let placeholder = ([0.0; 3], [1.0; 3]);
+    assert_eq!(
+        sh_sampler_lattice(Some(streamed), None),
+        FluidGridLattice::new(streamed.0, streamed.1)
+    );
+    // The streamed path never consults the legacy mirrors, whatever they hold.
+    assert_eq!(
+        sh_sampler_lattice(Some(streamed), Some(placeholder)),
+        FluidGridLattice::new(streamed.0, streamed.1)
+    );
+    assert_eq!(
+        sh_sampler_lattice(None, Some(section)),
+        FluidGridLattice::new(section.0, section.1)
+    );
+    assert_eq!(sh_sampler_lattice(None, None), None);
+    assert_eq!(
+        sh_sampler_lattice(None, Some(([0.0; 3], [0.0, 1.0, 1.0]))),
+        None
+    );
+    // The renderer offers the legacy mirrors only while a section is bound.
+    let types = code_only(include_str!("renderer_types.rs"));
+    assert!(types.contains(
+        "self.sh_volume_resources.present.then_some((self.sh_volume_resources.grid_origin,\
+         self.sh_volume_resources.cell_size,)),"
+    ));
+}
+
+fn validated_reflection_module_and_info() -> (naga::Module, naga::valid::ModuleInfo) {
+    let module = naga::front::wgsl::parse_str(composed_reflection_shader_source())
+        .expect("fluid reflection shader must parse as WGSL");
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("fluid reflection shader must pass naga validation");
+    (module, info)
+}
+
+/// The reflection shader compacted to one entry point, as wgpu compiles it.
+fn reflection_stage_module(stage: naga::ShaderStage, entry_point: &str) -> naga::Module {
+    let (module, info) = validated_reflection_module_and_info();
+    let (processed, _) = naga::back::pipeline_constants::process_overrides(
+        &module,
+        &info,
+        Some((stage, entry_point)),
+        &naga::back::PipelineConstants::default(),
+    )
+    .unwrap_or_else(|error| panic!("{entry_point} compacts: {error}"));
+    processed.into_owned()
+}
+
+// The reflection pass's own layout: 0 camera, 1 world material, 2 its inputs
+// (scene depth, scene colour, its uniform), 3 the fluid pass's parameter
+// window and probe table over the same buffers. Its shader's binding
+// inventory is closed: no probe colour or distance array, no animation
+// descriptors (live lighting, a capture-side input) and none of the fluid
+// pass's group 5, which holds this pass's own target (P12). Every binding
+// each entry point compiles with is in the layout, visible to its stage.
+#[test]
+fn fluid_reflection_pass_binds_no_probe_array_and_no_fluid_group_5() {
+    let (module, _) = validated_reflection_module_and_info();
+    let mut declared: Vec<(u32, u32, String)> = module
+        .global_variables
+        .iter()
+        .filter_map(|(_, global)| {
+            let binding = global.binding.as_ref()?;
+            Some((
+                binding.group,
+                binding.binding,
+                global.name.clone().unwrap_or_default(),
+            ))
+        })
+        .collect();
+    declared.sort();
+    let expected: Vec<(u32, u32, String)> = [
+        (0, 0, "uniforms"),
+        (1, 0, "base_texture"),
+        (2, 0, "scene_depth"),
+        (2, 1, "scene_color"),
+        (2, 2, "reflection_inputs"),
+        (3, 0, "fluid_volumes"),
+        (3, 2, "fluid_probes"),
+    ]
+    .into_iter()
+    .map(|(group, binding, name)| (group, binding, name.to_owned()))
+    .collect();
+    assert_eq!(
+        declared, expected,
+        "the reflection shader's binding inventory"
+    );
+    let code = code_only(composed_reflection_shader_source());
+    for absent in [
+        "fluid_probe_array",
+        "fluid_probe_distance",
+        "anim_descriptors",
+        "reflection_target",
+        "fluid_scene",
+        "@group(4)",
+        "@group(5)",
+        "fluid_reflection_search",
+        "fluid_reflection_shadow",
+        "fluid_reflection_sample",
+        "fluid_reflection_layered_composite",
+    ] {
+        assert!(
+            !code.contains(absent),
+            "the reflection pass reads `{absent}`"
+        );
+    }
+
+    let groups = fluid_reflection_pipeline_bind_group_layout_entries();
+    assert_eq!(groups.len(), FLUID_REFLECTION_BIND_GROUP_COUNT);
+    let bindings =
+        |group: usize| -> Vec<u32> { groups[group].iter().map(|entry| entry.binding).collect() };
+    assert_eq!(bindings(2), [0, 1, 2], "scene depth, scene colour, uniform");
+    assert_eq!(
+        bindings(3),
+        [0, 2],
+        "the parameter window and the probe table"
+    );
+    let [window, _, table, _] = fluid_params_bind_group_layout_entries();
+    let subset = fluid_reflection_probe_bind_group_layout_entries();
+    assert_eq!(subset[0], window);
+    assert_eq!(subset[1], table);
+    // The pass's own groups hold no texture array: no probe capture.
+    for entry in groups[2..].iter().flatten() {
+        assert!(
+            !matches!(
+                entry.ty,
+                wgpu::BindingType::Texture {
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    ..
+                }
+            ),
+            "the reflection layout holds no texture array: {entry:?}"
+        );
+    }
+
+    for (stage, visibility, entry_point) in [
+        (
+            naga::ShaderStage::Vertex,
+            wgpu::ShaderStages::VERTEX,
+            "vs_reflection",
+        ),
+        (
+            naga::ShaderStage::Fragment,
+            wgpu::ShaderStages::FRAGMENT,
+            "fs_reflection",
+        ),
+    ] {
+        let compacted = reflection_stage_module(stage, entry_point);
+        let bound = assert_bindings_in_layout(&compacted, &groups, visibility);
+        assert!(bound >= 1, "{entry_point} binds nothing");
+    }
+}
+
+// The reflection pass reads the fluid pass's buffers through its own copies
+// of their structs: member for member the same, so a row or probe field read
+// in one pass is the same field in the other. Its uniform is the CPU's.
+#[test]
+fn fluid_reflection_pass_structs_match_the_fluid_shader_and_the_cpu() {
+    let fluid = validated_module();
+    let (reflection, _) = validated_reflection_module_and_info();
+    for name in [
+        "Uniforms",
+        "FluidVolumeRow",
+        "FluidVolumeParams",
+        "FluidProbeLight",
+        "FluidProbe",
+        "FluidProbeTable",
+    ] {
+        assert_eq!(
+            struct_span(&reflection, name),
+            struct_span(&fluid, name),
+            "{name} span"
+        );
+        assert_eq!(
+            struct_member_offsets(&reflection, name),
+            struct_member_offsets(&fluid, name),
+            "{name} members"
+        );
+    }
+    assert_eq!(
+        struct_span(&reflection, "FluidReflectionInputs") as u64,
+        FLUID_REFLECTION_UNIFORM_BYTES
+    );
+    assert_eq!(
+        struct_member_offsets(&reflection, "FluidReflectionInputs"),
+        [
+            (
+                "reflection_style".to_owned(),
+                std::mem::offset_of!(FluidReflectionUniform, reflection_style) as u32
+            ),
+            (
+                "step_budget".to_owned(),
+                std::mem::offset_of!(FluidReflectionUniform, step_budget) as u32
+            ),
+            (
+                "thickness".to_owned(),
+                std::mem::offset_of!(FluidReflectionUniform, thickness) as u32
+            ),
+            (
+                "stride".to_owned(),
+                std::mem::offset_of!(FluidReflectionUniform, stride) as u32
+            ),
+            (
+                "target_scale".to_owned(),
+                std::mem::offset_of!(FluidReflectionUniform, target_scale) as u32
+            ),
+            (
+                "spare".to_owned(),
+                std::mem::offset_of!(FluidReflectionUniform, spare) as u32
+            ),
+        ]
+    );
+}
+
+/// `fs_reflection`'s tail, code only: the loaded colour clamped to
+/// [0, f16 max], so a ±Inf, negative or huge texel stays finite and
+/// non-negative (a NaN texel is not covered), then premultiplied (c·SSR, c),
+/// or a literal 0 wherever c is not above 0, so a miss never writes the texel
+/// it loaded (Inf × 0 is a NaN that smooth bilinear sampling would spread).
+const FS_REFLECTION_TAIL: &str = "letcolour=clamp(textureLoad(scene_color,vec2<i32>(march.pixel),0).rgb,\
+     vec3<f32>(0.0),vec3<f32>(65504.0));\
+     letpremultiplied=vec4<f32>(colour*march.confidence,march.confidence);\
+     returnselect(vec4<f32>(0.0),premultiplied,march.confidence>0.0);}";
+
+/// `fs_reflection`, whole, code only. Pinned under the march's IP rule: a
+/// statement anywhere in the entry, such as a direction test between the gate
+/// and the march or between the march and its write, would choose per pixel
+/// whether SSR applies by direction.
+const FS_REFLECTION_BODY: &str = "fnfs_reflection(in:ReflectionVertexOutput)->@location(0)vec4<f32>{\
+     letddx=dpdx(in.uv);\
+     letddy=dpdy(in.uv);\
+     letddx_world=dpdx(in.world_position);\
+     letddy_world=dpdy(in.world_position);\
+     letdims=vec2<f32>(textureDimensions(base_texture,0));\
+     letscale=reflection_inputs.target_scale;\
+     lettexels_per_pixel=max(length(ddx*dims*scale.x),length(ddy*dims*scale.y));\
+     letview_dir=normalize(uniforms.camera_position-in.world_position);\
+     letoutward=normalize(in.world_normal);\
+     letreflectivity=fluid_volumes.slots[in.slot].surface.z;\
+     if!fluid_reflection_gate(in.probe,outward,view_dir,uniforms.light_term_mask,reflectivity){\
+     discard;}\
+     letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);\
+     letpoint=fluid_reflection_point(reflection_inputs.reflection_style,in.uv*dims,\
+     in.world_position,outward,axes,uniforms.time,texels_per_pixel,\
+     fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
+     fluid_probes.probes[in.probe].capture_point);\
+     letview=normalize(uniforms.camera_position-point.position);\
+     letray=fluid_reflection_above_horizon(fluid_reflection_mirror(view,point.normal));\
+     letmarch=screen_march(point.position,ray,uniforms.view_proj,scene_depth,\
+     reflection_inputs.stride,reflection_inputs.step_budget,reflection_inputs.thickness);\
+     letcolour=clamp(textureLoad(scene_color,vec2<i32>(march.pixel),0).rgb,\
+     vec3<f32>(0.0),vec3<f32>(65504.0));\
+     letpremultiplied=vec4<f32>(colour*march.confidence,march.confidence);\
+     returnselect(vec4<f32>(0.0),premultiplied,march.confidence>0.0);}";
+
+// The reflection fragment shares the fluid pass's gate, cell point and ray:
+// derivatives first, in uniform control flow; a refused fragment discards;
+// pixel style starts the march at `fluid_reflection_point`'s point about its
+// normal, as the probe term's `fluid_reflection_sample` mirrors it, with
+// texels per pixel scaled to scene resolution so both passes fade and tilt
+// one cell alike. It writes premultiplied colour and confidence.
+#[test]
+fn fluid_reflection_pass_marches_from_the_probe_terms_point_and_writes_premultiplied() {
+    let source = composed_reflection_shader_source();
+    let fragment = code_only(wgsl_fn(source, "fs_reflection"));
+    let gate = fragment
+        .find(
+            "if!fluid_reflection_gate(in.probe,outward,view_dir,uniforms.light_term_mask,\
+               reflectivity){discard;}",
+        )
+        .expect("the fluid pass's gate, discarding");
+    for derivative in [
+        "letddx=dpdx(in.uv);",
+        "letddy=dpdy(in.uv);",
+        "letddx_world=dpdx(in.world_position);",
+        "letddy_world=dpdy(in.world_position);",
+    ] {
+        let at = fragment.find(derivative).expect(derivative);
+        assert!(at < gate, "`{derivative}` precedes the gate");
+    }
+    assert_eq!(fragment.matches("dpdx(").count(), 2);
+    assert_eq!(fragment.matches("dpdy(").count(), 2);
+    assert!(
+        fragment.contains(
+            "lettexels_per_pixel=max(length(ddx*dims*scale.x),length(ddy*dims*scale.y));"
+        )
+    );
+    assert!(fragment.contains(
+        "letpoint=fluid_reflection_point(reflection_inputs.reflection_style,in.uv*dims,"
+    ));
+    assert!(fragment.contains(
+        "letray=fluid_reflection_above_horizon(fluid_reflection_mirror(view,point.normal));"
+    ));
+    assert!(fragment.contains("letmarch=screen_march(point.position,ray,uniforms.view_proj,"));
+    assert!(fragment.ends_with(FS_REFLECTION_TAIL), "{fragment}");
+    // The probe term mirrors the same ray from the same point.
+    let sample = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_sample"));
+    assert!(
+        sample.contains(
+            "letray=fluid_reflection_above_horizon(fluid_reflection_mirror(view,outward));"
+        )
+    );
+    assert!(
+        code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"))
+            .contains("fluid_reflection_sample(in.probe,point.position,view,point.normal);")
+    );
+    // No implicit-derivative sample anywhere in the march (FXC X3511).
+    let march = code_only(include_str!("../shaders/screen_march.wgsl"));
+    for implicit in [
+        "textureSample(",
+        "textureSampleCompare(",
+        "dpdx",
+        "dpdy",
+        "fwidth",
+    ] {
+        assert!(!march.contains(implicit), "the march calls `{implicit}`");
+    }
+}
+
+// The pass's own state: two-sided like the fluid pass, its own depth tested
+// and written so the nearest fluid surface owns a texel, no blend (each
+// fragment replaces), a target cleared to c = 0 and a depth cleared to far
+// each frame, and its own labelled timing pair.
+#[test]
+fn fluid_reflection_pass_clears_its_target_and_orders_fluid_by_its_own_depth() {
+    let depth = fluid_reflection_depth_stencil_state();
+    assert_eq!(depth.format, DEPTH_FORMAT);
+    assert_eq!(depth.depth_write_enabled, Some(true));
+    assert_eq!(depth.depth_compare, Some(wgpu::CompareFunction::Less));
+    assert_eq!(
+        FLUID_REFLECTION_TARGET_FORMAT,
+        wgpu::TextureFormat::Rgba16Float
+    );
+    let pass = include_str!("fluid_surface/reflection_pass.rs");
+    let code = code_only(pass);
+    assert!(code.contains("primitive:fluid_primitive_state(),"));
+    assert!(code.contains("format:FLUID_REFLECTION_TARGET_FORMAT,blend:None,"));
+    assert!(code.contains("load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),"));
+    assert!(code.contains("load:wgpu::LoadOp::Clear(1.0),"));
+    assert!(code.contains("render_pass_writes(TIMING_PAIR_FLUID_REFLECTION)"));
+    // The scene depth is read, never attached: the depth attachment is the
+    // target's own.
+    let record = code_only(wgsl_fn(pass, "record_fluid_reflection_pass"));
+    assert!(!record.contains("depth_view:&full.depth_view"));
+    assert!(!record.contains("full.depth_view"));
+    const { assert!(TIMING_PAIR_FLUID_REFLECTION < TIMING_PAIR_COUNT) }
+    let labels = include_str!("renderer_init_resources.rs");
+    let line = "pass_labels[TIMING_PAIR_FLUID_REFLECTION] = \"fluid_reflection\"";
+    assert!(labels.contains(line), "missing timing label `{line}`");
+}
+
+// The target extent per axis at the active fraction of the scene's, rounded
+// up and never below one texel, is render-cpu's `reflection_target_extent`
+// rule alone (its tests pin the rule), and every fraction the pass holds
+// comes from render-cpu's preset table, or from the capture's override,
+// which the setter range-checks: the renderer sizes every target through
+// the rule and keeps no fraction value or rounding of its own.
+#[test]
+fn the_reflection_target_sizes_by_the_render_cpu_tier_rule_alone() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+    let source = include_str!("fluid_surface/reflection_pass.rs");
+    let pass = code_only(source);
+    // One call of the rule; the other match is the test accessor of the same name.
+    assert_eq!(pass.matches("reflection_target_extent(").count(), 2);
+    assert!(pass.contains(
+        "fnreflection_target_extent(&self)->Option<(u32,u32)>{self.reflection.live_target_extent()}"
+    ));
+    assert!(pass.contains("reflection_target_extent(self.scene_extent,fraction)"));
+    for copy in ["ceil(", "FRACTION", "0.25", "0.5)", ".target_extent("] {
+        assert!(!pass.contains(copy), "the pass keeps its own `{copy}`");
+    }
+    // Every write of the fraction: the default tier's preset at full init,
+    // a tier's preset on a change, and the range-checked override.
+    assert_eq!(
+        pass.matches("fraction:preset.map(|preset|preset.fraction),")
+            .count(),
+        1
+    );
+    assert_eq!(
+        pass.matches("self.fraction=preset.map(|preset|preset.fraction);")
+            .count(),
+        1
+    );
+    assert_eq!(
+        pass.matches("self.reflection.fraction=Some(fraction);")
+            .count(),
+        1
+    );
+    assert!(
+        code_only(wgsl_fn(source, "set_reflection_target_fraction")).contains(
+            "if self.reflection.fraction.is_none()||!(fraction>0.0&&fraction<=1.0){returnfalse;}"
+                .replace(' ', "")
+                .as_str()
+        )
+    );
+    assert!(!code_only(include_str!("fluid_surface.rs")).contains("ceil("));
+    assert_eq!(
+        FluidReflectionQuality::Medium.target_extent((1921, 1081)),
+        Some((961, 541))
+    );
+}
+
+// P14, by source: raising or lowering the tier compiles nothing. The
+// renderer's setter and every helper it reaches (the pass's setter, the
+// wanted extent, the target change, the target's creation and group 5's
+// rebind and scale) create no pipeline, shader module or pipeline layout;
+// those exist only in the full-init constructors, built at every tier. The
+// tier's preset reaches the march tuning and the fraction alone, and the
+// capture's fraction override reaches the same target change. The march's
+// dev tuning setters compile and rebuild nothing either.
+#[test]
+fn raising_the_reflection_tier_compiles_nothing() {
+    const COMPILES: [&str; 3] = [
+        "create_render_pipeline(",
+        "create_shader_module(",
+        "create_pipeline_layout(",
+    ];
+    let source = include_str!("fluid_surface.rs");
+    let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
+    let inputs = include_str!("fluid_scene_inputs.rs");
+    let target_impl = {
+        let start = reflection_source
+            .find("impl FluidReflectionTarget {")
+            .expect("the target's impl");
+        wgsl_fn(&reflection_source[start..], "new")
+    };
+    let mut bodies: Vec<(&str, String)> = vec![
+        (
+            "Renderer::set_reflection_quality",
+            code_only(wgsl_fn(source, "set_reflection_quality")),
+        ),
+        (
+            "Renderer::set_reflection_target_fraction",
+            code_only(wgsl_fn(source, "set_reflection_target_fraction")),
+        ),
+        (
+            "has_probe_bound_face",
+            code_only(wgsl_fn(source, "has_probe_bound_face")),
+        ),
+        ("FluidReflectionTarget::new", code_only(target_impl)),
+        (
+            "FluidSceneInputs::rebuild",
+            code_only(wgsl_fn(inputs, "rebuild")),
+        ),
+        (
+            "FluidSceneInputs::set_ssr_scale",
+            code_only(wgsl_fn(inputs, "set_ssr_scale")),
+        ),
+        (
+            "FluidSceneInputs::bound_scene_depth",
+            code_only(wgsl_fn(inputs, "bound_scene_depth")),
+        ),
+    ];
+    for helper in [
+        "set_reflection_quality",
+        "apply_preset",
+        "set_reflection_target_fraction",
+        "wanted_reflection_target",
+        "set_reflection_target",
+        "tier_target_extent",
+        "live_target_extent",
+        "create_target",
+        "rebind_reflection_target",
+        "bound_view",
+        "target_scale",
+    ] {
+        bodies.push((helper, code_only(wgsl_fn(reflection_source, helper))));
+    }
+    for (name, body) in &bodies {
+        for compile in COMPILES {
+            assert!(!body.contains(compile), "{name} calls `{compile}`");
+        }
+    }
+    // The march's dev tuning writes the reflection uniform alone, on its
+    // next change-driven upload: neither the pass's setter, render-cpu's
+    // sanitizer (GPU-free) nor the renderer's setters compile, build a bind
+    // group or target, or write a buffer themselves.
+    let state = include_str!("renderer_state.rs");
+    let presets = include_str!("../../../render-cpu/src/fluid_surface/reflection_quality.rs");
+    let mut tuning: Vec<(&str, String)> =
+        ["reflection_march_tuning", "set_reflection_march_tuning"]
+            .into_iter()
+            .map(|helper| (helper, code_only(wgsl_fn(reflection_source, helper))))
+            .collect();
+    tuning.push(("sanitized", code_only(wgsl_fn(presets, "sanitized"))));
+    // A tier change applies its preset as values: the march and the
+    // fraction, nothing built.
+    let apply = code_only(wgsl_fn(reflection_source, "apply_preset"));
+    assert!(
+        apply.contains("self.tuning=preset.march;")
+            && apply.contains("self.fraction=preset.map(|preset|preset.fraction);"),
+        "{apply}"
+    );
+    for setter in [
+        "set_reflection_march_step_budget",
+        "set_reflection_march_thickness",
+        "set_reflection_march_rows_per_stride_pixel",
+    ] {
+        tuning.push((setter, code_only(wgsl_fn(state, setter))));
+    }
+    for (name, body) in &tuning {
+        for forbidden in COMPILES.into_iter().chain([
+            "create_bind_group(",
+            "create_target(",
+            "set_reflection_target(",
+            "rebuild(",
+            "write_buffer(",
+        ]) {
+            assert!(!body.contains(forbidden), "{name} reaches `{forbidden}`");
+        }
+    }
+    assert!(
+        code_only(wgsl_fn(reflection_source, "set_reflection_march_tuning"))
+            .contains("self.reflection.tuning=tuning.sanitized(self.reflection.tuning);")
+    );
+    // The setter's call graph is closed over that list.
+    let pass_setter = &bodies
+        .iter()
+        .find(|(name, _)| *name == "set_reflection_quality")
+        .unwrap()
+        .1;
+    assert!(
+        pass_setter.contains(
+            "self.reflection.apply_preset(quality);\
+             self.set_reflection_target(device,self.wanted_reflection_target());"
+        ),
+        "{pass_setter}"
+    );
+    // The only compiles in these modules are the full-init constructors'.
+    let pass_new = code_only(wgsl_fn(
+        &reflection_source[reflection_source
+            .find("impl FluidReflectionPass {")
+            .unwrap()..],
+        "new",
+    ));
+    for compile in COMPILES {
+        assert_eq!(
+            code_only(reflection_source).matches(compile).count(),
+            1,
+            "{compile}"
+        );
+        assert!(pass_new.contains(compile), "{compile}");
+        assert!(!code_only(inputs).contains(compile), "{compile}");
+    }
+    let fluid_new = code_only(wgsl_fn(source, "new"));
+    let fluid_pipeline = code_only(wgsl_fn(source, "create_fluid_pipeline"));
+    for (compile, count) in [
+        ("create_render_pipeline(", 1),
+        ("create_shader_module(", 1),
+        ("create_pipeline_layout(", 1),
+    ] {
+        assert_eq!(
+            code_only(source).matches(compile).count(),
+            count,
+            "{compile}"
+        );
+        assert!(
+            fluid_new.contains(compile) || fluid_pipeline.contains(compile),
+            "{compile}"
+        );
+    }
+}
+
+/// The screen-space march's own module, composed into the reflection pass.
+const SCREEN_MARCH_WGSL: &str = include_str!("../shaders/screen_march.wgsl");
+/// Its GPU-free CPU reference.
+const SCREEN_MARCH_CPU: &str =
+    include_str!("../../../render-cpu/src/fluid_surface/screen_march.rs");
+
+#[test]
+fn screen_march_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::screen_march as m;
+    let march_f32 = |name: &str| -> f32 {
+        shader_const_in(SCREEN_MARCH_WGSL, name, "f32")
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} must be an f32 literal"))
+    };
+    for (name, cpu) in [
+        ("SCREEN_MARCH_RAY_LENGTH", m::SCREEN_MARCH_RAY_LENGTH),
+        ("SCREEN_MARCH_NEAR_EPSILON", m::SCREEN_MARCH_NEAR_EPSILON),
+        ("SCREEN_MARCH_EDGE_FADE", m::SCREEN_MARCH_EDGE_FADE),
+        ("SCREEN_MARCH_REACH_FADE", m::SCREEN_MARCH_REACH_FADE),
+    ] {
+        assert_eq!(march_f32(name), cpu, "{name}");
+    }
+    // Every constant the module declares is one of those four.
+    assert_eq!(
+        code_only(SCREEN_MARCH_WGSL).matches("const").count(),
+        4,
+        "the march declares a constant the pin does not name"
+    );
+}
+
+/// `screen_march`, code only, as WGSL: the transcription pin and the IP gate
+/// below both hold the march to this text.
+const SCREEN_MARCH_WGSL_BODY: &str = "fnscreen_march(origin:vec3<f32>,direction:vec3<f32>,view_proj:mat4x4<f32>,\
+     depth:texture_depth_2d,stride:f32,budget:u32,thickness:f32)->ScreenMarch{\
+     letextent=vec2<f32>(textureDimensions(depth));\
+     letmiss=ScreenMarch(vec2<f32>(0.0),0.0);\
+     letrow_z=vec4<f32>(view_proj[0].z,view_proj[1].z,view_proj[2].z,view_proj[3].z);\
+     letrow_w=vec4<f32>(view_proj[0].w,view_proj[1].w,view_proj[2].w,view_proj[3].w);\
+     letw_axis=dot(row_w.xyz,row_w.xyz);\
+     if!(w_axis>0.0){returnmiss;}\
+     letdepth_a=dot(row_z.xyz,row_w.xyz)/w_axis;\
+     letdepth_b=row_z.w-depth_a*row_w.w;\
+     letclip_origin=view_proj*vec4<f32>(origin,1.0);\
+     if!(clip_origin.z>SCREEN_MARCH_NEAR_EPSILON&&clip_origin.w>0.0){returnmiss;}\
+     varclip_far=view_proj*vec4<f32>(origin+direction*SCREEN_MARCH_RAY_LENGTH,1.0);\
+     ifclip_far.z<SCREEN_MARCH_NEAR_EPSILON{\
+     lett=(clip_origin.z-SCREEN_MARCH_NEAR_EPSILON)/(clip_origin.z-clip_far.z);\
+     clip_far=clip_origin+(clip_far-clip_origin)*t;}\
+     letp0=screen_march_pixel(clip_origin,extent);\
+     letp1=screen_march_pixel(clip_far,extent);\
+     letd0=clip_origin.z/clip_origin.w;letd1=clip_far.z/clip_far.w;\
+     letk0=1.0/clip_origin.w;letk1=1.0/clip_far.w;\
+     letspan=max(length(p1-p0),1.0e-6);\
+     lets_step=stride/span;\
+     varin_front=false;\
+     varlast_w=1.0/k0;\
+     for(vartaken:u32=0u;taken<budget;taken=taken+1u){\
+     lets=f32(taken)*s_step;\
+     ifs>1.0{returnmiss;}\
+     letpixel=mix(p0,p1,s);\
+     ifany(pixel<vec2<f32>(0.0))||any(pixel>=extent){returnmiss;}\
+     letray_depth=mix(d0,d1,s);\
+     if!(ray_depth>=0.0&&ray_depth<=1.0){returnmiss;}\
+     letray_w=1.0/mix(k0,k1,s);\
+     letspan_near=min(ray_w,last_w);\
+     last_w=ray_w;\
+     letscene=textureLoad(depth,vec2<i32>(pixel),0);\
+     ifscene>=1.0||ray_depth<=scene{in_front=true;continue;}\
+     letscene_w=depth_b/(scene-depth_a);\
+     ifin_front&&span_near<=scene_w+thickness{\
+     returnScreenMarch(pixel,screen_march_confidence(pixel,extent,taken,budget));}}\
+     returnmiss;}";
+
+/// `screen_march`'s CPU reference, code only.
+const SCREEN_MARCH_CPU_BODY: &str = "fnscreen_march(origin:Vec3,direction:Vec3,view_proj:Mat4,\
+     depth:&implScreenMarchDepth,stride:f32,budget:u32,thickness:f32,)->ScreenMarch{\
+     letextent=depth.dimensions().as_vec2();\
+     letmiss=ScreenMarch{pixel:Vec2::ZERO,confidence:0.0,};\
+     letrow_z=Vec4::new(view_proj.col(0).z,view_proj.col(1).z,view_proj.col(2).z,\
+     view_proj.col(3).z,);\
+     letrow_w=Vec4::new(view_proj.col(0).w,view_proj.col(1).w,view_proj.col(2).w,\
+     view_proj.col(3).w,);\
+     letw_axis=row_w.truncate().dot(row_w.truncate());\
+     if!(w_axis>0.0){returnmiss;}\
+     letdepth_a=row_z.truncate().dot(row_w.truncate())/w_axis;\
+     letdepth_b=row_z.w-depth_a*row_w.w;\
+     letclip_origin=view_proj*origin.extend(1.0);\
+     if!(clip_origin.z>SCREEN_MARCH_NEAR_EPSILON&&clip_origin.w>0.0){returnmiss;}\
+     letmutclip_far=view_proj*(origin+direction*SCREEN_MARCH_RAY_LENGTH).extend(1.0);\
+     ifclip_far.z<SCREEN_MARCH_NEAR_EPSILON{\
+     lett=(clip_origin.z-SCREEN_MARCH_NEAR_EPSILON)/(clip_origin.z-clip_far.z);\
+     clip_far=clip_origin+(clip_far-clip_origin)*t;}\
+     letp0=screen_march_pixel(clip_origin,extent);\
+     letp1=screen_march_pixel(clip_far,extent);\
+     letd0=clip_origin.z/clip_origin.w;letd1=clip_far.z/clip_far.w;\
+     letk0=1.0/clip_origin.w;letk1=1.0/clip_far.w;\
+     letspan=(p1-p0).length().max(1.0e-6);\
+     lets_step=stride/span;\
+     letmutin_front=false;\
+     letmutlast_w=1.0/k0;\
+     fortakenin0..budget{\
+     lets=takenasf32*s_step;\
+     ifs>1.0{returnmiss;}\
+     letpixel=p0.lerp(p1,s);\
+     ifpixel.cmplt(Vec2::ZERO).any()||pixel.cmpge(extent).any(){returnmiss;}\
+     letray_depth=mix(d0,d1,s);\
+     if!(0.0..=1.0).contains(&ray_depth){returnmiss;}\
+     letray_w=1.0/mix(k0,k1,s);\
+     letspan_near=ray_w.min(last_w);\
+     last_w=ray_w;\
+     letscene=depth.load(pixel);\
+     ifscene>=1.0||ray_depth<=scene{in_front=true;continue;}\
+     letscene_w=depth_b/(scene-depth_a);\
+     ifin_front&&span_near<=scene_w+thickness{\
+     returnScreenMarch{pixel,confidence:screen_march_confidence(pixel,extent,taken,\
+     budget),};}}\
+     miss}";
+
+// The march's pixel projection, confidence and march are the CPU
+// `screen_march` reference in WGSL, pinned on both sides. The CPU's depth is
+// a stand-in for the texture: `dimensions()` is `textureDimensions`, and
+// `load(pixel)` is `textureLoad` at `vec2<i32>(pixel)`, level 0; glam's
+// `lerp` is WGSL's `mix`, and a range's `contains` is the negated pair of
+// comparisons, a NaN reading as outside either way.
+#[test]
+fn screen_march_wgsl_bodies_match_the_cpu_reference() {
+    let pinned: [(&str, &str, &str); 3] = [
+        (
+            "screen_march_pixel",
+            "fnscreen_march_pixel(clip:vec4<f32>,extent:vec2<f32>)->vec2<f32>{\
+             letndc=clip.xy/clip.w;\
+             returnvec2<f32>(ndc.x*0.5+0.5,0.5-ndc.y*0.5)*extent;}",
+            "fnscreen_march_pixel(clip:Vec4,extent:Vec2)->Vec2{\
+             letndc=clip.truncate().truncate()/clip.w;\
+             Vec2::new(ndc.x*0.5+0.5,0.5-ndc.y*0.5)*extent}",
+        ),
+        (
+            "screen_march_confidence",
+            "fnscreen_march_confidence(pixel:vec2<f32>,extent:vec2<f32>,taken:u32,budget:u32)\
+             ->f32{\
+             letuv=pixel/extent;\
+             letedge=min(uv,vec2<f32>(1.0)-uv);\
+             letfade=clamp(min(edge.x,edge.y)/SCREEN_MARCH_EDGE_FADE,0.0,1.0);\
+             letleft=f32(budget-taken)/max(f32(budget)*SCREEN_MARCH_REACH_FADE,1.0);\
+             returnfade*clamp(left,0.0,1.0);}",
+            "fnscreen_march_confidence(pixel:Vec2,extent:Vec2,taken:u32,budget:u32)->f32{\
+             letuv=pixel/extent;\
+             letedge=uv.min(Vec2::ONE-uv);\
+             letfade=(edge.x.min(edge.y)/SCREEN_MARCH_EDGE_FADE).clamp(0.0,1.0);\
+             letleft=(budget-taken)asf32/(budgetasf32*SCREEN_MARCH_REACH_FADE).max(1.0);\
+             fade*left.clamp(0.0,1.0)}",
+        ),
+        (
+            "screen_march",
+            SCREEN_MARCH_WGSL_BODY,
+            SCREEN_MARCH_CPU_BODY,
+        ),
+    ];
+    for (name, wgsl_body, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(SCREEN_MARCH_WGSL, name)),
+            wgsl_body,
+            "WGSL `{name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(SCREEN_MARCH_CPU, name)),
+            cpu_body,
+            "CPU `{name}` drifted"
+        );
+    }
+    // The CPU's scalar `mix` is WGSL's.
+    assert_eq!(
+        code_only(wgsl_fn(SCREEN_MARCH_CPU, "mix")),
+        "fnmix(x:f32,y:f32,a:f32)->f32{x*(1.0-a)+y*a}"
+    );
+}
+
+/// The code of `fn name`'s body, split into statements at `;`, `{` and `}`,
+/// comments and whitespace removed.
+fn body_statements(source: &str, name: &str) -> Vec<String> {
+    let code = code_only(wgsl_fn(source, name));
+    let body = &code[code.find('{').expect("fn body") + 1..];
+    body.split([';', '{', '}'])
+        .filter(|statement| !statement.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Every name a ray- or view-direction quantity goes by, or a test of one's
+/// sign, as code-only text. `view_proj`, the projection, is struck out before
+/// the scan.
+const DIRECTION_READS: [&str; 10] = [
+    "direction",
+    "dir",
+    "toward",
+    "camera",
+    "view",
+    "reflect",
+    "mirror",
+    "sign(",
+    "signum",
+    "is_sign_",
+];
+
+// IP gate (structural, rendering_pipeline.md §7.3a): the march and its
+// confidence read no ray- or view-direction quantity. Confidence takes the
+// stop's pixel, the extent, the step index and the budget, and nothing else.
+// In the march, `direction` is read once, where the far end is placed; no
+// other statement names a direction, the camera or the view, or tests a
+// sign. A name scan cannot see a direction gate written as data flow (a flag
+// set from `k1 <= k0`, a mix weight, a shadowed thickness, a loop bound), so
+// the march's whole body is also pinned, in both the WGSL and its CPU
+// reference, as is the whole `fs_reflection` entry that runs it: any edit to
+// either fails here and needs owner IP review.
+#[test]
+fn the_march_and_its_confidence_read_no_direction() {
+    for (source, signature, far_end) in [
+        (
+            SCREEN_MARCH_WGSL,
+            "fnscreen_march_confidence(pixel:vec2<f32>,extent:vec2<f32>,taken:u32,budget:u32)\
+             ->f32{",
+            "varclip_far=view_proj*vec4<f32>(origin+direction*SCREEN_MARCH_RAY_LENGTH,1.0)",
+        ),
+        (
+            SCREEN_MARCH_CPU,
+            "fnscreen_march_confidence(pixel:Vec2,extent:Vec2,taken:u32,budget:u32)->f32{",
+            "letmutclip_far=view_proj*(origin+direction*SCREEN_MARCH_RAY_LENGTH).extend(1.0)",
+        ),
+    ] {
+        let confidence = code_only(wgsl_fn(source, "screen_march_confidence"));
+        assert!(
+            confidence.starts_with(signature),
+            "confidence takes the stop's pixel, extent, step index and budget alone: \
+             {confidence}"
+        );
+        for statement in body_statements(source, "screen_march_confidence")
+            .iter()
+            .chain(&body_statements(source, "screen_march_pixel"))
+        {
+            for read in DIRECTION_READS {
+                assert!(
+                    !statement.contains(read),
+                    "confidence reads `{read}`: {statement}"
+                );
+            }
+        }
+
+        let statements = body_statements(source, "screen_march");
+        let direction_reads: Vec<&String> = statements
+            .iter()
+            .filter(|statement| statement.contains("direction"))
+            .collect();
+        assert_eq!(
+            direction_reads,
+            [far_end],
+            "the march reads its direction only to place the far end"
+        );
+        for statement in statements.iter().filter(|statement| *statement != far_end) {
+            let scanned = statement.replace("view_proj", "");
+            for read in DIRECTION_READS {
+                assert!(
+                    !scanned.contains(read),
+                    "the march reads `{read}` past its far end: {statement}"
+                );
+            }
+        }
+        // The step is one stride of the screen segment, every step.
+        for step in ["lets_step=stride/span", "letpixel="] {
+            assert_eq!(
+                statements.iter().filter(|s| s.starts_with(step)).count(),
+                1,
+                "`{step}` is computed once"
+            );
+        }
+        assert!(
+            !statements
+                .iter()
+                .any(|s| s.starts_with("s_step=") || s.starts_with("stride=")),
+            "the step is never re-assigned"
+        );
+    }
+
+    // The march's `if` conditions, returns and step chain are allowlisted
+    // exactly. These finer checks name where a change landed; the whole-body
+    // pin after them is what allowlists every statement and the loop header.
+    let rule = "march exits/weights/steps must read no direction (owner IP review to change)";
+    let shared_conditions = |pixel: &str, depth_range: &str| {
+        [
+            "!(w_axis>0.0)",
+            "!(clip_origin.z>SCREEN_MARCH_NEAR_EPSILON&&clip_origin.w>0.0)",
+            "clip_far.z<SCREEN_MARCH_NEAR_EPSILON",
+            "s>1.0",
+            pixel,
+            depth_range,
+            "scene>=1.0||ray_depth<=scene",
+            "in_front&&span_near<=scene_w+thickness",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    };
+    let returns = |hit: &str| {
+        ["miss", "miss", "miss", "miss", "miss", hit, "miss"]
+            .map(str::to_owned)
+            .to_vec()
+    };
+    for (source, body, conditions, exits, step_chain) in [
+        (
+            SCREEN_MARCH_WGSL,
+            SCREEN_MARCH_WGSL_BODY,
+            shared_conditions(
+                "any(pixel<vec2<f32>(0.0))||any(pixel>=extent)",
+                "!(ray_depth>=0.0&&ray_depth<=1.0)",
+            ),
+            returns("ScreenMarch(pixel,screen_march_confidence(pixel,extent,taken,budget))"),
+            [
+                "letspan=max(length(p1-p0),1.0e-6)",
+                "lets_step=stride/span",
+                "lets=f32(taken)*s_step",
+                "letpixel=mix(p0,p1,s)",
+            ],
+        ),
+        (
+            SCREEN_MARCH_CPU,
+            SCREEN_MARCH_CPU_BODY,
+            shared_conditions(
+                "pixel.cmplt(Vec2::ZERO).any()||pixel.cmpge(extent).any()",
+                "!(0.0..=1.0).contains(&ray_depth)",
+            ),
+            returns(
+                "ScreenMarch{pixel,confidence:screen_march_confidence(pixel,extent,taken,budget),}",
+            ),
+            [
+                "letspan=(p1-p0).length().max(1.0e-6)",
+                "lets_step=stride/span",
+                "lets=takenasf32*s_step",
+                "letpixel=p0.lerp(p1,s)",
+            ],
+        ),
+    ] {
+        let statements = body_statements(source, "screen_march");
+        assert_eq!(
+            march_conditions(source),
+            conditions,
+            "{rule}: `if` conditions"
+        );
+        assert_eq!(march_returns(source), exits, "{rule}: return expressions");
+        for branch in ["else", "break", "while", "loop", "select("] {
+            assert!(
+                !statements
+                    .iter()
+                    .any(|statement| statement.contains(branch)),
+                "{rule}: the march gains `{branch}`"
+            );
+        }
+        for step in step_chain {
+            let name = &step[..=step.find('=').expect("a let")];
+            let found: Vec<&String> = statements
+                .iter()
+                .filter(|statement| statement.starts_with(name))
+                .collect();
+            assert_eq!(found, [step], "{rule}: the step chain");
+        }
+        // The transcription pin holds the march to the same text; this
+        // duplicate exists to carry the IP rule's message.
+        assert_eq!(
+            code_only(wgsl_fn(source, "screen_march")),
+            body,
+            "{rule}: the march body"
+        );
+    }
+    // The entry that runs the march, whole: the finer `fs_reflection` checks
+    // pin its head and tail, but nothing else holds them adjacent.
+    assert_eq!(
+        code_only(wgsl_fn(
+            composed_reflection_shader_source(),
+            "fs_reflection"
+        )),
+        FS_REFLECTION_BODY,
+        "{rule}: the reflection entry"
+    );
+}
+
+/// Each `if` condition in `screen_march`, code only, in source order: every
+/// statement opening with `if`, the keyword stripped.
+fn march_conditions(source: &str) -> Vec<String> {
+    body_statements(source, "screen_march")
+        .into_iter()
+        .filter_map(|statement| statement.strip_prefix("if").map(str::to_owned))
+        .collect()
+}
+
+/// Each expression `screen_march` returns, code only, in source order: every
+/// `return` scanned to its `;` at bracket depth 0, then a tail expression
+/// after the body's last `;` or `}`, if any.
+fn march_returns(source: &str) -> Vec<String> {
+    let code = code_only(wgsl_fn(source, "screen_march"));
+    let body = &code[code.find('{').expect("fn body") + 1..code.len() - 1];
+    let mut returns = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find("return") {
+        let expression = &rest[at + "return".len()..];
+        let mut depth = 0i32;
+        let mut end = None;
+        for (offset, ch) in expression.char_indices() {
+            match ch {
+                '(' | '{' | '[' => depth += 1,
+                ')' | '}' | ']' => depth -= 1,
+                ';' if depth == 0 => {
+                    end = Some(offset);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let end = end.expect("a return ends at `;`");
+        returns.push(expression[..end].to_owned());
+        rest = &expression[end..];
+    }
+    let tail = &body[body.rfind([';', '}']).map_or(0, |at| at + 1)..];
+    if !tail.is_empty() {
+        returns.push(tail.to_owned());
+    }
+    returns
+}
+
+// IP gate (structural): the reflection target holds colour and confidence
+// alone, (c·SSR, c) in one four-channel texel, written by one colour
+// attachment from a single four-component output. In the fluid shader the
+// target's global is read by the screen layer alone: no probe search,
+// sample, capture-shadow, lookup or live-lighting function reaches it, and
+// the probe sample runs, from its own point, before the screen layer is
+// read and with none of it.
+#[test]
+fn the_target_holds_colour_and_confidence_and_no_probe_lookup_reaches_it() {
+    assert_eq!(
+        FLUID_REFLECTION_TARGET_FORMAT,
+        wgpu::TextureFormat::Rgba16Float
+    );
+    let pass = code_only(include_str!("fluid_surface/reflection_pass.rs"));
+    assert_eq!(pass.matches("RenderPassColorAttachment{").count(), 1);
+    assert!(pass.contains(
+        "targets:&[Some(wgpu::ColorTargetState{format:FLUID_REFLECTION_TARGET_FORMAT,\
+         blend:None,write_mask:wgpu::ColorWrites::ALL,})],"
+    ));
+    let (reflection, _) = validated_reflection_module_and_info();
+    let entry = reflection
+        .entry_points
+        .iter()
+        .find(|entry| entry.name == "fs_reflection")
+        .expect("fs_reflection");
+    let result = entry
+        .function
+        .result
+        .as_ref()
+        .expect("fs_reflection returns");
+    assert!(matches!(
+        result.binding,
+        Some(naga::Binding::Location { location: 0, .. })
+    ));
+    assert!(matches!(
+        reflection.types[result.ty].inner,
+        naga::TypeInner::Vector {
+            size: naga::VectorSize::Quad,
+            scalar: naga::Scalar::F32,
+        }
+    ));
+    assert!(
+        code_only(wgsl_fn(
+            composed_reflection_shader_source(),
+            "fs_reflection"
+        ))
+        .ends_with(FS_REFLECTION_TAIL)
+    );
+
+    let module = validated_module();
+    let reaching: Vec<String> = module
+        .functions
+        .iter()
+        .filter(|(_, function)| {
+            reached_from(&module, function)
+                .1
+                .iter()
+                .any(|global| global == "reflection_target")
+        })
+        .map(|(_, function)| function.name.clone().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        reaching,
+        ["fluid_reflection_screen_layer"],
+        "only the screen layer reads the target"
+    );
+    for prefix in [
+        "fluid_reflection_search",
+        "fluid_reflection_sample",
+        "fluid_reflection_shadow",
+        "fluid_reflection_lookup",
+        "fluid_reflection_box_hit",
+        "fluid_reflection_tile_uv",
+        "fluid_reflection_ratio",
+        "fluid_reflection_light_",
+    ] {
+        let named: Vec<String> = module
+            .functions
+            .iter()
+            .filter_map(|(_, function)| function.name.clone())
+            .filter(|name| name.starts_with(prefix))
+            .collect();
+        assert!(!named.is_empty(), "the fluid shader declares {prefix}*");
+        for name in named {
+            assert!(
+                !reaching.contains(&name),
+                "{name} reaches the reflection target"
+            );
+        }
+    }
+    let (_, free_globals) = reached_names(&module, "fs_main");
+    assert!(
+        !free_globals
+            .iter()
+            .any(|global| global == "reflection_target")
+    );
+    let (_, reflecting_globals) = reached_names(&module, "fs_main_reflecting");
+    assert!(
+        reflecting_globals
+            .iter()
+            .any(|global| global == "reflection_target")
+    );
+
+    let main = code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"));
+    let sample = main
+        .find("letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);")
+        .expect("the probe sample from its own point");
+    let screen = main
+        .find("letscreen=fluid_reflection_screen_layer(")
+        .expect("the screen layer");
+    assert!(
+        sample < screen,
+        "the probe sample runs before the screen read"
+    );
+}
+
+// Pixel and smooth rays share their provenance with the probe term: the
+// reflection pass starts each march at `fluid_reflection_point`'s point,
+// about its normal, with the eye seen from that point mirrored and kept above
+// the horizon, exactly as `fs_main_reflecting` hands the probe sample its
+// point and `fluid_reflection_sample` mirrors it. One definition of each
+// serves both passes: the pass composes `fluid_reflection_ray.wgsl` and
+// declares none of them itself.
+#[test]
+fn the_reflection_pass_ray_starts_at_the_probe_terms_point_and_mirror() {
+    let pass = code_only(wgsl_fn(
+        composed_reflection_shader_source(),
+        "fs_reflection",
+    ));
+    assert!(
+        pass.contains(
+            "letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);\
+             letpoint=fluid_reflection_point(reflection_inputs.reflection_style,in.uv*dims,\
+             in.world_position,outward,axes,uniforms.time,texels_per_pixel,\
+             fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
+             fluid_probes.probes[in.probe].capture_point);\
+             letview=normalize(uniforms.camera_position-point.position);\
+             letray=fluid_reflection_above_horizon(fluid_reflection_mirror(view,point.normal));\
+             letmarch=screen_march(point.position,ray,uniforms.view_proj,scene_depth,\
+             reflection_inputs.stride,reflection_inputs.step_budget,reflection_inputs.thickness);"
+        ),
+        "{pass}"
+    );
+    let main = code_only(wgsl_fn(FLUID_WGSL, "fs_main_reflecting"));
+    assert!(
+        main.contains(
+            "letaxes=fluid_reflection_texel_axes(shaded.uv_dx_texels,shaded.uv_dy_texels,\
+             ddx_world,ddy_world);\
+             letstyle=fluid_scene.reflection_style;\
+             letpoint=fluid_reflection_point(style,in.uv*dims,in.world_position,outward,axes,\
+             uniforms.time,texels_per_pixel,fluid_probes.probes[in.probe].box_min,\
+             fluid_probes.probes[in.probe].box_max,fluid_probes.probes[in.probe].capture_point);\
+             letview=normalize(uniforms.camera_position-point.position);\
+             letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);"
+        ),
+        "{main}"
+    );
+    assert!(
+        code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_sample")).contains(
+            "letray=fluid_reflection_above_horizon(fluid_reflection_mirror(view,outward));"
+        )
+    );
+    let ray = include_str!("../shaders/fluid_reflection_ray.wgsl");
+    assert!(composed_reflection_shader_source().contains(ray));
+    assert!(FLUID_WGSL.contains(ray));
+    let pass_own = code_only(include_str!("../shaders/fluid_reflection_pass.wgsl"));
+    for shared in [
+        "fnfluid_reflection_point(",
+        "fnfluid_reflection_mirror(",
+        "fnfluid_reflection_above_horizon(",
+        "fnfluid_reflection_texel_axes(",
+        "fnfluid_reflection_gate(",
+    ] {
+        assert!(
+            !pass_own.contains(shared),
+            "the pass declares its own `{shared}`"
+        );
+    }
+}
+
+// The brief's sampling Decision, pinned on the whole screen-layer body:
+// smooth samples the target bilinearly at its own screen position through
+// `textureSampleLevel`; pixel takes a nearest `textureLoad` at its water
+// texel cell's centre, projected and scaled by `ssr_scale`; a centre off
+// screen or at w <= 0 reads `vec4(0)`.
+#[test]
+fn the_fluid_screen_layer_samples_smooth_bilinear_and_pixel_at_its_cell_centre() {
+    assert_eq!(
+        code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_screen_layer")),
+        "fnfluid_reflection_screen_layer(style:u32,frag_xy:vec2<f32>,texel_uv:vec2<f32>,\
+         world_position:vec3<f32>,axes:FluidTexelAxes)->vec4<f32>{\
+         letextent=vec2<f32>(textureDimensions(scene_depth));\
+         ifstyle==FLUID_REFLECTION_STYLE_SMOOTH{\
+         returntextureSampleLevel(reflection_target,sh_atlas_sampler,frag_xy/extent,0.0);}\
+         letcentre=fluid_reflection_cell_centre(texel_uv,world_position,axes);\
+         letclip=uniforms.view_proj*vec4<f32>(centre,1.0);\
+         if!(clip.w>0.0){returnvec4<f32>(0.0);}\
+         letndc=clip.xy/clip.w;\
+         letpixel=vec2<f32>(ndc.x*0.5+0.5,0.5-ndc.y*0.5)*extent;\
+         ifany(pixel<vec2<f32>(0.0))||any(pixel>=extent){returnvec4<f32>(0.0);}\
+         letlast=textureDimensions(reflection_target)-vec2<u32>(1u);\
+         returntextureLoad(reflection_target,min(vec2<u32>(pixel*fluid_scene.ssr_scale),last),\
+         0);}"
+    );
+}
+
+// The three IP rules sit in comments beside the code they bind, in the WGSL
+// and in each CPU twin, so a later change does not cross one unawares.
+#[test]
+fn the_ip_rules_are_commented_beside_the_march_the_composite_and_the_probe_lookup() {
+    let rule = "IP rule (owner review to change, rendering_pipeline.md §7.3a)";
+    let reflection_wgsl = include_str!("../shaders/fluid_reflection.wgsl");
+    let reflection_cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
+    let fluid_wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    // Each rule's comment, the code it guards, and the most lines between.
+    for (file, what, guarded, within) in [
+        (
+            SCREEN_MARCH_WGSL,
+            "the march",
+            "const SCREEN_MARCH_RAY_LENGTH",
+            12,
+        ),
+        (
+            SCREEN_MARCH_CPU,
+            "the march",
+            "pub const SCREEN_MARCH_RAY_LENGTH",
+            12,
+        ),
+        (
+            reflection_wgsl,
+            "the composite",
+            "fn fluid_reflection_layered_composite(",
+            4,
+        ),
+        (
+            reflection_cpu,
+            "the composite",
+            "pub fn reflection_layered_composite(",
+            6,
+        ),
+        (
+            fluid_wgsl,
+            "the probe lookup",
+            "let reflection = fluid_reflection_sample(",
+            4,
+        ),
+        (
+            reflection_cpu,
+            "the probe lookup",
+            "let search = reflection_search(",
+            5,
+        ),
+    ] {
+        let at = file.find(guarded).unwrap_or_else(|| panic!("{guarded}"));
+        let lines: Vec<&str> = file[..at].lines().collect();
+        let near = &lines[lines.len().saturating_sub(within)..];
+        assert!(
+            near.iter().any(|line| line.contains(rule)),
+            "{what}'s IP rule sits within {within} lines above `{guarded}`"
+        );
+    }
 }

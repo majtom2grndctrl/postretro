@@ -84,7 +84,7 @@ const DIRECTIONAL_FALLBACK_RANGE_METERS: f64 = 100.0;
 pub(crate) const INDIRECT_DELTA_SH_STAGE_ID: &str = "indirect_delta_sh_subblock";
 
 /// Bump when the indirect-delta sub-block computation or its key inputs change.
-pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 2;
+pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 3;
 
 /// Inputs for the delta SH bake. Mirrors `sh_bake::ShBakeCtx` (same BVH,
 /// same geometry, same BSP tree) plus the animated-light envelope and the

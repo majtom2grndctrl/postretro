@@ -52,6 +52,8 @@ mod patches;
 mod payload;
 #[cfg(feature = "dev-tools")]
 mod probe_diagnostics;
+#[cfg(feature = "dev-tools")]
+mod probe_readback;
 mod row_bitset;
 mod row_refs;
 mod rows;
@@ -400,6 +402,8 @@ pub(super) struct ShResidencyState {
     direct_compose_epoch: u64,
     install_cpu: InstallCpuCounters,
     gpu: Option<StreamingGpuPools>,
+    #[cfg(feature = "dev-tools")]
+    probe_readback: probe_readback::StreamedProbeReadback,
 }
 
 impl ShResidencyState {
@@ -409,6 +413,12 @@ impl ShResidencyState {
     /// at the following drain, never while the frame can still observe writes.
     fn grid_dimensions(&self) -> [u32; 3] {
         self.grid_dimensions
+    }
+
+    /// The manifest base lattice, origin and cell size: what this level's
+    /// streamed grid uniform carries, so what the SH sampler reads.
+    pub(in crate::render) fn base_lattice(&self) -> ([f32; 3], [f32; 3]) {
+        (self.base_metadata.grid_origin, self.base_metadata.cell_size)
     }
 
     fn logical_occupancy_bytes(&self) -> u64 {

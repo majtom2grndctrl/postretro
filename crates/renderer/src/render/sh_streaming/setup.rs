@@ -176,6 +176,8 @@ impl ShResidencyState {
             cluster_count,
             grid_dimensions: base.grid_dimensions,
             generation: 0,
+            #[cfg(feature = "dev-tools")]
+            probe_readback: Default::default(),
             targets: BTreeSet::new(),
             dense_owner,
             dense_node,

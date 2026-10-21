@@ -6,7 +6,7 @@
 // density level, and node scale come from the streaming session's own base
 // metadata (`ShResidencyState::base_metadata`) instead. `MarkerMode::Residency`
 // additionally colors each probe from the renderer's live residency mirrors
-// (`ShResidencyState::probe_residency_classes`) rather than bake-time data —
+// (`ShResidencyState::probe_residency_class`) rather than bake-time data —
 // it only exists here because it has no meaning against a whole-loaded volume.
 //
 // Split out of `sh_diagnostics.rs` per context/lib/development_guide.md §2:
@@ -18,7 +18,8 @@ use postretro_level_loader::{LevelWorld, ShStreamBaseMetadata};
 use super::debug_lines::DebugLineRenderer;
 use super::sh_diagnostics::{
     COLOR_BASE_AABB, COLOR_PROBE_INVALID, COLOR_PROBE_UNIFORM, COLOR_PROBE_VALID, MarkerMode,
-    ShDiagnosticsState, density_level_marker_color, emit_cells, probe_index,
+    ShDiagnosticsState, density_level_marker_color, emit_cells, irradiance_marker_color,
+    probe_index,
 };
 use super::sh_streaming::{ProbeResidencyClass, ShResidencyState};
 
@@ -49,8 +50,8 @@ fn residency_marker_color(class: ProbeResidencyClass) -> [u8; 4] {
 /// matters: an invalid probe is never anything else, and a sampleable probe
 /// always wins over "installed" or "requested" even if its owner is also a
 /// live target. Pure and free of `ShResidencyState` so it is testable without
-/// constructing renderer state; `ShResidencyState::probe_residency_classes`
-/// (in `sh_streaming::probe_diagnostics`) maps this over every dense probe.
+/// constructing renderer state; `ShResidencyState::probe_residency_class`
+/// (in `sh_streaming::probe_diagnostics`) classifies only the probes being drawn.
 pub(super) fn classify_probe(
     validity: u8,
     sampled_word: u32,
@@ -144,47 +145,44 @@ fn emit_markers(
     // probe grids blow past the debug-line segment cap and whole rooms
     // vanish from the overlay.
     let r2 = state.cell_radius * state.cell_radius;
-    // Classified once per frame rather than per probe. `probe_residency_classes`
-    // is only ever `Some` (computed) for `MarkerMode::Residency` — nothing
-    // else in this function reads it, and every other mode skips the
-    // per-probe residency walk entirely.
-    let residency_classes =
-        (state.marker_mode == MarkerMode::Residency).then(|| residency.probe_residency_classes());
-
-    for z in 0..dims[2] {
-        for y in 0..dims[1] {
-            for x in 0..dims[0] {
-                let pos =
-                    origin + Vec3::new(x as f32 * cell.x, y as f32 * cell.y, z as f32 * cell.z);
-                if (pos - camera_pos).length_squared() > r2 {
-                    continue;
-                }
-                let idx = probe_index(x, y, z, dims);
-                let Some(color) =
-                    marker_color(state.marker_mode, base, residency_classes.as_deref(), idx)
-                else {
-                    continue;
-                };
-                lines.push_marker(pos, state.marker_scale, color);
-            }
+    let bounds = super::sh_diagnostics_grid::GridBounds::around_sphere(
+        dims,
+        origin,
+        cell,
+        camera_pos,
+        state.cell_radius,
+    );
+    for [x, y, z] in bounds.coordinates() {
+        let pos = origin + Vec3::new(x as f32 * cell.x, y as f32 * cell.y, z as f32 * cell.z);
+        if (pos - camera_pos).length_squared() > r2 {
+            continue;
+        }
+        let idx = probe_index(x, y, z, dims);
+        let residency_class = (state.marker_mode == MarkerMode::Residency)
+            .then(|| residency.probe_residency_class(idx));
+        let irradiance = (state.marker_mode == MarkerMode::Irradiance)
+            .then(|| residency.probe_irradiance(idx))
+            .flatten();
+        let Some(color) = marker_color(state.marker_mode, base, residency_class, irradiance, idx)
+        else {
+            continue;
+        };
+        lines.push_marker(pos, state.marker_scale, color);
+        if lines.depth_tested_overflowed() {
+            break;
         }
     }
 }
 
 /// Resolve one streamed probe's marker color. `None` means "draw nothing":
-/// used for `Irradiance`, which has no data source on a streamed map (the
-/// live "total"-atlas readback is fixed at renderer init to the whole-loaded
-/// atlas geometry and bind group — a streaming session owns a differently
-/// sized atlas behind its own bind group, `ShResidencyState::bind_group`;
-/// wiring it here would mean a second readback path, out of scope for this
-/// overlay — the panel shows a label instead, see `debug_ui`), and for
-/// `Residency` before a streaming session has classified anything. An
+/// used for `Residency` before a streaming session has classified anything. An
 /// out-of-range probe index otherwise degrades to the invalid color, the same
 /// tolerance `sh_diagnostics::emit_markers` applies to a partial mirror.
 fn marker_color(
     mode: MarkerMode,
     base: &ShStreamBaseMetadata,
-    residency_classes: Option<&[ProbeResidencyClass]>,
+    residency_class: Option<ProbeResidencyClass>,
+    irradiance: Option<[f32; 3]>,
     idx: usize,
 ) -> Option<[u8; 4]> {
     match mode {
@@ -208,14 +206,12 @@ fn marker_color(
                 .unwrap_or_default();
             Some(density_level_marker_color(level, scale))
         }
-        MarkerMode::Irradiance => None,
-        MarkerMode::Residency => {
-            let class = residency_classes?
-                .get(idx)
-                .copied()
-                .unwrap_or(ProbeResidencyClass::Invalid);
-            Some(residency_marker_color(class))
-        }
+        MarkerMode::Irradiance => Some(
+            irradiance
+                .map(irradiance_marker_color)
+                .unwrap_or(COLOR_RESIDENCY_INVALID),
+        ),
+        MarkerMode::Residency => Some(residency_marker_color(residency_class?)),
     }
 }
 
@@ -317,32 +313,41 @@ mod tests {
         ]);
 
         assert_eq!(
-            marker_color(MarkerMode::Validity, &base, None, 0),
+            marker_color(MarkerMode::Validity, &base, None, None, 0),
             Some(COLOR_PROBE_VALID)
         );
         assert_eq!(
-            marker_color(MarkerMode::Validity, &base, None, 1),
+            marker_color(MarkerMode::Validity, &base, None, None, 1),
             Some(COLOR_PROBE_INVALID)
         );
         assert_eq!(
-            marker_color(MarkerMode::DensityLevel, &base, None, 0),
+            marker_color(MarkerMode::DensityLevel, &base, None, None, 0),
             Some(density_level_marker_color(1, 0))
         );
         // Out of range: tolerated like the whole-loaded path — treated as
         // invalid rather than skipped, so a partial mirror doesn't panic.
         assert_eq!(
-            marker_color(MarkerMode::Validity, &base, None, 5),
+            marker_color(MarkerMode::Validity, &base, None, None, 5),
             Some(COLOR_PROBE_INVALID)
         );
     }
 
     #[test]
-    fn irradiance_mode_draws_nothing_on_a_streamed_map() {
+    fn irradiance_mode_draws_live_colors_and_marks_unavailable_streamed_probes_grey() {
+        // Regression: streamed maps emitted no markers at all in irradiance mode.
         let base = base_with_probes(vec![OctahedralShProbe {
             validity: 1,
             ..Default::default()
         }]);
-        assert_eq!(marker_color(MarkerMode::Irradiance, &base, None, 0), None);
+        assert_eq!(
+            marker_color(MarkerMode::Irradiance, &base, None, None, 0),
+            Some(COLOR_RESIDENCY_INVALID)
+        );
+        let rgb = [2.0, 0.5, 0.25];
+        assert_eq!(
+            marker_color(MarkerMode::Irradiance, &base, None, Some(rgb), 0),
+            Some(irradiance_marker_color(rgb))
+        );
     }
 
     #[test]
@@ -355,7 +360,10 @@ mod tests {
             validity: 1,
             ..Default::default()
         }]);
-        assert_eq!(marker_color(MarkerMode::Residency, &base, None, 0), None);
+        assert_eq!(
+            marker_color(MarkerMode::Residency, &base, None, None, 0),
+            None
+        );
     }
 
     #[test]
@@ -366,7 +374,7 @@ mod tests {
         }]);
         let classes = [ProbeResidencyClass::Sampleable];
         assert_eq!(
-            marker_color(MarkerMode::Residency, &base, Some(&classes), 0),
+            marker_color(MarkerMode::Residency, &base, Some(classes[0]), None, 0),
             Some(COLOR_RESIDENCY_SAMPLEABLE)
         );
     }

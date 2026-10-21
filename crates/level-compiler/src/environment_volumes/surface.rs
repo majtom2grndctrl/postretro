@@ -1,4 +1,5 @@
-// Fluid surface faces: each fluid brush side minus solid world and sibling brushes.
+// Fluid surface faces: each brush side minus solid world and siblings, split
+// along push brushes. Seams between them close level-wide (`closure.rs`).
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use glam::DVec3;
@@ -7,20 +8,21 @@ use crate::geometry_utils::split_polygon;
 use crate::map_data::{BrushSide, BrushVolume, MapEnvironmentBrush, MapEnvironmentVolume};
 use crate::partition::Aabb;
 
+use super::push_split::PushBrushes;
 use super::solid_index::SolidIndex;
 
 /// A face within this distance of a remover's plane, along a parallel normal,
 /// lies on it: 1 mm, face extraction's coplanar distance tolerance. A fluid
 /// face this close to a solid face is flush, not a gap.
-const FLUSH_EPSILON: f64 = 1e-3;
+pub(super) const FLUSH_EPSILON: f64 = 1e-3;
 /// `1 - |n·m|` below this makes two plane normals parallel (≈ 0.08°).
 const PARALLEL_EPSILON: f64 = 1e-6;
 /// Point classification for a cutting plane: 0.1 mm, face extraction's
 /// coplanar-subtraction epsilon. Tight, because it cuts visible faces.
-const SPLIT_EPSILON: f64 = 1e-4;
+pub(super) const SPLIT_EPSILON: f64 = 1e-4;
 /// Pieces under 1 mm² are tolerance slivers, not surface; a removed region
 /// under it is a touch along an edge, not burial.
-const MIN_PIECE_AREA: f64 = 1e-6;
+pub(super) const MIN_PIECE_AREA: f64 = 1e-6;
 /// Consecutive vertices closer than this collapse into one.
 const WELD_EPSILON: f64 = 1e-6;
 
@@ -100,11 +102,13 @@ impl<'a> SolidWorld<'a> {
     }
 }
 
-/// Exposed surface pieces of one volume, in brush then side order. A dry
-/// volume, or a fluid volume whose brushes carry no sides, has none.
+/// Exposed surface pieces of one volume, in brush then side order, each cut
+/// along every push brush over it. A dry volume, or a fluid volume whose
+/// brushes carry no sides, has none.
 pub(super) fn fluid_surface_pieces<'a>(
     volume: &'a MapEnvironmentVolume,
     solid: &SolidWorld<'_>,
+    pushes: &PushBrushes,
 ) -> Vec<SurfacePiece<'a>> {
     if volume.fluid.is_none() {
         return Vec::new();
@@ -143,6 +147,9 @@ pub(super) fn fluid_surface_pieces<'a>(
                 };
                 subtract_remover(&mut exposed, side, &remover);
             }
+            // After burial, so only exposed area is cut and buried area never
+            // splits.
+            pushes.split(&mut exposed, side, &face_bounds);
 
             pieces.extend(
                 exposed
@@ -219,7 +226,17 @@ fn outside_parts(
 /// Whether the remover's box reaches the face's plane. A box wholly in front
 /// of it or wholly behind it cannot hold any point of the face.
 fn box_touches_plane(bounds: &Aabb, side: &BrushSide) -> bool {
-    let normal = side.normal;
+    box_reaches_plane(bounds, side.normal, side.distance, FLUSH_EPSILON)
+}
+
+/// Whether `bounds` reaches the plane `(normal, distance)` within `tolerance`:
+/// not wholly in front of it, and not wholly behind it.
+pub(super) fn box_reaches_plane(
+    bounds: &Aabb,
+    normal: DVec3,
+    distance: f64,
+    tolerance: f64,
+) -> bool {
     let near = DVec3::new(
         if normal.x >= 0.0 {
             bounds.min.x
@@ -254,11 +271,10 @@ fn box_touches_plane(bounds: &Aabb, side: &BrushSide) -> bool {
             bounds.min.z
         },
     );
-    near.dot(normal) - side.distance <= FLUSH_EPSILON
-        && far.dot(normal) - side.distance >= -FLUSH_EPSILON
+    near.dot(normal) - distance <= tolerance && far.dot(normal) - distance >= -tolerance
 }
 
-fn distance_range(polygon: &[DVec3], normal: DVec3, distance: f64) -> (f64, f64) {
+pub(super) fn distance_range(polygon: &[DVec3], normal: DVec3, distance: f64) -> (f64, f64) {
     polygon
         .iter()
         .map(|vertex| vertex.dot(normal) - distance)
@@ -279,7 +295,7 @@ fn expanded_bounds(polygon: &[DVec3], margin: f64) -> Aabb {
 }
 
 /// Collapse consecutive coincident vertices a split can leave behind.
-fn weld(polygon: Vec<DVec3>) -> Vec<DVec3> {
+pub(super) fn weld(polygon: Vec<DVec3>) -> Vec<DVec3> {
     let mut welded: Vec<DVec3> = Vec::with_capacity(polygon.len());
     for vertex in polygon {
         if welded
@@ -297,7 +313,7 @@ fn weld(polygon: Vec<DVec3>) -> Vec<DVec3> {
     welded
 }
 
-fn polygon_area(polygon: &[DVec3], normal: DVec3) -> f64 {
+pub(super) fn polygon_area(polygon: &[DVec3], normal: DVec3) -> f64 {
     if polygon.len() < 3 {
         return 0.0;
     }

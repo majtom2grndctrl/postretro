@@ -203,13 +203,16 @@ impl Renderer {
 
         self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
         let frame_light_term_mask = self.frame_light_term_mask();
+        // The frame's one reflection tier, read once beside its one mask
+        // snapshot: the reflection pass and the fluid pass both take their
+        // variants by these two values.
+        let frame_reflection_quality = self.reflection_quality();
         let mut compose_succeeded = true;
 
-        // The readback copy is deliberately not encoded here. A
-        // `copy_texture_to_buffer` in the same command buffer as the compose
-        // dispatch reads the `total` atlas texture before its storage writes
-        // are visible, flickering garbage into the markers. It runs after a
-        // blocking `poll(Wait)` below, once the compose submit has retired.
+        // Whole-loaded diagnostics copy their atlas only after the submit's
+        // blocking wait: copying the storage-written texture here flickers on
+        // Metal. Streamed diagnostics instead reduce through a sampled-texture
+        // dependency and copy only the resulting buffer in this encoder.
 
         // Selected-static promotion gates on the renderable/planned mesh set, not
         // raw collected inputs: uncached models and budget overflow cannot promote
@@ -652,6 +655,33 @@ impl Renderer {
         // its own visible draws, never on the smoke pass's particle gate.
         if render_world && self.full().fluid_surface.has_draws() {
             let _fluid_scope = cpu.scope(RenderStage::FluidSurface);
+            // Only a drawing frame reads the scene inputs (fog weight,
+            // reflection style, target scale). The weight is stored every
+            // frame; all upload here lazily, only when changed, before the
+            // reflection pass, so both passes draw this frame's style; the
+            // batched write copies ahead of this frame's submission.
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.fluid_surface.upload_scene_inputs(queue);
+            }
+            // The screen-space reflection layer, resolved into its own target
+            // before the fluid pass samples it: the frame's reflecting draws,
+            // by the same mask snapshot and tier the fluid pass picks variants
+            // by. Off, Low and a frame with no reflecting draw record none.
+            if self
+                .full()
+                .fluid_surface
+                .has_reflecting_draws(frame_light_term_mask, frame_reflection_quality)
+            {
+                self.record_fluid_reflection_pass(
+                    encoder,
+                    frame_light_term_mask,
+                    frame_reflection_quality,
+                );
+            }
             let fluid_ts = self
                 .full()
                 .frame_timing
@@ -668,12 +698,11 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
+                // Read-only: the pass tests depth without writing it, and its
+                // group 5 loads the same texture for depth fog.
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.full().depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    depth_ops: None,
                     stencil_ops: None,
                 }),
                 timestamp_writes: fluid_ts,
@@ -682,9 +711,14 @@ impl Renderer {
             fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
             fluid_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
             fluid_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
-            self.full()
-                .fluid_surface
-                .record_draws(&mut fluid_pass, &self.full().gpu_textures);
+            // The frame's group-0 mask and tier pick each draw's shader
+            // variant.
+            self.full().fluid_surface.record_draws(
+                &mut fluid_pass,
+                &self.full().gpu_textures,
+                frame_light_term_mask,
+                frame_reflection_quality,
+            );
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
@@ -955,6 +989,15 @@ impl Renderer {
             timing.encode_resolve(encoder);
         }
 
+        #[cfg(feature = "dev-tools")]
+        if swapchain_view.is_some()
+            && (render_world || scene.composes_sh())
+            && compose_succeeded
+            && let Some(streaming) = full.sh_streaming.as_mut()
+        {
+            streaming.encode_probe_readback(&self.device, queue, encoder);
+        }
+
         Ok(compose_succeeded)
     }
 
@@ -989,6 +1032,9 @@ impl Renderer {
                 .expect("renderer full-init must complete before full-ready paths run");
             if let Some(live_irradiance) = full.sh_probe_readback.post_submit(device) {
                 full.sh_volume_resources.probe_irradiance = live_irradiance;
+            }
+            if let Some(streaming) = full.sh_streaming.as_mut() {
+                streaming.post_submit_probe_readback(device);
             }
         }
 

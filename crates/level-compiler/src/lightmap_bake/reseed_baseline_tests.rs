@@ -16,7 +16,7 @@ use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::{read_container, read_section_data};
 
-use crate::bc6h::{decode_bc6h_block_for_tests, f16_bits_to_f32};
+use crate::bc6h::{decode_bc6h_block, f16_bits_to_f32};
 
 const BASELINE_ENV: &str = "POSTRETRO_RESEED_BASELINE_PRL";
 const AFTER_ENV: &str = "POSTRETRO_RESEED_AFTER_PRL";
@@ -65,12 +65,10 @@ fn block_irradiance(section: &LightmapSection, block: usize) -> Vec<[f32; 3]> {
     }
     for (bi, encoded) in b.irradiance.as_chunks::<16>().0.iter().enumerate() {
         let (bx, by) = ((bi % (w / 4)) * 4, (bi / (w / 4)) * 4);
-        let decoded = decode_bc6h_block_for_tests(encoded);
-        for (k, texel) in decoded.iter().enumerate() {
+        let decoded = decode_bc6h_block(encoded).expect("the bake writes Mode 11");
+        for (k, texel) in decoded.into_iter().enumerate() {
             let (x, y) = (bx + k % 4, by + k / 4);
-            for c in 0..3 {
-                texels[y * w + x][c] = f16_bits_to_f32(texel[c]);
-            }
+            texels[y * w + x] = texel;
         }
     }
     texels

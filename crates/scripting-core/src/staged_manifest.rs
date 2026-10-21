@@ -1205,7 +1205,10 @@ mod tests {
                     name: "RenderMod",
                     id: "render-mod",
                     version: "1",
-                    render: { bloom: { resolution: "eighth", pixelated: true } },
+                    render: {
+                        bloom: { resolution: "eighth", pixelated: true },
+                        reflections: { style: "smooth" },
+                    },
                 };
             "#,
         );
@@ -1217,7 +1220,10 @@ mod tests {
                     name = "RenderMod",
                     id = "render-mod",
                     version = "1",
-                    render = { bloom = { resolution = "eighth", pixelated = true } },
+                    render = {
+                        bloom = { resolution = "eighth", pixelated = true },
+                        reflections = { style = "smooth" },
+                    },
                 }
             "#,
         );
@@ -1225,6 +1231,9 @@ mod tests {
             bloom: ModBloomProfile {
                 resolution: ModBloomResolution::Eighth,
                 pixelated: true,
+            },
+            reflections: crate::runtime::ModReflectionProfile {
+                style: crate::runtime::ModReflectionStyle::Smooth,
             },
         };
         assert_eq!(js, expected);
@@ -1262,6 +1271,7 @@ mod tests {
                 resolution: ModBloomResolution::Half,
                 pixelated: true,
             },
+            ..ModRenderProfile::default()
         };
         assert_eq!(js, expected);
         assert_eq!(luau, expected);

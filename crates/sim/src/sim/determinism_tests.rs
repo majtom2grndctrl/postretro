@@ -39,8 +39,8 @@ use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::{
-    AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
-    RATE_MIN,
+    AnimationState, InterruptPolicy, LocomotionDirection, MeshAnimation, MeshComponent,
+    RATE_CHANGE_EPSILON, RATE_MAX, RATE_MIN,
 };
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::data_descriptors::{
@@ -714,6 +714,7 @@ impl SimHarness {
             |_| command.to_post_movement_command(),
             DT,
             Some(super::TriggerTickContext {
+                teleporters: None,
                 system: &mut self.trigger_system,
                 bridge: &self.trigger_bridge,
                 bindings: &self.trigger_bindings,
@@ -2499,6 +2500,7 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
         registry
             .get_component::<MeshComponent>(entity)
@@ -2530,30 +2532,126 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
 }
 
 #[test]
-fn local_player_pose_inputs_use_camera_aim_and_movement_heading() {
+fn local_player_pose_inputs_use_camera_aim_and_folded_movement_heading() {
     let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, -0.4);
-    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
-    movement.velocity = Vec3::X * 3.0;
-    registry.set_component(pawn, movement).unwrap();
     registry.mark_local_player_pawn(pawn).unwrap();
+    let run = |registry: &mut EntityRegistry, velocity: Vec3| {
+        let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+        movement.velocity = velocity;
+        registry.set_component(pawn, movement).unwrap();
+        super::update_pose_inputs(
+            registry,
+            (-0.35, 1.1),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        );
+        let mesh = registry.get_component::<MeshComponent>(pawn).unwrap();
+        (
+            mesh.pose_inputs.unwrap(),
+            mesh.animation.as_ref().unwrap().locomotion_direction,
+        )
+    };
 
-    super::update_pose_inputs(
-        &mut registry,
-        (-0.35, 1.1),
-        &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-    );
-
-    let inputs = registry
-        .get_component::<MeshComponent>(pawn)
-        .unwrap()
-        .pose_inputs
-        .unwrap();
+    // -X travel is yaw +π/2, about 27° off the camera aim: legs face travel.
+    let (inputs, direction) = run(&mut registry, Vec3::NEG_X * 3.0);
     assert!((inputs.aim_pitch + 0.35).abs() <= 1.0e-6);
     assert!((inputs.aim_yaw - 1.1).abs() <= 1.0e-6);
-    assert!((inputs.heading_yaw + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+    assert_eq!(direction, LocomotionDirection::Forward);
+
+    // +X travel backpedals: the legs keep facing +π/2 instead of turning to
+    // travel, and the pawn's direction memory records the backpedal.
+    let (inputs, direction) = run(&mut registry, Vec3::X * 3.0);
+    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5);
+    assert_eq!(direction, LocomotionDirection::Backward);
+}
+
+#[test]
+fn connected_client_own_pawn_shadow_folds_with_the_host_sent_backward_clip() {
+    let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, 0.0);
+    registry.mark_local_player_pawn(pawn).unwrap();
+    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+    // +X travel is 90° off the camera aim (yaw 0): inside the dead zone.
+    movement.velocity = Vec3::X * 3.0;
+    registry.set_component(pawn, movement).unwrap();
+    // The host's state arrived as `walk_backward`; this peer selects no state.
+    let mut mesh = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .clone();
+    let animation = mesh.animation.as_mut().unwrap();
+    let declared = |clip: &str, clip_index| AnimationState {
+        clip: clip.to_string(),
+        looping: true,
+        crossfade_ms: 50.0,
+        interrupt: InterruptPolicy::Smooth,
+        travel_speed: None,
+        clip_index: Some(clip_index),
+    };
+    animation
+        .states
+        .insert("walk_forward".to_string(), declared("walk_forward", 1));
+    animation
+        .states
+        .insert("walk_backward".to_string(), declared("walk_backward", 2));
+    animation.current_state = "walk_backward".to_string();
+    registry.set_component(pawn, mesh).unwrap();
+
+    let present = |registry: &mut EntityRegistry, owns_direction: bool| {
+        super::update_pose_inputs(
+            registry,
+            (0.0, 0.0),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            owns_direction,
+        );
+        let mesh = registry.get_component::<MeshComponent>(pawn).unwrap();
+        (
+            mesh.pose_inputs.unwrap().heading_yaw,
+            mesh.animation.as_ref().unwrap().locomotion_direction,
+        )
+    };
+
+    // The host-sent backward clip folds the legs either way; travel -π/2
+    // folded faces +π/2.
+    let (heading, direction) = present(&mut registry, false);
+    assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5);
+    assert_eq!(
+        direction,
+        LocomotionDirection::Forward,
+        "where the fixed tick's selector owns the memory, the pose pass only reads"
+    );
+    let (heading, direction) = present(&mut registry, true);
+    assert!((heading - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5);
+    assert_eq!(
+        direction,
+        LocomotionDirection::Backward,
+        "a connected client keeps its own pawn's memory"
+    );
+
+    // A settled state lagging the client's own classification does not pull the
+    // legs back: the host still shows `walk_forward` while this peer's memory
+    // already crossed into the backpedal, and travel sits in the dead zone.
+    let mut mesh = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .clone();
+    let animation = mesh.animation.as_mut().unwrap();
+    animation.current_state = "walk_forward".to_string();
+    animation.entered_at = Some(0.0);
+    animation.previous_state = None;
+    registry.set_component(pawn, mesh).unwrap();
+    let (heading, direction) = present(&mut registry, true);
+    assert!(
+        (heading - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5,
+        "legs hold the fold: {heading}"
+    );
+    assert_eq!(direction, LocomotionDirection::Backward);
 }
 
 #[test]
@@ -2575,6 +2673,7 @@ fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback(
         &remote_aim_pitches,
         &remote_heading_yaws,
         &remote_network_ids,
+        false,
     );
     let moving = registry
         .get_component::<MeshComponent>(pawn)
@@ -2592,6 +2691,7 @@ fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback(
         &remote_aim_pitches,
         &HashMap::new(),
         &remote_network_ids,
+        false,
     );
     let stationary = registry
         .get_component::<MeshComponent>(pawn)
@@ -2621,7 +2721,7 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
         .unwrap();
     registry.mark_local_player_pawn(local_pawn).unwrap();
     let mut remote_player_aims = HashMap::new();
-    remote_player_aims.insert(pawn, (-0.4, 1.2));
+    remote_player_aims.insert(pawn, (-0.4, -1.2));
 
     super::update_pose_inputs(
         &mut registry,
@@ -2630,6 +2730,7 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
         &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
+        false,
     );
 
     let inputs = registry
@@ -2638,8 +2739,27 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
         .pose_inputs
         .unwrap();
     assert!((inputs.aim_pitch + 0.4).abs() <= 1.0e-6);
-    assert!((inputs.aim_yaw - 1.2).abs() <= 1.0e-6);
+    assert!((inputs.aim_yaw + 1.2).abs() <= 1.0e-6);
     assert!((inputs.heading_yaw + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+
+    // The client turns to aim +1.2 while still travelling +X: a backpedal, so
+    // the legs face against travel rather than twisting the torso 160°.
+    remote_player_aims.insert(pawn, (-0.4, 1.2));
+    super::update_pose_inputs(
+        &mut registry,
+        (0.0, 0.0),
+        &remote_player_aims,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        false,
+    );
+    let inputs = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-5);
 }
 
 /// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),
@@ -2728,6 +2848,7 @@ fn probe_leg_entity_in(
             remote_aim_pitches: &HashMap::new(),
             remote_heading_yaws: &HashMap::new(),
             remote_network_ids: &HashMap::new(),
+            local_pawn_owns_direction: false,
         },
     );
 
@@ -2863,6 +2984,7 @@ fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
             remote_aim_pitches: &HashMap::new(),
             remote_heading_yaws: &HashMap::new(),
             remote_network_ids: &HashMap::new(),
+            local_pawn_owns_direction: false,
         },
     );
 
@@ -2898,6 +3020,7 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
                 remote_aim_pitches: &HashMap::new(),
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),
+                local_pawn_owns_direction: false,
             },
         );
     };

@@ -271,6 +271,12 @@ fn fluid(name: &str) -> postretro_foundation::FluidDescriptor {
         surface_opacity: 0.6,
         enter_sound: None,
         exit_sound: None,
+        fog_distance: None,
+        fog_color: None,
+        wave_period: None,
+        wave_amplitude: 8.0,
+        wave_length: [64.0, 80.0],
+        surface_reflectivity: 1.0,
     }
 }
 
@@ -358,17 +364,25 @@ fn a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry() {
         "dry before the reload"
     );
 
+    commit_staged_manifest(&mut app, mod_root.path());
+
+    assert_eq!(resolve_at(&app, SUBMERGED).fluid, Some(1));
+}
+
+/// Queue a staged manifest build of the start script under `mod_root` and poll
+/// until it commits, the route a host's manifest reload takes.
+fn commit_staged_manifest(app: &mut App, mod_root: &std::path::Path) {
     let generation = app
         .session
         .as_mut()
         .expect("test app session installed")
         .scripting
         .script_runtime
-        .enqueue_staged_manifest_build(mod_root.path())
+        .enqueue_staged_manifest_build(mod_root)
         .expect("staged build queued")
         .expect("debug builds stage manifest reloads");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while script_runtime_committed(&app) != Some(generation) {
+    while script_runtime_committed(app) != Some(generation) {
         assert!(
             std::time::Instant::now() < deadline,
             "the staged manifest never committed"
@@ -376,8 +390,6 @@ fn a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry() {
         std::thread::sleep(std::time::Duration::from_millis(5));
         app.poll_staged_manifest_results();
     }
-
-    assert_eq!(resolve_at(&app, SUBMERGED).fluid, Some(1));
 }
 
 fn script_runtime_committed(app: &App) -> Option<u64> {
@@ -446,6 +458,16 @@ fn connect_as_client(app: &mut App) {
 /// Deliver a host tuning payload carrying `fluids` through the production
 /// client Control drain, as `net_poll_and_apply` does.
 fn deliver_host_fluids(app: &mut App, fluids: &[(&str, f32)]) {
+    deliver_host_tuning(app, fluids, None);
+}
+
+/// Like [`deliver_host_fluids`], with the host's player movement descriptor
+/// riding the same payload.
+fn deliver_host_tuning(
+    app: &mut App,
+    fluids: &[(&str, f32)],
+    movement: Option<postretro_foundation::PlayerMovementDescriptor>,
+) {
     use postretro_combat_model::{
         EnvironmentTuning, FluidMovementTable, FluidMovementTuning, TuningPayload,
     };
@@ -460,7 +482,7 @@ fn deliver_host_fluids(app: &mut App, fluids: &[(&str, f32)]) {
     )
     .expect("valid host table");
     let payload = TuningPayload::new(
-        None,
+        movement,
         std::array::from_fn(|_| None),
         EnvironmentTuning {
             level_gravity: LEVEL_GRAVITY,
@@ -990,4 +1012,508 @@ fn a_swimming_player_or_a_dry_level_never_warns_about_the_swim_block() {
     let capture = postretro_test_log_capture::LogCapture::start();
     app.warn_if_local_player_cannot_swim();
     capture.assert_not_logged(log::Level::Warn, WADE_ONLY_WARNING);
+}
+
+/// A level with one `water` pool spanning `0..4` on every axis, its top face
+/// drawn, under a coincident current pushing +X at `push` m/s².
+fn level_with_current(push: f32) -> LevelWorld {
+    use postretro_level_format::environment_volumes::{
+        EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
+    };
+    let corner = |x: f32, z: f32| EnvironmentSurfaceVertex {
+        position: [x, 4.0, z],
+        uv: [x * 39.37, z * 39.37],
+    };
+    let mut world = level_with_fluid_volume(7, "water");
+    world.environment_volumes.volumes[0].surface_faces = vec![EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: vec![
+            corner(0.0, 4.0),
+            corner(4.0, 4.0),
+            corner(4.0, 0.0),
+            corner(0.0, 0.0),
+        ],
+    }];
+    world
+        .environment_volumes
+        .volumes
+        .push(EnvironmentVolumeRecord {
+            source_entity: 8,
+            priority: 0,
+            gravity: None,
+            push: Some([push, 0.0, 0.0]),
+            fluid: String::new(),
+            brushes: vec![box_brush(Vec3::ZERO, Vec3::splat(4.0))],
+            surface_faces: Vec::new(),
+        });
+    world
+}
+
+#[track_caller]
+fn assert_drift(app: &App, expected_x: f32) {
+    assert_eq!(app.fluid_surface_drift.len(), 1, "one drawn face");
+    let drift = app.fluid_surface_drift[0];
+    assert!(
+        (drift - Vec3::new(expected_x, 0.0, 0.0)).length() < 1.0e-4,
+        "drift {drift}, expected {expected_x} m/s along +X"
+    );
+}
+
+// A host manifest reload that changes only a viscosity, names unchanged, still
+// re-resolves drift.
+#[test]
+fn a_viscosity_only_host_reload_re_resolves_fluid_surface_drift() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    // push 6 ÷ water viscosity 2.
+    assert_drift(&app, 3.0);
+
+    script_ctx(&app).data_registry.borrow_mut().replace_fluids(
+        postretro_foundation::FluidRegistry::from_declarations(
+            "test",
+            [Ok(fluid_with("water", 6.0, [0.1, 0.3, 0.4, 0.35]))],
+        ),
+    );
+    let capture = postretro_test_log_capture::LogCapture::start();
+    app.refresh_environment_fluids();
+    capture.assert_not_logged(log::Level::Info, "[Loader] environment volumes:");
+    assert_drift(&app, 1.0);
+}
+
+// A client draws drift only from the host's table. Before the tuning
+// arrives its fluid shows nothing and drifts none; each tuning, a
+// viscosity-only resend included, re-resolves drift; a demotion stills it, and
+// the next tuning brings the new table's drift.
+#[test]
+fn a_connected_client_resolves_drift_from_each_host_tuning() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    connect_as_client(&mut app);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    assert_drift(&app, 0.0);
+    let local = script_ctx(&app).data_registry.borrow().fluids.clone();
+    assert!(
+        crate::fluid_presentation::local_fluid_presentation(
+            &app.environment_volumes,
+            &app.environment_fluids,
+            &local,
+            0,
+        )
+        .is_none(),
+        "no fluid surface draws before the host's table"
+    );
+
+    deliver_host_fluids(&mut app, &[("water", 2.0)]);
+    assert_drift(&app, 3.0);
+    deliver_host_fluids(&mut app, &[("water", 1.25)]);
+    assert_drift(&app, 4.8);
+
+    crate::client_drain_control(
+        &mut app,
+        vec![postretro_net::wire::ServerControlMessage::Divergence(
+            postretro_net::wire::DivergenceReason::Holding(
+                postretro_net::wire::HoldingCause::HostLevelAbsent,
+            ),
+        )],
+    );
+    assert_drift(&app, 0.0);
+    deliver_host_fluids(&mut app, &[("water", 6.0)]);
+    assert_drift(&app, 1.0);
+}
+
+// Tuning before the level install and after it draw identical drift.
+#[test]
+fn a_client_tuned_before_its_level_install_draws_the_same_drift_as_one_tuned_after() {
+    let mut tuned_first = test_app();
+    declare_fluids(&tuned_first, &["water"]);
+    connect_as_client(&mut tuned_first);
+    deliver_host_fluids(&mut tuned_first, &[("water", 2.0)]);
+    tuned_first
+        .install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+
+    let mut tuned_after = test_app();
+    declare_fluids(&tuned_after, &["water"]);
+    connect_as_client(&mut tuned_after);
+    tuned_after
+        .install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    deliver_host_fluids(&mut tuned_after, &[("water", 2.0)]);
+
+    assert_drift(&tuned_first, 3.0);
+    assert_eq!(
+        tuned_first.fluid_surface_drift,
+        tuned_after.fluid_surface_drift
+    );
+}
+
+// A connected client caps drift at the terminal velocity of the movement
+// descriptor on the host's tuning payload, the one its own prediction reads.
+#[test]
+fn a_connected_clients_drift_caps_at_the_host_tuning_terminal_velocity() {
+    let mut app = test_app();
+    connect_as_client(&mut app);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+
+    let mut movement = crate::tests::minimal_player_descriptor();
+    movement.fall.terminal_velocity = 1.5;
+    deliver_host_tuning(&mut app, &[("water", 2.0)], Some(movement));
+    // push 6 ÷ water viscosity 2 would settle at 3; the host's cap holds it.
+    assert_drift(&app, 1.5);
+
+    // A payload without a movement descriptor leaves drift uncapped.
+    deliver_host_tuning(&mut app, &[("water", 2.0)], None);
+    assert_drift(&app, 3.0);
+}
+
+// Host and offline cap drift at the local pawn's live movement component, the
+// value movement caps against, not at a descriptor looked up by class name.
+#[test]
+fn a_hosts_drift_caps_at_the_local_pawns_live_terminal_velocity() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    // No pawn and no registered descriptor: no cap.
+    assert_drift(&app, 3.0);
+
+    spawn_local_pawn(&app, "swimmer", None);
+    let ctx = script_ctx(&app);
+    {
+        let mut registry = ctx.registry.borrow_mut();
+        let pawn = registry.local_player_pawn().expect("local pawn");
+        let mut movement = registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .expect("movement")
+            .clone();
+        movement.fall.terminal_velocity = 1.5;
+        registry.set_component(pawn, movement).expect("movement");
+    }
+    // No descriptor named `swimmer` is registered, so only the pawn's own
+    // component can supply this cap.
+    app.resolve_fluid_surface_drift();
+    assert_drift(&app, 1.5);
+}
+
+/// A start-script manifest declaring `water` (viscosity 2) and a `player`
+/// descriptor whose movement caps falling at `terminal_velocity`.
+fn manifest_with_player_terminal_velocity(terminal_velocity: f32) -> String {
+    format!(
+        "globalThis.__postretroModManifest = {{ name: 'Fluids', id: 'fluids', version: '1', \
+         fluids: [{{ name: 'water', viscosity: 2, viewTint: [0.1, 0.3, 0.4, 0.35], muffle: 0.8, surfaceOpacity: 0.6 }}], \
+         entities: [{{ canonicalName: 'player', components: {{ movement: {{ \
+         capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }}, \
+         ground: {{ speed: {{ walk: 7, run: 11, crouch: 3 }}, accel: 10, stepHeight: 0.3, maxSlope: 45 }}, \
+         air: {{ forwardSteer: 0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0 }}, \
+         fall: {{ terminalVelocity: {terminal_velocity} }} }} }} }}] }};"
+    )
+}
+
+// A host manifest reload that changes only the player's terminal velocity
+// re-resolves drift, through the production route: the commit refreshes the
+// live pawn's movement component from the new descriptor, then the fluid refresh
+// reads that component's cap.
+#[test]
+fn a_host_manifest_reload_that_changes_the_player_terminal_velocity_re_resolves_drift() {
+    use postretro_entities::provenance::{DescriptorComponentKind, DescriptorProvenance};
+    let mod_root = tempfile::tempdir().expect("temporary mod root");
+    let start_script = mod_root.path().join("start-script.js");
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    // push 6 ÷ water viscosity 2, no cap yet.
+    assert_drift(&app, 3.0);
+
+    // The first reload registers the player descriptor; a refresh needs a prior
+    // descriptor snapshot to diff against. Its cap sits above the drift.
+    std::fs::write(&start_script, manifest_with_player_terminal_velocity(40.0))
+        .expect("first manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+    assert_drift(&app, 3.0);
+
+    // The local pawn spawns as the descriptor's, owning its movement, high
+    // enough above the floor that a refreshed capsule cannot embed it.
+    spawn_local_pawn(&app, "player", None);
+    {
+        let ctx = script_ctx(&app);
+        let mut registry = ctx.registry.borrow_mut();
+        let pawn = registry.local_player_pawn().expect("local pawn");
+        registry
+            .set_component(
+                pawn,
+                postretro_entities::Transform {
+                    position: Vec3::new(2.0, 6.0, 2.0),
+                    ..Default::default()
+                },
+            )
+            .expect("transform");
+        let mut provenance = registry
+            .get_component::<DescriptorProvenance>(pawn)
+            .expect("provenance")
+            .clone();
+        provenance
+            .owned_components
+            .insert(DescriptorComponentKind::Movement);
+        registry
+            .set_component(pawn, provenance)
+            .expect("provenance");
+    }
+
+    std::fs::write(&start_script, manifest_with_player_terminal_velocity(1.5))
+        .expect("reloaded manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+
+    let ctx = script_ctx(&app);
+    let live_cap = {
+        let registry = ctx.registry.borrow();
+        let pawn = registry.local_player_pawn().expect("local pawn");
+        registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .expect("movement")
+            .fall
+            .terminal_velocity
+    };
+    assert_eq!(live_cap, 1.5, "the reload refreshed the pawn's movement");
+    // push 6 ÷ water viscosity 2 would settle at 3; the reloaded cap holds it.
+    assert_drift(&app, 1.5);
+}
+
+// Unloading a level leaves no drift behind for the next frames.
+#[test]
+fn unloading_a_level_clears_its_fluid_surface_drift() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    assert_drift(&app, 3.0);
+
+    app.unload_level();
+    assert!(app.fluid_surface_drift.is_empty());
+}
+
+// --- Reflectivity through the staged reload (pins P12, P24) -----------------
+
+/// A start script declaring `water` at the given opacity and reflectivity.
+fn reflecting_water_script(surface_opacity: &str, surface_reflectivity: &str) -> String {
+    format!(
+        "globalThis.__postretroModManifest = {{ name: 'Fluids', id: 'fluids', version: '1', \
+         fluids: [{{ name: 'water', viscosity: 2, viewTint: [0.1, 0.3, 0.4, 0.35], muffle: 0.8, \
+         surfaceOpacity: {surface_opacity}, surfaceReflectivity: {surface_reflectivity} }}] }};"
+    )
+}
+
+/// [`level_with_fluid_volume`] naming `water`, its top face at y 4 bound to
+/// one reflection probe.
+fn level_with_reflecting_pool() -> LevelWorld {
+    use postretro_level_format::environment_volumes::{
+        EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
+    };
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeBinding, ReflectionProbeLightShare,
+        ReflectionProbeRecord, ReflectionProbesSection,
+    };
+    let mut world = level_with_fluid_volume(7, "water");
+    let vertex = |x: f32, z: f32| EnvironmentSurfaceVertex {
+        position: [x, 4.0, z],
+        uv: [0.0, 0.0],
+    };
+    world.environment_volumes.volumes[0].surface_faces = vec![EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: vec![
+            vertex(0.0, 0.0),
+            vertex(0.0, 4.0),
+            vertex(4.0, 4.0),
+            vertex(4.0, 0.0),
+        ],
+    }];
+    world.reflection_probes = Some(ReflectionProbesSection {
+        tile_dimension: 4,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_BC6H,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 9,
+            box_min: [0.0, 0.0, 0.0],
+            box_max: [4.0, 8.0, 4.0],
+            capture_point: [2.0, 4.002, 2.0],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: vec![0; 16],
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(1, 4),
+    });
+    world
+}
+
+/// This frame's fluid draws, as the app collects them for the renderer.
+fn collect_draws(app: &mut App) -> Vec<postretro_render_cpu::fluid_surface::FluidSurfaceDraw> {
+    let local = script_ctx(app).data_registry.borrow().fluids.clone();
+    crate::fluid_presentation::collect_fluid_surface_draws(
+        &mut app.fluid_surface_render,
+        app.level.as_ref().expect("installed"),
+        &postretro_visibility::VisibleCells::DrawAll,
+        Vec3::new(2.0, 6.0, 2.0),
+        &app.environment_volumes,
+        &app.environment_fluids,
+        &local,
+    )
+    .to_vec()
+}
+
+/// Queue a staged build of the start script under `mod_root` and poll until
+/// it fails, the route a broken reload takes: it never commits.
+fn fail_staged_manifest(app: &mut App, mod_root: &std::path::Path) {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let generation = app
+        .session
+        .as_mut()
+        .expect("test app session installed")
+        .scripting
+        .script_runtime
+        .enqueue_staged_manifest_build(mod_root)
+        .expect("staged build queued")
+        .expect("debug builds stage manifest reloads");
+    let failed = format!("[Scripting] staged mod-init generation {generation} failed");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !capture
+        .records()
+        .iter()
+        .any(|record| record.message.contains(&failed))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the staged manifest never failed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.poll_staged_manifest_results();
+    }
+}
+
+// Pin P12 for reflectivity, through the real staged reload route: the frame
+// after a reload that changes only `surfaceReflectivity` draws the new value
+// and re-uploads that fluid's row; an unchanged re-collect uploads nothing;
+// a failed reload keeps the previous value.
+#[test]
+fn a_staged_reload_changing_only_reflectivity_draws_the_new_value_next_frame() {
+    use postretro_render_cpu::fluid_surface::{FluidSurfaceSlots, pack_fluid_surfaces};
+    let mod_root = tempfile::tempdir().expect("temporary mod root");
+    let script = mod_root.path().join("start-script.js");
+    std::fs::write(&script, reflecting_water_script("0.6", "1")).expect("manifest written");
+    let mut app = test_app();
+    commit_staged_manifest(&mut app, mod_root.path());
+    let world = level_with_reflecting_pool();
+    let mesh = pack_fluid_surfaces(&world.environment_volumes.volumes, &[], 1, None);
+    app.install_level_payload(world, PathBuf::from("baked"))
+        .expect("fixture installs");
+    let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
+
+    let draws = collect_draws(&mut app);
+    assert_eq!(draws.len(), 1);
+    assert_eq!(draws[0].params.reflectivity(), 1.0);
+    assert_eq!(draws[0].params.opacity(), 0.6);
+    slots.set_draws(&draws);
+    assert!(slots.take_dirty().is_some(), "the first frame uploads");
+
+    std::fs::write(&script, reflecting_water_script("0.6", "2.5")).expect("manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+    let draws = collect_draws(&mut app);
+    assert_eq!(
+        draws[0].params.reflectivity(),
+        2.5,
+        "frame N draws the new value"
+    );
+    assert_eq!(draws[0].params.opacity(), 0.6, "opacity unchanged");
+    slots.set_draws(&draws);
+    let (range, rows) = slots.take_dirty().expect("the changed row uploads");
+    assert_eq!(range, 0..1);
+    assert_eq!(rows[0].reflectivity(), 2.5);
+    slots.set_draws(&collect_draws(&mut app));
+    assert!(
+        slots.take_dirty().is_none(),
+        "an unchanged re-collect uploads no row"
+    );
+
+    std::fs::write(&script, "throw new Error('broken reload');").expect("manifest written");
+    fail_staged_manifest(&mut app, mod_root.path());
+    let draws = collect_draws(&mut app);
+    assert_eq!(
+        draws[0].params.reflectivity(),
+        2.5,
+        "a failed reload keeps the value"
+    );
+    slots.set_draws(&draws);
+    assert!(slots.take_dirty().is_none());
+}
+
+// Pin P24 through the staged reload route: a zero-opacity, fog-free fluid
+// with a bound face leaves the draw set on the frame a reload commits
+// reflectivity 1 → 0, and draws its reflection again after 0 → 1.
+#[test]
+fn a_staged_reload_flips_a_zero_opacity_fluids_draw_with_its_reflectivity() {
+    let mod_root = tempfile::tempdir().expect("temporary mod root");
+    let script = mod_root.path().join("start-script.js");
+    std::fs::write(&script, reflecting_water_script("0", "1")).expect("manifest written");
+    let mut app = test_app();
+    commit_staged_manifest(&mut app, mod_root.path());
+    app.install_level_payload(level_with_reflecting_pool(), PathBuf::from("baked"))
+        .expect("fixture installs");
+    let reflecting = collect_draws(&mut app);
+    assert_eq!(reflecting.len(), 1, "a zero-opacity reflecting fluid draws");
+    assert_eq!(reflecting[0].params.opacity(), 0.0);
+
+    std::fs::write(&script, reflecting_water_script("0", "0")).expect("manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+    assert!(
+        collect_draws(&mut app).is_empty(),
+        "frame N after 1 → 0 collects no draw"
+    );
+
+    std::fs::write(&script, reflecting_water_script("0", "1")).expect("manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+    assert_eq!(
+        collect_draws(&mut app),
+        reflecting,
+        "the reverse reload draws again"
+    );
+}
+
+// P1 and P2: on the level path and the capture path alike, fluid surfaces
+// install after level geometry, which installs this level's SH volume (and
+// drops the last level's fluid): the fluid grid then reads this level's
+// lattice, never the previous level's or a placeholder.
+#[test]
+fn fluid_surfaces_install_after_level_geometry_on_the_level_and_capture_paths() {
+    for (path, source) in [
+        ("startup/lifecycle.rs", include_str!("lifecycle.rs")),
+        (
+            "capture/prepared.rs",
+            include_str!("../capture/prepared.rs"),
+        ),
+    ] {
+        // Production code only: lifecycle.rs's own test module quotes these.
+        let source = source
+            .split("#[cfg(test)]\npub(crate) mod tests")
+            .next()
+            .unwrap();
+        let geometry = "renderer.install_level_geometry(";
+        let fluid = "renderer.install_fluid_surfaces(";
+        assert_eq!(source.matches(geometry).count(), 1, "{path}");
+        assert_eq!(source.matches(fluid).count(), 1, "{path}");
+        assert!(
+            source.find(geometry) < source.find(fluid),
+            "{path} installs fluid surfaces before level geometry"
+        );
+    }
 }

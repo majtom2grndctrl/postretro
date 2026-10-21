@@ -152,12 +152,10 @@ pub struct ShVolumeResources {
     pub probe_irradiance: Vec<[f32; 3]>,
     /// CPU copies of grid origin and cell size. `grid_info_buffer` is the
     /// canonical GPU-side source for the forward / fog / billboard shaders;
-    /// these mirror the values consumed by `sh_diagnostics` (probe-marker
-    /// emission) and remain available to any future CPU-side consumer (the
-    /// SDF shadow pass reads them from the section directly).
-    #[allow(dead_code)]
+    /// these mirror it for `sh_diagnostics` (probe-marker emission) and the
+    /// fluid grid (`FullRenderer::sh_sampler_lattice`). The placeholder's
+    /// while `present` is false.
     pub grid_origin: [f32; 3],
-    #[allow(dead_code)]
     pub cell_size: [f32; 3],
     grid_info_buffer: wgpu::Buffer,
     probe_occlusion_enabled: bool,
@@ -324,6 +322,20 @@ impl AnimatedLightBuffers {
         self.dirty = true;
     }
 
+    /// Overwrite mirror record `slot`, the single dummy record of a level with
+    /// no animated lights included, and mark the mirror for the frame's flush.
+    /// GPU tests stand in for the light bridge with it.
+    #[cfg(test)]
+    pub(crate) fn write_record_for_test(
+        &mut self,
+        slot: usize,
+        bytes: &[u8; ANIMATION_DESCRIPTOR_SIZE],
+    ) {
+        let start = slot * ANIMATION_DESCRIPTOR_SIZE;
+        self.descriptor_mirror[start..start + ANIMATION_DESCRIPTOR_SIZE].copy_from_slice(bytes);
+        self.dirty = true;
+    }
+
     /// Upload the CPU mirror to the GPU descriptor buffer. No-op when clean.
     /// Must be called before the compose pass and forward pass each frame.
     pub fn upload_descriptors_if_dirty(&mut self, queue: &crate::render::uploads::UploadQueue) {
@@ -392,6 +404,20 @@ impl ShVolumeResources {
         let usable = section
             .filter(|s| {
                 s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
+            })
+            .filter(|s| {
+                // A degenerate lattice would sample through `max(cell, 1e-6)` or NaN;
+                // refuse it so every SH consumer takes the no-volume path.
+                let sane = s.grid_origin.iter().all(|v| v.is_finite())
+                    && s.cell_size.iter().all(|v| v.is_finite() && *v > 0.0);
+                if !sane {
+                    log::error!(
+                        "[Renderer] SH volume lattice is degenerate (grid origin {:?}, cell size {:?}); disabling SH volume for this level",
+                        s.grid_origin,
+                        s.cell_size,
+                    );
+                }
+                sane
             })
             .filter(|s| {
                 let fits = atlas_fits(s.atlas_dimensions, s.layer_count, &limits);
@@ -951,7 +977,8 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
     // Shared with the forward pass (fragment), fog raymarch (compute), and the
     // billboard pass (vertex + fragment), so visibility covers all three stages on
     // every entry. VERTEX is required because billboard hoists SH indirect + direct
-    // sampling into `vs_main` (per-vertex lighting); the SH reads use non-derivative
+    // sampling into `vs_main` (per-vertex lighting) and the fluid pass's `vs_main`
+    // (`fluid_baked_light`) reads them too; the SH reads use non-derivative
     // texture ops (`textureSampleLevel`/`textureLoad`), which are vertex-stage valid.
     // Widening is additive — forward/fog/mesh sharers do not read in the vertex stage,
     // and carrying extra visibility on a shared layout is valid at pipeline creation.

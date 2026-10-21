@@ -260,6 +260,14 @@ impl App {
             bindings
         };
         self.trigger_bindings = bindings;
+        if let Some(session) = self.session.as_ref() {
+            self.teleporter_bindings =
+                postretro_sim::teleporter_system::TeleporterBindingTable::build(
+                    &session.scripting.script_ctx,
+                    session.scripting.command_diagnostics.clone(),
+                    session.scripting.spawn_context.clone(),
+                );
+        }
         self.warn_hosted_trigger_machine_local();
         self.rebuild_player_events(true);
     }
@@ -674,19 +682,26 @@ impl App {
             animated_baked_descriptor_indices,
             fgd_sample_float_count,
         ) = {
-            let (shadow_quality, surface_depth_quality) = {
+            let (shadow_quality, surface_depth_quality, reflection_quality) = {
                 let options = &self
                     .session
                     .as_ref()
                     .expect("session installed before level install")
                     .player_options;
-                (options.shadow_quality, options.surface_depth_quality)
+                (
+                    options.shadow_quality,
+                    options.surface_depth_quality,
+                    options.reflection_quality,
+                )
             };
             self.configure_player_shadow_quality(shadow_quality);
             // Before `install_textures`, so every material this level builds is
             // packed at the player's tier rather than built at the default and
             // rewritten.
             self.apply_player_surface_depth_quality(surface_depth_quality);
+            // Before the fluid install, which sizes the reflection target from
+            // the kept tier. The tier the renderer already holds is a no-op.
+            self.apply_player_reflection_quality(reflection_quality);
             let renderer = match self.renderer.as_mut() {
                 Some(r) => r,
                 None => {
@@ -694,6 +709,9 @@ impl App {
                     // The level stays installed, so its collision does too.
                     self.collision_world = static_collision;
                     self.level = Some(world);
+                    // Keeps the App's drift current for tests and later
+                    // refreshes; there is no renderer to hand it to.
+                    self.resolve_fluid_surface_drift();
                     return Ok(());
                 }
             };
@@ -723,7 +741,10 @@ impl App {
             self.level_timings.record("geometry_upload");
             // Fluid surfaces after textures (their UVs normalize by the
             // installed dimensions) and geometry (which drops the last level's).
-            renderer.install_fluid_surfaces(&world.environment_volumes.volumes);
+            renderer.install_fluid_surfaces(
+                &world.environment_volumes.volumes,
+                world.reflection_probes.as_ref(),
+            );
 
             // Reseed the SH diagnostic per-light visibility bitmap to match the
             // freshly-installed level's animated-light count. Reset `seeded` so the
@@ -899,6 +920,10 @@ impl App {
                 }
             },
         );
+        crate::runtime_teleporters::bind_loaded_teleporters(
+            &mut self.collision_world.teleporters,
+            &script_ctx.registry.borrow(),
+        );
         // The level's trees joined the tree set.
         session.check_accessibility_entry();
 
@@ -927,8 +952,12 @@ impl App {
 
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
+        self.teleporter_bindings = products.teleporter_bindings;
         self.warn_hosted_trigger_machine_local();
         self.warn_if_local_player_cannot_swim();
+        // After the boot pawn spawns, so the host reads its own descriptor's
+        // terminal velocity; the surfaces drew still until now.
+        self.resolve_fluid_surface_drift();
         // A level install starts every player unobserved: no edge memory
         // carries from the previous level.
         self.rebuild_player_events(false);
@@ -1493,6 +1522,7 @@ pub(crate) struct WorldInstallProducts {
     pub(crate) spawned_mover_entities: Vec<postretro_entities::registry::EntityId>,
     /// Trigger reactions partitioned from the final composed active set.
     pub(crate) trigger_bindings: TriggerBindingTable,
+    pub(crate) teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
     /// Host-only trigger-pool outcome retained by `App` for diagnostics and
     /// tests. Connected clients receive the default empty report.
     pub(crate) trigger_pool_report: TriggerPoolInstallReport,
@@ -1909,6 +1939,7 @@ pub(crate) mod tests {
             environment_volumes: postretro_collision::EnvironmentVolumes::empty(),
             environment_fluids: Default::default(),
             environment_fluid_source: Default::default(),
+            fluid_surface_drift: Vec::new(),
             kinematic_mover_colliders: Vec::new(),
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
             mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
@@ -1917,11 +1948,14 @@ pub(crate) mod tests {
                 postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(),
             fluid_eye: Default::default(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
+            teleporter_bindings: Default::default(),
             player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
             client_weapon: Default::default(),
+            active_slot_resync: Default::default(),
             observer_weapon_cues: Vec::new(),
+            pending_teleport_sounds: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
             client_reload_edges: Default::default(),
             client_overheat_edge: Default::default(),
@@ -2300,6 +2334,9 @@ pub(crate) mod tests {
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
+            teleporters: Default::default(),
+            environment_push_forces: Vec::new(),
+            reflection_probes: None,
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,

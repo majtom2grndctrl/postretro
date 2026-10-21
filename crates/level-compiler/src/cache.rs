@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+};
 
 mod records;
 
@@ -49,6 +52,7 @@ static STAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// the same filename.
 pub struct CacheKey {
     digest: [u8; HASH_BYTES],
+    stage: [u8; HASH_BYTES],
     #[cfg(test)]
     stage_id: String,
 }
@@ -66,6 +70,7 @@ impl CacheKey {
         let digest = hasher.finalize();
         Self {
             digest: *digest.as_bytes(),
+            stage: *blake3::hash(stage_id.as_bytes()).as_bytes(),
             #[cfg(test)]
             stage_id: stage_id.to_owned(),
         }
@@ -82,7 +87,9 @@ impl CacheKey {
 #[derive(Clone)]
 pub struct StageCache {
     dir: Arc<PathBuf>,
-    live_entries: Arc<Mutex<HashMap<[u8; HASH_BYTES], u64>>>,
+    // Independent tables keep a later stage's growth from rehashing an
+    // earlier stage's resident baseline. The outer tree never rehashes.
+    live_entries: Arc<Mutex<BTreeMap<[u8; HASH_BYTES], SparedSet>>>,
     live_set_reported: Arc<AtomicBool>,
     /// This build's use journal, when the cache was opened for a map.
     journal: Option<Arc<Journal>>,
@@ -102,6 +109,8 @@ pub(crate) struct CacheTestAccess {
     pub read_attempts: usize,
     pub read_hits: usize,
     pub writes: usize,
+    pub streamed_writes: usize,
+    pub max_streamed_write_bytes: usize,
 }
 
 impl StageCache {
@@ -112,7 +121,7 @@ impl StageCache {
         fs::create_dir_all(&dir)?;
         Ok(Self {
             dir: Arc::new(dir),
-            live_entries: Arc::new(Mutex::new(HashMap::new())),
+            live_entries: Arc::new(Mutex::new(BTreeMap::new())),
             live_set_reported: Arc::new(AtomicBool::new(false)),
             journal: None,
             #[cfg(test)]
@@ -273,6 +282,23 @@ impl StageCache {
         payload_len: u64,
         write_payload: impl FnOnce(&mut dyn Write) -> io::Result<()>,
     ) {
+        #[cfg(test)]
+        let write_payload = |writer: &mut dyn Write| {
+            let mut observer = StreamedWriteObserver {
+                writer,
+                max_write: 0,
+            };
+            let result = write_payload(&mut observer);
+            let mut accesses = self
+                .test_accesses
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let access = accesses.entry(key.stage_id.clone()).or_default();
+            access.streamed_writes += 1;
+            access.max_streamed_write_bytes =
+                access.max_streamed_write_bytes.max(observer.max_write);
+            result
+        };
         self.publish(key, payload_len, |tmp_path| {
             Self::write_streamed_entry(tmp_path, payload_len, write_payload)
         });
@@ -355,7 +381,8 @@ impl StageCache {
         self.live_entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .keys()
+            .values()
+            .flat_map(HashMap::keys)
             .map(|digest| hex_encode(digest))
             .collect()
     }
@@ -392,7 +419,9 @@ impl StageCache {
                 .live_entries
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
+                .values()
+                .flat_map(|stage| stage.iter().map(|(digest, size)| (*digest, *size)))
+                .collect();
             if let Err(err) = journal.promote(&entries) {
                 log::warn!(
                     "[cache] cannot record this build's entries in {} ({err}); the next prune may evict them",
@@ -421,7 +450,8 @@ impl StageCache {
             self.live_entries
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .iter()
+                .values()
+                .flat_map(HashMap::iter)
                 .map(|(digest, &size)| (*digest, size)),
         );
         spared
@@ -435,8 +465,12 @@ impl StageCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         CacheLiveSet {
-            entry_count: entries.len(),
-            total_bytes: entries.values().copied().fold(0u64, u64::saturating_add),
+            entry_count: entries.values().map(HashMap::len).sum(),
+            total_bytes: entries
+                .values()
+                .flat_map(HashMap::values)
+                .copied()
+                .fold(0u64, u64::saturating_add),
         }
     }
 
@@ -695,11 +729,32 @@ impl StageCache {
             .live_entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.stage)
+            .or_default()
             .insert(key.digest, bytes)
             .is_none();
         if first_use && let Some(journal) = &self.journal {
             journal.append(&key.digest, bytes);
         }
+    }
+}
+
+/// Observe the actual serializer's writes before the cache's fixed buffer.
+#[cfg(test)]
+struct StreamedWriteObserver<'a> {
+    writer: &'a mut dyn Write,
+    max_write: usize,
+}
+
+#[cfg(test)]
+impl Write for StreamedWriteObserver<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.max_write = self.max_write.max(bytes.len());
+        self.writer.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
     }
 }
 
@@ -864,6 +919,15 @@ mod tests {
         assert_eq!(cache.get(&first), Some(b"1234".to_vec()));
         cache.put(&second, b"12345678");
         assert_eq!(cache.get(&second), Some(b"12345678".to_vec()));
+        cache.mark_used(&first);
+        cache.mark_used(&second);
+        assert_eq!(cache.test_live_entry_names().len(), 2);
+        // Regression: lightmap-pair growth used to rehash prior SH entries.
+        let entries = cache.live_entries.lock().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[&first.stage].len(), 1);
+        assert_eq!(entries[&second.stage].len(), 1);
+        drop(entries);
 
         assert_eq!(
             cache.live_set(),
@@ -872,6 +936,35 @@ mod tests {
                 total_bytes: (HEADER_BYTES * 2 + 12) as u64,
             }
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn later_stage_live_entries_grow_without_rehashing_prior_stages() {
+        // Regression: pricing only new lightmap entries missed a resize that
+        // temporarily copied the prior SH stages' entire live-entry baseline.
+        let dir = fresh_temp_dir("stage_live_set_growth");
+        let cache = StageCache::new(&dir).unwrap();
+        let prior = CacheKey::new("sh_light", 1, b"baseline");
+        cache.record_live_entry(&prior, 10);
+        let prior_capacity = cache.live_entries.lock().unwrap()[&prior.stage].capacity();
+        for i in 0u32..1000 {
+            let key = CacheKey::new("lightmap_layer", 1, &i.to_le_bytes());
+            cache.record_live_entry(&key, 20);
+            cache.record_live_entry(&key, 20);
+        }
+        assert_eq!(
+            cache.live_entries.lock().unwrap()[&prior.stage].capacity(),
+            prior_capacity
+        );
+        assert_eq!(
+            cache.live_set(),
+            CacheLiveSet {
+                entry_count: 1001,
+                total_bytes: 20_010
+            }
+        );
+        assert_eq!(cache.test_live_entry_names().len(), 1001);
         let _ = fs::remove_dir_all(&dir);
     }
 

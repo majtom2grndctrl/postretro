@@ -12,7 +12,7 @@ use parry3d::shape::{Capsule as ParryCapsule, TriMesh};
 use super::skin_cast::cast_shapes_skin;
 use super::{
     COS_WALKABLE, CollisionCapsule, CollisionMeshError, CollisionWorld, SKIN_DISTANCE,
-    cast_capsule_parry, cast_ray_parry, inclusive_query_limit, within_limit,
+    cast_capsule_parry_to, cast_ray_parry, inclusive_query_limit, within_limit,
 };
 use postretro_entities::Transform;
 
@@ -169,6 +169,12 @@ impl MoverCollider {
         })
     }
 
+    /// Farthest collider point from the mover origin: no rotation about the
+    /// origin carries any point further.
+    pub(crate) fn reach(&self) -> f32 {
+        self.local_radius
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn mover_id(&self) -> u32 {
         self.mover_id
@@ -218,8 +224,95 @@ fn cast_capsule_combined_with<const BROAD_PHASE: bool>(
     dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
+    cast_capsule_combined_targeted::<BROAD_PHASE>(
+        static_world,
+        movers,
+        poses,
+        pos,
+        capsule,
+        dir,
+        max_toi,
+        SKIN_DISTANCE,
+    )
+}
+
+/// [`cast_capsule_combined_parry`] stopping `target_distance` from surfaces
+/// instead of one skin width.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cast_capsule_combined_to(
+    static_world: &CollisionWorld,
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<CombinedCastHit> {
+    cast_capsule_combined_targeted::<true>(
+        static_world,
+        movers,
+        poses,
+        pos,
+        capsule,
+        dir,
+        max_toi,
+        target_distance,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cast_capsule_combined_targeted<const BROAD_PHASE: bool>(
+    static_world: &CollisionWorld,
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<CombinedCastHit> {
     let mut nearest =
-        cast_capsule_parry(static_world, pos, capsule, dir, max_toi).map(static_shape_hit);
+        cast_capsule_parry_to(static_world, pos, capsule, dir, max_toi, target_distance)
+            .map(static_shape_hit);
+    choose_nearest(
+        &mut nearest,
+        cast_capsule_movers_targeted::<BROAD_PHASE>(
+            movers,
+            poses,
+            pos,
+            capsule,
+            dir,
+            max_toi,
+            target_distance,
+        ),
+    );
+    nearest
+}
+
+/// [`cast_capsule_combined_to`] against movers alone.
+pub(crate) fn cast_capsule_against_movers(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<CombinedCastHit> {
+    cast_capsule_movers_targeted::<true>(movers, poses, pos, capsule, dir, max_toi, target_distance)
+}
+
+fn cast_capsule_movers_targeted<const BROAD_PHASE: bool>(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<CombinedCastHit> {
+    let mut nearest = None;
     let (capsule_center, capsule_radius) = capsule_bounding_sphere(capsule);
     let sweep_start = pos + capsule_center;
     let sweep_motion = dir * max_toi;
@@ -235,14 +328,14 @@ fn cast_capsule_combined_with<const BROAD_PHASE: bool>(
                 &mover_pose,
                 sweep_start,
                 sweep_motion,
-                capsule_radius + SKIN_DISTANCE,
+                capsule_radius + target_distance,
             )
         {
             continue;
         }
         let options = ShapeCastOptions {
             max_time_of_impact: inclusive_query_limit(max_toi),
-            target_distance: SKIN_DISTANCE,
+            target_distance,
             stop_at_penetration: false,
             ..Default::default()
         };
@@ -378,6 +471,44 @@ fn deepest_mover_penetration_with<const BROAD_PHASE: bool>(
     }
 
     deepest
+}
+
+/// Whether `point` lies inside any mover's closed hull at its current pose.
+/// Contact queries see only triangles, so a shape wholly inside a hull reports
+/// none. Uses the generalized winding number (summed signed solid angles,
+/// Van Oosterom–Strackee): about ±1 inside a closed mesh of either winding, 0
+/// outside, and free of the edge and vertex degeneracies of ray parity. A point
+/// on a surface is undefined, so callers ask only after contact came back clear.
+/// Movers whose bounding sphere cannot reach the point are skipped;
+/// allocation-free.
+pub(crate) fn point_inside_mover(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    point: Vec3,
+) -> bool {
+    if !point.is_finite() {
+        return false;
+    }
+    movers.iter().any(|mover| {
+        let Some(pose) = poses.pose(mover.mover_id) else {
+            return false;
+        };
+        let mover_pose = transform_pose(pose.transform);
+        if !mover_bound_may_reach_segment(mover, &mover_pose, point, Vec3::ZERO, 0.0) {
+            return false;
+        }
+        let local = mover_pose.inverse_transform_point(point).as_dvec3();
+        let vertices = mover.local_mesh.vertices();
+        let mut solid_angle = 0.0_f64;
+        for triangle in mover.local_mesh.indices() {
+            let [a, b, c] = triangle.map(|index| vertices[index as usize].as_dvec3() - local);
+            let (la, lb, lc) = (a.length(), b.length(), c.length());
+            let numerator = a.dot(b.cross(c));
+            let denominator = la * lb * lc + a.dot(b) * lc + a.dot(c) * lb + b.dot(c) * la;
+            solid_angle += 2.0 * numerator.atan2(denominator);
+        }
+        (solid_angle / (4.0 * std::f64::consts::PI)).abs() > 0.5
+    })
 }
 
 pub(crate) fn deepest_mover_push_penetration(
@@ -1094,7 +1225,8 @@ mod tests {
         let origin = Vec3::new(0.0, 2.0, 0.0);
         let dir = Vec3::NEG_Y;
 
-        let direct = cast_capsule_parry(&world, origin, &capsule, dir, 10.0).unwrap();
+        let direct =
+            crate::collision::cast_capsule_parry(&world, origin, &capsule, dir, 10.0).unwrap();
         let combined =
             cast_capsule_combined_parry(&world, &[], &poses, origin, &capsule, dir, 10.0).unwrap();
 

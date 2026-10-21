@@ -175,8 +175,8 @@ pub(super) fn environment_transition(
 ///   tick's integration (no gravity on the jump tick itself) overshoots that
 ///   continuous peak by about `v·dt / 2`, so the test is conservative.
 /// - **Headroom.** The standing capsule must be able to sweep up the required
-///   rise ([`upward_clearance_probe`], the cast crouch stand-up uses), so a low
-///   ceiling over the water blocks it.
+///   rise ([`upward_clearance_probe`]), so a low ceiling over the water blocks
+///   it.
 fn fluid_jump_clears(
     component: &PlayerMovementComponent,
     exit_depth: f32,

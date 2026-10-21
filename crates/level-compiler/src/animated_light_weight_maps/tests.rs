@@ -306,7 +306,12 @@ where
     F: FnOnce(&[Chart]) -> AnimatedLightChunksSection,
 {
     let (bvh, prims, _) = build_bvh(&geo).unwrap();
-    let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+    // Animated weights need the static blocks the renderer composes them onto.
+    let statics = [MapLight {
+        animation: None,
+        ..animated_point_light_above()
+    }];
+    let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&statics);
     let mut lm_ctx = crate::lightmap_bake::LightmapBakeCtx {
         bvh: &bvh,
         primitives: &prims,

@@ -287,7 +287,7 @@ fn start_aim(
     if action_charges(registry, weapon, token.lane) {
         return None;
     }
-    queues.start_aim(command.owner_client_id, token)
+    queues.start_aim_in_registry(command.owner_client_id, token, command.pawn, registry)
 }
 
 /// Whether `weapon`'s action on `lane` charges: its shot fires at the release.
@@ -1063,6 +1063,7 @@ mod tests {
         start: Option<ActivationToken>,
     ) -> wire::InputCommand {
         wire::InputCommand {
+            teleport_yaw_stamp: 0.0,
             client_tick,
             movement: wire::WireMovementInput {
                 wish_dir: [0.0; 2],

@@ -1,0 +1,24 @@
+{
+  "map": "content/dev/maps/reflection-probes-test.prl",
+  "camera": {
+    "position": [
+      -6.5024,
+      1.6,
+      -6.5024
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": -89.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    1536,
+    960
+  ],
+  "output": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/test-auto-stock.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-base-pass-cost/metal/runs/landing1-test-auto-stock-r1.report.json",
+    "warmup_frames": 120,
+    "sample_frames": 120
+  },
+  "light_term_mask": 319
+}

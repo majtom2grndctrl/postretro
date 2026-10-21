@@ -31,12 +31,12 @@ pub type VirtualMillis = u64;
 /// single seeded stream is all the conditioner needs for reproducible
 /// jitter/loss decisions. Same seed ⇒ same sequence, every run, every platform.
 #[derive(Debug, Clone)]
-struct SplitMix64 {
+pub(crate) struct SplitMix64 {
     state: u64,
 }
 
 impl SplitMix64 {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
@@ -65,8 +65,9 @@ impl SplitMix64 {
     }
 }
 
-/// Conditioning parameters for one direction of the relay. All times are in
-/// virtual milliseconds on the conditioner's own clock.
+/// Conditioning parameters for one direction of a link. Times are
+/// milliseconds: virtual ones on [`PacketConditioner`]'s own clock, wall-clock
+/// ones in the dev lag proxy (`crate::lag_proxy`), which ignores `seed`.
 #[derive(Debug, Clone, Copy)]
 pub struct LinkConfig {
     /// Base one-way delay applied to every delivered packet.
@@ -93,6 +94,19 @@ impl LinkConfig {
             loss_probability: 0.0,
             seed: 0,
         }
+    }
+
+    /// The per-packet decision of the link model, shared by
+    /// [`PacketConditioner`] and the dev lag proxy (`crate::lag_proxy`): `None`
+    /// drops the packet, else its one-way delay (`delay` plus a uniform
+    /// `[0, jitter]` draw). The loss flip consumes the stream only when loss is
+    /// on, and the jitter draw only when the packet survives and jitter is on,
+    /// so the stream position is a deterministic function of the call sequence.
+    pub(crate) fn sample_delay(&self, rng: &mut SplitMix64) -> Option<VirtualMillis> {
+        if self.loss_probability > 0.0 && rng.next_unit_f64() < self.loss_probability {
+            return None;
+        }
+        Some(self.delay + rng.next_in_inclusive(self.jitter))
     }
 }
 
@@ -162,22 +176,17 @@ impl PacketConditioner {
     /// Enqueue one packet buffer. The loss coin is flipped first: a dropped
     /// packet is counted and discarded (returns `false`, never scheduled). A
     /// surviving packet is scheduled at `now + delay + jitter_draw` and returns
-    /// `true`.
-    ///
-    /// The PRNG is advanced for the loss flip on every call, and for the jitter
-    /// draw only when the packet survives and `jitter > 0` — so the stream
-    /// position is a deterministic function of the enqueue sequence.
+    /// `true`. PRNG consumption follows [`LinkConfig::sample_delay`], so the
+    /// stream position is a deterministic function of the enqueue sequence.
     pub fn enqueue(&mut self, packet: Vec<u8>) -> bool {
-        if self.config.loss_probability > 0.0
-            && self.rng.next_unit_f64() < self.config.loss_probability
-        {
+        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
             self.dropped += 1;
             return false;
-        }
-
-        let jitter = self.rng.next_in_inclusive(self.config.jitter);
-        let deliver_at = self.now + self.config.delay + jitter;
-        self.queue.push(ScheduledPacket { deliver_at, packet });
+        };
+        self.queue.push(ScheduledPacket {
+            deliver_at: self.now + delay,
+            packet,
+        });
         true
     }
 
@@ -191,16 +200,12 @@ impl PacketConditioner {
     /// without consuming twice. Clones only the surviving buffer.
     fn enqueue_one(&mut self, packet: &[u8]) -> bool {
         // Mirror `enqueue` but avoid cloning a dropped buffer.
-        if self.config.loss_probability > 0.0
-            && self.rng.next_unit_f64() < self.config.loss_probability
-        {
+        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
             self.dropped += 1;
             return false;
-        }
-        let jitter = self.rng.next_in_inclusive(self.config.jitter);
-        let deliver_at = self.now + self.config.delay + jitter;
+        };
         self.queue.push(ScheduledPacket {
-            deliver_at,
+            deliver_at: self.now + delay,
             packet: packet.to_vec(),
         });
         true
@@ -407,6 +412,7 @@ mod tests {
                 projectile_presentation: None,
                 presentation_binding: None,
                 components: vec![RawComponentPayload {
+                    teleporter: None,
                     component_kind: COMPONENT_KIND_TRANSFORM,
                     transform: Some(WireTransform {
                         position: [1.5, -2.0, 3.25],

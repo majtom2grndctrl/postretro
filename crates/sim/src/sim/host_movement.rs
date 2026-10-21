@@ -18,7 +18,7 @@
 use glam::{Quat, Vec3};
 
 use crate::movement::{
-    MovementCollisionSource, MovementEvents, MovementInput, tick_with_immersion,
+    MovementCollisionSource, MovementEvents, MovementInput, tick_with_immersion_and_armed,
 };
 use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
@@ -72,14 +72,19 @@ pub fn run_host_movement_tick(
 
     let mut events_out = Vec::with_capacity(snapshots.len());
     for (id, mut component, position, input) in snapshots {
-        let (new_pos, events, immersion) = tick_with_immersion(
+        let world = collision.combined_collision();
+        let (new_pos, events, immersion) = tick_with_immersion_and_armed(
             &mut component,
             &input,
             collision,
             environment,
             tick_dt,
             position,
+            |index| world.static_world.teleporters.armed(registry, index),
         );
+        if let Some(overlap) = &events.static_overlap {
+            super::report_static_overlap(world.static_world, registry, id, overlap);
+        }
         // Write the advanced pose. `get_component` re-read tolerates a Transform that
         // vanished mid-loop (it cannot here — single-threaded — but keeps the write
         // total).
@@ -90,9 +95,15 @@ pub fn run_host_movement_tick(
             // heading is a render-only override derived from velocity, so snapshots
             // retain the controlling camera yaw for upper-body presentation.
             if input.facing_yaw.is_finite() {
-                t.rotation = Quat::from_rotation_y(input.facing_yaw);
+                t.rotation = Quat::from_rotation_y(
+                    input.facing_yaw + events.teleport.map_or(0.0, |event| event.yaw_delta),
+                );
             }
-            let _ = registry.set_component(id, t);
+            if events.teleport.is_some() {
+                let _ = registry.set_presentation_transform(id, t);
+            } else {
+                let _ = registry.set_component(id, t);
+            }
         }
         let _ = registry.set_component(id, component);
         let _ = registry.set_component(id, ImmersionComponent { immersion });
@@ -603,5 +614,129 @@ mod tests {
             events.is_empty(),
             "a pawn without a movement component contributes nothing"
         );
+    }
+    fn teleport_world() -> CollisionWorld {
+        use postretro_level_format::environment_volumes::{EnvironmentBrush, EnvironmentPlane};
+        use postretro_level_format::teleporters::{
+            TeleportMode, TeleporterRecord, TeleportersSection,
+        };
+        let min = Vec3::splat(-2.0);
+        let max = Vec3::splat(2.0);
+        let planes = (0..3)
+            .flat_map(|axis| {
+                let mut normal = Vec3::ZERO;
+                normal[axis] = 1.0;
+                [
+                    EnvironmentPlane {
+                        normal: normal.to_array(),
+                        distance: max[axis],
+                    },
+                    EnvironmentPlane {
+                        normal: (-normal).to_array(),
+                        distance: -min[axis],
+                    },
+                ]
+            })
+            .collect();
+        let section = TeleportersSection {
+            teleporters: vec![TeleporterRecord {
+                source_entity: 1,
+                mode: TeleportMode::Classic,
+                enabled_on_spawn: true,
+                brushes: vec![EnvironmentBrush {
+                    aabb_min: min.to_array(),
+                    aabb_max: max.to_array(),
+                    planes,
+                }],
+                destination_origin: [20.0, 5.0, 10.0],
+                destination_yaw: std::f32::consts::FRAC_PI_2,
+                landmark_origin: [0.0; 3],
+                landmark_yaw: 0.0,
+                arrival_sound: String::new(),
+                on_teleport: String::new(),
+            }],
+        };
+        let mut world = CollisionWorld::new();
+        world.teleporters = postretro_physics::teleporters::Teleporters::from_section(&section);
+        world
+    }
+
+    #[test]
+    fn teleport_host_movement_writes_arrival_yaw_and_mesh_cut_at_every_alpha() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_pawn(&mut registry, Vec3::ZERO);
+        registry.snapshot_transforms();
+        let world = teleport_world();
+        let events = run_host_movement_tick(
+            &mut registry,
+            &world,
+            EnvironmentView::level_only(0.0),
+            &[(pawn, idle_input())],
+            1.0 / 60.0,
+        );
+        assert!(events[0].1.teleport.is_some());
+        for alpha in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let transform = registry.interpolated_transform(pawn, alpha).unwrap();
+            assert!((transform.position - Vec3::new(20.0, 5.0, 10.0)).length() < EPSILON);
+            assert!((transform.rotation * Vec3::NEG_Z - Vec3::NEG_X).length() < EPSILON);
+        }
+    }
+
+    #[test]
+    fn teleport_host_fires_after_step_and_respects_bound_armed_state() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_pawn(&mut registry, Vec3::new(-2.05, 0.0, 0.0));
+        let mut component = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone();
+        component.velocity = Vec3::X * 6.0;
+        registry.set_component(pawn, component).unwrap();
+        let mut world = teleport_world();
+        let teleporter = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                teleporter,
+                postretro_entities::TeleporterComponent {
+                    index: 0,
+                    source_entity: 1,
+                    armed: false,
+                    arrival_sound: String::new(),
+                    on_teleport: String::new(),
+                },
+            )
+            .unwrap();
+        world.teleporters.bind_entity(0, teleporter);
+        let input = [(pawn, idle_input())];
+        let events = run_host_movement_tick(
+            &mut registry,
+            &world,
+            EnvironmentView::level_only(0.0),
+            &input,
+            1.0 / 60.0,
+        );
+        assert!(events[0].1.teleport.is_none());
+        assert!(
+            registry
+                .get_component::<Transform>(pawn)
+                .unwrap()
+                .position
+                .x
+                > -2.0
+        );
+        let mut armed = registry
+            .get_component::<postretro_entities::TeleporterComponent>(teleporter)
+            .unwrap()
+            .clone();
+        armed.armed = true;
+        registry.set_component(teleporter, armed).unwrap();
+        let events = run_host_movement_tick(
+            &mut registry,
+            &world,
+            EnvironmentView::level_only(0.0),
+            &input,
+            1.0 / 60.0,
+        );
+        assert!(events[0].1.teleport.is_some());
     }
 }

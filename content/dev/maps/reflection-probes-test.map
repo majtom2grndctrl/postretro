@@ -1,0 +1,764 @@
+// Game: Postretro
+// Format: Standard
+// Reflection-probe manual test map: what to look for, per feature, below.
+// Axis-aligned box brushes; 1 map unit = 0.0254 m; map coordinates, Z up.
+// Keep comments free of braces and quotes and
+// never leave a blank line inside an entity block. A bare comment marker with
+// no text after it also breaks the parser.
+// Fluid water is declared in content/dev/start-script.ts.
+// Script: content/dev/scripts/reflection-probes-test.ts.
+// ----
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/reflection-probes-test.map -o content/dev/maps/reflection-probes-test.prl
+// Run:     cargo run -p xtask -- run --features dev-tools -- content/dev/maps/reflection-probes-test.prl
+// ----
+// LAYOUT, west to east along X, every room y 0 to 512:
+//   Room P, pool room     x 0 to 512,     floor z 0, ceiling z 256, grey concrete walls
+//   Door P to A           x 512 to 528,   y 400 to 464, onto room A north walkway
+//   Room A, canal west    x 528 to 912,   floor z 0, ceiling z 192, RED walls
+//   Doorway A to B        x 912 to 928,   y 144 to 368, z 0 to 128, the canal runs under it
+//   Room B, canal hall    x 928 to 1440,  floor z 0, ceiling z 384, GREEN walls
+//   Balcony               x 1312 to 1440, top z 192, stairs along the south wall x 1024 to 1312
+// ----
+// POOL ROOM P
+//   Pool        x 160 to 352, y 160 to 352, surface z 0 flush with the floor, pit floor z -96 blue.
+//   Coping      16 wide, 6 high, x 144 to 368, y 144 to 368.
+//   Floor props crate x 392 to 440, y 200 to 248, 48 high, east of the rim;
+//               bench x 200 to 312, y 104 to 128, 20 high, south of the rim;
+//               stump x 88 to 120, y 88 to 120, 64 high, in the sdf corner.
+//   Neon sign   x 192 to 320 on the north wall y 512, z 96 to 160, faces the pool.
+//   Lights      static fill 256 384 224;
+//               FLICKER, Quake style 10, amber, 96 400 208, north-west of the pool;
+//               SWITCHABLE, cyan, tag rp_switch_light, 432 128 208, south-east;
+//               SDF, _shadow_type sdf, magenta, 40 40 160, south-west corner.
+//   Switches    on the south wall: red x 352 to 384 turns the tagged lights OFF,
+//               green x 448 to 480 turns them back ON. Walk up, press use.
+//   Start       256 56, facing north across the pool at the neon sign.
+// ----
+// CANAL, one fluid_volume, surface z -16, through rooms A and B:
+//   Room A stretch x 528 to 920, y 208 to 304: DERIVED probe, red walls.
+//   Room B stretch x 920 to 1440, y 208 to 304, widened to a basin y 112 to 400
+//   from x 928: claimed by the AUTHORED reflection_volume x 928 to 1440, y 0 to
+//   512, z -96 to 384, _capture_offset -128 0. A pillar x 1168 to 1200,
+//   y 240 to 272 stands at the basin centroid; the offset moves the capture
+//   point west, clear of it. The brush split at x 920 is the doorway midline.
+//   Room B has a second SWITCHABLE cyan light, same tag, at 1200 440 300, and a
+//   red OFF and green ON switch pair on the east wall above the balcony.
+// ----
+// WHAT TO LOOK FOR, per feature
+//   Existing-map pool reflects: not this map; rebuild e24-environment-test.map.
+//   Mirror and parallax: from the start, the pool mirrors the room, the magenta sdf
+//     corner and the stump shadow included. Strafe along y 56: the north wall
+//     and neon sign hold their place. Crouch or stand on the coping edge for a
+//     low eye: coping, crate, bench and stump reflect at the right height.
+//   Fresnel: look straight down from the coping, faint; look across the
+//     pool, near-mirror. Climb the stairs to the balcony and look west across
+//     the basin and canal: far walls and the green ceiling reflect strongly.
+//   Live lighting and switch: watch the amber flicker in the pool reflection, no seam
+//     between lobes. Press the red pool-room switch: the south-east cyan wash
+//     leaves the reflection there; green restores it. Repeat from the balcony
+//     with its own switches and watch the basin. The neon sign reflects.
+//   Style, pixel: per the manifest water fluid reflection style.
+//   Canal boundary: stand in room A or on the balcony looking along the
+//     canal through the doorway. Where the derived room A probe meets the
+//     authored room B probe at x 920, expect at most a brightness or occlusion
+//     step, never a geometry jump.
+{
+"classname" "worldspawn"
+"wad" ""
+"data_script" "../scripts/reflection-probes-test.ts"
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// ---- Shell ----
+// sub-slab under every floor and trench
+{
+( -16 528 -112 ) ( -16 -16 -96 ) ( -16 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -112 ) ( 1456 -16 -96 ) ( 1456 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -112 ) ( 1456 528 -112 ) ( -16 528 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 528 -96 ) ( 1456 -16 -96 ) ( -16 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1456 528 -112 ) ( -16 528 -96 ) ( -16 528 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1456 -16 -112 ) ( 1456 528 -96 ) ( 1456 528 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// roof, room B ceiling at z 384
+{
+( -16 528 384 ) ( -16 -16 400 ) ( -16 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 384 ) ( 1456 -16 400 ) ( 1456 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 384 ) ( 1456 528 384 ) ( -16 528 384 ) DebugTextures/debug_ceiling_green 0 0 0 1 1
+( -16 528 400 ) ( 1456 -16 400 ) ( -16 -16 400 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1456 528 384 ) ( -16 528 400 ) ( -16 528 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1456 -16 384 ) ( 1456 528 400 ) ( 1456 528 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// west wall
+{
+( -16 528 -96 ) ( -16 -16 384 ) ( -16 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -96 ) ( 0 -16 384 ) ( 0 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -96 ) ( 0 528 -96 ) ( -16 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 528 384 ) ( 0 -16 384 ) ( -16 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 528 -96 ) ( -16 528 384 ) ( -16 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 -16 -96 ) ( 0 528 384 ) ( 0 528 -96 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// east wall
+{
+( 1440 528 -96 ) ( 1440 -16 384 ) ( 1440 -16 -96 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 1440 -16 -96 ) ( 1456 -16 384 ) ( 1456 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1440 -16 -96 ) ( 1456 528 -96 ) ( 1440 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1440 528 384 ) ( 1456 -16 384 ) ( 1440 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1456 528 -96 ) ( 1440 528 384 ) ( 1440 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1456 -16 -96 ) ( 1456 528 384 ) ( 1456 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// south wall, room P
+{
+( 0 0 -96 ) ( 0 -16 384 ) ( 0 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 -16 -96 ) ( 512 -16 384 ) ( 512 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 -16 -96 ) ( 512 0 -96 ) ( 0 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 384 ) ( 512 -16 384 ) ( 0 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 0 -96 ) ( 0 0 384 ) ( 0 0 -96 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 -16 -96 ) ( 512 0 384 ) ( 512 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// north wall, room P
+{
+( 0 528 -96 ) ( 0 512 384 ) ( 0 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 512 -96 ) ( 512 512 384 ) ( 512 512 -96 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 512 -96 ) ( 512 528 -96 ) ( 0 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 528 384 ) ( 512 512 384 ) ( 0 512 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 528 -96 ) ( 0 528 384 ) ( 0 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 512 -96 ) ( 512 528 384 ) ( 512 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// south wall, room P-A
+{
+( 512 0 -96 ) ( 512 -16 384 ) ( 512 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 -16 -96 ) ( 528 -16 384 ) ( 528 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 -16 -96 ) ( 528 0 -96 ) ( 512 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 0 384 ) ( 528 -16 384 ) ( 512 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 0 -96 ) ( 512 0 384 ) ( 512 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 -16 -96 ) ( 528 0 384 ) ( 528 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// north wall, room P-A
+{
+( 512 528 -96 ) ( 512 512 384 ) ( 512 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 512 -96 ) ( 528 512 384 ) ( 528 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 512 -96 ) ( 528 528 -96 ) ( 512 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 528 384 ) ( 528 512 384 ) ( 512 512 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 528 -96 ) ( 512 528 384 ) ( 512 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 512 -96 ) ( 528 528 384 ) ( 528 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// south wall, room A
+{
+( 528 0 -96 ) ( 528 -16 384 ) ( 528 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 -16 -96 ) ( 912 -16 384 ) ( 912 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 -16 -96 ) ( 912 0 -96 ) ( 528 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 0 384 ) ( 912 -16 384 ) ( 528 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 0 -96 ) ( 528 0 384 ) ( 528 0 -96 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 912 -16 -96 ) ( 912 0 384 ) ( 912 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// north wall, room A
+{
+( 528 528 -96 ) ( 528 512 384 ) ( 528 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 512 -96 ) ( 912 512 384 ) ( 912 512 -96 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 528 512 -96 ) ( 912 528 -96 ) ( 528 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 528 384 ) ( 912 512 384 ) ( 528 512 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 528 -96 ) ( 528 528 384 ) ( 528 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 512 -96 ) ( 912 528 384 ) ( 912 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// south wall, room A-B
+{
+( 912 0 -96 ) ( 912 -16 384 ) ( 912 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 -16 -96 ) ( 928 -16 384 ) ( 928 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 -16 -96 ) ( 928 0 -96 ) ( 912 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 0 384 ) ( 928 -16 384 ) ( 912 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 0 -96 ) ( 912 0 384 ) ( 912 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 -16 -96 ) ( 928 0 384 ) ( 928 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// north wall, room A-B
+{
+( 912 528 -96 ) ( 912 512 384 ) ( 912 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 512 -96 ) ( 928 512 384 ) ( 928 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 512 -96 ) ( 928 528 -96 ) ( 912 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 528 384 ) ( 928 512 384 ) ( 912 512 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 528 -96 ) ( 912 528 384 ) ( 912 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 512 -96 ) ( 928 528 384 ) ( 928 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// south wall, room B
+{
+( 928 0 -96 ) ( 928 -16 384 ) ( 928 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 -16 -96 ) ( 1440 -16 384 ) ( 1440 -16 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 -16 -96 ) ( 1440 0 -96 ) ( 928 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 0 384 ) ( 1440 -16 384 ) ( 928 -16 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1440 0 -96 ) ( 928 0 384 ) ( 928 0 -96 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 1440 -16 -96 ) ( 1440 0 384 ) ( 1440 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// north wall, room B
+{
+( 928 528 -96 ) ( 928 512 384 ) ( 928 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 512 -96 ) ( 1440 512 384 ) ( 1440 512 -96 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 928 512 -96 ) ( 1440 528 -96 ) ( 928 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 528 384 ) ( 1440 512 384 ) ( 928 512 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1440 528 -96 ) ( 928 528 384 ) ( 928 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1440 512 -96 ) ( 1440 528 384 ) ( 1440 528 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// ---- Floors, z -96 to 0, leaving the pool pit and the canal trench open ----
+// pool room floor west of the pit
+{
+( 0 512 -96 ) ( 0 0 0 ) ( 0 0 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 0 0 -96 ) ( 160 0 0 ) ( 160 0 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 0 0 -96 ) ( 160 512 -96 ) ( 0 512 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 0 512 0 ) ( 160 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 160 512 -96 ) ( 0 512 0 ) ( 0 512 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 160 0 -96 ) ( 160 512 0 ) ( 160 512 -96 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+}
+// pool room floor east of the pit, its east face closes the canal trench
+{
+( 352 512 -96 ) ( 352 0 0 ) ( 352 0 -96 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 352 0 -96 ) ( 528 0 0 ) ( 528 0 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 352 0 -96 ) ( 528 512 -96 ) ( 352 512 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 352 512 0 ) ( 528 0 0 ) ( 352 0 0 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 528 512 -96 ) ( 352 512 0 ) ( 352 512 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 528 0 -96 ) ( 528 512 0 ) ( 528 512 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+}
+// pool room floor south of the pit
+{
+( 160 160 -96 ) ( 160 0 0 ) ( 160 0 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 160 0 -96 ) ( 352 0 0 ) ( 352 0 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 160 0 -96 ) ( 352 160 -96 ) ( 160 160 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 160 160 0 ) ( 352 0 0 ) ( 160 0 0 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 352 160 -96 ) ( 160 160 0 ) ( 160 160 -96 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 352 0 -96 ) ( 352 160 0 ) ( 352 160 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+}
+// pool room floor north of the pit
+{
+( 160 512 -96 ) ( 160 352 0 ) ( 160 352 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 160 352 -96 ) ( 352 352 0 ) ( 352 352 -96 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 160 352 -96 ) ( 352 512 -96 ) ( 160 512 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 160 512 0 ) ( 352 352 0 ) ( 160 352 0 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 352 512 -96 ) ( 160 512 0 ) ( 160 512 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+( 352 352 -96 ) ( 352 512 0 ) ( 352 512 -96 ) 50-free-textures/concrete_pavement_037 0 0 0 1 1
+}
+// room A south walkway
+{
+( 528 208 -96 ) ( 528 0 0 ) ( 528 0 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 528 0 -96 ) ( 928 0 0 ) ( 928 0 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 528 0 -96 ) ( 928 208 -96 ) ( 528 208 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 528 208 0 ) ( 928 0 0 ) ( 528 0 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 208 -96 ) ( 528 208 0 ) ( 528 208 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 0 -96 ) ( 928 208 0 ) ( 928 208 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+}
+// room A north walkway
+{
+( 528 512 -96 ) ( 528 304 0 ) ( 528 304 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 528 304 -96 ) ( 928 304 0 ) ( 928 304 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 528 304 -96 ) ( 928 512 -96 ) ( 528 512 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 528 512 0 ) ( 928 304 0 ) ( 528 304 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 512 -96 ) ( 528 512 0 ) ( 528 512 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 304 -96 ) ( 928 512 0 ) ( 928 512 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+}
+// room B south walkway
+{
+( 928 112 -96 ) ( 928 0 0 ) ( 928 0 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 0 -96 ) ( 1440 0 0 ) ( 1440 0 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 0 -96 ) ( 1440 112 -96 ) ( 928 112 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 112 0 ) ( 1440 0 0 ) ( 928 0 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 1440 112 -96 ) ( 928 112 0 ) ( 928 112 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 1440 0 -96 ) ( 1440 112 0 ) ( 1440 112 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+}
+// room B north walkway
+{
+( 928 512 -96 ) ( 928 400 0 ) ( 928 400 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 400 -96 ) ( 1440 400 0 ) ( 1440 400 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 400 -96 ) ( 1440 512 -96 ) ( 928 512 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 928 512 0 ) ( 1440 400 0 ) ( 928 400 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 1440 512 -96 ) ( 928 512 0 ) ( 928 512 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 1440 400 -96 ) ( 1440 512 0 ) ( 1440 512 -96 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+}
+// ---- Pool room P ----
+// coping, south
+{
+( 144 160 0 ) ( 144 144 6 ) ( 144 144 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 144 0 ) ( 368 144 6 ) ( 368 144 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 144 0 ) ( 368 160 0 ) ( 144 160 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 160 6 ) ( 368 144 6 ) ( 144 144 6 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 160 0 ) ( 144 160 6 ) ( 144 160 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 144 0 ) ( 368 160 6 ) ( 368 160 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// coping, north
+{
+( 144 368 0 ) ( 144 352 6 ) ( 144 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 352 0 ) ( 368 352 6 ) ( 368 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 352 0 ) ( 368 368 0 ) ( 144 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 368 6 ) ( 368 352 6 ) ( 144 352 6 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 368 0 ) ( 144 368 6 ) ( 144 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 352 0 ) ( 368 368 6 ) ( 368 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// coping, west
+{
+( 144 352 0 ) ( 144 160 6 ) ( 144 160 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 160 0 ) ( 160 160 6 ) ( 160 160 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 160 0 ) ( 160 352 0 ) ( 144 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 144 352 6 ) ( 160 160 6 ) ( 144 160 6 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 160 352 0 ) ( 144 352 6 ) ( 144 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 160 160 0 ) ( 160 352 6 ) ( 160 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// coping, east
+{
+( 352 352 0 ) ( 352 160 6 ) ( 352 160 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 352 160 0 ) ( 368 160 6 ) ( 368 160 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 352 160 0 ) ( 368 352 0 ) ( 352 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 352 352 6 ) ( 368 160 6 ) ( 352 160 6 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 352 0 ) ( 352 352 6 ) ( 352 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 160 0 ) ( 368 352 6 ) ( 368 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// floor prop: crate east of the rim
+{
+( 392 248 0 ) ( 392 200 48 ) ( 392 200 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 392 200 0 ) ( 440 200 48 ) ( 440 200 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 392 200 0 ) ( 440 248 0 ) ( 392 248 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 392 248 48 ) ( 440 200 48 ) ( 392 200 48 ) metal/metal_rough_046a 0 0 0 1 1
+( 440 248 0 ) ( 392 248 48 ) ( 392 248 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 440 200 0 ) ( 440 248 48 ) ( 440 248 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// floor prop: low bench south of the rim
+{
+( 200 128 0 ) ( 200 104 20 ) ( 200 104 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 200 104 0 ) ( 312 104 20 ) ( 312 104 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 200 104 0 ) ( 312 128 0 ) ( 200 128 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 200 128 20 ) ( 312 104 20 ) ( 200 104 20 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 312 128 0 ) ( 200 128 20 ) ( 200 128 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 312 104 0 ) ( 312 128 20 ) ( 312 128 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// floor prop: stump in the sdf-lit south-west corner, casts its sdf shadow
+{
+( 88 120 0 ) ( 88 88 64 ) ( 88 88 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 88 88 0 ) ( 120 88 64 ) ( 120 88 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 88 88 0 ) ( 120 120 0 ) ( 88 120 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 88 120 64 ) ( 120 88 64 ) ( 88 88 64 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 120 120 0 ) ( 88 120 64 ) ( 88 120 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 120 88 0 ) ( 120 120 64 ) ( 120 120 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// neon sign flush on the north wall, facing the pool
+{
+( 192 512 96 ) ( 192 504 160 ) ( 192 504 96 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 504 96 ) ( 320 504 160 ) ( 320 504 96 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 504 96 ) ( 320 512 96 ) ( 192 512 96 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 512 160 ) ( 320 504 160 ) ( 192 504 160 ) neon/neon_glow_panel 0 0 0 1 1
+( 320 512 96 ) ( 192 512 160 ) ( 192 512 96 ) neon/neon_glow_panel 0 0 0 1 1
+( 320 504 96 ) ( 320 512 160 ) ( 320 512 96 ) neon/neon_glow_panel 0 0 0 1 1
+}
+// pool room ceiling filler, ceiling at z 256
+{
+( 0 512 256 ) ( 0 0 384 ) ( 0 0 256 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 256 ) ( 512 0 384 ) ( 512 0 256 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 256 ) ( 512 512 256 ) ( 0 512 256 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( 0 512 384 ) ( 512 0 384 ) ( 0 0 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 512 256 ) ( 0 512 384 ) ( 0 512 256 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 0 256 ) ( 512 512 384 ) ( 512 512 256 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// wall between P and A, door at y 400 to 464, z 0 to 112
+{
+( 512 400 0 ) ( 512 0 384 ) ( 512 0 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 0 0 ) ( 528 0 384 ) ( 528 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 0 0 ) ( 528 400 0 ) ( 512 400 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 400 384 ) ( 528 0 384 ) ( 512 0 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 400 0 ) ( 512 400 384 ) ( 512 400 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 0 0 ) ( 528 400 384 ) ( 528 400 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+{
+( 512 512 0 ) ( 512 464 384 ) ( 512 464 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 464 0 ) ( 528 464 384 ) ( 528 464 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 464 0 ) ( 528 512 0 ) ( 512 512 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 512 384 ) ( 528 464 384 ) ( 512 464 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 512 0 ) ( 512 512 384 ) ( 512 512 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 464 0 ) ( 528 512 384 ) ( 528 512 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+{
+( 512 464 112 ) ( 512 400 384 ) ( 512 400 112 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 400 112 ) ( 528 400 384 ) ( 528 400 112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 512 400 112 ) ( 528 464 112 ) ( 512 464 112 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 464 384 ) ( 528 400 384 ) ( 512 400 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 464 112 ) ( 512 464 384 ) ( 512 464 112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 400 112 ) ( 528 464 384 ) ( 528 464 112 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+// ---- Canal room A ----
+// room A ceiling filler, ceiling at z 192
+{
+( 528 512 192 ) ( 528 0 384 ) ( 528 0 192 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 0 192 ) ( 912 0 384 ) ( 912 0 192 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 528 0 192 ) ( 912 512 192 ) ( 528 512 192 ) DebugTextures/debug_ceiling_red 0 0 0 1 1
+( 528 512 384 ) ( 912 0 384 ) ( 528 0 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 512 192 ) ( 528 512 384 ) ( 528 512 192 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 0 192 ) ( 912 512 384 ) ( 912 512 192 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// wall between A and B, opening at y 144 to 368, z 0 to 128, the canal runs under it
+{
+( 912 144 0 ) ( 912 0 384 ) ( 912 0 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 912 0 0 ) ( 928 0 384 ) ( 928 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 0 0 ) ( 928 144 0 ) ( 912 144 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 144 384 ) ( 928 0 384 ) ( 912 0 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 144 0 ) ( 912 144 384 ) ( 912 144 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 928 0 0 ) ( 928 144 384 ) ( 928 144 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+{
+( 912 512 0 ) ( 912 368 384 ) ( 912 368 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 912 368 0 ) ( 928 368 384 ) ( 928 368 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 912 368 0 ) ( 928 512 0 ) ( 912 512 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 512 384 ) ( 928 368 384 ) ( 912 368 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 512 0 ) ( 912 512 384 ) ( 912 512 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 368 0 ) ( 928 512 384 ) ( 928 512 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+{
+( 912 368 128 ) ( 912 144 384 ) ( 912 144 128 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 912 144 128 ) ( 928 144 384 ) ( 928 144 128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 912 144 128 ) ( 928 368 128 ) ( 912 368 128 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 912 368 384 ) ( 928 144 384 ) ( 912 144 384 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 368 128 ) ( 912 368 384 ) ( 912 368 128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 928 144 128 ) ( 928 368 384 ) ( 928 368 128 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+// ---- Canal hall B ----
+// pillar standing in the basin at its area centroid
+{
+( 1168 272 -96 ) ( 1168 240 384 ) ( 1168 240 -96 ) metal/metal_brushed_012 0 0 0 1 1
+( 1168 240 -96 ) ( 1200 240 384 ) ( 1200 240 -96 ) metal/metal_brushed_012 0 0 0 1 1
+( 1168 240 -96 ) ( 1200 272 -96 ) ( 1168 272 -96 ) metal/metal_brushed_012 0 0 0 1 1
+( 1168 272 384 ) ( 1200 240 384 ) ( 1168 240 384 ) metal/metal_brushed_012 0 0 0 1 1
+( 1200 272 -96 ) ( 1168 272 384 ) ( 1168 272 -96 ) metal/metal_brushed_012 0 0 0 1 1
+( 1200 240 -96 ) ( 1200 272 384 ) ( 1200 272 -96 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// balcony at z 192 over the basin east end
+{
+( 1312 512 176 ) ( 1312 0 192 ) ( 1312 0 176 ) metal/metal_brushed_012 0 0 0 1 1
+( 1312 0 176 ) ( 1440 0 192 ) ( 1440 0 176 ) metal/metal_brushed_012 0 0 0 1 1
+( 1312 0 176 ) ( 1440 512 176 ) ( 1312 512 176 ) metal/metal_brushed_012 0 0 0 1 1
+( 1312 512 192 ) ( 1440 0 192 ) ( 1312 0 192 ) metal/metal_brushed_012 0 0 0 1 1
+( 1440 512 176 ) ( 1312 512 192 ) ( 1312 512 176 ) metal/metal_brushed_012 0 0 0 1 1
+( 1440 0 176 ) ( 1440 512 192 ) ( 1440 512 176 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// balcony rail
+{
+( 1312 512 192 ) ( 1312 80 216 ) ( 1312 80 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 1312 80 192 ) ( 1320 80 216 ) ( 1320 80 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 1312 80 192 ) ( 1320 512 192 ) ( 1312 512 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 1312 512 216 ) ( 1320 80 216 ) ( 1312 80 216 ) metal/metal_rough_046a 0 0 0 1 1
+( 1320 512 192 ) ( 1312 512 216 ) ( 1312 512 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 1320 80 192 ) ( 1320 512 216 ) ( 1320 512 192 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 1 up to the balcony
+{
+( 1024 64 0 ) ( 1024 0 16 ) ( 1024 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1024 0 0 ) ( 1048 0 16 ) ( 1048 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1024 0 0 ) ( 1048 64 0 ) ( 1024 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1024 64 16 ) ( 1048 0 16 ) ( 1024 0 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 1048 64 0 ) ( 1024 64 16 ) ( 1024 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1048 0 0 ) ( 1048 64 16 ) ( 1048 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 2 up to the balcony
+{
+( 1048 64 0 ) ( 1048 0 32 ) ( 1048 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1048 0 0 ) ( 1072 0 32 ) ( 1072 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1048 0 0 ) ( 1072 64 0 ) ( 1048 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1048 64 32 ) ( 1072 0 32 ) ( 1048 0 32 ) metal/metal_rough_046a 0 0 0 1 1
+( 1072 64 0 ) ( 1048 64 32 ) ( 1048 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1072 0 0 ) ( 1072 64 32 ) ( 1072 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 3 up to the balcony
+{
+( 1072 64 0 ) ( 1072 0 48 ) ( 1072 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1072 0 0 ) ( 1096 0 48 ) ( 1096 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1072 0 0 ) ( 1096 64 0 ) ( 1072 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1072 64 48 ) ( 1096 0 48 ) ( 1072 0 48 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 64 0 ) ( 1072 64 48 ) ( 1072 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 0 0 ) ( 1096 64 48 ) ( 1096 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 4 up to the balcony
+{
+( 1096 64 0 ) ( 1096 0 64 ) ( 1096 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 0 0 ) ( 1120 0 64 ) ( 1120 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 0 0 ) ( 1120 64 0 ) ( 1096 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 64 64 ) ( 1120 0 64 ) ( 1096 0 64 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 64 0 ) ( 1096 64 64 ) ( 1096 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 0 0 ) ( 1120 64 64 ) ( 1120 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 5 up to the balcony
+{
+( 1120 64 0 ) ( 1120 0 80 ) ( 1120 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 0 0 ) ( 1144 0 80 ) ( 1144 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 0 0 ) ( 1144 64 0 ) ( 1120 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 64 80 ) ( 1144 0 80 ) ( 1120 0 80 ) metal/metal_rough_046a 0 0 0 1 1
+( 1144 64 0 ) ( 1120 64 80 ) ( 1120 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1144 0 0 ) ( 1144 64 80 ) ( 1144 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 6 up to the balcony
+{
+( 1144 64 0 ) ( 1144 0 96 ) ( 1144 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1144 0 0 ) ( 1168 0 96 ) ( 1168 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1144 0 0 ) ( 1168 64 0 ) ( 1144 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1144 64 96 ) ( 1168 0 96 ) ( 1144 0 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1168 64 0 ) ( 1144 64 96 ) ( 1144 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1168 0 0 ) ( 1168 64 96 ) ( 1168 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 7 up to the balcony
+{
+( 1168 64 0 ) ( 1168 0 112 ) ( 1168 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1168 0 0 ) ( 1192 0 112 ) ( 1192 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1168 0 0 ) ( 1192 64 0 ) ( 1168 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1168 64 112 ) ( 1192 0 112 ) ( 1168 0 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 1192 64 0 ) ( 1168 64 112 ) ( 1168 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1192 0 0 ) ( 1192 64 112 ) ( 1192 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 8 up to the balcony
+{
+( 1192 64 0 ) ( 1192 0 128 ) ( 1192 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1192 0 0 ) ( 1216 0 128 ) ( 1216 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1192 0 0 ) ( 1216 64 0 ) ( 1192 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1192 64 128 ) ( 1216 0 128 ) ( 1192 0 128 ) metal/metal_rough_046a 0 0 0 1 1
+( 1216 64 0 ) ( 1192 64 128 ) ( 1192 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1216 0 0 ) ( 1216 64 128 ) ( 1216 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 9 up to the balcony
+{
+( 1216 64 0 ) ( 1216 0 144 ) ( 1216 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1216 0 0 ) ( 1240 0 144 ) ( 1240 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1216 0 0 ) ( 1240 64 0 ) ( 1216 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1216 64 144 ) ( 1240 0 144 ) ( 1216 0 144 ) metal/metal_rough_046a 0 0 0 1 1
+( 1240 64 0 ) ( 1216 64 144 ) ( 1216 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1240 0 0 ) ( 1240 64 144 ) ( 1240 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 10 up to the balcony
+{
+( 1240 64 0 ) ( 1240 0 160 ) ( 1240 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1240 0 0 ) ( 1264 0 160 ) ( 1264 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1240 0 0 ) ( 1264 64 0 ) ( 1240 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1240 64 160 ) ( 1264 0 160 ) ( 1240 0 160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1264 64 0 ) ( 1240 64 160 ) ( 1240 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1264 0 0 ) ( 1264 64 160 ) ( 1264 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 11 up to the balcony
+{
+( 1264 64 0 ) ( 1264 0 176 ) ( 1264 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1264 0 0 ) ( 1288 0 176 ) ( 1288 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1264 0 0 ) ( 1288 64 0 ) ( 1264 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1264 64 176 ) ( 1288 0 176 ) ( 1264 0 176 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 64 0 ) ( 1264 64 176 ) ( 1264 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 0 0 ) ( 1288 64 176 ) ( 1288 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// stair step 12 up to the balcony
+{
+( 1288 64 0 ) ( 1288 0 192 ) ( 1288 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 0 0 ) ( 1312 0 192 ) ( 1312 0 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 0 0 ) ( 1312 64 0 ) ( 1288 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 64 192 ) ( 1312 0 192 ) ( 1288 0 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 1312 64 0 ) ( 1288 64 192 ) ( 1288 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1312 0 0 ) ( 1312 64 192 ) ( 1312 64 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// player start: pool room south edge, facing north across the pool at the neon sign
+{
+"classname" "player_spawn"
+"origin" "256 56 24"
+"angles" "0 90 0"
+"_tags" "player"
+}
+// pool: one brush, surface at z 0 flush with the floor
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 160 352 -96 ) ( 160 160 0 ) ( 160 160 -96 ) fluids/water_64 0 0 0 1 1
+( 160 160 -96 ) ( 352 160 0 ) ( 352 160 -96 ) fluids/water_64 0 0 0 1 1
+( 160 160 -96 ) ( 352 352 -96 ) ( 160 352 -96 ) fluids/water_64 0 0 0 1 1
+( 160 352 0 ) ( 352 160 0 ) ( 160 160 0 ) fluids/water_64 0 0 0 1 1
+( 352 352 -96 ) ( 160 352 0 ) ( 160 352 -96 ) fluids/water_64 0 0 0 1 1
+( 352 160 -96 ) ( 352 352 0 ) ( 352 352 -96 ) fluids/water_64 0 0 0 1 1
+}
+}
+// canal: ONE fluid entity through the A-B doorway, surface at z -16.
+// Two-brush split at the doorway midline gives each room its own up-facing faces.
+{
+"classname" "fluid_volume"
+"fluid" "water"
+// room A stretch, ends at the doorway midline x 920
+{
+( 528 304 -96 ) ( 528 208 -16 ) ( 528 208 -96 ) fluids/water_64 0 0 0 1 1
+( 528 208 -96 ) ( 920 208 -16 ) ( 920 208 -96 ) fluids/water_64 0 0 0 1 1
+( 528 208 -96 ) ( 920 304 -96 ) ( 528 304 -96 ) fluids/water_64 0 0 0 1 1
+( 528 304 -16 ) ( 920 208 -16 ) ( 528 208 -16 ) fluids/water_64 0 0 0 1 1
+( 920 304 -96 ) ( 528 304 -16 ) ( 528 304 -96 ) fluids/water_64 0 0 0 1 1
+( 920 208 -96 ) ( 920 304 -16 ) ( 920 304 -96 ) fluids/water_64 0 0 0 1 1
+}
+// room B stretch, from the doorway midline
+{
+( 920 304 -96 ) ( 920 208 -16 ) ( 920 208 -96 ) fluids/water_64 0 0 0 1 1
+( 920 208 -96 ) ( 1440 208 -16 ) ( 1440 208 -96 ) fluids/water_64 0 0 0 1 1
+( 920 208 -96 ) ( 1440 304 -96 ) ( 920 304 -96 ) fluids/water_64 0 0 0 1 1
+( 920 304 -16 ) ( 1440 208 -16 ) ( 920 208 -16 ) fluids/water_64 0 0 0 1 1
+( 1440 304 -96 ) ( 920 304 -16 ) ( 920 304 -96 ) fluids/water_64 0 0 0 1 1
+( 1440 208 -96 ) ( 1440 304 -16 ) ( 1440 304 -96 ) fluids/water_64 0 0 0 1 1
+}
+// room B basin, south half
+{
+( 928 208 -96 ) ( 928 112 -16 ) ( 928 112 -96 ) fluids/water_64 0 0 0 1 1
+( 928 112 -96 ) ( 1440 112 -16 ) ( 1440 112 -96 ) fluids/water_64 0 0 0 1 1
+( 928 112 -96 ) ( 1440 208 -96 ) ( 928 208 -96 ) fluids/water_64 0 0 0 1 1
+( 928 208 -16 ) ( 1440 112 -16 ) ( 928 112 -16 ) fluids/water_64 0 0 0 1 1
+( 1440 208 -96 ) ( 928 208 -16 ) ( 928 208 -96 ) fluids/water_64 0 0 0 1 1
+( 1440 112 -96 ) ( 1440 208 -16 ) ( 1440 208 -96 ) fluids/water_64 0 0 0 1 1
+}
+// room B basin, north half
+{
+( 928 400 -96 ) ( 928 304 -16 ) ( 928 304 -96 ) fluids/water_64 0 0 0 1 1
+( 928 304 -96 ) ( 1440 304 -16 ) ( 1440 304 -96 ) fluids/water_64 0 0 0 1 1
+( 928 304 -96 ) ( 1440 400 -96 ) ( 928 400 -96 ) fluids/water_64 0 0 0 1 1
+( 928 400 -16 ) ( 1440 304 -16 ) ( 928 304 -16 ) fluids/water_64 0 0 0 1 1
+( 1440 400 -96 ) ( 928 400 -16 ) ( 928 400 -96 ) fluids/water_64 0 0 0 1 1
+( 1440 304 -96 ) ( 1440 400 -16 ) ( 1440 400 -96 ) fluids/water_64 0 0 0 1 1
+}
+}
+// authored probe box over room B, the box is the hall interior.
+// The basin centroid falls in the pillar, so the point moves onto the water, then -128 in x clears the pillar.
+{
+"classname" "reflection_volume"
+"_capture_offset" "-128 0"
+{
+( 928 512 -96 ) ( 928 0 384 ) ( 928 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 928 0 -96 ) ( 1440 0 384 ) ( 1440 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 928 0 -96 ) ( 1440 512 -96 ) ( 928 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 928 512 384 ) ( 1440 0 384 ) ( 928 0 384 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1440 512 -96 ) ( 928 512 384 ) ( 928 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1440 0 -96 ) ( 1440 512 384 ) ( 1440 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+// pool room static fill
+{
+"classname" "light"
+"origin" "256 384 224"
+"light" "160"
+"_color" "255 236 214"
+"_falloff_range" "640"
+"delay" "0"
+}
+// pool room FLICKER light: Quake style 10 fluorescent flicker, amber, north-west of the pool
+{
+"classname" "light"
+"origin" "96 400 208"
+"light" "260"
+"_color" "255 170 90"
+"_falloff_range" "448"
+"delay" "0"
+"style" "10"
+}
+// pool room SWITCHABLE light: curveless, cyan, south-east of the pool, tag rp_switch_light
+{
+"classname" "light"
+"origin" "432 128 208"
+"light" "320"
+"_color" "90 200 255"
+"_falloff_range" "448"
+"delay" "0"
+"_tags" "rp_switch_light"
+}
+// pool room SDF light: magenta, south-west corner, the stump casts its shadow
+{
+"classname" "light"
+"origin" "40 40 160"
+"light" "260"
+"_color" "255 60 160"
+"_falloff_range" "320"
+"delay" "0"
+"_shadow_type" "sdf"
+}
+// room A static light
+{
+"classname" "light"
+"origin" "720 256 160"
+"light" "220"
+"_color" "255 220 200"
+"_falloff_range" "512"
+"delay" "0"
+}
+// room B static light
+{
+"classname" "light"
+"origin" "1100 256 340"
+"light" "300"
+"_color" "235 255 235"
+"_falloff_range" "768"
+"delay" "0"
+}
+// room B SWITCHABLE light: same tag, north side of the basin, for the vista check from the balcony
+{
+"classname" "light"
+"origin" "1200 440 300"
+"light" "300"
+"_color" "90 200 255"
+"_falloff_range" "512"
+"delay" "0"
+"_tags" "rp_switch_light"
+}
+// switch rp_light_off_pool
+{
+"classname" "switch"
+"name" "rp_light_off_pool"
+"on_fire" "reflectionProbes.lightOff"
+"use_reach" "16"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+{
+( 352 8 40 ) ( 352 0 72 ) ( 352 0 40 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 352 0 40 ) ( 384 0 72 ) ( 384 0 40 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 352 0 40 ) ( 384 8 40 ) ( 352 8 40 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 352 8 72 ) ( 384 0 72 ) ( 352 0 72 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 384 8 40 ) ( 352 8 72 ) ( 352 8 40 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 384 0 40 ) ( 384 8 72 ) ( 384 8 40 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+}
+// switch rp_light_on_pool
+{
+"classname" "switch"
+"name" "rp_light_on_pool"
+"on_fire" "reflectionProbes.lightOn"
+"use_reach" "16"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+{
+( 448 8 40 ) ( 448 0 72 ) ( 448 0 40 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 448 0 40 ) ( 480 0 72 ) ( 480 0 40 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 448 0 40 ) ( 480 8 40 ) ( 448 8 40 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 448 8 72 ) ( 480 0 72 ) ( 448 0 72 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 480 8 40 ) ( 448 8 72 ) ( 448 8 40 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 480 0 40 ) ( 480 8 72 ) ( 480 8 40 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+}
+// switch rp_light_off_balcony
+{
+"classname" "switch"
+"name" "rp_light_off_balcony"
+"on_fire" "reflectionProbes.lightOff"
+"use_reach" "16"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+{
+( 1432 192 232 ) ( 1432 160 264 ) ( 1432 160 232 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1432 160 232 ) ( 1440 160 264 ) ( 1440 160 232 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1432 160 232 ) ( 1440 192 232 ) ( 1432 192 232 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1432 192 264 ) ( 1440 160 264 ) ( 1432 160 264 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1440 192 232 ) ( 1432 192 264 ) ( 1432 192 232 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1440 160 232 ) ( 1440 192 264 ) ( 1440 192 232 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+}
+// switch rp_light_on_balcony
+{
+"classname" "switch"
+"name" "rp_light_on_balcony"
+"on_fire" "reflectionProbes.lightOn"
+"use_reach" "16"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+{
+( 1432 352 232 ) ( 1432 320 264 ) ( 1432 320 232 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 1432 320 232 ) ( 1440 320 264 ) ( 1440 320 232 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 1432 320 232 ) ( 1440 352 232 ) ( 1432 352 232 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 1432 352 264 ) ( 1440 320 264 ) ( 1432 320 264 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 1440 352 232 ) ( 1432 352 264 ) ( 1432 352 232 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 1440 320 232 ) ( 1440 352 264 ) ( 1440 352 232 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+}

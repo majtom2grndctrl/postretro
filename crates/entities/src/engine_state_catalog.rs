@@ -360,6 +360,11 @@ const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
 /// lever, and the middle tier it once had never changed the carve depth.
 /// See `context/lib/player_options.md` §4.
 const SURFACE_DEPTH_QUALITY_VALUES: &[&str] = &["off", "on"];
+/// Fluid reflections: Off removes both reflection layers, Low keeps the probe
+/// term alone, and medium and above add the screen-space layer by each tier's
+/// preset. The player picks cost only; the author owns the style.
+/// See `context/lib/player_options.md` §4.
+const REFLECTION_QUALITY_VALUES: &[&str] = &["off", "low", "medium", "high", "very_high", "ultra"];
 /// Scene render resolution: Auto or an integer divisor of the surface. Same
 /// names as the `settings.toml` values. See `context/lib/player_options.md` §4.
 const RENDER_RESOLUTION_VALUES: &[&str] = &["auto", "native", "half", "third", "quarter"];
@@ -965,6 +970,18 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "options.reflectionQuality",
+        sdk_path: &["options", "reflectionQuality"],
+        value_type: EngineStateValueType::Enum {
+            values: REFLECTION_QUALITY_VALUES,
+        },
+        default: EngineStateDefault::Enum("high"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "options.windowMode",
         sdk_path: &["options", "windowMode"],
         value_type: EngineStateValueType::Enum {
@@ -1396,6 +1413,7 @@ mod tests {
                 "options.mouseSensitivity",
                 "options.musicVolume",
                 "options.reduceMotion",
+                "options.reflectionQuality",
                 "options.renderResolution",
                 "options.screenShakeScale",
                 "options.sfxVolume",
@@ -1459,6 +1477,7 @@ mod tests {
             "options.shadowQuality",
             "options.fogQuality",
             "options.surfaceDepthQuality",
+            "options.reflectionQuality",
             "options.renderResolution",
             "options.reduceMotion",
             "options.screenShakeScale",

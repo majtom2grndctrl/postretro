@@ -152,3 +152,82 @@ fn assert_original_prefilter(leaf: &ConvexLeaf) {
         assert_eq!(actual, expected, "point {point:?}");
     }
 }
+
+// A body feels push × force; a particle follows the nominal push, so a
+// decorative (force 0) current still carries foam.
+#[test]
+fn bodies_feel_push_times_force_while_particles_follow_the_nominal_push() {
+    use crate::{BodyProbe, resolve_environment};
+    let probe = |position: Vec3| BodyProbe {
+        position,
+        half_height: 0.5,
+        radius: 0.25,
+        eye_height: 0.6,
+    };
+    for force in [0.0, 0.5, 1.0, 3.0] {
+        let current = EnvironmentVolume {
+            push: Some(Vec3::new(6.0, 0.0, 0.0)),
+            force,
+            ..volume(vec![axis_box(Vec3::splat(-10.0), Vec3::splat(10.0))])
+        };
+        let volumes = EnvironmentVolumes::build(vec![current]);
+        let view = EnvironmentView::new(-9.81, &volumes, &[]);
+        let felt = resolve_environment(view, &probe(Vec3::ZERO)).push;
+        assert_eq!(felt, Vec3::new(6.0 * force, 0.0, 0.0), "force {force}");
+        let (_, nominal) = resolve_particle_acceleration(view, Vec3::ZERO);
+        assert_eq!(nominal, Vec3::new(6.0, 0.0, 0.0), "force {force}");
+    }
+}
+
+// Production particles call the batch form: every point gets the nominal push,
+// whatever the volume's force.
+#[test]
+fn batched_particle_accelerations_return_the_nominal_push_for_every_point() {
+    use crate::resolve_particle_accelerations;
+    let current = EnvironmentVolume {
+        push: Some(Vec3::new(6.0, 0.0, 2.0)),
+        force: 0.5,
+        ..volume(vec![axis_box(Vec3::splat(-10.0), Vec3::splat(10.0))])
+    };
+    let volumes = EnvironmentVolumes::build(vec![current]);
+    let view = EnvironmentView::new(-9.81, &volumes, &[]);
+    let positions = [Vec3::ZERO, Vec3::new(3.0, -2.0, 5.0), Vec3::splat(9.5)];
+    let mut accelerations = [(0.0, Vec3::ZERO); 3];
+    resolve_particle_accelerations(view, &positions, &mut accelerations);
+    for (&position, &(gravity, push)) in positions.iter().zip(&accelerations) {
+        assert_eq!(gravity, -9.81, "point {position:?}");
+        assert_eq!(push, Vec3::new(6.0, 0.0, 2.0), "point {position:?}");
+    }
+}
+
+// The overlap winner is picked on the nominal fields; its own force scales it.
+// A force-0 winner inside a stronger push leaves the body feeling nothing.
+#[test]
+fn a_force_zero_winner_shadows_a_weaker_ranked_push_for_bodies() {
+    use crate::{BodyProbe, resolve_environment};
+    let wind = EnvironmentVolume {
+        push: Some(Vec3::new(8.0, 0.0, 0.0)),
+        ..volume(vec![axis_box(Vec3::splat(-10.0), Vec3::splat(10.0))])
+    };
+    let decorative = EnvironmentVolume {
+        push: Some(Vec3::new(0.0, 0.0, 4.0)),
+        force: 0.0,
+        ..volume(vec![axis_box(Vec3::splat(-1.0), Vec3::splat(1.0))])
+    };
+    let volumes = EnvironmentVolumes::build(vec![wind, decorative]);
+    let view = EnvironmentView::new(-9.81, &volumes, &[]);
+    let body = resolve_environment(
+        view,
+        &BodyProbe {
+            position: Vec3::ZERO,
+            half_height: 0.5,
+            radius: 0.25,
+            eye_height: 0.6,
+        },
+    );
+    assert_eq!(body.push, Vec3::ZERO);
+    assert_eq!(
+        resolve_particle_acceleration(view, Vec3::ZERO).1,
+        Vec3::new(0.0, 0.0, 4.0)
+    );
+}

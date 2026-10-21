@@ -26,7 +26,7 @@ use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
     ROTATING_PLATFORM_RIDER_START, component as player_component, downhill_facet_normal,
     faceted_floor_height, faceted_slope_world, forward_command, gravity_box_volume, idle_command,
-    input_at, light_link, use_command,
+    input_at, light_link, mandated_link, use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -48,17 +48,9 @@ use postretro_foundation::{
 };
 use std::collections::VecDeque;
 
-/// The mandated automated harness profile (Task 6 §B), applied in BOTH directions:
-/// 45 ms base + up to 60 ms jitter (a 45..105 ms one-way range, ≈150 ms mean RTT),
-/// 5% loss, fixed seed. Matches the Phase 2 latency harness profile exactly.
-fn mandated_link() -> LinkConfig {
-    LinkConfig {
-        delay: 45,
-        jitter: 60,
-        loss_probability: 0.05,
-        seed: 0x1502,
-    }
-}
+// Co-op proof: a default lift holding for a rider pinned under a low ceiling.
+#[path = "predict_reconcile_harness_pinned_lift.rs"]
+mod pinned_lift;
 
 /// Plain loopback at ~zero latency: no delay, jitter, or loss. The host playout
 /// buffer still warms up (a few ticks), but once armed the host resolves the
@@ -585,6 +577,8 @@ fn install_armed_reconcile_pawn(
     let pawn = h.client_registry.spawn(transform);
     h.client_registry.set_component(pawn, movement).unwrap();
     h.prediction.arm(h.host_pawn_network_id, pawn);
+    // Installed as if its first record had already merged.
+    h.prediction.mark_first_record_adopted();
     h.client_pawn = Some(pawn);
     pawn
 }

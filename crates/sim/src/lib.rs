@@ -30,6 +30,8 @@ pub mod scripting_systems;
 pub mod sim;
 pub mod spawner;
 pub mod sprite_collection;
+pub mod teleporter_commands;
+pub mod teleporter_system;
 pub mod trigger_bindings;
 pub mod trigger_commands;
 pub mod trigger_pools;

@@ -120,6 +120,21 @@ pub struct MeshAnimation {
     /// `clip_index`, since it carries no durable meaning across a reload.
     #[serde(skip, default)]
     pub interrupted_outgoing: Option<InterruptedOutgoing>,
+    /// Whether a player's presented lower body reads its travel as forward or
+    /// backward motion. Hysteresis memory for the engine's locomotion selection,
+    /// local to each peer: runtime-only and never replicated.
+    #[serde(skip, default)]
+    pub locomotion_direction: LocomotionDirection,
+}
+
+/// Which way a player's lower body faces relative to its travel. `Backward`
+/// turns the legs to face against travel (toward aim) and selects backward
+/// locomotion states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LocomotionDirection {
+    #[default]
+    Forward,
+    Backward,
 }
 
 impl MeshAnimation {
@@ -144,6 +159,7 @@ impl MeshAnimation {
             speed_scale: default_speed_scale(),
             fade_source: FadeSourceKind::Clip,
             interrupted_outgoing: None,
+            locomotion_direction: LocomotionDirection::Forward,
         }
     }
 

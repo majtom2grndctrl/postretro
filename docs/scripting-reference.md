@@ -93,8 +93,8 @@ host-side value. Omit `network` for host-local bookkeeping or use
 owner address. Per-owner values are session-scoped: `perOwner: true` with
 `persist: true` is rejected.
 
-**Render profile.** The optional `render.bloom` block picks the mod's bloom look
-once, for the whole mod:
+**Render profile.** The optional `render` block picks the mod's bloom and
+water-reflection looks once, for the whole mod:
 
 ```typescript
 export default defineMod({
@@ -106,6 +106,7 @@ export default defineMod({
       resolution: "quarter",
       pixelated: true,
     },
+    reflections: { style: "smooth" },
   },
 });
 ```
@@ -120,6 +121,7 @@ return defineMod({
       resolution = "quarter",
       pixelated = true,
     },
+    reflections = { style = "smooth" },
   },
 })
 ```
@@ -131,18 +133,30 @@ bloom-pass cost. `pixelated` (default `false`) switches the bloom upsample and
 the final composite to blocky, texel-addressed sampling for a retro look; the
 downsample and blur stages stay linear either way.
 
-Both fields — and `render` and `bloom` themselves — are optional, and omitting
-them selects the engine default of half-resolution smooth bloom. Malformed
-optional values degrade rather than abort: a non-object `render` or `bloom`
-warns and falls back to the complete default profile, an unrecognized
-`resolution` warns and uses `"half"`, and a non-boolean `pixelated` warns and
-uses `false`. None of these reject an otherwise valid manifest.
+`reflections.style` sets how every fluid reflection looks. `"pixel"` (the
+default) breaks the reflection into the same texel blocks the water's texture
+moves in: each block reflects one direction, tilted by that block's own
+shimmer and ripples, so the reflection reads as moving water. `"smooth"`
+reflects the flat surface: a still mirror. Drift and a declared wave never
+tilt the reflection in either style. How strongly a fluid reflects is its own
+`surfaceReflectivity` (see `defineFluid`).
+
+Every field — and `render`, `bloom` and `reflections` themselves — is
+optional, and omitting them selects the engine defaults: half-resolution
+smooth bloom and pixel-style reflections. Malformed optional values degrade
+rather than abort: a non-object `render` warns and falls back to the complete
+default profile; a non-object `bloom` or `reflections` warns and falls back to
+that block's default without touching the other; an unrecognized
+`resolution` warns and uses `"half"`, a non-boolean `pixelated` warns and uses
+`false`, and a `style` other than `"pixel"` or `"smooth"` warns and uses
+`"pixel"`. None of these reject an otherwise valid manifest.
 
 The profile is static and mod-wide. It is committed at mod init and reapplied
 by a debug staged reload, so it cannot vary per level, per material, or from a
 reaction. It selects only the bloom *style*: whether bloom runs at all remains
 controlled by the `POSTRETRO_BLOOM` diagnostic override and the dev-tools
-toggle.
+toggle. A capture run loads no manifest, so it always draws pixel-style
+reflections.
 
 ---
 
@@ -185,6 +199,53 @@ defineEntity({
   components: {
     light: { color: [1.0, 0.5, 0.1], range: 256, intensity: 1.2, is_dynamic: true },
     emitter: sparkEmitter({ rate: 4, spread: 0.5, lifetime: 0.8 }),
+  },
+});
+```
+
+### Player locomotion animation states
+
+A player descriptor's `components.mesh.animations` drives its third-person body
+through state names the engine recognizes. You do not switch these states yourself;
+the engine picks one each tick from the player's speed and direction.
+
+| State | Plays when |
+|-------|------------|
+| `defaultState` | The player stands still. |
+| `walk_forward` (or `walk`) | Moving forward at walking speed. Required for any engine-driven locomotion. |
+| `walk_backward` | Backpedalling at walking speed. |
+| `run_forward` (or `run`) | Moving forward nearer run pace than walk pace, e.g. while sprinting. |
+| `run_backward` | Backpedalling nearer run pace than walk pace. Needs `run_forward` (or `run`) beside it. |
+
+Travel more than 105° from where the player aims counts as backpedalling; travel
+within 75° counts as forward, and anything in between keeps the previous choice.
+While backpedalling the legs turn to face against travel, toward the aim, and the
+backward state plays, so the upper body never twists more than 105° from the legs.
+If a backward state is missing, or names a clip the model lacks, the same tier's
+forward state plays instead: the player backpedals with a forward stride, a
+visible reminder that the backward clip is still owed. Without a run state, or
+with one whose clip the model lacks, the walk states cover every speed. The switch
+to the run states happens halfway between `movement.ground.speed.walk` and
+`movement.ground.speed.run`, with a margin either side so a player hovering near
+that speed does not flicker between clips. Each state scales its playback rate
+against its own `travelSpeed`.
+
+```typescript
+defineEntity({
+  canonicalName: "player",
+  components: {
+    mesh: {
+      model: "models/exo_red/model.gltf",
+      animations: {
+        idle: { clip: "idle", loop: true },
+        walk_forward: { clip: "walk_forward", loop: true, travelSpeed: 7 },
+        walk_backward: { clip: "walk_backward", loop: true, travelSpeed: 7 },
+        run_forward: { clip: "run_forward", loop: true, travelSpeed: 11 },
+        run_backward: { clip: "run_backward", loop: true, travelSpeed: 11 },
+      },
+      defaultState: "idle",
+    },
+    // movement, health, ...
   },
 });
 ```
@@ -711,108 +772,130 @@ the old state's exit address before the new state's entry address, so a
 
 ---
 
-## Slide camera feel
+## Camera pose
 
-`components.movement.viewFeel.slide` authors a sustained camera dip and wider
-horizontal field of view while the player is sliding. Leave it out to preserve
-the existing camera presentation. It is independent of movement slide tuning;
-`movement.slide` still controls whether the player can slide.
-
-```typescript
-viewFeel: {
-  slide: { eyeDrop: 0.15, fovIncrease: 5, enterRate: 18, exitRate: 12 },
-}
-```
-
-```lua
-viewFeel = {
-  slide = { eyeDrop = 0.15, fovIncrease = 5, enterRate = 18, exitRate = 12 },
-}
-```
-
-All four fields are required when the block is present. Wrong types, non-finite
-numbers, and values outside these ranges reject the descriptor at load time.
-
-| Field | Units | Accepted values |
-|---|---|---|
-| `eyeDrop` | metres downward | finite and ≥ 0; 0 disables the dip |
-| `fovIncrease` | horizontal degrees | finite in [0, 90]; 0 disables the increase |
-| `enterRate` | per second | finite in [0.1, 240] |
-| `exitRate` | per second | finite in [0.1, 240] |
-
-Larger response rates approach the target sooner. The dip and FOV increase hold
-throughout the current slide, then ease back to zero on every exit, including
-crouch, stand, jump, and dash. They compose with bob and transition impulses.
-The dip retains at least 0.05 m of eye-to-feet clearance, and the renderer clamps
-the final FOV. These are camera effects: collision and aim stay unchanged.
-
-Both channels follow the player's resolved view-feel scale, including reduced
-motion. `viewFeel.impulse.states.slide` remains a separate entry/exit kick;
-keep its FOV channel small or zero when authoring a sustained FOV increase.
-
----
-
-## Vault camera pose
-
-`components.movement.viewFeel.vault` holds a camera pose while the player
-vaults: the view eases into it as the climb starts, rests there for most of the
-climb, and eases back as the player steps onto the top. Use it to look down at
-the ledge being climbed. Leave it out for no pose. It needs a
-[`movement.vault`](#movementvault) block to have anything to follow.
+`components.movement.viewFeel.pose` holds a camera pose while a movement state
+lasts. Each row names a state and the pose held during it: pitch, roll, a dip
+of the eye, and a change of field of view. The view eases into a row's pose,
+holds it for the state, and eases back on every way out. Leave `pose` out for
+no pose.
 
 ```typescript
 viewFeel: {
-  vault: {
-    pitch: -6, fov: 0, roll: 0, // held offsets while vaulting
-    easeIn: 0.15,               // share of the climb spent easing in (optional)
-    easeOut: 0.2,               // share spent easing back at the end (optional)
+  pose: {
+    // Weighted by the climb's progress; releases on every early end but a reload.
+    vault: {
+      ledgeFocus: { strength: 0.7, maxPitch: 30 }, // share toward the ledge line; cap, degrees
+      roll: 10, fov: -30,                          // literal holds; pitch, roll in degrees, + looks up
+      easeIn: 0.33, easeOut: 0.33,                 // shares of the climb, [0, 1], sum <= 1
+    },
+    slide: { eyeDrop: 0.15, fov: 5, enterRate: 18, exitRate: 12 }, // 1/sec, [0.1, 240]
   },
 }
 ```
 
 ```lua
 viewFeel = {
-  vault = { pitch = -6, fov = 0, roll = 0, easeIn = 0.15, easeOut = 0.2 },
+  pose = {
+    vault = {
+      ledgeFocus = { strength = 0.7, maxPitch = 30 },
+      roll = 10, fov = -30,
+      easeIn = 0.33, easeOut = 0.33,
+    },
+    slide = { eyeDrop = 0.15, fov = 5, enterRate = 18, exitRate = 12 },
+  },
 }
 ```
 
-Every field is optional. Wrong types, non-finite numbers, and values outside
-these ranges reject the descriptor at load time, and the error names the field
-(for example `movement.viewFeel.vault.pitch`).
+The rows are `slide` and `vault`. Each is optional, and so is each channel in
+a row; a missing channel is 0. `normal` has no row, since a pose there would be
+a permanent offset rather than a cue for a state. Rows evaluate independently
+and add, so leaving a slide straight into a vault eases one out while the other
+eases in.
 
-| Field | Units | Accepted values |
-|---|---|---|
-| `pitch` | degrees, positive looks up | finite in [-90, 90]; default 0 |
-| `roll` | degrees | finite in [-90, 90]; default 0 |
-| `fov` | horizontal degrees added to the base FOV | finite in [-90, 90]; default 0 |
-| `easeIn` | share of the climb | finite in [0, 1]; default 0.15 |
-| `easeOut` | share of the climb | finite in [0, 1]; default 0.2 |
+The block is strict. A misspelled or unknown key, a row other than `slide` or
+`vault`, a field from another row's timing, or a field inherited through a
+prototype (`Object.create`) or an `__index` metatable rejects the descriptor at
+load time, and the error names the field (for example
+`movement.viewFeel.pose.vault.easeIn`). Wrong types, non-finite numbers and
+values outside these ranges reject it too.
 
-`easeIn` plus `easeOut` must be at most 1. The pose follows the climb itself,
-not a timer. The climb lasts `durationMs` rounded up to whole simulation ticks
-(433 ms for 420 at 60 Hz), and both shares are of that time. The pose is fully
-in after the first `easeIn` of the climb and back to neutral exactly as the
-player reaches the top.
+| Field | Rows | Units | Accepted values |
+|---|---|---|---|
+| `pitch` | every row | degrees, positive looks up | finite in [-90, 90]; default 0 |
+| `roll` | every row | degrees | finite in [-90, 90]; default 0 |
+| `eyeDrop` | every row | metres downward | finite and ≥ 0; default 0 |
+| `fov` | every row | horizontal degrees added to the base FOV | finite in [-90, 90]; default 0 |
+| `enterRate` | `slide`, required | per second | finite in [0.1, 240] |
+| `exitRate` | `slide`, required | per second | finite in [0.1, 240] |
+| `easeIn` | `vault` | share of the climb | finite in [0, 1]; default 0.15 |
+| `easeOut` | `vault` | share of the climb | finite in [0, 1]; default 0.2 |
+| `ledgeFocus` | `vault` | see below | optional; both fields required |
+
+### Slide: timed by rates
+
+The `slide` row approaches its pose at `enterRate` while the player slides and
+returns to neutral at `exitRate` on every exit, including crouch, stand, jump,
+dash and a network correction that ends the slide. Larger rates move sooner.
+`movement.slide` still controls whether the player can slide at all.
+
+### Vault: timed by the climb
+
+The `vault` row follows the climb itself, not a timer. It needs a
+[`movement.vault`](#movementvault) block to have anything to follow. The climb
+lasts `durationMs` rounded up to whole simulation ticks (433 ms for 420 at
+60 Hz), and both shares are of that time. The pose is fully in after the first
+`easeIn` of the climb and back to neutral exactly as the player reaches the
+top. `easeIn` plus `easeOut` must be at most 1.
 
 - **`easeIn` 0** starts the pose at full strength.
 - **`easeOut` 0** holds the pose at full strength to the end of the climb, then
   eases it back over 0.1 s after the player is on the top.
-- **A climb that ends early** eases back from wherever the pose was, over the
-  climb's time × `easeOut` (at least 0.1 s). It ends early when it is blocked,
-  the player dies, or a network correction ends it. A new climb started
-  meanwhile picks up from there.
+- **A climb that ends early** eases back from the pose it last showed, ledge
+  focus included, over the climb's time × `easeOut` (at least 0.1 s). It ends
+  early when it is blocked, the player dies, or a network correction ends it.
+  A new climb started meanwhile blends in from there.
 - **A climb that appears already under way** eases in from neutral over the
   climb's time × `easeIn`, then follows the climb. A network correction can
   start a climb your machine did not predict, and a descriptor reload can
   reset the pose mid-climb.
 
-The pose moves only the camera: aim, the shot line and collision are unchanged,
-and the first-person weapon stays where it is in view. With `allowFire: true`
-the crosshair sits off the shot line by the held pose during the climb, so keep
-the pose small if you allow fire. The view never tips past straight up or
-down. The pose composes with bob, tilt, sway and transition impulses and
-follows the player's resolved view-feel scale; reduced motion removes it.
-`viewFeel.impulse.states.vault` remains a separate kick on the climb's edges.
+### Ledge focus
+
+`ledgeFocus` pulls the view down toward the spot the player will stand on, so
+the camera settles on the ledge during the climb. It measures the line from
+the eye to that spot against the aim the player had as the climb started, plus
+the row's `pitch`. While that starting view is above the line, the pull is
+`strength` of the gap, capped at `maxPitch` degrees; at or below the line,
+there is none. A ledge at or above the eye never pulls the view up.
+
+| Field | Units | Accepted values |
+|---|---|---|
+| `strength` | share of the gap | finite in [0, 1] |
+| `maxPitch` | degrees | finite in (0, 89] |
+
+The pull is added on top of the player's own look and never replaces it: from
+the frame after the climb starts, moving the mouse moves the view one to one,
+and looking down mid-climb adds to the pull. Ledge focus turns pitch only,
+never yaw, so a strafing climb keeps its heading. Low ledges pull at once;
+tall ones pull only once the eye has risen above them. On a moving platform the
+spot moves with the platform. A `pitch` on the row counts toward the starting
+view, so a row that already looks down far enough adds no focus.
+
+### What the pose touches
+
+The pose moves only the rendered camera. Aim, the shot line, collision and the
+first-person weapon's placement are unchanged; `eyeDrop` lowers the eye, the
+weapon and the listener together. With `movement.vault.allowFire: true`, the
+crosshair sits off the shot line by the presented pose during the climb, ledge
+focus included, so keep the vault pose small if you allow fire.
+
+Every row's eye drop together keeps at least 0.05 m of eye-to-feet clearance.
+The view never tips past straight up or down, and the renderer clamps the final
+field of view. The pose composes with bob, tilt, sway and transition impulses
+(`viewFeel.impulse.states.slide` and `.vault` stay separate kicks on the
+edges), and follows the player's resolved view-feel scale; reduced motion
+removes it. A descriptor reload snaps the pose to neutral.
 
 ---
 
@@ -1647,6 +1730,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `events` | Level-local impact policies. |
 | `crossings` | State-crossing watchers (`onStateCrossing`). |
 | `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
+| `teleportEvents` | Teleports bound with a teleporter member's `on("teleport", …)` (see [teleporters.md](teleporters.md#the-teleport-event)). |
 | `triggerPools` | Trigger pools (`defineTriggerPool`). |
 | `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
@@ -1722,9 +1806,9 @@ A map names its data script with the `data_script` key on `worldspawn`, a path r
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, lights, fog volumes, emitters, spawners. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, lights, fog volumes, emitters, spawners. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
-- **Subject tokens** — the entity a trigger fire is about: `on.activators` and `on.trigger`, inside a trigger-event reaction.
+- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
 
 Every command is a method on its target. In TypeScript call it as `target.verb(…)`; in Luau, `target:verb(…)`. Each target carries only the verbs its kind supports — calling a verb a target lacks is a type error in TypeScript and an error in Luau.
 
@@ -1734,12 +1818,14 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | light member | `getMapEntities("light")` | `pulse`, `fade`, `flicker`, `colorShift`, `sweep` |
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
+| teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
 | player group | `players()` | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
 | `on.activators` | trigger-event reaction param | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
+| `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
 
 ### getMapEntities
 
@@ -1758,6 +1844,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 |------|--------|-----------------|
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
+| `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |
@@ -1788,7 +1875,7 @@ players();                    // every player
 
 ### Subject tokens
 
-A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired):
+A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event):
 
 ```typescript
 const heal = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
@@ -2443,7 +2530,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 
 | Helper | Emitted body | Notes |
 |--------|--------------|-------|
-| `playSound(sound, { bus?, at?, audience? }?)` | `{ primitive: "playSound", args: { sound, bus?, at?, audience? } }` | Plays `sound` on the optional mixer `bus` (SFX when omitted). In a reaction fired by a weapon, reload, impact, enemy, movement or mover event, `at: on.emitter` positions the sound where that event happened, on the SFX bus: `defineReaction("door.open", (on: EmitterParams) => playSound("sfx/door_open", { at: on.emitter }))`. A source that publishes no emitter (level load, crossings, triggers, deaths, follow-ups) skips such a reaction with a warning. `at` with a non-SFX bus is rejected when the level installs. |
+| `playSound(sound, { bus?, at?, audience? }?)` | `{ primitive: "playSound", args: { sound, bus?, at?, audience? } }` | Plays `sound` on the optional mixer `bus` (SFX when omitted). In a reaction fired by a weapon, reload, impact, enemy, movement or mover event, `at: on.emitter` positions the sound where that event happened, on the SFX bus: `defineReaction("door.open", (on: EmitterParams) => playSound("sfx/door_open", { at: on.emitter }))`. A source that publishes no emitter (level load, crossings, triggers, deaths, follow-ups) skips such a reaction with a warning. A teleport publishes none either, but there `at` skips only the positioned sound, with a warning logged once; the rest of the reaction runs. `at` with a non-SFX bus is rejected when the level installs. |
 | `rumble(strong, durationMs, weak?, { audience? }?)` | `{ primitive: "rumble", args: { strong, weak?, durationMs, audience? } }` | Drives gilrs gamepad force feedback. `strong`/optional `weak` are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op when force feedback is unsupported. |
 | `flashScreen(color, durationMs, { audience? }?)` | `{ primitive: "flashScreen", args: { color, durationMs, audience? } }` | Writes the engine-owned `screen.flash` RGBA slot, which decays back to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. |
 | `vignette(strength, durationMs, color?, { audience? }?)` | `{ primitive: "vignette", args: { color?, strength, durationMs, audience? } }` | Writes the engine-owned `screen.vignette` slot, which rises to peak then decays back to rest. `strength` is the peak edge-darken amount; `durationMs` is the total rise-plus-decay time. Optional `color` is an `[r, g, b]` linear-RGB tint (omitted → black, a pure strength-only edge-darken). |
@@ -2470,6 +2557,7 @@ The five presentation builders (`playSound`, `rumble`, `flashScreen`, `vignette`
 | Source that fires the reaction | Default sound audience | Default flash, vignette, shake and rumble audience |
 |---|---|---|
 | Trigger enter or exit | Everyone | The players who activated that edge |
+| Teleport | Everyone | The player who teleported |
 | Per-player event | That player | That player |
 | Host-only AI cues, death, movers, kill progress, follow-ups and timed landings | Everyone | Host only |
 | Each-machine level load, local crossing, movement, weapon or AI activate/observer presentation | This machine | This machine |
@@ -2477,6 +2565,8 @@ The five presentation builders (`playSound`, `rumble`, `flashScreen`, `vignette`
 `audience: "everyone"` reaches every participating player. In a trigger callback,
 `audience: on.activators` selects that edge's activators;
 `audience: on.trigger` selects the players inside that trigger at the fire.
+In a teleport callback, `audience: on.activators` selects the player who
+teleported.
 In a player-event callback, `audience: on.player` selects its player. These are
 source tokens, not entity positions. An absent or disconnected player adds no
 recipient. Every recipient plays the command once, including the host when
@@ -2949,8 +3039,39 @@ through its `fluid` key. Each field is checked when the mod loads:
 | `viewTint` | `[r, g, b, strength]` | each `0`–`1` | Full-screen tint while the camera is inside the fluid. `strength` `0` is no tint. |
 | `muffle` | number | `0`–`1` | Low-pass on world sounds while the camera is inside. `0` is none, `1` the most. Music and UI sounds are never muffled. |
 | `surfaceOpacity` | number | `0`–`1` | How opaque the fluid's surface draws. |
+| `surfaceReflectivity` | number | `0`–`50`, optional | How strongly the surface reflects the room around it, strongest at a glancing view and faintest looking straight down. `0` reflects nothing, `1` is water (the default when left out), about `2` reads as glass, about `10` as wet polished stone, and `50` is a mirror at every angle. Opacity never dims the reflection: a clear fluid still mirrors fully at a glancing view. |
 | `enterSound` | sound key | optional | Plays when the player starts swimming in this fluid. |
 | `exitSound` | sound key | optional | Plays when the player stops swimming in this fluid. |
+| `fogDistance` | metres | above `0`, optional | How far you see into the fluid from outside it: at this depth of view 95% of what lies beyond is hidden. Leave it out for a clear fluid. Never applies to the view from inside, which `viewTint` alone covers. |
+| `fogColor` | `[r, g, b]` | each `0`–`1`, optional | The murk's colour, picked like `viewTint`'s rgb; the engine lights it with the surface's own lighting. Leave it out to use `viewTint`'s rgb. |
+| `wavePeriod` | seconds | `≥ 6`, optional | Turns on a slow surface wave: seconds per cycle of an average crest. Leave it out for no wave. |
+| `waveAmplitude` | texels | `0`–`16`, optional | How far the wave shifts the surface texture sideways at its peak. `0` is no wave; leave it out for `8`. |
+| `waveLength` | texels: a number or `[min, max]` | above `0`, min ≤ max, max ≤ `128`, min ≥ 8 × `waveAmplitude`; optional | Crest to crest. One number `L` means every crest is `L` long; a `[min, max]` range gives each crest its own length within it. The minimum must be at least 8 × `waveAmplitude`, the default `8` included. Leave it out for `[64, 80]` at the default amplitude; in general `[max(48, 8A), max(80, 8A)]` for amplitude `A`. |
+
+The wave fields count the face's texture texels at its texture scale, so
+swapping a 64 px texture for a 128 px one keeps the wave's size, and a face at a
+finer scale carries a finer wave. The surface stays flat: the wave slides the
+texture's pixels sideways in whole-texel steps. In Luau a range is a positional table:
+`waveLength = { 48, 80 }`; a keyed `{ min = 48, max = 80 }` is rejected.
+
+```typescript
+defineFluid({
+  name: "canal",
+  viscosity: 2.0,
+  viewTint: [0.1, 0.3, 0.4, 0.35],
+  muffle: 0.8,
+  surfaceOpacity: 0.75,
+  fogDistance: 1.0, // walls show near the surface; the floor 1 m down is hidden
+  fogColor: [0.08, 0.2, 0.16],
+  wavePeriod: 63,
+  waveAmplitude: 6,
+  waveLength: [48, 80],
+}),
+```
+
+A `surfaceOpacity` of `0` with a `fogDistance` draws the murk alone, and with a
+`surfaceReflectivity` above `0` it draws the reflection alone wherever the map
+gives the water a reflection.
 
 A field out of range, an unknown field, or a second fluid with a name already
 declared rejects that one declaration, with a warning naming the field. The
@@ -2961,10 +3082,10 @@ value that is not an array, declares no fluids, with one warning. A
 warning.
 
 **In co-op,** everyone swims by the host's fluids: the host's `viscosity`
-drives movement on every machine. The tint, muffle, surface opacity and sounds
-come from each machine's own declaration of that name, the way sound keys do,
-so a player whose mod lacks the fluid still swims in it but sees no tint.
-Fluid declarations do not affect who can join.
+drives movement on every machine. The tint, muffle, surface opacity,
+reflectivity, fog, wave and sounds come from each machine's own declaration of
+that name, the way sound keys do, so a player whose mod lacks the fluid still
+swims in it but sees no tint. Fluid declarations do not affect who can join.
 
 ### `movement.swim`
 
@@ -3046,7 +3167,7 @@ vault = {
 | `swimMaxHeight` | m | above `0` | Highest ledge top a vault reaches out of a fluid, measured from the fluid's surface, so pool edges tune apart from land ledges. |
 | `durationMs` | ms | above `0` | Time from starting the climb to standing on the top, rounded up to whole simulation ticks. |
 | `from` | object | optional | Where a vault may start, each place naming what starts it. Defaults to `{ air: "auto", swim: "auto" }`. |
-| `allowFire` | boolean | optional | Whether the player may start firing while climbing. Defaults to `false`. |
+| `allowFire` | boolean | optional | Whether the player may start firing while climbing. Defaults to `false`. With it on, a [camera pose](#camera-pose) moves the crosshair off the shot line during the climb. |
 
 The places in `from` are `air` (in the air, walking or dashing), `ground` (on
 the ground, walking or dashing) and `swim` (swimming with the eye above the
@@ -3084,12 +3205,14 @@ How vaulting plays:
   through the climb fires again once it ends. A charge stops too, unless its
   weapon action sets `charge.interruptedBy.vault: false`: it then keeps
   charging, and a release during the climb fires once it ends (see
-  [What interrupts a charge](#what-interrupts-a-charge)).
+  [What interrupts a charge](#what-interrupts-a-charge)). With `allowFire`
+  true, shots follow the player's aim, so a [camera pose](#camera-pose) on the
+  climb puts the crosshair off the shot line while it lasts.
 - **Maps cannot change vault tuning.** It belongs to the descriptor.
 
 Starting and finishing a climb fire the reserved `vault_started` and
 `vault_ended` addresses. `viewFeel.impulse.states.vault` adds a camera kick on
-either edge, and [`viewFeel.vault`](#vault-camera-pose) holds a camera pose
+either edge, and [`viewFeel.pose.vault`](#camera-pose) holds a camera pose
 through the climb. A climb cut short by the player's death ends without
 `vault_ended`, so a reaction that pairs the two (a looping climb sound, say)
 should also stop on `playerDied`. A descriptor hot reload does the same but
@@ -3703,7 +3826,7 @@ resolved value, live during play whether or not a menu is open:
 | `accessibility.reduceMotion` | boolean | Reduce motion. Follows the OS setting until the player chooses. |
 | `accessibility.reduceMotionFollowsSystem` | boolean | True while reduce motion follows the OS. |
 | `accessibility.screenShakeScale` | number, 0–1 | Screen-shake scale. |
-| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, slide, vault pose) scale. |
+| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, camera pose and ledge focus) scale. |
 | `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. Limits `screen.flash` and `screen.vignette`. |
 | `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
 | `accessibility.monoAudio` | boolean | Mono audio. |

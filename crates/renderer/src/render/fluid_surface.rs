@@ -1,5 +1,6 @@
 // Fluid surface pass: environment-volume surface faces drawn translucent,
-// two-sided and warped after skinned meshes and before billboards.
+// two-sided and moving in whole texels, after skinned meshes and before billboards.
+// The screen-space reflection pass lives in the submodule `fluid_surface/reflection_pass.rs`.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use std::num::NonZeroU64;
@@ -7,22 +8,58 @@ use std::num::NonZeroU64;
 use wgpu::util::DeviceExt;
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
+use postretro_level_format::reflection_probes::ReflectionProbesSection;
+use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::{
-    FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES, FLUID_SURFACE_VERTEX_STRIDE, FluidSurfaceDraw,
-    FluidSurfaceSlots, FluidSurfaceVolume, pack_fluid_surfaces, slot_window,
+    FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES,
+    FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidGridLattice,
+    FluidShaderVariant, FluidSurfaceDraw, FluidSurfaceSlots, FluidSurfaceVolume, fill_drift_rates,
+    pack_fluid_surfaces, slot_window,
 };
+use postretro_render_cpu::frame_uniforms::LightTermMask;
+
+use super::fluid_reflection_probes::{
+    FluidProbeResources, create_probe_index_buffer, fluid_probe_bind_group_layout_entries,
+    installable_probe_section,
+};
+
+#[cfg(test)]
+pub(crate) use super::fluid_scene_inputs::FLUID_SCENE_UNIFORM_BYTES;
+#[cfg(any(test, debug_assertions))]
+pub(crate) use super::fluid_scene_inputs::fluid_scene_inputs_bind_group_layout_entries;
+pub(crate) use super::fluid_scene_inputs::{FLUID_SCENE_INPUTS_GROUP, FluidSceneInputs};
 
 use super::*;
 
-/// Pipeline group of the per-volume parameter window.
+// The reflection pass reaches the installed level's buffers, so it lives
+// beneath this module.
+mod reflection_pass;
+pub(crate) use reflection_pass::FluidReflectionMarchTuning;
+#[cfg(test)]
+pub(crate) use reflection_pass::{
+    FLUID_REFLECTION_BIND_GROUP_COUNT, FLUID_REFLECTION_TARGET_FORMAT,
+    FLUID_REFLECTION_UNIFORM_BYTES, FluidReflectionUniform, composed_reflection_shader_source,
+    fluid_reflection_depth_stencil_state, fluid_reflection_pipeline_bind_group_layout_entries,
+    fluid_reflection_probe_bind_group_layout_entries,
+};
+
+/// Pipeline group of the per-volume parameter window and the reflection probe
+/// resources (probe array, share table, distance array).
 pub(crate) const FLUID_PARAMS_GROUP: u32 = 4;
 /// Groups the pipeline layout composes, in order: 0 camera, 1 world material,
-/// 2 lighting, 3 SH volume, 4 per-volume parameters.
+/// 2 lighting, 3 SH volume, 4 per-volume parameters and reflection probes,
+/// 5 scene inputs.
 #[cfg(any(test, debug_assertions))]
-pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 5;
+pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 6;
 
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/fluid_surface.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_motion.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection.wgsl"),
+    "\n",
+    include_str!("../shaders/fluid_reflection_ray.wgsl"),
     "\n",
     include_str!("../shaders/sh_indirection.wgsl"),
     "\n",
@@ -36,20 +73,38 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
 );
 
-/// Group 4: one 64 KiB uniform window of per-volume `vec4` rows, selected by a
-/// dynamic offset. Textures, samplers and uniforms only: the shared groups
-/// already spend the whole FRAGMENT storage budget.
-pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
-    [wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: true,
-            min_binding_size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
+/// The fragment entry point for `variant`. Each variant is its own entry
+/// point so naga's per-entry compaction leaves the reflection globals out of
+/// the reflection-free entry's signature; an override constant would not.
+pub(crate) fn fluid_fragment_entry_point(variant: FluidShaderVariant) -> &'static str {
+    if variant.reflections() {
+        "fs_main_reflecting"
+    } else {
+        "fs_main"
+    }
+}
+
+/// Group 4, level-scoped: one uniform window (at most 64 KiB) of per-volume
+/// rows selected by a dynamic offset, then the reflection probe array, share
+/// table and distance array. Textures, samplers and uniforms only: the shared
+/// groups already spend the whole FRAGMENT storage budget.
+pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
+    let [probe_array, probe_table, probe_distance] = fluid_probe_bind_group_layout_entries();
+    [
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
+            },
+            count: None,
         },
-        count: None,
-    }]
+        probe_array,
+        probe_table,
+        probe_distance,
+    ]
 }
 
 /// Every BGL entry set the fluid pipeline layout composes, in group order.
@@ -64,6 +119,7 @@ pub(crate) fn fluid_pipeline_bind_group_layout_entries()
         lighting_bind_group_layout_entries().to_vec(),
         sh_volume::sh_bind_group_layout_entries(),
         fluid_params_bind_group_layout_entries().to_vec(),
+        fluid_scene_inputs_bind_group_layout_entries().to_vec(),
     ]
 }
 
@@ -76,7 +132,10 @@ pub(crate) fn fluid_pipeline_stage_count(count: fn(&[wgpu::BindGroupLayoutEntry]
         .sum()
 }
 
-/// Straight alpha over the scene at the fluid's surface opacity.
+/// Straight alpha over the scene. The fragment's alpha is the composite's
+/// coverage: the surface over fog, plus the reflection's union coverage
+/// W + (1 - W)·a from `fluid_reflection_layered_composite`. Murk alone still
+/// hides the scene.
 pub(crate) fn fluid_blend_state() -> wgpu::BlendState {
     wgpu::BlendState {
         color: wgpu::BlendComponent {
@@ -94,7 +153,8 @@ pub(crate) fn fluid_blend_state() -> wgpu::BlendState {
 
 /// Depth tested like the billboard pass and never written: a fluid face hides
 /// nothing drawn after it, so smoke above the water stays undimmed and fog
-/// composites over it.
+/// composites over it. Never writing is also what lets the pass open depth
+/// read-only and load it in group 5.
 pub(crate) fn fluid_depth_stencil_state(format: wgpu::TextureFormat) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format,
@@ -133,28 +193,115 @@ const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
     },
 ];
 
+/// The second vertex buffer: one drift rate per vertex, texture periods per
+/// second, rewritten in place whenever drift re-resolves.
+const DRIFT_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+    offset: 0,
+    shader_location: 3,
+    format: wgpu::VertexFormat::Float32x2,
+}];
+
+/// The third vertex buffer: the face's reflection probe index, written once
+/// at install. Bindings are per face and rows per volume, so the index rides
+/// the vertex stream, never a row.
+const PROBE_INDEX_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+    offset: 0,
+    shader_location: 4,
+    format: wgpu::VertexFormat::Uint32,
+}];
+
+/// The three vertex streams, at locations 0–4: position, normal and UV;
+/// drift; probe index. The fluid and reflection pipelines both read them.
+fn fluid_vertex_buffer_layouts() -> [Option<wgpu::VertexBufferLayout<'static>>; 3] {
+    [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: FLUID_SURFACE_VERTEX_STRIDE as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &VERTEX_ATTRIBUTES,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: FLUID_DRIFT_RATE_STRIDE as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &DRIFT_ATTRIBUTES,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: FLUID_PROBE_INDEX_STRIDE as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &PROBE_INDEX_ATTRIBUTES,
+        }),
+    ]
+}
+
 /// One installed level's fluid geometry and per-volume parameter buffer.
 struct InstalledFluidSurfaces {
     vertex_buffer: wgpu::Buffer,
+    /// Zeroed at install: a level draws still until drift resolves, and
+    /// capture, which resolves none, always draws still.
+    drift_buffer: wgpu::Buffer,
+    /// One map per surface face of every volume, in record order.
+    face_drift_maps: Vec<Option<FluidFaceDriftMap>>,
+    /// Reused per re-resolve.
+    drift_rates: Vec<[f32; 2]>,
+    /// One probe index per vertex; the no-probe value for faces no binding
+    /// names, every face of a level without probes included.
+    probe_index_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
+    /// The level's probe array, share table and distance array, or their
+    /// dummies. Held so they drop with the level; the frame reaches them only
+    /// through `params_bind_group`.
+    _probes: FluidProbeResources,
     params_bind_group: wgpu::BindGroup,
+    /// The reflection pass's group 3, the parameter window and probe table
+    /// over the same buffers; `None` for a level with no probe-bound face,
+    /// which never reflects.
+    reflection_probe_bind_group: Option<wgpu::BindGroup>,
     /// Indexed by draw slot.
     volumes: Vec<FluidSurfaceVolume>,
     slots: FluidSurfaceSlots,
+    /// The planes the faces were cut along; tests read it.
+    #[cfg(test)]
+    grid: Option<postretro_render_cpu::fluid_surface::FluidGridPlanes>,
+    /// Parameter-row uploads so far; tests read it.
+    #[cfg(test)]
+    param_uploads: u32,
+}
+
+impl InstalledFluidSurfaces {
+    /// Whether any face is bound to a reflection probe: fixed at install,
+    /// and with the tier, what keys the reflection target. Only such a level
+    /// builds the reflection pass's group 3.
+    fn has_probe_bound_face(&self) -> bool {
+        self.reflection_probe_bind_group.is_some()
+    }
 }
 
 pub(crate) struct FluidSurfacePass {
-    pipeline: wgpu::RenderPipeline,
+    /// One pipeline per `FluidShaderVariant`, in `FluidShaderVariant::ALL`
+    /// order, over one layout: the reflection-free variant and the
+    /// reflecting one. Each draw takes its row's variant.
+    pipelines: [wgpu::RenderPipeline; 2],
     params_bind_group_layout: wgpu::BindGroupLayout,
+    /// Group 5. Built at full init, level or not, and rebuilt only by the
+    /// scene-target rebuild, when a fluid install or a tier change creates,
+    /// resizes or releases the reflection target, and at unload.
+    scene_inputs: FluidSceneInputs,
+    /// The screen-space reflection pass, its pipeline built at full init at
+    /// every tier; its target exists only while a level with a probe-bound
+    /// face is installed at a tier that runs the screen-space layer.
+    reflection: reflection_pass::FluidReflectionPass,
     /// `None` until a level with drawable fluid surfaces installs: a level
     /// without them allocates nothing and never opens the pass.
     installed: Option<InstalledFluidSurfaces>,
 }
 
 impl FluidSurfacePass {
-    /// Build the pipeline over the renderer-owned shared layouts: camera
-    /// (group 0), world material (1), lighting (2) and SH volume (3).
+    /// Build both shader-variant pipelines over the renderer-owned shared
+    /// layouts: camera (group 0), world material (1), lighting (2) and SH
+    /// volume (3); the reflection pass over the current scene depth and
+    /// colour; and group 5 over the scene depth and the reflection target's
+    /// placeholder.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
@@ -162,6 +309,8 @@ impl FluidSurfacePass {
         material_bgl: &wgpu::BindGroupLayout,
         lighting_bgl: &wgpu::BindGroupLayout,
         sh_bgl: &wgpu::BindGroupLayout,
+        scene_depth: &wgpu::TextureView,
+        scene_color: &wgpu::TextureView,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fluid Surface Shader"),
@@ -172,6 +321,14 @@ impl FluidSurfacePass {
                 label: Some("Fluid Surface Params BGL (group 4)"),
                 entries: &fluid_params_bind_group_layout_entries(),
             });
+        let reflection = reflection_pass::FluidReflectionPass::new(
+            device,
+            camera_bgl,
+            material_bgl,
+            scene_depth,
+            scene_color,
+        );
+        let scene_inputs = FluidSceneInputs::new(device, scene_depth, reflection.bound_view());
         // Same group order as `fluid_pipeline_bind_group_layout_entries`.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Fluid Surface Pipeline Layout"),
@@ -181,113 +338,260 @@ impl FluidSurfacePass {
                 Some(lighting_bgl),
                 Some(sh_bgl),
                 Some(&params_bind_group_layout),
+                Some(scene_inputs.layout()),
             ],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Fluid Surface Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: FLUID_SURFACE_VERTEX_STRIDE as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &VERTEX_ATTRIBUTES,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: fluid_primitive_state(),
-            depth_stencil: Some(fluid_depth_stencil_state(depth_format)),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: SCENE_COLOR_FORMAT,
-                    blend: Some(fluid_blend_state()),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
+        let pipelines = FluidShaderVariant::ALL.map(|variant| {
+            create_fluid_pipeline(device, &pipeline_layout, &shader, depth_format, variant)
         });
         Self {
-            pipeline,
+            pipelines,
             params_bind_group_layout,
+            scene_inputs,
+            reflection,
             installed: None,
         }
     }
 
-    /// Drop the installed level's fluid geometry. Level install and unload
-    /// both start here.
-    pub fn clear(&mut self) {
-        self.installed = None;
+    /// Store the frame's eye fog weight; it uploads before the next fluid pass.
+    pub fn set_fog_weight(&mut self, weight: f32) {
+        self.scene_inputs.set_fog_weight(weight);
     }
 
-    /// Upload every drawable surface face of `volumes`, fan-triangulated into
-    /// one shared buffer with per-volume material ranges. UVs normalize by
-    /// `texture_dimensions` (indexed by texture index); faces whose texture is
-    /// past `material_count` draw with the placeholder material.
+    /// Store the mod's reflection style; it uploads before the next
+    /// reflection and fluid passes.
+    pub fn set_reflection_style(
+        &mut self,
+        style: postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
+    ) {
+        self.scene_inputs.set_reflection_style(style);
+        self.set_reflection_pass_style(style);
+    }
+
+    /// Write the scene and reflection uniforms where they changed. Called
+    /// before the reflection pass, so both passes of one frame draw one style.
+    pub fn upload_scene_inputs(&mut self, queue: &crate::render::uploads::UploadQueue) {
+        self.scene_inputs.upload(queue);
+        self.upload_reflection_inputs(queue);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scene_inputs(&self) -> &FluidSceneInputs {
+        &self.scene_inputs
+    }
+
+    /// Drop the installed level's fluid geometry and its reflection target,
+    /// rebinding group 5 to the placeholder first. Level install and unload
+    /// both start here.
+    pub fn clear(&mut self, device: &wgpu::Device) {
+        self.installed = None;
+        self.set_reflection_target(device, None);
+    }
+
+    /// Upload every drawable surface face of `volumes`, triangulated by
+    /// `pack_fluid_surfaces` into one shared buffer with per-volume material
+    /// ranges. UVs normalize by `texture_dimensions` (indexed by texture
+    /// index); faces whose texture is past `material_count` draw with the
+    /// placeholder material. `reflection_probes` (section 54) uploads whole
+    /// with the surfaces, and its bindings write each face's probe index; a
+    /// level without it binds dummies. Faces are cut along `lattice`, the
+    /// level's SH lattice, so the vertex stage's baked lighting varies within
+    /// a probe cell; without one they pack whole. A level with a probe-bound
+    /// face installed at medium or above also creates the screen-space
+    /// reflection target at the kept tier's fraction and rebinds group 5 to
+    /// it; at Off and Low it keeps the placeholder.
+    #[allow(clippy::too_many_arguments)]
     pub fn install(
         &mut self,
         device: &wgpu::Device,
+        queue: &crate::render::uploads::UploadQueue,
         volumes: &[EnvironmentVolumeRecord],
+        reflection_probes: Option<&ReflectionProbesSection>,
         texture_dimensions: &[[u32; 2]],
         material_count: usize,
+        lattice: Option<&FluidGridLattice>,
     ) {
-        self.installed = None;
-        let mesh = pack_fluid_surfaces(volumes, texture_dimensions, material_count);
+        self.clear(device);
+        let mesh = pack_fluid_surfaces(volumes, texture_dimensions, material_count, lattice);
         if mesh.indices.is_empty() {
             return;
         }
+        let reflection_probes = installable_probe_section(reflection_probes);
+        let (probe_index_buffer, has_probe_bound_face) = create_probe_index_buffer(
+            device,
+            volumes,
+            &mesh.face_drift_maps,
+            mesh.vertices.len(),
+            reflection_probes,
+        );
+        // An install-time upload takes the raw queue, as the SH atlases do.
+        let probes = FluidProbeResources::new(device, queue.raw(), reflection_probes);
         let slots = FluidSurfaceSlots::new(&mesh.volumes);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Vertex Buffer"),
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let drift_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fluid Surface Drift Buffer"),
+            size: (mesh.vertices.len() * FLUID_DRIFT_RATE_STRIDE) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Index Buffer"),
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        // Zeroed at creation; each slot uploads its opacity on first draw.
+        // Zeroed at creation; each slot uploads its row on first draw.
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Fluid Surface Params"),
             size: u64::from(slots.window_count()) * FLUID_PARAMS_WINDOW_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let [probe_array, probe_table, probe_distance] = probes.bind_group_entries();
         let params_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Fluid Surface Params Bind Group (group 4)"),
             layout: &self.params_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &params_buffer,
-                    offset: 0,
-                    size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
-                }),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &params_buffer,
+                        offset: 0,
+                        size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
+                    }),
+                },
+                probe_array,
+                probe_table,
+                probe_distance,
+            ],
         });
-        log::info!(
-            "[Renderer] Fluid surfaces installed: {} volumes, {} triangles",
-            mesh.volumes.len(),
-            mesh.indices.len() / 3,
-        );
+        let reflection_probe_bind_group = has_probe_bound_face.then(|| {
+            let [_, probe_table, _] = probes.bind_group_entries();
+            self.reflection_probe_bind_group(device, &params_buffer, probe_table)
+        });
+        match mesh.grid {
+            Some(grid) => log::info!(
+                "[Renderer] Fluid surfaces installed: {} volumes, {} triangles, {} vertices on a \
+                 {:.3?} m grid",
+                mesh.volumes.len(),
+                mesh.indices.len() / 3,
+                mesh.vertices.len(),
+                grid.spacing().to_array(),
+            ),
+            None => log::info!(
+                "[Renderer] Fluid surfaces installed: {} volumes, {} triangles, {} vertices, \
+                 no grid",
+                mesh.volumes.len(),
+                mesh.indices.len() / 3,
+                mesh.vertices.len(),
+            ),
+        }
         self.installed = Some(InstalledFluidSurfaces {
             vertex_buffer,
+            drift_buffer,
+            drift_rates: vec![[0.0; 2]; mesh.vertices.len()],
+            face_drift_maps: mesh.face_drift_maps,
+            probe_index_buffer,
             index_buffer,
             params_buffer,
+            _probes: probes,
             params_bind_group,
+            reflection_probe_bind_group,
             volumes: mesh.volumes,
             slots,
+            #[cfg(test)]
+            grid: mesh.grid,
+            #[cfg(test)]
+            param_uploads: 0,
         });
+        // Probe binding is fixed at install, so it and the kept tier alone
+        // key the target: reflectivity, retuned live, only switches draw
+        // variants.
+        self.set_reflection_target(device, self.wanted_reflection_target());
     }
 
-    /// Replace this frame's draws, uploading only opacity rows that changed.
+    /// Replace every face's drift: `drifts` holds one world drift per surface
+    /// face of every installed volume, in record order. Only the drift buffer
+    /// is rewritten, so draws, slots and parameter rows carry over untouched.
+    pub fn set_drift(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        drifts: &[glam::Vec3],
+    ) {
+        let Some(installed) = self.installed.as_mut() else {
+            return;
+        };
+        if drifts.len() != installed.face_drift_maps.len() {
+            log::warn!(
+                "[Renderer] Fluid surface drift count {} does not match {} surface faces; \
+                 water holds still",
+                drifts.len(),
+                installed.face_drift_maps.len(),
+            );
+        }
+        fill_drift_rates(
+            &installed.face_drift_maps,
+            drifts,
+            &mut installed.drift_rates,
+        );
+        // Drift re-resolves at install, reload commit and fluid-table or
+        // tuning refreshes. Some of those points require an empty upload
+        // batch. Nothing ever batch-writes this buffer, so a direct write,
+        // which lands now, is safe at every one.
+        queue.direct_write_buffer(
+            &installed.drift_buffer,
+            0,
+            bytemuck::cast_slice(&installed.drift_rates),
+        );
+    }
+
+    /// The installed level's grid planes: `None` without a level, or for
+    /// one packed whole.
+    #[cfg(test)]
+    pub(crate) fn installed_grid(
+        &self,
+    ) -> Option<postretro_render_cpu::fluid_surface::FluidGridPlanes> {
+        self.installed.as_ref().and_then(|installed| installed.grid)
+    }
+
+    /// Layers of the installed probe array: 1 for the dummy.
+    #[cfg(test)]
+    pub(crate) fn probe_array_layers(&self) -> Option<u32> {
+        self.probe_array_size()
+            .map(|size| size.depth_or_array_layers)
+    }
+
+    /// The installed probe array's tile width, height and layer count: 1×1
+    /// and one layer for the dummy.
+    #[cfg(test)]
+    pub(crate) fn probe_array_size(&self) -> Option<wgpu::Extent3d> {
+        self.installed
+            .as_ref()
+            .map(|installed| installed._probes.array_size())
+    }
+
+    /// The installed distance array's tile width, height and layer count:
+    /// 1×1 and one layer for the dummy.
+    #[cfg(test)]
+    pub(crate) fn probe_distance_size(&self) -> Option<wgpu::Extent3d> {
+        self.installed
+            .as_ref()
+            .map(|installed| installed._probes.distance_size())
+    }
+
+    /// Parameter-row uploads since install.
+    #[cfg(test)]
+    pub(crate) fn param_uploads(&self) -> Option<u32> {
+        self.installed
+            .as_ref()
+            .map(|installed| installed.param_uploads)
+    }
+
+    /// Replace this frame's draws, uploading only parameter rows that changed.
     pub fn set_draws(
         &mut self,
         queue: &crate::render::uploads::UploadQueue,
@@ -298,6 +602,10 @@ impl FluidSurfacePass {
         };
         installed.slots.set_draws(draws);
         if let Some((range, rows)) = installed.slots.take_dirty() {
+            #[cfg(test)]
+            {
+                installed.param_uploads += 1;
+            }
             queue.write_buffer(
                 &installed.params_buffer,
                 u64::from(range.start) * FLUID_PARAMS_STRIDE as u64,
@@ -313,21 +621,44 @@ impl FluidSurfacePass {
             .is_some_and(|installed| installed.slots.has_draws())
     }
 
-    /// Record this frame's draws. The caller binds groups 0, 2 and 3.
-    pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
+    /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
+    /// binds 1, 4 and the scene inputs (5), built with the scene targets and
+    /// the reflection target.
+    /// Each draw takes its row's shader variant under `light_term_mask` and
+    /// `quality`, the frame's group-0 mask and tier, the ones the reflection
+    /// pass took its draws by; the pipeline is set only where it changes
+    /// between consecutive draws.
+    pub fn record_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        materials: &[GpuTexture],
+        light_term_mask: LightTermMask,
+        quality: FluidReflectionQuality,
+    ) {
         let Some(installed) = self.installed.as_ref() else {
             return;
         };
         if !installed.slots.has_draws() {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(
+            FLUID_SCENE_INPUTS_GROUP,
+            self.scene_inputs.bind_group(),
+            &[],
+        );
         pass.set_vertex_buffer(0, installed.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, installed.drift_buffer.slice(..));
+        pass.set_vertex_buffer(2, installed.probe_index_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
+        let mut bound_variant = None;
         let mut bound_window = None;
         let mut bound_material = None;
-        for &slot in installed.slots.frame_slots() {
+        for (slot, variant) in installed.slots.frame_draws(light_term_mask.bits(), quality) {
+            if bound_variant != Some(variant) {
+                pass.set_pipeline(self.pipeline(variant));
+                bound_variant = Some(variant);
+            }
             let (window, element) = slot_window(slot);
             if bound_window != Some(window) {
                 let offset = u64::from(window) * FLUID_PARAMS_WINDOW_BYTES;
@@ -355,24 +686,114 @@ impl FluidSurfacePass {
             }
         }
     }
+
+    fn pipeline(&self, variant: FluidShaderVariant) -> &wgpu::RenderPipeline {
+        &self.pipelines[variant as usize]
+    }
+
+    /// The variant each of this frame's draws takes at the kept tier, in draw
+    /// order: what `record_draws` binds.
+    #[cfg(test)]
+    pub(crate) fn frame_variants(&self, light_term_mask: LightTermMask) -> Vec<FluidShaderVariant> {
+        let quality = self.kept_reflection_quality();
+        self.installed.as_ref().map_or_else(Vec::new, |installed| {
+            installed
+                .slots
+                .frame_draws(light_term_mask.bits(), quality)
+                .map(|(_, variant)| variant)
+                .collect()
+        })
+    }
+}
+
+/// One fluid pipeline: `variant` picks the fragment entry point. Everything
+/// else is shared, so both variants draw under one layout, vertex layout,
+/// blend and depth state.
+fn create_fluid_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    depth_format: wgpu::TextureFormat,
+    variant: FluidShaderVariant,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(match variant {
+            FluidShaderVariant::ReflectionFree => "Fluid Surface Pipeline (reflection-free)",
+            FluidShaderVariant::Reflecting => "Fluid Surface Pipeline (reflecting)",
+        }),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &fluid_vertex_buffer_layouts(),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: fluid_primitive_state(),
+        depth_stencil: Some(fluid_depth_stencil_state(depth_format)),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fluid_fragment_entry_point(variant)),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SCENE_COLOR_FORMAT,
+                blend: Some(fluid_blend_state()),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 impl Renderer {
-    /// Install the level's fluid surfaces. Call after `install_textures` and
-    /// `install_level_geometry` (which drops the previous level's): UVs
-    /// normalize by the installed diffuse dimensions, as
-    /// `normalize_world_uvs` does for world faces. Volumes without surface
-    /// faces allocate nothing; a level without any never opens the pass.
-    pub fn install_fluid_surfaces(&mut self, volumes: &[EnvironmentVolumeRecord]) {
-        let Self { device, full, .. } = self;
+    /// Install the level's fluid surfaces and their reflection probes. Call
+    /// after `install_textures` and `install_level_geometry` (which drops the
+    /// previous level's and installs its SH volume): UVs normalize by the
+    /// installed diffuse dimensions, as `normalize_world_uvs` does for world
+    /// faces, and faces are cut along the lattice the SH sampler now reads.
+    /// Volumes without surface faces allocate nothing, probes included; a
+    /// level without any never opens the pass. `reflection_probes` is the
+    /// level's section 54.
+    pub fn install_fluid_surfaces(
+        &mut self,
+        volumes: &[EnvironmentVolumeRecord],
+        reflection_probes: Option<&ReflectionProbesSection>,
+    ) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         let texture_dimensions =
             super::renderer_models::loaded_texture_dimensions(&full.loaded_textures);
         let material_count = full.gpu_textures.len();
-        full.fluid_surface
-            .install(device, volumes, &texture_dimensions, material_count);
+        let lattice = full.sh_sampler_lattice();
+        full.fluid_surface.install(
+            device,
+            queue,
+            volumes,
+            reflection_probes,
+            &texture_dimensions,
+            material_count,
+            lattice.as_ref(),
+        );
+    }
+
+    /// Every installed fluid face's world drift, one per surface face of every
+    /// volume in record order (`EnvironmentVolumeRecord::surface_faces`). Call
+    /// after `install_fluid_surfaces` and whenever drift re-resolves; a slice
+    /// of the wrong length draws every face still.
+    pub fn set_fluid_surface_drift(&mut self, drifts: &[glam::Vec3]) {
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.fluid_surface.set_drift(queue, drifts);
     }
 
     /// This frame's visible fluid draws, far to near, from
@@ -384,6 +805,89 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         full.fluid_surface.set_draws(queue, draws);
+    }
+
+    /// Store the frame's eye fog weight (0..1): 0 while the eye is inside any
+    /// fluid, else one minus the view tint's ramp. Send it every presented
+    /// frame beside `set_fluid_view_tint`. Held until replaced; before the
+    /// first write it is 1, so a renderer recreated mid-level still fogs.
+    pub fn set_fluid_fog_weight(&mut self, weight: f32) {
+        self.full_mut().fluid_surface.set_fog_weight(weight);
+    }
+
+    /// Commit the mod's fluid reflection style (`render.reflections.style`).
+    /// Retained in boot state, so a full init after surface recovery keeps it,
+    /// and safe before full init; it uploads before the next fluid pass, and
+    /// only when it changed. A renderer never told draws pixel, the default,
+    /// as frame capture does.
+    pub fn set_fluid_reflection_style(
+        &mut self,
+        style: postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
+    ) {
+        self.fluid_reflection_style = style;
+        if let Some(full) = self.full.as_mut() {
+            full.fluid_surface.set_reflection_style(style);
+        }
+    }
+
+    /// The reflection style the next fluid pass draws.
+    pub fn fluid_reflection_style(
+        &self,
+    ) -> postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle {
+        self.fluid_reflection_style
+    }
+
+    /// Apply the player's reflection tier (`reflection_quality`). Kept in
+    /// boot state, like Surface Depth, so it works before full init and with
+    /// no level: the next full init and fluid install consult it. The tier it
+    /// already holds builds nothing. On a full renderer the fluid pass's
+    /// reflection target follows the tier at once: created, resized or
+    /// released at the tier's fraction of the current scene extent on a
+    /// level with a probe-bound fluid face, with group 5 and the reflection
+    /// inputs' scale rebuilt around it; Off and Low release it. The march
+    /// resets to the tier's preset, any dev override dropped, and reaches
+    /// the reflection uniform alone: two screen-space tiers with one
+    /// fraction rebuild neither the target nor group 5. Off also turns every
+    /// draw reflection-free; Low keeps the reflecting variant over the
+    /// placeholder, the probe term alone. Compiles nothing: the reflection
+    /// pipeline is built at full init, at every tier.
+    pub fn set_reflection_quality(&mut self, quality: FluidReflectionQuality) {
+        if self.reflection_quality == quality {
+            return;
+        }
+        self.reflection_quality = quality;
+        let Self { device, full, .. } = self;
+        if let Some(full) = full.as_mut() {
+            full.fluid_surface.set_reflection_quality(device, quality);
+        }
+        log::info!("[Renderer] Reflection quality: {quality:?}");
+    }
+
+    /// The reflection tier the next frame draws at.
+    pub fn reflection_quality(&self) -> FluidReflectionQuality {
+        self.reflection_quality
+    }
+
+    /// Override the active tier's reflection target fraction per axis until
+    /// the next tier change or full init resets it: the target is created,
+    /// resized or released as a tier's would be (rounded up, at least 1×1).
+    /// A measurement hook, never player-facing. Returns false, changing
+    /// nothing, without a full renderer, at a tier that runs no screen-space
+    /// layer (Off, Low), or for a fraction outside (0, 1].
+    pub fn set_reflection_target_fraction(&mut self, fraction: f32) -> bool {
+        let Self { device, full, .. } = self;
+        full.as_mut().is_some_and(|full| {
+            full.fluid_surface
+                .set_reflection_target_fraction(device, fraction)
+        })
+    }
+
+    /// The active tier's reflection target fraction, with any override;
+    /// `None` at Off and Low or without a full renderer.
+    pub fn reflection_target_fraction(&self) -> Option<f32> {
+        self.full
+            .as_ref()
+            .and_then(|full| full.fluid_surface.reflection_target_fraction())
     }
 }
 

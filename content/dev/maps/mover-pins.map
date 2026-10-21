@@ -1,0 +1,3327 @@
+// Game: Postretro
+// Format: Standard
+// Mover pin fixture for movement--mover-pinned-rider. See mover-pins.README.md.
+// Generated layout. Rows A to E run south to north, bays west to east.
+// NOTE: keep map comments free of braces and quotes.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+"ambient_color" "40 40 48"
+"_lightmap_density" "0.08"
+// brush 0
+{
+( -16 -16 -16 ) ( -16 -15 -16 ) ( -16 -16 -15 ) concrete_pavement_036 0 0 0 1 1
+( 3056 -16 -16 ) ( 3056 -15 -16 ) ( 3056 -16 -17 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( -16 -16 -15 ) ( -15 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 2704 -16 ) ( -16 2704 -15 ) ( -17 2704 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( -15 -16 -16 ) ( -16 -15 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( -15 -16 0 ) ( -16 -17 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 1
+{
+( -16 -16 320 ) ( -16 -15 320 ) ( -16 -16 321 ) concrete_stone_033 0 0 0 1 1
+( 3056 -16 320 ) ( 3056 -15 320 ) ( 3056 -16 319 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 320 ) ( -16 -16 321 ) ( -15 -16 320 ) concrete_stone_033 0 0 0 1 1
+( -16 2704 320 ) ( -16 2704 321 ) ( -17 2704 320 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 320 ) ( -15 -16 320 ) ( -16 -15 320 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 336 ) ( -15 -16 336 ) ( -16 -17 336 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 2
+{
+( -16 0 0 ) ( -16 1 0 ) ( -16 0 1 ) concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 -1 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( -16 0 1 ) ( -15 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 2688 0 ) ( -16 2688 1 ) ( -17 2688 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( -15 0 0 ) ( -16 1 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 320 ) ( -15 0 320 ) ( -16 -1 320 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 3
+{
+( 3040 0 0 ) ( 3040 1 0 ) ( 3040 0 1 ) concrete_stone_033 0 0 0 1 1
+( 3056 0 0 ) ( 3056 1 0 ) ( 3056 0 -1 ) concrete_stone_033 0 0 0 1 1
+( 3040 0 0 ) ( 3040 0 1 ) ( 3041 0 0 ) concrete_stone_033 0 0 0 1 1
+( 3040 2688 0 ) ( 3040 2688 1 ) ( 3039 2688 0 ) concrete_stone_033 0 0 0 1 1
+( 3040 0 0 ) ( 3041 0 0 ) ( 3040 1 0 ) concrete_stone_033 0 0 0 1 1
+( 3040 0 320 ) ( 3041 0 320 ) ( 3040 -1 320 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 4
+{
+( -16 -16 0 ) ( -16 -15 0 ) ( -16 -16 1 ) concrete_stone_033 0 0 0 1 1
+( 3056 -16 0 ) ( 3056 -15 0 ) ( 3056 -16 -1 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( -16 -16 1 ) ( -15 -16 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( -16 0 1 ) ( -17 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( -15 -16 0 ) ( -16 -15 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 320 ) ( -15 -16 320 ) ( -16 -17 320 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 5
+{
+( -16 2688 0 ) ( -16 2689 0 ) ( -16 2688 1 ) concrete_stone_033 0 0 0 1 1
+( 3056 2688 0 ) ( 3056 2689 0 ) ( 3056 2688 -1 ) concrete_stone_033 0 0 0 1 1
+( -16 2688 0 ) ( -16 2688 1 ) ( -15 2688 0 ) concrete_stone_033 0 0 0 1 1
+( -16 2704 0 ) ( -16 2704 1 ) ( -17 2704 0 ) concrete_stone_033 0 0 0 1 1
+( -16 2688 0 ) ( -15 2688 0 ) ( -16 2689 0 ) concrete_stone_033 0 0 0 1 1
+( -16 2688 320 ) ( -15 2688 320 ) ( -16 2687 320 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 6
+{
+( 0 572 0 ) ( 0 573 0 ) ( 0 572 1 ) concrete_stone_033 0 0 0 1 1
+( 3040 572 0 ) ( 3040 573 0 ) ( 3040 572 -1 ) concrete_stone_033 0 0 0 1 1
+( 0 572 0 ) ( 0 572 1 ) ( 1 572 0 ) concrete_stone_033 0 0 0 1 1
+( 0 580 0 ) ( 0 580 1 ) ( -1 580 0 ) concrete_stone_033 0 0 0 1 1
+( 0 572 0 ) ( 1 572 0 ) ( 0 573 0 ) concrete_stone_033 0 0 0 1 1
+( 0 572 4 ) ( 1 572 4 ) ( 0 571 4 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 7
+{
+( 0 1084 0 ) ( 0 1085 0 ) ( 0 1084 1 ) concrete_stone_033 0 0 0 1 1
+( 3040 1084 0 ) ( 3040 1085 0 ) ( 3040 1084 -1 ) concrete_stone_033 0 0 0 1 1
+( 0 1084 0 ) ( 0 1084 1 ) ( 1 1084 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1092 0 ) ( 0 1092 1 ) ( -1 1092 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1084 0 ) ( 1 1084 0 ) ( 0 1085 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1084 4 ) ( 1 1084 4 ) ( 0 1083 4 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 8
+{
+( 0 1596 0 ) ( 0 1597 0 ) ( 0 1596 1 ) concrete_stone_033 0 0 0 1 1
+( 3040 1596 0 ) ( 3040 1597 0 ) ( 3040 1596 -1 ) concrete_stone_033 0 0 0 1 1
+( 0 1596 0 ) ( 0 1596 1 ) ( 1 1596 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1604 0 ) ( 0 1604 1 ) ( -1 1604 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1596 0 ) ( 1 1596 0 ) ( 0 1597 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1596 4 ) ( 1 1596 4 ) ( 0 1595 4 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 9
+{
+( 0 2108 0 ) ( 0 2109 0 ) ( 0 2108 1 ) concrete_stone_033 0 0 0 1 1
+( 3040 2108 0 ) ( 3040 2109 0 ) ( 3040 2108 -1 ) concrete_stone_033 0 0 0 1 1
+( 0 2108 0 ) ( 0 2108 1 ) ( 1 2108 0 ) concrete_stone_033 0 0 0 1 1
+( 0 2116 0 ) ( 0 2116 1 ) ( -1 2116 0 ) concrete_stone_033 0 0 0 1 1
+( 0 2108 0 ) ( 1 2108 0 ) ( 0 2109 0 ) concrete_stone_033 0 0 0 1 1
+( 0 2108 4 ) ( 1 2108 4 ) ( 0 2107 4 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 10
+{
+( 208 272 128 ) ( 208 273 128 ) ( 208 272 129 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 304 272 128 ) ( 304 273 128 ) ( 304 272 127 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 208 272 128 ) ( 208 272 129 ) ( 209 272 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 208 368 128 ) ( 208 368 129 ) ( 207 368 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 208 272 128 ) ( 209 272 128 ) ( 208 273 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 208 272 144 ) ( 209 272 144 ) ( 208 271 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 11
+{
+( 528 272 128 ) ( 528 273 128 ) ( 528 272 129 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 624 272 128 ) ( 624 273 128 ) ( 624 272 127 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 528 272 128 ) ( 528 272 129 ) ( 529 272 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 528 368 128 ) ( 528 368 129 ) ( 527 368 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 528 272 128 ) ( 529 272 128 ) ( 528 273 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 528 272 144 ) ( 529 272 144 ) ( 528 271 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 12
+{
+( 848 272 128 ) ( 848 273 128 ) ( 848 272 129 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 944 272 128 ) ( 944 273 128 ) ( 944 272 127 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 272 128 ) ( 848 272 129 ) ( 849 272 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 368 128 ) ( 848 368 129 ) ( 847 368 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 272 128 ) ( 849 272 128 ) ( 848 273 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 272 144 ) ( 849 272 144 ) ( 848 271 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 13
+{
+( 1168 272 128 ) ( 1168 273 128 ) ( 1168 272 129 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1264 272 128 ) ( 1264 273 128 ) ( 1264 272 127 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1168 272 128 ) ( 1168 272 129 ) ( 1169 272 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1168 368 128 ) ( 1168 368 129 ) ( 1167 368 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1168 272 128 ) ( 1169 272 128 ) ( 1168 273 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1168 272 144 ) ( 1169 272 144 ) ( 1168 271 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 14
+{
+( 1488 272 128 ) ( 1488 273 128 ) ( 1488 272 129 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1584 272 128 ) ( 1584 273 128 ) ( 1584 272 127 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1488 272 128 ) ( 1488 272 129 ) ( 1489 272 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1488 368 128 ) ( 1488 368 129 ) ( 1487 368 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1488 272 128 ) ( 1489 272 128 ) ( 1488 273 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1488 272 144 ) ( 1489 272 144 ) ( 1488 271 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 15
+{
+( 288 704 112 ) ( 288 705 112 ) ( 288 704 113 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 480 704 112 ) ( 480 705 112 ) ( 480 704 111 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 288 704 112 ) ( 288 704 113 ) ( 289 704 112 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 288 960 112 ) ( 288 960 113 ) ( 287 960 112 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 288 704 112 ) ( 289 704 112 ) ( 288 705 112 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 288 704 128 ) ( 289 704 128 ) ( 288 703 128 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 16
+{
+( 592 720 144 ) ( 592 721 144 ) ( 592 720 145 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 912 720 144 ) ( 912 721 144 ) ( 912 720 143 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 720 144 ) ( 592 720 145 ) ( 593 720 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 784 144 ) ( 592 784 145 ) ( 591 784 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 720 144 ) ( 593 720 144 ) ( 592 721 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 720 160 ) ( 593 720 160 ) ( 592 719 160 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 17
+{
+( 592 880 144 ) ( 592 881 144 ) ( 592 880 145 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 912 880 144 ) ( 912 881 144 ) ( 912 880 143 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 880 144 ) ( 592 880 145 ) ( 593 880 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 944 144 ) ( 592 944 145 ) ( 591 944 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 880 144 ) ( 593 880 144 ) ( 592 881 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 880 160 ) ( 593 880 160 ) ( 592 879 160 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 18
+{
+( 592 784 144 ) ( 592 785 144 ) ( 592 784 145 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 656 784 144 ) ( 656 785 144 ) ( 656 784 143 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 784 144 ) ( 592 784 145 ) ( 593 784 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 880 144 ) ( 592 880 145 ) ( 591 880 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 784 144 ) ( 593 784 144 ) ( 592 785 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 592 784 160 ) ( 593 784 160 ) ( 592 783 160 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 19
+{
+( 752 784 144 ) ( 752 785 144 ) ( 752 784 145 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 912 784 144 ) ( 912 785 144 ) ( 912 784 143 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 752 784 144 ) ( 752 784 145 ) ( 753 784 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 752 880 144 ) ( 752 880 145 ) ( 751 880 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 752 784 144 ) ( 753 784 144 ) ( 752 785 144 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 752 784 160 ) ( 753 784 160 ) ( 752 783 160 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 20
+{
+( 160 1336 0 ) ( 160 1337 0 ) ( 160 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 224 1336 0 ) ( 224 1337 0 ) ( 224 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 160 1336 0 ) ( 160 1336 1 ) ( 161 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 160 1352 0 ) ( 160 1352 1 ) ( 159 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 160 1336 0 ) ( 161 1336 0 ) ( 160 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 160 1336 128 ) ( 161 1336 128 ) ( 160 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 21
+{
+( 288 1336 0 ) ( 288 1337 0 ) ( 288 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 352 1336 0 ) ( 352 1337 0 ) ( 352 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 288 1336 0 ) ( 288 1336 1 ) ( 289 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 288 1352 0 ) ( 288 1352 1 ) ( 287 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 288 1336 0 ) ( 289 1336 0 ) ( 288 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 288 1336 128 ) ( 289 1336 128 ) ( 288 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 22
+{
+( 224 1336 96 ) ( 224 1337 96 ) ( 224 1336 97 ) concrete_stone_033 0 0 0 1 1
+( 288 1336 96 ) ( 288 1337 96 ) ( 288 1336 95 ) concrete_stone_033 0 0 0 1 1
+( 224 1336 96 ) ( 224 1336 97 ) ( 225 1336 96 ) concrete_stone_033 0 0 0 1 1
+( 224 1352 96 ) ( 224 1352 97 ) ( 223 1352 96 ) concrete_stone_033 0 0 0 1 1
+( 224 1336 96 ) ( 225 1336 96 ) ( 224 1337 96 ) concrete_stone_033 0 0 0 1 1
+( 224 1336 128 ) ( 225 1336 128 ) ( 224 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 23
+{
+( 480 1336 0 ) ( 480 1337 0 ) ( 480 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 544 1336 0 ) ( 544 1337 0 ) ( 544 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 480 1336 0 ) ( 480 1336 1 ) ( 481 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 480 1352 0 ) ( 480 1352 1 ) ( 479 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 480 1336 0 ) ( 481 1336 0 ) ( 480 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 480 1336 128 ) ( 481 1336 128 ) ( 480 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 24
+{
+( 608 1336 0 ) ( 608 1337 0 ) ( 608 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 672 1336 0 ) ( 672 1337 0 ) ( 672 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 608 1336 0 ) ( 608 1336 1 ) ( 609 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 608 1352 0 ) ( 608 1352 1 ) ( 607 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 608 1336 0 ) ( 609 1336 0 ) ( 608 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 608 1336 128 ) ( 609 1336 128 ) ( 608 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 25
+{
+( 544 1336 96 ) ( 544 1337 96 ) ( 544 1336 97 ) concrete_stone_033 0 0 0 1 1
+( 608 1336 96 ) ( 608 1337 96 ) ( 608 1336 95 ) concrete_stone_033 0 0 0 1 1
+( 544 1336 96 ) ( 544 1336 97 ) ( 545 1336 96 ) concrete_stone_033 0 0 0 1 1
+( 544 1352 96 ) ( 544 1352 97 ) ( 543 1352 96 ) concrete_stone_033 0 0 0 1 1
+( 544 1336 96 ) ( 545 1336 96 ) ( 544 1337 96 ) concrete_stone_033 0 0 0 1 1
+( 544 1336 128 ) ( 545 1336 128 ) ( 544 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 26
+{
+( 800 1336 0 ) ( 800 1337 0 ) ( 800 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 864 1336 0 ) ( 864 1337 0 ) ( 864 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 800 1336 0 ) ( 800 1336 1 ) ( 801 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 800 1352 0 ) ( 800 1352 1 ) ( 799 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 800 1336 0 ) ( 801 1336 0 ) ( 800 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 800 1336 128 ) ( 801 1336 128 ) ( 800 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 27
+{
+( 928 1336 0 ) ( 928 1337 0 ) ( 928 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 992 1336 0 ) ( 992 1337 0 ) ( 992 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 928 1336 0 ) ( 928 1336 1 ) ( 929 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 928 1352 0 ) ( 928 1352 1 ) ( 927 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 928 1336 0 ) ( 929 1336 0 ) ( 928 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 928 1336 128 ) ( 929 1336 128 ) ( 928 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 28
+{
+( 864 1336 96 ) ( 864 1337 96 ) ( 864 1336 97 ) concrete_stone_033 0 0 0 1 1
+( 928 1336 96 ) ( 928 1337 96 ) ( 928 1336 95 ) concrete_stone_033 0 0 0 1 1
+( 864 1336 96 ) ( 864 1336 97 ) ( 865 1336 96 ) concrete_stone_033 0 0 0 1 1
+( 864 1352 96 ) ( 864 1352 97 ) ( 863 1352 96 ) concrete_stone_033 0 0 0 1 1
+( 864 1336 96 ) ( 865 1336 96 ) ( 864 1337 96 ) concrete_stone_033 0 0 0 1 1
+( 864 1336 128 ) ( 865 1336 128 ) ( 864 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 29
+{
+( 1120 1336 0 ) ( 1120 1337 0 ) ( 1120 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 1184 1336 0 ) ( 1184 1337 0 ) ( 1184 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 1120 1336 0 ) ( 1120 1336 1 ) ( 1121 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 1120 1352 0 ) ( 1120 1352 1 ) ( 1119 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 1120 1336 0 ) ( 1121 1336 0 ) ( 1120 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 1120 1336 128 ) ( 1121 1336 128 ) ( 1120 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 30
+{
+( 1248 1336 0 ) ( 1248 1337 0 ) ( 1248 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 1312 1336 0 ) ( 1312 1337 0 ) ( 1312 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 1248 1336 0 ) ( 1248 1336 1 ) ( 1249 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 1248 1352 0 ) ( 1248 1352 1 ) ( 1247 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 1248 1336 0 ) ( 1249 1336 0 ) ( 1248 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 1248 1336 128 ) ( 1249 1336 128 ) ( 1248 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 31
+{
+( 1184 1336 96 ) ( 1184 1337 96 ) ( 1184 1336 97 ) concrete_stone_033 0 0 0 1 1
+( 1248 1336 96 ) ( 1248 1337 96 ) ( 1248 1336 95 ) concrete_stone_033 0 0 0 1 1
+( 1184 1336 96 ) ( 1184 1336 97 ) ( 1185 1336 96 ) concrete_stone_033 0 0 0 1 1
+( 1184 1352 96 ) ( 1184 1352 97 ) ( 1183 1352 96 ) concrete_stone_033 0 0 0 1 1
+( 1184 1336 96 ) ( 1185 1336 96 ) ( 1184 1337 96 ) concrete_stone_033 0 0 0 1 1
+( 1184 1336 128 ) ( 1185 1336 128 ) ( 1184 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 32
+{
+( 1440 1336 0 ) ( 1440 1337 0 ) ( 1440 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 1504 1336 0 ) ( 1504 1337 0 ) ( 1504 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 1440 1336 0 ) ( 1440 1336 1 ) ( 1441 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 1440 1352 0 ) ( 1440 1352 1 ) ( 1439 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 1440 1336 0 ) ( 1441 1336 0 ) ( 1440 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 1440 1336 128 ) ( 1441 1336 128 ) ( 1440 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 33
+{
+( 1568 1336 0 ) ( 1568 1337 0 ) ( 1568 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 1632 1336 0 ) ( 1632 1337 0 ) ( 1632 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 1568 1336 0 ) ( 1568 1336 1 ) ( 1569 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 1568 1352 0 ) ( 1568 1352 1 ) ( 1567 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 1568 1336 0 ) ( 1569 1336 0 ) ( 1568 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 1568 1336 128 ) ( 1569 1336 128 ) ( 1568 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 34
+{
+( 1504 1336 96 ) ( 1504 1337 96 ) ( 1504 1336 97 ) concrete_stone_033 0 0 0 1 1
+( 1568 1336 96 ) ( 1568 1337 96 ) ( 1568 1336 95 ) concrete_stone_033 0 0 0 1 1
+( 1504 1336 96 ) ( 1504 1336 97 ) ( 1505 1336 96 ) concrete_stone_033 0 0 0 1 1
+( 1504 1352 96 ) ( 1504 1352 97 ) ( 1503 1352 96 ) concrete_stone_033 0 0 0 1 1
+( 1504 1336 96 ) ( 1505 1336 96 ) ( 1504 1337 96 ) concrete_stone_033 0 0 0 1 1
+( 1504 1336 128 ) ( 1505 1336 128 ) ( 1504 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 35
+{
+( 1760 1336 0 ) ( 1760 1337 0 ) ( 1760 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 1824 1336 0 ) ( 1824 1337 0 ) ( 1824 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 1760 1336 0 ) ( 1760 1336 1 ) ( 1761 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 1760 1352 0 ) ( 1760 1352 1 ) ( 1759 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 1760 1336 0 ) ( 1761 1336 0 ) ( 1760 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 1760 1336 128 ) ( 1761 1336 128 ) ( 1760 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 36
+{
+( 1888 1336 0 ) ( 1888 1337 0 ) ( 1888 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 1952 1336 0 ) ( 1952 1337 0 ) ( 1952 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 1888 1336 0 ) ( 1888 1336 1 ) ( 1889 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 1888 1352 0 ) ( 1888 1352 1 ) ( 1887 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 1888 1336 0 ) ( 1889 1336 0 ) ( 1888 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 1888 1336 128 ) ( 1889 1336 128 ) ( 1888 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 37
+{
+( 1824 1336 96 ) ( 1824 1337 96 ) ( 1824 1336 97 ) concrete_stone_033 0 0 0 1 1
+( 1888 1336 96 ) ( 1888 1337 96 ) ( 1888 1336 95 ) concrete_stone_033 0 0 0 1 1
+( 1824 1336 96 ) ( 1824 1336 97 ) ( 1825 1336 96 ) concrete_stone_033 0 0 0 1 1
+( 1824 1352 96 ) ( 1824 1352 97 ) ( 1823 1352 96 ) concrete_stone_033 0 0 0 1 1
+( 1824 1336 96 ) ( 1825 1336 96 ) ( 1824 1337 96 ) concrete_stone_033 0 0 0 1 1
+( 1824 1336 128 ) ( 1825 1336 128 ) ( 1824 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 38
+{
+( 2080 1336 0 ) ( 2080 1337 0 ) ( 2080 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 2144 1336 0 ) ( 2144 1337 0 ) ( 2144 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 2080 1336 0 ) ( 2080 1336 1 ) ( 2081 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 2080 1352 0 ) ( 2080 1352 1 ) ( 2079 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 2080 1336 0 ) ( 2081 1336 0 ) ( 2080 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 2080 1336 128 ) ( 2081 1336 128 ) ( 2080 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 39
+{
+( 2208 1336 0 ) ( 2208 1337 0 ) ( 2208 1336 1 ) concrete_stone_033 0 0 0 1 1
+( 2272 1336 0 ) ( 2272 1337 0 ) ( 2272 1336 -1 ) concrete_stone_033 0 0 0 1 1
+( 2208 1336 0 ) ( 2208 1336 1 ) ( 2209 1336 0 ) concrete_stone_033 0 0 0 1 1
+( 2208 1352 0 ) ( 2208 1352 1 ) ( 2207 1352 0 ) concrete_stone_033 0 0 0 1 1
+( 2208 1336 0 ) ( 2209 1336 0 ) ( 2208 1337 0 ) concrete_stone_033 0 0 0 1 1
+( 2208 1336 128 ) ( 2209 1336 128 ) ( 2208 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 40
+{
+( 2144 1336 96 ) ( 2144 1337 96 ) ( 2144 1336 97 ) concrete_stone_033 0 0 0 1 1
+( 2208 1336 96 ) ( 2208 1337 96 ) ( 2208 1336 95 ) concrete_stone_033 0 0 0 1 1
+( 2144 1336 96 ) ( 2144 1336 97 ) ( 2145 1336 96 ) concrete_stone_033 0 0 0 1 1
+( 2144 1352 96 ) ( 2144 1352 97 ) ( 2143 1352 96 ) concrete_stone_033 0 0 0 1 1
+( 2144 1336 96 ) ( 2145 1336 96 ) ( 2144 1337 96 ) concrete_stone_033 0 0 0 1 1
+( 2144 1336 128 ) ( 2145 1336 128 ) ( 2144 1335 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 41
+{
+( 144 1848 0 ) ( 144 1849 0 ) ( 144 1848 1 ) concrete_stone_033 0 0 0 1 1
+( 240 1848 0 ) ( 240 1849 0 ) ( 240 1848 -1 ) concrete_stone_033 0 0 0 1 1
+( 144 1848 0 ) ( 144 1848 1 ) ( 145 1848 0 ) concrete_stone_033 0 0 0 1 1
+( 144 1864 0 ) ( 144 1864 1 ) ( 143 1864 0 ) concrete_stone_033 0 0 0 1 1
+( 144 1848 0 ) ( 145 1848 0 ) ( 144 1849 0 ) concrete_stone_033 0 0 0 1 1
+( 144 1848 128 ) ( 145 1848 128 ) ( 144 1847 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 42
+{
+( 336 1848 0 ) ( 336 1849 0 ) ( 336 1848 1 ) concrete_stone_033 0 0 0 1 1
+( 432 1848 0 ) ( 432 1849 0 ) ( 432 1848 -1 ) concrete_stone_033 0 0 0 1 1
+( 336 1848 0 ) ( 336 1848 1 ) ( 337 1848 0 ) concrete_stone_033 0 0 0 1 1
+( 336 1864 0 ) ( 336 1864 1 ) ( 335 1864 0 ) concrete_stone_033 0 0 0 1 1
+( 336 1848 0 ) ( 337 1848 0 ) ( 336 1849 0 ) concrete_stone_033 0 0 0 1 1
+( 336 1848 128 ) ( 337 1848 128 ) ( 336 1847 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 43
+{
+( 240 1848 96 ) ( 240 1849 96 ) ( 240 1848 97 ) concrete_stone_033 0 0 0 1 1
+( 336 1848 96 ) ( 336 1849 96 ) ( 336 1848 95 ) concrete_stone_033 0 0 0 1 1
+( 240 1848 96 ) ( 240 1848 97 ) ( 241 1848 96 ) concrete_stone_033 0 0 0 1 1
+( 240 1864 96 ) ( 240 1864 97 ) ( 239 1864 96 ) concrete_stone_033 0 0 0 1 1
+( 240 1848 96 ) ( 241 1848 96 ) ( 240 1849 96 ) concrete_stone_033 0 0 0 1 1
+( 240 1848 128 ) ( 241 1848 128 ) ( 240 1847 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 44
+{
+( 528 1848 0 ) ( 528 1849 0 ) ( 528 1848 1 ) concrete_stone_033 0 0 0 1 1
+( 624 1848 0 ) ( 624 1849 0 ) ( 624 1848 -1 ) concrete_stone_033 0 0 0 1 1
+( 528 1848 0 ) ( 528 1848 1 ) ( 529 1848 0 ) concrete_stone_033 0 0 0 1 1
+( 528 1864 0 ) ( 528 1864 1 ) ( 527 1864 0 ) concrete_stone_033 0 0 0 1 1
+( 528 1848 0 ) ( 529 1848 0 ) ( 528 1849 0 ) concrete_stone_033 0 0 0 1 1
+( 528 1848 128 ) ( 529 1848 128 ) ( 528 1847 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 45
+{
+( 720 1848 0 ) ( 720 1849 0 ) ( 720 1848 1 ) concrete_stone_033 0 0 0 1 1
+( 816 1848 0 ) ( 816 1849 0 ) ( 816 1848 -1 ) concrete_stone_033 0 0 0 1 1
+( 720 1848 0 ) ( 720 1848 1 ) ( 721 1848 0 ) concrete_stone_033 0 0 0 1 1
+( 720 1864 0 ) ( 720 1864 1 ) ( 719 1864 0 ) concrete_stone_033 0 0 0 1 1
+( 720 1848 0 ) ( 721 1848 0 ) ( 720 1849 0 ) concrete_stone_033 0 0 0 1 1
+( 720 1848 128 ) ( 721 1848 128 ) ( 720 1847 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 46
+{
+( 624 1848 96 ) ( 624 1849 96 ) ( 624 1848 97 ) concrete_stone_033 0 0 0 1 1
+( 720 1848 96 ) ( 720 1849 96 ) ( 720 1848 95 ) concrete_stone_033 0 0 0 1 1
+( 624 1848 96 ) ( 624 1848 97 ) ( 625 1848 96 ) concrete_stone_033 0 0 0 1 1
+( 624 1864 96 ) ( 624 1864 97 ) ( 623 1864 96 ) concrete_stone_033 0 0 0 1 1
+( 624 1848 96 ) ( 625 1848 96 ) ( 624 1849 96 ) concrete_stone_033 0 0 0 1 1
+( 624 1848 128 ) ( 625 1848 128 ) ( 624 1847 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 47
+{
+( 928 1840 0 ) ( 928 1841 0 ) ( 928 1840 1 ) concrete_stone_033 0 0 0 1 1
+( 1184 1840 0 ) ( 1184 1841 0 ) ( 1184 1840 -1 ) concrete_stone_033 0 0 0 1 1
+( 928 1840 0 ) ( 928 1840 1 ) ( 929 1840 0 ) concrete_stone_033 0 0 0 1 1
+( 928 1856 0 ) ( 928 1856 1 ) ( 927 1856 0 ) concrete_stone_033 0 0 0 1 1
+( 928 1840 0 ) ( 929 1840 0 ) ( 928 1841 0 ) concrete_stone_033 0 0 0 1 1
+( 928 1840 128 ) ( 929 1840 128 ) ( 928 1839 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 48
+{
+( 1248 1840 0 ) ( 1248 1841 0 ) ( 1248 1840 1 ) concrete_stone_033 0 0 0 1 1
+( 1504 1840 0 ) ( 1504 1841 0 ) ( 1504 1840 -1 ) concrete_stone_033 0 0 0 1 1
+( 1248 1840 0 ) ( 1248 1840 1 ) ( 1249 1840 0 ) concrete_stone_033 0 0 0 1 1
+( 1248 1856 0 ) ( 1248 1856 1 ) ( 1247 1856 0 ) concrete_stone_033 0 0 0 1 1
+( 1248 1840 0 ) ( 1249 1840 0 ) ( 1248 1841 0 ) concrete_stone_033 0 0 0 1 1
+( 1248 1840 128 ) ( 1249 1840 128 ) ( 1248 1839 128 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 49
+{
+( 1740 1848 0 ) ( 1740 1849 0 ) ( 1740 1848 1 ) concrete_stone_033 0 0 0 1 1
+( 1808 1848 0 ) ( 1808 1849 0 ) ( 1808 1848 -1 ) concrete_stone_033 0 0 0 1 1
+( 1740 1848 0 ) ( 1740 1848 1 ) ( 1741 1848 0 ) concrete_stone_033 0 0 0 1 1
+( 1740 1864 0 ) ( 1740 1864 1 ) ( 1739 1864 0 ) concrete_stone_033 0 0 0 1 1
+( 1740 1848 0 ) ( 1741 1848 0 ) ( 1740 1849 0 ) concrete_stone_033 0 0 0 1 1
+( 1740 1848 32 ) ( 1741 1848 32 ) ( 1740 1847 32 ) concrete_stone_033 0 0 0 1 1
+}
+// brush 50
+{
+( 336 2296 68 ) ( 336 2297 68 ) ( 336 2296 69 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 2296 68 ) ( 368 2297 68 ) ( 368 2296 67 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2296 68 ) ( 336 2296 69 ) ( 337 2296 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2440 68 ) ( 336 2440 69 ) ( 335 2440 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2296 68 ) ( 337 2296 68 ) ( 336 2297 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2296 100 ) ( 337 2296 100 ) ( 336 2295 100 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 51
+{
+( 336 2296 0 ) ( 336 2297 0 ) ( 336 2296 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 2296 0 ) ( 368 2297 0 ) ( 368 2296 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2296 0 ) ( 336 2296 1 ) ( 337 2296 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2312 0 ) ( 336 2312 1 ) ( 335 2312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2296 0 ) ( 337 2296 0 ) ( 336 2297 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2296 68 ) ( 337 2296 68 ) ( 336 2295 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 52
+{
+( 336 2424 0 ) ( 336 2425 0 ) ( 336 2424 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 368 2424 0 ) ( 368 2425 0 ) ( 368 2424 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2424 0 ) ( 336 2424 1 ) ( 337 2424 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2440 0 ) ( 336 2440 1 ) ( 335 2440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2424 0 ) ( 337 2424 0 ) ( 336 2425 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 336 2424 68 ) ( 337 2424 68 ) ( 336 2423 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 53
+{
+( 784 2296 68 ) ( 784 2297 68 ) ( 784 2296 69 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 2296 68 ) ( 816 2297 68 ) ( 816 2296 67 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2296 68 ) ( 784 2296 69 ) ( 785 2296 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2440 68 ) ( 784 2440 69 ) ( 783 2440 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2296 68 ) ( 785 2296 68 ) ( 784 2297 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2296 100 ) ( 785 2296 100 ) ( 784 2295 100 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 54
+{
+( 784 2296 0 ) ( 784 2297 0 ) ( 784 2296 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 2296 0 ) ( 816 2297 0 ) ( 816 2296 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2296 0 ) ( 784 2296 1 ) ( 785 2296 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2312 0 ) ( 784 2312 1 ) ( 783 2312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2296 0 ) ( 785 2296 0 ) ( 784 2297 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2296 68 ) ( 785 2296 68 ) ( 784 2295 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 55
+{
+( 784 2424 0 ) ( 784 2425 0 ) ( 784 2424 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 2424 0 ) ( 816 2425 0 ) ( 816 2424 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2424 0 ) ( 784 2424 1 ) ( 785 2424 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2440 0 ) ( 784 2440 1 ) ( 783 2440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2424 0 ) ( 785 2424 0 ) ( 784 2425 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 784 2424 68 ) ( 785 2424 68 ) ( 784 2423 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 56
+{
+( 1232 2296 68 ) ( 1232 2297 68 ) ( 1232 2296 69 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1264 2296 68 ) ( 1264 2297 68 ) ( 1264 2296 67 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2296 68 ) ( 1232 2296 69 ) ( 1233 2296 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2440 68 ) ( 1232 2440 69 ) ( 1231 2440 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2296 68 ) ( 1233 2296 68 ) ( 1232 2297 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2296 100 ) ( 1233 2296 100 ) ( 1232 2295 100 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 57
+{
+( 1232 2296 0 ) ( 1232 2297 0 ) ( 1232 2296 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1264 2296 0 ) ( 1264 2297 0 ) ( 1264 2296 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2296 0 ) ( 1232 2296 1 ) ( 1233 2296 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2312 0 ) ( 1232 2312 1 ) ( 1231 2312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2296 0 ) ( 1233 2296 0 ) ( 1232 2297 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2296 68 ) ( 1233 2296 68 ) ( 1232 2295 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 58
+{
+( 1232 2424 0 ) ( 1232 2425 0 ) ( 1232 2424 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1264 2424 0 ) ( 1264 2425 0 ) ( 1264 2424 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2424 0 ) ( 1232 2424 1 ) ( 1233 2424 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2440 0 ) ( 1232 2440 1 ) ( 1231 2440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2424 0 ) ( 1233 2424 0 ) ( 1232 2425 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1232 2424 68 ) ( 1233 2424 68 ) ( 1232 2423 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 59
+{
+( 1680 2296 68 ) ( 1680 2297 68 ) ( 1680 2296 69 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1712 2296 68 ) ( 1712 2297 68 ) ( 1712 2296 67 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2296 68 ) ( 1680 2296 69 ) ( 1681 2296 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2440 68 ) ( 1680 2440 69 ) ( 1679 2440 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2296 68 ) ( 1681 2296 68 ) ( 1680 2297 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2296 100 ) ( 1681 2296 100 ) ( 1680 2295 100 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 60
+{
+( 1680 2296 0 ) ( 1680 2297 0 ) ( 1680 2296 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1712 2296 0 ) ( 1712 2297 0 ) ( 1712 2296 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2296 0 ) ( 1680 2296 1 ) ( 1681 2296 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2312 0 ) ( 1680 2312 1 ) ( 1679 2312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2296 0 ) ( 1681 2296 0 ) ( 1680 2297 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2296 68 ) ( 1681 2296 68 ) ( 1680 2295 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 61
+{
+( 1680 2424 0 ) ( 1680 2425 0 ) ( 1680 2424 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1712 2424 0 ) ( 1712 2425 0 ) ( 1712 2424 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2424 0 ) ( 1680 2424 1 ) ( 1681 2424 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2440 0 ) ( 1680 2440 1 ) ( 1679 2440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2424 0 ) ( 1681 2424 0 ) ( 1680 2425 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1680 2424 68 ) ( 1681 2424 68 ) ( 1680 2423 68 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 62
+{
+( 2158 2352 64 ) ( 2158 2353 64 ) ( 2158 2352 65 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2238 2352 64 ) ( 2238 2353 64 ) ( 2238 2352 63 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2158 2352 64 ) ( 2158 2352 65 ) ( 2159 2352 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2158 2384 64 ) ( 2158 2384 65 ) ( 2157 2384 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2158 2352 64 ) ( 2159 2352 64 ) ( 2158 2353 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2158 2352 80 ) ( 2159 2352 80 ) ( 2158 2351 80 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 63
+{
+( 2210 2352 0 ) ( 2210 2353 0 ) ( 2210 2352 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2238 2352 0 ) ( 2238 2353 0 ) ( 2238 2352 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2210 2352 0 ) ( 2210 2352 1 ) ( 2211 2352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2210 2384 0 ) ( 2210 2384 1 ) ( 2209 2384 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2210 2352 0 ) ( 2211 2352 0 ) ( 2210 2353 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2210 2352 64 ) ( 2211 2352 64 ) ( 2210 2351 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 64
+{
+( 2510 2352 64 ) ( 2510 2353 64 ) ( 2510 2352 65 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2590 2352 64 ) ( 2590 2353 64 ) ( 2590 2352 63 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2510 2352 64 ) ( 2510 2352 65 ) ( 2511 2352 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2510 2384 64 ) ( 2510 2384 65 ) ( 2509 2384 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2510 2352 64 ) ( 2511 2352 64 ) ( 2510 2353 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2510 2352 80 ) ( 2511 2352 80 ) ( 2510 2351 80 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 65
+{
+( 2562 2352 0 ) ( 2562 2353 0 ) ( 2562 2352 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2590 2352 0 ) ( 2590 2353 0 ) ( 2590 2352 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2562 2352 0 ) ( 2562 2352 1 ) ( 2563 2352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2562 2384 0 ) ( 2562 2384 1 ) ( 2561 2384 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2562 2352 0 ) ( 2563 2352 0 ) ( 2562 2353 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2562 2352 64 ) ( 2563 2352 64 ) ( 2562 2351 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 66
+{
+( 2862 2352 64 ) ( 2862 2353 64 ) ( 2862 2352 65 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2942 2352 64 ) ( 2942 2353 64 ) ( 2942 2352 63 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2862 2352 64 ) ( 2862 2352 65 ) ( 2863 2352 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2862 2384 64 ) ( 2862 2384 65 ) ( 2861 2384 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2862 2352 64 ) ( 2863 2352 64 ) ( 2862 2353 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2862 2352 80 ) ( 2863 2352 80 ) ( 2862 2351 80 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 67
+{
+( 2914 2352 0 ) ( 2914 2353 0 ) ( 2914 2352 1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2942 2352 0 ) ( 2942 2353 0 ) ( 2942 2352 -1 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2914 2352 0 ) ( 2914 2352 1 ) ( 2915 2352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2914 2384 0 ) ( 2914 2384 1 ) ( 2913 2384 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2914 2352 0 ) ( 2915 2352 0 ) ( 2914 2353 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2914 2352 64 ) ( 2915 2352 64 ) ( 2914 2351 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a1_lift_bottom"
+"next" "mp_a1_lift_top"
+"origin" "256 320 8"
+}
+// entity 2
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a1_lift_top"
+"origin" "256 320 72"
+}
+// entity 3
+{
+"classname" "kinematic_mover"
+"name" "mp_a1_lift"
+"path" "mp_a1_lift_bottom"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"_tags" "mover_pins mp_a1"
+// brush 0
+{
+( 224 288 0 ) ( 224 289 0 ) ( 224 288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 288 288 0 ) ( 288 289 0 ) ( 288 288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 288 0 ) ( 224 288 1 ) ( 225 288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 352 0 ) ( 224 352 1 ) ( 223 352 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 288 0 ) ( 225 288 0 ) ( 224 289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 288 16 ) ( 225 288 16 ) ( 224 287 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 4
+{
+"classname" "trigger_volume"
+"name" "mp_a1_lift_go"
+"activation" "touch"
+"target_tag" "mp_a1"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 232 296 16 ) ( 232 297 16 ) ( 232 296 17 ) debug_ceiling_grey 0 0 0 1 1
+( 280 296 16 ) ( 280 297 16 ) ( 280 296 15 ) debug_ceiling_grey 0 0 0 1 1
+( 232 296 16 ) ( 232 296 17 ) ( 233 296 16 ) debug_ceiling_grey 0 0 0 1 1
+( 232 344 16 ) ( 232 344 17 ) ( 231 344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 232 296 16 ) ( 233 296 16 ) ( 232 297 16 ) debug_ceiling_grey 0 0 0 1 1
+( 232 296 64 ) ( 233 296 64 ) ( 232 295 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 5
+{
+"classname" "switch"
+"name" "mp_a1_lift_stop"
+"target_tag" "mp_a1"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 152 312 0 ) ( 152 313 0 ) ( 152 312 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 168 312 0 ) ( 168 313 0 ) ( 168 312 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 312 0 ) ( 152 312 1 ) ( 153 312 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 328 0 ) ( 152 328 1 ) ( 151 328 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 312 0 ) ( 153 312 0 ) ( 152 313 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 312 40 ) ( 153 312 40 ) ( 152 311 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 6
+{
+"classname" "light"
+"origin" "216 200 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 7
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a2_lift_bottom"
+"next" "mp_a2_lift_top"
+"origin" "576 320 8"
+}
+// entity 8
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a2_lift_top"
+"origin" "576 320 72"
+}
+// entity 9
+{
+"classname" "kinematic_mover"
+"name" "mp_a2_lift"
+"path" "mp_a2_lift_bottom"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "stop"
+"_tags" "mover_pins mp_a2"
+// brush 0
+{
+( 544 288 0 ) ( 544 289 0 ) ( 544 288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 608 288 0 ) ( 608 289 0 ) ( 608 288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 544 288 0 ) ( 544 288 1 ) ( 545 288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 544 352 0 ) ( 544 352 1 ) ( 543 352 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 544 288 0 ) ( 545 288 0 ) ( 544 289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 544 288 16 ) ( 545 288 16 ) ( 544 287 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 10
+{
+"classname" "trigger_volume"
+"name" "mp_a2_lift_go"
+"activation" "touch"
+"target_tag" "mp_a2"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 552 296 16 ) ( 552 297 16 ) ( 552 296 17 ) debug_ceiling_grey 0 0 0 1 1
+( 600 296 16 ) ( 600 297 16 ) ( 600 296 15 ) debug_ceiling_grey 0 0 0 1 1
+( 552 296 16 ) ( 552 296 17 ) ( 553 296 16 ) debug_ceiling_grey 0 0 0 1 1
+( 552 344 16 ) ( 552 344 17 ) ( 551 344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 552 296 16 ) ( 553 296 16 ) ( 552 297 16 ) debug_ceiling_grey 0 0 0 1 1
+( 552 296 64 ) ( 553 296 64 ) ( 552 295 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 11
+{
+"classname" "switch"
+"name" "mp_a2_lift_stop"
+"target_tag" "mp_a2"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 472 312 0 ) ( 472 313 0 ) ( 472 312 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 488 312 0 ) ( 488 313 0 ) ( 488 312 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 472 312 0 ) ( 472 312 1 ) ( 473 312 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 472 328 0 ) ( 472 328 1 ) ( 471 328 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 472 312 0 ) ( 473 312 0 ) ( 472 313 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 472 312 40 ) ( 473 312 40 ) ( 472 311 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 12
+{
+"classname" "light"
+"origin" "536 200 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 13
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a3_lift_bottom"
+"next" "mp_a3_lift_top"
+"origin" "896 320 8"
+}
+// entity 14
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a3_lift_top"
+"origin" "896 320 72"
+}
+// entity 15
+{
+"classname" "kinematic_mover"
+"name" "mp_a3_lift"
+"path" "mp_a3_lift_bottom"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "reverse"
+"_tags" "mover_pins mp_a3"
+// brush 0
+{
+( 864 288 0 ) ( 864 289 0 ) ( 864 288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 928 288 0 ) ( 928 289 0 ) ( 928 288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 864 288 0 ) ( 864 288 1 ) ( 865 288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 864 352 0 ) ( 864 352 1 ) ( 863 352 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 864 288 0 ) ( 865 288 0 ) ( 864 289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 864 288 16 ) ( 865 288 16 ) ( 864 287 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 16
+{
+"classname" "trigger_volume"
+"name" "mp_a3_lift_go"
+"activation" "touch"
+"target_tag" "mp_a3"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 872 296 16 ) ( 872 297 16 ) ( 872 296 17 ) debug_ceiling_grey 0 0 0 1 1
+( 920 296 16 ) ( 920 297 16 ) ( 920 296 15 ) debug_ceiling_grey 0 0 0 1 1
+( 872 296 16 ) ( 872 296 17 ) ( 873 296 16 ) debug_ceiling_grey 0 0 0 1 1
+( 872 344 16 ) ( 872 344 17 ) ( 871 344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 872 296 16 ) ( 873 296 16 ) ( 872 297 16 ) debug_ceiling_grey 0 0 0 1 1
+( 872 296 64 ) ( 873 296 64 ) ( 872 295 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 17
+{
+"classname" "switch"
+"name" "mp_a3_lift_stop"
+"target_tag" "mp_a3"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 792 312 0 ) ( 792 313 0 ) ( 792 312 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 808 312 0 ) ( 808 313 0 ) ( 808 312 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 792 312 0 ) ( 792 312 1 ) ( 793 312 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 792 328 0 ) ( 792 328 1 ) ( 791 328 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 792 312 0 ) ( 793 312 0 ) ( 792 313 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 792 312 40 ) ( 793 312 40 ) ( 792 311 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 18
+{
+"classname" "light"
+"origin" "856 200 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 19
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a4_lift_bottom"
+"next" "mp_a4_lift_top"
+"origin" "1216 320 8"
+}
+// entity 20
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a4_lift_top"
+"origin" "1216 320 72"
+}
+// entity 21
+{
+"classname" "kinematic_mover"
+"name" "mp_a4_lift"
+"path" "mp_a4_lift_bottom"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "crush"
+"crush_damage" "15"
+"crush_interval_ms" "500"
+"crush_sound" "movers/crusher_crush"
+"_tags" "mover_pins mp_a4"
+// brush 0
+{
+( 1184 288 0 ) ( 1184 289 0 ) ( 1184 288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1248 288 0 ) ( 1248 289 0 ) ( 1248 288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1184 288 0 ) ( 1184 288 1 ) ( 1185 288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1184 352 0 ) ( 1184 352 1 ) ( 1183 352 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1184 288 0 ) ( 1185 288 0 ) ( 1184 289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1184 288 16 ) ( 1185 288 16 ) ( 1184 287 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 22
+{
+"classname" "trigger_volume"
+"name" "mp_a4_lift_go"
+"activation" "touch"
+"target_tag" "mp_a4"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 1192 296 16 ) ( 1192 297 16 ) ( 1192 296 17 ) debug_ceiling_grey 0 0 0 1 1
+( 1240 296 16 ) ( 1240 297 16 ) ( 1240 296 15 ) debug_ceiling_grey 0 0 0 1 1
+( 1192 296 16 ) ( 1192 296 17 ) ( 1193 296 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1192 344 16 ) ( 1192 344 17 ) ( 1191 344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1192 296 16 ) ( 1193 296 16 ) ( 1192 297 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1192 296 64 ) ( 1193 296 64 ) ( 1192 295 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 23
+{
+"classname" "switch"
+"name" "mp_a4_lift_stop"
+"target_tag" "mp_a4"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1112 312 0 ) ( 1112 313 0 ) ( 1112 312 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1128 312 0 ) ( 1128 313 0 ) ( 1128 312 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1112 312 0 ) ( 1112 312 1 ) ( 1113 312 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1112 328 0 ) ( 1112 328 1 ) ( 1111 328 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1112 312 0 ) ( 1113 312 0 ) ( 1112 313 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1112 312 40 ) ( 1113 312 40 ) ( 1112 311 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 24
+{
+"classname" "light"
+"origin" "1176 200 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 25
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a5_lift_bottom"
+"next" "mp_a5_lift_top"
+"origin" "1536 320 8"
+}
+// entity 26
+{
+"classname" "kinematic_waypoint"
+"name" "mp_a5_lift_top"
+"origin" "1536 320 72"
+}
+// entity 27
+{
+"classname" "kinematic_mover"
+"name" "mp_a5_lift"
+"path" "mp_a5_lift_bottom"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "crush"
+"crush_damage" "0"
+"crush_interval_ms" "500"
+"_tags" "mover_pins mp_a5"
+// brush 0
+{
+( 1504 288 0 ) ( 1504 289 0 ) ( 1504 288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1568 288 0 ) ( 1568 289 0 ) ( 1568 288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1504 288 0 ) ( 1504 288 1 ) ( 1505 288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1504 352 0 ) ( 1504 352 1 ) ( 1503 352 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1504 288 0 ) ( 1505 288 0 ) ( 1504 289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1504 288 16 ) ( 1505 288 16 ) ( 1504 287 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 28
+{
+"classname" "trigger_volume"
+"name" "mp_a5_lift_go"
+"activation" "touch"
+"target_tag" "mp_a5"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 1512 296 16 ) ( 1512 297 16 ) ( 1512 296 17 ) debug_ceiling_grey 0 0 0 1 1
+( 1560 296 16 ) ( 1560 297 16 ) ( 1560 296 15 ) debug_ceiling_grey 0 0 0 1 1
+( 1512 296 16 ) ( 1512 296 17 ) ( 1513 296 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1512 344 16 ) ( 1512 344 17 ) ( 1511 344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1512 296 16 ) ( 1513 296 16 ) ( 1512 297 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1512 296 64 ) ( 1513 296 64 ) ( 1512 295 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 29
+{
+"classname" "switch"
+"name" "mp_a5_lift_stop"
+"target_tag" "mp_a5"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1432 312 0 ) ( 1432 313 0 ) ( 1432 312 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1448 312 0 ) ( 1448 313 0 ) ( 1448 312 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1432 312 0 ) ( 1432 312 1 ) ( 1433 312 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1432 328 0 ) ( 1432 328 1 ) ( 1431 328 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1432 312 0 ) ( 1433 312 0 ) ( 1432 313 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1432 312 40 ) ( 1433 312 40 ) ( 1432 311 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 30
+{
+"classname" "light"
+"origin" "1496 200 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 31
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b1_lift_bottom"
+"next" "mp_b1_lift_top"
+"origin" "256 832 8"
+}
+// entity 32
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b1_lift_top"
+"origin" "256 832 120"
+}
+// entity 33
+{
+"classname" "kinematic_mover"
+"name" "mp_b1_lift"
+"path" "mp_b1_lift_bottom"
+"speed" "1.5"
+"wait_ms" "2500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"_tags" "mover_pins mp_b1"
+// brush 0
+{
+( 224 800 0 ) ( 224 801 0 ) ( 224 800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 288 800 0 ) ( 288 801 0 ) ( 288 800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 800 0 ) ( 224 800 1 ) ( 225 800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 864 0 ) ( 224 864 1 ) ( 223 864 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 800 0 ) ( 225 800 0 ) ( 224 801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 800 16 ) ( 225 800 16 ) ( 224 799 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 34
+{
+"classname" "trigger_volume"
+"name" "mp_b1_lift_go"
+"activation" "touch"
+"target_tag" "mp_b1"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 232 808 16 ) ( 232 809 16 ) ( 232 808 17 ) debug_ceiling_grey 0 0 0 1 1
+( 280 808 16 ) ( 280 809 16 ) ( 280 808 15 ) debug_ceiling_grey 0 0 0 1 1
+( 232 808 16 ) ( 232 808 17 ) ( 233 808 16 ) debug_ceiling_grey 0 0 0 1 1
+( 232 856 16 ) ( 232 856 17 ) ( 231 856 16 ) debug_ceiling_grey 0 0 0 1 1
+( 232 808 16 ) ( 233 808 16 ) ( 232 809 16 ) debug_ceiling_grey 0 0 0 1 1
+( 232 808 64 ) ( 233 808 64 ) ( 232 807 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 35
+{
+"classname" "switch"
+"name" "mp_b1_lift_stop"
+"target_tag" "mp_b1"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 152 824 0 ) ( 152 825 0 ) ( 152 824 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 168 824 0 ) ( 168 825 0 ) ( 168 824 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 824 0 ) ( 152 824 1 ) ( 153 824 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 840 0 ) ( 152 840 1 ) ( 151 840 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 824 0 ) ( 153 824 0 ) ( 152 825 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 824 40 ) ( 153 824 40 ) ( 152 823 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 36
+{
+"classname" "light"
+"origin" "192 712 240"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 37
+{
+"classname" "light"
+"origin" "384 832 280"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 38
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b2_lift_bottom"
+"next" "mp_b2_lift_top"
+"origin" "704 832 8"
+}
+// entity 39
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b2_lift_top"
+"origin" "704 832 152"
+}
+// entity 40
+{
+"classname" "kinematic_mover"
+"name" "mp_b2_lift"
+"path" "mp_b2_lift_bottom"
+"speed" "1.5"
+"wait_ms" "2500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"_tags" "mover_pins mp_b2"
+// brush 0
+{
+( 672 800 0 ) ( 672 801 0 ) ( 672 800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 736 800 0 ) ( 736 801 0 ) ( 736 800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 672 800 0 ) ( 672 800 1 ) ( 673 800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 672 864 0 ) ( 672 864 1 ) ( 671 864 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 672 800 0 ) ( 673 800 0 ) ( 672 801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 672 800 16 ) ( 673 800 16 ) ( 672 799 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 41
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b2_hatch_closed"
+"next" "mp_b2_hatch_open"
+"origin" "704 832 152"
+}
+// entity 42
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b2_hatch_open"
+"origin" "816 832 152"
+}
+// entity 43
+{
+"classname" "kinematic_mover"
+"name" "mp_b2_hatch"
+"path" "mp_b2_hatch_closed"
+"speed" "2"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"_tags" "mover_pins mp_b2_hatch"
+// brush 0
+{
+( 656 784 146 ) ( 656 785 146 ) ( 656 784 147 ) metal/metal_rough_046a 0 0 0 1 1
+( 752 784 146 ) ( 752 785 146 ) ( 752 784 145 ) metal/metal_rough_046a 0 0 0 1 1
+( 656 784 146 ) ( 656 784 147 ) ( 657 784 146 ) metal/metal_rough_046a 0 0 0 1 1
+( 656 880 146 ) ( 656 880 147 ) ( 655 880 146 ) metal/metal_rough_046a 0 0 0 1 1
+( 656 784 146 ) ( 657 784 146 ) ( 656 785 146 ) metal/metal_rough_046a 0 0 0 1 1
+( 656 784 158 ) ( 657 784 158 ) ( 656 783 158 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 44
+{
+"classname" "trigger_volume"
+"name" "mp_b2_lift_go"
+"activation" "touch"
+"target_tag" "mp_b2"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 680 808 16 ) ( 680 809 16 ) ( 680 808 17 ) debug_ceiling_grey 0 0 0 1 1
+( 728 808 16 ) ( 728 809 16 ) ( 728 808 15 ) debug_ceiling_grey 0 0 0 1 1
+( 680 808 16 ) ( 680 808 17 ) ( 681 808 16 ) debug_ceiling_grey 0 0 0 1 1
+( 680 856 16 ) ( 680 856 17 ) ( 679 856 16 ) debug_ceiling_grey 0 0 0 1 1
+( 680 808 16 ) ( 681 808 16 ) ( 680 809 16 ) debug_ceiling_grey 0 0 0 1 1
+( 680 808 64 ) ( 681 808 64 ) ( 680 807 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 45
+{
+"classname" "switch"
+"name" "mp_b2_lift_stop"
+"target_tag" "mp_b2"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 592 824 0 ) ( 592 825 0 ) ( 592 824 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 608 824 0 ) ( 608 825 0 ) ( 608 824 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 824 0 ) ( 592 824 1 ) ( 593 824 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 840 0 ) ( 592 840 1 ) ( 591 840 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 824 0 ) ( 593 824 0 ) ( 592 825 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 824 40 ) ( 593 824 40 ) ( 592 823 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 46
+{
+"classname" "trigger_volume"
+"name" "mp_b2_hatch_open_from_lift"
+"activation" "use"
+"target_tag" "mp_b2_hatch"
+"command" "go_to_path_node"
+"command_arg" "mp_b2_hatch_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 672 800 16 ) ( 672 801 16 ) ( 672 800 17 ) debug_ceiling_grey 0 0 0 1 1
+( 736 800 16 ) ( 736 801 16 ) ( 736 800 15 ) debug_ceiling_grey 0 0 0 1 1
+( 672 800 16 ) ( 672 800 17 ) ( 673 800 16 ) debug_ceiling_grey 0 0 0 1 1
+( 672 864 16 ) ( 672 864 17 ) ( 671 864 16 ) debug_ceiling_grey 0 0 0 1 1
+( 672 800 16 ) ( 673 800 16 ) ( 672 801 16 ) debug_ceiling_grey 0 0 0 1 1
+( 672 800 144 ) ( 673 800 144 ) ( 672 799 144 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 47
+{
+"classname" "switch"
+"name" "mp_b2_hatch_open_switch"
+"target_tag" "mp_b2_hatch"
+"command" "go_to_path_node"
+"command_arg" "mp_b2_hatch_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 592 776 0 ) ( 592 777 0 ) ( 592 776 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 608 776 0 ) ( 608 777 0 ) ( 608 776 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 776 0 ) ( 592 776 1 ) ( 593 776 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 792 0 ) ( 592 792 1 ) ( 591 792 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 776 0 ) ( 593 776 0 ) ( 592 777 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 776 40 ) ( 593 776 40 ) ( 592 775 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 48
+{
+"classname" "switch"
+"name" "mp_b2_hatch_close_switch"
+"target_tag" "mp_b2_hatch"
+"command" "go_to_path_node"
+"command_arg" "mp_b2_hatch_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 592 872 0 ) ( 592 873 0 ) ( 592 872 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 608 872 0 ) ( 608 873 0 ) ( 608 872 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 872 0 ) ( 592 872 1 ) ( 593 872 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 888 0 ) ( 592 888 1 ) ( 591 888 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 872 0 ) ( 593 872 0 ) ( 592 873 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 592 872 40 ) ( 593 872 40 ) ( 592 871 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 49
+{
+"classname" "light"
+"origin" "624 736 120"
+"light" "250"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 50
+{
+"classname" "light"
+"origin" "784 832 280"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 51
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b3_slab_up"
+"next" "mp_b3_slab_down"
+"origin" "1184 832 112"
+}
+// entity 52
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b3_slab_down"
+"origin" "1184 832 20"
+}
+// entity 53
+{
+"classname" "kinematic_mover"
+"name" "mp_b3_slab"
+"path" "mp_b3_slab_up"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"_tags" "mover_pins mp_b3"
+// brush 0
+{
+( 1136 784 96 ) ( 1136 785 96 ) ( 1136 784 97 ) metal/metal_rough_046a 0 0 0 1 1
+( 1232 784 96 ) ( 1232 785 96 ) ( 1232 784 95 ) metal/metal_rough_046a 0 0 0 1 1
+( 1136 784 96 ) ( 1136 784 97 ) ( 1137 784 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1136 880 96 ) ( 1136 880 97 ) ( 1135 880 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1136 784 96 ) ( 1137 784 96 ) ( 1136 785 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1136 784 128 ) ( 1137 784 128 ) ( 1136 783 128 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 54
+{
+"classname" "switch"
+"name" "mp_b3_slab_down_switch"
+"target_tag" "mp_b3"
+"command" "go_to_path_node"
+"command_arg" "mp_b3_slab_down"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1088 760 0 ) ( 1088 761 0 ) ( 1088 760 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1104 760 0 ) ( 1104 761 0 ) ( 1104 760 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 760 0 ) ( 1088 760 1 ) ( 1089 760 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 776 0 ) ( 1088 776 1 ) ( 1087 776 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 760 0 ) ( 1089 760 0 ) ( 1088 761 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 760 40 ) ( 1089 760 40 ) ( 1088 759 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 55
+{
+"classname" "switch"
+"name" "mp_b3_slab_up_switch"
+"target_tag" "mp_b3"
+"command" "go_to_path_node"
+"command_arg" "mp_b3_slab_up"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1088 888 0 ) ( 1088 889 0 ) ( 1088 888 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1104 888 0 ) ( 1104 889 0 ) ( 1104 888 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 888 0 ) ( 1088 888 1 ) ( 1089 888 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 904 0 ) ( 1088 904 1 ) ( 1087 904 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 888 0 ) ( 1089 888 0 ) ( 1088 889 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 888 40 ) ( 1089 888 40 ) ( 1088 887 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 56
+{
+"classname" "light"
+"origin" "1088 736 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 57
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b4_slab_up"
+"next" "mp_b4_slab_down"
+"origin" "1504 832 112"
+}
+// entity 58
+{
+"classname" "kinematic_waypoint"
+"name" "mp_b4_slab_down"
+"origin" "1504 832 20"
+}
+// entity 59
+{
+"classname" "kinematic_mover"
+"name" "mp_b4_slab"
+"path" "mp_b4_slab_up"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "crush"
+"crush_damage" "15"
+"crush_interval_ms" "500"
+"crush_sound" "movers/crusher_crush"
+"_tags" "mover_pins mp_b4"
+// brush 0
+{
+( 1456 784 96 ) ( 1456 785 96 ) ( 1456 784 97 ) metal/metal_rough_046a 0 0 0 1 1
+( 1552 784 96 ) ( 1552 785 96 ) ( 1552 784 95 ) metal/metal_rough_046a 0 0 0 1 1
+( 1456 784 96 ) ( 1456 784 97 ) ( 1457 784 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1456 880 96 ) ( 1456 880 97 ) ( 1455 880 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1456 784 96 ) ( 1457 784 96 ) ( 1456 785 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1456 784 128 ) ( 1457 784 128 ) ( 1456 783 128 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 60
+{
+"classname" "switch"
+"name" "mp_b4_slab_down_switch"
+"target_tag" "mp_b4"
+"command" "go_to_path_node"
+"command_arg" "mp_b4_slab_down"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1408 760 0 ) ( 1408 761 0 ) ( 1408 760 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1424 760 0 ) ( 1424 761 0 ) ( 1424 760 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1408 760 0 ) ( 1408 760 1 ) ( 1409 760 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1408 776 0 ) ( 1408 776 1 ) ( 1407 776 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1408 760 0 ) ( 1409 760 0 ) ( 1408 761 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1408 760 40 ) ( 1409 760 40 ) ( 1408 759 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 61
+{
+"classname" "switch"
+"name" "mp_b4_slab_up_switch"
+"target_tag" "mp_b4"
+"command" "go_to_path_node"
+"command_arg" "mp_b4_slab_up"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1408 888 0 ) ( 1408 889 0 ) ( 1408 888 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1424 888 0 ) ( 1424 889 0 ) ( 1424 888 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1408 888 0 ) ( 1408 888 1 ) ( 1409 888 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1408 904 0 ) ( 1408 904 1 ) ( 1407 904 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1408 888 0 ) ( 1409 888 0 ) ( 1408 889 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1408 888 40 ) ( 1409 888 40 ) ( 1408 887 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 62
+{
+"classname" "light"
+"origin" "1408 736 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 63
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c1_door_open"
+"next" "mp_c1_door_closed"
+"origin" "194 1344 48"
+}
+// entity 64
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c1_door_closed"
+"origin" "256 1344 48"
+}
+// entity 65
+{
+"classname" "kinematic_mover"
+"name" "mp_c1_door"
+"path" "mp_c1_door_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_c1"
+// brush 0
+{
+( 162 1340 1 ) ( 162 1341 1 ) ( 162 1340 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 226 1340 1 ) ( 226 1341 1 ) ( 226 1340 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 162 1340 1 ) ( 162 1340 2 ) ( 163 1340 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 162 1348 1 ) ( 162 1348 2 ) ( 161 1348 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 162 1340 1 ) ( 163 1340 1 ) ( 162 1341 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 162 1340 95 ) ( 163 1340 95 ) ( 162 1339 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 66
+{
+"classname" "switch"
+"name" "mp_c1_door_close_switch"
+"target_tag" "mp_c1"
+"command" "go_to_path_node"
+"command_arg" "mp_c1_door_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 296 1288 0 ) ( 296 1289 0 ) ( 296 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 312 1288 0 ) ( 312 1289 0 ) ( 312 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 296 1288 0 ) ( 296 1288 1 ) ( 297 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 296 1304 0 ) ( 296 1304 1 ) ( 295 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 296 1288 0 ) ( 297 1288 0 ) ( 296 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 296 1288 40 ) ( 297 1288 40 ) ( 296 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 67
+{
+"classname" "switch"
+"name" "mp_c1_door_open_switch"
+"target_tag" "mp_c1"
+"command" "go_to_path_node"
+"command_arg" "mp_c1_door_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 328 1288 0 ) ( 328 1289 0 ) ( 328 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 344 1288 0 ) ( 344 1289 0 ) ( 344 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1288 0 ) ( 328 1288 1 ) ( 329 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1304 0 ) ( 328 1304 1 ) ( 327 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1288 0 ) ( 329 1288 0 ) ( 328 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1288 40 ) ( 329 1288 40 ) ( 328 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 68
+{
+"classname" "light"
+"origin" "256 1232 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 69
+{
+"classname" "light"
+"origin" "256 1456 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 70
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c2_door_open"
+"next" "mp_c2_door_closed"
+"origin" "514 1344 48"
+}
+// entity 71
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c2_door_closed"
+"origin" "576 1344 48"
+}
+// entity 72
+{
+"classname" "kinematic_mover"
+"name" "mp_c2_door"
+"path" "mp_c2_door_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "stop"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_c2"
+// brush 0
+{
+( 482 1340 1 ) ( 482 1341 1 ) ( 482 1340 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 546 1340 1 ) ( 546 1341 1 ) ( 546 1340 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 482 1340 1 ) ( 482 1340 2 ) ( 483 1340 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 482 1348 1 ) ( 482 1348 2 ) ( 481 1348 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 482 1340 1 ) ( 483 1340 1 ) ( 482 1341 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 482 1340 95 ) ( 483 1340 95 ) ( 482 1339 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 73
+{
+"classname" "switch"
+"name" "mp_c2_door_close_switch"
+"target_tag" "mp_c2"
+"command" "go_to_path_node"
+"command_arg" "mp_c2_door_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 616 1288 0 ) ( 616 1289 0 ) ( 616 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 1288 0 ) ( 632 1289 0 ) ( 632 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 616 1288 0 ) ( 616 1288 1 ) ( 617 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 616 1304 0 ) ( 616 1304 1 ) ( 615 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 616 1288 0 ) ( 617 1288 0 ) ( 616 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 616 1288 40 ) ( 617 1288 40 ) ( 616 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 74
+{
+"classname" "switch"
+"name" "mp_c2_door_open_switch"
+"target_tag" "mp_c2"
+"command" "go_to_path_node"
+"command_arg" "mp_c2_door_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 648 1288 0 ) ( 648 1289 0 ) ( 648 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 664 1288 0 ) ( 664 1289 0 ) ( 664 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 648 1288 0 ) ( 648 1288 1 ) ( 649 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 648 1304 0 ) ( 648 1304 1 ) ( 647 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 648 1288 0 ) ( 649 1288 0 ) ( 648 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 648 1288 40 ) ( 649 1288 40 ) ( 648 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 75
+{
+"classname" "light"
+"origin" "576 1232 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 76
+{
+"classname" "light"
+"origin" "576 1456 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 77
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c3_door_open"
+"next" "mp_c3_door_closed"
+"origin" "834 1344 48"
+}
+// entity 78
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c3_door_closed"
+"origin" "896 1344 48"
+}
+// entity 79
+{
+"classname" "kinematic_mover"
+"name" "mp_c3_door"
+"path" "mp_c3_door_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "reverse"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_c3"
+// brush 0
+{
+( 802 1340 1 ) ( 802 1341 1 ) ( 802 1340 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 866 1340 1 ) ( 866 1341 1 ) ( 866 1340 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 802 1340 1 ) ( 802 1340 2 ) ( 803 1340 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 802 1348 1 ) ( 802 1348 2 ) ( 801 1348 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 802 1340 1 ) ( 803 1340 1 ) ( 802 1341 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 802 1340 95 ) ( 803 1340 95 ) ( 802 1339 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 80
+{
+"classname" "switch"
+"name" "mp_c3_door_start_switch"
+"target_tag" "mp_c3"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 936 1288 0 ) ( 936 1289 0 ) ( 936 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 952 1288 0 ) ( 952 1289 0 ) ( 952 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 936 1288 0 ) ( 936 1288 1 ) ( 937 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 936 1304 0 ) ( 936 1304 1 ) ( 935 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 936 1288 0 ) ( 937 1288 0 ) ( 936 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 936 1288 40 ) ( 937 1288 40 ) ( 936 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 81
+{
+"classname" "switch"
+"name" "mp_c3_door_reset_switch"
+"target_tag" "mp_c3"
+"command" "reverse"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 968 1288 0 ) ( 968 1289 0 ) ( 968 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 984 1288 0 ) ( 984 1289 0 ) ( 984 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 968 1288 0 ) ( 968 1288 1 ) ( 969 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 968 1304 0 ) ( 968 1304 1 ) ( 967 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 968 1288 0 ) ( 969 1288 0 ) ( 968 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 968 1288 40 ) ( 969 1288 40 ) ( 968 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 82
+{
+"classname" "light"
+"origin" "896 1232 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 83
+{
+"classname" "light"
+"origin" "896 1456 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 84
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c4_door_open"
+"next" "mp_c4_door_closed"
+"origin" "1154 1344 48"
+}
+// entity 85
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c4_door_closed"
+"origin" "1216 1344 48"
+}
+// entity 86
+{
+"classname" "kinematic_mover"
+"name" "mp_c4_door"
+"path" "mp_c4_door_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "crush"
+"crush_damage" "15"
+"crush_interval_ms" "500"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"crush_sound" "movers/crusher_crush"
+"_tags" "mover_pins mp_c4"
+// brush 0
+{
+( 1122 1340 1 ) ( 1122 1341 1 ) ( 1122 1340 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 1186 1340 1 ) ( 1186 1341 1 ) ( 1186 1340 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1122 1340 1 ) ( 1122 1340 2 ) ( 1123 1340 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1122 1348 1 ) ( 1122 1348 2 ) ( 1121 1348 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1122 1340 1 ) ( 1123 1340 1 ) ( 1122 1341 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1122 1340 95 ) ( 1123 1340 95 ) ( 1122 1339 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 87
+{
+"classname" "switch"
+"name" "mp_c4_door_close_switch"
+"target_tag" "mp_c4"
+"command" "go_to_path_node"
+"command_arg" "mp_c4_door_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1256 1288 0 ) ( 1256 1289 0 ) ( 1256 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1272 1288 0 ) ( 1272 1289 0 ) ( 1272 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1256 1288 0 ) ( 1256 1288 1 ) ( 1257 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1256 1304 0 ) ( 1256 1304 1 ) ( 1255 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1256 1288 0 ) ( 1257 1288 0 ) ( 1256 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1256 1288 40 ) ( 1257 1288 40 ) ( 1256 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 88
+{
+"classname" "switch"
+"name" "mp_c4_door_open_switch"
+"target_tag" "mp_c4"
+"command" "go_to_path_node"
+"command_arg" "mp_c4_door_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1288 1288 0 ) ( 1288 1289 0 ) ( 1288 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1304 1288 0 ) ( 1304 1289 0 ) ( 1304 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 1288 0 ) ( 1288 1288 1 ) ( 1289 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 1304 0 ) ( 1288 1304 1 ) ( 1287 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 1288 0 ) ( 1289 1288 0 ) ( 1288 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1288 1288 40 ) ( 1289 1288 40 ) ( 1288 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 89
+{
+"classname" "light"
+"origin" "1216 1232 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 90
+{
+"classname" "light"
+"origin" "1216 1456 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 91
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c5_door_open"
+"next" "mp_c5_door_closed"
+"origin" "1474 1344 48"
+}
+// entity 92
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c5_door_closed"
+"origin" "1536 1344 48"
+}
+// entity 93
+{
+"classname" "kinematic_mover"
+"name" "mp_c5_door"
+"path" "mp_c5_door_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "crush"
+"crush_damage" "0"
+"crush_interval_ms" "500"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_c5"
+// brush 0
+{
+( 1442 1340 1 ) ( 1442 1341 1 ) ( 1442 1340 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 1506 1340 1 ) ( 1506 1341 1 ) ( 1506 1340 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1442 1340 1 ) ( 1442 1340 2 ) ( 1443 1340 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1442 1348 1 ) ( 1442 1348 2 ) ( 1441 1348 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1442 1340 1 ) ( 1443 1340 1 ) ( 1442 1341 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1442 1340 95 ) ( 1443 1340 95 ) ( 1442 1339 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 94
+{
+"classname" "switch"
+"name" "mp_c5_door_close_switch"
+"target_tag" "mp_c5"
+"command" "go_to_path_node"
+"command_arg" "mp_c5_door_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1576 1288 0 ) ( 1576 1289 0 ) ( 1576 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1592 1288 0 ) ( 1592 1289 0 ) ( 1592 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1576 1288 0 ) ( 1576 1288 1 ) ( 1577 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1576 1304 0 ) ( 1576 1304 1 ) ( 1575 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1576 1288 0 ) ( 1577 1288 0 ) ( 1576 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1576 1288 40 ) ( 1577 1288 40 ) ( 1576 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 95
+{
+"classname" "switch"
+"name" "mp_c5_door_open_switch"
+"target_tag" "mp_c5"
+"command" "go_to_path_node"
+"command_arg" "mp_c5_door_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1608 1288 0 ) ( 1608 1289 0 ) ( 1608 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1624 1288 0 ) ( 1624 1289 0 ) ( 1624 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1288 0 ) ( 1608 1288 1 ) ( 1609 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1304 0 ) ( 1608 1304 1 ) ( 1607 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1288 0 ) ( 1609 1288 0 ) ( 1608 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1288 40 ) ( 1609 1288 40 ) ( 1608 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 96
+{
+"classname" "light"
+"origin" "1536 1232 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 97
+{
+"classname" "light"
+"origin" "1536 1456 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 98
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c6_door_closed"
+"next" "mp_c6_door_open"
+"origin" "1856 1344 48"
+}
+// entity 99
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c6_door_open"
+"origin" "1794 1344 48"
+}
+// entity 100
+{
+"classname" "kinematic_mover"
+"name" "mp_c6_door"
+"path" "mp_c6_door_closed"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"auto_close_ms" "2000"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_c6"
+// brush 0
+{
+( 1824 1340 1 ) ( 1824 1341 1 ) ( 1824 1340 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 1888 1340 1 ) ( 1888 1341 1 ) ( 1888 1340 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1824 1340 1 ) ( 1824 1340 2 ) ( 1825 1340 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1824 1348 1 ) ( 1824 1348 2 ) ( 1823 1348 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1824 1340 1 ) ( 1825 1340 1 ) ( 1824 1341 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1824 1340 95 ) ( 1825 1340 95 ) ( 1824 1339 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 101
+{
+"classname" "switch"
+"name" "mp_c6_door_open_switch"
+"target_tag" "mp_c6"
+"command" "go_to_path_node"
+"command_arg" "mp_c6_door_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1896 1288 0 ) ( 1896 1289 0 ) ( 1896 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1912 1288 0 ) ( 1912 1289 0 ) ( 1912 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1896 1288 0 ) ( 1896 1288 1 ) ( 1897 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1896 1304 0 ) ( 1896 1304 1 ) ( 1895 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1896 1288 0 ) ( 1897 1288 0 ) ( 1896 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1896 1288 40 ) ( 1897 1288 40 ) ( 1896 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 102
+{
+"classname" "light"
+"origin" "1856 1232 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 103
+{
+"classname" "light"
+"origin" "1856 1456 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 104
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c7_door_open"
+"next" "mp_c7_door_closed"
+"origin" "2114 1344 48"
+}
+// entity 105
+{
+"classname" "kinematic_waypoint"
+"name" "mp_c7_door_closed"
+"origin" "2176 1344 48"
+}
+// entity 106
+{
+"classname" "kinematic_mover"
+"name" "mp_c7_door"
+"path" "mp_c7_door_open"
+"speed" "0.75"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_c7"
+// brush 0
+{
+( 2082 1340 1 ) ( 2082 1341 1 ) ( 2082 1340 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 2146 1340 1 ) ( 2146 1341 1 ) ( 2146 1340 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2082 1340 1 ) ( 2082 1340 2 ) ( 2083 1340 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2082 1348 1 ) ( 2082 1348 2 ) ( 2081 1348 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2082 1340 1 ) ( 2083 1340 1 ) ( 2082 1341 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2082 1340 95 ) ( 2083 1340 95 ) ( 2082 1339 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 107
+{
+"classname" "switch"
+"name" "mp_c7_door_start_switch"
+"target_tag" "mp_c7"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 2216 1288 0 ) ( 2216 1289 0 ) ( 2216 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2232 1288 0 ) ( 2232 1289 0 ) ( 2232 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2216 1288 0 ) ( 2216 1288 1 ) ( 2217 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2216 1304 0 ) ( 2216 1304 1 ) ( 2215 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2216 1288 0 ) ( 2217 1288 0 ) ( 2216 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2216 1288 40 ) ( 2217 1288 40 ) ( 2216 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 108
+{
+"classname" "switch"
+"name" "mp_c7_door_stop_switch"
+"target_tag" "mp_c7"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 2248 1288 0 ) ( 2248 1289 0 ) ( 2248 1288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2264 1288 0 ) ( 2264 1289 0 ) ( 2264 1288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2248 1288 0 ) ( 2248 1288 1 ) ( 2249 1288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2248 1304 0 ) ( 2248 1304 1 ) ( 2247 1304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2248 1288 0 ) ( 2249 1288 0 ) ( 2248 1289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2248 1288 40 ) ( 2249 1288 40 ) ( 2248 1287 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 109
+{
+"classname" "light"
+"origin" "2176 1232 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 110
+{
+"classname" "light"
+"origin" "2176 1456 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 111
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d1_leaf_l_open"
+"next" "mp_d1_leaf_l_closed"
+"origin" "218 1856 48"
+}
+// entity 112
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d1_leaf_l_closed"
+"origin" "264 1856 48"
+}
+// entity 113
+{
+"classname" "kinematic_mover"
+"name" "mp_d1_leaf_l"
+"path" "mp_d1_leaf_l_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_d1 mp_d1_l"
+// brush 0
+{
+( 194 1852 1 ) ( 194 1853 1 ) ( 194 1852 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 242 1852 1 ) ( 242 1853 1 ) ( 242 1852 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 194 1852 1 ) ( 194 1852 2 ) ( 195 1852 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 194 1860 1 ) ( 194 1860 2 ) ( 193 1860 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 194 1852 1 ) ( 195 1852 1 ) ( 194 1853 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 194 1852 95 ) ( 195 1852 95 ) ( 194 1851 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 114
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d1_leaf_r_open"
+"next" "mp_d1_leaf_r_closed"
+"origin" "358 1856 48"
+}
+// entity 115
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d1_leaf_r_closed"
+"origin" "312 1856 48"
+}
+// entity 116
+{
+"classname" "kinematic_mover"
+"name" "mp_d1_leaf_r"
+"path" "mp_d1_leaf_r_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_d1 mp_d1_r"
+// brush 0
+{
+( 334 1852 1 ) ( 334 1853 1 ) ( 334 1852 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 382 1852 1 ) ( 382 1853 1 ) ( 382 1852 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 334 1852 1 ) ( 334 1852 2 ) ( 335 1852 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 334 1860 1 ) ( 334 1860 2 ) ( 333 1860 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 334 1852 1 ) ( 335 1852 1 ) ( 334 1853 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 334 1852 95 ) ( 335 1852 95 ) ( 334 1851 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 117
+{
+"classname" "switch"
+"name" "mp_d1_close_l"
+"target_tag" "mp_d1_l"
+"command" "go_to_path_node"
+"command_arg" "mp_d1_leaf_l_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 232 1800 0 ) ( 232 1801 0 ) ( 232 1800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 248 1800 0 ) ( 248 1801 0 ) ( 248 1800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1800 0 ) ( 232 1800 1 ) ( 233 1800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1816 0 ) ( 232 1816 1 ) ( 231 1816 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1800 0 ) ( 233 1800 0 ) ( 232 1801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1800 40 ) ( 233 1800 40 ) ( 232 1799 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 118
+{
+"classname" "switch"
+"name" "mp_d1_close_r"
+"target_tag" "mp_d1_r"
+"command" "go_to_path_node"
+"command_arg" "mp_d1_leaf_r_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 248 1800 0 ) ( 248 1801 0 ) ( 248 1800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 264 1800 0 ) ( 264 1801 0 ) ( 264 1800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 248 1800 0 ) ( 248 1800 1 ) ( 249 1800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 248 1816 0 ) ( 248 1816 1 ) ( 247 1816 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 248 1800 0 ) ( 249 1800 0 ) ( 248 1801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 248 1800 40 ) ( 249 1800 40 ) ( 248 1799 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 119
+{
+"classname" "switch"
+"name" "mp_d1_open_l"
+"target_tag" "mp_d1_l"
+"command" "go_to_path_node"
+"command_arg" "mp_d1_leaf_l_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 312 1800 0 ) ( 312 1801 0 ) ( 312 1800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1800 0 ) ( 328 1801 0 ) ( 328 1800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 312 1800 0 ) ( 312 1800 1 ) ( 313 1800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 312 1816 0 ) ( 312 1816 1 ) ( 311 1816 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 312 1800 0 ) ( 313 1800 0 ) ( 312 1801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 312 1800 40 ) ( 313 1800 40 ) ( 312 1799 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 120
+{
+"classname" "switch"
+"name" "mp_d1_open_r"
+"target_tag" "mp_d1_r"
+"command" "go_to_path_node"
+"command_arg" "mp_d1_leaf_r_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 328 1800 0 ) ( 328 1801 0 ) ( 328 1800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 344 1800 0 ) ( 344 1801 0 ) ( 344 1800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1800 0 ) ( 328 1800 1 ) ( 329 1800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1816 0 ) ( 328 1816 1 ) ( 327 1816 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1800 0 ) ( 329 1800 0 ) ( 328 1801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 328 1800 40 ) ( 329 1800 40 ) ( 328 1799 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 121
+{
+"classname" "light"
+"origin" "288 1744 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 122
+{
+"classname" "light"
+"origin" "288 1968 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 123
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d2_leaf_l_open"
+"next" "mp_d2_leaf_l_closed"
+"origin" "602 1856 48"
+}
+// entity 124
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d2_leaf_l_closed"
+"origin" "648 1856 48"
+}
+// entity 125
+{
+"classname" "kinematic_mover"
+"name" "mp_d2_leaf_l"
+"path" "mp_d2_leaf_l_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "reverse"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_d2 mp_d2_l"
+// brush 0
+{
+( 578 1852 1 ) ( 578 1853 1 ) ( 578 1852 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 626 1852 1 ) ( 626 1853 1 ) ( 626 1852 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 578 1852 1 ) ( 578 1852 2 ) ( 579 1852 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 578 1860 1 ) ( 578 1860 2 ) ( 577 1860 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 578 1852 1 ) ( 579 1852 1 ) ( 578 1853 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 578 1852 95 ) ( 579 1852 95 ) ( 578 1851 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 126
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d2_leaf_r_open"
+"next" "mp_d2_leaf_r_closed"
+"origin" "742 1856 48"
+}
+// entity 127
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d2_leaf_r_closed"
+"origin" "696 1856 48"
+}
+// entity 128
+{
+"classname" "kinematic_mover"
+"name" "mp_d2_leaf_r"
+"path" "mp_d2_leaf_r_open"
+"speed" "0.75"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "reverse"
+"auto_close_ms" "0"
+"blocked_sound" "movers/door_blocked"
+"_tags" "mover_pins mp_d2 mp_d2_r"
+// brush 0
+{
+( 718 1852 1 ) ( 718 1853 1 ) ( 718 1852 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 766 1852 1 ) ( 766 1853 1 ) ( 766 1852 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 718 1852 1 ) ( 718 1852 2 ) ( 719 1852 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 718 1860 1 ) ( 718 1860 2 ) ( 717 1860 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 718 1852 1 ) ( 719 1852 1 ) ( 718 1853 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 718 1852 95 ) ( 719 1852 95 ) ( 718 1851 95 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 129
+{
+"classname" "switch"
+"name" "mp_d2_close_l"
+"target_tag" "mp_d2_l"
+"command" "go_to_path_node"
+"command_arg" "mp_d2_leaf_l_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 616 1800 0 ) ( 616 1801 0 ) ( 616 1800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 1800 0 ) ( 632 1801 0 ) ( 632 1800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 616 1800 0 ) ( 616 1800 1 ) ( 617 1800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 616 1816 0 ) ( 616 1816 1 ) ( 615 1816 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 616 1800 0 ) ( 617 1800 0 ) ( 616 1801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 616 1800 40 ) ( 617 1800 40 ) ( 616 1799 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 130
+{
+"classname" "switch"
+"name" "mp_d2_close_r"
+"target_tag" "mp_d2_r"
+"command" "go_to_path_node"
+"command_arg" "mp_d2_leaf_r_closed"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 632 1800 0 ) ( 632 1801 0 ) ( 632 1800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 648 1800 0 ) ( 648 1801 0 ) ( 648 1800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 1800 0 ) ( 632 1800 1 ) ( 633 1800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 1816 0 ) ( 632 1816 1 ) ( 631 1816 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 1800 0 ) ( 633 1800 0 ) ( 632 1801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 1800 40 ) ( 633 1800 40 ) ( 632 1799 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 131
+{
+"classname" "switch"
+"name" "mp_d2_open_l"
+"target_tag" "mp_d2_l"
+"command" "go_to_path_node"
+"command_arg" "mp_d2_leaf_l_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 696 1800 0 ) ( 696 1801 0 ) ( 696 1800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 712 1800 0 ) ( 712 1801 0 ) ( 712 1800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 696 1800 0 ) ( 696 1800 1 ) ( 697 1800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 696 1816 0 ) ( 696 1816 1 ) ( 695 1816 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 696 1800 0 ) ( 697 1800 0 ) ( 696 1801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 696 1800 40 ) ( 697 1800 40 ) ( 696 1799 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 132
+{
+"classname" "switch"
+"name" "mp_d2_open_r"
+"target_tag" "mp_d2_r"
+"command" "go_to_path_node"
+"command_arg" "mp_d2_leaf_r_open"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 712 1800 0 ) ( 712 1801 0 ) ( 712 1800 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 728 1800 0 ) ( 728 1801 0 ) ( 728 1800 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 712 1800 0 ) ( 712 1800 1 ) ( 713 1800 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 712 1816 0 ) ( 712 1816 1 ) ( 711 1816 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 712 1800 0 ) ( 713 1800 0 ) ( 712 1801 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 712 1800 40 ) ( 713 1800 40 ) ( 712 1799 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 133
+{
+"classname" "light"
+"origin" "672 1744 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 134
+{
+"classname" "light"
+"origin" "672 1968 200"
+"light" "200"
+"_falloff_range" "400"
+"_color" "255 248 236"
+}
+// entity 135
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d3_hinge_closed"
+"next" "mp_d3_hinge_swung"
+"origin" "992 1864 50"
+}
+// entity 136
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d3_hinge_swung"
+"origin" "992 1864 52"
+}
+// entity 137
+{
+"classname" "kinematic_mover"
+"name" "mp_d3_hinge"
+"path" "mp_d3_hinge_closed"
+"speed" "0.0508"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"spin_axis" "0 0 -1"
+"spin_speed" "90"
+"spin_accel" "0"
+"carry_yaw" "0"
+"_tags" "mover_pins mp_d3"
+// brush 0
+{
+( 988 1864 2 ) ( 988 1865 2 ) ( 988 1864 3 ) metal/metal_rough_046a 0 0 0 1 1
+( 996 1864 2 ) ( 996 1865 2 ) ( 996 1864 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 988 1864 2 ) ( 988 1864 3 ) ( 989 1864 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 988 1920 2 ) ( 988 1920 3 ) ( 987 1920 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 988 1864 2 ) ( 989 1864 2 ) ( 988 1865 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 988 1864 98 ) ( 989 1864 98 ) ( 988 1863 98 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 138
+{
+"classname" "switch"
+"name" "mp_d3_hinge_swing_switch"
+"target_tag" "mp_d3"
+"command" "start"
+"fire_mode" "once"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1096 1952 0 ) ( 1096 1953 0 ) ( 1096 1952 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1112 1952 0 ) ( 1112 1953 0 ) ( 1112 1952 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 1952 0 ) ( 1096 1952 1 ) ( 1097 1952 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 1968 0 ) ( 1096 1968 1 ) ( 1095 1968 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 1952 0 ) ( 1097 1952 0 ) ( 1096 1953 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 1952 40 ) ( 1097 1952 40 ) ( 1096 1951 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 139
+{
+"classname" "light"
+"origin" "1056 1976 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 140
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d4_hinge_closed"
+"next" "mp_d4_hinge_swung"
+"origin" "1312 1864 50"
+}
+// entity 141
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d4_hinge_swung"
+"origin" "1312 1864 52"
+}
+// entity 142
+{
+"classname" "kinematic_mover"
+"name" "mp_d4_hinge"
+"path" "mp_d4_hinge_closed"
+"speed" "0.0508"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "reverse"
+"spin_axis" "0 0 -1"
+"spin_speed" "90"
+"spin_accel" "0"
+"carry_yaw" "0"
+"_tags" "mover_pins mp_d4"
+// brush 0
+{
+( 1308 1864 2 ) ( 1308 1865 2 ) ( 1308 1864 3 ) metal/metal_rough_046a 0 0 0 1 1
+( 1316 1864 2 ) ( 1316 1865 2 ) ( 1316 1864 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1308 1864 2 ) ( 1308 1864 3 ) ( 1309 1864 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 1308 1920 2 ) ( 1308 1920 3 ) ( 1307 1920 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 1308 1864 2 ) ( 1309 1864 2 ) ( 1308 1865 2 ) metal/metal_rough_046a 0 0 0 1 1
+( 1308 1864 98 ) ( 1309 1864 98 ) ( 1308 1863 98 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 143
+{
+"classname" "switch"
+"name" "mp_d4_hinge_swing_switch"
+"target_tag" "mp_d4"
+"command" "start"
+"fire_mode" "once"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1416 1952 0 ) ( 1416 1953 0 ) ( 1416 1952 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1432 1952 0 ) ( 1432 1953 0 ) ( 1432 1952 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1416 1952 0 ) ( 1416 1952 1 ) ( 1417 1952 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1416 1968 0 ) ( 1416 1968 1 ) ( 1415 1968 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1416 1952 0 ) ( 1417 1952 0 ) ( 1416 1953 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1416 1952 40 ) ( 1417 1952 40 ) ( 1416 1951 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 144
+{
+"classname" "light"
+"origin" "1376 1976 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 145
+{
+"classname" "kinematic_waypoint"
+"name" "mp_d5_arm_pivot"
+"origin" "1728 1856 78"
+}
+// entity 146
+{
+"classname" "kinematic_mover"
+"name" "mp_d5_arm"
+"path" "mp_d5_arm_pivot"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"spin_axis" "0 0 1"
+"spin_speed" "45"
+"spin_accel" "90"
+"carry_yaw" "0"
+"_tags" "mover_pins mp_d5"
+// brush 0
+{
+( 1724 1800 36 ) ( 1724 1801 36 ) ( 1724 1800 37 ) metal/metal_rough_046a 0 0 0 1 1
+( 1732 1800 36 ) ( 1732 1801 36 ) ( 1732 1800 35 ) metal/metal_rough_046a 0 0 0 1 1
+( 1724 1800 36 ) ( 1724 1800 37 ) ( 1725 1800 36 ) metal/metal_rough_046a 0 0 0 1 1
+( 1724 1912 36 ) ( 1724 1912 37 ) ( 1723 1912 36 ) metal/metal_rough_046a 0 0 0 1 1
+( 1724 1800 36 ) ( 1725 1800 36 ) ( 1724 1801 36 ) metal/metal_rough_046a 0 0 0 1 1
+( 1724 1800 120 ) ( 1725 1800 120 ) ( 1724 1799 120 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 147
+{
+"classname" "switch"
+"name" "mp_d5_arm_start_switch"
+"target_tag" "mp_d5"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1608 1832 0 ) ( 1608 1833 0 ) ( 1608 1832 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1624 1832 0 ) ( 1624 1833 0 ) ( 1624 1832 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1832 0 ) ( 1608 1832 1 ) ( 1609 1832 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1848 0 ) ( 1608 1848 1 ) ( 1607 1848 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1832 0 ) ( 1609 1832 0 ) ( 1608 1833 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1832 40 ) ( 1609 1832 40 ) ( 1608 1831 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 148
+{
+"classname" "switch"
+"name" "mp_d5_arm_stop_switch"
+"target_tag" "mp_d5"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1608 1864 0 ) ( 1608 1865 0 ) ( 1608 1864 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1624 1864 0 ) ( 1624 1865 0 ) ( 1624 1864 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1864 0 ) ( 1608 1864 1 ) ( 1609 1864 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1880 0 ) ( 1608 1880 1 ) ( 1607 1880 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1864 0 ) ( 1609 1864 0 ) ( 1608 1865 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1608 1864 40 ) ( 1609 1864 40 ) ( 1608 1863 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 149
+{
+"classname" "light"
+"origin" "1728 1744 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 150
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e1_platform_start"
+"next" "mp_e1_platform_end"
+"origin" "192 2368 8"
+}
+// entity 151
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e1_platform_end"
+"origin" "512 2368 8"
+}
+// entity 152
+{
+"classname" "kinematic_mover"
+"name" "mp_e1_platform"
+"path" "mp_e1_platform_start"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"_tags" "mover_pins mp_e1"
+// brush 0
+{
+( 160 2336 0 ) ( 160 2337 0 ) ( 160 2336 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 224 2336 0 ) ( 224 2337 0 ) ( 224 2336 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 160 2336 0 ) ( 160 2336 1 ) ( 161 2336 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 160 2400 0 ) ( 160 2400 1 ) ( 159 2400 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 160 2336 0 ) ( 161 2336 0 ) ( 160 2337 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 160 2336 16 ) ( 161 2336 16 ) ( 160 2335 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 153
+{
+"classname" "trigger_volume"
+"name" "mp_e1_platform_go"
+"activation" "touch"
+"target_tag" "mp_e1"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 168 2344 16 ) ( 168 2345 16 ) ( 168 2344 17 ) debug_ceiling_grey 0 0 0 1 1
+( 216 2344 16 ) ( 216 2345 16 ) ( 216 2344 15 ) debug_ceiling_grey 0 0 0 1 1
+( 168 2344 16 ) ( 168 2344 17 ) ( 169 2344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 168 2392 16 ) ( 168 2392 17 ) ( 167 2392 16 ) debug_ceiling_grey 0 0 0 1 1
+( 168 2344 16 ) ( 169 2344 16 ) ( 168 2345 16 ) debug_ceiling_grey 0 0 0 1 1
+( 168 2344 64 ) ( 169 2344 64 ) ( 168 2343 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 154
+{
+"classname" "switch"
+"name" "mp_e1_platform_stop"
+"target_tag" "mp_e1"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 184 2264 0 ) ( 184 2265 0 ) ( 184 2264 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 200 2264 0 ) ( 200 2265 0 ) ( 200 2264 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 184 2264 0 ) ( 184 2264 1 ) ( 185 2264 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 184 2280 0 ) ( 184 2280 1 ) ( 183 2280 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 184 2264 0 ) ( 185 2264 0 ) ( 184 2265 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 184 2264 40 ) ( 185 2264 40 ) ( 184 2263 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 155
+{
+"classname" "light"
+"origin" "352 2248 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 156
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e2_platform_start"
+"next" "mp_e2_platform_end"
+"origin" "640 2368 8"
+}
+// entity 157
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e2_platform_end"
+"origin" "960 2368 8"
+}
+// entity 158
+{
+"classname" "kinematic_mover"
+"name" "mp_e2_platform"
+"path" "mp_e2_platform_start"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "stop"
+"_tags" "mover_pins mp_e2"
+// brush 0
+{
+( 608 2336 0 ) ( 608 2337 0 ) ( 608 2336 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 672 2336 0 ) ( 672 2337 0 ) ( 672 2336 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 608 2336 0 ) ( 608 2336 1 ) ( 609 2336 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 608 2400 0 ) ( 608 2400 1 ) ( 607 2400 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 608 2336 0 ) ( 609 2336 0 ) ( 608 2337 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 608 2336 16 ) ( 609 2336 16 ) ( 608 2335 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 159
+{
+"classname" "trigger_volume"
+"name" "mp_e2_platform_go"
+"activation" "touch"
+"target_tag" "mp_e2"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 616 2344 16 ) ( 616 2345 16 ) ( 616 2344 17 ) debug_ceiling_grey 0 0 0 1 1
+( 664 2344 16 ) ( 664 2345 16 ) ( 664 2344 15 ) debug_ceiling_grey 0 0 0 1 1
+( 616 2344 16 ) ( 616 2344 17 ) ( 617 2344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 616 2392 16 ) ( 616 2392 17 ) ( 615 2392 16 ) debug_ceiling_grey 0 0 0 1 1
+( 616 2344 16 ) ( 617 2344 16 ) ( 616 2345 16 ) debug_ceiling_grey 0 0 0 1 1
+( 616 2344 64 ) ( 617 2344 64 ) ( 616 2343 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 160
+{
+"classname" "switch"
+"name" "mp_e2_platform_stop"
+"target_tag" "mp_e2"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 632 2264 0 ) ( 632 2265 0 ) ( 632 2264 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 648 2264 0 ) ( 648 2265 0 ) ( 648 2264 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 2264 0 ) ( 632 2264 1 ) ( 633 2264 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 2280 0 ) ( 632 2280 1 ) ( 631 2280 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 2264 0 ) ( 633 2264 0 ) ( 632 2265 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 632 2264 40 ) ( 633 2264 40 ) ( 632 2263 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 161
+{
+"classname" "light"
+"origin" "800 2248 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 162
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e3_platform_start"
+"next" "mp_e3_platform_end"
+"origin" "1088 2368 8"
+}
+// entity 163
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e3_platform_end"
+"origin" "1408 2368 8"
+}
+// entity 164
+{
+"classname" "kinematic_mover"
+"name" "mp_e3_platform"
+"path" "mp_e3_platform_start"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "reverse"
+"_tags" "mover_pins mp_e3"
+// brush 0
+{
+( 1056 2336 0 ) ( 1056 2337 0 ) ( 1056 2336 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 2336 0 ) ( 1120 2337 0 ) ( 1120 2336 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1056 2336 0 ) ( 1056 2336 1 ) ( 1057 2336 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1056 2400 0 ) ( 1056 2400 1 ) ( 1055 2400 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1056 2336 0 ) ( 1057 2336 0 ) ( 1056 2337 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1056 2336 16 ) ( 1057 2336 16 ) ( 1056 2335 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 165
+{
+"classname" "trigger_volume"
+"name" "mp_e3_platform_go"
+"activation" "touch"
+"target_tag" "mp_e3"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 1064 2344 16 ) ( 1064 2345 16 ) ( 1064 2344 17 ) debug_ceiling_grey 0 0 0 1 1
+( 1112 2344 16 ) ( 1112 2345 16 ) ( 1112 2344 15 ) debug_ceiling_grey 0 0 0 1 1
+( 1064 2344 16 ) ( 1064 2344 17 ) ( 1065 2344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1064 2392 16 ) ( 1064 2392 17 ) ( 1063 2392 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1064 2344 16 ) ( 1065 2344 16 ) ( 1064 2345 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1064 2344 64 ) ( 1065 2344 64 ) ( 1064 2343 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 166
+{
+"classname" "switch"
+"name" "mp_e3_platform_stop"
+"target_tag" "mp_e3"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1080 2264 0 ) ( 1080 2265 0 ) ( 1080 2264 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1096 2264 0 ) ( 1096 2265 0 ) ( 1096 2264 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1080 2264 0 ) ( 1080 2264 1 ) ( 1081 2264 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1080 2280 0 ) ( 1080 2280 1 ) ( 1079 2280 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1080 2264 0 ) ( 1081 2264 0 ) ( 1080 2265 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1080 2264 40 ) ( 1081 2264 40 ) ( 1080 2263 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 167
+{
+"classname" "light"
+"origin" "1248 2248 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 168
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e4_platform_start"
+"next" "mp_e4_platform_end"
+"origin" "1536 2368 8"
+}
+// entity 169
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e4_platform_end"
+"origin" "1856 2368 8"
+}
+// entity 170
+{
+"classname" "kinematic_mover"
+"name" "mp_e4_platform"
+"path" "mp_e4_platform_start"
+"speed" "1.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "crush"
+"crush_damage" "15"
+"crush_interval_ms" "500"
+"crush_sound" "movers/crusher_crush"
+"_tags" "mover_pins mp_e4"
+// brush 0
+{
+( 1504 2336 0 ) ( 1504 2337 0 ) ( 1504 2336 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1568 2336 0 ) ( 1568 2337 0 ) ( 1568 2336 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1504 2336 0 ) ( 1504 2336 1 ) ( 1505 2336 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1504 2400 0 ) ( 1504 2400 1 ) ( 1503 2400 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1504 2336 0 ) ( 1505 2336 0 ) ( 1504 2337 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1504 2336 16 ) ( 1505 2336 16 ) ( 1504 2335 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 171
+{
+"classname" "trigger_volume"
+"name" "mp_e4_platform_go"
+"activation" "touch"
+"target_tag" "mp_e4"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "500"
+"enabled_on_spawn" "1"
+"_tags" "mover_pins_trigger"
+// brush 0
+{
+( 1512 2344 16 ) ( 1512 2345 16 ) ( 1512 2344 17 ) debug_ceiling_grey 0 0 0 1 1
+( 1560 2344 16 ) ( 1560 2345 16 ) ( 1560 2344 15 ) debug_ceiling_grey 0 0 0 1 1
+( 1512 2344 16 ) ( 1512 2344 17 ) ( 1513 2344 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1512 2392 16 ) ( 1512 2392 17 ) ( 1511 2392 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1512 2344 16 ) ( 1513 2344 16 ) ( 1512 2345 16 ) debug_ceiling_grey 0 0 0 1 1
+( 1512 2344 64 ) ( 1513 2344 64 ) ( 1512 2343 64 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 172
+{
+"classname" "switch"
+"name" "mp_e4_platform_stop"
+"target_tag" "mp_e4"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1528 2264 0 ) ( 1528 2265 0 ) ( 1528 2264 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1544 2264 0 ) ( 1544 2265 0 ) ( 1544 2264 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1528 2264 0 ) ( 1528 2264 1 ) ( 1529 2264 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1528 2280 0 ) ( 1528 2280 1 ) ( 1527 2280 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1528 2264 0 ) ( 1529 2264 0 ) ( 1528 2265 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1528 2264 40 ) ( 1529 2264 40 ) ( 1528 2263 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 173
+{
+"classname" "light"
+"origin" "1696 2248 200"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 174
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e5_carousel_pivot"
+"origin" "2088 2368 8"
+}
+// entity 175
+{
+"classname" "kinematic_mover"
+"name" "mp_e5_carousel"
+"path" "mp_e5_carousel_pivot"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "displace"
+"spin_axis" "0 0 1"
+"spin_speed" "30"
+"spin_accel" "60"
+"carry_yaw" "1"
+"_tags" "mover_pins mp_e5"
+// brush 0
+{
+( 2008 2288 0 ) ( 2008 2289 0 ) ( 2008 2288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2168 2288 0 ) ( 2168 2289 0 ) ( 2168 2288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2008 2288 0 ) ( 2008 2288 1 ) ( 2009 2288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2008 2448 0 ) ( 2008 2448 1 ) ( 2007 2448 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2008 2288 0 ) ( 2009 2288 0 ) ( 2008 2289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2008 2288 16 ) ( 2009 2288 16 ) ( 2008 2287 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 176
+{
+"classname" "switch"
+"name" "mp_e5_carousel_start_switch"
+"target_tag" "mp_e5"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1936 2344 0 ) ( 1936 2345 0 ) ( 1936 2344 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1952 2344 0 ) ( 1952 2345 0 ) ( 1952 2344 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1936 2344 0 ) ( 1936 2344 1 ) ( 1937 2344 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1936 2360 0 ) ( 1936 2360 1 ) ( 1935 2360 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1936 2344 0 ) ( 1937 2344 0 ) ( 1936 2345 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1936 2344 40 ) ( 1937 2344 40 ) ( 1936 2343 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 177
+{
+"classname" "switch"
+"name" "mp_e5_carousel_stop_switch"
+"target_tag" "mp_e5"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 1936 2376 0 ) ( 1936 2377 0 ) ( 1936 2376 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1952 2376 0 ) ( 1952 2377 0 ) ( 1952 2376 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 1936 2376 0 ) ( 1936 2376 1 ) ( 1937 2376 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1936 2392 0 ) ( 1936 2392 1 ) ( 1935 2392 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1936 2376 0 ) ( 1937 2376 0 ) ( 1936 2377 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1936 2376 40 ) ( 1937 2376 40 ) ( 1936 2375 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 178
+{
+"classname" "light"
+"origin" "2088 2232 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 179
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e6_carousel_pivot"
+"origin" "2440 2368 8"
+}
+// entity 180
+{
+"classname" "kinematic_mover"
+"name" "mp_e6_carousel"
+"path" "mp_e6_carousel_pivot"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "reverse"
+"spin_axis" "0 0 1"
+"spin_speed" "30"
+"spin_accel" "60"
+"carry_yaw" "1"
+"_tags" "mover_pins mp_e6"
+// brush 0
+{
+( 2360 2288 0 ) ( 2360 2289 0 ) ( 2360 2288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2520 2288 0 ) ( 2520 2289 0 ) ( 2520 2288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2360 2288 0 ) ( 2360 2288 1 ) ( 2361 2288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2360 2448 0 ) ( 2360 2448 1 ) ( 2359 2448 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2360 2288 0 ) ( 2361 2288 0 ) ( 2360 2289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2360 2288 16 ) ( 2361 2288 16 ) ( 2360 2287 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 181
+{
+"classname" "switch"
+"name" "mp_e6_carousel_start_switch"
+"target_tag" "mp_e6"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 2288 2344 0 ) ( 2288 2345 0 ) ( 2288 2344 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2304 2344 0 ) ( 2304 2345 0 ) ( 2304 2344 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 2344 0 ) ( 2288 2344 1 ) ( 2289 2344 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 2360 0 ) ( 2288 2360 1 ) ( 2287 2360 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 2344 0 ) ( 2289 2344 0 ) ( 2288 2345 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 2344 40 ) ( 2289 2344 40 ) ( 2288 2343 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 182
+{
+"classname" "switch"
+"name" "mp_e6_carousel_stop_switch"
+"target_tag" "mp_e6"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 2288 2376 0 ) ( 2288 2377 0 ) ( 2288 2376 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2304 2376 0 ) ( 2304 2377 0 ) ( 2304 2376 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 2376 0 ) ( 2288 2376 1 ) ( 2289 2376 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 2392 0 ) ( 2288 2392 1 ) ( 2287 2392 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 2376 0 ) ( 2289 2376 0 ) ( 2288 2377 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 2376 40 ) ( 2289 2376 40 ) ( 2288 2375 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 183
+{
+"classname" "light"
+"origin" "2440 2232 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 184
+{
+"classname" "kinematic_waypoint"
+"name" "mp_e7_carousel_pivot"
+"origin" "2792 2368 8"
+}
+// entity 185
+{
+"classname" "kinematic_mover"
+"name" "mp_e7_carousel"
+"path" "mp_e7_carousel_pivot"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"block_policy" "crush"
+"crush_damage" "15"
+"crush_interval_ms" "500"
+"crush_sound" "movers/crusher_crush"
+"spin_axis" "0 0 1"
+"spin_speed" "30"
+"spin_accel" "60"
+"carry_yaw" "1"
+"_tags" "mover_pins mp_e7"
+// brush 0
+{
+( 2712 2288 0 ) ( 2712 2289 0 ) ( 2712 2288 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2872 2288 0 ) ( 2872 2289 0 ) ( 2872 2288 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2712 2288 0 ) ( 2712 2288 1 ) ( 2713 2288 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2712 2448 0 ) ( 2712 2448 1 ) ( 2711 2448 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2712 2288 0 ) ( 2713 2288 0 ) ( 2712 2289 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2712 2288 16 ) ( 2713 2288 16 ) ( 2712 2287 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 186
+{
+"classname" "switch"
+"name" "mp_e7_carousel_start_switch"
+"target_tag" "mp_e7"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 2640 2344 0 ) ( 2640 2345 0 ) ( 2640 2344 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2656 2344 0 ) ( 2656 2345 0 ) ( 2656 2344 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2640 2344 0 ) ( 2640 2344 1 ) ( 2641 2344 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2640 2360 0 ) ( 2640 2360 1 ) ( 2639 2360 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2640 2344 0 ) ( 2641 2344 0 ) ( 2640 2345 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2640 2344 40 ) ( 2641 2344 40 ) ( 2640 2343 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 187
+{
+"classname" "switch"
+"name" "mp_e7_carousel_stop_switch"
+"target_tag" "mp_e7"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"use_reach" "24"
+"_tags" "mover_pins_console"
+// brush 0
+{
+( 2640 2376 0 ) ( 2640 2377 0 ) ( 2640 2376 1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2656 2376 0 ) ( 2656 2377 0 ) ( 2656 2376 -1 ) metal/metal_rough_046a 0 0 0 1 1
+( 2640 2376 0 ) ( 2640 2376 1 ) ( 2641 2376 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2640 2392 0 ) ( 2640 2392 1 ) ( 2639 2392 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2640 2376 0 ) ( 2641 2376 0 ) ( 2640 2377 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 2640 2376 40 ) ( 2641 2376 40 ) ( 2640 2375 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 188
+{
+"classname" "light"
+"origin" "2792 2232 220"
+"light" "300"
+"_falloff_range" "520"
+"_color" "255 248 236"
+}
+// entity 189
+{
+"classname" "player_spawn"
+"origin" "64 1216 32"
+"angles" "0 0 0"
+}
+// entity 190
+{
+"classname" "light"
+"origin" "64 1216 260"
+"light" "250"
+"_falloff_range" "600"
+"_color" "255 248 236"
+}

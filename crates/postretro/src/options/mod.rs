@@ -20,7 +20,9 @@ mod window;
 pub use accessibility::AccessibilityOptions;
 pub(crate) use bridge::OptionsBridge;
 use document::StoredDocument;
-pub use graphics::{FogQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality};
+pub use graphics::{
+    FogQuality, ReflectionQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality,
+};
 pub(crate) use panel_actions::{PanelActionOutcome, apply_panel_action, is_numeric_field};
 pub(crate) use persist::PlayerOptionsLoadStatus;
 pub(crate) use resolved::{OsPreferences, apply_to_audio, reduce_motion_from_slots};
@@ -49,6 +51,7 @@ pub(crate) mod keys {
     pub(crate) const SHADOW_QUALITY: &str = "shadow_quality";
     pub(crate) const FOG_QUALITY: &str = "fog_quality";
     pub(crate) const SURFACE_DEPTH_QUALITY: &str = "surface_depth_quality";
+    pub(crate) const REFLECTION_QUALITY: &str = "reflection_quality";
     pub(crate) const WINDOW_MODE: &str = "window_mode";
     pub(crate) const RENDER_RESOLUTION: &str = "render_resolution";
     pub(crate) const SWITCH_CYCLE_DWELL_MS: &str = "switch_cycle_dwell_ms";
@@ -193,6 +196,10 @@ pub struct PlayerOptions {
     /// the per-material uniform buffers, and re-applied on renderer full-init.
     pub surface_depth_quality: SurfaceDepthQuality,
 
+    /// Fluid reflection cost tier, applied live and re-applied on renderer
+    /// full-init and at each level install.
+    pub reflection_quality: ReflectionQuality,
+
     /// Scene render resolution, applied live and re-applied on renderer
     /// full-init before the scene targets are built.
     pub render_resolution: RenderResolution,
@@ -240,6 +247,7 @@ impl PartialEq for PlayerOptions {
             && self.shadow_quality == other.shadow_quality
             && self.fog_quality == other.fog_quality
             && self.surface_depth_quality == other.surface_depth_quality
+            && self.reflection_quality == other.reflection_quality
             && self.render_resolution == other.render_resolution
             && self.window_mode == other.window_mode
             && self.display_mode == other.display_mode
@@ -290,6 +298,7 @@ impl Default for PlayerOptions {
             shadow_quality: ShadowQuality::default(),
             fog_quality: FogQuality::default(),
             surface_depth_quality: SurfaceDepthQuality::default(),
+            reflection_quality: ReflectionQuality::default(),
             render_resolution: RenderResolution::default(),
             window_mode: WindowMode::default(),
             display_mode: None,

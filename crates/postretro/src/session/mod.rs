@@ -652,6 +652,12 @@ impl Session {
                 None
             }
         };
+        // Dev builds relay every session through the lag proxy; seed it before
+        // the first poll so the handshake already runs conditioned.
+        #[cfg(feature = "dev-tools")]
+        if let Some(endpoint) = net_endpoint.as_mut() {
+            netcode::seed_lag_profile_from_environment(endpoint);
+        }
         let seat_table = if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
             None
         } else {
@@ -906,6 +912,10 @@ fn build_scripting_core(
         script_ctx.clone(),
         command_diagnostics.clone(),
     );
+    postretro_sim::teleporter_commands::register_sequenced_teleporter_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+    );
     register_sequenced_spawner_primitives(
         &mut sequence_registry,
         script_ctx.clone(),
@@ -927,6 +937,10 @@ fn build_scripting_core(
     );
     register_spawner_reaction_primitives(&mut reaction_registry, spawn_context.clone());
     register_trigger_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
+    postretro_sim::teleporter_commands::register_teleporter_reaction_primitives(
+        &mut reaction_registry,
+        script_ctx.clone(),
+    );
 
     // System-reaction handlers (no entity targets) — the second arm of the shared
     // named-reaction vocabulary. They enqueue typed commands onto

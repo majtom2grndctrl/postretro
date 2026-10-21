@@ -125,6 +125,13 @@ impl App {
             self.apply_player_surface_depth_quality(quality);
         }
 
+        // Live: the renderer creates, resizes or releases the reflection
+        // target at once on a level that reflects, and keeps the tier for the
+        // next install on one that does not.
+        if let Some(quality) = effects.reflection_quality {
+            self.apply_player_reflection_quality(quality);
+        }
+
         // Live and record-only: the frame-start extent commit rebuilds once
         // from the final values, so a resize in the same frame costs no extra
         // rebuild.

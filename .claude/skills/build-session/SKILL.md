@@ -115,9 +115,9 @@ Split on blast radius, never on size. Does the track **establish** a contract th
 | `model:` | Use for |
 |---|---|
 | `opus` | Establishing contracts, seams, layouts. Ambiguity resolved by reading code. |
-| `sonnet` | Execution inside a settled contract, however large. Tests for specified behavior. |
-| `haiku` | Read-only sweeps too wide to run yourself. |
-| `fable` | A reasoning track that genuinely exceeds `opus`. Rare; costs accordingly. |
+| `sonnet` | Execution inside a settled contract, however large. Tests for specified behavior. Read-only sweeps. |
+| `haiku` | Batch tool calls. |
+| `fable` | A reasoning track that genuinely exceeds `opus`. Rare; costs more, so only use when necessary. |
 
 The aliases are durable; what backs them is not. When one stops resolving, fix this table — don't route around it.
 

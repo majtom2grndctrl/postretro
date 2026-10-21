@@ -2331,6 +2331,7 @@ mod tests {
             &descriptors,
             &carried.wieldables,
             Some(&carried),
+            None,
         );
 
         let restored = next_level
@@ -2353,6 +2354,89 @@ mod tests {
             5,
             "the carried instance's live magazine survives the descriptor respawn"
         );
+    }
+
+    /// A held item keeps its own rotation through the drop, so a loadout
+    /// weapon must spawn in the model frame: dropped, it faces the way a
+    /// pickup placed at its pawn's start yaw does, front along the map arrow.
+    #[test]
+    fn dropped_loadout_weapon_faces_like_a_placed_pickup() {
+        let yaw_90 = Vec3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0);
+        let start = MapEntity {
+            map_ordinal: None,
+            classname: "player_spawn".to_string(),
+            origin: Vec3::new(0.0, 2.0, 0.0),
+            angles: yaw_90,
+            key_values: Default::default(),
+            tags: Vec::new(),
+        };
+        let descriptors = [drop_descriptor("ion", TouchMode::Press, 0.1)];
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, start.origin);
+        let mut pawn_transform = *registry.get_component::<Transform>(pawn).unwrap();
+        pawn_transform.rotation = start.rotation_quat();
+        registry.set_component(pawn, pawn_transform).unwrap();
+        let slots = std::array::from_fn(|slot| (slot == 0).then(|| "ion".to_string()));
+        compose_wieldable_inventory_from_slots(
+            &mut registry,
+            pawn,
+            &start,
+            &descriptors,
+            &slots,
+            None,
+            None,
+        );
+        let loadout = registry
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("the loadout slot materializes");
+
+        let pickup_placement = MapEntity {
+            classname: "ion".to_string(),
+            origin: Vec3::new(30.0, 0.5, 30.0),
+            ..start.clone()
+        };
+        crate::scripting::builtins::data_archetype::apply_data_archetype_dispatch(
+            std::slice::from_ref(&pickup_placement),
+            &descriptors,
+            &HashSet::new(),
+            &mut registry,
+            None,
+        );
+        let (pickup, _) = registry
+            .iter_with_kind(ComponentKind::Touchable)
+            .next()
+            .expect("the map-placed pickup spawns touchable");
+        assert_ne!(pickup, loadout);
+
+        let mut system = TouchSystem::default();
+        let events = tick_with_edges(
+            &mut system,
+            &mut registry,
+            &floor_world(),
+            &descriptors,
+            &players(&[(PlayerId::Local(pawn), pawn)]),
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+        assert_eq!(events.dropped_item_meshes, vec![loadout]);
+
+        let dropped = registry
+            .get_component::<Transform>(loadout)
+            .unwrap()
+            .rotation;
+        let placed = registry
+            .get_component::<Transform>(pickup)
+            .unwrap()
+            .rotation;
+        assert!(
+            dropped.abs_diff_eq(placed, 1e-6),
+            "dropped {dropped:?} vs placed {placed:?}"
+        );
+        // Map yaw 90 is engine `-X`; the model's `+Z` front points along it.
+        let front = dropped * Vec3::Z;
+        assert!(front.abs_diff_eq(Vec3::NEG_X, 1e-6), "model front {front}");
     }
 
     #[test]

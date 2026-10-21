@@ -447,6 +447,9 @@ fn tick_impl(
             );
             agent.velocity = result.velocity;
             agent.is_grounded = result.grounded;
+            if let Some(overlap) = &result.overlap {
+                crate::sim::report_static_overlap(collision_world, registry, current.id, overlap);
+            }
             if let Ok(transform) = registry.get_component::<Transform>(current.id) {
                 let mut t = *transform;
                 t.position = result.position;
@@ -597,6 +600,9 @@ fn tick_impl(
 
         agent.velocity = result.velocity;
         agent.is_grounded = result.grounded;
+        if let Some(overlap) = &result.overlap {
+            crate::sim::report_static_overlap(collision_world, registry, current.id, overlap);
+        }
         if !recovery_active_this_tick {
             update_stuck_ticks(
                 &mut agent,

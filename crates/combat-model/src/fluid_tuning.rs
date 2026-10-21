@@ -7,8 +7,8 @@ use postretro_foundation::{FluidDescriptor, FluidRegistry};
 use serde::{Deserialize, Serialize};
 
 /// One fluid's movement fields as the host sends them. Presentation fields
-/// (tint, muffle, surface opacity, sounds) never ride the payload: a client
-/// resolves those locally by `name`, as it does sound keys.
+/// (tint, muffle, surface opacity, depth fog, wave, sounds) never ride the
+/// payload: a client resolves those locally by `name`, as it does sound keys.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FluidMovementTuning {
     pub name: String,
@@ -171,6 +171,12 @@ mod tests {
             surface_opacity: 0.6,
             enter_sound: None,
             exit_sound: None,
+            fog_distance: None,
+            fog_color: None,
+            wave_period: None,
+            wave_amplitude: 8.0,
+            wave_length: [64.0, 80.0],
+            surface_reflectivity: 1.0,
         }
     }
 
@@ -264,5 +270,45 @@ mod tests {
 
         let without_water = registry(vec![fluid("sludge", 1.0, [0.2; 4])]);
         assert_eq!(host.local_presentation(0, &without_water), None);
+    }
+
+    // The fog and wave fields are local presentation: they never ride the
+    // host's movement tuning.
+    #[test]
+    fn movement_tuning_carries_no_fog_or_wave_field() {
+        // Exhaustive: a field added to the tuning row fails to compile here.
+        let FluidMovementTuning {
+            name: _,
+            viscosity: _,
+        } = entry("", 0.0);
+
+        // Tests may build full descriptors; only the shipped code counts, and
+        // doc comments may name the fields in words.
+        let source = include_str!("fluid_tuning.rs");
+        let shipped = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let code: String = shipped
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code.contains("viscosity"),
+            "positive control: the scan reads the shipped tuning slice"
+        );
+        for field in [
+            "fog_distance",
+            "fog_color",
+            "resolved_fog_color",
+            "wave_period",
+            "wave_amplitude",
+            "wave_length",
+            "fogDistance",
+            "fogColor",
+            "wavePeriod",
+            "waveAmplitude",
+            "waveLength",
+        ] {
+            assert!(!code.contains(field), "fluid_tuning.rs reads `{field}`");
+        }
     }
 }

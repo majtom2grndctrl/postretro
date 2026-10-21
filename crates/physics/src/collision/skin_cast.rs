@@ -125,7 +125,7 @@ const BAND_REACHED_TOLERANCE: Real = 2.0e-5;
 /// slop in the sense of Box2D's `linearSlop` or PhysX's rest offset. It
 /// absorbs a contact-normal error of up to `MAX_BAND_INTRUSION / travel` rad
 /// — `1.5e-3` for a 0.33 m dash tick, far above f32 noise.
-const MAX_BAND_INTRUSION: Real = 5.0e-4;
+pub(super) const MAX_BAND_INTRUSION: Real = 5.0e-4;
 
 /// Contacts evaluated per leaf before the advancement stops with a
 /// conservative hit. A face approach reaches the band in one step and its

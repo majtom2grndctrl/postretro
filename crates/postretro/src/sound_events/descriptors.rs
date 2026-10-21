@@ -352,6 +352,7 @@ pub(crate) fn warn_unknown_sound_keys(
             }
         }
     }
+    super::teleporters::name_arrival_sounds(&registry, &mut name);
     drop(registry);
 
     let mut unknown = Vec::new();
@@ -905,6 +906,12 @@ mod tests {
             surface_opacity: 0.6,
             enter_sound: enter.map(str::to_string),
             exit_sound: exit.map(str::to_string),
+            fog_distance: None,
+            fog_color: None,
+            wave_period: None,
+            wave_amplitude: 8.0,
+            wave_length: [64.0, 80.0],
+            surface_reflectivity: 1.0,
         }
     }
 
@@ -1094,6 +1101,7 @@ mod tests {
             priority: 0,
             gravity: None,
             push: None,
+            force: 1.0,
             fluid: Some(1),
             brushes: vec![ConvexLeaf {
                 planes: vec![

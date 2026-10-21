@@ -446,7 +446,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 false,
             );
             command.activation.cancel = Some(token);
-            let _ = netcode::client_send_input_command(session.net_endpoint.as_mut(), &command);
+            let _ = netcode::client_send_input_command_in_registry(
+                session.net_endpoint.as_mut(),
+                &command,
+                &session.scripting.script_ctx.registry.borrow(),
+            );
         }
     }
 
@@ -502,6 +506,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // never enqueue host-local mover audio.
     let mut pending_mover_events = Vec::new();
     let mut pending_trigger_residuals = Vec::new();
+    let mut pending_teleport_residuals = Vec::new();
     let mut pending_player_event_residuals = Vec::new();
     let mut repointed_pawns = Vec::new();
 
@@ -721,15 +726,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 if switch_accepted && let Some(slot) = command.select_slot {
                     app.client_declare_switch(slot, input_tick);
                 }
+                app.client_observe_active_slot_resync(input_tick, tick_dt);
                 {
                     let _scope = prediction_cpu.scope(cpu_timing::PredictionStage::Movers);
                     app.client_predict_loaded_movers_tick(tick_dt);
                 }
-                let prediction_tick = {
+                // Predict, then turn, follow, decay and hold or push, in that order.
+                let prediction_tick = app.run_client_predicted_tick(has_player_pawn, |app| {
                     let _scope = prediction_cpu.scope(cpu_timing::PredictionStage::Movement);
                     app.predict_client_weapon_command(&mut command, input_tick, tick_dt);
                     app.client_predict_movement_tick(&command, tick_dt)
-                };
+                });
                 if let Some(prediction_tick) = prediction_tick {
                     // Predicted movement sounds from the local pawn, swim
                     // entry and exit included. Forward prediction is the
@@ -758,48 +765,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                             }),
                     );
                 }
-                // Tick-rate camera follow tracks the PRESENTED local pose:
-                // the gameplay-authoritative (snapped) registry pose plus the
-                // decaying presentation offset. Folding the offset in HERE —
-                // before `frame_timing.push_state` — is the fix for the
-                // velocity-proportional first-person shake (M15 Phase 3
-                // playtest bug). Reconcile snaps the registry backward by the
-                // correction each snapshot and seeds the offset forward by the
-                // same amount, so `registry + offset` is continuous across the
-                // snap. If `frame_timing` instead carried the bare (snapped)
-                // registry pose and the offset were re-added only at render,
-                // `frame_timing` would interpolate ACROSS the snap (a backward
-                // arc) while a constant offset over-corrected at alpha 0 — the
-                // exact ∝-velocity oscillation. With the presented pose pushed,
-                // both `frame_timing` endpoints sit in presented space and the
-                // render-rate interpolation between consecutive presented poses
-                // IS the smoother; the offset decays once per tick here.
-                let presentation_offset = netcode::client_local_presentation_offset(
-                    app.session
-                        .as_ref()
-                        .and_then(|session| session.net_endpoint.as_ref()),
-                );
-                if has_player_pawn {
-                    let registry_ref = script_ctx.registry.borrow();
-                    follow_camera_to_local_pawn(
-                        &mut app.camera,
-                        &registry_ref,
-                        presentation_offset,
-                    );
-                }
-                // Decay the offset one step now that this tick's camera pose
-                // has baked in the current value. Tick-rate decay (paired with
-                // the presented-pose push) keeps `frame_timing` continuous;
-                // the render stage reads the interpolated presented eye
-                // directly and must NOT re-add the offset (it is already in
-                // the pose), so there is no double-count.
-                netcode::client_decay_local_correction(
-                    app.session
-                        .as_mut()
-                        .and_then(|session| session.net_endpoint.as_mut()),
-                );
-                app.frame_timing
-                    .push_state(InterpolableState::new(app.camera.position));
                 continue;
             }
 
@@ -882,6 +847,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let touch_system = &mut session.touch_system;
             let trigger_volume_bridge = &session.trigger_volume_bridge;
             let trigger_bindings = &app.trigger_bindings;
+            let teleport_before =
+                crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow());
             let presentation_camera_aim = (app.camera.pitch, app.camera.yaw);
             let camera = &mut app.camera;
             #[cfg(feature = "dev-tools")]
@@ -910,6 +877,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     // weapon fire resolves its aim ray.
                     if has_player_pawn {
                         let registry_ref = registry.borrow();
+                        crate::runtime_teleporters::apply_local_camera_turn(
+                            camera,
+                            &registry_ref,
+                            teleport_before,
+                        );
                         // Host / single-player: no client-side correction
                         // offset (the host pawn is authoritative).
                         follow_camera_to_local_pawn(camera, &registry_ref, Vec3::ZERO);
@@ -937,6 +909,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &trigger_use_edges,
                 &touch_drop_edges,
                 Some(sim::TriggerTickContext {
+                    teleporters: Some(&app.teleporter_bindings),
                     system: trigger_system,
                     bridge: trigger_volume_bridge,
                     bindings: trigger_bindings,
@@ -1099,13 +1072,41 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             repointed_pawns.extend(tick_events.repointed_pawns);
             pending_death_events.extend(tick_events.death);
             pending_trigger_residuals.extend(tick_events.trigger_residuals);
+            pending_teleport_residuals.extend(tick_events.teleport_residuals);
 
-            app.frame_timing
-                .push_state(InterpolableState::new(app.camera.position));
+            crate::runtime_teleporters::push_local_traveller_cues(
+                &mut app.pending_teleport_sounds,
+                &app.collision_world.teleporters,
+                script_ctx.registry.borrow().local_player_movement_pawn(),
+                &tick_events.teleports,
+            );
+            if crate::runtime_teleporters::local_teleported_since(
+                &script_ctx.registry.borrow(),
+                teleport_before,
+            ) {
+                crate::runtime_teleporters::hold_local_arrival(
+                    &app.camera,
+                    &mut app.frame_timing,
+                    &mut app.mover_yaw_carry_ground,
+                );
+            } else {
+                app.frame_timing
+                    .push_state(InterpolableState::new(app.camera.position));
+            }
             // Fix B: capture each connected-client pawn's authoritative pose
             // for this tick before the tick stamp advances, so the buffered
             // sample is keyed to the tick whose end-of-tick pose it carries.
             app.host_record_client_pawn_poses();
+            // Host-seat observer cues for client pawns, drained per recorded
+            // tick: each tick is one host sample, so each generation change
+            // it records plays its own cue.
+            crate::runtime_teleporters::host_observed_arrival_cues(
+                app.session
+                    .as_mut()
+                    .and_then(|session| session.net_endpoint.as_mut()),
+                &app.collision_world.teleporters,
+                &mut app.pending_teleport_sounds,
+            );
             app.host_advance_fixed_sim_tick(&mut host_snapshot_due);
             // Unconditional per-tick registration sweeps, not gated on "did a spawn
             // happen this tick": they catch runtime enemies and component-driven
@@ -1113,7 +1114,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             app.host_register_descriptor_entities_after_fixed_sim_tick();
         }
     }
-
     // Fixed ticks run this frame. A UI-captured frame still ticks
     // (on a neutral snapshot), so this is the accumulator's count.
     let ticks_run = ticks;
@@ -1213,6 +1213,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             }
         }
         requests.append(&mut client_sounds);
+        requests.append(&mut app.pending_teleport_sounds);
         (edges, requests, listener_attached)
     };
     if let Some(audio) = app
@@ -1273,6 +1274,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     .as_ref()
                     .and_then(|seats| seats.seat_for_client(client_id)),
             },
+        );
+        postretro_sim::teleporter_system::drain_teleport_residuals(
+            &pending_teleport_residuals,
+            &app.teleporter_bindings,
+            &session.scripting.scheduler,
+            postretro_sim::residual_drain::ResidualRegistries {
+                sequence: &session.scripting.sequence_registry,
+                reaction: &session.scripting.reaction_registry,
+                system: &session.scripting.system_registry,
+            },
+            &script_ctx,
+            &mut pending_trigger_follow_ups,
         );
         if !pending_trigger_follow_ups.is_empty() {
             // Direct residual work has already been partitioned and
@@ -1481,7 +1494,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // BEFORE the render collectors read entities. Clocked off the host's own
     // authoritative tick plus the render sub-tick `alpha`, so the presented
     // pose varies smoothly per render frame instead of stepping at 60 Hz.
-    app.host_present_client_pawns(frame_result.alpha);
+    app.host_present_client_pawns(frame_result.alpha, frame_anim_time);
 
     // Advance each reload-endpoint consumer only after it sampled
     // this frame. Catch-up endpoints remain queued in tick order.
@@ -1527,34 +1540,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // read this one evaluated eye (`audio.md` §3). View feel only runs
     // when the camera-following pawn carries `view_feel`; another
     // pawn's preset must not leak onto the selected camera.
-    let view_feel_driver = {
-        let registry = script_ctx.registry.borrow();
-        followed_player_pawn(&registry).and_then(|pawn| {
-            registry
-                .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
-                .ok()
-                .and_then(|component| {
-                    component
-                        .view_feel
-                        .as_ref()
-                        .map(|params| frame_eye::ViewFeelDriver {
-                            pawn,
-                            params: params.clone(),
-                            velocity: component.velocity,
-                            is_grounded: component.is_grounded(),
-                            movement_state: component.movement_state.kind(),
-                            vault: presented_vault(component, tick_dt, frame_result.alpha),
-                            eye_height_above_feet: frame_eye::presented_eye_clearance(
-                                presented_eye.y,
-                                app.camera.position.y,
-                                component.capsule.eye_height
-                                    + component.capsule.half_height
-                                    + component.capsule.radius,
-                            ),
-                        })
-                })
-        })
-    };
+    let view_feel_driver = frame_eye::view_feel_driver(
+        &script_ctx.registry.borrow(),
+        presented_eye.y,
+        app.camera.position.y,
+        tick_dt,
+        frame_result.alpha,
+    );
     let view_feel_scale = app
         .session
         .as_ref()
@@ -2266,6 +2258,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         }
                     });
                     let mut reach = reach_before;
+                    let network_lag_before = session
+                        .net_endpoint
+                        .as_ref()
+                        .and_then(crate::network_diagnostics::lag_lever);
+                    let mut network_lag = network_lag_before;
                     let ctx_clone = debug_ui.ctx.clone();
                     let full_output = ctx_clone.run_ui(raw_input, |ui| {
                         let ctx = ui.ctx();
@@ -2302,6 +2299,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                                         }
                                     }),
                                 reach.as_mut(),
+                                network_lag.as_mut(),
                             );
                         }
                     });
@@ -2316,6 +2314,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         && let Some(stage) = session.level_streaming.cell_demand_mut()
                     {
                         stage.set_lead_metres(after.lead_metres);
+                    }
+                    if let (Some(before), Some(after)) = (network_lag_before, network_lag)
+                        && let Some(endpoint) = session.net_endpoint.as_mut()
+                    {
+                        crate::network_diagnostics::apply_lag_lever(endpoint, &before, &after);
                     }
                     debug_ui
                         .winit_state
@@ -2441,8 +2444,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let limiter_frame = App::next_limiter_frame(&mut app.last_resolve_at, now);
         renderer.set_limiter_frame(limiter_frame);
         // Rewritten every frame with the effect uniform it rides, so a
-        // recreated renderer picks it up on its first frame.
+        // recreated renderer picks it up on its first frame. The fog weight
+        // travels beside it for the same reason, from the same eye update.
         renderer.set_fluid_view_tint(app.fluid_eye.tint());
+        renderer.set_fluid_fog_weight(app.fluid_eye.fog_weight());
 
         drop(stage_scope.take());
         let render_scope = cpu_stages.scope(cpu_timing::FrameStage::Render);
@@ -2634,25 +2639,4 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(cpu_stages);
     app.cpu_timer.finish_frame(Instant::now());
     postretro_stage_timing::mark_frame();
-}
-
-/// The local pawn's vault as this frame presents it, for the held vault pose.
-/// `alpha` is the frame's interpolation share toward the latest tick, whose
-/// movement state `component` holds.
-fn presented_vault(
-    component: &postretro_foundation::PlayerMovementComponent,
-    tick_dt: f32,
-    alpha: f32,
-) -> Option<crate::view_feel::vault::VaultViewInput> {
-    let postretro_foundation::MovementState::Vault { elapsed_ms, .. } = component.movement_state
-    else {
-        return None;
-    };
-    let duration_ms = component.vault.as_ref()?.duration_ms;
-    Some(crate::view_feel::vault::VaultViewInput::presented(
-        elapsed_ms,
-        duration_ms,
-        tick_dt,
-        alpha,
-    ))
 }

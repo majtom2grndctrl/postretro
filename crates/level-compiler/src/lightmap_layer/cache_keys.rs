@@ -435,7 +435,7 @@ pub fn validate_cached_lightmap_section(
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.
 pub fn section_input_hash(
-    layer_input_hashes: &[[u8; 32]],
+    layer_input_hashes: impl ExactSizeIterator<Item = [u8; 32]>,
     atlas: &SharedAtlas<'_>,
     texel_density: f32,
     uncompressed_irradiance: bool,
@@ -445,7 +445,7 @@ pub fn section_input_hash(
     hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
     hasher.update(&(layer_input_hashes.len() as u32).to_le_bytes());
     for hash in layer_input_hashes {
-        hasher.update(hash);
+        hasher.update(&hash);
     }
     hasher.update(&atlas_layout_fingerprint(atlas));
     hasher.update(&texel_density.to_le_bytes());

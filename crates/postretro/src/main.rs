@@ -48,6 +48,9 @@ use postretro_physics::movement;
 // state; the renderer only consumes its emitted lines.
 #[cfg(feature = "dev-tools")]
 mod mover_diagnostics;
+// App-side bridge from the net endpoint's dev lag proxy to the Network tab.
+#[cfg(feature = "dev-tools")]
+mod network_diagnostics;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 use postretro_sim::nav;
@@ -81,6 +84,7 @@ pub(crate) use postretro_sim::{
 mod render;
 mod render_preparation;
 mod runtime_movers;
+mod runtime_teleporters;
 use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
 // audio, net endpoint, input/UI/modal group, and their bridges and registries),
@@ -275,6 +279,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_fire_resolutions.clear();
                 app.client_predicted_shots.clear();
                 app.client_weapon.clear();
+                app.active_slot_resync.reset();
                 app.observer_weapon_cues.clear();
                 // Demotion dropped the host's tuning: until the next one
                 // installs, this client's volumes keep gravity and push but
@@ -361,37 +366,12 @@ fn apply_client_switch_resolution(
     session: &mut session::Session,
     resolution: netcode::CurrentSwitchResolution,
 ) {
-    let (target_slot, rollback_slot, last_weapon_slot) = match resolution {
-        netcode::CurrentSwitchResolution::None => return,
-        netcode::CurrentSwitchResolution::Accepted { last_weapon_slot } => {
-            session
-                .gameplay_input_latch
-                .wieldable_selection_mut()
-                .confirm_latest_declaration(last_weapon_slot);
-            return;
-        }
-        netcode::CurrentSwitchResolution::Refused {
-            target_slot,
-            rollback_slot,
-            last_weapon_slot,
-        } => (target_slot, rollback_slot, last_weapon_slot),
-    };
     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-    let Some(pawn) = registry.local_player_movement_pawn() else {
-        return;
-    };
-    if !sim::refuse_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot) {
-        return;
-    }
-    let active_slot = registry
-        .get_component::<Inventory>(pawn)
-        .ok()
-        .map(|inventory| inventory.active_slot);
-    drop(registry);
-    session
-        .gameplay_input_latch
-        .wieldable_selection_mut()
-        .reset_to_active_with_last(active_slot, last_weapon_slot);
+    client_weapon::settle_switch_resolution(
+        &mut registry,
+        &mut session.gameplay_input_latch,
+        resolution,
+    );
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -987,6 +967,11 @@ pub(crate) struct App {
     /// host's table builds every volume with its fluid dry, so gravity and
     /// push still hold; the host's table re-resolves the fluids on arrival.
     environment_fluid_source: startup::environment_install::FluidTableSource,
+    /// Each installed fluid surface face's world drift, one per surface face of
+    /// every environment record in record order; empty with no level. Resolved
+    /// at level install and on every fluid-table or tuning refresh, then handed
+    /// to the renderer.
+    fluid_surface_drift: Vec<glam::Vec3>,
     /// Local-space collider payloads for PRL-loaded kinematic movers.
     kinematic_mover_colliders: Vec<collision::moving::MoverCollider>,
     /// Live fixed-tick mover poses, published before player movement consumes
@@ -1005,6 +990,10 @@ pub(crate) struct App {
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
+    /// Per-level `teleport` event bindings, rebuilt with the trigger bindings from
+    /// the composed reaction set. The authoritative fixed tick dispatches each
+    /// teleport's reactions through it, and the frame-end residual drain reads it.
+    teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
     /// Host-only player events bound from the composed active set, with their
     /// per-player edge memory. Rebuilt with the trigger bindings.
     player_events: postretro_sim::player_events::PlayerEventTable,
@@ -1013,7 +1002,14 @@ pub(crate) struct App {
     trigger_pool_report: trigger_pools::TriggerPoolInstallReport,
 
     client_weapon: client_weapon::ClientWeaponFrame,
+    /// Connected-client safety net re-declaring the local active slot when the
+    /// host's projection persistently names another one.
+    active_slot_resync: client_weapon::ActiveSlotResync,
     observer_weapon_cues: Vec<netcode::weapon_cues::ObserverWeaponCueDelivery>,
+    /// This frame's teleport arrival cues at fixed points: the local traveller's
+    /// (forward prediction, adoption, or the host seat's own crossing) and every
+    /// observed remote arrival. Played and cleared by the frame's audio step.
+    pending_teleport_sounds: Vec<postretro_audio::SoundRequest>,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.
@@ -3883,6 +3879,7 @@ impl App {
                 host_pawn: _,
                 descriptor_entities: _,
                 loaded_movers: _,
+                loaded_teleporters: _,
                 demo_mover: _,
                 state_slots,
                 last_sent_tuning,
@@ -4377,6 +4374,21 @@ impl App {
                         time_sync.rtt_micros(),
                     )
                 };
+                crate::runtime_teleporters::apply_local_adoptions(
+                    &mut self.camera,
+                    &mut self.frame_timing,
+                    &mut self.mover_yaw_carry_ground,
+                    &mut self.pending_teleport_sounds,
+                    &self.collision_world.teleporters,
+                    &registry,
+                    &apply_outcome.local_teleport_adoptions,
+                    apply_outcome.local_first_record_hold,
+                );
+                sound_events::observed_arrival_sounds(
+                    &self.collision_world.teleporters,
+                    &apply_outcome.observed_teleports,
+                    &mut self.pending_teleport_sounds,
+                );
                 // This owner projection can arrive on a zero-tick frame. Death
                 // clears charge feedback/input immediately, without changing
                 // the local health simulation or previously produced flights.
@@ -4687,6 +4699,7 @@ impl App {
             host_pawn,
             descriptor_entities: _,
             loaded_movers: _,
+            loaded_teleporters: _,
             demo_mover,
             state_slots,
             last_sent_tuning,
@@ -4912,6 +4925,7 @@ impl App {
                 remote_aim_pitches: &self.remote_player_presentation.aim_pitches,
                 remote_heading_yaws: &self.remote_player_presentation.heading_yaws,
                 remote_network_ids: &remote_network_ids,
+                local_pawn_owns_direction: true,
             },
         );
     }
@@ -5004,13 +5018,10 @@ impl App {
     /// serialization (which reads the authoritative pose) and before the render collectors
     /// read entities. `alpha` is the render sub-tick accumulator, so the presented pose
     /// varies smoothly per render frame rather than stepping once per 60 Hz tick. Thin
-    /// delegation; a no-op for single-player and the client.
-    fn host_present_client_pawns(&mut self, alpha: f32) {
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
+    /// delegation; a no-op for single-player and the client. The pawns' feet are then
+    /// re-probed from that presented pose at `anim_time`, so contacts match the drawn body.
+    fn host_present_client_pawns(&mut self, alpha: f32, anim_time: f64) {
+        let Some(session) = self.session.as_ref() else {
             return;
         };
         let Some(netcode::NetEndpoint::Host {
@@ -5019,22 +5030,27 @@ impl App {
             allocator,
             tick,
             ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
+        }) = session.net_endpoint.as_ref()
         else {
             return;
         };
-        let current_tick = *tick;
-        let mut registry = script_ctx.registry.borrow_mut();
+        let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         netcode::host_present_client_pawns(
             client_pawn_presentation,
             owners,
             allocator,
             &mut registry,
-            current_tick,
+            *tick,
             alpha,
+        );
+        netcode::host_probe_presented_client_pawn_feet(
+            owners,
+            &mut registry,
+            &self.collision_world,
+            &self.kinematic_mover_colliders,
+            &self.kinematic_mover_tick_states,
+            &session.hit_zone_store,
+            anim_time,
         );
     }
 
@@ -5061,7 +5077,11 @@ impl App {
         else {
             return Vec::new();
         };
-        let resolved = netcode::host_resolve_remote_commands(owners, command_queues);
+        let resolved = netcode::host_resolve_remote_commands_in_registry(
+            owners,
+            command_queues,
+            &session.scripting.script_ctx.registry.borrow(),
+        );
         netcode::host_apply_switch_deliveries(
             &mut session.scripting.script_ctx.registry.borrow_mut(),
             server,
@@ -5576,6 +5596,7 @@ impl App {
             allocator,
             replicable,
             loaded_movers,
+            loaded_teleporters,
             ..
         }) = self
             .session
@@ -5586,6 +5607,12 @@ impl App {
         };
         let registry = script_ctx.registry.borrow();
         netcode::host_register_loaded_movers(&registry, allocator, replicable, loaded_movers);
+        netcode::host_register_loaded_teleporters(
+            &registry,
+            allocator,
+            replicable,
+            loaded_teleporters,
+        );
     }
 
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation
@@ -9218,6 +9245,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: tick,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -9258,6 +9286,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -9345,6 +9374,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -10355,7 +10385,7 @@ mod tests {
                 "optionsTabGraphics",
                 "graphics",
                 "optionsPanelGraphics",
-                12,
+                14,
                 &[
                     "optionsWindowed",
                     "optionsBorderless",
@@ -10370,6 +10400,12 @@ mod tests {
                     "optionsFogHigh",
                     "optionsSurfaceDepthOff",
                     "optionsSurfaceDepthOn",
+                    "optionsReflectionOff",
+                    "optionsReflectionLow",
+                    "optionsReflectionMedium",
+                    "optionsReflectionHigh",
+                    "optionsReflectionVeryHigh",
+                    "optionsReflectionUltra",
                     "optionsRenderResolutionAuto",
                     "optionsRenderResolutionNative",
                     "optionsRenderResolutionHalf",
@@ -10592,30 +10628,40 @@ mod tests {
 
         let graphics_panel = find_by_id(&options_tree.root, "optionsPanelGraphics")
             .expect("graphics panel is in the options tree");
-        for (id, value) in [
-            ("optionsWindowed", "windowed"),
-            ("optionsBorderless", "borderless"),
-            ("optionsExclusive", "exclusive"),
+        for (id, slot, value) in [
+            ("optionsWindowed", "options.windowMode", "windowed"),
+            ("optionsBorderless", "options.windowMode", "borderless"),
+            ("optionsExclusive", "options.windowMode", "exclusive"),
+            ("optionsReflectionOff", "options.reflectionQuality", "off"),
+            ("optionsReflectionLow", "options.reflectionQuality", "low"),
+            (
+                "optionsReflectionMedium",
+                "options.reflectionQuality",
+                "medium",
+            ),
+            ("optionsReflectionHigh", "options.reflectionQuality", "high"),
+            (
+                "optionsReflectionVeryHigh",
+                "options.reflectionQuality",
+                "very_high",
+            ),
+            (
+                "optionsReflectionUltra",
+                "options.reflectionQuality",
+                "ultra",
+            ),
         ] {
-            let button = find_button(graphics_panel, id)
-                .unwrap_or_else(|| panic!("{id} is a window-mode radio button"));
+            let button =
+                find_button(graphics_panel, id).unwrap_or_else(|| panic!("{id} is a radio button"));
             assert_eq!(button.role, Some(Role::Radio));
             let checked = button
                 .checked
                 .as_ref()
                 .expect("radio exposes checked state");
             assert_eq!(button.bind.as_ref(), Some(checked));
-            assert_eq!(
-                checked.source,
-                BindSource::Slot {
-                    slot: "options.windowMode".into()
-                }
-            );
+            assert_eq!(checked.source, BindSource::Slot { slot: slot.into() });
             assert_eq!(checked.equals, Some(PredicateValue::String(value.into())));
-            assert_eq!(
-                button.on_press,
-                format!("frontend.options.windowMode.{value}")
-            );
+            assert_eq!(button.on_press, format!("frontend.{slot}.{value}"));
             let reaction = manifest
                 .reactions
                 .iter()
@@ -10627,7 +10673,7 @@ mod tests {
             assert_eq!(primitive.primitive, "setState");
             assert_eq!(
                 primitive.args,
-                serde_json::json!({ "slot": "options.windowMode", "value": value })
+                serde_json::json!({ "slot": slot, "value": value })
             );
         }
         for (id, action) in [
@@ -12088,6 +12134,11 @@ mod tests {
             Some(&SlotValue::Enum("windowed".to_string())),
             "window-mode working copy defaults to the windowed enum",
         );
+        assert_eq!(
+            snapshot.get("options.reflectionQuality"),
+            Some(&SlotValue::Enum("high".to_string())),
+            "reflection-quality working copy defaults to the high enum",
+        );
         for slot in [
             "window.displayModeWidth",
             "window.displayModeHeight",
@@ -12181,7 +12232,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            62,
+            63,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

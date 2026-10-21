@@ -71,8 +71,9 @@ pub(super) struct ReachBand {
 ///    path over the lip and the standing capsule's room on the top.
 ///
 /// Sweeps 3 and 4 run one skin width above the resting height, so the top
-/// itself never reads as blocking them. Collision has no overlap query; the
-/// two sweeps from a known-clear pose stand in for it.
+/// itself never reads as blocking them. The combined (mover-aware) collision
+/// has no overlap query; the two sweeps from a known-clear pose stand in for
+/// it, so the probe still respects movers.
 pub(super) fn probe_ledge(
     component: &PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,

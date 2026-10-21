@@ -1,5 +1,6 @@
-// Co-op swim parity through the loopback harness: swim entry and exit, the fluid jump and its latch, and fluid crossings into low gravity, all predicted with no correction.
-// See: context/lib/networking.md · context/lib/movement.md §4 (Swim)
+// Co-op swim parity through the loopback harness: swim edges, the fluid jump and
+// its latch, low-gravity crossings, and push-force currents, none needing correction.
+// See: context/lib/networking.md · context/lib/movement.md §4 (Swim), §6 (Regional gravity and push)
 
 #![cfg(test)]
 
@@ -49,6 +50,12 @@ fn fluid(name: &str, viscosity: f32) -> FluidDescriptor {
         surface_opacity: 0.6,
         enter_sound: None,
         exit_sound: None,
+        fog_distance: None,
+        fog_color: None,
+        wave_period: None,
+        wave_amplitude: 8.0,
+        wave_length: [64.0, 80.0],
+        surface_reflectivity: 1.0,
     }
 }
 
@@ -93,7 +100,9 @@ struct ClientTick {
     /// The tick-END position's resolve, i.e. the next tick's tick-start view.
     immersion: f32,
     in_low_gravity: bool,
-    /// The predicted drift layer's vertical part and total vertical velocity.
+    /// The predicted drift layer's vertical part and total vertical velocity,
+    /// and its horizontal x part.
+    drift_x: f32,
     drift_y: f32,
     velocity_y: f32,
 }
@@ -192,6 +201,7 @@ fn run_records(
             latched: movement.swim_reentry_latched,
             immersion: resolved.immersion,
             in_low_gravity: in_box(position, LOW_GRAVITY_MIN, LOW_GRAVITY_MAX),
+            drift_x: movement.push_velocity.x,
             drift_y: movement.push_velocity.y,
             velocity_y: movement.velocity.y,
         });
@@ -559,4 +569,73 @@ fn pawn_tuning_rebuild_on_a_swimming_client_costs_no_correction_and_no_swim_edge
         .filter(|(_, address, _)| *address == "swim_started")
         .count();
     assert_eq!(entries, 1, "one swim entry: {:?}", run.swim_emissions);
+}
+
+const SIDEWAYS_PUSH_X: f32 = 6.0;
+
+/// The pool under a sideways current of the given force.
+fn sideways_current_course(force: f32) -> Vec<NamedEnvironmentVolume> {
+    let mut course = current_course();
+    let current = &mut course[1].volume;
+    current.push = Some(Vec3::new(SIDEWAYS_PUSH_X, 0.0, 0.0));
+    current.force = force;
+    course
+}
+
+/// Run the sideways current at `force`; the swimmer walks in, then idles in the
+/// current until it settles.
+fn run_sideways_current(force: f32) -> SwimRun {
+    run_records(
+        sideways_current_course(force),
+        host_fluids(),
+        300,
+        walk_into_the_current,
+        |_, _| {},
+    )
+}
+
+/// The client's mean drift along the push over the last swimming ticks, once
+/// the current has settled (the swimmer idles in it for well over the drift's
+/// 1 / viscosity time constant before the run ends).
+fn settled_drift_x(run: &SwimRun) -> f32 {
+    const WINDOW: usize = 30;
+    let tail = &run.ticks[run.ticks.len() - WINDOW..];
+    assert!(
+        tail.iter()
+            .all(|record| record.state == MovementStateKind::Swim),
+        "fixture: the swimmer must still be swimming when the drift is read"
+    );
+    tail.iter().map(|record| record.drift_x).sum::<f32>() / WINDOW as f32
+}
+
+// Host movement, client prediction and reconcile replay all read the felt
+// push (push × force) from the same per-volume force, so a half-force current
+// carries the swimmer at half its settled drift with zero corrections.
+#[test]
+fn half_force_current_reconciles_without_correction_under_light_link() {
+    let half = run_sideways_current(0.5);
+    assert!(half.host_swam, "fixture: the host pawn must swim");
+    assert_no_correction(&half);
+    assert!(
+        half.windows.iter().any(|window| window.0.is_some()),
+        "reconcile replays must run through the current"
+    );
+
+    // A resolve that ignored force would also reconcile cleanly, so compare the
+    // settled drift against the same course at full force.
+    let full = run_sideways_current(1.0);
+    assert!(full.host_swam, "fixture: the host pawn must swim");
+    assert_no_correction(&full);
+    let full_drift = settled_drift_x(&full);
+    let half_drift = settled_drift_x(&half);
+    let full_expected = SIDEWAYS_PUSH_X / HOST_WATER_VISCOSITY;
+    assert!(
+        (full_drift - full_expected).abs() <= 0.05 * full_expected,
+        "fixture: a full-force current settles at push / viscosity {full_expected}; got \
+         {full_drift}"
+    );
+    assert!(
+        (half_drift - 0.5 * full_drift).abs() <= 0.03 * full_drift,
+        "half force must settle at half the full-force drift: half {half_drift}, full {full_drift}"
+    );
 }

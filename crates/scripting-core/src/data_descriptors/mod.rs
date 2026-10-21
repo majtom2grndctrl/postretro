@@ -20,7 +20,8 @@ pub use super::registry::EntityId;
 pub use super::runtime::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
     ModBloomResolution, ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs,
-    ModLoading, ModMapEntry, ModMoverDefaults, ModRenderProfile,
+    ModLoading, ModMapEntry, ModMoverDefaults, ModReflectionProfile, ModReflectionStyle,
+    ModRenderProfile,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
@@ -69,7 +70,7 @@ mod swim_block;
 mod trigger_events;
 mod validate;
 mod vault_block;
-mod vault_view_block;
+mod view_pose_block;
 mod vm_adapters;
 
 mod js {
@@ -115,7 +116,7 @@ pub use runtime_manifest::*;
 pub(crate) use swim_block::*;
 pub use validate::*;
 pub(crate) use vault_block::*;
-pub(crate) use vault_view_block::*;
+pub(crate) use view_pose_block::*;
 pub use vm_adapters::*;
 
 pub use postretro_entities::data_descriptors::{
@@ -123,8 +124,8 @@ pub use postretro_entities::data_descriptors::{
     GroupTarget, InventoryDescriptor, LocomotionDescriptor, MeshDescriptor, NamedReaction,
     PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PrimitiveDescriptor,
     ProgressDescriptor, RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep,
-    SequenceTarget, TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor,
-    VolumeTriggerEventDescriptor, build_crossing, build_predicate_crossing,
+    SequenceTarget, TeleportEventDescriptor, TriggerEventDescriptor, TriggerPoolArm,
+    TriggerPoolDescriptor, VolumeTriggerEventDescriptor, build_crossing, build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{

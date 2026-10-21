@@ -62,6 +62,10 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
   - [ ] **Per-entity interpolation delay** — the starvation-driven delay is global today (one starved moving remote adds latency to every remote); make it per-entity. Tradeoff: per-entity delay introduces per-entity time offsets.
   - [ ] **Smoothed interpolation-delay transitions** — a delay *increase* currently pauses the remote render target (the monotonic no-rewind clamp) until the server estimate catches up, which can read as a brief freeze on a sustained-jitter link. Rate-limit the transition instead. Delicate: trades directly against the no-rewind guarantee.
 
+- [ ] **Network lag simulator** — inject latency, jitter and loss into a session from a dev-toolbar control or CLI flag, so co-op playtests at realistic RTT need no OS-level link conditioning.
+
+- [ ] **coop--pre-arm-fire-resolves-slot-zero** — before a connected client's pawn arms, its Input carries `firing_slot` 0, and a fresh fire press there fires the host pawn's slot-0 weapon whatever its active slot. Traced in source, not yet seen in play. Trace: `context/plans/done/coop--client-inventory-awaits-tuning/research.md`. Needs a draft session.
+
 **Testable outcome:** two-plus players use the selected hosted-session flow, with one joining mid-level and another dropping while the session survives, through a mod-authored lobby.
 
 ---
@@ -116,6 +120,8 @@ The platform foundation, visual parity, trigger/command surface, rotation, and d
 
 - [ ] **F - Visibility-bearing moving world.** Doors-as-occluders, dynamic portals, sector-graph updates, and any chunk-primitive consolidation. Extend the shared cell-visibility relation for moving geometry; do not invent a parallel dynamic-visibility path. Moving lights that cast shadows use the dynamic shadow tier; reuse the existing depth-cache substrate when a real moving shadow caster needs it, invalidating from the mover's authoritative at-rest signal. Start only for a concrete set-piece (E18-E's sealed closets) or measured performance need. The non-visibility-bearing kinematic-cluster slice lives in Epic 22.
 - [ ] **G - Destruction bridge.** Pre-fracture, promotion to dynamic debris, and rigid-body debris stay outside the deterministic kinematic substrate. Revisit only after mover payloads and the speculative destruction work both have real consumers.
+- [x] **movement--mover-pinned-rider** — a mover under the default `displace` policy can carry or push a player into static geometry it cannot push them clear of, and nothing frees them: only `crush` handles a pinned body (`movement.md` §6). Own movement can no longer embed a body (`plans/done/movement--static-overlap-invariant`), so this is the remaining way a pawn ends up stuck inside static geometry. Lands before enemy–mover interaction, which moves agents onto the same mover-contact code and inherits the rule. Also fixes a `once` mover that a reversal sends back to its start staying unstartable.
+- [ ] **Enemy–mover interaction** — enemies blocked, crushed, carried on lifts and pushed by movers, as players already are. Research: `context/research/enemy-mover-interaction.md`.
 
 ---
 
@@ -187,6 +193,20 @@ Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each
 
 ---
 
+## Fluid Rendering
+
+Water-surface briefs outside a numbered epic.
+
+- [x] **reflection-probes** — every map's water mirrors its static room from compile-time, distance-corrected box-projected probes the compiler derives per pool, with live per-light brightness and Fresnel weighting; a `reflection_volume` brush overrides the fit. The static base layer a later screen-space layer composites over. Done (`plans/done/reflection-probes`).
+- [ ] **reflection-probe fluid-pass performance** — per-probe light-share precompute for drawn volumes (the blend-cost spike cut a single sample 21% and a 3-probe blend from +78% to +3–4%), a Fresnel early-out at steep views, pixel style at cell rate; measure the Mac 5300M first. Not yet drafted.
+- [x] **fluid base-pass cost** — fluid baked light (ambient floor, SH indirect, baked direct SH) moved to the vertex stage on an install-time SH-lattice grid: the 5300M's reflection-free fluid pass at full-screen 4K fell 52–54 → 2.2 ms, all views faster on the GTX 1660. Done: `context/plans/done/fluid-base-pass-cost/`. Follow-up: fluid surface T-junction closure (below).
+- [x] **fluid surface T-junction closure** — every fluid face pair meeting along a boundary now shares bit-identical vertices, within and across volumes: level-wide weld-then-insert at bake replaces the push-cut gate, and faces with inserted vertices ear-clip at install. stress-env-volumes went from 6,173 open seams to 0 at 75 ms more bake and 13 ms more install. Done: `context/plans/done/fluid-surface-t-junction-closure/`.
+- [x] **fluid-ssr-reflections** — screen-space reflections composited over the probe term by confidence, so movers, characters and dynamic lights appear in fluid surfaces; player `reflection_quality` (off/low/medium/high/very_high/ultra). Done (`plans/done/fluid-ssr-reflections`).
+- [ ] **reflection-probe-capture-exclusion** — probes leave out static brushes small relative to their water, so pillars, posts and trim reflect through SSR with true parallax while room-scale walls and undersides stay in the probe; mapper override `_reflection_capture`. Builds after `fluid-ssr-reflections`. Ready: `context/plans/ready/reflection-probe-capture-exclusion/`.
+- [ ] **reflection-probe streaming and seams** — streamed probe residency, and blending across probe boundaries. Drafts on branch `claude/probe-streaming-brief-364a5e`; the seams brief depends on the performance brief's precompute.
+
+---
+
 ## Future / Speculative
 
 Features below are intended but not yet sequenced. Rough priority ordering within each group.
@@ -208,19 +228,20 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **Directional fog** — the remaining fog enhancement. Existing fog volumes and portal-aware culling are shipped.
 - **Moving-light shadow-depth invalidation** — re-render a moving light's cached static depth only when its transform changes, so projectile-attached and other moving lights do not redraw the full world every frame. Not sequenced until a moving shadow-caster needs it.
 - **Post-processing** — optional CRT/scanline filter. HDR scene color, additive emissive, tonemapping, and bloom are shipped.
-- **Baked cubemap reflections** — `env_cubemap` point entity baked to a cubemap atlas at compile time.
 
 ### Infrastructure
 
 - **Large-map spatial residency** — future epic seed for clustered-cell, portal-driven residency of baked resources (SH, geometry, lightmap layers, and related spatial data). Distinct from regional-BVH culling. Research and staged planning seed: `context/plans/large-map-spatial-residency.md`. SH residency (stages 1–4) and lightmap/shadowmask cell blocks (stage 5, `done/spatial-residency--lightmap-cell-blocks/`) have shipped.
+- **Teleporter arrival residency lever** — keep arrival cells touching a source region mandatory and move farther arrival cells into the evictable band. Measure on the first dense teleporter hub; today every arrival room within lead of a source is mandatory (`done/teleporters/plan.md`, External runbook).
 - **Sector Graph + Portal Culling** — replace the compiler-derived runtime cell/portal graph with an author-defined sector graph. Latent portals (activate on event) support destruction reveals. Prerequisite for kinematic clusters that need their own sector graphs.
 - **Chunk Primitive** — unify static world geometry, kinematic clusters, and dynamic debris into one record type (mesh + collider + transform + sector membership). Deferred until two or more of those consumers exist and the duplication cost is clear.
 - **`canonicalName` rename** — rename `classname` to `canonicalName` in scripting API and PRL. Source formats translate their identifier (Quake `.map` `classname`, UDMF thing-type, Blender prop) to this canonical name at compile time. Absence on an archetype means not directly placeable from source — script-spawned or marker-indirected only. Subsumes the `spawn_only` / `map_entity_classname` patterns into one field's presence.
 - **FGD generated from script registry** — scripts are the single source of truth for entity archetypes. FGD emitted at script compile time, not hand-edited. Removes the divergence class of bug where registry and FGD describe different archetypes.
 - **Composable archetypes via `@BaseClass` mixins** — `@BaseClass` declarations map to component lists; property bags drive behavior instead of proliferating archetype names. Reference patterns from `bevy_trenchbroom`: `Default::default()` as the property-fallback source, recursive depth-first base spawn with TypeId dedup, two-phase spawn (component insertion at load, subsystem registration at lifecycle hook).
 - **Property-driven editor previews** — TrenchBroom expression-language helpers (`model({{ ... }})`, `iconsprite({{ ... }})`) drive per-instance preview variation. One canonical name can display different models or icons based on property values, reducing pressure to multiply archetype names.
+- **Entity pitch sign vs TrenchBroom** — engine positive pitch is nose-up, while TrenchBroom draws non-MDL models nose-down; reconcile at the one angle converter. Near-zero content exposure today.
 - **Multi-format map support** — UDMF and others via `format/<name>.rs` sibling modules. All formats normalize to the canonical-name vocabulary at compile time, so runtime sees one identifier shape regardless of source.
 
 ### Dropped
 
-- **Cubemap bake tool** — deferred indefinitely; baked cubemap reflections remain on the speculative list above but the standalone tool is dropped.
+- **Cubemap bake tool** — the standalone offline tool and the `env_cubemap` point entity are dropped; reflection probes capture inside prl-build instead (`reflection-probes`, above).

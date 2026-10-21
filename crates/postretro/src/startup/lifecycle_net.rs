@@ -124,11 +124,13 @@ impl App {
         self.kinematic_mover_render.clear();
         self.fluid_surface_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
+        self.teleporter_bindings = Default::default();
         self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
         self.client_weapon.clear();
+        self.active_slot_resync.reset();
         self.observer_weapon_cues.clear();
         self.client_reload_edges = Default::default();
         self.client_overheat_edge = Default::default();
@@ -173,14 +175,23 @@ impl App {
         // the issuer and SH's workers go now, not at the next install.
         if let Some(session) = self.session.as_mut() {
             session.clear_level_streaming();
+            session
+                .scripting
+                .script_ctx
+                .pending_teleporter_mutations
+                .borrow_mut()
+                .clear();
         }
 
         self.level = None;
+        self.pending_teleport_sounds.clear();
         self.clear_surface_lifetime_level_state();
         self.nav_graph = None;
         // No volume of this level may resolve after it unloads; the next install
         // supplies its own set.
         self.environment_volumes = postretro_collision::EnvironmentVolumes::empty();
+        // Nor may its surfaces' drift.
+        self.fluid_surface_drift.clear();
         // Nor may its fluid tint or muffle.
         self.clear_fluid_eye_presentation();
         // The registry is cleared below, retiring the chase agent's entity slot;

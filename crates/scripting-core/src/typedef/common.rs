@@ -183,6 +183,9 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         // makes available on movement descriptor fields.
         "NumberOrIr" => "number | RuntimeValue".to_string(),
         "BoolOrIr" => "boolean | RuntimeValue".to_string(),
+        // A range field: one number L, meaning [L, L], or a `[min, max]` pair
+        // (`defineFluid`'s `waveLength`).
+        "NumberOrRange" => "number | readonly [number, number]".to_string(),
         "CrouchParams" => "CrouchParams".to_string(),
         "SlideParams" => "SlideParams".to_string(),
         "SwimParams" => "SwimParams".to_string(),
@@ -190,8 +193,10 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "VaultEntry" => "VaultEntry".to_string(),
         "VaultTrigger" => "VaultTrigger".to_string(),
         "ViewFeelParams" => "ViewFeelParams".to_string(),
-        "SlideViewParams" => "SlideViewParams".to_string(),
-        "VaultViewParams" => "VaultViewParams".to_string(),
+        "PoseParams" => "PoseParams".to_string(),
+        "PoseRow" => "PoseRow".to_string(),
+        "VaultPoseRow" => "VaultPoseRow".to_string(),
+        "LedgeFocus" => "LedgeFocus".to_string(),
         "BobParams" => "BobParams".to_string(),
         "TiltParams" => "TiltParams".to_string(),
         "SwayParams" => "SwayParams".to_string(),
@@ -364,6 +369,9 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         // See the TS mapping: a dash value field is a literal-or-expression union.
         "NumberOrIr" => "number | RuntimeValue".to_string(),
         "BoolOrIr" => "boolean | RuntimeValue".to_string(),
+        // Luau has no fixed-length table type; the pair is a `{ min, max }`
+        // array.
+        "NumberOrRange" => "number | {number}".to_string(),
         "CrouchParams" => "CrouchParams".to_string(),
         "SlideParams" => "SlideParams".to_string(),
         "SwimParams" => "SwimParams".to_string(),
@@ -371,8 +379,10 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "VaultEntry" => "VaultEntry".to_string(),
         "VaultTrigger" => "VaultTrigger".to_string(),
         "ViewFeelParams" => "ViewFeelParams".to_string(),
-        "SlideViewParams" => "SlideViewParams".to_string(),
-        "VaultViewParams" => "VaultViewParams".to_string(),
+        "PoseParams" => "PoseParams".to_string(),
+        "PoseRow" => "PoseRow".to_string(),
+        "VaultPoseRow" => "VaultPoseRow".to_string(),
+        "LedgeFocus" => "LedgeFocus".to_string(),
         "BobParams" => "BobParams".to_string(),
         "TiltParams" => "TiltParams".to_string(),
         "SwayParams" => "SwayParams".to_string(),

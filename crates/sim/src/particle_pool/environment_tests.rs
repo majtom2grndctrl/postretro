@@ -16,6 +16,7 @@ fn volume(gravity: Option<f32>, push: Option<Vec3>, priority: i32) -> Environmen
         priority,
         gravity,
         push,
+        force: 1.0,
         fluid: Some(0),
         brushes: vec![ConvexLeaf {
             planes: vec![

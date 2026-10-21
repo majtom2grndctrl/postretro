@@ -58,7 +58,7 @@ declare module "postretro" {
     shadowBiasScale?: number;
     /** When true, renders this mesh into shadow-depth passes only. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward. */
     shadowOnly?: boolean;
-    /** Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. */
+    /** Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. On a player descriptor the engine selects locomotion by state name: `defaultState` when still; `walk_forward` (or `walk`) and `walk_backward` at walking speed; `run_forward` (or `run`) and `run_backward` once speed passes the midpoint between `movement.ground.speed.walk` and `.run`, with a band either side so the clip does not flicker. Backward states play when travel points behind the aim, with the legs turned against travel, toward the aim; a missing or unresolved backward state plays its tier's forward state instead, and `run_backward` needs a run forward state beside it. Without `walk_forward` or `walk` the engine drives none of these. */
     animations?: { readonly [state: string]: AnimationStateDescriptor };
     /** The state entered at spawn. Required exactly when `animations` is present; must name a declared state. */
     defaultState?: string;
@@ -828,7 +828,7 @@ declare module "postretro" {
     swim?: SwimParams;
     /** Optional vault (mantle) tuning. When omitted, the player never vaults. When present, `maxHeight`, `swimMaxHeight` and `durationMs` are required; a block that fails validation is dropped with a warning naming `movement.vault.<field>`, and the player cannot vault. Never overridable by a map. */
     vault?: VaultParams;
-    /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional. */
+    /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse, sustained state poses). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional. */
     viewFeel?: ViewFeelParams;
     /** Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated. */
     sounds?: MovementSounds;
@@ -993,7 +993,7 @@ declare module "postretro" {
     /** Vault when jump is held or buffered at a ledge within reach. */
     | "jump";
 
-  /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide and vault poses). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide`/`vault` is independently optional; an absent sub-object disables that motion. */
+  /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained state poses). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`pose` is independently optional; an absent sub-object disables that motion. The retired `slide` and `vault` keys are rejected: author `pose.slide` and `pose.vault`. */
   export type ViewFeelParams = {
     /** Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`. */
     bob?: BobParams;
@@ -1003,36 +1003,58 @@ declare module "postretro" {
     sway?: SwayParams;
     /** Optional state-transition camera displacement. When present, `tension`, `max`, and `states` are required; state rows and their entry/exit displacements are sparse. */
     impulse?: ImpulseParams;
-    /** Optional sustained slide camera dip and FOV increase. When present, all four fields are required. Omission disables this effect. */
-    slide?: SlideViewParams;
-    /** Optional camera pose held while vaulting. Every field is optional. Omission disables this effect. */
-    vault?: VaultViewParams;
+    /** Optional camera poses held while a movement state lasts, one row per state. Omission disables them. */
+    pose?: PoseParams;
   };
 
-  /** Camera pose held while vaulting. Its weight follows the vault's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the vault ends. A vault that ends early (an abort, death, a correction) eases back from wherever the pose was. This affects presentation only: aim, the shot line and the weapon model are unchanged. It composes with bob, tilt, sway and impulses and is scaled by view-feel accessibility settings; reduced motion removes it. */
-  export type VaultViewParams = {
-    /** Held pitch offset in degrees; positive looks up, so a negative value looks down toward the ledge. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit. */
+  /** Camera poses held while a movement state lasts. Each row is optional and runs on its own timing; rows that overlap add, so a slide easing out while a vault eases in shows both. `normal` takes no row: a pose there would be a permanent offset. Presentation only: aim, the shot line and the weapon model are unchanged, so with `movement.vault.allowFire: true` the screen-centre reticle sits off the shot line by the presented pose. Scaled by view-feel accessibility settings; reduced motion removes it. Strict: an unknown key, or an entry inherited through a prototype or `__index`, is rejected at every level. */
+  export type PoseParams = {
+    /** Optional pose held while sliding, eased by rates. */
+    slide?: PoseRow;
+    /** Optional pose held while vaulting, weighted by the climb's progress so it reaches neutral as the pawn reaches the top. */
+    vault?: VaultPoseRow;
+  };
+
+  /** A pose row timed by rates. Its weight eases toward the pose at `enterRate` while the state lasts and back to neutral at `exitRate` once it ends, however it ends. Channels are optional and default to 0; both rates are required. Takes rates, not shares. */
+  export type PoseRow = {
+    /** Pitch offset in degrees; positive looks up. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit. */
     pitch?: number;
-    /** Held roll offset in degrees. Must be finite in [-90, 90]; default 0. */
+    /** Roll offset in degrees. Must be finite in [-90, 90]; default 0. */
     roll?: number;
-    /** Held horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV. */
+    /** Downward eye displacement in metres. Must be finite and ≥ 0; default 0. The drops of every row together keep at least 0.05 m of eye-to-feet clearance. */
+    eyeDrop?: number;
+    /** Horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV. */
+    fov?: number;
+    /** Exponential response rate while the state lasts, in 1/sec. Must be finite in [0.1, 240]; larger values reach the pose sooner. */
+    enterRate: number;
+    /** Exponential response rate after the state ends, in 1/sec. Must be finite in [0.1, 240]; larger values return sooner. */
+    exitRate: number;
+  };
+
+  /** The vault pose row, weighted by the climb's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the pawn reaches the top (with `easeOut` 0 it holds to the top, then eases back over 0.1 s). A vault that ends early (an abort, death, a correction) eases back from the last presented pose. Takes shares, not rates. Every field is optional. */
+  export type VaultPoseRow = {
+    /** Pitch offset in degrees; positive looks up. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit. */
+    pitch?: number;
+    /** Roll offset in degrees. Must be finite in [-90, 90]; default 0. */
+    roll?: number;
+    /** Downward eye displacement in metres. Must be finite and ≥ 0; default 0. The drops of every row together keep at least 0.05 m of eye-to-feet clearance. */
+    eyeDrop?: number;
+    /** Horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV. */
     fov?: number;
     /** Share of `durationMs` spent easing in. Must be finite in [0, 1]; default 0.15. 0 holds the pose from the first frame. */
     easeIn?: number;
     /** Share of `durationMs` spent easing back at the end. Must be finite in [0, 1]; default 0.2. `easeIn + easeOut` must be at most 1. */
     easeOut?: number;
+    /** Optional downward pull toward the vault's landing spot. Vault row only. */
+    ledgeFocus?: LedgeFocus;
   };
 
-  /** Sustained slide camera tuning. The current slide state holds the dip and FOV increase; every exit eases both back to zero. This affects presentation only, composed with bob and impulses and scaled by view-feel accessibility settings. */
-  export type SlideViewParams = {
-    /** Downward eye displacement in metres. Must be finite and ≥ 0; 0 disables the dip. Presentation retains at least 0.05 m of eye-to-feet clearance. */
-    eyeDrop: number;
-    /** Horizontal field-of-view increase in degrees. Must be finite in [0, 90]; 0 disables the increase. The renderer clamps final FOV. */
-    fovIncrease: number;
-    /** Exponential response rate while sliding, in 1/sec. Must be finite in [0.1, 240]; larger values enter sooner. */
-    enterRate: number;
-    /** Exponential response rate after sliding, in 1/sec. Must be finite in [0.1, 240]; larger values return sooner. */
-    exitRate: number;
+  /** A downward pitch offset toward the line from the rendered eye to the vault's landing spot. It is measured against a reference taken on the pose's first frame of the vault: that frame's aim plus the row's `pitch`. While the reference looks above the line, the view pulls down by `strength` of the gap, capped at `maxPitch`; at or below the line, or with the landing spot at or above the eye, it adds nothing. Pitch only, never yaw. The offset is additive, so mouse look stays 1:1 through the climb. Both fields are required. */
+  export type LedgeFocus = {
+    /** Share of the gap between the reference and the ledge line. Must be finite in [0, 1]. */
+    strength: number;
+    /** Largest pull in degrees. Must be finite in (0, 89]. */
+    maxPitch: number;
   };
 
   /** Distance-phased head-bob tuning. Vertical and lateral motion have independent cadences. All fields are required except `groundedOnly`, which defaults to true. */
@@ -1206,10 +1228,25 @@ declare module "postretro" {
     pixelated?: boolean;
   };
 
+  /** Look of every fluid reflection layer. Valid values: `pixel`, `smooth`. */
+  export type ReflectionStyle =
+    /** One reflection direction per water texel cell, tilted by that cell's shimmer and ripples, so the reflection breaks into the blocks the water's texture moves in. Drift and a declared wave tilt nothing. This is the default. */
+    | "pixel"
+    /** Reflect the flat surface per pixel: a still mirror. */
+    | "smooth";
+
+  /** Static fluid-reflection presentation preferences for the entire mod. How strongly each fluid reflects is its own `surfaceReflectivity`. */
+  export type ReflectionRenderProfile = {
+    /** Reflection look. Optional; defaults to `"pixel"`. An unknown value warns and uses `"pixel"`. */
+    style?: ReflectionStyle;
+  };
+
   /** Static renderer preferences declared once for the entire mod. */
   export type RenderProfile = {
     /** Bloom presentation preferences. Optional; defaults to half-resolution smooth bloom. */
     bloom?: BloomRenderProfile;
+    /** Fluid reflection presentation preferences. Optional; defaults to pixel-style reflections. */
+    reflections?: ReflectionRenderProfile;
   };
 
   /** Static kinematic-mover defaults for the mod. Authored mover `auto_close_ms` values take precedence. */
@@ -1436,10 +1473,22 @@ declare module "postretro" {
     muffle: number;
     /** Opacity of the fluid's visible surface faces. Finite and in [0, 1]. */
     surfaceOpacity: number;
+    /** How strongly the surface reflects the room around it: a scale on its Fresnel base reflectance (0.02 x value). 0 reflects nothing, 1 is water, about 2 reads as glass, about 10 as wet polished stone, 50 a mirror at every angle. Opacity never dims the reflection, so a zero-opacity fluid still reflects. Finite and in [0, 50]. Omitted: 1. */
+    surfaceReflectivity?: number;
     /** Optional sound key played when a swim starts in this fluid. */
     enterSound?: string;
     /** Optional sound key played when a swim in this fluid ends. */
     exitSound?: string;
+    /** Metres of view path into the fluid, seen from outside it, that hide 95% of what lies beyond. Finite and > 0. Omitted: clear. Never applies to the view from inside, which `viewTint` alone covers. */
+    fogDistance?: number;
+    /** Murk colour as `[r, g, b]`, in `viewTint`'s rgb space; the engine lights it with the surface's own lighting. Each finite and in [0, 1]. Omitted: `viewTint`'s rgb. */
+    fogColor?: readonly [number, number, number];
+    /** Seconds per cycle of an average-length surface wave crest. Finite and >= 6. Omitted: no wave. */
+    wavePeriod?: number;
+    /** Peak sideways shift of the surface wave, in texture texels at the face's texture scale; 0 is no wave. Finite and in [0, 16]. Omitted: 8. */
+    waveAmplitude?: number;
+    /** Crest-to-crest length, in texture texels: one number L, meaning [L, L], or a `[min, max]` range from which each crest takes its own length. Finite, 0 < min <= max <= 128, and min >= 8 x `waveAmplitude` (the default 8 included). Omitted: [max(48, 8A), max(80, 8A)] for amplitude A. */
+    waveLength?: number | readonly [number, number];
   };
 
   /** Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed. */
@@ -1450,7 +1499,7 @@ declare module "postretro" {
     id: string;
     /** Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid. */
     version: string;
-    /** Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom. */
+    /** Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom and pixel-style fluid reflections. */
     render?: RenderProfile;
     /** Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay. */
     movers?: MoverDefaults;
@@ -1637,6 +1686,7 @@ declare module "postretro" {
       readonly mouseSensitivity: Ref<number>;
       readonly musicVolume: Ref<number>;
       readonly reduceMotion: Ref<boolean>;
+      readonly reflectionQuality: Ref<"off" | "low" | "medium" | "high" | "very_high" | "ultra">;
       readonly renderResolution: Ref<"auto" | "native" | "half" | "third" | "quarter">;
       readonly screenShakeScale: Ref<number>;
       readonly sfxVolume: Ref<number>;
@@ -1749,7 +1799,10 @@ declare module "postretro" {
      * A nonzero rate requires the mover to author a nonzero `spin_axis` in its map entity.
      */
     setSpinRate(rate: number): SequenceStep[];
-    /** Set the host-authoritative response when the mover contacts an entity. */
+    /**
+     * Set the host-authoritative response when the mover contacts an entity.
+     * Under every policy but `"crush"`, a player the mover would press into geometry or another mover holds it until the player is clear; `"reverse"` backs off instead when its way back is clear.
+     */
     setBlockPolicy(policy: "displace" | "reverse" | "stop" | "crush"): SequenceStep[];
   }
 
@@ -1762,6 +1815,22 @@ declare module "postretro" {
     /** Fire `fire` on this volume's `event` edge, and on no sibling volume sharing its tag. Return the entry from `setupLevel`'s `triggerEvents`. */
     on(event: "enter" | "exit", fire: TriggerEventReaction[]): VolumeTriggerEventDescriptor;
   }
+
+  /** Snapshot of a map-placed teleporter: id, position and tags. */
+  export type TeleporterEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+  /** Teleporter member returned by `getMapEntities("teleporter")`. Arming state is host-authoritative and replicated; methods build closed command steps. */
+  export interface TeleporterHandle extends TeleporterEntity {
+    /** Arm the teleporter. Applies on the host at the start of its next movement tick. */
+    arm(): SequenceStep[];
+    /** Disarm the teleporter. Applies on the host at the start of its next movement tick. */
+    disarm(): SequenceStep[];
+    /** Fire `fire` once per pawn per authoritative teleport through this teleporter, and for no sibling sharing its tag. Return the entry from `setupLevel`'s `teleportEvents`. */
+    on(event: "teleport", fire: TeleportEventReaction[]): TeleportEventDescriptor;
+  }
+  /** A teleporter member binding: the reactions named by `fire` run on the teleporter's `teleport` event. */
+  export type TeleportEventDescriptor = { teleporter: EntityId; event: "teleport"; fire: string[] };
+  /** What a teleporter member's `on("teleport", …)` accepts: a sourceless or teleport-scoped reaction, or a reaction's name. */
+  export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string;
 
   /** Snapshot of a map-placed spawner: id, position, its own tags, and `spawnedTags`, the tags each NPC it spawns carries. Its own tags never pass to its spawns. */
   export type SpawnerEntity = {
@@ -1778,12 +1847,13 @@ declare module "postretro" {
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "light" | "fog" | "emitter" | "spawner";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
     K extends "mover" ? MoverEntityHandle :
     K extends "trigger" ? TriggerVolumeHandle :
+    K extends "teleporter" ? TeleporterHandle :
     K extends "light" ? LightEntityHandle :
     K extends "fog" ? FogVolumeHandle :
     K extends "emitter" ? EmitterEntity :
@@ -1823,7 +1893,7 @@ declare module "postretro" {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`) carries `target: "@activators"`, `"@trigger"`, `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   const reactionBodyScopeBrand: unique symbol;
   export type ReactionBodyScope<S> = { readonly [reactionBodyScopeBrand]?: (scope: S) => void };
   export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
@@ -1916,6 +1986,10 @@ declare module "postretro" {
   /** Sequence step that sets a kinematic mover's host-authoritative block policy. */
   export type MoverSetBlockPolicyStep = { id: EntityId; primitive: "moverSetBlockPolicy"; args: { policy: "displace" | "reverse" | "stop" | "crush" } };
 
+  /** Sequence step that arms one teleporter (`t.arm()`). Applies on the host at the start of its next movement tick. */
+  export type ArmTeleporterStep = { id: EntityId; primitive: "armTeleporter"; args: Record<string, never> };
+  /** Sequence step that disarms one teleporter (`t.disarm()`). Applies on the host at the start of its next movement tick. */
+  export type DisarmTeleporterStep = { id: EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
   /** Sequence step that arms one trigger volume. */
   export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
   /** Sequence step that disarms one trigger volume. */
@@ -1948,6 +2022,8 @@ declare module "postretro" {
     | MoverGoToPathNodeStep
     | MoverSetSpinRateStep
     | MoverSetBlockPolicyStep
+    | ArmTeleporterStep
+    | DisarmTeleporterStep
     | ArmTriggerStep
     | DisarmTriggerStep
     | SpawnFromSpawnerStep
@@ -1991,6 +2067,9 @@ declare module "postretro" {
     /** Disarm the volume that fired. */
     disarm(): SubjectTokenCommand;
   }
+  const teleporterTargetBrand: unique symbol;
+  export interface TeleporterTarget { readonly [teleporterTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
+  export type TeleportEventParams = Readonly<{ activators: ActivatorsTarget; teleporter: TeleporterTarget }>;
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   const emitterTargetBrand: unique symbol;
   /** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
@@ -2167,6 +2246,7 @@ declare module "postretro" {
     crossings?: CrossingDescriptor[];
     /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
     triggerEvents?: VolumeTriggerEventDescriptor[];
+    teleportEvents?: TeleportEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
     /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
     playerEvents?: PlayerEventDescriptor[];
@@ -2187,6 +2267,7 @@ declare module "postretro" {
   export function defineReaction<S = {}>(descriptor: ReactionBody<S>): Reaction<S>;
   export function defineReaction(tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
+  export function defineReaction(tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
   export function defineReaction(tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
@@ -2202,6 +2283,7 @@ declare module "postretro" {
   export function defineReaction<S = {}>(name: string, descriptor: ReactionBody<S>): Reaction<S>;
   export function defineReaction(name: string, tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(name: string, tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
+  export function defineReaction(name: string, tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
   export function defineReaction(name: string, tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(name: string, tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
 
@@ -2223,8 +2305,8 @@ declare module "postretro" {
   /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
   export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
   /** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
-  export type SubjectTokenTarget = "@activators" | "@trigger" | "@player";
-  /** One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
+  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
+  /** One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
   export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
   /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */
   export type NpcGroupFilter = { tag?: string };
@@ -2963,7 +3045,7 @@ declare module "postretro/ui" {
   /** Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted); `at: on.emitter` positions the sound where the named gameplay event happened, on the SFX bus. */
   export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone";
   export type PresentationOptions = { audience?: PresentationAudience };
-  export type AudienceScope<A> = (Extract<A, ActivatorsTarget | TriggerTarget> extends never ? {} : TriggerEventParams) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
+  export type AudienceScope<A> = (Extract<A, ActivatorsTarget> extends never ? {} : Pick<TriggerEventParams, "activators">) & (Extract<A, TriggerTarget> extends never ? {} : Pick<TriggerEventParams, "trigger">) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
   export type PlaySoundOptions = PresentationOptions & { bus?: string; at?: EmitterTarget };
   export type PresentationBody<O extends PresentationOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
   export type SoundBody<O extends PlaySoundOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;

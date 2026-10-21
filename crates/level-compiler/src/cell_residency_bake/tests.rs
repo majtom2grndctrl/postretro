@@ -11,8 +11,15 @@ fn bake_uncached(
     portals: &PortalsSection,
     locator: &CellLocatorSection,
 ) -> Option<CellResidencySetSection> {
-    cell_residency_set_bake_cached(cells, portals, locator, None, &BakeControl::unrestricted())
-        .expect("the bake succeeds")
+    cell_residency_set_bake_cached(
+        cells,
+        portals,
+        locator,
+        None,
+        None,
+        &BakeControl::unrestricted(),
+    )
+    .expect("the bake succeeds")
 }
 
 fn open_cache() -> (tempfile::TempDir, StageCache) {
@@ -123,8 +130,9 @@ fn warm_bake_hits_the_cache_with_the_cold_section() {
         std::sync::Arc::new(crate::governor::Governor::new(1, false)),
         &progress,
     );
-    let first = cell_residency_set_bake_cached(&cells, &portals, &locator, Some(&cache), &control)
-        .expect("miss bakes");
+    let first =
+        cell_residency_set_bake_cached(&cells, &portals, &locator, None, Some(&cache), &control)
+            .expect("miss bakes");
     assert_eq!(first, cold);
     assert_eq!(progress.total(), Some(L_OPEN_CELLS as usize));
     assert_eq!(progress.completed(), L_OPEN_CELLS as usize);
@@ -137,8 +145,9 @@ fn warm_bake_hits_the_cache_with_the_cold_section() {
         &progress,
     );
     let capture = LogCapture::start();
-    let second = cell_residency_set_bake_cached(&cells, &portals, &locator, Some(&cache), &control)
-        .expect("hit loads");
+    let second =
+        cell_residency_set_bake_cached(&cells, &portals, &locator, None, Some(&cache), &control)
+            .expect("hit loads");
     assert_eq!(second, cold);
     capture.assert_logged_once(Level::Info, "[cache] cell_residency_set hit");
     assert_eq!(progress.completed(), L_OPEN_CELLS as usize);
@@ -152,7 +161,7 @@ fn a_corrupt_cache_entry_rebakes() {
     let cold = bake_uncached(&cells, &portals, &locator);
     let (_dir, cache) = open_cache();
     cache.put(
-        &cell_residency_set_cache_key(&cells, &portals, &locator),
+        &cell_residency_set_cache_key(&cells, &portals, &locator, &Default::default(), None),
         b"not a residency set",
     );
     let capture = LogCapture::start();
@@ -160,6 +169,7 @@ fn a_corrupt_cache_entry_rebakes() {
         &cells,
         &portals,
         &locator,
+        None,
         Some(&cache),
         &BakeControl::unrestricted(),
     )
@@ -172,7 +182,8 @@ fn a_corrupt_cache_entry_rebakes() {
 fn cache_key_tracks_every_input_section() {
     let (cells, portals, locator) = l_corridor_sections();
     let key = |cells: &CellsSection, portals: &PortalsSection, locator: &CellLocatorSection| {
-        cell_residency_set_cache_key(cells, portals, locator).as_filename()
+        cell_residency_set_cache_key(cells, portals, locator, &Default::default(), None)
+            .as_filename()
     };
     let base = key(&cells, &portals, &locator);
     assert_eq!(base, key(&cells, &portals, &locator));
@@ -213,7 +224,8 @@ fn cache_key_tracks_every_input_section() {
 #[test]
 fn cache_key_ignores_face_ranges() {
     let (cells, portals, locator) = l_corridor_sections();
-    let base = cell_residency_set_cache_key(&cells, &portals, &locator).as_filename();
+    let base = cell_residency_set_cache_key(&cells, &portals, &locator, &Default::default(), None)
+        .as_filename();
     let mut reranged = cells.clone();
     for record in reranged
         .cells
@@ -225,7 +237,8 @@ fn cache_key_ignores_face_ranges() {
     }
     assert_ne!(reranged.to_bytes(), cells.to_bytes());
     assert_eq!(
-        cell_residency_set_cache_key(&reranged, &portals, &locator).as_filename(),
+        cell_residency_set_cache_key(&reranged, &portals, &locator, &Default::default(), None)
+            .as_filename(),
         base,
     );
     assert_eq!(

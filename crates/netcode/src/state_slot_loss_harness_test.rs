@@ -871,18 +871,18 @@ fn accumulated_shared_global_converges_without_client_side_evaluation() {
     );
 }
 
-// A dropped baseline forces a `StateBaselineRefresh` and the slot repairs WITHOUT
-// reconnect. Under a heavy-loss link the client will receive a delta referencing a
-// baseline it never held (its full baseline was dropped); the apply path requests a
-// refresh, the server schedules a full baseline, and the slot converges once a frame
-// finally survives the link.
+// Dropped snapshots and acks never strand a held slot. Under a heavy-loss link the
+// client often receives a delta naming a baseline older than the one it holds, or one
+// it never held; each delta carries the full value, so the newest applies and the rest
+// are skipped. No refresh round-trip is needed, and the slot converges WITHOUT
+// reconnect once a frame finally survives the link. The refresh path for a slot with
+// no held baseline is pinned at the glue in `state_slots`.
 #[test]
-fn dropped_baseline_triggers_refresh_and_repairs() {
+fn dropped_snapshots_converge_without_refresh_churn() {
     let mut h = StateSlotHarness::new(CLIENT_A, heavy_loss_link(0x5201), heavy_loss_link(0x5202));
 
     // Change the shared value every few ticks so the server keeps minting fresh
-    // baselines; heavy loss guarantees some are dropped, producing delta-against-missing
-    // on the client and thus a refresh request.
+    // baselines; heavy loss guarantees some snapshots and acks are dropped.
     let mut value = 0.0_f32;
     for tick in 0..300u32 {
         if tick % 3 == 0 {
@@ -900,19 +900,14 @@ fn dropped_baseline_triggers_refresh_and_repairs() {
         }
     }
 
-    // The repair seam fired: the client requested at least one baseline refresh and the
-    // server received it (proving the refresh repairs without reconnect).
-    assert!(
-        h.refreshes_received > 0,
-        "a dropped baseline must trigger at least one StateBaselineRefresh round-trip"
+    assert_eq!(
+        h.refreshes_received, 0,
+        "a delta against an older held baseline applies or skips; it never needs repair"
     );
-
-    // Despite the heavy loss + refresh churn, the slot converges to the last
-    // authoritative value once a frame survives.
     assert_eq!(
         h.client_value("net.objective"),
         Some(SlotValue::Number(value)),
-        "the slot converges to the authoritative value after refresh repair"
+        "the slot converges to the authoritative value under heavy loss"
     );
 }
 

@@ -5,8 +5,11 @@ use super::*;
 use std::collections::BTreeMap;
 
 use postretro_combat_model::{EnvironmentTuning, TuningPayload};
-use postretro_foundation::Seat;
+use postretro_foundation::{PlayerMovementDescriptor, Seat};
 use postretro_net::wire::JoinSeedValue;
+
+#[cfg(feature = "dev-tools")]
+pub use postretro_net::lag_proxy::LagProfile;
 
 /// The active network endpoint held by `App`. `None` for single-player; a
 /// `Host`/`Client` variant once the role's transport is constructed.
@@ -102,6 +105,8 @@ pub enum NetEndpoint {
         /// bind these by `mover_id` to their already-loaded local mover entities
         /// rather than spawning from the baseline.
         loaded_movers: std::collections::HashSet<EntityId>,
+        /// Installed teleporter regions registered for authoritative arming.
+        loaded_teleporters: std::collections::HashSet<EntityId>,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -158,7 +163,8 @@ pub enum NetEndpoint {
         state_slots: Box<state_slots::ClientStateApply>,
         /// Host-resolved values the client predicts with. The generation lets the
         /// movement materializer rebuild after a staged host retune without relying
-        /// on Control/Snapshot ordering.
+        /// on Control/Snapshot ordering. Dropped at demotion and at level unload,
+        /// since it carries the host's level environment.
         tuning: Option<Box<TuningPayload>>,
         tuning_generation: u64,
         applied_movement_tuning_generation: u64,
@@ -258,6 +264,13 @@ pub enum CurrentSwitchResolution {
 
 #[derive(Debug, Default)]
 pub struct ClientApplyFrameOutcome {
+    /// One latest accepted generation-change sample per remote pawn this frame.
+    pub observed_teleports: Vec<crate::netcode::interpolation::ObservedTeleport>,
+    /// Ordered adopted cuts from this frame's accepted own-pawn records.
+    pub local_teleport_adoptions: Vec<crate::netcode::prediction::LocalTeleportAdoption>,
+    /// The local pawn, when a reconcile this frame wrote it before its first record
+    /// had merged: a camera hold at its eye, with no cue, view turn or carry change.
+    pub local_first_record_hold: Option<EntityId>,
     pub materialized_remote_entity_presentation: bool,
     pub armed_local_pawn: Option<ClientArmedLocalPawn>,
     /// At least one replicated state-slot value was committed this frame.
@@ -471,6 +484,18 @@ impl NetEndpoint {
         }
     }
 
+    /// Whether this client has a switch declaration the host has not yet
+    /// answered. `false` on a host.
+    pub fn has_pending_switch_declarations(&self) -> bool {
+        matches!(
+            self,
+            Self::Client {
+                pending_switch_declarations,
+                ..
+            } if !pending_switch_declarations.is_empty()
+        )
+    }
+
     pub fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
         let Self::Client {
             pending_switch_declarations,
@@ -502,8 +527,15 @@ impl NetEndpoint {
                 let public_addr = socket
                     .local_addr()
                     .map_err(|e| format!("host local_addr failed: {e}"))?;
-                let server = NetServer::new(socket, public_addr, MAX_CLIENTS, now(), None)
-                    .map_err(|e| format!("host transport init failed: {e}"))?;
+                // Dev builds relay every session through the lag proxy, which
+                // takes over the public socket; it forwards unimpaired until a
+                // profile is set.
+                #[cfg(feature = "dev-tools")]
+                let server =
+                    NetServer::new_behind_lag_proxy(socket, public_addr, MAX_CLIENTS, now(), None);
+                #[cfg(not(feature = "dev-tools"))]
+                let server = NetServer::new(socket, public_addr, MAX_CLIENTS, now(), None);
+                let server = server.map_err(|e| format!("host transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Host {
                     server: Box::new(server),
                     allocator: Box::new(NetworkIdAllocator::new()),
@@ -523,6 +555,7 @@ impl NetEndpoint {
                     host_pawn: None,
                     descriptor_entities: std::collections::HashSet::new(),
                     loaded_movers: std::collections::HashSet::new(),
+                    loaded_teleporters: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
                     last_sent_tuning: HashMap::new(),
@@ -539,8 +572,18 @@ impl NetEndpoint {
                 // Client id is arbitrary under unsecure auth; use the wall clock
                 // so two clients on one host do not collide.
                 let client_id = now().as_nanos() as u64;
-                let client = NetClient::new(socket, *addr, client_id, now(), None, user_data)
-                    .map_err(|e| format!("client transport init failed: {e}"))?;
+                #[cfg(feature = "dev-tools")]
+                let client = NetClient::new_behind_lag_proxy(
+                    socket,
+                    *addr,
+                    client_id,
+                    now(),
+                    None,
+                    user_data,
+                );
+                #[cfg(not(feature = "dev-tools"))]
+                let client = NetClient::new(socket, *addr, client_id, now(), None, user_data);
+                let client = client.map_err(|e| format!("client transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
                     replication: Box::new(ClientReplication::new()),
@@ -557,6 +600,47 @@ impl NetEndpoint {
                 }))
             }
         }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn lag_proxy(&self) -> Option<&postretro_net::lag_proxy::LagProxy> {
+        match self {
+            Self::Host { server, .. } => server.lag_proxy(),
+            Self::Client { client, .. } => client.lag_proxy(),
+        }
+    }
+
+    /// The lag proxy's live impairment, applied to each direction of every
+    /// link this endpoint carries. `None` only for an endpoint built without
+    /// the proxy.
+    #[cfg(feature = "dev-tools")]
+    #[must_use]
+    pub fn lag_profile(&self) -> Option<LagProfile> {
+        self.lag_proxy()
+            .map(postretro_net::lag_proxy::LagProxy::profile)
+    }
+
+    /// Change the lag proxy's impairment; a no-op for an endpoint built
+    /// without the proxy. Datagrams already in flight keep their arrival
+    /// times; the new profile applies to later ones.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_lag_profile(&mut self, profile: LagProfile) {
+        if let Some(proxy) = self.lag_proxy() {
+            proxy.set_profile(profile);
+        }
+    }
+
+    /// A client's smoothed time-sync round trip, through any lag proxy. `None`
+    /// for a host, or before the first echo.
+    #[cfg(feature = "dev-tools")]
+    #[must_use]
+    pub fn measured_rtt(&self) -> Option<Duration> {
+        let Self::Client { time_sync, .. } = self else {
+            return None;
+        };
+        time_sync
+            .rtt_micros()
+            .and_then(|micros| Duration::try_from_secs_f64(micros / 1_000_000.0).ok())
     }
 
     pub fn set_mod_identity(&mut self, id: String, version: String) {
@@ -671,6 +755,12 @@ impl NetEndpoint {
     /// full baselines so unchanged acked remotes are not lost after the local registry
     /// is cleared. Replicated state-slot schema and baselines rebuild from the next
     /// installed level.
+    ///
+    /// The installed tuning goes too: its environment is the old level's gravity
+    /// and fluid table. The host's level change demotes this slot first, which
+    /// already drops it, and the next level's payload is sent only after this
+    /// client re-enters participation, which needs its reveal of a level loaded
+    /// after this reset. Clearing here keeps the unload self-contained.
     pub fn reset_level_scoped_client_state(&mut self) {
         let NetEndpoint::Client {
             client,
@@ -679,6 +769,8 @@ impl NetEndpoint {
             interpolation_delay,
             prediction,
             state_slots,
+            tuning,
+            applied_movement_tuning_generation,
             pending_switch_declarations,
             ..
         } = self
@@ -693,6 +785,8 @@ impl NetEndpoint {
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
         state_slots.reset_schema();
+        *tuning = None;
+        *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
         time_sync.weapon_cues.clear();
     }
@@ -716,6 +810,7 @@ impl NetEndpoint {
             host_pawn,
             descriptor_entities,
             loaded_movers,
+            loaded_teleporters,
             demo_mover,
             state_slots,
             last_sent_tuning,
@@ -739,6 +834,7 @@ impl NetEndpoint {
         *host_pawn = None;
         descriptor_entities.clear();
         loaded_movers.clear();
+        loaded_teleporters.clear();
         *demo_mover = DemoMoverState::from_env();
         state_slots.reset_schema();
         last_sent_tuning.clear();
@@ -796,6 +892,20 @@ impl NetEndpoint {
         }
     }
 
+    /// The movement tuning this client predicts its own pawn with, from the
+    /// installed tuning payload. `None` on a host, before a payload installs,
+    /// or when the host's pawn class has no movement descriptor.
+    pub fn client_movement_tuning(&self) -> Option<&PlayerMovementDescriptor> {
+        match self {
+            Self::Client { tuning, .. } => tuning.as_deref()?.movement.as_ref(),
+            Self::Host { .. } => None,
+        }
+    }
+
+    /// Install a host tuning payload. A pawn tuning change rematerializes the
+    /// armed local pawn: the first payload composes its inventory (a pawn armed
+    /// before it holds none), and a later one merges into the live inventory
+    /// without moving the selection (`networking.md` §What gates, and what replicates instead).
     pub fn install_tuning_payload(
         &mut self,
         bytes: &[u8],
@@ -968,6 +1078,18 @@ mod tests {
         endpoint.demote_client_state(&mut registry);
         assert!(endpoint.client_host_environment().is_none());
 
+        // So does a level unload: the old level's gravity and fluids must
+        // not reach the next one, and the next payload installs as new pawn
+        // tuning even when it matches the dropped one.
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[]);
+        let before_unload = generations(&endpoint);
+        endpoint.reset_level_scoped_client_state();
+        assert!(endpoint.client_host_environment().is_none());
+        assert!(endpoint.client_movement_tuning().is_none());
+        assert_eq!(generations(&endpoint), (before_unload.0, 0));
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[]);
+        assert_eq!(generations(&endpoint).0, before_unload.0.wrapping_add(1));
+
         let host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
             .unwrap()
             .unwrap();
@@ -1008,6 +1130,37 @@ mod tests {
             !apply_client_session_roster(&mut session_status, &mut slot_table, roster).0,
             "an identical reliable roster does not create a second presentation change"
         );
+    }
+
+    /// Every dev-tools endpoint is built behind the lag proxy, unimpaired, and
+    /// takes a live profile change.
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn dev_endpoints_start_unimpaired_behind_the_lag_proxy_and_take_a_live_profile() {
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        let profile = LagProfile {
+            delay_ms: 75,
+            jitter_ms: 30,
+            loss_probability: 0.05,
+        };
+        let host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
+            .expect("host endpoint constructs")
+            .expect("host role yields an endpoint");
+        let client = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint");
+        for mut endpoint in [host, client] {
+            assert_eq!(endpoint.lag_profile(), Some(LagProfile::OFF));
+            endpoint.set_lag_profile(profile);
+            assert_eq!(endpoint.lag_profile(), Some(profile));
+            assert_eq!(endpoint.measured_rtt(), None, "no echo has been measured");
+        }
     }
 
     #[test]

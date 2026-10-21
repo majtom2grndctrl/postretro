@@ -1746,19 +1746,19 @@ fn subject_token_rejections_name_the_reaction_in_both_vms() {
             r#"({ name: "bad", sequence: [{ target: "@wait", primitive: "wait", args: { durationMs: 1 } }] })"#,
             r#"return { name = "bad", sequence = { { target = "@wait", primitive = "wait", args = { durationMs = 1 } } } }"#,
             "reaction `bad` sequence step",
-            "`target` must be \"@activators\", \"@trigger\" or \"@player\", got \"@wait\"",
+            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got \"@wait\"",
         ),
         (
             r#"({ name: "bad", sequence: [{ target: 7, primitive: "grantHealth", args: { amount: 1 } }] })"#,
             r#"return { name = "bad", sequence = { { target = 7, primitive = "grantHealth", args = { amount = 1 } } } }"#,
             "reaction `bad` sequence step",
-            "`target` must be \"@activators\", \"@trigger\" or \"@player\", got a",
+            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got a",
         ),
         (
             r#"({ name: "bad", primitive: "applyDamage", target: "@everyone", args: { amount: 1 } })"#,
             r#"return { name = "bad", primitive = "applyDamage", target = "@everyone", args = { amount = 1 } }"#,
             "reaction `bad` primitive",
-            "`target` must be \"@activators\", \"@trigger\" or \"@player\", got \"@everyone\"",
+            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got \"@everyone\"",
         ),
         (
             r#"({ name: "bad", sequence: [{ target: "@activators", primitive: "armTrigger", args: {} }] })"#,
@@ -1943,4 +1943,40 @@ fn sequence_step_diagnostics_count_from_zero_in_both_vms() {
         let error = identical_rejection(js_source, lua_source);
         assert!(error.contains(expected), "unexpected diagnostic: {error}");
     }
+}
+
+#[test]
+fn teleport_manifests_keep_member_events_and_reject_other_scopes_in_both_vms() {
+    let js = eval_js(
+        r#"({
+        reactions: [
+          { name: "used", primitive: "disarmTeleporter", target: "@teleporter", args: {} },
+          { name: "bad", primitive: "applyDamage", target: "@teleporter", args: { amount: 1 } }
+        ],
+        teleportEvents: [
+          { teleporter: 65536, event: "teleport", fire: ["used"] },
+          { tag: "gate", event: "teleport", fire: ["used"] },
+          { teleporter: 65536, event: "enter", fire: ["used"] }
+        ]
+    })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return {
+        reactions = {
+          { name = "used", primitive = "disarmTeleporter", target = "@teleporter", args = {} },
+          { name = "bad", primitive = "applyDamage", target = "@teleporter", args = { amount = 1 } }
+        },
+        teleportEvents = {
+          { teleporter = 65536, event = "teleport", fire = { "used" } },
+          { tag = "gate", event = "teleport", fire = { "used" } },
+          { teleporter = 65536, event = "enter", fire = { "used" } }
+        }
+    }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+    assert_eq!(js, lua);
+    assert_eq!(js.teleport_events.len(), 1);
+    assert_eq!(js.reactions.len(), 1);
+    assert_eq!(js.teleport_events[0].teleporter, EntityId::from_raw(65536));
 }

@@ -946,6 +946,10 @@ pub(super) fn run_mod_init_luau(
 }
 
 #[cfg(test)]
+#[path = "reflection_profile_tests.rs"]
+mod reflection_profile_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::data_descriptors::{SwitchingDescriptor, TriggerPoolArm};
@@ -984,6 +988,7 @@ mod tests {
                 resolution: ModBloomResolution::Quarter,
                 pixelated: true,
             },
+            ..ModRenderProfile::default()
         };
         assert_eq!(js, expected);
         assert_eq!(luau, expected);
@@ -1002,6 +1007,7 @@ mod tests {
                         resolution: ModBloomResolution::Half,
                         pixelated: true,
                     },
+                    ..ModRenderProfile::default()
                 },
             ),
             (
@@ -1012,6 +1018,7 @@ mod tests {
                         resolution: ModBloomResolution::Eighth,
                         pixelated: false,
                     },
+                    ..ModRenderProfile::default()
                 },
             ),
         ];

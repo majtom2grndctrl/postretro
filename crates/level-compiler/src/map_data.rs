@@ -224,6 +224,24 @@ pub struct MapTriggerVolume {
     pub on_exit: String,
 }
 
+/// One authored reflection-probe box. Compiler-only: no static BSP, geometry,
+/// collision or runtime entity input sees it; only the reflection-probe stage
+/// reads it (`resource_management.md` §5.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapReflectionVolume {
+    /// Source map entity index; the probe's `source_entity` in id 54.
+    pub source_entity: u32,
+    /// Adapter-written diagnostic name, in the source format's vocabulary.
+    /// Shared stages print it verbatim and never parse it.
+    pub source_label: String,
+    /// Engine-space AABB of every brush: the projection box and the
+    /// influence region.
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// Horizontal capture-point offset in engine meters, `[x, z]`.
+    pub capture_offset: Option<[f32; 2]>,
+}
+
 /// One canonical environment volume: a static region that overrides gravity,
 /// adds a push, or holds a fluid. Format adapters translate their authoring
 /// vocabulary into this record with only the fields the source entity sets;
@@ -238,8 +256,12 @@ pub struct MapEnvironmentVolume {
     pub priority: i32,
     /// Gravity override, m/s², signed vertical (negative = downward).
     pub gravity: Option<f32>,
-    /// Push acceleration, m/s², engine axes (Y-up).
+    /// Push acceleration, m/s², engine axes (Y-up): the nominal current, its
+    /// direction and look.
     pub push: Option<glam::Vec3>,
+    /// How hard the push shoves a body: bodies feel `push × force`. Finite and
+    /// ≥ 0; 1 unless a `push_volume` authors `force`.
+    pub force: f32,
     /// Fluid name the mod manifest resolves.
     pub fluid: Option<String>,
     /// One convex leaf per authored brush, in authored order.
@@ -657,6 +679,11 @@ pub struct MapData {
     /// Static regional gravity, push and fluid volumes in source map entity
     /// order, which is the overlap rule's final tiebreak.
     pub environment_volumes: Vec<MapEnvironmentVolume>,
+    /// Authored reflection-probe boxes in source map entity order, the
+    /// binding tiebreak and id 54's authored probe order.
+    pub reflection_volumes: Vec<MapReflectionVolume>,
+    /// Predictive teleporter records, in source entity order.
+    pub teleporters: postretro_level_format::teleporters::TeleportersSection,
     /// Mapper-authored SH probe-coarsening protection volumes: world-space AABBs
     /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
     /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.

@@ -28,6 +28,11 @@ pub const LIGHTMAP_BLOCK_RECORD_BYTES: usize = 36;
 /// inside WebGPU's default 8192 texture dimension.
 pub const LIGHTMAP_POOL_LAYER_EDGE: u32 = 2048;
 
+/// Minimum array-layer limit requested by the renderer. A level that cannot
+/// stream must fit its all-resident lightmap pool within this runtime floor.
+/// Internal compiler bake layers are working planes and do not use this limit.
+pub const RUNTIME_MAX_TEXTURE_ARRAY_LAYERS: u32 = 256;
+
 /// Most blocks a level may carry. Block id + 1 must fit a vertex's `u16`;
 /// 0 means no lightmap. So ids run 0..=65534.
 pub const MAX_LIGHTMAP_BLOCKS: u32 = u16::MAX as u32;
@@ -523,9 +528,10 @@ impl LightmapSection {
                 .sum::<usize>()
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    /// Header and block records, without copying any encoded block payload.
+    pub fn index_bytes(&self) -> Vec<u8> {
         let index = self.index();
-        let mut out = Vec::with_capacity(self.byte_len());
+        let mut out = Vec::with_capacity(index.header.index_byte_len().unwrap_or(0) as usize);
         index.header.write(&mut out);
         for record in &index.records {
             out.extend_from_slice(&record.cell_id.to_le_bytes());
@@ -537,6 +543,22 @@ impl LightmapSection {
             out.extend_from_slice(&record.direction.len.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
         }
+        out
+    }
+
+    /// Stream the wire bytes, retaining only the index beside the block blobs.
+    pub fn write_to(&self, writer: &mut (impl std::io::Write + ?Sized)) -> std::io::Result<()> {
+        writer.write_all(&self.index_bytes())?;
+        for block in &self.blocks {
+            writer.write_all(&block.irradiance)?;
+            writer.write_all(&block.direction)?;
+        }
+        Ok(())
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = self.index_bytes();
+        out.reserve_exact(self.byte_len() - out.len());
         for block in &self.blocks {
             out.extend_from_slice(&block.irradiance);
             out.extend_from_slice(&block.direction);

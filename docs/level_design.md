@@ -37,6 +37,20 @@ bin/prl-build <content-root>/maps/input.map \
 
 **Unit scale:** 1 map unit = 0.0254 m (one inch). A standard player-height room is roughly 72–80 units tall.
 
+### Entity facing
+
+An entity faces the direction of its TrenchBroom arrow: the yaw of its `angle`
+key, or the middle value of `angles` (`"pitch yaw roll"`). This holds for
+everything that has a front: a `player_spawn` looks along the arrow, and a
+`prop_mesh`, an enemy, a pickup, or the enemies an `entity_spawner` releases
+turn their model's front along it. An entity with no angle key faces yaw `0`.
+When an `entity_spawner` releases several copies, they line up side by side
+to the left of its arrow, starting at the spawner.
+
+Set only the yaw for characters and pickups. Pitch and roll tilt a `prop_mesh`,
+but an enemy keeps only its yaw once it starts turning, and a player start
+ignores roll. Lights use `angles` as a direction instead; see their keys below.
+
 ---
 
 ## Lights
@@ -281,14 +295,15 @@ Each brush is one convex piece of the volume. One entity may own several brushes
 
 | Key | Entity | Type | Default | What it does |
 |-----|--------|------|---------|--------------|
-| `fluid` | `fluid_volume` | string | **required** | The name of a fluid your mod declares with `defineFluid`, such as `water`. The mod's declaration sets how thick the fluid is, the screen tint and sound muffling while your view is inside, the surface opacity, and the splash sounds (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). A name the mod does not declare loads as dry, with a warning naming the entity and the fluid. |
+| `fluid` | `fluid_volume` | string | **required** | The name of a fluid your mod declares with `defineFluid`, such as `water`. The mod's declaration sets how thick the fluid is, the screen tint and sound muffling while your view is inside, the surface opacity, how strongly the surface reflects (`surfaceReflectivity`), and the splash sounds (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). A name the mod does not declare loads as dry, with a warning naming the entity and the fluid. |
 | `gravity` | `gravity_volume` | float | **required** | Gravity inside the volume, in **m/s²**, signed like worldspawn `initialGravity`: negative pulls down. `-20.32` is the level default, `-6` is low gravity, `0` is weightless, and a positive value pulls up. It replaces the level's gravity inside the volume. A script's `setGravity` changes the level's gravity everywhere else, never inside a gravity volume, and `getGravity` returns the level's gravity even inside one. |
 | `push` | `push_volume` | three floats | **required** | An acceleration in **m/s²**, in map axes (X, Y, Z, with Z up, as TrenchBroom shows them). `0 0 25` is an updraft, `8 0 0` a wind toward +X, `0 6 0` a current toward +Y. A push never changes which way is down. |
+| `force` | `push_volume` | float | `1` | How hard the push shoves the player, who feels `push` × `force`. `push` keeps its direction and look: a current's surface drifts, and particles flow, the same at any force. `0` makes a decorative current that pushes nothing; above `1` shoves harder than it looks. Any finite number from `0` up. |
 | `priority` | all three | integer | `0` | Which volume wins where volumes that set the same key overlap. Higher wins. |
 
 `gravity` and `push` are in metres per second squared, not map units. The level default is −20.32 m/s², about twice Earth's 9.81: shooter jumps use exaggerated gravity so they land quickly.
 
-A blank `fluid`, `gravity` or `push`, a `gravity` with more than one number, a `push` without exactly three numbers, or a volume entity with no brush fails the build, and the error names the entity.
+A blank `fluid`, `gravity` or `push`, a `gravity` with more than one number, a `push` without exactly three numbers, a negative, infinite or non-numeric `force`, or a volume entity with no brush fails the build, and the error names the entity.
 
 ### How overlapping volumes combine
 
@@ -302,28 +317,43 @@ Where no volume sets a key, the level's own value applies: worldspawn `initialGr
 
 Because each key resolves separately, volumes that set different keys combine. A water pool inside a low-gravity room is wet, and it has low gravity. Gravity and push apply at the player's position. A fluid applies wherever it covers part of the player's body from feet to head, and how deep the player is counts only the winning fluid's brushes.
 
-Push is one winner, never a sum. That gives you two patterns:
+Push is one winner, never a sum, and `force` goes with its winning push: where volumes overlap, the player feels the winning volume's `push` × its own `force`, never a mix of two volumes. That gives you two patterns:
 
 - **A calm pocket.** Put a `push_volume` with `push` `0 0 0` inside a wind, at a higher `priority`. Nothing pushes inside the pocket.
 - **Lift and drift together.** A shaft that should both lift and drift sideways is one `push_volume` carrying the combined vector, such as `4 0 15`.
 
-A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push.
+A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push, and the fluid's surface drifts with it, at the speed the push alone carries a swimmer at `force` 1. A bending river is one `fluid_volume` under several `push_volume` entities, one per stretch: a push is one vector per entity, so each stretch needs its own, and the surface drifts along each, exactly where its push is. The surface drifts only where the push holds the water 2 mm below the surface: a current must reach within 2 mm of the waterline, and a push from above must dip at least 2 mm into the water. A current sunk wholly beneath the waterline carries swimmers but leaves the surface still, and a push whose bottom rests on the waterline, such as a wind over the water, moves no water. A vertical push (an updraft or a down-current) has nothing along a level surface, so the surface looks still from above.
 
 ### What the player feels
 
 - **Fluids.** A player whose descriptor has a `movement.swim` block swims once deep enough, and can jump out from the surface. A player without one walks along the bottom.
 - **Gravity.** The player falls, jumps and swims under the volume's gravity. Leaving the volume brings the level's gravity back at once.
-- **Push.** A sideways push makes a standing player drift at a steady speed, and walls stop the drift. Airborne, the drift carries on after leaving the volume until you land. An upward push stronger than gravity lifts a standing player off the ground, and the rise levels off at the player's terminal fall speed. A weaker upward push only makes jumps floatier.
+- **Push.** The player feels `push` × `force`: `force` `0` pushes nothing, and the lift-off and the steady drift scale with it. The terminal speed below is the player's own and does not change with `force`. A sideways push makes a standing player drift at a steady speed, and walls stop the drift. Airborne, the drift carries on after leaving the volume until you land. An upward push stronger than gravity lifts a standing player off the ground, and the rise levels off at the player's terminal fall speed. A weaker upward push only makes jumps floatier.
 
 Enemies take only a volume's gravity, and only when it pulls down: in a volume whose gravity pulls up, an enemy behaves as if weightless. Enemies ignore push, do not swim, and walk along the bottom of a fluid. Projectiles are not affected by any volume.
 
 ### Fluid surfaces
 
-The compiler draws a fluid's surface from its brush faces, using each face's texture. The surface is translucent, warped, and visible from both above and below.
+The compiler draws a fluid's surface from its brush faces, using each face's texture. The surface is translucent and visible from both above and below. It moves in whole texels on its texture's own grid, so a fluid has the grain of a wall at the same texture scale: still water shimmers and rings, and a current drifts the way it pushes. Scale the texture down for finer water.
 
 - A face flush against solid world draws nothing, so a pool sunk into the floor shows only its top. A face partly against solid world draws only its open part.
 - A face shared by two brushes of the same `fluid_volume` draws nothing.
 - **Build one pool as one entity.** A pool made from two `fluid_volume` entities draws a surface where they meet. Give one entity several brushes instead.
+
+### Fluid reflections
+
+Every up-facing fluid surface reflects the room around it, with no authoring: after a rebuild the compiler derives a reflection probe for each pool, fitted to the room the pool sees. A pool sunk below the floor reflects the room, not the pit. How strongly a fluid reflects is its declaration's `surfaceReflectivity` (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). Sloped and side faces do not reflect. Seen from below the surface, nothing reflects.
+
+When the fitted box is wrong, draw a `reflection_volume` brush around the room. It is an invisible, compiler-only brush entity: it does not render, collide or change the lighting.
+
+| Key | Type | Default | What it does |
+|-----|------|---------|--------------|
+| `_capture_offset` | two floats | none | Moves the capture point, the spot the room is photographed from, in **map units** on the map's horizontal axes: `32 -16`. It starts in the middle of the lowest water inside the box, 2 mm above the surface. Use it to step clear of a pillar standing in the water there. Its height cannot be moved. |
+
+- **The box is the reflection's room and its reach.** The reflection projects onto the box's walls, and the box claims the up-facing fluid surfaces inside it. A surface binds the smallest box that contains the centre of its area. On a tie, the entity that comes first in the `.map` file wins. A surface no box claims keeps its derived probe.
+- **Offset errors.** An offset with three numbers (the third would be vertical), one that is not two numbers, or one that moves the capture point outside the box fails the build, and the error names the entity.
+- **Too many boxes.** A level holds at most 256 reflection probes. `reflection_volume` boxes past that cap refuse the build; derived probes past it are dropped with a warning instead, the ones over the least water first.
+- **Warnings.** A box with no water inside, or whose water smaller boxes all claim, draws nothing and warns. A capture point inside solid, inside a fluid or outside the level drops its probe with a warning naming the entity. A capture point within 1 cm of a wall moves 1 cm clear of it; it drops with a warning if that move would leave its box or its water, or if walls stand within 1 cm on both sides of it. Derived probes drop the same way, and their water then reflects nothing: draw a `reflection_volume` there. A pillar standing in the water where the capture point would land does not drop it: the point moves onto the water beside the pillar, which then blocks much of the view, so use an offset to step clear. A box holding water at more than one height warns, naming the heights, and captures above the lowest. A capture point that sees less than half of its probe's water warns, naming the probe; the water it cannot see reflects nothing. Move the point with `_capture_offset`, or give the hidden water its own box.
 
 ### Tips
 
@@ -331,6 +361,72 @@ The compiler draws a fluid's surface from its brush faces, using each face's tex
 - **Mind the depth.** A player starts swimming only once the fluid covers the share of their body that the player descriptor's `enterDepth` names; at `0.5`, about waist deep. Shallower is wading.
 - **Push is acceleration.** `8` is a firm wind; `25` up is enough to lift a player against the default gravity. Start small and tune by feel.
 - **Keep volumes clear of walls you don't mean.** Like fog, a volume does not stop at a wall.
+
+---
+
+## Movers
+
+A `kinematic_mover` is a brush entity that slides along a path of `kinematic_waypoint` points, spins, or both: doors, lifts, platforms, carousels. This section covers what a mover does to a player in its way.
+
+### Pinned players
+
+A mover never presses a player into the world or into another mover, unless its `block_policy` is `crush`. A player is **pinned** when the mover's next move would do that:
+
+- **A rider**, standing on the mover or vaulting onto it, whom the mover would carry into a ceiling, a wall or another mover.
+- **Any other player** the mover pushes, with a wall, a door jamb or another mover behind them.
+
+### Block policy
+
+`block_policy` picks what the mover does to a player in its way:
+
+| `block_policy` | Player in its path | Player pinned |
+|----------------|--------------------|---------------|
+| `displace` (default) | Pushes them along. | Holds, then carries on the tick the player is clear. |
+| `stop` | Holds while it touches them, then carries on. | Holds, then carries on. |
+| `reverse` | Backs off along its path. | Backs off if its path heads into the player and the way back is clear. Otherwise holds. |
+| `crush` | Pushes them along. | Keeps moving and deals `crush_damage` every `crush_interval_ms`. Never yields. |
+
+- **Holding** stops the mover's travel and its spin together.
+- **A rider on a `stop` or `reverse` mover** (or just after jumping off it) is not an obstruction to it. A rider the mover would carry into a ceiling, wall or another mover, in any direction, is pinned. A rider may stand right up to a ceiling; a move that would carry them into it pins.
+- **`reverse` holds instead of backing off** when the mover has no path to back along, when its spin causes the pin, when the pin is off its heading (such as a player pressed sideways to the path), when it is still at its start, or when backing off would pin someone else.
+- **A hold keeps its plan.** A `once` door finishes its run once the player is clear. A mover sent to a path node by a script still goes there. An expiring `auto_close_ms` still sends a held door closed, and the closing door holds for the player the same way.
+- **A `reverse` back-off is a new course.** It drops a scripted `goToPathNode` target and heads for the other end.
+- **A `once` mover that backs off to its start** ends unstarted: its trigger's `start` runs it again, and a `reverse` command on it at its start sends it out along its path (opens it). An `auto_close_ms` countdown that expires on such a parked mover does nothing.
+- **Dead players' bodies count.** A body left under a default `once` lift holds it until the body is gone.
+- **`crush` never yields**, even at `crush_damage` `0`: then it moves through the player and leaves them inside it, unharmed. It also crushes a rider carried sideways into a wall and a player squeezed between it and another mover.
+
+Enemies are never carried or pushed, so none of this applies to them: a `displace` mover ignores them, and a `stop` or `reverse` mover reacts to an enemy on its heading (and fires the blocked event) as it does to a player.
+
+### Blocked event and sound
+
+`blocked_event` names a reaction to fire, and `blocked_sound` a sound to play, when the mover first reacts: a `stop` or `reverse` mover meeting a player or enemy on its heading, or any non-`crush` mover first holding or backing off for a pinned player. A hold fires once for as long as it lasts, even if its cause changes from a contact to a pin. Once the hold ends (a script stops the mover, it finishes its run, or the player moves clear), the next one fires again.
+
+- A `reverse` mover fires on every back-off, since a back-off is not a hold. A ping-pong `reverse` mover that keeps meeting a player fires each time.
+- A script command that restarts a `stop` mover held by an unpinned contact (a `blocked_event` reaction calling `start()`) fires the event again on the next tick. A mover held for a pinned player does not.
+
+### Choosing a response
+
+Outside `crush`, the engine guarantees only that a mover never leaves a player stuck inside it or the world. How the mover responds is yours to author:
+
+- **Wait for the player.** The default: `displace` holds, then carries on.
+- **Back off.** Use `reverse`.
+- **Anything a script can do.** Name a reaction in `blocked_event`. It can run the door's `reverse()` to back it off the player, play a sound or show a message. A command never moves a held mover into the player: a course back into them holds again.
+- **Close no matter what.** Use `crush`.
+
+**Co-op.** Any player can hold a default door open by standing in it. A door that must close, such as one sealing an arena, needs `crush`. On a remote player's screen a held mover may move for a moment, then settle back where the host holds it.
+
+**Headroom.** A lift whose rider is too tall for the gap above its stop just waits, with the rider under the ceiling. A rider who crouches or steps off lets it carry on. The first time a mover holds or backs off for a pinned rider (a rider carried sideways into a wall included), the engine logs one `[Mover]` warning giving the mover's numeric id and its current position in TrenchBroom coordinates; it does not repeat for that mover until the level loads again. Raise the ceiling, lower the stop, or use `crush`.
+
+---
+
+## Teleporters
+
+A `trigger_teleport` brush sends a player who walks into it to a
+`teleport_destination` point: either exactly there (`classic`), or carried
+relative to a pair of points with their offset, view and momentum kept
+(`seamless`), for shifts between copies of a room. Scripts turn teleporters on
+and off. Keys, room-copy layout, firing rules and scripting are in
+[docs/teleporters.md](teleporters.md).
 
 ---
 

@@ -36,7 +36,7 @@ fn fxc_instance() -> wgpu::Instance {
 #[ignore = "on demand: FXC compiles every renderer pipeline (tens of seconds)"]
 fn dx12_fxc_compiles_every_full_init_pipeline() {
     match Renderer::new_offscreen_on(&fxc_instance(), 64, 64) {
-        Ok(_) => {}
+        Ok(_) => eprintln!("DX12 FXC test ran: every full-init pipeline compiled"),
         Err(error) if error.to_string().contains("requires a GPU adapter") => {
             eprintln!("DX12 FXC test skipped: no DX12 adapter ({error:#})");
         }

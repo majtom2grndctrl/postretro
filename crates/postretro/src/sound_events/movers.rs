@@ -6,7 +6,8 @@ use glam::Vec3;
 use postretro_entities::{Emitter, EntityId, KinematicMoverComponent};
 use postretro_physics::kinematic_mover::MoverEventKind;
 
-use super::anchors::{AnchorScene, entity_key, mover_entity};
+use super::anchors::{AnchorScene, entity_key};
+use crate::runtime_movers::mover_entity;
 
 /// One mover edge as the app drain sees it. Either authored field may be
 /// absent; an edge with neither is dropped.

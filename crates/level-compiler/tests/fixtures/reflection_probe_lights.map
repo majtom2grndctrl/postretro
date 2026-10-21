@@ -1,0 +1,125 @@
+// Reflection-probe light fixture: a long sealed hall with a pool under one animated light.
+// Entities: 2 static light, 3 animated red (style 1) over the pool, 4 dynamic light, 5 bake-only
+// animated (style 2), 6 animated sdf (style 10), 7 animated blue (style 5), 8 the pool.
+// The roster is [3, 5, 6, 7]: entity 5 is a runtime hole (bake-only, no AlphaLights record).
+{
+"classname" "worldspawn"
+{
+( -784 0 0 ) ( -784 1 0 ) ( -784 0 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 784 0 0 ) ( 784 0 1 ) ( 784 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -144 0 ) ( 0 -144 1 ) ( 1 -144 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 144 0 ) ( 1 144 0 ) ( 0 144 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+{
+( -784 0 0 ) ( -784 1 0 ) ( -784 0 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 784 0 0 ) ( 784 0 1 ) ( 784 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -144 0 ) ( 0 -144 1 ) ( 1 -144 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 144 0 ) ( 1 144 0 ) ( 0 144 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 192 ) ( 1 0 192 ) ( 0 1 192 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 208 ) ( 0 1 208 ) ( 1 0 208 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+{
+( -784 0 0 ) ( -784 1 0 ) ( -784 0 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -768 0 0 ) ( -768 0 1 ) ( -768 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -144 0 ) ( 0 -144 1 ) ( 1 -144 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 144 0 ) ( 1 144 0 ) ( 0 144 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 192 ) ( 0 1 192 ) ( 1 0 192 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+{
+( 768 0 0 ) ( 768 1 0 ) ( 768 0 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 784 0 0 ) ( 784 0 1 ) ( 784 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -144 0 ) ( 0 -144 1 ) ( 1 -144 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 144 0 ) ( 1 144 0 ) ( 0 144 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 192 ) ( 0 1 192 ) ( 1 0 192 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+{
+( -768 0 0 ) ( -768 1 0 ) ( -768 0 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 768 0 0 ) ( 768 0 1 ) ( 768 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -144 0 ) ( 0 -144 1 ) ( 1 -144 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -128 0 ) ( 1 -128 0 ) ( 0 -128 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 192 ) ( 0 1 192 ) ( 1 0 192 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+{
+( -768 0 0 ) ( -768 1 0 ) ( -768 0 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 768 0 0 ) ( 768 0 1 ) ( 768 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 128 0 ) ( 0 128 1 ) ( 1 128 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 144 0 ) ( 1 144 0 ) ( 0 144 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 192 ) ( 0 1 192 ) ( 1 0 192 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "-640 0 32"
+}
+{
+"classname" "light"
+"origin" "-256 0 96"
+"light" "300"
+"_falloff_range" "192"
+"_light_size" "0"
+"_color" "255 255 255"
+}
+{
+"classname" "light"
+"origin" "-512 0 96"
+"light" "300"
+"_falloff_range" "192"
+"_light_size" "0"
+"_color" "255 64 64"
+"style" "1"
+}
+{
+"classname" "light_dynamic"
+"origin" "384 0 96"
+"light" "300"
+"_falloff_range" "192"
+"_light_size" "0"
+"_color" "255 255 255"
+}
+{
+"classname" "light"
+"origin" "256 0 96"
+"light" "300"
+"_falloff_range" "192"
+"_light_size" "0"
+"_color" "255 255 64"
+"style" "2"
+"_bake_only" "1"
+}
+{
+"classname" "light"
+"origin" "0 0 96"
+"light" "300"
+"_falloff_range" "192"
+"_light_size" "0"
+"_color" "64 255 64"
+"style" "10"
+"_shadow_type" "sdf"
+}
+{
+"classname" "light"
+"origin" "512 0 96"
+"light" "300"
+"_falloff_range" "192"
+"_light_size" "0"
+"_color" "64 64 255"
+"style" "5"
+}
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( -640 0 0 ) ( -640 1 0 ) ( -640 0 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -384 0 0 ) ( -384 0 1 ) ( -384 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -96 0 ) ( 0 -96 1 ) ( 1 -96 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 96 0 ) ( 1 96 0 ) ( 0 96 1 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 32 ) ( 0 1 32 ) ( 1 0 32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+}

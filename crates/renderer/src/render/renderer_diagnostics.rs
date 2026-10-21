@@ -301,8 +301,18 @@ impl Renderer {
         let full = self.full_mut();
         let want_live_irradiance = state.show_markers
             && state.marker_mode == sh_diagnostics::MarkerMode::Irradiance
+            && state.cell_radius > 0.0
             && full.sh_volume_resources.present;
         full.sh_probe_readback.set_wanted(want_live_irradiance);
+        if let Some(streaming) = full.sh_streaming.as_mut() {
+            streaming.set_probe_overlay(
+                state.show_markers
+                    && state.marker_mode == sh_diagnostics::MarkerMode::Irradiance
+                    && state.cell_radius > 0.0,
+                camera_pos,
+                state.cell_radius,
+            );
+        }
 
         sh_diagnostics::emit(
             state,

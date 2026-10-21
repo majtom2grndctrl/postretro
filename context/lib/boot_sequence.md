@@ -149,7 +149,7 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 | 1 | Seed the level default gravity from the EnvironmentVolumes header (before scripts run) |
 | 2 | Texture upload from `.prm` sidecars |
 | 3 | UV normalize using uploaded texture dimensions |
-| 4 | Apply the current player shadow tier at the renderer boundary, then upload geometry (rebuilding the spot-shadow pool and resolution-coupled caches only when the retained resolution changed), then fluid surfaces, whose UVs normalize by the uploaded texture sizes |
+| 4 | Apply the current player shadow tier at the renderer boundary, then upload geometry (rebuilding the spot-shadow pool and resolution-coupled caches only when the retained resolution changed), then fluid surfaces, whose UVs normalize by the uploaded texture sizes and whose grid follows the SH lattice geometry upload installs (`rendering_pipeline.md` §7.3a); they draw still until drift resolves (note below) |
 | 5 | World mesh spawn (see seam note below) |
 | 6 | Light bridge: one light entity per map-authored light |
 | 7 | Collision world committed from static geometry (separate from BSP; built before stage 1, so a rejected mesh — a defensive route, see `entity_model.md` §7 — fails the load before any mutation), then the environment volume set and its query tree, replaced whole. Both exist before the level content digest publishes and before the first tick, on the renderer-less path too |
@@ -167,6 +167,8 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 Lights come from PRL data via the light bridge, not classname dispatch. Entity types and mod-global reaction/crossing definitions arrive at mod-init via the mod manifest. `setupLevel`/the data script contributes level-local reactions and crossings only (see `scripting.md` §2). Level install composes active behavior after the data script returns and before crossing initialization and progress subscription, so both see the final active set. Progress membership is captured later (stage 13), so it counts the map-placed NPCs the archetype sweep spawns.
 
 **No streamed read at install.** Install reads no streamed SH cluster or lightmap block; Settling's drains make the presented pose's set resident before the first world frame. Capture and tests keep a synchronous lightmap preload of their own.
+
+**Fluid surface drift.** Drift first resolves after the `levelLoad` fire (stage 14), once the boot pawn exists, so the host reads its own descriptor's terminal velocity. Every later fluid-table or tuning refresh re-resolves it (`rendering_pipeline.md` §7.3a).
 
 **Mesh-spawn seam.** World mesh spawning is its own install stage, distinct from classname dispatch. The durable contract: map geometry becomes renderable mesh entities here, after geometry upload and before the light/fog bridges. (The current implementation hardwires a single world mesh; a classname-driven handler is planned — see §7.)
 

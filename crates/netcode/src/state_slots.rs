@@ -498,6 +498,7 @@ use postretro_net::state_slots::{
     RawStateSlotRecord, WireSlotValue,
 };
 
+use super::client::baseline_is_newer;
 use crate::netcode::command_queue::{MovementOwners, WeaponOwners};
 use crate::weapon::{ReplicatedWeaponProjection, SlotSample};
 use postretro_entities::EntityId;
@@ -613,10 +614,10 @@ impl FactionSentimentReplication {
             return;
         };
         // A delayed ack may name the immediately previous complete set after the
-        // host has already advanced again. Preserve that progress so the next delta
-        // references the baseline the client actually holds; requiring the current
-        // id here would strand a client on an unappliable old reference. A forged
-        // future id remains outside the issued namespace and is ignored.
+        // host has already advanced again. Record that progress anyway: acks advance
+        // monotonically, and the client applies any newer complete set whatever
+        // reference it names. A forged future id remains outside the issued
+        // namespace and is ignored.
         if acknowledged >= self.minimum_valid_baseline_id
             && acknowledged < self.next_baseline_id
             && acknowledged > *held
@@ -1160,12 +1161,14 @@ use crate::scripting::primitives::store::apply_store_slot_batch;
 
 /// Reason code carried in a `StateBaselineRefresh` request. Diagnostic only — the
 /// server repair path keys on slot + missing ref, not the reason.
+/// A `Delta` arrived with no held baseline, or a regressed one.
 const STATE_REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 
 /// What a client state-apply pass produced for the caller to send back on the reliable
 /// input channel: the `(slot_id, baseline_id)` acks for applied records, and the
-/// baseline-refresh requests for deltas referencing a baseline the client does not
-/// hold. Both empty when the snapshot carried no state records or was rejected whole.
+/// baseline-refresh requests for deltas whose slot holds no baseline, or whose id is
+/// older than the held one. Both empty when the snapshot carried no state records or
+/// was rejected whole.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct StateApplyOutcome {
     pub(crate) slot_baselines: Vec<(u16, u32)>,
@@ -1197,11 +1200,15 @@ pub struct ClientStateApply {
     /// The lowered net schema (fingerprint + per-slot descriptors), built once
     /// alongside `schema` and reused so per-snapshot validation does not re-lower it.
     net_schema: Option<StateSchema>,
-    /// `StateSlotId -> held baseline_id`. A delta's `baseline_ref` must match this to
-    /// apply; a successful apply advances it. `FullBaseline` sets it outright.
+    /// `StateSlotId -> held baseline_id`. A delta applies when its `new_baseline_id`
+    /// is newer than this, whatever its `baseline_ref`, and a successful apply
+    /// advances it; a delta at the held id is skipped and an older one requests a
+    /// refresh. `FullBaseline` sets it outright.
     held_baselines: HashMap<StateSlotId, u32>,
     /// Complete sparse faction-sentiment baseline currently reflected by the local
     /// overlay. Its independent namespace prevents collision with static slot ids.
+    /// Deltas follow the same newest-wins rule as `held_baselines`, except that an
+    /// older id is adopted as a complete set (see `apply_faction_sentiment`).
     held_faction_sentiment_baseline: Option<u32>,
     /// The host wieldable slot each owner-private weapon value in the slot table
     /// describes, committed with that value. A reset clears it, so a value kept
@@ -1266,15 +1273,25 @@ impl ClientStateApply {
         let baseline_id = match &typed {
             FactionSentimentRecord::FullBaseline { baseline_id, .. } => *baseline_id,
             FactionSentimentRecord::Delta {
-                baseline_ref,
-                new_baseline_id,
-                ..
+                new_baseline_id, ..
             } => {
-                if self.held_faction_sentiment_baseline != Some(*baseline_ref) {
-                    // The host re-emits against its last acknowledged baseline until
-                    // it receives an ack. Leaving this record unacked therefore
-                    // retries safely without a new input-channel message variant.
-                    return None;
+                // Each record carries the complete set, so any held baseline older
+                // than `new_baseline_id` suffices. Without one, leaving this record
+                // unacked retries safely: the host re-emits until it sees an ack.
+                // A record at the held id is a resend and is skipped. This runs
+                // only for an accepted newest snapshot, so an older id breaks
+                // newest-wins; the overlay has no refresh request, and this record
+                // already is the complete set a refresh would deliver, so adopt
+                // and ack it rather than leave the host resending forever.
+                match self.held_faction_sentiment_baseline {
+                    None => return None,
+                    Some(held) if held == *new_baseline_id => return None,
+                    Some(held) if !baseline_is_newer(*new_baseline_id, held) => {
+                        log::warn!(
+                            "[Net] faction-sentiment delta {new_baseline_id} is older than held {held}; adopting it as a complete set"
+                        );
+                    }
+                    Some(_) => {}
                 }
                 *new_baseline_id
             }
@@ -1354,10 +1371,12 @@ impl ClientStateApply {
     ///   or the store's own type/range/enum/finite check — rejects the WHOLE batch and
     ///   leaves every slot unchanged (no partial apply, no baseline advance). A
     ///   fingerprint mismatch logs a stable diagnostic; the batch is dropped.
-    /// - **Delta against a missing baseline** — a single delta referencing a baseline
-    ///   the client does not hold is EXCLUDED from this batch and triggers a refresh
-    ///   request, while the rest of the batch still applies normally. It does not reject
-    ///   the batch.
+    /// - **Delta against a missing or regressed baseline** — a single delta for a slot
+    ///   the client holds no baseline for, or whose `new_baseline_id` is older than the
+    ///   held one, is EXCLUDED from this batch and triggers a refresh request, while
+    ///   the rest of the batch still applies normally. It does not reject the batch. A
+    ///   delta at the held id is excluded silently; any newer delta applies whatever
+    ///   its `baseline_ref`, since it carries the full value.
     ///
     /// On success, every applicable record's value is written through the atomic
     /// store-batch helper (which prevalidates all mapped values, then commits all or
@@ -1388,8 +1407,9 @@ impl ClientStateApply {
             }
         };
 
-        // Partition the validated records: applicable (full baseline, or a delta whose
-        // ref the client holds) vs refresh-needed (delta against a missing baseline).
+        // Partition the validated records: applicable (full baseline, or a delta newer
+        // than the held baseline) vs refresh-needed (delta with no held baseline or
+        // an older id).
         let mut writes: Vec<PendingSlotWrite> = Vec::new();
         let mut pending_baselines: Vec<(StateSlotId, u32)> = Vec::new();
         let mut outcome = StateApplyOutcome::default();
@@ -1419,7 +1439,17 @@ impl ClientStateApply {
                     new_baseline_id,
                     value,
                 } => {
-                    if self.held_baselines.get(slot_id).copied() == Some(*baseline_ref) {
+                    let held = self.held_baselines.get(slot_id).copied();
+                    // The delta carries the full value, so any older held baseline
+                    // suffices. One at the held id is a resend, skipped silently.
+                    // State applies only for an accepted newest snapshot, so an
+                    // older id breaks newest-wins: repair it like a missing one.
+                    if held == Some(*new_baseline_id) {
+                        continue;
+                    }
+                    if let Some(held) = held
+                        && baseline_is_newer(*new_baseline_id, held)
+                    {
                         match self.write_for(slot_table, replication_identity, *slot_id, value) {
                             Ok(Some(write)) => writes.push(write),
                             Ok(None) => {}
@@ -1432,8 +1462,9 @@ impl ClientStateApply {
                         }
                         pending_baselines.push((*slot_id, *new_baseline_id));
                     } else {
-                        // Missing baseline: request a full refresh keyed by StateSlotId.
-                        // Leave the slot untouched; the rest of the batch still applies.
+                        // Missing or regressed baseline: request a full refresh keyed
+                        // by StateSlotId. Leave the slot untouched; the rest of the
+                        // batch still applies.
                         outcome.refresh_requests.push(StateBaselineRefreshRequest {
                             snapshot_sequence,
                             slot_id: slot_id.0,
@@ -4641,6 +4672,112 @@ mod tests {
         );
     }
 
+    fn objective_frame(
+        host: &mut HostStateReplication,
+        table: &SlotTable,
+        sequence: u32,
+    ) -> Vec<RawStateSlotRecord> {
+        host.ingest_frame(
+            table,
+            &test_replication_identity(),
+            &EntityRegistry::new(),
+            &MovementOwners::new(),
+            &WeaponOwners::new(),
+        );
+        host.produce_for_client(CLIENT_A, sequence)
+            .expect("the objective has records for this frame")
+    }
+
+    // Newest wins for state deltas: each carries the full value, so deltas the host
+    // keeps naming against its last acked baseline (while the client's newer acks
+    // are in flight) all apply. A duplicate at the held id is skipped without a
+    // refresh or an ack; an older id inside a newer snapshot requests a refresh.
+    #[test]
+    fn state_deltas_apply_newest_skip_duplicates_and_refresh_regressions() {
+        let mut host_table = shared_and_private_table();
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(3.0));
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+
+        let full = objective_frame(&mut host, &host_table, 0);
+        let new_client = || {
+            let mut table = shared_and_private_table();
+            let mut client = ClientStateApply::new();
+            let outcome = client.apply_snapshot_state(
+                &mut table,
+                &test_replication_identity(),
+                0,
+                &fingerprint,
+                &full,
+            );
+            (client, table, outcome.slot_baselines)
+        };
+        let (mut in_order, mut in_order_table, acked) = new_client();
+        let (_, held_a) = acked[0];
+        host.apply_ack(CLIENT_A, 0, &acked, None);
+
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(4.0));
+        let to_b = objective_frame(&mut host, &host_table, 1);
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(5.0));
+        let to_c = objective_frame(&mut host, &host_table, 2);
+        for records in [&to_b, &to_c] {
+            assert_eq!(records.len(), 1);
+            assert_eq!(
+                records[0].kind,
+                postretro_net::state_slots::STATE_RECORD_KIND_DELTA
+            );
+            assert_eq!(
+                records[0].baseline_ref, held_a,
+                "no ack past A reached the host"
+            );
+        }
+        let objective = |table: &SlotTable| table.get("net.objective").unwrap().value.clone();
+        let apply = |client: &mut ClientStateApply, table: &mut SlotTable, seq, records| {
+            client.apply_snapshot_state(
+                table,
+                &test_replication_identity(),
+                seq,
+                &fingerprint,
+                records,
+            )
+        };
+
+        // In order: A->B then A->C both apply.
+        let out_b = apply(&mut in_order, &mut in_order_table, 1, &to_b);
+        assert_eq!(objective(&in_order_table), Some(SlotValue::Number(4.0)));
+        let out_c = apply(&mut in_order, &mut in_order_table, 2, &to_c);
+        assert_eq!(objective(&in_order_table), Some(SlotValue::Number(5.0)));
+        assert!(out_b.refresh_requests.is_empty() && out_c.refresh_requests.is_empty());
+        assert_eq!(out_b.slot_baselines, vec![(0, to_b[0].baseline_id)]);
+        assert_eq!(out_c.slot_baselines, vec![(0, to_c[0].baseline_id)]);
+
+        // C applies first; a duplicate C is skipped, and B (older than the held C)
+        // requests a refresh.
+        let (mut reordered, mut reordered_table, _) = new_client();
+        let first = apply(&mut reordered, &mut reordered_table, 1, &to_c);
+        let duplicate = apply(&mut reordered, &mut reordered_table, 2, &to_c);
+        let regressed = apply(&mut reordered, &mut reordered_table, 3, &to_b);
+        assert_eq!(first.slot_baselines, vec![(0, to_c[0].baseline_id)]);
+        assert!(
+            duplicate.refresh_requests.is_empty(),
+            "no refresh for a duplicate delta"
+        );
+        assert_eq!(regressed.refresh_requests.len(), 1);
+        assert_eq!(regressed.refresh_requests[0].slot_id, 0);
+        for outcome in [&duplicate, &regressed] {
+            assert!(
+                outcome.slot_baselines.is_empty(),
+                "a skipped delta is not acked"
+            );
+            assert!(
+                outcome.fresh_slots.is_empty(),
+                "a skipped delta writes nothing"
+            );
+        }
+        assert_eq!(objective(&reordered_table), Some(SlotValue::Number(5.0)));
+    }
+
     fn faction_sync_registry() -> FactionRegistry {
         FactionRegistry::from_descriptors(vec![
             postretro_entities::FactionDescriptor {
@@ -4927,6 +5064,64 @@ mod tests {
                 .apply_faction_sentiment(&factions, &client_overlay, Some(&second))
                 .is_some(),
             "the client accepts the delta against its acknowledged prior set"
+        );
+        assert_eq!(client_overlay.borrow().get(2.0, 3.0), Some(-0.5));
+    }
+
+    // The faction overlay follows the same newest-wins rule as state slots. It has
+    // no refresh request, so a regressed id (a broken invariant inside an accepted
+    // newest snapshot) is adopted as the complete set it carries, and acked.
+    #[test]
+    fn faction_sentiment_deltas_apply_newest_skip_duplicates_and_adopt_regressions() {
+        let factions = faction_sync_registry();
+        let baseline = factions.sentiment(2.0, 3.0);
+        let mut host_overlay = FactionSentimentState::default();
+        host_overlay.set(2.0, 3.0, -0.75, baseline).unwrap();
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.ingest_faction_sentiment(&host_overlay);
+        let full = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("initial full set");
+
+        let mut client = ClientStateApply::new();
+        let client_overlay = RefCell::new(FactionSentimentState::default());
+        let held_a = client
+            .apply_faction_sentiment(&factions, &client_overlay, Some(&full))
+            .expect("initial full set applies");
+        host.apply_ack(CLIENT_A, 0, &[], Some(held_a));
+
+        let mut delta_to = |value: f32| {
+            host_overlay.set(2.0, 3.0, value, baseline).unwrap();
+            host.ingest_faction_sentiment(&host_overlay);
+            let record = host
+                .produce_faction_sentiment_for_client(CLIENT_A)
+                .expect("changed set is sent");
+            assert_eq!(record.kind, FACTION_SENTIMENT_RECORD_KIND_DELTA);
+            assert_eq!(record.baseline_ref, held_a);
+            record
+        };
+        let to_b = delta_to(-0.5);
+        let to_c = delta_to(-0.25);
+
+        // C applies first; a duplicate C is then skipped.
+        assert_eq!(
+            client.apply_faction_sentiment(&factions, &client_overlay, Some(&to_c)),
+            Some(to_c.baseline_id),
+            "a delta newer than the held set applies whatever its reference"
+        );
+        assert_eq!(
+            client.apply_faction_sentiment(&factions, &client_overlay, Some(&to_c)),
+            None,
+            "a resend at the held id is skipped without an ack"
+        );
+        assert_eq!(client_overlay.borrow().get(2.0, 3.0), Some(-0.25));
+
+        // B (older) in a newer snapshot is adopted and acked rather than left for
+        // the host to resend forever.
+        assert_eq!(
+            client.apply_faction_sentiment(&factions, &client_overlay, Some(&to_b)),
+            Some(to_b.baseline_id)
         );
         assert_eq!(client_overlay.borrow().get(2.0, 3.0), Some(-0.5));
     }

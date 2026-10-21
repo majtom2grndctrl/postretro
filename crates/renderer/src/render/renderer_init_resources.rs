@@ -3,15 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use super::*;
-
-/// Minimum `max_texture_array_layers` the engine requires. The lightmap
-/// irradiance + direction atlases are `texture_2d_array`; charts that overflow
-/// one atlas layer spill into additional layers. 256 is wgpu's default for this
-/// limit and the WebGPU spec floor, comfortably above the layer counts the bake
-/// produces. Requested in `required_limits` (the hard backstop) and pre-checked
-/// against the adapter so an under-spec adapter fails with a named diagnostic
-/// before `request_device`.
-const REQUIRED_MAX_TEXTURE_ARRAY_LAYERS: u32 = 256;
+use postretro_level_format::lightmap::RUNTIME_MAX_TEXTURE_ARRAY_LAYERS as REQUIRED_MAX_TEXTURE_ARRAY_LAYERS;
 
 /// Whether an adapter's granted `max_texture_array_layers` clears the engine's
 /// floor. Pure comparison, factored out so the abort path is unit-testable —
@@ -633,6 +625,7 @@ pub(crate) fn build_frame_timing(
         pass_labels[TIMING_PAIR_DYNAMIC_CUBE_DEPTH] = "dynamic_cube_depth_upper";
         pass_labels[TIMING_PAIR_RESOLVE] = "resolve";
         pass_labels[TIMING_PAIR_FLUID_SURFACE] = "fluid_surface";
+        pass_labels[TIMING_PAIR_FLUID_REFLECTION] = "fluid_reflection";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
         None

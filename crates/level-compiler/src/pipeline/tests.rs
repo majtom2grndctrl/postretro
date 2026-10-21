@@ -7,6 +7,8 @@ use glam::DVec3;
 use log::Level;
 use postretro_test_log_capture::LogCapture;
 
+mod lightmap_runtime_floor;
+
 #[test]
 fn direct_delta_plan_bake_csr_divergence_is_caught() {
     let plan = DeltaCsrPlan::from_csr(vec![0, 1, 2], vec![3, 7]);
@@ -429,8 +431,8 @@ fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
     let without_sdf = planned_stages_for_sdf(false);
     let with_sdf = planned_stages_for_sdf(true);
 
-    assert_eq!(without_sdf.len(), 27);
-    assert_eq!(with_sdf.len(), 27);
+    assert_eq!(without_sdf.len(), 28);
+    assert_eq!(with_sdf.len(), 28);
     assert_eq!(
         without_sdf
             .iter()
@@ -465,6 +467,7 @@ fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
             (StageId::AnimatedWeightMaps, "AnimWeightMaps"),
             (StageId::SdfAtlasBake, "SDF Atlas Bake"),
             (StageId::TextureMips, "TextureMips"),
+            (StageId::ReflectionProbes, "Reflection Probes"),
             (StageId::ClusterDirectory, "ClusterDirectory"),
             (StageId::Packing, "Packing"),
         ]

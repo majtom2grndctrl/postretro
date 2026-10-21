@@ -111,6 +111,7 @@ fn gravity_box(min: Vec3, max: Vec3, gravity: f32) -> EnvironmentVolume {
         priority: 0,
         gravity: Some(gravity),
         push: None,
+        force: 1.0,
         fluid: None,
         brushes: vec![box_leaf(min, max)],
     }
@@ -123,6 +124,7 @@ pub(super) fn push_box(min: Vec3, max: Vec3, push: Vec3) -> EnvironmentVolume {
         priority: 0,
         gravity: None,
         push: Some(push),
+        force: 1.0,
         fluid: None,
         brushes: vec![box_leaf(min, max)],
     }

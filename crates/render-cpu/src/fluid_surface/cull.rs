@@ -5,7 +5,7 @@ use glam::Vec3;
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_visibility::VisibleCells;
 
-use super::{FluidSurfaceDraw, surface_bounds};
+use super::{FluidSurfaceDraw, FluidSurfaceLook, surface_bounds};
 
 fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
     a_min.cmple(b_max).all() && a_max.cmpge(b_min).all()
@@ -18,8 +18,8 @@ struct BoundsSource {
     len: usize,
 }
 
-/// Per-frame fluid surface culling: which volumes draw, at what opacity, in
-/// back-to-front order. Reuses its buffers; allocates only while growing.
+/// Per-frame fluid surface culling: which volumes draw, with what packed look,
+/// in back-to-front order. Reuses its buffers; allocates only while growing.
 #[derive(Debug, Default)]
 pub struct FluidSurfaceRenderCollector {
     /// `(volume_index, min, max)` for each volume with drawable faces.
@@ -48,20 +48,22 @@ impl FluidSurfaceRenderCollector {
 
     /// Collect this frame's fluid draws. A volume draws when its surface
     /// bounds touch a visible cell's bounds (`DrawAll` draws every volume) and
-    /// `surface_opacity(volume_index)` names a visible opacity. `None` means
-    /// the client lacks the fluid or the volume is dry, and draws nothing.
-    /// Draws come back far to near, the order alpha blending needs.
-    pub fn collect<C, O>(
+    /// `look(volume_index)` names a look that shows something: a visible
+    /// surface opacity, or depth fog or a probe-bound face's reflection, each
+    /// of which draws on its own at opacity 0.
+    /// `None` means the client lacks the fluid or the volume is dry, and draws
+    /// nothing. Draws come back far to near, the order alpha blending needs.
+    pub fn collect<C, L>(
         &mut self,
         volumes: &[EnvironmentVolumeRecord],
         visible: &VisibleCells,
         cell_bounds: C,
         camera_position: Vec3,
-        surface_opacity: O,
+        look: L,
     ) -> &[FluidSurfaceDraw]
     where
         C: Fn(u32) -> Option<(Vec3, Vec3)>,
-        O: Fn(usize) -> Option<f32>,
+        L: Fn(usize) -> Option<FluidSurfaceLook>,
     {
         self.refresh_bounds(volumes);
         self.sorted.clear();
@@ -87,10 +89,11 @@ impl FluidSurfaceRenderCollector {
             if !visible_now {
                 continue;
             }
-            let Some(opacity) = surface_opacity(volume_index as usize) else {
+            let Some(look) = look(volume_index as usize) else {
                 continue;
             };
-            if !opacity.is_finite() || opacity <= 0.0 {
+            let params = look.pack();
+            if !params.draws() {
                 continue;
             }
             let distance_sq = ((min + max) * 0.5).distance_squared(camera_position);
@@ -98,7 +101,7 @@ impl FluidSurfaceRenderCollector {
                 distance_sq,
                 FluidSurfaceDraw {
                     volume_index,
-                    surface_opacity: opacity.min(1.0),
+                    params,
                 },
             ));
         }

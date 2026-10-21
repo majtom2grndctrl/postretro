@@ -37,11 +37,17 @@ impl MapEntity {
         )
     }
 
-    /// Build the spawn-time `Transform.rotation` from `self.angles`. Engine
-    /// convention is `Quat::from_euler(YXZ, yaw, pitch, roll)` (matches
+    /// The authored orientation as an engine frame whose forward is `-Z`: the
+    /// view convention, so `rotation_quat() * -Z` points along the entity's
+    /// TrenchBroom arrow. `Quat::from_euler(YXZ, yaw, pitch, roll)` (matches
     /// `EulerDegrees::to_quat` in `conv.rs` and the angle convention produced
     /// by `quake_to_engine_angles` in the level compiler). Returns
     /// `Quat::IDENTITY` when angles are all zero.
+    ///
+    /// Use this for entities that look along `-Z` — a player pawn, whose
+    /// transform carries its camera yaw — or that have no front at all. A
+    /// rendered model or an AI enemy faces `+Z` instead and spawns from
+    /// [`Self::model_rotation_quat`].
     pub fn rotation_quat(&self) -> Quat {
         // Exact == is intentional: the format adapter returns the literal-zero
         // default sentinel when no angles KVP was present, so this equality
@@ -51,7 +57,27 @@ impl MapEntity {
         }
         Quat::from_euler(EulerRot::YXZ, self.angles.y, self.angles.x, self.angles.z)
     }
+
+    /// The spawn rotation for an entity whose front is its model's `+Z`: every
+    /// `prop_mesh`, descriptor-placed enemy or prop, and the enemies an
+    /// `entity_spawner` releases. glTF models are authored facing `+Z`, and AI
+    /// facing aims that axis (`MESH_FORWARD` in `postretro-ai`'s `facing.rs`),
+    /// so the model is turned half a revolution about its own up axis before
+    /// the map orientation applies. Its front then points along the TrenchBroom
+    /// arrow, the same direction a player spawned there looks; pitch tilts that
+    /// front nose-up as it does a camera.
+    ///
+    /// This is the one place map yaw becomes a `+Z`-front orientation; spawn
+    /// consumers choose between it and [`Self::rotation_quat`] by the axis
+    /// their entity treats as forward.
+    pub fn model_rotation_quat(&self) -> Quat {
+        self.rotation_quat() * MODEL_FRONT_TO_VIEW_FORWARD
+    }
 }
+
+/// A half turn about `+Y`: carries a model's authored front (`+Z`) onto the
+/// view forward (`-Z`) that map angles orient.
+const MODEL_FRONT_TO_VIEW_FORWARD: Quat = Quat::from_xyzw(0.0, 1.0, 0.0, 0.0);
 
 /// Adapter from the format-crate wire record to the scripting-facing
 /// `MapEntity`. Lives in the scripting tree so the loader does not depend on
@@ -79,6 +105,84 @@ mod tests {
     use super::*;
     use postretro_scripting_core::conv::EulerDegrees;
     use std::collections::HashMap;
+
+    /// A placed entity whose angles come from raw KVPs through the compiler's
+    /// own source-format converter.
+    fn placed(raw_angles: &[(&str, &str)]) -> MapEntity {
+        let props: HashMap<String, String> = raw_angles
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        let angles =
+            postretro_level_compiler::format::quake_map::angles::try_quake_to_engine_angles(&props)
+                .expect("well-formed angle key");
+        MapEntity {
+            map_ordinal: None,
+            classname: "_test".to_string(),
+            origin: Vec3::ZERO,
+            angles: Vec3::from(angles),
+            key_values: HashMap::new(),
+            tags: vec![],
+        }
+    }
+
+    /// A model's `+Z` front faces the TrenchBroom arrow: map yaw 90 is Quake
+    /// `+Y`, engine `-X`, through the compiler's own angle converter. The view
+    /// frame a player spawn uses looks the same way along `-Z`, unchanged.
+    #[test]
+    fn model_rotation_points_a_plus_z_front_along_the_map_arrow() {
+        for (key, raw, quake_forward) in [
+            ("angles", "0 90 0", (0.0, 1.0)),
+            ("angle", "90", (0.0, 1.0)),
+            ("angles", "0 0 0", (1.0, 0.0)),
+            ("angles", "0 180 0", (-1.0, 0.0)),
+            ("angles", "0 270 0", (0.0, -1.0)),
+            ("angles", "0 45 0", (0.5f32.sqrt(), 0.5f32.sqrt())),
+        ] {
+            let entity = placed(&[(key, raw)]);
+            // Quake (x, y) → engine (-y, _, -x): the compiler's axis map.
+            let expected = Vec3::new(-quake_forward.1, 0.0, -quake_forward.0);
+            let model_front = entity.model_rotation_quat() * Vec3::Z;
+            let view_forward = entity.rotation_quat() * Vec3::NEG_Z;
+            assert!(
+                model_front.abs_diff_eq(expected, 1e-5),
+                "{key} {raw}: model front {model_front} != arrow {expected}"
+            );
+            assert!(
+                view_forward.abs_diff_eq(expected, 1e-5),
+                "{key} {raw}: view forward {view_forward} != arrow {expected}"
+            );
+        }
+        let east = placed(&[("angle", "90")]);
+        assert!((east.model_rotation_quat() * Vec3::Z).abs_diff_eq(Vec3::NEG_X, 1e-6));
+    }
+
+    /// An entity with no angle key faces yaw 0 (Quake `+X`, engine `-Z`), and a
+    /// pitched placement tilts the model's front exactly as it tilts the view.
+    #[test]
+    fn model_rotation_agrees_with_the_view_frame_when_absent_or_pitched() {
+        let absent = placed(&[]);
+        assert_eq!(absent.rotation_quat(), Quat::IDENTITY);
+        assert!((absent.model_rotation_quat() * Vec3::Z).abs_diff_eq(Vec3::NEG_Z, 1e-6));
+
+        let pitched = placed(&[("angles", "30 135 0")]);
+        let model_front = pitched.model_rotation_quat() * Vec3::Z;
+        let view_forward = pitched.rotation_quat() * Vec3::NEG_Z;
+        assert!(
+            model_front.abs_diff_eq(view_forward, 1e-6),
+            "{model_front} vs {view_forward}"
+        );
+        assert!(
+            model_front.y > 0.49,
+            "positive pitch tilts the front up: {model_front}"
+        );
+        let model_up = pitched.model_rotation_quat() * Vec3::Y;
+        let view_up = pitched.rotation_quat() * Vec3::Y;
+        assert!(
+            model_up.abs_diff_eq(view_up, 1e-6),
+            "the half turn keeps up: {model_up}"
+        );
+    }
 
     /// Pins the invariant that `MapEntity::rotation_quat` (radians, YXZ via
     /// `glam`) and `EulerDegrees::to_quat` (degrees, YXZ via `glam`) build

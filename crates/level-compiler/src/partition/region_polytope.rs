@@ -179,9 +179,8 @@ impl RegionPolytope {
     }
 
     fn half_spaces(&self) -> Vec<(DVec3, f64)> {
-        self.facets
-            .iter()
-            .map(|facet| (facet.normal, facet.distance))
+        self.facets()
+            .map(|(normal, distance, _)| (normal, distance))
             .collect()
     }
 
@@ -195,7 +194,14 @@ impl RegionPolytope {
         }
     }
 
-    fn vertices(&self) -> impl Iterator<Item = DVec3> + '_ {
+    /// Facet planes and windings shared by clipping and offline convex queries.
+    pub(crate) fn facets(&self) -> impl Iterator<Item = (DVec3, f64, &[DVec3])> + '_ {
+        self.facets
+            .iter()
+            .map(|facet| (facet.normal, facet.distance, facet.winding.as_slice()))
+    }
+
+    pub(crate) fn vertices(&self) -> impl Iterator<Item = DVec3> + '_ {
         self.facets
             .iter()
             .flat_map(|facet| facet.winding.iter().copied())

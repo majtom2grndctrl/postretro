@@ -21,6 +21,7 @@ postretro-level-format.workspace = true
 postretro-level-loader.workspace = true
 
 [dev-dependencies]
+postretro-test-log-capture.workspace = true
 postretro-entities = { workspace = true, features = ["test-support"] }
 postretro-sim = { workspace = true, features = ["test-support"] }
 proptest.workspace = true

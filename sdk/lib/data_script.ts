@@ -16,6 +16,7 @@ import type {
   PlayerTarget,
   SubjectTokenCommand,
   TriggerTarget,
+  TeleporterTarget,
 } from "./data_script/commands";
 import type { VolumeTriggerEventDescriptor, TriggerPoolDescriptor } from "./data_script/trigger_events";
 import type { PlayerEventDescriptor } from "./data_script/player_events";
@@ -33,6 +34,7 @@ export type {
   SubjectTokenCommand,
   SubjectTokenTarget,
   TriggerTarget,
+  TeleporterTarget,
 } from "./data_script/commands";
 export { becomes, ceases } from "./data_script/player_events";
 export type {
@@ -78,6 +80,8 @@ export type TriggerEventParams = Readonly<{
   occupancy: import("postretro").RuntimeRead;
 }>;
 
+export type TeleportEventParams = Readonly<{ activators: ActivatorsTarget; teleporter: TeleporterTarget }>;
+
 /** Dispatch values published by a player event (`players().on`): the player it fired for. */
 export type PlayerEventParams = Readonly<{
   player: PlayerTarget;
@@ -88,7 +92,7 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`) carries `target: "@activators"`, `"@trigger"`, `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 declare const reactionBodyScopeBrand: unique symbol;
 
 /** A body retains the fire context its builders require, including direct-body registration. */
@@ -100,7 +104,7 @@ export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
   primitive: string;
   kind?: "npc" | "player";
   tag?: string;
-  target?: "@activators" | "@trigger" | "@player";
+  target?: "@activators" | "@trigger" | "@teleporter" | "@player";
   args?: Record<string, unknown> | null;
   onComplete?: string;
 };
@@ -133,6 +137,8 @@ export type MoverReverseStep = import("postretro").MoverReverseStep;
 export type MoverGoToPathNodeStep = import("postretro").MoverGoToPathNodeStep;
 export type MoverSetSpinRateStep = import("postretro").MoverSetSpinRateStep;
 export type MoverSetBlockPolicyStep = import("postretro").MoverSetBlockPolicyStep;
+export type ArmTeleporterStep = { id: import("postretro").EntityId; primitive: "armTeleporter"; args: Record<string, never> };
+export type DisarmTeleporterStep = { id: import("postretro").EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
 export type ArmTriggerStep = import("postretro").ArmTriggerStep;
 export type DisarmTriggerStep = import("postretro").DisarmTriggerStep;
 export type SpawnFromSpawnerStep = import("postretro").SpawnFromSpawnerStep;
@@ -156,6 +162,8 @@ export type SequenceStep =
   | MoverGoToPathNodeStep
   | MoverSetSpinRateStep
   | MoverSetBlockPolicyStep
+  | ArmTeleporterStep
+  | DisarmTeleporterStep
   | ArmTriggerStep
   | DisarmTriggerStep
   | SpawnFromSpawnerStep
@@ -189,6 +197,7 @@ export type LevelManifest = {
   crossings?: import("./ui/reactions").CrossingDescriptor[];
   /** Level trigger events, keyed by volume: build each with a trigger member's `on`. */
   triggerEvents?: VolumeTriggerEventDescriptor[];
+  teleportEvents?: import("./entities/teleporters").TeleportEventDescriptor[];
   triggerPools?: TriggerPoolDescriptor[];
   /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
   playerEvents?: PlayerEventDescriptor[];
@@ -648,9 +657,16 @@ export function sentiment(
  * A map's `fluid_volume` names it through its `fluid` key; declaration order
  * assigns its index. `viscosity` is drag while swimming (1/s, >= 0);
  * `viewTint` is rgb plus strength, `muffle` and `surfaceOpacity` each in
- * [0, 1]; `enterSound` and `exitSound` are optional sound keys. A field out of
- * range, or a repeated name, is rejected with a warning naming the field, and
- * the first declaration stands. Pure: no engine side effects. */
+ * [0, 1]; `enterSound` and `exitSound` are optional sound keys. Optional
+ * presentation: `surfaceReflectivity` (0..50, default 1: 0 none, 1 water, 50 a
+ * mirror) scales how strongly the surface reflects the room around it;
+ * `fogDistance` (metres seen into the fluid from outside, > 0)
+ * and `fogColor` (rgb in `viewTint`'s space; omitted, `viewTint`'s rgb) add
+ * murk; `wavePeriod` (seconds, >= 6) turns on a slow surface wave whose
+ * `waveAmplitude` (texels, 0..16, default 8) and `waveLength` (texels: a
+ * number or `[min, max]`, at most 128, min >= 8 x amplitude) shape it. A field
+ * out of range, or a repeated name, is rejected with a warning naming the
+ * field, and the first declaration stands. Pure: no engine side effects. */
 export function defineFluid(
   desc: import("postretro").FluidDescriptor,
 ): import("postretro").FluidDescriptor {

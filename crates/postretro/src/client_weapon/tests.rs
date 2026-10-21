@@ -1874,3 +1874,354 @@ fn client_weapon_a_spared_charge_stops_its_burst_once_fired_and_dies_with_its_ow
     predict(&mut frame, &mut registry, &mut command(false, false), 3);
     assert!(frame.due.is_empty());
 }
+
+/// A connected client holding a one-shot projectile weapon, its pawn drifting +X
+/// toward a classic teleporter that sends it to (20, 0, 0) a quarter turn to the left.
+fn teleporting_shooter() -> crate::App {
+    use crate::runtime_teleporters::app_tests::{classic, client_app, level, region};
+    let action = serde_json::json!({"trigger":"press","recoveryMs":50.0,"steps":[{"kind":"shot"}]});
+    let (mut registry, pawn, weapon_id) = fixture(action, true);
+    if let Ok(postretro_entities::ComponentValue::Weapon(component)) =
+        registry.get_component_value_mut(weapon_id, postretro_entities::ComponentKind::Weapon)
+    {
+        // Isolates the aim choice from bloom dispersion.
+        component.bloom_per_shot_degrees = 0.0;
+        component.bloom_max_degrees = 0.0;
+    }
+    let start = Vec3::new(-1.15, 0.0, 0.0);
+    registry
+        .set_component(
+            pawn,
+            Transform {
+                position: start,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .clone();
+    movement.velocity = Vec3::X * 6.0;
+    let eye_height = movement.capsule.eye_height;
+    registry.set_component(pawn, movement).unwrap();
+    registry.mark_local_player_pawn(pawn).unwrap();
+    let facing = crate::build_sim_command(
+        &crate::input::ActionSnapshot::neutral(),
+        &crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0),
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    )
+    .movement
+    .facing_yaw;
+    let level = level(vec![classic(
+        1,
+        region(Vec3::new(-1.0, -50.0, -5.0), Vec3::new(1.0, 50.0, 5.0)),
+        Vec3::new(20.0, 0.0, 0.0),
+        facing + std::f32::consts::FRAC_PI_2,
+    )]);
+    let mut app = client_app(&level, registry);
+    app.camera = crate::camera::Camera::new(start + Vec3::Y * eye_height, 0.0, 0.2);
+    app.frame_timing = crate::frame_timing::FrameTiming::new(
+        crate::frame_timing::InterpolableState::new(app.camera.position),
+    );
+    app
+}
+
+/// One predicted tick through the frame loop's seam: the weapon predicts on this
+/// tick's command (pressing fire when `fire`), then movement. Yields the eye and
+/// view the camera settled on, and whether the pawn teleported.
+fn shooter_tick(app: &mut crate::App, tick: u32, fire: bool) -> (Vec3, Vec3, bool) {
+    let result = app.run_client_predicted_tick(true, |app| {
+        let mut command = crate::build_sim_command(
+            &crate::input::ActionSnapshot::neutral(),
+            &app.camera,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        command.fire_button = weapon::FireButtonState {
+            pressed: fire,
+            active: fire,
+        };
+        let ctx = app.session.as_ref().unwrap().scripting.script_ctx.clone();
+        predict(
+            &mut app.client_weapon,
+            &mut ctx.registry.borrow_mut(),
+            &mut command,
+            tick,
+        );
+        crate::runtime_teleporters::app_tests::predicted_step(app, command.movement, tick)
+    });
+    let (eye, view) = app.camera.aim_ray();
+    (
+        eye,
+        view,
+        result.is_some_and(|result| result.movement_events.teleport.is_some()),
+    )
+}
+
+fn resolved_launch(app: &mut crate::App) -> (Vec3, Vec3) {
+    let aim = app.presented_aim_pose(0.5);
+    let mut emissions = Vec::new();
+    app.run_client_fire_path_post_loop(0.0, 0.0, aim, &mut emissions);
+    let [resolution] = app.client_fire_resolutions.as_slice() else {
+        panic!("one predicted shot resolves");
+    };
+    let launch = resolution.projectile_launch.as_ref().unwrap();
+    (launch.origin, launch.direction)
+}
+
+// The host fires each shot after that tick's movement, so a shot a predicting
+// client fires on the tick before a teleport later in the same frame leaves that
+// tick's eye along that tick's view, not the frame's presented arrival; a shot on
+// the teleport tick itself leaves the arrival eye along the rotated view.
+#[test]
+fn teleport_client_shot_keeps_its_firing_tick_aim_across_a_later_catchup_teleport() {
+    let mut app = teleporting_shooter();
+    let (eye, view, teleported) = shooter_tick(&mut app, 10, true);
+    assert!(!teleported, "fixture: the shot's tick stays at the source");
+    let (arrival_eye, arrival_view, teleported) = shooter_tick(&mut app, 11, false);
+    assert!(teleported, "fixture: the next catch-up tick teleports");
+    assert!(arrival_eye.distance(eye) > 10.0 && arrival_view.distance(view) > 0.5);
+    let (origin, direction) = resolved_launch(&mut app);
+    assert!(
+        origin.distance(eye) < 1.0e-5,
+        "the shot left {origin}, not its tick's eye {eye}"
+    );
+    assert!(direction.distance(view) < 1.0e-5);
+
+    let mut app = teleporting_shooter();
+    let _ = shooter_tick(&mut app, 10, false);
+    let (arrival_eye, arrival_view, teleported) = shooter_tick(&mut app, 11, true);
+    assert!(teleported, "fixture: the shot's own tick teleports");
+    let (origin, direction) = resolved_launch(&mut app);
+    assert!(
+        origin.distance(arrival_eye) < 1.0e-5,
+        "leaves the arrival eye"
+    );
+    assert!(
+        direction.distance(arrival_view) < 1.0e-5,
+        "along the rotated view"
+    );
+    assert!((app.camera.yaw - std::f32::consts::FRAC_PI_2).abs() < 1.0e-5);
+}
+
+mod switch_settlement {
+    use super::*;
+    use crate::client_weapon::{ActiveSlotResyncObservation, settle_switch_resolution};
+    use crate::input::{
+        Action, ActionSnapshot, ButtonState, GameplayInputLatch, WieldableSelectionPolicy,
+    };
+    use crate::netcode::CurrentSwitchResolution;
+    use postretro_entities::components::wieldable_state::WieldableState;
+
+    const OCCUPIED: [bool; 2] = [true, true];
+
+    /// A movement pawn holding slot 0, with a second weapon in slot 1.
+    fn two_slot_pawn() -> (EntityRegistry, EntityId, [EntityId; 2]) {
+        let (mut registry, pawn, first) = fixture(
+            serde_json::json!({"trigger":"press","recoveryMs":50.0,"steps":[{"kind":"shot"}]}),
+            false,
+        );
+        let component = registry
+            .get_component::<WeaponComponent>(first)
+            .unwrap()
+            .clone();
+        let second = registry.spawn(Transform::default());
+        registry.set_component(second, component).unwrap();
+        let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        inventory.wieldables[1] = Some(second);
+        registry.set_component(pawn, inventory).unwrap();
+        (registry, pawn, [first, second])
+    }
+
+    fn edit_inventory(
+        registry: &mut EntityRegistry,
+        pawn: EntityId,
+        edit: impl FnOnce(&mut Inventory),
+    ) {
+        let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        edit(&mut inventory);
+        registry.set_component(pawn, inventory).unwrap();
+    }
+
+    fn set_state(registry: &mut EntityRegistry, weapon: EntityId, state: WieldableState) {
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.state = state;
+        registry.set_component(weapon, component).unwrap();
+    }
+
+    /// A selection that has queued a direct-select commit by `select` while
+    /// `active` is held.
+    fn latch_committing(select: Action, active: usize) -> GameplayInputLatch {
+        let mut latch = GameplayInputLatch::default();
+        latch.wieldable_selection_mut().advance_frame(
+            &ActionSnapshot::with_button_state(select, ButtonState::Pressed),
+            &OCCUPIED,
+            Some(active),
+            WieldableSelectionPolicy {
+                commit_on_direct_select: true,
+                cycle_dwell_ms: 0.0,
+            },
+            0.0,
+        );
+        latch
+    }
+
+    // Regression: a host refusal of the active-slot re-sync (the slot the
+    // player already holds) rolled back to that same slot and then reset the
+    // selection, wiping a weapon choice the player was making meanwhile.
+    #[test]
+    fn same_slot_resync_refusal_keeps_the_in_progress_selection() {
+        let (mut registry, pawn, _) = two_slot_pawn();
+        // An earlier accepted switch left its origin behind.
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.switch_origin = Some(1);
+        });
+        let mut latch = latch_committing(Action::SelectWieldable2, 0);
+        assert_eq!(latch.wieldable_selection().cursor_slot(), Some(1));
+
+        settle_switch_resolution(
+            &mut registry,
+            &mut latch,
+            CurrentSwitchResolution::Refused {
+                target_slot: 0,
+                rollback_slot: 0,
+                last_weapon_slot: Some(1),
+            },
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_slot,
+            0
+        );
+        assert_eq!(latch.wieldable_selection().cursor_slot(), Some(1));
+        assert_eq!(
+            latch
+                .wieldable_selection_mut()
+                .take_pending_commit(&OCCUPIED, Some(0)),
+            Some(1),
+            "the queued choice survives"
+        );
+    }
+
+    #[test]
+    fn refusal_that_rolls_back_resets_the_selection_to_the_restored_slot() {
+        let (mut registry, pawn, _) = two_slot_pawn();
+        // Switched 0 -> 1 locally; the lower has already repointed.
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.active_slot = 1;
+            inventory.switch_origin = Some(0);
+        });
+        let mut latch = latch_committing(Action::SelectWieldable1, 1);
+
+        settle_switch_resolution(
+            &mut registry,
+            &mut latch,
+            CurrentSwitchResolution::Refused {
+                target_slot: 1,
+                rollback_slot: 0,
+                last_weapon_slot: None,
+            },
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_slot,
+            0
+        );
+        assert_eq!(latch.wieldable_selection().cursor_slot(), Some(0));
+        assert_eq!(
+            latch
+                .wieldable_selection_mut()
+                .take_pending_commit(&OCCUPIED, Some(0)),
+            None
+        );
+    }
+
+    // A same-slot refusal is not always the re-sync: a refused round trip
+    // (0 -> 1 -> 0) rebases to the slot it returns to. When it cancels a raise
+    // still running locally, the player saw a change, so the selection resets.
+    #[test]
+    fn same_slot_refusal_that_cancels_a_raise_resets_the_selection() {
+        let (mut registry, pawn, [first, _]) = two_slot_pawn();
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.switch_origin = Some(1);
+        });
+        set_state(&mut registry, first, WieldableState::Raising);
+        let mut latch = latch_committing(Action::SelectWieldable2, 0);
+
+        settle_switch_resolution(
+            &mut registry,
+            &mut latch,
+            CurrentSwitchResolution::Refused {
+                target_slot: 0,
+                rollback_slot: 0,
+                last_weapon_slot: Some(1),
+            },
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(first)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+        assert_eq!(latch.wieldable_selection().cursor_slot(), Some(0));
+        assert_eq!(
+            latch
+                .wieldable_selection_mut()
+                .take_pending_commit(&OCCUPIED, Some(0)),
+            None
+        );
+    }
+
+    // Regression: the observation treated a retained `switch_origin` as a
+    // switch in flight, so after the first accepted switch the re-sync never
+    // armed again.
+    #[test]
+    fn resync_observation_ignores_a_retained_switch_origin() {
+        let (mut registry, pawn, [_, second]) = two_slot_pawn();
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.active_slot = 1;
+            inventory.switch_origin = Some(0);
+        });
+        let read = |registry: &EntityRegistry| {
+            ActiveSlotResyncObservation::read(registry, pawn, false, Some(0))
+                .expect("the pawn holds a weapon")
+        };
+        let settled = read(&registry);
+        assert!(
+            !settled.local_switching,
+            "a settled switch is not in flight"
+        );
+        assert_eq!(settled.local_active_slot, 1);
+
+        set_state(&mut registry, second, WieldableState::Raising);
+        assert!(read(&registry).local_switching, "raising");
+        set_state(&mut registry, second, WieldableState::Idle);
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.switch_target = Some(0);
+        });
+        assert!(read(&registry).local_switching, "a switch target");
+    }
+}

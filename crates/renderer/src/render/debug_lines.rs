@@ -8,7 +8,7 @@ use super::SCENE_COLOR_FORMAT;
 
 const DEBUG_LINES_SHADER_SOURCE: &str = include_str!("../shaders/debug_lines.wgsl");
 
-const MAX_DEBUG_SEGMENTS: usize = 256 * 1024;
+pub(super) const MAX_DEBUG_SEGMENTS: usize = 256 * 1024;
 /// Overlay (always-on-top) segments are only used for bounding-shape AABBs,
 /// which carry 12 segments each. A fraction of the depth-tested cap is plenty.
 const MAX_DEBUG_OVERLAY_SEGMENTS: usize = MAX_DEBUG_SEGMENTS / 8;
@@ -304,6 +304,15 @@ impl DebugLineRenderer {
             overflowed_this_frame: false,
             overlay_overflowed_this_frame: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn segment_count(&self) -> usize {
+        self.cpu_vertices.len() / 2
+    }
+
+    pub(super) fn depth_tested_overflowed(&self) -> bool {
+        self.overflowed_this_frame
     }
 
     pub fn clear(&mut self) {

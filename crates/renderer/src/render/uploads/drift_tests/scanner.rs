@@ -686,6 +686,9 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         ("render/smoke.rs", "SmokePass", "upload_sprite_asset") => Some("install"),
         ("render/ui/mod.rs", "", "upload_ui_texture") => Some("load"),
         ("render/mesh_pass.rs", "MeshPass", "upload_identity_palette") => Some("install"),
+        ("render/fluid_surface.rs", "FluidSurfacePass", "set_drift") => {
+            Some("install/commit/tuning refresh (drift re-resolve; never batched)")
+        }
         ("lighting/lightmap/pool.rs", "", "upload_static_pool") => Some("install"),
         ("render/direct_sh_resources.rs", "DirectShResources", "enable_streamed_atlas") => {
             Some("install (has_direct guards growth)")

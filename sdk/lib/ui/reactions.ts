@@ -179,7 +179,8 @@ export type PresentationAudience = import("../data_script/commands").ActivatorsT
   | import("../data_script/commands").PlayerTarget | "everyone";
 export type PresentationOptions = { audience?: PresentationAudience };
 export type AudienceScope<A> =
-  (Extract<A, import("../data_script/commands").ActivatorsTarget | import("../data_script/commands").TriggerTarget> extends never ? {} : import("../data_script").TriggerEventParams)
+  (Extract<A, import("../data_script/commands").ActivatorsTarget> extends never ? {} : Pick<import("../data_script").TriggerEventParams, "activators">)
+  & (Extract<A, import("../data_script/commands").TriggerTarget> extends never ? {} : Pick<import("../data_script").TriggerEventParams, "trigger">)
   & (Extract<A, import("../data_script/commands").PlayerTarget> extends never ? {} : import("../data_script").PlayerEventParams);
 export type PresentationBody<O extends PresentationOptions> = import("../data_script").PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
 export type SoundBody<O extends PlaySoundOptions> = import("../data_script").PrimitiveReactionDescriptor<AudienceScope<O["audience"]>

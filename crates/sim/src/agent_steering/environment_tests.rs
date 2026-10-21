@@ -39,6 +39,7 @@ fn gravity_volume(min: Vec3, max: Vec3, gravity: f32) -> EnvironmentVolume {
         priority: 0,
         gravity: Some(gravity),
         push: None,
+        force: 1.0,
         fluid: None,
         brushes: vec![volume_box(min, max)],
     }

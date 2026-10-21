@@ -34,7 +34,8 @@ fn drain_lua(src: &str) -> FluidRegistry {
 }
 
 /// One fluid entry in JS object syntax; Luau syntax swaps `:` for ` =` and
-/// `[...]` for `{...}`.
+/// `[...]` for `{...}`. An override replaces a default field's value; one for
+/// any other key adds that field.
 fn js_fluid(name: &str, overrides: &[(&str, &str)]) -> String {
     let defaults = [
         ("viscosity", "2.0"),
@@ -50,6 +51,11 @@ fn js_fluid(name: &str, overrides: &[(&str, &str)]) -> String {
             .find(|(k, _)| *k == key)
             .map_or(value, |(_, v)| *v);
         fields.push(format!("{key}: {value}"));
+    }
+    for (key, value) in overrides {
+        if !defaults.iter().any(|(k, _)| k == key) {
+            fields.push(format!("{key}: {value}"));
+        }
     }
     format!("{{ {} }}", fields.join(", "))
 }
@@ -397,6 +403,400 @@ fn a_missing_or_mistyped_fluid_field_names_the_entry_field() {
             !skipped[0].contains("reaction descriptor"),
             "{}",
             skipped[0]
+        );
+    }
+}
+
+// --- Fog and wave fields ---------------------------------------------------
+
+/// Drain `[water, bad, sludge]` in both runtimes, where `bad` carries the
+/// given JS and Luau overrides; return both registries.
+fn drain_with_bad(
+    js_overrides: &[(&str, &str)],
+    lua_overrides: &[(&str, &str)],
+) -> (FluidRegistry, FluidRegistry) {
+    let js = drain_js(&js_manifest(&[
+        js_fluid("water", &[]),
+        js_fluid("bad", js_overrides),
+        js_fluid("sludge", &[]),
+    ]));
+    let lua = drain_lua(&lua_manifest(&[
+        lua_fluid("water", &[]),
+        lua_fluid("bad", lua_overrides),
+        lua_fluid("sludge", &[]),
+    ]));
+    (js, lua)
+}
+
+/// The one fluid `overrides` declare, drained in both runtimes; both must
+/// accept it and agree.
+fn accepted_in_both(overrides: &[(&str, &str)]) -> FluidDescriptor {
+    let capture = LogCapture::start();
+    let (js, lua) = drain_both(&[("water", overrides)]);
+    assert_eq!(js, lua, "{overrides:?}: the runtimes diverged");
+    assert_eq!(
+        js.names(),
+        ["water"],
+        "{overrides:?} is accepted: {:?}",
+        warnings(&capture, "fluids[0]")
+    );
+    js.get(0).unwrap().clone()
+}
+
+// The brief's scripting-surface example, in TS and its Luau mirror.
+#[test]
+fn the_fog_and_wave_scripting_example_parses_identically_in_ts_and_luau() {
+    let js = drain_js(
+        r#"({ fluids: [{
+        name: "water",
+        viscosity: 2.0,
+        viewTint: [0.1, 0.3, 0.4, 0.35],
+        muffle: 0.8,
+        surfaceOpacity: 0.75,
+        fogDistance: 1.0,
+        fogColor: [0.08, 0.2, 0.16],
+        wavePeriod: 63,
+        waveAmplitude: 6,
+        waveLength: [48, 80],
+    }] })"#,
+    );
+    let lua = drain_lua(
+        r#"return { fluids = { {
+        name = "water",
+        viscosity = 2.0,
+        viewTint = { 0.1, 0.3, 0.4, 0.35 },
+        muffle = 0.8,
+        surfaceOpacity = 0.75,
+        fogDistance = 1.0,
+        fogColor = { 0.08, 0.2, 0.16 },
+        wavePeriod = 63,
+        waveAmplitude = 6,
+        waveLength = { 48, 80 },
+    } } }"#,
+    );
+    assert_eq!(js, lua);
+    assert_eq!(
+        js.descriptors(),
+        [FluidDescriptor {
+            name: "water".into(),
+            viscosity: 2.0,
+            view_tint: [0.1, 0.3, 0.4, 0.35],
+            muffle: 0.8,
+            surface_opacity: 0.75,
+            enter_sound: None,
+            exit_sound: None,
+            fog_distance: Some(1.0),
+            fog_color: Some([0.08, 0.2, 0.16]),
+            wave_period: Some(63.0),
+            wave_amplitude: 6.0,
+            wave_length: [48.0, 80.0],
+            surface_reflectivity: 1.0,
+        }]
+    );
+}
+
+// Omitted: no fog, no wave, murk in `viewTint`'s rgb, amplitude 8, length
+// [64, 80]. `fogColor` stays unset; readers resolve it against `viewTint`.
+#[test]
+fn omitted_fog_and_wave_fields_resolve_to_their_defaults_in_both_runtimes() {
+    let water = accepted_in_both(&[]);
+    assert_eq!(water.fog_distance, None, "no fog");
+    assert_eq!(water.wave_period, None, "no wave");
+    assert_eq!(water.fog_color, None);
+    assert_eq!(water.resolved_fog_color(), [0.1, 0.3, 0.4]);
+    assert_eq!(water.wave_amplitude, 8.0);
+    assert_eq!(water.wave_length, [64.0, 80.0]);
+}
+
+// `null` reads as omitted, as it does for the optional sounds.
+#[test]
+fn null_fog_and_wave_fields_read_as_omitted() {
+    let js = drain_js(&js_manifest(&[js_fluid(
+        "water",
+        &[
+            ("fogDistance", "null"),
+            ("fogColor", "null"),
+            ("wavePeriod", "null"),
+            ("waveAmplitude", "null"),
+            ("waveLength", "null"),
+        ],
+    )]));
+    assert_eq!(js, drain_js(&js_manifest(&[js_fluid("water", &[])])));
+}
+
+// Boundary values on the accepted side of each rule, in both runtimes.
+#[test]
+fn fog_and_wave_boundary_values_are_accepted_in_both_runtimes() {
+    // `1e-45` rounds to the smallest positive f32 (a subnormal): the least
+    // fog distance the f64 -> f32 conversion can yield above 0.
+    let water = accepted_in_both(&[("fogDistance", "1e-45")]);
+    assert_eq!(water.fog_distance, Some(f32::from_bits(1)));
+    assert_eq!(
+        accepted_in_both(&[("fogColor", "[0, 1, 0]")]).fog_color,
+        Some([0.0, 1.0, 0.0])
+    );
+    assert_eq!(
+        accepted_in_both(&[("fogColor", "[1, 0, 1]")]).fog_color,
+        Some([1.0, 0.0, 1.0])
+    );
+    assert_eq!(
+        accepted_in_both(&[("waveAmplitude", "0")]).wave_amplitude,
+        0.0
+    );
+    assert_eq!(
+        accepted_in_both(&[("wavePeriod", "6")]).wave_period,
+        Some(6.0)
+    );
+    let limit = accepted_in_both(&[("waveAmplitude", "16"), ("waveLength", "128")]);
+    assert_eq!(
+        (limit.wave_amplitude, limit.wave_length),
+        (16.0, [128.0, 128.0])
+    );
+    assert_eq!(
+        accepted_in_both(&[("waveLength", "[64, 128]")]).wave_length,
+        [64.0, 128.0]
+    );
+    // A minimum of exactly 8 x amplitude.
+    assert_eq!(
+        accepted_in_both(&[("waveAmplitude", "6.5"), ("waveLength", "[52, 80]")]).wave_length,
+        [52.0, 80.0]
+    );
+    // Pin P12: the default amplitude 8 sets the minimum at 64.
+    assert_eq!(
+        accepted_in_both(&[("waveLength", "64")]).wave_length,
+        [64.0, 64.0]
+    );
+    assert_eq!(
+        accepted_in_both(&[("waveAmplitude", "6"), ("waveLength", "50")]).wave_length,
+        [50.0, 50.0]
+    );
+}
+
+// One number L means [L, L]; a pair is [min, max]; both runtimes agree. An
+// omitted length follows the amplitude.
+#[test]
+fn wave_length_forms_and_defaults_resolve_identically_in_both_runtimes() {
+    let single = accepted_in_both(&[("waveLength", "72")]);
+    assert_eq!(single.wave_length, [72.0, 72.0]);
+    let pair = accepted_in_both(&[("waveAmplitude", "6"), ("waveLength", "[48, 80]")]);
+    assert_eq!(pair.wave_length, [48.0, 80.0]);
+    let low = accepted_in_both(&[("waveAmplitude", "4")]);
+    assert_eq!(low.wave_length, [48.0, 80.0]);
+    let high = accepted_in_both(&[("waveAmplitude", "16")]);
+    assert_eq!(high.wave_length, [128.0, 128.0]);
+}
+
+// Each invalid value rejects that fluid only, with one warning per runtime
+// naming `fluids[1].<field>`; the runtimes' warnings match word for word.
+#[test]
+fn each_invalid_fog_or_wave_value_rejects_that_fluid_naming_the_field() {
+    type Case<'a> = (&'a str, &'a [(&'a str, &'a str)]);
+    let cases: &[Case] = &[
+        ("fogDistance", &[("fogDistance", "0")]),
+        ("fogDistance", &[("fogDistance", "-1")]),
+        ("fogColor", &[("fogColor", "[0.5, 1.01, 0.5]")]),
+        ("fogColor", &[("fogColor", "[-0.01, 0.5, 0.5]")]),
+        ("fogColor", &[("fogColor", "[0.5, 0.5]")]),
+        ("fogColor", &[("fogColor", "[0.5, 0.5, 0.5, 0.5]")]),
+        ("fogColor", &[("fogColor", "0.5")]),
+        ("wavePeriod", &[("wavePeriod", "5.99")]),
+        ("waveAmplitude", &[("waveAmplitude", "-1")]),
+        (
+            "waveAmplitude",
+            &[("waveAmplitude", "16.01"), ("waveLength", "128")],
+        ),
+        ("waveLength", &[("waveLength", "0")]),
+        ("waveLength", &[("waveLength", "[80, 64]")]),
+        ("waveLength", &[("waveLength", "[64, 128.01]")]),
+        ("waveLength", &[("waveLength", "[64]")]),
+        ("waveLength", &[("waveLength", "[48, 64, 80]")]),
+        ("waveLength", &[("waveLength", "\"long\"")]),
+        // Just below 8 x amplitude.
+        (
+            "waveLength",
+            &[("waveAmplitude", "6.5"), ("waveLength", "[51.99, 80]")],
+        ),
+        // Pin P12: the default amplitude 8 binds the 8x rule.
+        ("waveLength", &[("waveLength", "50")]),
+        ("waveLength", &[("waveLength", "63.99")]),
+    ];
+    for &(field, overrides) in cases {
+        let capture = LogCapture::start();
+        let (js, lua) = drain_with_bad(overrides, overrides);
+        assert_eq!(js, lua);
+        assert_eq!(
+            js.names(),
+            ["water", "sludge"],
+            "{overrides:?}: the rest stands"
+        );
+        let rejected = warnings(&capture, &format!("fluids[1].{field}"));
+        assert_eq!(
+            rejected.len(),
+            2,
+            "{overrides:?}: one per runtime: {rejected:?}"
+        );
+        assert_eq!(
+            rejected[0], rejected[1],
+            "the runtimes' diagnostics diverged"
+        );
+        assert_eq!(
+            warnings(&capture, "fluids[1]").len(),
+            2,
+            "{overrides:?}: no other warning for the entry"
+        );
+    }
+}
+
+// Pin P5: an out-of-range amplitude names `waveAmplitude`, never the length
+// the author did not write, whether or not a period is set.
+#[test]
+fn an_out_of_range_amplitude_with_a_defaulted_length_names_wave_amplitude() {
+    for overrides in [
+        &[("waveAmplitude", "30")][..],
+        &[("waveAmplitude", "17")][..],
+        &[("waveAmplitude", "17"), ("wavePeriod", "63")][..],
+    ] {
+        let capture = LogCapture::start();
+        let (js, lua) = drain_with_bad(overrides, overrides);
+        assert_eq!(js, lua);
+        assert_eq!(js.names(), ["water", "sludge"]);
+        let rejected = warnings(
+            &capture,
+            "fluids[1].waveAmplitude must be a finite value in [0, 16]",
+        );
+        assert_eq!(rejected.len(), 2, "{overrides:?}: {rejected:?}");
+        assert!(
+            warnings(&capture, "waveLength").is_empty(),
+            "{overrides:?}: a defaulted length never appears in a warning"
+        );
+    }
+}
+
+// A non-finite number never reaches validation: script conversion rejects
+// it, naming the entry and the field, identically in both runtimes.
+#[test]
+fn a_nan_fog_or_wave_value_rejects_that_fluid_naming_the_field() {
+    for (field, js_value, lua_value, path) in [
+        ("fogDistance", "NaN", "0/0", "fogDistance"),
+        (
+            "fogColor",
+            "[0.5, NaN, 0.5]",
+            "{0.5, 0/0, 0.5}",
+            "fogColor[1]",
+        ),
+        ("wavePeriod", "NaN", "0/0", "wavePeriod"),
+        ("waveAmplitude", "NaN", "0/0", "waveAmplitude"),
+        ("waveLength", "NaN", "0/0", "waveLength"),
+        ("waveLength", "[NaN, 80]", "{0/0, 80}", "waveLength[0]"),
+    ] {
+        let capture = LogCapture::start();
+        let (js, lua) = drain_with_bad(&[(field, js_value)], &[(field, lua_value)]);
+        assert_eq!(js, lua);
+        assert_eq!(js.names(), ["water", "sludge"], "{field}: the rest stands");
+        let rejected: Vec<String> = warnings(&capture, "fluids[1] is malformed and was skipped")
+            .into_iter()
+            .filter(|message| message.contains(&format!("non-finite number at `{path}`")))
+            .collect();
+        assert_eq!(rejected.len(), 2, "{field}: one per runtime: {rejected:?}");
+        assert_eq!(
+            rejected[0], rejected[1],
+            "the runtimes' diagnostics diverged"
+        );
+    }
+}
+
+// --- Reflectivity -----------------------------------------------------------
+
+// Acceptance row 28: an omitted `surfaceReflectivity` resolves to 1 (water);
+// 0 and 50, the range's ends, are accepted in both runtimes.
+#[test]
+fn surface_reflectivity_defaults_to_water_and_accepts_zero_and_fifty() {
+    assert_eq!(accepted_in_both(&[]).surface_reflectivity, 1.0);
+    assert_eq!(
+        accepted_in_both(&[("surfaceReflectivity", "null")]).surface_reflectivity,
+        1.0
+    );
+    for (authored, expected) in [("0", 0.0), ("50", 50.0), ("2.5", 2.5), ("10", 10.0)] {
+        assert_eq!(
+            accepted_in_both(&[("surfaceReflectivity", authored)]).surface_reflectivity,
+            expected,
+            "{authored}"
+        );
+    }
+}
+
+// Acceptance row 28: −0.1 and 50.1 reject that fluid with one warning per
+// runtime naming the field; the rest of the manifest stands.
+#[test]
+fn an_out_of_range_surface_reflectivity_rejects_that_fluid_naming_the_field() {
+    for authored in ["-0.1", "50.1"] {
+        let capture = LogCapture::start();
+        let overrides = [("surfaceReflectivity", authored)];
+        let (js, lua) = drain_with_bad(&overrides, &overrides);
+        assert_eq!(js, lua);
+        assert_eq!(
+            js.names(),
+            ["water", "sludge"],
+            "{authored}: the rest stands"
+        );
+        let rejected = warnings(
+            &capture,
+            "fluids[1].surfaceReflectivity must be a finite value in [0, 50]",
+        );
+        assert_eq!(
+            rejected.len(),
+            2,
+            "{authored}: one per runtime: {rejected:?}"
+        );
+        assert_eq!(
+            rejected[0], rejected[1],
+            "the runtimes' diagnostics diverged"
+        );
+        assert!(
+            rejected[0].contains("fluid 'bad' was rejected"),
+            "{}",
+            rejected[0]
+        );
+        assert_eq!(warnings(&capture, "fluids[1]").len(), 2, "no other warning");
+    }
+}
+
+// Acceptance row 28: NaN never reaches validation; script conversion rejects
+// it, still naming the field, and the rest of the manifest stands. A string
+// is malformed the same way.
+#[test]
+fn a_nan_or_mistyped_surface_reflectivity_rejects_that_fluid_naming_the_field() {
+    for (js_value, lua_value, needle) in [
+        ("NaN", "0/0", "non-finite number at `surfaceReflectivity`"),
+        (
+            "\"mirror\"",
+            "\"mirror\"",
+            "`fluids[1].surfaceReflectivity` must be a number",
+        ),
+    ] {
+        let capture = LogCapture::start();
+        let (js, lua) = drain_with_bad(
+            &[("surfaceReflectivity", js_value)],
+            &[("surfaceReflectivity", lua_value)],
+        );
+        assert_eq!(js, lua);
+        assert_eq!(
+            js.names(),
+            ["water", "sludge"],
+            "{js_value}: the rest stands"
+        );
+        let rejected: Vec<String> = warnings(&capture, "fluids[1] is malformed and was skipped")
+            .into_iter()
+            .filter(|message| message.contains(needle))
+            .collect();
+        assert_eq!(
+            rejected.len(),
+            2,
+            "{js_value}: one per runtime: {rejected:?}"
+        );
+        assert_eq!(
+            rejected[0], rejected[1],
+            "the runtimes' diagnostics diverged"
         );
     }
 }

@@ -4,19 +4,23 @@
 use glam::{Vec2, Vec3};
 
 mod carry;
+mod teleport;
+pub use teleport::TeleportEvent;
 mod dispatch;
 mod environment;
 mod intents;
 pub mod knockback;
 mod ledge_probe;
 mod mover_carry;
+pub mod overlap_check;
 mod push;
 mod substrate;
+pub mod swept;
 mod swim_transition;
 mod vault;
 mod vault_path;
 
-pub(crate) use mover_carry::mover_push_is_blocked_by_static;
+pub use push::steady_drift_velocity;
 pub use vault_path::{vault_clock, vault_path_ms, vault_path_ticks};
 
 use crate::collision::moving::CombinedCollisionWorld;
@@ -32,9 +36,7 @@ use postretro_foundation::{GroundRef, MovementState, MovementStateKind, PlayerMo
 #[cfg(test)]
 use crate::movement::intents::{DASH_MAX_MS, SLIDE_MAX_MS, dash_intent};
 #[cfg(test)]
-use crate::movement::substrate::{
-    ResizeAnchor, resize_capsule, standup_clearance_probe, step_up_lift,
-};
+use crate::movement::substrate::{ResizeAnchor, anchored_standup_clearance_probe, resize_capsule};
 
 /// Per-tick input plumbed in from the engine's input layer. Keep `wish_dir`
 /// component magnitudes within `[0, 1]` — the raw x/y values drive threshold
@@ -86,7 +88,7 @@ pub struct MovementStateEdge {
 
 /// Events the movement tick emits for the same-frame dispatch layer to fire
 /// into the reaction registry.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MovementEvents {
     pub landed: bool,
     pub jumped: bool,
@@ -95,6 +97,10 @@ pub struct MovementEvents {
     /// the active fluid table; `None` on a tick with no swim edge. Lets the
     /// swim enter and exit sounds name their fluid after the pawn is dry.
     pub swim_fluid: Option<u16>,
+    pub teleport: Option<TeleportEvent>,
+    /// The tick's own movement ended inside static geometry after starting clear
+    /// (`overlap_check`). The caller logs it; it is never wire or script state.
+    pub static_overlap: Option<crate::collision::StaticOverlap>,
 }
 
 impl MovementEvents {
@@ -160,6 +166,9 @@ pub struct SubstrateResult {
     /// A genuine landing transition (airborne → grounded) cleared the
     /// air-tick hysteresis gate. Maps directly to `MovementEvents::landed`.
     pub(crate) landed: bool,
+    /// The pose the tick overlap check starts from: after mover carry and mover
+    /// displacement, which mover policy polices instead.
+    pub(crate) checked_start: Vec3,
 }
 
 /// A state transition a per-state intent warrants this tick: the `next` state to
@@ -172,6 +181,11 @@ pub struct SubstrateResult {
 pub struct Transition {
     pub(crate) next: MovementState,
     pub(crate) carry: CarryRule,
+}
+
+/// The pawn's live collision capsule.
+fn body_capsule(component: &PlayerMovementComponent) -> crate::collision::CollisionCapsule {
+    crate::collision::CollisionCapsule::new(component.capsule.radius, component.capsule.half_height)
 }
 
 pub trait MovementCollisionSource {
@@ -190,12 +204,22 @@ impl MovementCollisionSource for CombinedCollisionWorld<'_> {
     }
 }
 
-/// Advance one pawn one fixed tick. `environment` is the level gravity plus the
-/// installed volumes; the tick resolves it once, at the tick-start `position`,
-/// and hands the result to the state intent, which never queries it.
-///
-/// Prediction and reconcile replay call this form: it reports nothing they
-/// could carry into a later tick beyond the pose, the component and events.
+/// The ground mover carry moves a body with this tick: the vault target's
+/// mover while vaulting (none for a static ledge), else `previous_ground`. The
+/// host pin test reads the same rule to know which bodies a mover carries.
+pub(crate) fn carry_ground_for(state: &MovementState, previous_ground: GroundRef) -> GroundRef {
+    match state {
+        MovementState::Vault { mover, .. } => mover.map_or(GroundRef::Airborne, GroundRef::Mover),
+        _ => previous_ground,
+    }
+}
+
+/// Test convenience for [`tick_with_immersion_and_armed`]: one fixed tick that
+/// discards the immersion and arms every teleporter as its map spawned it
+/// (`enabled_on_spawn`). Production movement never calls it: host movement,
+/// client prediction and reconcile replay all supply the installed armed state,
+/// which scripts change at runtime.
+#[cfg(test)]
 pub fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -209,12 +233,8 @@ pub fn tick(
     (position, events)
 }
 
-/// [`tick`], also reporting the tick's resolved immersion (0..=1): the
-/// tick-start resolve the state intent used, after any swim entry re-resolved
-/// it for the standing capsule. Authoritative host movement stores it in the
-/// pawn's output-only `ImmersionComponent` for the `player.immersion` slot.
-/// Nothing feeds it back into a tick: the next tick resolves afresh from its
-/// own position.
+/// [`tick`], also reporting the tick's immersion; test-only for the same reason.
+#[cfg(test)]
 pub fn tick_with_immersion(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -222,6 +242,40 @@ pub fn tick_with_immersion(
     environment: EnvironmentView<'_>,
     dt: f32,
     position: Vec3,
+) -> (Vec3, MovementEvents, f32) {
+    let world = collision.combined_collision();
+    tick_with_immersion_and_armed(
+        component,
+        input,
+        collision,
+        environment,
+        dt,
+        position,
+        |index| world.static_world.teleporters.records()[index].enabled_on_spawn,
+    )
+}
+
+/// Advance one pawn one fixed tick: the movement entry for host movement, client
+/// prediction and reconcile replay alike. `environment` is the level gravity
+/// plus the installed volumes; the tick resolves it once, at the tick-start
+/// `position`, and hands the result to the state intent, which never queries it.
+/// `armed` reports whether teleporter `index` (map order) is armed this tick;
+/// callers read the installed armed state, so all three agree.
+///
+/// Also returns the tick's resolved immersion (0..=1): the tick-start resolve
+/// the state intent used, after any swim entry re-resolved it for the standing
+/// capsule. Authoritative host movement stores it in the pawn's output-only
+/// `ImmersionComponent` for the `player.immersion` slot. Nothing feeds it back
+/// into a tick: the next tick resolves afresh from its own position.
+#[allow(clippy::too_many_arguments)]
+pub fn tick_with_immersion_and_armed(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    collision: &impl MovementCollisionSource,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+    position: Vec3,
+    armed: impl FnMut(usize) -> bool,
 ) -> (Vec3, MovementEvents, f32) {
     let mut resolved_environment = resolve_at_tick_start(component, environment, position);
     let mut events = MovementEvents::default();
@@ -267,6 +321,10 @@ pub fn tick_with_immersion(
     // Gravity still accumulates in that base; the protected knockback and push
     // drift layers are recomposed before the one shared collision sweep.
     component.velocity -= component.knockback_velocity + component.push_velocity;
+    // Resizes (swim seam stand-up, crouch and slide entry and exit) run before
+    // mover carry, ahead of the substrate's own check, so their segment is
+    // checked on its own once the intent has run.
+    let tick_start = (position, body_capsule(component));
     // Swim entry and exit by immersion apply here, before the intent, so the
     // entered state owns this tick (`swim_transition`), which also decides
     // whether the swim intent fires a fluid jump.
@@ -284,10 +342,7 @@ pub fn tick_with_immersion(
     // never with any other (a static ledge carries nothing). Its path then
     // holds against a mover of any speed, steady or not. Any other pawn, and
     // the tick a vault starts, rides the ground it stood on.
-    let carry_ground = match component.movement_state {
-        MovementState::Vault { mover, .. } => mover.map_or(GroundRef::Airborne, GroundRef::Mover),
-        _ => previous_ground,
-    };
+    let carry_ground = carry_ground_for(&component.movement_state, previous_ground);
     // Vault entry runs next, from the same tick-start pose, unless the swim
     // seam already took an edge: a swim entry on the tick a land vault would
     // start wins. The entered vault owns this tick.
@@ -315,6 +370,12 @@ pub fn tick_with_immersion(
         &mut position,
         carry_ground,
         &mut events,
+    );
+
+    let resize_overlap = overlap_check::check_resize(
+        collision.static_world,
+        tick_start,
+        (position, body_capsule(component)),
     );
 
     // Push lands after the intent: horizontal push (all of it while swimming) in
@@ -393,6 +454,15 @@ pub fn tick_with_immersion(
         events.jumped || launched || left_ground,
     );
 
+    events.static_overlap = resize_overlap.or_else(|| {
+        overlap_check::check_own_movement(
+            collision.static_world,
+            substrate.checked_start,
+            current_pos,
+            body_capsule(component),
+        )
+    });
+
     // Contact flows forward through the tick seam: the active intent has
     // already run, so this result becomes input for the NEXT tick's intent.
     // Write `None` as well when no walkable floor was found, preventing a
@@ -439,11 +509,25 @@ pub fn tick_with_immersion(
     // jump buffer down toward a silent drop if it expires before landing.
     advance_forgiveness(component, dt);
 
+    let current_pos = teleport::resolve(
+        component,
+        input,
+        &collision,
+        current_pos,
+        &mut events,
+        armed,
+    );
     (current_pos, events, resolved_environment.immersion)
 }
 
 #[cfg(test)]
 mod environment_tests;
+#[cfg(test)]
+mod overlap_baseline_tests;
+#[cfg(test)]
+mod overlap_baseline_tracks;
+#[cfg(test)]
+mod overlap_tests;
 #[cfg(test)]
 mod push_tests;
 #[cfg(test)]
@@ -476,7 +560,7 @@ mod tests {
     const ENV: EnvironmentView<'static> = EnvironmentView::level_only(GRAVITY);
 
     /// Canonical player descriptor mirroring `content/dev/scripts/player.ts`.
-    fn canonical_descriptor() -> PlayerMovementDescriptor {
+    pub(super) fn canonical_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
             sounds: None,
             capsule: CapsuleParams {
@@ -553,8 +637,7 @@ mod tests {
                 grounded_only: false,
             }),
             impulse: None,
-            slide: None,
-            vault: None,
+            pose: None,
         };
         desc.view_feel = Some(view_feel.clone());
         let comp = PlayerMovementComponent::from_descriptor(&desc);
@@ -1787,10 +1870,11 @@ mod tests {
     // the tick, but the intra-tick excursion produced visible camera jitter.
     // Direct unit test: pure wall → None.
     #[test]
-    fn step_up_lift_returns_none_at_pure_wall() {
+    fn step_up_returns_none_at_pure_wall() {
         let desc = canonical_descriptor();
         let world = flat_floor_and_wall_world();
-        let capsule = Capsule::new_y(desc.capsule.half_height, desc.capsule.radius);
+        let capsule =
+            crate::collision::CollisionCapsule::new(desc.capsule.radius, desc.capsule.half_height);
         let cos_walkable = desc.ground.max_slope.to_radians().cos();
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
         // Position the capsule just shy of the wall (wall at x=5) so the
@@ -1798,33 +1882,34 @@ mod tests {
         // floor so the forward probe finds the wall (not the floor contact).
         let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
         let horiz_vel = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
-        let horiz_speed = horiz_vel.length();
         let collision = CombinedCollisionWorld::static_only(&world);
 
-        let result = step_up_lift(
+        let result = swept::step_up(
             &collision,
-            &capsule,
+            capsule,
             current_pos,
             horiz_vel,
-            horiz_speed,
-            desc.ground.step_height,
-            cos_walkable,
             DT,
-            desc.capsule.radius,
+            swept::StepParams {
+                step_height: desc.ground.step_height,
+                lift_margin: crate::collision::STEP_UP_LIFT_MARGIN,
+                cos_walkable,
+            },
         );
         assert!(
             result.is_none(),
-            "step_up_lift should return None at a pure wall, got {:?}",
+            "step_up should return None at a pure wall, got {:?}",
             result
         );
     }
 
     // Direct unit test: walkable step → Some(lifted) at step_height + 0.05.
     #[test]
-    fn step_up_lift_returns_some_at_walkable_step() {
+    fn step_up_returns_some_at_walkable_step() {
         let desc = canonical_descriptor();
         let world = ledge_and_wall_world();
-        let capsule = Capsule::new_y(desc.capsule.half_height, desc.capsule.radius);
+        let capsule =
+            crate::collision::CollisionCapsule::new(desc.capsule.radius, desc.capsule.half_height);
         let cos_walkable = desc.ground.max_slope.to_radians().cos();
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
         // Approach the step riser at x=5 from the floor side. Lift the
@@ -1833,21 +1918,21 @@ mod tests {
         // riser.
         let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
         let horiz_vel = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
-        let horiz_speed = horiz_vel.length();
         let collision = CombinedCollisionWorld::static_only(&world);
 
-        let result = step_up_lift(
+        let result = swept::step_up(
             &collision,
-            &capsule,
+            capsule,
             current_pos,
             horiz_vel,
-            horiz_speed,
-            desc.ground.step_height,
-            cos_walkable,
             DT,
-            desc.capsule.radius,
+            swept::StepParams {
+                step_height: desc.ground.step_height,
+                lift_margin: crate::collision::STEP_UP_LIFT_MARGIN,
+                cos_walkable,
+            },
         );
-        let lifted = result.expect("step_up_lift should return Some at a walkable step");
+        let lifted = result.expect("step_up should return Some at a walkable step");
         let expected_y = current_pos.y + desc.ground.step_height + 0.05;
         assert!(
             approx_eq(lifted.y, expected_y, POS_EPS),
@@ -2809,7 +2894,7 @@ mod tests {
         desc
     }
 
-    fn idle_input() -> MovementInput {
+    pub(super) fn idle_input() -> MovementInput {
         MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -4863,7 +4948,7 @@ mod tests {
 
     // ----- Capsule-resize + stand-up-probe substrate helpers (D8) -----------
     //
-    // These drive `resize_capsule` / `standup_clearance_probe` DIRECTLY with a
+    // These drive `resize_capsule` / `anchored_standup_clearance_probe` DIRECTLY with a
     // target size and anchor mode — no `Crouching` intent involved — proving the
     // substrate is reusable (slide can call the same helpers).
 
@@ -5001,12 +5086,13 @@ mod tests {
         // after a resize) before probing.
         resize_capsule(&mut comp, crouched_half_height, 0.2, ResizeAnchor::Feet);
         let blocked_collision = CombinedCollisionWorld::static_only(&blocked_world);
-        let clear = standup_clearance_probe(
+        let clear = anchored_standup_clearance_probe(
             &comp,
             &blocked_collision,
             pos,
             crouched_half_height,
             standing_half_height,
+            ResizeAnchor::Feet,
         );
         assert!(
             !clear,
@@ -5016,12 +5102,13 @@ mod tests {
         // Ceiling well above the standing head — clear to stand.
         let clear_world = floor_and_ceiling_world(crouched_top + head_rise + 1.0);
         let clear_collision = CombinedCollisionWorld::static_only(&clear_world);
-        let clear = standup_clearance_probe(
+        let clear = anchored_standup_clearance_probe(
             &comp,
             &clear_collision,
             pos,
             crouched_half_height,
             standing_half_height,
+            ResizeAnchor::Feet,
         );
         assert!(
             clear,
@@ -5031,12 +5118,13 @@ mod tests {
         // No ceiling at all (empty world) — clear.
         let empty = CollisionWorld::new();
         let empty_collision = CombinedCollisionWorld::static_only(&empty);
-        let clear = standup_clearance_probe(
+        let clear = anchored_standup_clearance_probe(
             &comp,
             &empty_collision,
             pos,
             crouched_half_height,
             standing_half_height,
+            ResizeAnchor::Feet,
         );
         assert!(clear, "no ceiling geometry must report headroom clear");
     }
@@ -5617,6 +5705,8 @@ mod tests {
                 },
             ],
             swim_fluid: None,
+            teleport: None,
+            static_overlap: None,
         };
         let mut addresses = Vec::new();
         events.append_named_events(&mut addresses);

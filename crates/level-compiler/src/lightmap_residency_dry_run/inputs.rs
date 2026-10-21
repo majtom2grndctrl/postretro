@@ -21,6 +21,7 @@ use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::{DIRECTION_TEXEL_BYTES, LightmapBlockIndex};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, ShadowmaskOwnerBounds};
+use postretro_level_format::teleporters::TeleportersSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_level_loader::LevelWorld;
 
@@ -171,6 +172,13 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         ),
         None => None,
     };
+    let teleporters_present = match optional(SectionId::Teleporters)? {
+        Some(bytes) => !TeleportersSection::from_bytes(&bytes)
+            .context("parse Teleporters")?
+            .teleporters
+            .is_empty(),
+        None => false,
+    };
 
     let cell_visibility_present = visibility.is_some();
     let (component_ids, coupled_pairs) = match visibility {
@@ -193,6 +201,7 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         visibility_world: Some(visibility_world),
         loader_rejected_portals,
         baked_residency_set,
+        teleporters_present,
         reconstruction,
     })
 }

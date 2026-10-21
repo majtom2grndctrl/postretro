@@ -11,6 +11,11 @@ use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, CLUSTER_SH_PAYLOADS_HEADER_SIZE,
     ClusterShPayloadsSection,
 };
+use postretro_level_format::lightmap::{LIGHTMAP_HEADER_BYTES, LightmapBlockIndex, LightmapHeader};
+use postretro_level_format::shadowmask_atlas::{
+    SHADOWMASK_BLOCK_RECORD_BYTES, ShadowmaskBlockIndex, ShadowmaskOwnerBounds,
+    shadowmask_prefix_len_through_block_count,
+};
 use postretro_level_format::{
     SectionDescriptor, SectionEntry, SectionId, read_container, read_section_data,
 };
@@ -33,6 +38,7 @@ pub(super) fn validate_readback(
     );
 
     let mut expected_offset = 8 + expected_sections.len() as u64 * 22;
+    let mut lightmap_index = None;
     for (index, expected) in expected_sections.iter().enumerate() {
         let entry = meta.sections.get(index).ok_or_else(|| {
             anyhow::anyhow!("section ID {} missing from read-back", expected.section_id)
@@ -55,7 +61,14 @@ pub(super) fn validate_readback(
             "section ID {} table entry differs from the declared length or version",
             expected.section_id,
         );
-        if expected.section_id == SectionId::ClusterShPayloads as u32 {
+        if expected.section_id == SectionId::Lightmap as u32 {
+            lightmap_index = Some(validate_lightmap_readback(file, entry, file_len)?);
+        } else if expected.section_id == SectionId::ShadowmaskAtlas as u32 {
+            let lightmap = lightmap_index.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("section 42 requires section 22 before it in the staged PRL")
+            })?;
+            validate_shadowmask_readback(file, entry, file_len, lightmap)?;
+        } else if expected.section_id == SectionId::ClusterShPayloads as u32 {
             validate_cluster_sh_payloads_readback(file, entry, file_len)?;
         } else {
             let actual =
@@ -88,6 +101,107 @@ pub(super) fn validate_readback(
         validate_cluster_directory_semantics_readback(file, &meta, inputs)?;
     }
 
+    Ok(())
+}
+
+/// Read only metadata into dynamic buffers; every body read uses fixed scratch.
+fn validate_lightmap_readback(
+    reader: &mut (impl Read + Seek),
+    entry: &SectionEntry,
+    file_len: u64,
+) -> anyhow::Result<LightmapBlockIndex> {
+    validate_frame(entry, file_len)?;
+    let mut prefix = Vec::new();
+    extend_index_prefix(reader, entry, &mut prefix, LIGHTMAP_HEADER_BYTES as u64)?;
+    let header = LightmapHeader::from_bytes(&prefix)?;
+    let index_len = header
+        .index_byte_len()
+        .ok_or_else(|| anyhow::anyhow!("section 22 index length overflows"))?;
+    extend_index_prefix(reader, entry, &mut prefix, index_len)?;
+    let index = LightmapBlockIndex::from_prefix(&prefix, entry.size)?;
+    scan_section_body(reader, entry, index_len)?;
+    Ok(index)
+}
+
+fn validate_shadowmask_readback(
+    reader: &mut (impl Read + Seek),
+    entry: &SectionEntry,
+    file_len: u64,
+    lightmap: &LightmapBlockIndex,
+) -> anyhow::Result<()> {
+    validate_frame(entry, file_len)?;
+    let mut prefix = Vec::new();
+    extend_index_prefix(reader, entry, &mut prefix, 8)?;
+    // Real face/light namespace bounds are checked before section planning.
+    // Same-handle read-back checks wire framing, owner shape, and blob ranges.
+    let bounds = ShadowmaskOwnerBounds::from_section_header(&prefix)?;
+    let through_count =
+        shadowmask_prefix_len_through_block_count(&prefix, entry.size, lightmap, None)?;
+    extend_index_prefix(reader, entry, &mut prefix, through_count as u64)?;
+    let block_count = u32::from_le_bytes(prefix[through_count - 4..].try_into()?);
+    anyhow::ensure!(
+        block_count as usize == lightmap.records.len(),
+        "section 42 block count {block_count} differs from section 22"
+    );
+    let index_len = (through_count as u64)
+        .checked_add(u64::from(block_count) * SHADOWMASK_BLOCK_RECORD_BYTES as u64)
+        .ok_or_else(|| anyhow::anyhow!("section 42 index length overflows"))?;
+    extend_index_prefix(reader, entry, &mut prefix, index_len)?;
+    ShadowmaskBlockIndex::from_prefix(&prefix, entry.size, lightmap, bounds)?;
+    scan_section_body(reader, entry, index_len)
+}
+
+fn validate_frame(entry: &SectionEntry, file_len: u64) -> anyhow::Result<()> {
+    let end = entry
+        .offset
+        .checked_add(entry.size)
+        .ok_or_else(|| anyhow::anyhow!("section {} framed range overflows", entry.section_id))?;
+    anyhow::ensure!(
+        end <= file_len,
+        "section {} framed range ends at {end}, beyond staged PRL length {file_len}",
+        entry.section_id
+    );
+    Ok(())
+}
+
+fn extend_index_prefix(
+    reader: &mut (impl Read + Seek),
+    entry: &SectionEntry,
+    prefix: &mut Vec<u8>,
+    want: u64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        want <= entry.size,
+        "section {} index prefix {want} exceeds framed length {}",
+        entry.section_id,
+        entry.size
+    );
+    let have = prefix.len();
+    let want = usize::try_from(want)?;
+    if want > have {
+        prefix.try_reserve_exact(want - have)?;
+        prefix.resize(want, 0);
+        reader.seek(SeekFrom::Start(entry.offset + have as u64))?;
+        reader.read_exact(&mut prefix[have..])?;
+    }
+    Ok(())
+}
+
+const SECTION_READBACK_SCRATCH_BYTES: usize = 8192;
+
+fn scan_section_body(
+    reader: &mut (impl Read + Seek),
+    entry: &SectionEntry,
+    index_len: u64,
+) -> anyhow::Result<()> {
+    reader.seek(SeekFrom::Start(entry.offset + index_len))?;
+    let mut remaining = entry.size - index_len;
+    let mut scratch = [0; SECTION_READBACK_SCRATCH_BYTES];
+    while remaining > 0 {
+        let count = remaining.min(scratch.len() as u64) as usize;
+        reader.read_exact(&mut scratch[..count])?;
+        remaining -= count as u64;
+    }
     Ok(())
 }
 
@@ -199,6 +313,10 @@ fn validate_cluster_sh_payloads_readback(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "readback/lightmap_tests.rs"]
+mod lightmap_tests;
 
 #[cfg(test)]
 mod tests {

@@ -74,6 +74,12 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 - `ChannelClamp` (crates/render-cpu/src/flash_clamp.rs) is hard-wired to `screen.flash`, `screen.vignette` and the fluid tint, and its per-channel tracked value is private. A state turned on "starts fresh against its own values".
 - Nesting the Ghost track under SFX takes one of SFX's child-track slots, which are sized to the SFX voice headroom. `caps_within_capacity` with a 16 ghost cap totals 60 of 64.
 - Remote entity baselines, remote pawns included, carry the descriptor `entity_class` they were materialized from, and clients build display copies from their own descriptors by that class (crates/netcode/src/client.rs, `RemoteEntityMaterialize`). Remote projectiles resolve their visual from the local weapon descriptor's `projectile` block (`materialize_armed_remote_projectile`, crates/netcode/src/remote_materialize.rs).
+- `ProjectileDescriptor` rides the host tuning payload (`WieldableTuningPayload.projectile`, crates/netcode/src/carried_loadout.rs); decode strips only sounds and view feel, and `same_pawn_tuning` compares weapons whole, so an unstripped field change rebuilds the client pawn.
+- On the host, a monster's gameplay projectile carries the enemy's damage-provenance id as `owner_weapon`, not a weapon class. The weapon name exists only transiently, for a client mirror created when clients are registered (crates/netcode/src/projectile_presentation.rs). Host mirrors carry provenance but no visuals.
+- A pawn's descriptor is whatever class its `player_spawn` names (default `"player"`); nothing marks a descriptor as a player's (crates/netcode/src/descriptor_class.rs).
+- Both descriptor parsers ignore unknown top-level keys today; a malformed known descriptor field rejects mod init.
+- Virtual-module plumbing beyond the runtime: the script compiler's SDK specifier allowlist and its build-side Luau `require` both hardcode `postretro` and `postretro/ui`, with a drift test (crates/script-compiler/src/lib.rs, crates/sim light_membership tests).
+- The per-entity presentation-override lane (light, fog, emitter writes bound by map identity) is the precedent a future per-entity ghost flip would use.
 - Descriptors are `defineEntity({ canonicalName, components })` (content/dev/scripts/player.ts); a weapon's projectile is `components.weapon.projectile`.
 - Fluid colors are `[r, g, b]` arrays (`viewTint`, `fogColor` in content/dev/start-script.ts).
 

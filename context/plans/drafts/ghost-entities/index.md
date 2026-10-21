@@ -1,6 +1,6 @@
 # ghost-entities
 
-Brief · resumable · reads: `context/lib/movement.md` §6 (Teleport), `context/lib/networking.md` §Current contract, §What gates, and what replicates instead, §Version gates, `context/lib/rendering_pipeline.md` §4, §7.4, §7.8 (Photosensitivity limiter, Fluid view tint), `context/plans/ready/E23--accessibility/index.md` (I2, I9, D4), `context/lib/audio.md` §1, §4, §5, `context/lib/scripting.md` §1, §12, `context/lib/build_pipeline.md` §PRL section IDs · read at d6f3471
+Brief · resumable · reads: `context/lib/movement.md` §6 (Teleport), `context/lib/networking.md` §Current contract, §What gates, and what replicates instead, §Version gates, `context/lib/rendering_pipeline.md` §4, §7.4, §7.8 (Photosensitivity limiter, Fluid view tint), `context/plans/ready/E23--accessibility/index.md` (I2, I9, D4), `context/lib/audio.md` §1, §4, §5, `context/lib/scripting.md` §1, §12, `context/lib/entity_model.md` §4 (Map declarations), `context/lib/build_pipeline.md` §PRL section IDs · read at d6f3471
 
 ## Problem
 The game owner wants a new capability for The Dreadgate Trials, the first game on the engine: co-op players in the same room at different moments in time. Each player sees the partner in the other time as a ghost. A barrier one player cannot pass is watched opening from the other time when the partner hits a button there. In battles, each player sees only their own monsters plus the partner's ghost and aim, and a script swaps them so each faces what they could not see. The swap already exists: room copies joined by a seamless teleporter pair (`docs/teleporters.md` "A closet loop and a time shift"). The missing piece is perceiving the other copy. When done, a mapper places a `ghost_link` volume over one room copy, naming a landmark in it, a target in the other copy, the tagged movers it ghosts and a ghost style. A mod's descriptors declare which kinds of entity can ghost, and its manifest declares ghost styles: look and whether sound carries. While the link is armed, its members draw as translucent ghosts at the mapped pose in the other copy. When the style carries sound, their sounds also play there through a muffled ghost bus. Scripts arm links, narrow which kinds of member a link shows, and change look and ghost audio during play, with ramps.
@@ -14,11 +14,11 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - The mod manifest says how ghosts present: named styles and the ghost bus profile.
   - Level scripts say what changes during play, including which member categories a link shows.
   - The link holds no raw look values or presentation flags, and the manifest names no map entity.
-- **`ghost_link` is a brush entity that reuses `teleport_destination` points.** `landmark` names a point inside the source copy, `target` a point in the other copy. They must exist and differ, under the seamless `trigger_teleport` rules and error wording. Links carry `_tags` for script queries. A link is independent of teleporters, so a link can look into a copy nobody teleports to. A two-way link is two volumes.
+- **`ghost_link` is a brush entity that reuses `teleport_destination` points.** `landmark` names a point inside the source copy, `target` a point in the other copy. They must exist and differ, under the seamless `trigger_teleport` rules and error wording. Links carry `_tags` for script queries. A link is independent of teleporters, so a link can look into a copy nobody teleports to. A two-way link is two volumes. Like teleporter regions, a link is a baked region scripts arm, so it is its own amendment to `entity_model.md` §4's map declarations, recorded at promotion.
 - **One mapping function, in physics beside the teleport resolve.** The seamless landmark → target transform becomes one shared pure function that teleports and ghosts both call, so a ghost and a seamless arrival from the same pose always agree. This follows the one-chokepoint rule for pawn relocation (`movement.md` §6).
 - **Membership: an entity must be able to ghost, and the link must show its category.**
-  - A descriptor's top-level `ghost` field, beside `canonicalName`, marks an archetype that can ghost. It is a descriptor attribute, not a component kind. Player descriptors default to true; every other descriptor defaults to false. A pawn ghosts with its third-person weapon.
-  - A weapon's `projectile` block takes its own `ghost` field, default false. A projectile that opts in can ghost whoever fired it.
+  - A descriptor's top-level `ghost` field, beside `canonicalName`, marks an archetype that can ghost. It is a descriptor attribute, not a component kind, and it defaults to false for every descriptor: a mod opts its player descriptor in like any other, so the engine never branches on actor kind. A level with links while no loaded descriptor sets `ghost` warns once at install, so a forgotten opt-in is not silent. A non-boolean `ghost` rejects mod init in both runtimes, as every malformed descriptor field does. A pawn ghosts with its third-person weapon.
+  - A weapon's `projectile` block takes its own `ghost` field, default false. A projectile that opts in can ghost whoever fired it. Every peer resolves it from the firing weapon's descriptor, the host included, for a monster's projectiles as for a player's. The field is stripped from the host tuning payload like sound keys, so flipping it never rebuilds a client's pawn.
   - Movers have no descriptor: a link's `ghost_tags` names the movers carrying those `_tags`. A listed tag that matches no mover warns once at install.
   - Each link shows four member categories: `players`, `entities` (non-player descriptor entities), `projectiles` and `movers`. A category only narrows: it never ghosts what the descriptor or tag did not opt in. The FGD key `ghost_members` sets a link's starting categories, all four by default, and `setMembers` changes them during play.
   - An impact belongs to a link when its shot's owner is a member, resolved from the shot id normalized the way observer cues normalize it. An impact without a shot id belongs to no link.
@@ -49,7 +49,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - Each ghost is one limiter channel: presented opacity is its strength and its link's tint is its redness, under the fluid view tint's rules and player-only toggle. Like the screen channels, it judges the change as if it covered the screen (`rendering_pipeline.md` §7.8).
   - A new ghost's membership starts at 0. Turning the limiter on starts every ghost fresh against its current value, as the screen channels start, so enabling it never dips a ghost. The membership ramp runs on presented-frame time, so it continues through a pause, while `setColorFilter` ramps follow script time.
   - The clamp applies on the presenting machine to the presented value, and nothing it holds reaches a script or the wire (I9).
-  - The per-ghost clamp is a reusable per-value clamp extracted from the screen-channel clamp on the same rules. It is not a ghost-only copy: `drafts/E23--photosensitivity-source-floor` reuses it for every other source.
+  - The per-ghost clamp is a reusable per-value clamp extracted from the screen-channel clamp on the same rules. It is not a ghost-only copy: it is extracted so `drafts/E23--photosensitivity-source-floor` can reuse it for every other source.
 - **Look resolves per link, per field:** floor style, then the named style, then `setColorFilter`. `setColorFilter` ramps each field it names independently. An omitted field keeps its value and any ramp in flight. Presentation flags come from the style alone and never change at runtime.
 - **Ghost audio mirrors voices this machine plays.**
   - When a link's style sets `audio`, a sound this machine plays anchored at a member inside the volume also plays a second voice. The voice sits at the mapped fire-time point on the Ghost bus. Admission reads the fire-time point and armed state, not the presented ramp.
@@ -73,7 +73,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
 - **Non-goals.**
   - Phase or timeline tags and interaction filtering.
   - Per-instance ghost tags on descriptor placements: on a connected client they are snapshot display copies with no tags or map identity. Their descriptor opts them in instead, and replicating per-instance identity is its own wire change.
-  - Flipping `ghost` on individual entities at runtime: it needs per-entity replicated state that does not exist. `setMembers` covers per-scenario rules.
+  - Flipping `ghost` on individual entities at runtime: it needs a per-entity ghost record and setter on the presentation-override lane that lights, fog and emitters use. `setMembers` covers per-scenario rules; add it when a set-piece needs one entity to differ from its archetype.
   - Widening a link past its opt-ins, such as ghosting a descriptor that did not set `ghost`: the game declares what is ghostable, and links only narrow.
   - Ghost impact sparks: they would mark a hidden target's position on screen. A game that wants impact hints opts into impact audio.
   - Hitscan tracers and muzzle flashes: no peer sees them today, even unghosted.
@@ -97,8 +97,9 @@ export default defineMod({
     defineGhostStyle({ name: "echo", tint: [0.6, 0.8, 1.0], opacity: 0.45, saturation: 0.2,
       audio: true, impactAudio: false }),
   ],
-  // Descriptors say what can ghost. Player descriptors default to ghost: true, everything else to false.
+  // Descriptors say what can ghost. `ghost` defaults to false everywhere, players included.
   entities: [
+    defineEntity({ canonicalName: "player", ghost: true, components: { /* movement, health, ... */ } }),
     defineEntity({ canonicalName: "rocket_launcher",
       components: { weapon: { projectile: { speed: 30, ghost: true /* ... */ } /* ... */ } } }),
     defineEntity({ canonicalName: "phase_wraith", ghost: true, components: { /* health, behavior, ... */ } }),
@@ -158,7 +159,7 @@ Pins are in `research.md`.
   - presented point just inside vs just outside the volume, for a pawn's body point, a projectile's origin and a mover's bounds center
   - partner pawn ghosted while an untagged mover and a monster whose descriptor does not set `ghost` beside it are not
   - a mover carrying a listed tag ghosted, and a monster whose descriptor sets `ghost` ghosted
-  - a player descriptor with `ghost: false` puts no pawn in any ghost set
+  - a player descriptor that omits `ghost` puts no pawn in any ghost set, and a level with links and no ghost-opted descriptor warns once at install
   - a spawner releasing a ghost-opted descriptor inside an armed link ghosts the spawn, ramping in from 0
   - the same tagged barrier inside two links ghosts through the link that lists its tag and not the other
   - a projectile whose weapon block sets `ghost` ghosted and one without not, whoever fired it; a ghost-opted projectile fired by an unghosted monster ghosts
@@ -173,7 +174,8 @@ Pins are in `research.md`.
 **Member categories**
 - [ ] With one category off, that category's eligible members fade out at the rate cap and the other categories' members stay, for each of the four categories. A category on never ghosts an entity whose descriptor or tag did not opt in (P43).
 - [ ] A link's `ghost_members` map default holds from the first frame. `setMembers` off then on in one tick ends in the last call's state with no ramp. `setMembers` and `arm` on one tick present together. A category flipped mid-ramp reverses from the presented value (P44, P45).
-- [ ] A committed reload that changes a descriptor's `ghost` re-resolves membership through the membership ramp on every peer (P46).
+- [ ] A committed reload that changes a descriptor's `ghost` re-resolves membership through the membership ramp on every peer (P46). A host reload flipping only a weapon's `projectile.ghost` changes ghosting on a client without rebuilding its pawn.
+- [ ] A non-boolean `ghost` or `projectile.ghost` rejects mod init with the same error in both runtimes.
 - [ ] A ghost is never a hit, overlap, trigger or AI target: a hitscan through it records no hit on the ghost, a splash centered on it damages nothing through it, a trigger it overlaps does not fire, and an enemy facing it acquires nothing.
 **Photosensitivity**
 - [ ] With the limiter on and a style at opacity 1, each of these presents at most 3 flashes in any 1 s window and rests at its pre-flash level over budget:
@@ -222,7 +224,7 @@ Pins are in `research.md`.
 - Rendering: translucent variants of the skinned-mesh and kinematic-brush passes, with game logic handing the renderer extra instances and look values. Mover and skinned instance seams: `research.md` §Rendering.
 - Limiter: extract the private per-channel tracked value from `flash_clamp.rs` (`research.md` §Client-side facts).
 - Audio seams (bus-aware voice release, the SFX child-track slot, `Point` anchors, kira's built-in effects and the dB drive): `research.md` §Audio, §Audio capacity.
-- Descriptor attribute: remote entities and pawns materialize from local descriptors by `entity_class`, and projectiles by their weapon's `projectile` block (`research.md` §Client-side facts). Read `ghost` there, and keep it out of the networked-by-default component classification.
+- Descriptor attribute: the host must record a weapon class on every gameplay projectile it spawns, a monster's included, before it can read `projectile.ghost` (`research.md` §Client-side facts). Remote entities and pawns materialize from local descriptors by `entity_class`, and projectiles by their weapon's `projectile` block (`research.md` §Client-side facts). Read `ghost` there, and keep it out of the networked-by-default component classification.
 - Impact and projectile owners on each role: `research.md` §Client-side facts. Normalize before reading membership.
 - Replication: links register at level install like teleporters. Look ramps rebase with the host-time rule bound presentation state uses, then present at each member's own clock (`research.md` §Presentation clocks).
 - Rivals weighed:
@@ -230,10 +232,11 @@ Pins are in `research.md`.
   - Per-link look keys and flags: every link would repeat a game's taste.
   - Script-set membership at arm time: map data keeps membership off the wire.
   - A per-entity `ghost` KVP: it cannot vary by link, and clients cannot read it on descriptor placements.
+  - Each link listing the descriptor and weapon classes it ghosts, as `ghost_tags` lists movers: clients could resolve it, and it tells rockets from plasma per link. Rejected because whether an archetype can ghost is a fact about the archetype, true through every link, and class lists would repeat across links. Category narrowing covers per-scenario rules.
   - Projectile ghosting as a style flag: it puts an archetype fact in the presentation layer, and it cannot tell rockets from plasma.
   - Two briefs, visuals now and ghost audio later: rejected because the owner treats ghost audio, `setGhostAudio` included, as core to designing the experience.
   - Screen-door (dithered) transparency instead of alpha blending: it avoids sorting against the fluid and billboard passes and suits the retro look. The executor weighs it in the thin slice and reports the choice; the limiter's opacity strength reads the same either way.
-- Namespace: `postretro/ui` is the precedent for a virtual module: `luau_require.rs`, `luau_prelude.rs`, `staged_manifest.rs`, `typedef/luau.rs` and the `ui_sdk_module.d.ts` template. Dev `tsconfig.json` files map module ids to the generated declarations.
+- Namespace: `postretro/ui` is the precedent for a virtual module: `luau_require.rs`, `luau_prelude.rs`, `staged_manifest.rs`, `typedef/luau.rs` and the `ui_sdk_module.d.ts` template. Dev `tsconfig.json` files map module ids to the generated declarations. The script compiler's specifier allowlist and build-side Luau `require` also need the new id (`research.md` §Client-side facts).
 - Split before extending: `crates/net/src/wire.rs`, `crates/netcode/src/replication.rs`, `crates/level-compiler/src/parse.rs`, `crates/renderer/src/render/mesh_pass.rs`.
 
 ## Open questions
@@ -249,7 +252,7 @@ Pins are in `research.md`.
   - style name, length-prefixed; empty means the floor style
   - convex leaves
   - landmark origin and yaw, then target origin and yaw
-  - `u32` ghost-tag count, then each tag length-prefixed, in authored order, deduplicated. Count 0 means players only.
+  - `u32` ghost-tag count, then each tag length-prefixed, in authored order, deduplicated. Count 0 means no movers.
 - Decode rejects:
   - another version, or a link count of 0 or past the cap
   - an enabled_on_spawn other than 0 or 1
@@ -269,7 +272,7 @@ Pins are in `research.md`.
 | Ghosted tags | — | per-link tag list | — | — | `ghost_tags` (whitespace-delimited, like `_tags`; default empty) |
 | Style reference | resolved style | style name string | — | — | `ghost_style` (default empty: floor style) |
 | Member categories | link field | `u8` mask in PRL and link-state payload | `setMembers({ players, entities, projectiles, movers })` | `l:setMembers({...})` | `ghost_members` (whitespace-delimited from `players entities projectiles movers`; default all four) |
-| Descriptor opt-in | descriptor attribute | — | `defineEntity({ canonicalName, ghost, components })`; player descriptors default `true` | same | — |
+| Descriptor opt-in | descriptor attribute | — | `defineEntity({ canonicalName, ghost, components })`; default `false` for every descriptor | same | — |
 | Projectile opt-in | weapon projectile field | — | `components.weapon.projectile.ghost` (default `false`) | same | — |
 | Style declaration | style table | — | `ghostStyles: [defineGhostStyle({ name, tint: [r, g, b], opacity, saturation, audio, impactAudio })]` | same | — |
 | Look change | host-only command | per-field look ramps in link-state payload | `setColorFilter({ tint, opacity, saturation, periodMs })` | `l:setColorFilter({...})` | — |

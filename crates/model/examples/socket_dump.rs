@@ -9,7 +9,7 @@ use std::path::Path;
 
 use postretro_model::gltf_loader::load_model;
 use postretro_model::mount::{
-    CharacterForward, corrective_delta, detect_weapon_mount, resolve_socket_frame, verify_mount,
+    corrective_delta, detect_weapon_mount, resolve_socket_frame, verify_mount,
 };
 
 /// A path that looks like a model file — used to catch the common mistake of
@@ -80,7 +80,9 @@ fn main() {
 
     // Optional 5th arg: a weapon model to mount at this socket (holder = identity,
     // exactly like the engine's `holder_transform * socket_matrix`). Reports the
-    // barrel direction in ENGINE world space so tuning can target +Z (forward).
+    // barrel direction in ENGINE world space so tuning can target the holder's
+    // forward: the weapon's persisted `extras.mount` facing, else +Z, as
+    // `postretro-tool solve-weapon-mount` resolves it.
     //
     // The barrel is identified GEOMETRICALLY (not "farthest vertex from origin",
     // which can pick the stock butt): long axis from the extreme vertex pair,
@@ -94,9 +96,13 @@ fn main() {
         let weapon = load_model(Path::new(&weapon_path)).expect("load weapon failed");
         let detection = detect_weapon_mount(&weapon).expect("weapon mount detection failed");
         let frame = detection.frame;
-        // This diagnostic predates character forward; it keeps the +Z target.
-        let verification = verify_mount(m, frame, CharacterForward::PositiveZ)
-            .expect("weapon mount verification failed");
+        let forward = weapon
+            .mount
+            .and_then(|mount| mount.character_forward)
+            .unwrap_or_default();
+        let forward_axis = forward.as_str().to_ascii_uppercase();
+        let verification =
+            verify_mount(m, frame, forward).expect("weapon mount verification failed");
         eprintln!("--- weapon {weapon_path} mounted ---");
         eprintln!(
             "  weapon local bbox min {:?} max {:?}",
@@ -126,15 +132,15 @@ fn main() {
             frame.up.to_array()
         );
         eprintln!(
-            "  BARREL -> world {:?}   (target forward = [0,0,1])",
+            "  BARREL -> world {:?}   (target forward = {forward_axis})",
             verification.barrel_world.to_array()
         );
         eprintln!(
-            "  UP     -> world {:?}   (target up      = [0,1,0])",
+            "  UP     -> world {:?}   (target up      = +Y)",
             verification.up_world.to_array()
         );
         eprintln!(
-            "  barrel·+Z = {:.3}  (1.0 = forward)   barrel·+Y = {:+.3}  (0 = level, + = muzzle up)",
+            "  barrel·{forward_axis} = {:.3}  (1.0 = forward)   barrel·+Y = {:+.3}  (0 = level, + = muzzle up)",
             verification.barrel_dot_forward, verification.barrel_dot_up
         );
         eprintln!(
@@ -142,8 +148,7 @@ fn main() {
             verification.up_dot_up
         );
 
-        let d_gltf = corrective_delta(m, frame, CharacterForward::PositiveZ)
-            .expect("corrective delta failed");
+        let d_gltf = corrective_delta(m, frame, forward).expect("corrective delta failed");
         // Blender frame: b = C·g, C: (x,y,z) -> (x,-z,y).
         let c_map = glam::Mat3::from_cols(glam::Vec3::X, glam::Vec3::Z, -glam::Vec3::Y);
         let d_b = c_map * d_gltf * c_map.transpose();

@@ -76,8 +76,9 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
                 format_vec3(axes.barrel),
                 format_vec3(axes.up),
             );
-            // The solved Euler is only meaningful for this facing, so the
-            // rebake persists it beside the axes.
+            // The solved Euler holds only for this facing. The rebake persists
+            // a non-default facing beside the axes; +Z is omitted because
+            // absent means +Z.
             let emitted_axes = MountAxes {
                 character_forward: Some(character_forward),
                 ..axes
@@ -128,6 +129,14 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
             println!(
                 "UNVERIFIED assist rebake will not persist mount axes; declare barrel/up before a VERIFIED check."
             );
+            // Facing is persisted only with declared axes, so a later check
+            // falls back to +Z unless told otherwise.
+            if character_forward != CharacterForward::default() {
+                println!(
+                    "The rebake will not record this facing; check it with --character-forward {}.",
+                    character_forward.as_str(),
+                );
+            }
             (blender_xyz_euler_degrees(total_blender), None, true)
         }
     };
@@ -414,7 +423,7 @@ mod tests {
         Command::new("python3")
     }
 
-    fn postprocess_weapon_fixture_with_prop_writer(path: &Path) {
+    fn postprocess_weapon_fixture_with_prop_writer(path: &Path, character_forward: Option<&str>) {
         let converter = crate_root().join("../../tools/prop_to_gltf.py");
         let python = r#"
 import importlib.util
@@ -433,13 +442,15 @@ converter.postprocess_gltf(
     sys.argv[2],
     rotate_euler=[0.0, 0.0, 0.0],
     mount_axes=[0.0, 0.0, 2.0, 0.0, 3.0, 0.0],
+    character_forward=sys.argv[3] if len(sys.argv) > 3 else None,
 )
 "#;
-        let output = python_interpreter()
-            .arg("-c")
-            .arg(python)
-            .arg(converter)
-            .arg(path)
+        let mut command = python_interpreter();
+        command.arg("-c").arg(python).arg(converter).arg(path);
+        if let Some(character_forward) = character_forward {
+            command.arg(character_forward);
+        }
+        let output = command
             .output()
             .expect("python3 runs the prop postprocessor");
         assert!(
@@ -530,7 +541,7 @@ converter.postprocess_gltf(
         // Regression: the normal prop writer -> model loader -> declared check
         // seam must persist intent without a second hand-authored JSON shape.
         let weapon_path = write_weapon_fixture();
-        postprocess_weapon_fixture_with_prop_writer(&weapon_path);
+        postprocess_weapon_fixture_with_prop_writer(&weapon_path, None);
         let weapon = load_model(&weapon_path).expect("prop writer output loads");
         assert_eq!(
             weapon.mount,
@@ -551,6 +562,33 @@ converter.postprocess_gltf(
         .expect("normal persisted check needs no CLI axes or euler");
 
         let result = check_weapon_mount(&args, &weapon, Mat4::IDENTITY);
+        let _ = std::fs::remove_file(weapon_path);
+
+        assert_eq!(result, Ok(0));
+    }
+
+    #[test]
+    fn prop_writer_negative_z_forward_loads_and_checks_without_cli_flag() {
+        // The writer -> loader seam must carry a -Z facing so a later check
+        // reuses it instead of falling back to +Z.
+        let weapon_path = write_weapon_fixture();
+        postprocess_weapon_fixture_with_prop_writer(&weapon_path, Some("-z"));
+        let weapon = load_model(&weapon_path).expect("prop writer output loads");
+        assert_eq!(
+            weapon.mount.and_then(|mount| mount.character_forward),
+            Some(CharacterForward::NegativeZ),
+        );
+        let args = parse_solve_weapon_mount_args(vec![
+            OsString::from("holder.gltf"),
+            OsString::from("--weapon"),
+            weapon_path.clone().into_os_string(),
+            OsString::from("--check"),
+        ])
+        .expect("persisted -Z check needs no --character-forward");
+
+        // A half turn about +Y points the declared +Z barrel down -Z, up kept.
+        let socket = Mat4::from_rotation_y(std::f32::consts::PI);
+        let result = check_weapon_mount(&args, &weapon, socket);
         let _ = std::fs::remove_file(weapon_path);
 
         assert_eq!(result, Ok(0));

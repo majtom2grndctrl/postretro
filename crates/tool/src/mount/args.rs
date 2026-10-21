@@ -12,6 +12,8 @@ use std::path::PathBuf;
 use glam::Vec3;
 use postretro_model::mount::{CharacterForward, MountAxes};
 
+use crate::flag::match_flag;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct MountCheckThresholds {
     pub(super) min_barrel_dot: f32,
@@ -111,6 +113,24 @@ pub(super) fn parse_solve_weapon_mount_args(
 
     while index < args.len() {
         let argument = argument_string(&args[index], "solve-weapon-mount argument")?;
+        // The shared matcher also takes `--character-forward=-z`, the spelling
+        // prop_to_gltf.py needs, so one form works in both mount tools.
+        if let Some(matched) = match_flag(&argument, args.get(index + 1), "--character-forward") {
+            let value = matched
+                .value
+                .ok_or_else(|| usage("--character-forward requires a value"))?;
+            let value = value
+                .to_str()
+                .ok_or_else(|| usage("--character-forward must be valid UTF-8"))?;
+            let parsed = CharacterForward::parse(value).ok_or_else(|| {
+                usage(&format!(
+                    "--character-forward expects +z or -z (case-insensitive), got {value:?}"
+                ))
+            })?;
+            set_once(&mut character_forward, parsed, "--character-forward")?;
+            index += matched.tokens;
+            continue;
+        }
         match argument.as_str() {
             "--mount-joint" => {
                 set_once(
@@ -202,15 +222,6 @@ pub(super) fn parse_solve_weapon_mount_args(
                     parse_array3(&args, &mut index, "--current-euler")?,
                     "--current-euler",
                 )?;
-            }
-            "--character-forward" => {
-                let value = next_argument(&args, &mut index, "--character-forward")?;
-                let parsed = CharacterForward::parse(&value).ok_or_else(|| {
-                    usage(&format!(
-                        "--character-forward expects +z or -z, got {value:?}"
-                    ))
-                })?;
-                set_once(&mut character_forward, parsed, "--character-forward")?;
             }
             "--min-barrel-dot" => {
                 set_once(
@@ -558,6 +569,21 @@ mod tests {
         .expect("a -z value is not mistaken for an option");
         assert_eq!(parsed.character_forward, Some(CharacterForward::NegativeZ));
 
+        for (value, expected) in [
+            ("--character-forward=-z", CharacterForward::NegativeZ),
+            ("--character-forward=+Z", CharacterForward::PositiveZ),
+        ] {
+            let parsed = parse_solve_weapon_mount_args(os_args(&[
+                "holder.gltf",
+                "--weapon",
+                "weapon.gltf",
+                "--check",
+                value,
+            ]))
+            .expect("the = form matches prop_to_gltf.py's spelling");
+            assert_eq!(parsed.character_forward, Some(expected), "{value}");
+        }
+
         for args in [
             [
                 "holder.gltf",
@@ -585,6 +611,32 @@ mod tests {
                 "+z",
                 "--character-forward",
                 "-z",
+            ]
+            .as_slice(),
+            [
+                "holder.gltf",
+                "--weapon",
+                "w.gltf",
+                "--check",
+                "--character-forward=x",
+            ]
+            .as_slice(),
+            [
+                "holder.gltf",
+                "--weapon",
+                "w.gltf",
+                "--check",
+                "--character-forward=",
+            ]
+            .as_slice(),
+            [
+                "holder.gltf",
+                "--weapon",
+                "w.gltf",
+                "--check",
+                "--character-forward",
+                "+z",
+                "--character-forward=-z",
             ]
             .as_slice(),
         ] {

@@ -52,7 +52,8 @@ pub enum CharacterForward {
 }
 
 impl CharacterForward {
-    /// Parse the `+z` / `-z` spelling shared by the CLI and `extras.mount`.
+    /// Parse the `+z` / `-z` spelling shared by the CLI and `extras.mount`,
+    /// case-insensitively.
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "+z" => Some(Self::PositiveZ),
@@ -309,6 +310,7 @@ pub fn corrective_delta_for_axes(
 /// verification intentionally uses the raw `Mat3::from_mat4(socket_frame)`, not
 /// the normalized rotation used by [`corrective_delta`], preserving the legacy
 /// diagnostic's reported values and any positive scale they carry.
+/// `barrel_dot_forward` is measured against `character_forward`.
 pub fn verify_mount(
     socket_frame: Mat4,
     weapon_frame: MountFrame,

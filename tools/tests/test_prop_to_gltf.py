@@ -1,11 +1,13 @@
 """Metadata tests for the Blender converter's post-export glTF pass."""
 
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import types
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -161,10 +163,18 @@ class ConverterArgumentValidationTests(unittest.TestCase):
                 self.parse("--scale", scale)
 
     def test_accepts_equals_form_negative_character_forward(self):
-        self.assertEqual(self.parse("--character-forward=-z").character_forward, "-z")
+        axes = ("--mount-axes", "0", "0", "-1", "0", "1", "0")
+        self.assertEqual(
+            self.parse(*axes, "--character-forward=-z").character_forward, "-z"
+        )
         self.assertIsNone(self.parse().character_forward)
         with self.assertRaises(SystemExit):
-            self.parse("--character-forward=x")
+            self.parse(*axes, "--character-forward=x")
+
+    def test_rejects_character_forward_without_mount_axes_before_export(self):
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as stderr:
+            self.parse("--character-forward=-z")
+        self.assertIn("requires --mount-axes", stderr.getvalue())
 
     def test_rejects_non_finite_transform_metadata_inputs(self):
         for args in [

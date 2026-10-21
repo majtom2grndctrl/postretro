@@ -87,7 +87,11 @@ The persisted barrel/up values remain raw-source-frame declarations. The
 persisted Euler is the rotation applied during the final bake. A -Z solve
 emits `--character-forward=-z` (the `=` keeps `-z` from reading as an option)
 and records `characterForward: "-z"`; a +Z solve records nothing, and absent
-means +Z.
+means +Z. An unreadable `characterForward` also reads as +Z, so re-solving from
+that file drops the -Z intent, while `--check` on it fails loudly rather than
+passing. The stored forward belongs to the weapon file, not the character, so
+re-solving a -Z bake against a +Z character needs an explicit
+`--character-forward +z`.
 
 ## 4. Check the final bake
 

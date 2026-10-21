@@ -119,7 +119,12 @@ def parse_args():
         help="Override the model's up axis (for OBJ/FBX imports). "
              "glTF is always Y-up. If omitted, Blender's importer default is used."
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # Reject before the export overwrites --output; postprocess repeats the guard
+    # for direct callers.
+    if args.character_forward is not None and args.mount_axes is None:
+        parser.error("--character-forward requires --mount-axes")
+    return args
 
 
 def clean_scene():

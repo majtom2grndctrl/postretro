@@ -102,7 +102,8 @@ pub struct LoadedModel {
     pub sockets: HashMap<String, SocketBinding>,
     /// Optional raw-source weapon axes declared on the selected mesh node's
     /// `extras.mount`. Malformed metadata degrades to `None` without rejecting
-    /// the model; the optional applied Euler degrades independently.
+    /// the model; the optional applied Euler and `characterForward` degrade
+    /// independently.
     pub mount: Option<MountAxes>,
     /// Tags parsed from the document's top-level `extras` (`{ "tags": [..] }`).
     /// They are returned but currently unused; map placement tags are separate.

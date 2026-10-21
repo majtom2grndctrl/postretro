@@ -984,8 +984,9 @@ fn teleport_client_predicted_tick_cuts_on_first_middle_last_and_zero_tick_frames
 
 // Traveller cues coalesce per frame and carry detaches on identity alone: several
 // adoptions drained in one frame play only the last cue, at its own arrival point;
-// a plain teleport-class correction (three metres or more, teleport record
-// unchanged) holds the camera but keeps the platform's yaw carry.
+// a plain teleport-class correction (three metres or more, or a composed
+// presentation offset reaching that floor, teleport record unchanged) holds the
+// camera but keeps the platform's yaw carry.
 #[test]
 fn teleport_frame_adoptions_coalesce_to_the_last_cue_and_detach_carry_on_identity_change() {
     let first = Vec3::new(10.0, 1.2, 0.0);

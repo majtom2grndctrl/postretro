@@ -47,10 +47,13 @@ use postretro_foundation::PlayerMovementComponent;
 /// 5. **Write back** the reconciled `(Transform, PlayerMovementComponent)` to the
 ///    registry — the gameplay-authoritative snap, read by collision/AI/future prediction.
 /// 6. **Classify + smooth** the correction (`predicted_pose - reconciled_pose`):
-///    seed a decaying presentation offset for a smoothed correction; for a teleport,
-///    clear the offset, report a [`LocalTeleportAdoption`], and clear history only
-///    for a plain teleport-floor correction (an identity change keeps it). The
-///    newly armed pawn's first merged record skips this: it adopts silently.
+///    compose a smoothed correction onto the in-flight presentation offset; for a
+///    teleport, clear the offset, report a [`LocalTeleportAdoption`], and clear
+///    history only for a plain teleport-floor correction (an identity change keeps
+///    it). A composed offset at or past the teleport floor snaps as well: offset
+///    cleared, an eye-cut-only adoption reported, history kept, and the class
+///    returned is [`CorrectionClass::Teleport`]. The newly armed pawn's first merged
+///    record skips this: it adopts silently and clears the offset.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn reconcile_local_pawn(
@@ -288,15 +291,33 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
             });
         }
         CorrectionClass::Ordinary | CorrectionClass::Dash | CorrectionClass::OversizedSmoothed => {
-            // Smooth: the registry snapped to the reconciled pose; seed the decaying
-            // presentation offset so the rendered first-person eye glides from where
-            // the client predicted to the authoritative pose over a few render frames.
+            // Smooth: the registry snapped to the reconciled pose; compose the
+            // correction onto the in-flight presentation offset so the rendered
+            // first-person eye stays put this frame and glides to the authoritative
+            // pose over a few ticks.
             if matches!(class, CorrectionClass::OversizedSmoothed) {
                 log::debug!(
                     "[Net] oversized local correction {magnitude:.3} m smoothed (above the ordinary cap, below the teleport floor)"
                 );
             }
-            prediction.seed_presentation_offset(correction);
+            if prediction.seed_presentation_offset(correction) {
+                // The composed offset reached the teleport floor: the eye snaps, by
+                // the rule a single correction there follows. Only the eye cuts. The
+                // reconcile was ordinary, so history stays, the teleport record did
+                // not move (no view turn or cue) and carry is kept.
+                log::debug!(
+                    "[Net] composed local correction offset reached the teleport floor; eye snaps"
+                );
+                prediction.teleport_adoptions.push(LocalTeleportAdoption {
+                    entity_id,
+                    yaw_delta: 0.0,
+                    camera_cut: true,
+                    identity_changed: false,
+                    arrival: reconciled_transform.position,
+                    cue_teleporter: None,
+                });
+                return Some(CorrectionClass::Teleport);
+            }
         }
     }
 
@@ -735,8 +756,10 @@ mod tests {
             "the unacked tail still crosses a dash"
         );
         // The measured correction must sit in the dash band for the classification to
-        // be meaningful (derived from the named caps, not a magic number).
-        let correction = prediction.presentation_offset().length();
+        // be meaningful (derived from the named caps, not a magic number). It is the
+        // registry's move, not the presentation offset, which composes with any
+        // remainder in flight.
+        let correction = (predicted - predicted_position(&registry, id)).length();
         assert!(
             correction > ORDINARY_CORRECTION_MAX_M && correction <= DASH_CORRECTION_MAX_M,
             "correction {correction} m lands in the dash band ({ORDINARY_CORRECTION_MAX_M}..={DASH_CORRECTION_MAX_M})"
@@ -782,7 +805,7 @@ mod tests {
                 DT,
             )
             .unwrap();
-        prediction.seed_presentation_offset(Vec3::new(0.1, 0.0, 0.0));
+        assert!(!prediction.seed_presentation_offset(Vec3::new(0.1, 0.0, 0.0)));
         let predicted = predicted_position(&registry, id);
 
         // Authoritative pose a teleport-distance away, acking all so nothing replays.
@@ -822,6 +845,316 @@ mod tests {
         assert!(
             (at_zero.position - at_one.position).length() < EPSILON,
             "previous and current transform are stamped equal (no teleport slide)"
+        );
+    }
+
+    // --- Presentation-offset composition (P18). Helpers drive the production order:
+    // reconcile at frame start, then each fixed tick predicts and decays once. ---
+
+    /// Predict one neutral tick from the registry pose and write it back, as
+    /// `client_predict_tick` does.
+    fn predict_neutral(
+        registry: &mut EntityRegistry,
+        prediction: &mut ClientPrediction,
+        id: EntityId,
+        client_tick: u32,
+        world: &CollisionWorld,
+    ) {
+        let prev = (
+            *registry.get_component::<Transform>(id).unwrap(),
+            registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .clone(),
+        );
+        let (t, m) = prediction
+            .predict_tick(
+                neutral_command(client_tick),
+                prev,
+                world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
+            .unwrap();
+        registry.set_component(id, t).unwrap();
+        registry.set_component(id, m).unwrap();
+    }
+
+    /// Reconcile against an authoritative pose at `position`, acking `ack`.
+    fn reconcile_at(
+        registry: &mut EntityRegistry,
+        prediction: &mut ClientPrediction,
+        id: EntityId,
+        position: Vec3,
+        wire: &WirePlayerMovementState,
+        ack: u32,
+        world: &CollisionWorld,
+    ) -> CorrectionClass {
+        reconcile_local_pawn(
+            registry,
+            prediction,
+            id,
+            Transform {
+                position,
+                ..Transform::default()
+            },
+            Some(wire),
+            Some(ack),
+            world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        )
+        .expect("armed pawn reconciles")
+    }
+
+    /// The presented local pose: registry transform plus the presentation offset.
+    fn presented_position(
+        registry: &EntityRegistry,
+        prediction: &ClientPrediction,
+        id: EntityId,
+    ) -> Vec3 {
+        prediction
+            .present_local_pose(*registry.get_component::<Transform>(id).unwrap())
+            .position
+    }
+
+    // Regression: a correction landing before the previous one decayed made the
+    // camera jump.
+    #[test]
+    fn correction_before_previous_decayed_composes_and_presented_eye_stays_continuous() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(20));
+        let wire = authoritative_movement();
+        predict_neutral(&mut registry, &mut prediction, id, 0, &world);
+        predict_neutral(&mut registry, &mut prediction, id, 1, &world);
+
+        // A: a small correction, tick 1 left unacked.
+        let a_at = predicted_position(&registry, id) + Vec3::new(0.3, 0.0, 0.0);
+        let class_a = reconcile_at(&mut registry, &mut prediction, id, a_at, &wire, 0, &world);
+        assert_eq!(class_a, CorrectionClass::Ordinary);
+
+        // One fixed tick: predict, then decay once. A is still settling.
+        predict_neutral(&mut registry, &mut prediction, id, 2, &world);
+        prediction.decay_presentation_offset();
+        let remainder = prediction.presentation_offset();
+        assert!(
+            remainder.length() > 0.1,
+            "A's offset is still in flight: {remainder:?}"
+        );
+        let eye_before = presented_position(&registry, &prediction, id);
+        let registry_before = predicted_position(&registry, id);
+
+        // B lands before A decays: a correction along another axis.
+        let b_at = registry_before + Vec3::new(0.0, 0.0, 0.25);
+        let class_b = reconcile_at(&mut registry, &mut prediction, id, b_at, &wire, 1, &world);
+        assert_eq!(class_b, CorrectionClass::Ordinary);
+
+        let eye_after = presented_position(&registry, &prediction, id);
+        assert!(
+            (eye_after - eye_before).length() < EPSILON,
+            "the presented eye is continuous across B: before {eye_before:?}, after {eye_after:?}"
+        );
+        let b_correction = registry_before - predicted_position(&registry, id);
+        assert!(b_correction.length() > 0.1, "B moved the registry");
+        assert!(
+            (prediction.presentation_offset() - (remainder + b_correction)).length() < EPSILON,
+            "the offset is A's remainder plus B"
+        );
+        assert!(prediction.teleport_adoptions.is_empty(), "no cut");
+    }
+
+    // --- Two corrections in one frame (no tick between them): the presented eye
+    // never moves, and the offset is the sum of both. ---
+    #[test]
+    fn two_corrections_in_one_frame_leave_presented_eye_continuous() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(21));
+        let wire = authoritative_movement();
+        for tick in 0..3 {
+            predict_neutral(&mut registry, &mut prediction, id, tick, &world);
+        }
+        let eye_before_a = presented_position(&registry, &prediction, id);
+        let registry_before_a = predicted_position(&registry, id);
+
+        let a_at = registry_before_a + Vec3::new(0.3, 0.0, 0.0);
+        let class_a = reconcile_at(&mut registry, &mut prediction, id, a_at, &wire, 0, &world);
+        assert_eq!(class_a, CorrectionClass::Ordinary);
+        let offset_a = prediction.presentation_offset();
+        let eye_before_b = presented_position(&registry, &prediction, id);
+        let registry_before_b = predicted_position(&registry, id);
+
+        let b_at = registry_before_b + Vec3::new(0.0, 0.0, -0.35);
+        let class_b = reconcile_at(&mut registry, &mut prediction, id, b_at, &wire, 1, &world);
+        assert_eq!(class_b, CorrectionClass::Ordinary);
+        let eye_after_b = presented_position(&registry, &prediction, id);
+
+        assert!(
+            (eye_after_b - eye_before_b).length() < EPSILON,
+            "continuous across B: before {eye_before_b:?}, after {eye_after_b:?}"
+        );
+        assert!(
+            (eye_after_b - eye_before_a).length() < EPSILON,
+            "the eye has not moved across both corrections"
+        );
+        let b_correction = registry_before_b - predicted_position(&registry, id);
+        assert!(
+            (prediction.presentation_offset() - (offset_a + b_correction)).length() < EPSILON,
+            "the offset composes A and B"
+        );
+        assert!(prediction.teleport_adoptions.is_empty(), "no cut");
+    }
+
+    // --- Refuse: a teleport-class correction clears an in-flight offset, whether it
+    // is a plain teleport-floor correction or a teleport-record mismatch at a short
+    // distance, and the next correction starts from zero. ---
+    #[test]
+    fn teleport_class_correction_clears_in_flight_offset_and_next_correction_does_not_compose() {
+        for identity_change in [false, true] {
+            let world = floor_world();
+            let mut registry = EntityRegistry::new();
+            let mut prediction = ClientPrediction::new();
+            let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(22));
+            let mut wire = authoritative_movement();
+            predict_neutral(&mut registry, &mut prediction, id, 0, &world);
+            let a_at = predicted_position(&registry, id) + Vec3::new(0.3, 0.0, 0.0);
+            reconcile_at(&mut registry, &mut prediction, id, a_at, &wire, 0, &world);
+            assert!(prediction.presentation_offset().length() > 0.1);
+
+            predict_neutral(&mut registry, &mut prediction, id, 1, &world);
+            prediction.decay_presentation_offset();
+            assert!(
+                prediction.presentation_offset().length() > 0.1,
+                "an offset is in flight at the teleport-class correction"
+            );
+            let shift = if identity_change {
+                wire.teleport.generation = wire.teleport.generation.wrapping_add(1);
+                Vec3::new(0.2, 0.0, 0.0)
+            } else {
+                Vec3::new(TELEPORT_CORRECTION_MIN_M + 1.0, 0.0, 0.0)
+            };
+            let t_at = predicted_position(&registry, id) + shift;
+            let class = reconcile_at(&mut registry, &mut prediction, id, t_at, &wire, 1, &world);
+            assert_eq!(
+                class,
+                CorrectionClass::Teleport,
+                "identity change {identity_change}"
+            );
+            assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+
+            predict_neutral(&mut registry, &mut prediction, id, 2, &world);
+            let before = predicted_position(&registry, id);
+            let c_at = before + Vec3::new(0.0, 0.0, 0.2);
+            let class_c = reconcile_at(&mut registry, &mut prediction, id, c_at, &wire, 2, &world);
+            assert_eq!(class_c, CorrectionClass::Ordinary);
+            let c_correction = before - predicted_position(&registry, id);
+            assert!(
+                (prediction.presentation_offset() - c_correction).length() < EPSILON,
+                "identity change {identity_change}: the next correction starts from zero, offset {:?}",
+                prediction.presentation_offset()
+            );
+        }
+    }
+
+    // --- Refuse: a first-record adoption clears an in-flight offset, and the next
+    // correction starts from zero. ---
+    #[test]
+    fn first_record_adoption_clears_in_flight_offset_and_next_correction_does_not_compose() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(23));
+        let wire = authoritative_movement();
+        predict_neutral(&mut registry, &mut prediction, id, 0, &world);
+        let a_at = predicted_position(&registry, id) + Vec3::new(0.3, 0.0, 0.0);
+        reconcile_at(&mut registry, &mut prediction, id, a_at, &wire, 0, &world);
+        assert!(prediction.presentation_offset().length() > 0.1);
+
+        // A new pawn identity on the same entity: its first record adopts silently.
+        prediction.arm(NetworkId(24), id);
+        assert!(prediction.first_record_pending());
+        let adopt_at = predicted_position(&registry, id) + Vec3::new(0.0, 0.0, 0.4);
+        reconcile_at(
+            &mut registry,
+            &mut prediction,
+            id,
+            adopt_at,
+            &wire,
+            0,
+            &world,
+        );
+        assert!(
+            !prediction.first_record_pending(),
+            "the first record adopted"
+        );
+        assert_eq!(prediction.first_record_hold, Some(id));
+        assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+
+        predict_neutral(&mut registry, &mut prediction, id, 1, &world);
+        let before = predicted_position(&registry, id);
+        let c_at = before + Vec3::new(-0.25, 0.0, 0.0);
+        let class_c = reconcile_at(&mut registry, &mut prediction, id, c_at, &wire, 1, &world);
+        assert_eq!(class_c, CorrectionClass::Ordinary);
+        let c_correction = before - predicted_position(&registry, id);
+        assert!(
+            (prediction.presentation_offset() - c_correction).length() < EPSILON,
+            "the next correction starts from zero, offset {:?}",
+            prediction.presentation_offset()
+        );
+    }
+
+    // --- Two sub-floor corrections whose composed offset reaches the teleport floor
+    // snap the eye: offset cleared, an eye-cut-only adoption reported, and history
+    // kept, since each reconcile was ordinary. ---
+    #[test]
+    fn composed_offset_at_teleport_floor_snaps_with_camera_cut_and_keeps_history() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(25));
+        let wire = authoritative_movement();
+        for tick in 0..3 {
+            predict_neutral(&mut registry, &mut prediction, id, tick, &world);
+        }
+
+        let before_a = predicted_position(&registry, id);
+        let a_at = before_a + Vec3::new(2.0, 0.0, 0.0);
+        let class_a = reconcile_at(&mut registry, &mut prediction, id, a_at, &wire, 0, &world);
+        assert_ne!(class_a, CorrectionClass::Teleport, "A alone smooths");
+        let a_magnitude = (before_a - predicted_position(&registry, id)).length();
+
+        let before_b = predicted_position(&registry, id);
+        let b_at = before_b + Vec3::new(1.5, 0.0, 0.0);
+        let class_b = reconcile_at(&mut registry, &mut prediction, id, b_at, &wire, 1, &world);
+        let b_magnitude = (before_b - predicted_position(&registry, id)).length();
+        assert!(
+            a_magnitude < TELEPORT_CORRECTION_MIN_M && b_magnitude < TELEPORT_CORRECTION_MIN_M,
+            "each correction is under the floor: {a_magnitude} m, {b_magnitude} m"
+        );
+        assert!(a_magnitude + b_magnitude >= TELEPORT_CORRECTION_MIN_M);
+
+        assert_eq!(
+            class_b,
+            CorrectionClass::Teleport,
+            "the composed offset snaps"
+        );
+        assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+        let remaining: Vec<u32> = prediction.history().iter().map(|e| e.client_tick).collect();
+        assert_eq!(remaining, vec![2], "history is kept past the ack");
+        assert_eq!(
+            prediction.teleport_adoptions,
+            vec![LocalTeleportAdoption {
+                entity_id: id,
+                yaw_delta: 0.0,
+                camera_cut: true,
+                identity_changed: false,
+                arrival: predicted_position(&registry, id),
+                cue_teleporter: None,
+            }],
+            "an eye cut only: no view turn, carry detach or cue"
         );
     }
 

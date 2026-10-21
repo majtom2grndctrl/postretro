@@ -1129,6 +1129,10 @@ impl LoopbackHarness {
             },
         );
         self.latest_predicted_movement_events = result.movement_events;
+        // Production decays the presentation offset once per predicted fixed tick,
+        // after the tick's camera pose bakes it in; without it, corrections would
+        // compose across harness steps that never decay.
+        self.prediction.decay_presentation_offset();
 
         // Enqueue the real wire message through the conditioner.
         if deliver {

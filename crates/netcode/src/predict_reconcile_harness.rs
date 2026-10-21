@@ -920,8 +920,10 @@ fn teleport_correction_snaps_without_smoothing() {
     h.step_until_armed(&forward_command(false));
     let pawn = h.client_pawn.expect("armed");
     // Seed a stale presentation offset to prove the teleport clears it.
-    h.prediction
-        .seed_presentation_offset(Vec3::new(0.1, 0.0, 0.0));
+    assert!(
+        !h.prediction
+            .seed_presentation_offset(Vec3::new(0.1, 0.0, 0.0))
+    );
     let predicted = h
         .client_registry
         .get_component::<Transform>(pawn)
@@ -1055,9 +1057,9 @@ fn presented_first_person_eye_is_smooth_under_reconcile_cadence() {
     let mut eye_z: Vec<f32> = Vec::new();
 
     for _ in 0..200 {
-        // One fixed tick: predict + reconcile (inside step). Then camera-follow the
-        // PRESENTED eye (registry CURRENT + offset) and push it into frame_timing, and
-        // decay the offset once per tick — exactly the production tick-rate seam.
+        // One fixed tick: predict (which decays the offset once, the production
+        // tick-rate seam) + reconcile (inside step). Then camera-follow the PRESENTED
+        // eye (registry CURRENT + offset) and push it into frame_timing.
         h.step(&forward_command(false));
         let registry_eye = h.local_pawn_eye().expect("armed pawn has an eye");
         let camera_eye = h
@@ -1068,7 +1070,6 @@ fn presented_first_person_eye_is_smooth_under_reconcile_cadence() {
             })
             .position;
         frame_timing.push_state(InterpolableState::new(camera_eye));
-        h.prediction.decay_presentation_offset();
 
         // Several render frames this tick: presented eye = interpolated PRESENTED pose
         // read directly (offset already baked in — no re-add). `frame_timing`
@@ -2522,8 +2523,9 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
 impl LoopbackHarness {
     /// A full step that additionally observes the reconcile correction taken on each
     /// snapshot applied this step. Returns `(took_teleport, max_correction_magnitude)`
-    /// where the magnitude is the largest seeded presentation offset (the smoothed
-    /// `predicted - reconciled` delta) over the snapshots applied this step. The gate
+    /// where the magnitude is the largest smoothed correction (the registry's
+    /// `predicted - reconciled` delta, as `latest_local_corrections` records it) over
+    /// the snapshots applied this step. The gate
     /// uses this to assert sub-teleport corrections smooth and to report the worst
     /// per-snapshot correction under the conditioned link.
     pub(crate) fn step_and_watch_correction(&mut self, command: &SimCommand) -> (bool, f32) {
@@ -2569,6 +2571,13 @@ impl LoopbackHarness {
                     &self.client_environment_volumes,
                 )
             {
+                // The first record adopts silently: it is no correction.
+                let adopting = self.prediction.first_record_pending();
+                let before = self
+                    .client_registry
+                    .get_component::<Transform>(reconcile.entity_id)
+                    .ok()
+                    .map(|transform| transform.position);
                 let class = reconcile_local_pawn(
                     &mut self.client_registry,
                     &mut self.prediction,
@@ -2582,13 +2591,19 @@ impl LoopbackHarness {
                 );
                 match class {
                     Some(super::prediction::CorrectionClass::Teleport) => took_teleport = true,
-                    // A smoothed correction seeds the presentation offset; its length is
-                    // the magnitude of this correction.
-                    Some(_) => {
-                        max_correction =
-                            max_correction.max(self.prediction.presentation_offset().length());
+                    // A smoothed correction moved the registry by this correction's
+                    // magnitude. The presentation offset composes with any remainder
+                    // in flight, so its length is no longer this correction's.
+                    Some(_) if !adopting => {
+                        if let (Some(before), Ok(after)) = (
+                            before,
+                            self.client_registry
+                                .get_component::<Transform>(reconcile.entity_id),
+                        ) {
+                            max_correction = max_correction.max((before - after.position).length());
+                        }
                     }
-                    None => {}
+                    Some(_) | None => {}
                 }
             }
             if let Some(ack) = outcome.ack {

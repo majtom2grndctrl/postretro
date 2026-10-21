@@ -272,7 +272,8 @@ pub(crate) fn host_observed_arrival_cues(
 /// turns the view by its yaw delta; any camera cut holds the final adopted eye.
 /// Mover carry detaches only for an adoption that changed the pawn's teleport
 /// identity: a plain teleport-class correction of three metres or more keeps the
-/// platform's yaw carry. Of several cues in one frame, only the last plays, at its
+/// platform's yaw carry, as does a composed-offset snap, which reports a camera cut
+/// alone (no view turn or cue). Of several cues in one frame, only the last plays, at its
 /// own arrival point, since unseen teleports coalesce to the last cue.
 /// `first_record_hold` holds the camera the same way and nothing more: the pawn's
 /// first record was written over a stale gated pose, which the eye must not blend

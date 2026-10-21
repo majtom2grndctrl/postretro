@@ -261,6 +261,32 @@ impl<'a> SceneTracer<'a> {
     /// Interpolated attributes at `hit` along a ray of unit `direction` from
     /// `origin`.
     pub(crate) fn surface(&self, hit: &SurfaceHit, origin: Vec3, direction: Vec3) -> SurfacePoint {
+        self.surface_at(hit, origin + direction * hit.distance, direction)
+    }
+
+    /// The point on `hit`'s triangle its barycentrics name.
+    pub(crate) fn position_on(&self, hit: &SurfaceHit) -> Vec3 {
+        let geom = &self.geometry.geometry;
+        hit.triangle
+            .iter()
+            .zip(hit.barycentric)
+            .map(|(&i, w)| Vec3::from(geom.vertices[i as usize].position) * w)
+            .sum()
+    }
+
+    /// The static geometry the tracer reads.
+    pub(crate) fn geometry(&self) -> &GeometryResult {
+        self.geometry
+    }
+
+    /// [`Self::surface`] with the point's position given: `hit`'s triangle
+    /// and barycentrics still interpolate every vertex attribute.
+    pub(crate) fn surface_at(
+        &self,
+        hit: &SurfaceHit,
+        position: Vec3,
+        direction: Vec3,
+    ) -> SurfacePoint {
         let geom = &self.geometry.geometry;
         let [v0, v1, v2] = hit.triangle.map(|i| &geom.vertices[i as usize]);
         let [w0, w1, w2] = hit.barycentric;
@@ -282,7 +308,7 @@ impl<'a> SceneTracer<'a> {
             normal = -normal;
         }
         SurfacePoint {
-            position: origin + direction * hit.distance,
+            position,
             normal,
             texture_index: geom.faces[hit.face as usize].texture_index,
             uv: lerp2(v0.uv, v1.uv, v2.uv),

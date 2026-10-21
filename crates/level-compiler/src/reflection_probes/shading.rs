@@ -5,6 +5,7 @@ use glam::Vec3;
 
 use super::animated_direct::AnimatedDirectSampler;
 use super::capture_exclusion::{CaptureBrushes, ProbeExclusion, RayOutcome};
+use super::capture_fill::fill_surface;
 use super::delta_sample::DeltaShSampler;
 use super::hit::{SceneTracer, SurfacePoint};
 use super::lightmap_sample::LightmapSampler;
@@ -103,13 +104,32 @@ impl CaptureScene<'_> {
         scratch: &mut ShadeScratch,
     ) -> anyhow::Result<(Vec3, Option<f32>)> {
         let outcome = self.trace(origin, direction, exclusion);
-        let Some(hit) = outcome.surface() else {
+        let Some((surface, distance)) = self.surface_of(&outcome, origin, direction) else {
             scratch.animated.clear();
             return Ok((Vec3::ZERO, None));
         };
-        let surface = self.tracer.surface(hit, origin, direction);
-        let radiance = self.shade(&surface, hit.distance, sample_angle, scratch)?;
-        Ok((radiance, Some(hit.distance)))
+        let radiance = self.shade(&surface, distance, sample_angle, scratch)?;
+        Ok((radiance, Some(distance)))
+    }
+
+    /// The surface `outcome` reads along a ray from `origin`, traced or
+    /// synthesized for a fill, and its distance from `origin`.
+    pub(crate) fn surface_of(
+        &self,
+        outcome: &RayOutcome,
+        origin: Vec3,
+        direction: Vec3,
+    ) -> Option<(SurfacePoint, f32)> {
+        match outcome {
+            RayOutcome::Miss => None,
+            RayOutcome::Hit(hit) | RayOutcome::LeakGuard(hit) => {
+                Some((self.tracer.surface(hit, origin, direction), hit.distance))
+            }
+            RayOutcome::Fill(fill) => Some((
+                fill_surface(&self.tracer, self.brushes.volumes, fill, origin, direction),
+                fill.distance,
+            )),
+        }
     }
 
     /// Static radiance leaving `surface` toward a capture point `distance`

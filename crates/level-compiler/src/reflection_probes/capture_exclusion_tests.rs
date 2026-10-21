@@ -29,9 +29,9 @@ use crate::light_namespaces::StaticBakedLights;
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
 
 /// A point inside the pillar, the wall behind it, and the ceiling slab.
-const IN_PILLAR: [f64; 3] = [48.0, 0.0, 64.0];
-const IN_BACK_WALL: [f64; 3] = [136.0, 0.0, 64.0];
-const IN_CEILING: [f64; 3] = [0.0, 0.0, 136.0];
+pub(super) const IN_PILLAR: [f64; 3] = [48.0, 0.0, 64.0];
+pub(super) const IN_BACK_WALL: [f64; 3] = [136.0, 0.0, 64.0];
+pub(super) const IN_CEILING: [f64; 3] = [0.0, 0.0, 136.0];
 
 /// Points on the wall behind the pillar that the capture point sees only
 /// through the pillar's body, whose sides they leave into empty space. Test
@@ -48,7 +48,7 @@ fn wall_behind_the_pillar() -> Vec<[f64; 3]> {
 }
 
 /// Radiance and distance one ray reads.
-fn read(
+pub(super) fn read(
     scene: &CaptureScene<'_>,
     origin: Vec3,
     direction: Vec3,
@@ -65,7 +65,7 @@ fn read(
         .unwrap()
 }
 
-fn only_probe(probes: &[PlacedProbe]) -> &PlacedProbe {
+pub(super) fn only_probe(probes: &[PlacedProbe]) -> &PlacedProbe {
     assert_eq!(probes.len(), 1, "the pool keeps one probe: {probes:?}");
     &probes[0]
 }
@@ -303,71 +303,6 @@ fn texels_no_ray_sent_into_the_pillar_capture_bit_identically_when_it_is_exclude
             }
         }
         assert!(untouched_blocks > 0);
-    });
-}
-
-// The first slice has no fill: rays through the pillar toward its ceiling
-// contact take the leak guard and read the pillar. Across the whole sphere no
-// ray misses or lands outside the projection box above its floor.
-#[test]
-fn rays_through_the_pillar_never_miss_or_leave_the_box_and_its_ceiling_contact_takes_the_leak_guard()
- {
-    let room = CaptureFixture::pool_room(Some(ROOM_MAX[2]));
-    let pillar = room.brush_at(IN_PILLAR);
-    room.with_scene(|scene, probes| {
-        let probe = only_probe(probes);
-        let capture = probe.capture_point_vec3();
-        let none = exclusion(scene, probe, &[]);
-        let filter = exclusion(scene, probe, &[pillar]);
-        // The contact patch: points on the pillar's top, inside its outline.
-        for x in [44.0, 48.0, 52.0] {
-            for y in [-4.5, 0.5, 4.5] {
-                let (direction, _) = toward(capture, [x, y, ROOM_MAX[2]]);
-                let entry = scene
-                    .trace(capture, direction, &none)
-                    .surface()
-                    .copied()
-                    .expect("the pillar faces the ray");
-                assert_eq!(room.face_brush(entry.face), Some(pillar));
-                assert_eq!(
-                    scene.trace(capture, direction, &filter),
-                    RayOutcome::LeakGuard(entry),
-                    "({x}, {y}) reads the pillar's own surface"
-                );
-            }
-        }
-
-        let (lo, hi) = (Vec3::from(probe.box_min), Vec3::from(probe.box_max));
-        let tolerance = 1e-3;
-        let mut guarded = 0;
-        for y in 0..TILE_INTERIOR {
-            for x in 0..TILE_INTERIOR {
-                for [dx, dy] in SUPERSAMPLE_OFFSETS {
-                    let direction = octahedral_direction(
-                        (x as f32 + 0.5 + dx) / TILE_INTERIOR as f32,
-                        (y as f32 + 0.5 + dy) / TILE_INTERIOR as f32,
-                    );
-                    match scene.trace(capture, direction, &filter) {
-                        RayOutcome::Miss => panic!("{direction} misses"),
-                        RayOutcome::Hit(hit) => {
-                            let p = capture + direction * hit.distance;
-                            let inside = p.x >= lo.x - tolerance
-                                && p.x <= hi.x + tolerance
-                                && p.z >= lo.z - tolerance
-                                && p.z <= hi.z + tolerance
-                                && p.y <= hi.y + tolerance;
-                            assert!(inside, "{direction} lands at {p}, outside {lo}..{hi}");
-                            assert_ne!(room.face_brush(hit.face), Some(pillar));
-                        }
-                        RayOutcome::LeakGuard(hit) => {
-                            assert_eq!(room.face_brush(hit.face), Some(pillar));
-                            guarded += 1;
-                        }
-                    }
-                }
-            }
-        }
-        assert!(guarded > 0);
     });
 }
 

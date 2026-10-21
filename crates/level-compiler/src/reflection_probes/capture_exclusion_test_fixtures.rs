@@ -1,4 +1,4 @@
-// Capture-exclusion fixtures: a compiled pool room with a pillar, its materials, light and capture scene.
+// Capture-exclusion fixtures: a compiled pool room with a pillar, its materials, lightmap, lights and capture scene.
 // See: context/lib/testing_guide.md §4
 
 use std::collections::HashMap;
@@ -6,14 +6,20 @@ use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::AlphaLightsSection;
+use postretro_level_format::animated_light_weight_maps::{
+    AnimatedBlock, AnimatedLightWeightMapsSection, ChunkAtlasRect, TexelLight, TexelLightEntry,
+};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection};
+use postretro_level_format::lightmap::{
+    IRRADIANCE_FORMAT_RGBA16F, LightmapBlock, LightmapMode, LightmapSection, f32_to_f16_bits,
+};
 use postretro_level_format::prm::{
     PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, cache_filename_for_key,
 };
 use postretro_level_format::sh_reconstruct::Level;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use super::animated_direct::AnimatedDirectSampler;
 use super::capture_exclusion::{CaptureBrushes, ProbeExclusion};
 use super::hit::SceneTracer;
 use super::lightmap_sample::LightmapSampler;
@@ -43,7 +49,12 @@ pub(super) const PILLAR_MAX: [f64; 3] = [56.0, 8.0, 128.0];
 /// The wall behind the pillar, seen from the capture point: map x = 128.
 pub(super) const BACK_WALL_X: f64 = 128.0;
 
-/// Wall, ceiling and floor slabs sealing the room, 16 u thick.
+/// The ceiling slab's thickness in map units: deep enough to sink a brush
+/// half a metre into it.
+pub(super) const CEILING_DEPTH: f64 = 32.0;
+
+/// Wall and floor slabs 16 u thick and a [`CEILING_DEPTH`] ceiling slab,
+/// sealing the room.
 pub(super) fn textured_room() -> Vec<String> {
     let ([x0, y0, z0], [x1, y1, z1]) = (ROOM_MIN, ROOM_MAX);
     let w = 16.0;
@@ -55,7 +66,7 @@ pub(super) fn textured_room() -> Vec<String> {
         ),
         textured_box_brush(
             [x0 - w, y0 - w, z1],
-            [x1 + w, y1 + w, z1 + w],
+            [x1 + w, y1 + w, z1 + CEILING_DEPTH],
             CEILING_TEXTURE,
         ),
         textured_box_brush([x0 - w, y0 - w, z0], [x0, y1 + w, z1], WALL_TEXTURE),
@@ -69,11 +80,21 @@ pub(super) fn textured_room() -> Vec<String> {
 /// flush with the pillar's back, so the pillar stands in it and the water
 /// stays one derived probe (water behind the pillar would fit its own box).
 pub(super) fn pool_entity() -> String {
+    pool_entity_to(PILLAR_MAX[0])
+}
+
+/// The pool with its far edge at map x = `far`.
+pub(super) fn pool_entity_to(far: f64) -> String {
+    pool_between(-96.0, far)
+}
+
+/// A pool spanning map x `near`..`far`, its own fluid entity.
+pub(super) fn pool_between(near: f64, far: f64) -> String {
     fluid(
         "water",
         &[textured_box_brush(
-            [-96.0, -96.0, 0.0],
-            [56.0, 96.0, WATER_TOP],
+            [near, -96.0, 0.0],
+            [far, 96.0, WATER_TOP],
             "test/water",
         )],
     )
@@ -88,21 +109,44 @@ pub(super) fn pillar(top: f64) -> String {
     )
 }
 
-/// One `.prm` diffuse colour per mip level, sRGB.
-type MipColours = [[u8; 4]; 3];
+/// A 4×4 sRGB diffuse's three mip levels, level 0 first, row-major RGBA.
+type MipPayload = Vec<u8>;
+
+/// Each level one colour.
+fn uniform_mips(levels: [[u8; 4]; 3]) -> MipPayload {
+    [16, 4, 1]
+        .into_iter()
+        .zip(levels)
+        .flat_map(|(texels, rgba)| rgba.repeat(texels))
+        .collect()
+}
+
+/// Every texel of levels 0 and 1 its own colour, so a wrong UV reads a
+/// wrong albedo at either level.
+fn varied_mips() -> MipPayload {
+    let mut payload = Vec::new();
+    for (texels, step) in [(16u8, 12u8), (4, 60)] {
+        for i in 0..texels {
+            payload.extend_from_slice(&[40 + i * step, 200 - i * step, 90 + (i % 2) * 80, 255]);
+        }
+    }
+    payload.extend_from_slice(&[128, 128, 128, 255]);
+    payload
+}
 
 /// Every fixture texture's mips. The wall's levels differ, so a footprint
-/// measured from the wrong point reads the wrong colour.
-pub(super) fn fixture_materials() -> Vec<(&'static str, MipColours)> {
+/// measured from the wrong point reads the wrong colour; the ceiling's
+/// texels differ, so a wrong UV does.
+pub(super) fn fixture_materials() -> Vec<(&'static str, MipPayload)> {
     vec![
         (
             WALL_TEXTURE,
-            [[0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255]],
+            uniform_mips([[0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255]]),
         ),
-        (CEILING_TEXTURE, [[128, 128, 128, 255]; 3]),
-        (FLOOR_TEXTURE, [[64, 64, 64, 255]; 3]),
-        (PILLAR_TEXTURE, [[255, 0, 0, 255]; 3]),
-        (TRIM_TEXTURE, [[255, 0, 255, 255]; 3]),
+        (CEILING_TEXTURE, varied_mips()),
+        (FLOOR_TEXTURE, uniform_mips([[64, 64, 64, 255]; 3])),
+        (PILLAR_TEXTURE, uniform_mips([[255, 0, 0, 255]; 3])),
+        (TRIM_TEXTURE, uniform_mips([[255, 0, 255, 255]; 3])),
     ]
 }
 
@@ -117,6 +161,7 @@ pub(super) struct CaptureFixture {
     pub sh: OctahedralShVolumeSection,
     pub alpha_lights: AlphaLightsSection,
     pub chunk_list: ChunkLightListSection,
+    pub weight_maps: Option<AnimatedLightWeightMapsSection>,
 }
 
 impl CaptureFixture {
@@ -149,7 +194,118 @@ impl CaptureFixture {
             sh,
             alpha_lights: AlphaLightsSection::default(),
             chunk_list: ChunkLightListSection::placeholder(),
+            weight_maps: None,
         }
+    }
+
+    /// Base SH varying across the room: `value(x, y, z)` at each probe of a
+    /// 1 m grid from (−4, −1, −4) m.
+    pub(super) fn set_sh(&mut self, value: impl Fn(u32, u32, u32) -> [f32; 3]) {
+        let mut dense = dense_sh_volume([9, 6, 9], value);
+        dense.grid_origin = [-4.0, -1.0, -4.0];
+        let descriptors = std::mem::take(&mut self.sh.animation_descriptors);
+        self.sh = crate::sh_density::pack_indirect_section(dense, Some(Level::L0))
+            .unwrap()
+            .0;
+        self.sh.animation_descriptors = descriptors;
+    }
+
+    /// Give every face of `brush` lightmap block `block` (1-based, pushed
+    /// next), 16×16 RGBA16F texels of `irradiance(u, v)`, its UV the
+    /// face's engine (x, z) across the room's floor plan: one block over
+    /// every fragment of a horizontal surface, so its texels vary across
+    /// faces as one lightmap would.
+    pub(super) fn lightmap_brush(&mut self, brush: u32, irradiance: impl Fn(f32, f32) -> f32) {
+        let block = self.lightmap.blocks.len() as u16 + 1;
+        let (lo, hi) = (engine(ROOM_MIN), engine(ROOM_MAX));
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+        let geometry = &mut self.world.geometry;
+        for (face, range) in geometry.face_index_ranges.iter().enumerate() {
+            if self.world.face_brushes[face] != Some(brush) {
+                continue;
+            }
+            let start = range.index_offset as usize;
+            for &index in &geometry.geometry.indices[start..start + range.index_count as usize] {
+                let vertex = &mut geometry.geometry.vertices[index as usize];
+                let p = Vec3::from(vertex.position).as_dvec3();
+                let u = ((p.x - lo.x) / (hi.x - lo.x)).clamp(0.0, 1.0);
+                let v = ((p.z - lo.z) / (hi.z - lo.z)).clamp(0.0, 1.0);
+                vertex.lightmap_uv = [(u * 65535.0).round() as u16, (v * 65535.0).round() as u16];
+                vertex.lightmap_block = block;
+            }
+        }
+        let side = 16u16;
+        let mut texels = Vec::new();
+        for y in 0..side {
+            for x in 0..side {
+                let value = irradiance(
+                    (f32::from(x) + 0.5) / f32::from(side),
+                    (f32::from(y) + 0.5) / f32::from(side),
+                );
+                for channel in [value, value, value, 1.0] {
+                    texels.extend(f32_to_f16_bits(channel).to_le_bytes());
+                }
+            }
+        }
+        self.lightmap.blocks.push(LightmapBlock {
+            cell_id: 0,
+            width: side,
+            height: side,
+            irradiance: texels,
+            direction: Vec::new(),
+        });
+    }
+
+    /// Animated direct over lightmap blocks: block `b` (1-based) lit by
+    /// `(light, weight)` pairs, uniform over its texels; its faces take an
+    /// animated block of their own.
+    pub(super) fn weight_lightmap_blocks(&mut self, blocks: &[(u16, &[(u32, f32)])]) {
+        let mut section = AnimatedLightWeightMapsSection {
+            page_size: 16,
+            compact_layers: blocks.len() as u32,
+            ..AnimatedLightWeightMapsSection::empty()
+        };
+        for (k, &(block, lights)) in blocks.iter().enumerate() {
+            for vertex in &mut self.world.geometry.geometry.vertices {
+                if vertex.lightmap_block == block {
+                    vertex.animated_block = k as u16 + 1;
+                }
+            }
+            let source = &self.lightmap.blocks[usize::from(block) - 1];
+            let (width, height) = (u32::from(source.width), u32::from(source.height));
+            section.blocks.push(AnimatedBlock {
+                lightmap_block: u32::from(block) - 1,
+                block_x: 0,
+                block_y: 0,
+                compact_x: 0,
+                compact_y: 0,
+                compact_layer: k as u32,
+                width,
+                height,
+            });
+            section.chunk_rects.push(ChunkAtlasRect {
+                compact_x: 0,
+                compact_y: 0,
+                width,
+                height,
+                texel_offset: section.offset_counts.len() as u32,
+                block: k as u32,
+            });
+            for _ in 0..width * height {
+                section.offset_counts.push(TexelLightEntry {
+                    offset: section.texel_lights.len() as u32,
+                    count: lights.len() as u32,
+                });
+                for &(light_index, weight) in lights {
+                    section.texel_lights.push(TexelLight {
+                        light_index,
+                        weight,
+                        direction_oct: [0, 0],
+                    });
+                }
+            }
+        }
+        self.weight_maps = Some(section);
     }
 
     /// The room, its pool and a pillar topped at `pillar_top` (map units).
@@ -204,7 +360,10 @@ impl CaptureFixture {
             ),
             lightmap: LightmapSampler::new(&self.lightmap),
             sh: ShVolumeSampler::new(&self.sh, PRODUCTION_PROBE_OCCLUSION).unwrap(),
-            animated_direct: None,
+            animated_direct: self
+                .weight_maps
+                .as_ref()
+                .map(|maps| AnimatedDirectSampler::new(maps, &self.lightmap)),
             deltas: None,
             sdf: SdfLights::new(&self.alpha_lights, &self.chunk_list),
             max_distance: self.world.bounds().diagonal() as f32 + 1.0,
@@ -229,14 +388,8 @@ pub(super) fn toward(from: Vec3, q: [f64; 3]) -> (Vec3, f32) {
     (offset.normalize().as_vec3(), offset.length() as f32)
 }
 
-/// A 4×4 diffuse `.prm` whose three mip levels are `mips`, at `key`.
-fn write_mip_prm(dir: &Path, key: [u8; 32], mips: MipColours) {
-    let mut payload = Vec::new();
-    for (texels, rgba) in [16, 4, 1].into_iter().zip(mips) {
-        for _ in 0..texels {
-            payload.extend_from_slice(&rgba);
-        }
-    }
+/// A 4×4 diffuse `.prm` of three mip levels, at `key`.
+fn write_mip_prm(dir: &Path, key: [u8; 32], payload: MipPayload) {
     let prm = PrmFile {
         header: PrmHeader {
             stage_version: STAGE_VERSION,

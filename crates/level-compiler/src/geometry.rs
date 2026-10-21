@@ -291,7 +291,7 @@ pub fn extract_kinematic_mover_geometry(
 /// Inverse of the `quake_to_engine` transform in parse.rs:
 ///   engine = (-qy, qz, -qx)
 ///   quake  = (-engine_z, -engine_x, engine_y)
-fn engine_to_quake(v: DVec3) -> DVec3 {
+pub(crate) fn engine_to_quake(v: DVec3) -> DVec3 {
     DVec3::new(-v.z, -v.x, v.y)
 }
 
@@ -417,7 +417,11 @@ pub fn brush_side_texel_uv(
 ///
 /// Returns (u, v) in texel units. The engine normalizes by dividing by
 /// texture width/height at load time.
-fn compute_texel_uv(quake_pos: DVec3, normal: DVec3, projection: &TextureProjection) -> (f64, f64) {
+pub(crate) fn compute_texel_uv(
+    quake_pos: DVec3,
+    normal: DVec3,
+    projection: &TextureProjection,
+) -> (f64, f64) {
     match projection {
         TextureProjection::Standard {
             u_offset,

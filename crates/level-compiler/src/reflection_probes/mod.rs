@@ -8,6 +8,7 @@ mod authored;
 mod box_fit;
 mod capture;
 mod capture_exclusion;
+mod capture_fill;
 mod capture_point;
 mod capture_visibility;
 mod delta_sample;
@@ -28,6 +29,8 @@ mod stage_key;
 mod capture_exclusion_test_fixtures;
 #[cfg(test)]
 mod capture_exclusion_tests;
+#[cfg(test)]
+mod capture_fill_tests;
 #[cfg(test)]
 mod capture_tests;
 #[cfg(test)]

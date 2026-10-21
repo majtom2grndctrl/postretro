@@ -3,6 +3,7 @@
 
 use glam::{DVec3, Vec3};
 
+use super::capture_fill::{Fill, KeptCandidate, find_fill};
 use super::hit::{FaceMask, MaskedHit, RAY_EPSILON, SceneTracer, SurfaceHit};
 use super::placement::{PLANE_TOLERANCE_M, PlacedProbe};
 use crate::map_data::BrushVolume;
@@ -33,14 +34,30 @@ pub(crate) enum RayOutcome {
     /// The first excluded surface the ray skipped, read as if it were kept:
     /// the ray found nothing behind the excluded brushes it may show.
     LeakGuard(SurfaceHit),
+    /// A kept brush's side, crossed inside an excluded hull, where CSG
+    /// removed it against that brush.
+    Fill(Fill),
 }
 
 impl RayOutcome {
-    /// The surface the ray reads, with its distance from the ray origin.
+    #[cfg(test)]
+    /// The traced surface the ray reads, with its distance from the ray
+    /// origin. A fill's surface is synthesized instead
+    /// ([`super::capture_fill::fill_surface`]).
     pub(crate) fn surface(&self) -> Option<&SurfaceHit> {
         match self {
-            Self::Miss => None,
+            Self::Miss | Self::Fill(_) => None,
             Self::Hit(hit) | Self::LeakGuard(hit) => Some(hit),
+        }
+    }
+
+    #[cfg(test)]
+    /// How far along the ray its surface lies; `None` on a miss.
+    pub(crate) fn distance(&self) -> Option<f32> {
+        match self {
+            Self::Miss => None,
+            Self::Hit(hit) | Self::LeakGuard(hit) => Some(hit.distance),
+            Self::Fill(fill) => Some(fill.distance),
         }
     }
 }
@@ -54,22 +71,26 @@ pub(crate) struct ProbeExclusion<'a> {
     /// Their surviving faces.
     mask: FaceMask,
     /// Per excluded brush, parallel to `excluded`: the brushes whose bounds
-    /// touch its own. An exit point lies on the hull, so any brush holding it
-    /// is among these.
+    /// touch its own. An exit point or a covering side lies on the hull, so
+    /// any brush holding one is among these.
     contacts: Vec<Contacts>,
+    /// Every kept brush some excluded brush touches, sorted by brush.
+    kept: Vec<KeptCandidate>,
     projection_box: ProjectionBox,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Contacts {
-    /// Brushes this probe keeps: its kept solid.
-    kept: Vec<u32>,
+    /// Brushes this probe keeps, its kept solid, as slots of `kept`.
+    kept: Vec<usize>,
     /// Other brushes this probe excludes, as slots of `excluded`.
     excluded: Vec<usize>,
 }
 
 /// How a ray leaves an excluded hull it skipped.
 enum Crossing {
+    /// Through a kept brush's covering side inside the hull.
+    Fill(Fill),
     /// Into empty space at this distance: trace on from there.
     Exit(f64),
     /// Into kept solid, or past the crossing bound.
@@ -108,21 +129,42 @@ impl<'a> ProbeExclusion<'a> {
                     .map(|(face, _)| face as u32),
             )
         };
-        let contacts = excluded
-            .iter()
-            .map(|&brush| {
-                let bounds = &brushes.volumes[brush as usize].aabb;
-                let mut contacts = Contacts::default();
-                for (other, volume) in brushes.volumes.iter().enumerate() {
-                    if other == brush as usize || !bounds_touch(bounds, &volume.aabb) {
-                        continue;
-                    }
-                    match excluded.binary_search(&(other as u32)) {
-                        Ok(slot) => contacts.excluded.push(slot),
-                        Err(_) => contacts.kept.push(other as u32),
-                    }
+        let mut touching: Vec<(Vec<u32>, Vec<usize>)> = Vec::with_capacity(excluded.len());
+        for &brush in &excluded {
+            let bounds = &brushes.volumes[brush as usize].aabb;
+            let (mut kept, mut others) = (Vec::new(), Vec::new());
+            for (other, volume) in brushes.volumes.iter().enumerate() {
+                if other == brush as usize || !bounds_touch(bounds, &volume.aabb) {
+                    continue;
                 }
-                contacts
+                match excluded.binary_search(&(other as u32)) {
+                    Ok(slot) => others.push(slot),
+                    Err(_) => kept.push(other as u32),
+                }
+            }
+            touching.push((kept, others));
+        }
+        let mut kept_brushes: Vec<u32> = touching
+            .iter()
+            .flat_map(|(kept, _)| kept)
+            .copied()
+            .collect();
+        kept_brushes.sort_unstable();
+        kept_brushes.dedup();
+        let kept = KeptCandidate::build(
+            brushes.volumes,
+            brushes.face_brushes,
+            tracer.geometry(),
+            &kept_brushes,
+        );
+        let contacts = touching
+            .into_iter()
+            .map(|(kept, excluded)| Contacts {
+                kept: kept
+                    .iter()
+                    .map(|brush| kept_brushes.binary_search(brush).expect("collected above"))
+                    .collect(),
+                excluded,
             })
             .collect();
         Self {
@@ -130,6 +172,7 @@ impl<'a> ProbeExclusion<'a> {
             excluded,
             mask,
             contacts,
+            kept,
             projection_box: ProjectionBox::of(probe),
         }
     }
@@ -144,9 +187,11 @@ impl<'a> ProbeExclusion<'a> {
     /// excluded brush the ray skips is crossed in turn: its hull exit into
     /// another excluded brush continues from that brush's exit, into kept
     /// solid takes the leak guard, and into empty space traces on from the
-    /// exit under the same mask. A ray that skipped any excluded brush and
-    /// then misses, or ends outside the projection box, takes the leak guard
-    /// too. Every distance is from `origin`.
+    /// exit under the same mask. Before its exit, a ray that crosses into a
+    /// kept brush inside the hull, through a side with surviving faces,
+    /// fills there. A ray that skipped any excluded brush and then misses,
+    /// or ends (traced or filled) outside the projection box, takes the leak
+    /// guard. Every distance is from `origin`.
     pub(crate) fn trace(
         &self,
         tracer: &SceneTracer<'_>,
@@ -179,9 +224,21 @@ impl<'a> ProbeExclusion<'a> {
             let Some(slot) = self.slot_of_face(skipped.face) else {
                 return RayOutcome::LeakGuard(first);
             };
-            // A fill, where the ray crosses a kept brush's covering side
-            // inside this hull, is tested here, before the exit.
-            match self.cross(slot, origin64, direction64, f64::from(skipped.distance)) {
+            match self.cross(
+                tracer,
+                slot,
+                origin64,
+                direction64,
+                f64::from(skipped.distance),
+            ) {
+                Crossing::Fill(fill) => {
+                    let point = origin64 + direction64 * f64::from(fill.distance);
+                    return if self.projection_box.holds(point) {
+                        RayOutcome::Fill(fill)
+                    } else {
+                        RayOutcome::LeakGuard(first)
+                    };
+                }
                 Crossing::LeakGuard => return RayOutcome::LeakGuard(first),
                 // Never at or before the skipped face itself, so each pass
                 // advances even when f32 rounds the exit below it.
@@ -215,17 +272,35 @@ impl<'a> ProbeExclusion<'a> {
         }
     }
 
-    /// Classify the exit of the excluded hull in `slot`, entered at
-    /// `entry`, continuing through every excluded hull that exit lies in.
-    fn cross(&self, mut slot: usize, origin: DVec3, direction: DVec3, entry: f64) -> Crossing {
+    /// Resolve the excluded hull in `slot`, entered at `entry`: a covering
+    /// side crossed inside it fills, else its exit is classified, continuing
+    /// through every excluded hull that exit lies in.
+    fn cross(
+        &self,
+        tracer: &SceneTracer<'_>,
+        mut slot: usize,
+        origin: DVec3,
+        direction: DVec3,
+        entry: f64,
+    ) -> Crossing {
         let mut reached = entry;
         for _ in 0..self.excluded.len() {
             let exit = self.hull_exit(slot, origin, direction).max(reached);
             if !exit.is_finite() {
                 return Crossing::LeakGuard;
             }
-            let point = origin + direction * exit;
             let contacts = &self.contacts[slot];
+            if let Some(fill) = find_fill(
+                tracer,
+                self.brushes.volumes,
+                &self.kept,
+                &contacts.kept,
+                (origin, direction),
+                [reached, exit],
+            ) {
+                return Crossing::Fill(fill);
+            }
+            let point = origin + direction * exit;
             // Rule 1: a hull that holds the exit and reaches past it.
             if let Some(&next) = contacts.excluded.iter().find(|&&next| {
                 self.holds(self.excluded[next], point)
@@ -236,7 +311,11 @@ impl<'a> ProbeExclusion<'a> {
                 continue;
             }
             // Rule 3: kept solid behind the exit.
-            if contacts.kept.iter().any(|&brush| self.holds(brush, point)) {
+            if contacts
+                .kept
+                .iter()
+                .any(|&kept| self.holds(self.kept[kept].brush, point))
+            {
                 return Crossing::LeakGuard;
             }
             return Crossing::Exit(exit);

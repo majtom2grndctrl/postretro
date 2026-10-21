@@ -728,6 +728,13 @@ pub struct Renderer {
     pub(super) fluid_reflection_style:
         postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
 
+    /// The player's fluid reflection tier. Boot state, like Surface Depth, so
+    /// a change before full init or with no level holds until the next full
+    /// init and fluid install consult it, and a full-renderer rebuild after
+    /// surface recovery keeps it. Applies live on a full renderer.
+    pub(super) reflection_quality:
+        postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality,
+
     /// Spot shadow-map resolution cached in boot state. Configuration updates
     /// affect the next full-renderer construction or level install; they never
     /// rebuild live GPU resources from the setter.

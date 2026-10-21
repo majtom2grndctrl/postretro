@@ -91,13 +91,38 @@ Sources (techniques public; no current encumbrance found; not legal advice):
 - Carried magazine and reserve: no client reader. `client_reload.rs` reads `ReplicatedWeaponProjection`. No defect.
 - Latent (not this brief): host ack apply uses plain `>`, not serial. It only matters past a `u32` wrap (~days at high churn). The entity baseline allocator's `wrapping_add` can hand out sentinel 0.
 
-## Reload meter
+## Switch scoping off Control (read at d6f3471)
 
-- `hud.ts` `reloadMeter` binds `player.reloadProgress` with no tween, and visibility follows `player.reloadActive`.
-- On a connected client, `PlayerHudStatePublisher::tick_for_role_and_report_sampled_weapon` skips reload publish. The value is the host's `WeaponComponent::reload_feedback_sample`: an endpoint stream, else `1 - remaining/total`. It is sent as `ReplicatedWireShape::WieldableSlotNumber` at `SNAPSHOT_TICK_INTERVAL` = 2 (~30 Hz, unreliable).
-- `ClientStateApply` writes it straight into the store. Jitter reorders snapshots, and newest-wins drops the late ones. A loss leaves a ~66 ms hold.
-- `WEAPON_COOLDOWN_SLOT` (`player.weaponCooldownMs`) shares the wire shape, so the executor checks whether any HUD binds it.
-- Host-time anchor precedent: `PresentationBindings::accept_presentation_clock` / `presentation_host_time` (client/bindings.rs), consumed by mesh_anim.rs `rebase_time`.
+- Client→host: `NetClient::send_input` wraps payloads in `ParticipationFrame`; `NetServer::drain_input` drops frames whose epoch differs from the client's current one. `send_switch_declaration` sends on Control, gated only on `active_participation_epoch.is_some()`, with no frame epoch.
+- Host→client: `NetClient::drain_input` epoch-filters only `WeaponCues`. `resolve_switch_outcome` refuses an outcome unless it matches the front of the pending chain by `declaration_id` and slot. `demote_client_state` and `reset_level_scoped_client_state` clear `pending_switch_declarations`; `next_switch_declaration_id` is set once at endpoint construction and only increments (`wrapping_add`). A stale outcome therefore meets an empty chain or a newer front.
+- Host lane removal: `HostCommandQueues::remove_client` on slot close and pawn loss.
+
+The reload-meter research moved to `ready/coop--timed-slot-projection/research.md` with the scope.
+
+## Ordering pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Loss-off control | Same seed and jitter as the steady run, loss 0. Ordered delivery holds later commands behind a late datagram; a frontier freeze runs one host-only held step | Records no correction above the band. If it does, the cause is jitter, not loss |
+| P2 | Single Input loss, resend vs send interval | Command t's datagram lost. The resend rides the next datagram whose send time is at least one resend after t's | Resend ≤ send interval: t rides with t+1 and resolves Real on its own tick. Resend above it (17–20 ms at a 60 Hz poll): t rides with t+2, the host deep-yields Held on t, then stale-drops it |
+| P3 | Slide entry lost | The datagram carrying the slide or vault entry command is lost once | The host enters on the same client tick the client did |
+| P4 | Switch datagram lost, later start survives | switch(t) sent, start(t+k) sent after it, the switch's datagram lost | One stream: the start waits behind the switch. Today's Control layout: the start resolves first (the networking.md known gap) |
+| P5 | Switch and start on one command | declaration(t) goes on Input before command(t). The datagram carrying both is lost once | The switch applies first. The start on t lands after it in the same resolution |
+| P6 | Declaration in flight across demote and re-promote | Framed under E, sent; the host retires E and arms E+1; the declaration arrives | The host's Input drain drops it: no lane entry, no outcome. Today it reaches the lane over Control |
+| P7 | Dropped declaration still pending on the client | The host drops P6's declaration. The client gets Holding(E), then the E+1 marker, in one Control drain | demote_client_state runs on Holding and clears the chain before the first E+1 declaration. No E+1 outcome waits behind the dropped one |
+| P8 | Declaration in the lane at demotion | The lane holds a declaration, and the slot is demoted before its command resolves | The lane goes with the queue. Nothing is applied or answered after re-promotion |
+| P9 | Outcome in flight across demotion | The host sends an outcome on Input, unframed. The client handles Holding first | The chain is empty, so it resolves nothing |
+| P10 | Stale outcome, newer front | The client declares n under E, is demoted and re-promoted, declares n+1. Outcome n arrives, then n+1 | Outcome n leaves the chain untouched. n+1 resolves |
+| P11 | Two edges on one tick | Two presses on t, the datagram lost, then the resend | Both delivered once. renet dedupes by message id, so no copy reaches intake |
+| P12 | Two-second outage burst | About 120 commands, 10 probes and the queued edges, starts and switches arrive at once | Depth > INPUT_BUFFER_MAX, so the queue trims to the newest 2. Lanes deliver in tick order. Starts past the 500 ms allowance are refused for lag, none dropped silently. No switch is refused as malformed. The 64-tick prediction history has overflowed, so reconcile trusts the authority |
+| P13 | Probes across the outage | The 10 outage probes land in the 16-sample window beside 6 pre-outage samples | The pre-outage minimum holds. Outage samples are gated out and no reseed happens. The offset stays within one tick |
+| P14 | Probe resent once | The probe's datagram is lost and renet resends it on a later tick | One echo per sample_id. RTT is at most one resend high, and the ≥ 20 ms gate tolerance admits it |
+| P15 | Ack lost, new entity | FullBaseline sent, the client's ack datagram lost once | The host's first delta is no more than one snapshot later than with no loss |
+| P16 | Sliced tuning on Control under loss | Tuning slices in flight with some lost, Input commands sent on the same ticks against the shared per-tick byte budget | Every Input message meets the single-loss latency bound |
+| P17 | Tuning across demotion | Tuning sent under E, then Holding, then re-promotion and a new payload | The old payload never installs after Holding. The new one installs |
+| P18 | Two corrections before decay | Correction A seeds the offset. B lands before A decays, possibly in the same frame | The presented eye is the same before and after B. The offset becomes A's remainder plus B. A teleport-class correction, a first-record adoption or a level reset clears it instead |
+
+Read at d6f3471 (`/review-brief`). P2's first outcome is the chosen one: the gameplay resend is capped at one tick.
 
 ## Harness inventory
 

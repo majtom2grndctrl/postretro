@@ -429,6 +429,68 @@ impl Renderer {
         self.full_mut().fog.step_size = step_size.max(0.01);
     }
 
+    // Fluid reflection march tuning: dev-only, never player-facing. Each
+    // setter replaces one knob of the reflection pass's uniform, which
+    // uploads on the next frame only if it changed; none rebuilds a bind
+    // group or the reflection target, or compiles anything.
+
+    /// Steps per screen-space reflection ray.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn reflection_march_step_budget(&self) -> u32 {
+        self.full()
+            .fluid_surface
+            .reflection_march_tuning()
+            .step_budget
+    }
+
+    /// Set the steps per reflection ray (at least 1).
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_reflection_march_step_budget(&mut self, step_budget: u32) {
+        let fluid = &mut self.full_mut().fluid_surface;
+        fluid.set_reflection_march_tuning(super::fluid_surface::FluidReflectionMarchTuning {
+            step_budget,
+            ..fluid.reflection_march_tuning()
+        });
+    }
+
+    /// Metres of view depth a reflection hit may lie behind the depth buffer.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn reflection_march_thickness(&self) -> f32 {
+        self.full()
+            .fluid_surface
+            .reflection_march_tuning()
+            .thickness
+    }
+
+    /// Set the reflection march thickness (finite, at least 0).
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_reflection_march_thickness(&mut self, thickness: f32) {
+        let fluid = &mut self.full_mut().fluid_surface;
+        fluid.set_reflection_march_tuning(super::fluid_surface::FluidReflectionMarchTuning {
+            thickness,
+            ..fluid.reflection_march_tuning()
+        });
+    }
+
+    /// Scene rows per full-resolution pixel of reflection march stride.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn reflection_march_rows_per_stride_pixel(&self) -> u32 {
+        self.full()
+            .fluid_surface
+            .reflection_march_tuning()
+            .rows_per_stride_pixel
+    }
+
+    /// Set the scene rows per pixel of reflection march stride (at least 1).
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_reflection_march_rows_per_stride_pixel(&mut self, rows: u32) {
+        let fluid = &mut self.full_mut().fluid_surface;
+        fluid.set_reflection_march_tuning(super::fluid_surface::FluidReflectionMarchTuning {
+            rows_per_stride_pixel: rows,
+            ..fluid.reflection_march_tuning()
+        });
+    }
+
     /// Current `fog_pixel_scale` — read by the debug-UI slider on first draw.
     /// The setter (`set_fog_pixel_scale` above) drives a scatter-target
     /// rebuild rather than a per-frame uniform write.

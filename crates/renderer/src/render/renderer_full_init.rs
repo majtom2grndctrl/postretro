@@ -507,8 +507,9 @@ pub(crate) fn build_full_renderer(
         promoted_cube_cache,
     );
     // Fluid surfaces share the camera, world-material, lighting and SH
-    // layouts; their scene inputs (group 5) are built here over the scene
-    // depth, level or not. See: context/lib/rendering_pipeline.md §7.3a, §10
+    // layouts; their scene inputs (group 5) and the reflection pass's
+    // pipeline and inputs are built here over the scene depth and colour,
+    // level or not. See: context/lib/rendering_pipeline.md §7.3a, §10
     let fluid_surface = fluid_surface::FluidSurfacePass::new(
         device,
         DEPTH_FORMAT,
@@ -517,6 +518,7 @@ pub(crate) fn build_full_renderer(
         &lighting_bind_group_layout,
         &sh_volume_resources.bind_group_layout,
         &depth_view,
+        screen_effects.scene_color_view(),
     );
     let rigid_occluder_depth = rigid_occluder_depth::RigidOccluderDepthPass::new(
         device,

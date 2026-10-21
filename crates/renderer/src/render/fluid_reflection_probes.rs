@@ -73,21 +73,26 @@ pub(crate) fn installable_probe_section(
 }
 
 /// The fluid mesh's third vertex buffer: one probe index per vertex of the
-/// mesh `face_maps` describe, written once here and never again.
+/// mesh `face_maps` describe, written once here and never again; and whether
+/// any face is probe-bound, which keys the screen-space reflection target.
 pub(crate) fn create_probe_index_buffer(
     device: &wgpu::Device,
     volumes: &[EnvironmentVolumeRecord],
     face_maps: &[Option<FluidFaceDriftMap>],
     vertex_count: usize,
     section: Option<&ReflectionProbesSection>,
-) -> wgpu::Buffer {
+) -> (wgpu::Buffer, bool) {
     let mut indices = vec![FLUID_REFLECTION_NO_PROBE; vertex_count];
     fill_probe_indices(volumes, face_maps, section, &mut indices);
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let has_probe_bound_face = indices
+        .iter()
+        .any(|&index| index != FLUID_REFLECTION_NO_PROBE);
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Fluid Surface Probe Index Buffer"),
         contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::VERTEX,
-    })
+    });
+    (buffer, has_probe_bound_face)
 }
 
 /// BC6H tiles stay compressed through upload, as the SH atlases do: the

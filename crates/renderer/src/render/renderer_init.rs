@@ -159,6 +159,9 @@ impl Renderer {
             capture_gpu_timing_state,
             bloom_render_profile: BloomRenderProfile::default(),
             fluid_reflection_style: Default::default(),
+            // High until the app applies the player's option, which it does
+            // before full init.
+            reflection_quality: Default::default(),
             spot_shadow_map_resolution:
                 crate::lighting::spot_shadow::DEFAULT_SPOT_SHADOW_MAP_RESOLUTION,
             // The feature ships on; the tier is an escape hatch. The app
@@ -272,6 +275,9 @@ impl Renderer {
             bloom_render_profile,
             // Capture loads no manifest: pixel-style reflections.
             fluid_reflection_style: Default::default(),
+            // Capture has no player: the default tier, high, which the fluid
+            // pass was built at.
+            reflection_quality: Default::default(),
             spot_shadow_map_resolution,
             surface_depth_quality,
             boot_splash: None,
@@ -307,6 +313,17 @@ impl Renderer {
         // The rebuilt fluid pass starts at the default style; hand it the
         // committed one, which uploads before its first pass.
         self.set_fluid_reflection_style(self.fluid_reflection_style);
+        // And at the default tier; hand it the kept one. No level is
+        // installed yet, so this allocates no target: the first fluid
+        // install consults the tier, and at Off or Low keeps the
+        // placeholder. The pass starts at the default tier's preset, so a
+        // kept default tier keeps its march; any other resets it to its own.
+        let quality = self.reflection_quality;
+        let Self { device, full, .. } = self;
+        full.as_mut()
+            .expect("full renderer was just built")
+            .fluid_surface
+            .set_reflection_quality(device, quality);
         self.queue.enable();
         self.log_render_extents();
         log::info!("[Renderer] Full renderer initialization complete");

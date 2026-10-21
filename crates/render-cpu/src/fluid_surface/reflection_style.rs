@@ -1,9 +1,10 @@
-// Fluid reflection style: where a fluid fragment evaluates its probe
-// reflection from. Smooth reflects the flat face per fragment; pixel reflects
-// once per water texel cell, from the cell's world-space centre (held to the
-// probe's box at a wall rim), about a normal tilted by the cell's displayed
-// offset. GPU-free CPU reference for `fluid_reflection.wgsl`'s style functions,
-// which mirror it and a test pins.
+// Fluid reflection style: where a fluid fragment evaluates its reflection
+// from, the probe term's and the screen-space march's alike. Smooth reflects
+// the flat face per fragment; pixel reflects once per water texel cell, from
+// the cell's world-space centre (held to the probe's box at a wall rim),
+// about a normal tilted by the cell's displayed offset. GPU-free CPU
+// reference for `fluid_reflection_ray.wgsl`'s style functions, which mirror
+// it and a test pins.
 // See: context/lib/rendering_pipeline.md §7.3a (Reflection → Style)
 
 use glam::{IVec2, Vec2, Vec3};

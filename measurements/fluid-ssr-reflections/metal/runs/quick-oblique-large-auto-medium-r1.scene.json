@@ -1,0 +1,24 @@
+{
+  "map": "content/dev/maps/vault-test.prl",
+  "camera": {
+    "position": [
+      -35.052,
+      4.394,
+      -75.1332
+    ],
+    "yaw_deg": -125.0,
+    "pitch_deg": -20.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    1536,
+    960
+  ],
+  "output": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-ssr-reflections/metal/runs/oblique-large-auto-medium.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/fluid-ssr-reflections/metal/runs/quick-oblique-large-auto-medium-r1.report.json",
+    "warmup_frames": 120,
+    "sample_frames": 360
+  },
+  "reflection_quality": "medium"
+}

@@ -49,7 +49,7 @@ Recalled, not fetched.
 - Unity UI animates on `unscaledDeltaTime` so that menus run at `timeScale = 0`.
 - Godot pause menus run with `process_mode = ALWAYS`.
 - In-repo:
-  - `done/M13--ui-value-tweening` non-goal: "pausing game logic pauses tweens, which is the wanted behavior for a presentational layer". Written before the engine had a frontend or Loading; this brief reverses it.
+  - `done/M13--ui-value-tweening` non-goal: "pausing game logic pauses tweens, which is the wanted behavior for a presentational layer". Written before the engine had a frontend or Loading; superseded by the session clock.
   - `done/mod-loading-screen-contract` invariant: "UI time advances on Loading frames". Kept.
   - `done/production-pause-menu` non-goal: freezing UI time. Kept.
 

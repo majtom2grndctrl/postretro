@@ -115,6 +115,8 @@ impl PreparedCapture {
         if let Some(mask) = scene.light_term_mask() {
             renderer.set_light_term_mask(mask);
         }
+        // Before the fluid install sizes a reflection target from the tier.
+        apply_scene_reflection(&mut renderer, scene);
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);
@@ -486,6 +488,54 @@ impl PreparedCapture {
 /// Materialize just the VM-free receivers capture can render at a loaded
 /// instant. This deliberately does not call `install_world_cpu`: that path
 /// also runs data scripts and fires `levelLoad`.
+/// The scene file's own reflection settings, never player options or a mod
+/// manifest: the style, then the tier, then the march overrides over the
+/// tier's preset (steps, divisor, thickness, then the target fraction).
+/// Applied before the fluid install, so the install sizes the target once.
+/// Absent fields keep the renderer's defaults: pixel, high, high's preset.
+/// At a tier that runs no screen-space layer (off, low) the march overrides
+/// have nothing to override and are ignored with a warning.
+fn apply_scene_reflection(renderer: &mut Renderer, scene: &CaptureScene) {
+    if let Some(style) = scene.reflection_style {
+        renderer.set_fluid_reflection_style(style.renderer());
+    }
+    if let Some(quality) = scene.reflection_quality {
+        renderer.set_reflection_quality(quality.renderer());
+    }
+    let quality = renderer.reflection_quality();
+    if let Some(march) = scene.reflection_march {
+        if quality.runs_screen_space() {
+            if let Some(steps) = march.steps {
+                renderer.set_reflection_march_step_budget(steps);
+            }
+            if let Some(divisor) = march.divisor {
+                renderer.set_reflection_march_rows_per_stride_pixel(divisor);
+            }
+            if let Some(thickness) = march.thickness {
+                renderer.set_reflection_march_thickness(thickness);
+            }
+            if let Some(fraction) = march.fraction {
+                let applied = renderer.set_reflection_target_fraction(fraction);
+                debug_assert!(applied, "a validated fraction applies at {quality:?}");
+            }
+        } else {
+            log::warn!(
+                "[Capture] reflection_march ignored: reflection tier {quality:?} runs no \
+                 screen-space layer"
+            );
+        }
+    }
+    log::info!(
+        "[Capture] Fluid reflections: {quality:?}, {:?} style, target fraction {:?}, \
+         {} steps, divisor {}, thickness {} m",
+        renderer.fluid_reflection_style(),
+        renderer.reflection_target_fraction(),
+        renderer.reflection_march_step_budget(),
+        renderer.reflection_march_rows_per_stride_pixel(),
+        renderer.reflection_march_thickness(),
+    );
+}
+
 pub(super) fn spawn_capture_receiver_registry(
     world: &postretro_level_loader::LevelWorld,
 ) -> Result<EntityRegistry> {

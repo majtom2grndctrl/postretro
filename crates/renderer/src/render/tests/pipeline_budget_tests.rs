@@ -397,12 +397,12 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
 
     // Albedo, emissive, specular and normal (group 1), the SH atlas, depth
     // moments and direct atlas (group 3), the reflection probe array and its
-    // distance array (group 4), and scene depth for depth fog (group 5): 10
-    // of the 16.
+    // distance array (group 4), and scene depth for depth fog and the
+    // screen-space reflection target (group 5): 11 of the 16.
     let fragment_sampled = per_group(fragment_sampled_textures);
-    assert_eq!(fragment_sampled, [0, 4, 0, 3, 2, 1]);
+    assert_eq!(fragment_sampled, [0, 4, 0, 3, 2, 2]);
     let fragment_total: u32 = fragment_sampled.iter().sum();
-    assert_eq!(fragment_total, 10);
+    assert_eq!(fragment_total, 11);
     assert_eq!(
         fluid_surface::fluid_pipeline_stage_count(fragment_sampled_textures),
         fragment_total
@@ -418,7 +418,8 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
 // The reflection probes contribute exactly one fragment uniform (the share
 // table, in group 4 beside the params window) and no sampler: the probe array
 // and the distance array both sample through the SH atlas sampler of group 3.
-// Storage stays at 8.
+// The screen-space reflection target adds one sampled texture to group 5 and
+// reads through that same sampler. Storage stays at 8.
 #[cfg(debug_assertions)]
 #[test]
 fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
@@ -438,7 +439,7 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
             [0, 5, 1, 0],
             [3, 3, 1, 1],
             [2, 0, 2, 0],
-            [1, 0, 1, 0],
+            [2, 0, 1, 0],
         ],
         "fluid FRAGMENT bindings changed"
     );
@@ -450,8 +451,9 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
     );
     assert_eq!(
         total(0),
-        10,
-        "eight sampled textures before probes, plus the probe and distance arrays"
+        11,
+        "eight sampled textures before probes, plus the probe and distance arrays and the \
+         reflection target"
     );
     assert_eq!(total(1), 8, "the probes add no storage buffer");
     assert_eq!(total(3), 2, "the probes add no sampler");
@@ -464,6 +466,32 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
         postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES as u64
             <= limits.max_uniform_buffer_binding_size
     );
+}
+
+// The fluid reflection pass owns its layout: camera, world material, its own
+// inputs (scene depth, scene colour, its uniform) and the fluid pass's
+// parameter window and probe table. It binds no storage buffer, no probe
+// colour or distance array and none of the fluid pass's group 5.
+#[test]
+fn fluid_reflection_pipeline_fragment_bindings_stay_within_limits() {
+    let groups = fluid_surface::fluid_reflection_pipeline_bind_group_layout_entries();
+    let fragment: Vec<[u32; 4]> = groups
+        .iter()
+        .map(|entries| stage_inventory(entries, wgpu::ShaderStages::FRAGMENT))
+        .collect();
+    // (sampled textures, storage buffers, uniform buffers, samplers) per group:
+    // 0 camera, 1 world material, 2 the pass's inputs, 3 window and probe table.
+    assert_eq!(
+        fragment,
+        [[0, 0, 1, 0], [4, 0, 1, 1], [2, 0, 1, 0], [0, 0, 2, 0]],
+        "fluid reflection FRAGMENT bindings changed"
+    );
+    let total = |slot: usize| fragment.iter().map(|group| group[slot]).sum::<u32>();
+    assert_eq!(total(1), 0, "the reflection pass binds no storage buffer");
+    let limits = wgpu::Limits::default();
+    assert!(total(0) <= limits.max_sampled_textures_per_shader_stage);
+    assert!(total(2) <= limits.max_uniform_buffers_per_shader_stage);
+    assert!(total(3) <= limits.max_samplers_per_shader_stage);
 }
 
 /// Per-stage binding inventory of one BGL: (sampled textures, storage

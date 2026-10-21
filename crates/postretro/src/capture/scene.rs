@@ -1,6 +1,8 @@
 // Tool-facing static frame-capture scene vocabulary and validation.
 // See: context/lib/rendering_pipeline.md §7.8
 
+use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -18,6 +20,9 @@ pub(super) const MAX_MEASUREMENT_SAMPLE_FRAMES: u32 = 100_000;
 // Rgba16Float atlas/scene ceiling (65504) for transport and accumulation.
 // This is a capture-authoring budget, not a new scripting intensity limit.
 const MAX_FORCED_RADIANCE: f32 = 64.0;
+/// Upper bound on a capture's reflection march step budget: well past the
+/// ultra preset, short of a runaway march stalling the GPU.
+const MAX_REFLECTION_MARCH_STEPS: u32 = 4096;
 
 /// A deterministic capture of world geometry and authored receivers.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -51,6 +56,19 @@ pub(crate) struct CaptureScene {
     /// generation and every drain. Omitted keeps the engine default. Requires
     /// a streamed lightmap.
     pub(crate) lightmap_pool_cap_layers: Option<u32>,
+    /// Capture-only fluid reflection tier, by the player option's names:
+    /// `"off"`, `"low"`, `"medium"`, `"high"`, `"very_high"` or `"ultra"`.
+    /// Read from this scene file alone, never from player options, so one
+    /// binary times every tier. Omitted keeps the renderer's default, high.
+    pub(crate) reflection_quality: Option<CaptureReflectionQuality>,
+    /// Capture-only fluid reflection style, `"pixel"` or `"smooth"`. Capture
+    /// loads no mod manifest, so this stands in for `render.reflections.style`.
+    /// Omitted keeps the renderer's default, pixel.
+    pub(crate) reflection_style: Option<CaptureReflectionStyle>,
+    /// Capture-only overrides on the tier's screen-space preset, applied
+    /// after `reflection_quality`. Every member is optional. Ignored, with a
+    /// warning, at a tier that runs no screen-space layer (off, low).
+    pub(crate) reflection_march: Option<CaptureReflectionMarch>,
 }
 
 impl CaptureScene {
@@ -58,6 +76,64 @@ impl CaptureScene {
     pub(crate) fn light_term_mask(&self) -> Option<LightTermMask> {
         self.light_term_mask.map(light_term_mask_from_bits)
     }
+}
+
+/// A capture scene's reflection tier: the player option's vocabulary, mapped
+/// here to the renderer's without reading player options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CaptureReflectionQuality {
+    Off,
+    Low,
+    Medium,
+    High,
+    VeryHigh,
+    Ultra,
+}
+
+impl CaptureReflectionQuality {
+    pub(crate) const fn renderer(self) -> FluidReflectionQuality {
+        match self {
+            Self::Off => FluidReflectionQuality::Off,
+            Self::Low => FluidReflectionQuality::Low,
+            Self::Medium => FluidReflectionQuality::Medium,
+            Self::High => FluidReflectionQuality::High,
+            Self::VeryHigh => FluidReflectionQuality::VeryHigh,
+            Self::Ultra => FluidReflectionQuality::Ultra,
+        }
+    }
+}
+
+/// A capture scene's reflection style: the manifest's vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CaptureReflectionStyle {
+    Pixel,
+    Smooth,
+}
+
+impl CaptureReflectionStyle {
+    pub(crate) const fn renderer(self) -> FluidReflectionStyle {
+        match self {
+            Self::Pixel => FluidReflectionStyle::Pixel,
+            Self::Smooth => FluidReflectionStyle::Smooth,
+        }
+    }
+}
+
+/// Overrides on the tier's screen-space preset, each optional: the target's
+/// per-axis `fraction` of the scene extent in (0, 1] (sized as a tier's,
+/// rounded up and at least 1×1), the march's `steps` per ray in
+/// 1..=4096, its stride `divisor` (scene rows per full-resolution pixel of
+/// stride, at least 1), and its hit band's `thickness` in metres, finite and
+/// at least 0.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct CaptureReflectionMarch {
+    pub(crate) fraction: Option<f32>,
+    pub(crate) steps: Option<u32>,
+    pub(crate) divisor: Option<u32>,
+    pub(crate) thickness: Option<f32>,
 }
 
 fn light_term_mask_from_bits(bits: u32) -> LightTermMask {
@@ -160,6 +236,20 @@ pub(crate) enum SceneError {
     LightTermMaskOutOfRange { bits: u32 },
     #[error("invalid capture scene: lightmap_pool_cap_layers must be at least 1")]
     LightmapPoolCapZero,
+    #[error("invalid capture scene: reflection_march fraction must be finite")]
+    NonFiniteReflectionFraction,
+    #[error("invalid capture scene: reflection_march fraction must be in (0.0, 1.0], got {value}")]
+    ReflectionFractionOutOfRange { value: f32 },
+    #[error(
+        "invalid capture scene: reflection_march steps must be in 1..={MAX_REFLECTION_MARCH_STEPS}, got {value}"
+    )]
+    ReflectionStepsOutOfRange { value: u32 },
+    #[error("invalid capture scene: reflection_march divisor must be at least 1")]
+    ReflectionDivisorZero,
+    #[error("invalid capture scene: reflection_march thickness must be finite")]
+    NonFiniteReflectionThickness,
+    #[error("invalid capture scene: reflection_march thickness must be at least 0, got {value}")]
+    ReflectionThicknessNegative { value: f32 },
 }
 
 /// Parse a scene document and validate all GPU-independent authoring limits.
@@ -167,6 +257,34 @@ pub(crate) fn parse_scene(json: &str) -> Result<CaptureScene, SceneError> {
     let scene: CaptureScene = serde_json::from_str(json)?;
     validate_scene(&scene)?;
     Ok(scene)
+}
+
+fn validate_reflection_march(march: &CaptureReflectionMarch) -> Result<(), SceneError> {
+    if let Some(value) = march.fraction {
+        if !value.is_finite() {
+            return Err(SceneError::NonFiniteReflectionFraction);
+        }
+        if !(value > 0.0 && value <= 1.0) {
+            return Err(SceneError::ReflectionFractionOutOfRange { value });
+        }
+    }
+    if let Some(value) = march.steps
+        && !(1..=MAX_REFLECTION_MARCH_STEPS).contains(&value)
+    {
+        return Err(SceneError::ReflectionStepsOutOfRange { value });
+    }
+    if march.divisor == Some(0) {
+        return Err(SceneError::ReflectionDivisorZero);
+    }
+    if let Some(value) = march.thickness {
+        if !value.is_finite() {
+            return Err(SceneError::NonFiniteReflectionThickness);
+        }
+        if value < 0.0 {
+            return Err(SceneError::ReflectionThicknessNegative { value });
+        }
+    }
+    Ok(())
 }
 
 fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
@@ -228,6 +346,9 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     }
     if scene.lightmap_pool_cap_layers == Some(0) {
         return Err(SceneError::LightmapPoolCapZero);
+    }
+    if let Some(march) = &scene.reflection_march {
+        validate_reflection_march(march)?;
     }
     if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&scene.camera.fov_deg) {
         return Err(SceneError::FovOutOfRange {
@@ -345,6 +466,148 @@ mod tests {
             parse_scene(&zero_cap),
             Err(SceneError::LightmapPoolCapZero)
         ));
+    }
+
+    // Absent reflection fields keep the renderer's defaults: high, pixel, the
+    // high preset. Every field parses by the option's and manifest's names.
+    #[test]
+    fn parse_scene_reflection_fields_default_absent_and_parse_every_name() {
+        let scene = parse_scene(SCENE_WITH_DEFAULT_FOV).expect("scene must parse");
+        assert_eq!(scene.reflection_quality, None);
+        assert_eq!(scene.reflection_style, None);
+        assert_eq!(scene.reflection_march, None);
+
+        for (name, expected) in [
+            ("off", FluidReflectionQuality::Off),
+            ("low", FluidReflectionQuality::Low),
+            ("medium", FluidReflectionQuality::Medium),
+            ("high", FluidReflectionQuality::High),
+            ("very_high", FluidReflectionQuality::VeryHigh),
+            ("ultra", FluidReflectionQuality::Ultra),
+        ] {
+            let json = SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!("\"output\": \"capture.png\", \"reflection_quality\": \"{name}\""),
+            );
+            let scene = parse_scene(&json).expect("tier scene must parse");
+            assert_eq!(
+                scene.reflection_quality.map(|q| q.renderer()),
+                Some(expected)
+            );
+        }
+        // Every renderer tier has a capture name.
+        assert_eq!(FluidReflectionQuality::ALL.len(), 6);
+
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"reflection_quality\": \"medium\", \
+             \"reflection_style\": \"smooth\", \"reflection_march\": { \"fraction\": 0.75, \
+             \"steps\": 128, \"divisor\": 200, \"thickness\": 1.25 }",
+        );
+        let scene = parse_scene(&json).expect("full reflection scene must parse");
+        assert_eq!(
+            scene.reflection_style.map(CaptureReflectionStyle::renderer),
+            Some(FluidReflectionStyle::Smooth)
+        );
+        assert_eq!(
+            scene.reflection_march,
+            Some(CaptureReflectionMarch {
+                fraction: Some(0.75),
+                steps: Some(128),
+                divisor: Some(200),
+                thickness: Some(1.25),
+            })
+        );
+        let partial = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"reflection_style\": \"pixel\", \
+             \"reflection_march\": { \"steps\": 64 }",
+        );
+        let scene = parse_scene(&partial).expect("partial march must parse");
+        assert_eq!(
+            scene.reflection_march,
+            Some(CaptureReflectionMarch {
+                steps: Some(64),
+                ..CaptureReflectionMarch::default()
+            })
+        );
+    }
+
+    // Unknown names, unknown march members and out-of-range or non-finite
+    // values fail with a named error.
+    #[test]
+    fn parse_scene_rejects_unknown_reflection_names_and_bad_march_values() {
+        for (field, value) in [
+            ("reflection_quality", "\"probes\""),
+            ("reflection_quality", "\"High\""),
+            ("reflection_style", "\"blurry\""),
+        ] {
+            let json = SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!("\"output\": \"capture.png\", \"{field}\": {value}"),
+            );
+            let err = parse_scene(&json).expect_err("an unknown name must fail");
+            assert!(
+                err.to_string().contains("unknown variant"),
+                "{field}={value}: {err}"
+            );
+        }
+        let unknown = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"reflection_march\": { \"stride\": 2 }",
+        );
+        let err = parse_scene(&unknown).expect_err("an unknown march member must fail");
+        assert!(err.to_string().contains("unknown field"), "{err}");
+
+        let march = |member: &str| {
+            SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!("\"output\": \"capture.png\", \"reflection_march\": {{ {member} }}"),
+            )
+        };
+        for fraction in ["0.0", "-0.5", "1.01"] {
+            assert!(matches!(
+                parse_scene(&march(&format!("\"fraction\": {fraction}"))),
+                Err(SceneError::ReflectionFractionOutOfRange { .. })
+            ));
+        }
+        for steps in ["0", "4097"] {
+            assert!(matches!(
+                parse_scene(&march(&format!("\"steps\": {steps}"))),
+                Err(SceneError::ReflectionStepsOutOfRange { .. })
+            ));
+        }
+        assert!(matches!(
+            parse_scene(&march("\"divisor\": 0")),
+            Err(SceneError::ReflectionDivisorZero)
+        ));
+        assert!(matches!(
+            parse_scene(&march("\"thickness\": -0.1")),
+            Err(SceneError::ReflectionThicknessNegative { .. })
+        ));
+        // JSON carries no NaN or infinity; a scene built in code can.
+        let mut scene = parse_scene(SCENE_WITH_DEFAULT_FOV).unwrap();
+        for (fraction, thickness, expected) in [
+            (Some(f32::NAN), None, "fraction must be finite"),
+            (Some(f32::INFINITY), None, "fraction must be finite"),
+            (None, Some(f32::NAN), "thickness must be finite"),
+            (None, Some(f32::INFINITY), "thickness must be finite"),
+        ] {
+            scene.reflection_march = Some(CaptureReflectionMarch {
+                fraction,
+                thickness,
+                ..CaptureReflectionMarch::default()
+            });
+            let err = validate_scene(&scene).expect_err("a non-finite value must fail");
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+        // The bounds themselves pass.
+        assert!(
+            parse_scene(&march(
+                "\"fraction\": 1.0, \"steps\": 4096, \"divisor\": 1, \"thickness\": 0.0"
+            ))
+            .is_ok()
+        );
     }
 
     #[test]
@@ -588,6 +851,9 @@ mod tests {
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
             lightmap_pool_cap_layers: None,
+            reflection_quality: None,
+            reflection_style: None,
+            reflection_march: None,
         };
         assert!(matches!(
             validate_scene(&scene),

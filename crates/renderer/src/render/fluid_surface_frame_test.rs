@@ -1,4 +1,6 @@
-//! Adapter-backed fluid surface draw through the production capture recorder.
+//! Adapter-backed fluid surface draw through the production capture recorder,
+//! plus the reflection-target lifecycle, tier and pass-count cases.
+//! Screen-space reflection correctness cases live in `fluid_reflection_frame_test.rs`.
 //! See: context/lib/rendering_pipeline.md §7.3a
 
 use super::{ClearColor, FluidSurfaceDraw, Renderer, ShSampleRegionSets};
@@ -15,8 +17,8 @@ use postretro_level_format::sh_volume::AnimationDescriptor;
 use postretro_level_loader::ShDrainBatch;
 use postretro_render_cpu::fluid_surface::reflection::{
     FLUID_REFLECTION_ALL_TERMS, FLUID_REFLECTION_NO_PROBE, FluidReflectionFragment,
-    FluidReflectionLights, reflection_box_hit, reflection_fragment, reflection_lookup,
-    reflection_mirror,
+    FluidReflectionLights, REFLECTION_SCREEN_MISS, reflection_box_hit, reflection_fragment,
+    reflection_lookup, reflection_mirror,
 };
 use postretro_render_cpu::fluid_surface::reflection_search::{
     FluidReflectionSearchStatus, reflection_distance_sample, reflection_search,
@@ -266,8 +268,9 @@ impl<'a> ReferenceProbes<'a> {
 /// What the capture reads at (`column`, `row`) from the CPU references alone:
 /// a smooth-style [`fluid_quad`] fragment drawing the straight-alpha
 /// `surface`, its probe term (`reflection_fragment`, with no animated
-/// lights, its distance search reading the section's own distance tiles)
-/// when `probe` names one, blended straight-alpha over the white clear, then
+/// lights, its distance search reading the section's own distance tiles) when
+/// `probe` names one, with no screen-space hit (c = 0: a probe-only
+/// expectation), blended straight-alpha over the white clear, then
 /// [`capture_encode`]d.
 pub(super) fn expected_pixel(
     camera: Vec3,
@@ -292,6 +295,7 @@ pub(super) fn expected_pixel(
     };
     let out = reflection_fragment(
         surface,
+        REFLECTION_SCREEN_MISS,
         &fragment,
         &probes.section.probes,
         [probes.section.tile_dimension, probes.section.tile_border],
@@ -676,56 +680,146 @@ fn scene_inputs_extent(renderer: &Renderer) -> (Extent, u32) {
     (Extent::new(texture.width(), texture.height()), builds)
 }
 
-// Pin P4: group 5 exists from full init without a level, follows the scene
-// depth through every resize with or without a level installed, and level
-// install and release never rebuild it; the frame after a resize draws fog
+// Pin P4, widened (fluid-ssr-reflections row 20), the adapter twin of
+// `fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets`.
+// Group 5 is built at exactly these points and no others:
+//   - full init, with no level, over the placeholder;
+//   - the scene-target rebuild, with or without a level;
+//   - a fluid install or a tier change that creates or drops the reflection
+//     target, or resizes it (medium to high: a new view), and the capture's
+//     fraction override, which resizes it as a tier change would;
+//   - unload, which rebinds the placeholder.
+// A level with no probe-bound face, the tier it already holds, a change
+// between two screen-space tiers with one fraction (high, very high and
+// ultra), and a tier change with no such level build nothing. The frame after a resize draws fog
 // over the new depth.
 #[test]
 fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_level() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
     let Some(mut renderer) = renderer() else {
         return;
     };
     let (extent, built) = scene_inputs_extent(&renderer);
+    assert_eq!(built, 1, "full init builds group 5 once");
     assert_eq!(
         extent,
         renderer.scene_extent(),
         "built at full init, no level"
     );
+    let target = |renderer: &Renderer| renderer.full().fluid_surface.reflection_target_extent();
+    let builds = |renderer: &Renderer| scene_inputs_extent(renderer).1;
+    let mut expected = built;
 
     renderer.record_surface_size(40, 24);
     renderer.commit_extents().expect("the surface changed");
+    expected += 1;
     assert_eq!(
         scene_inputs_extent(&renderer),
-        (Extent::new(40, 24), built + 1),
-        "resize without a level"
+        (Extent::new(40, 24), expected),
+        "the scene-target rebuild, without a level"
     );
+    // A tier change with no level installed builds nothing.
+    renderer.set_reflection_quality(FluidReflectionQuality::Low);
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    assert_eq!(builds(&renderer), expected, "a tier change with no level");
 
     renderer.install_fluid_surfaces(&[full_screen_fluid()], None);
     assert_eq!(
-        scene_inputs_extent(&renderer).1,
-        built + 1,
-        "level install leaves group 5 alone"
+        builds(&renderer),
+        expected,
+        "a level with no probe-bound face leaves group 5 alone"
     );
+    assert_eq!(target(&renderer), None, "and allocates no target");
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    assert_eq!(builds(&renderer), expected, "nor does a tier change on it");
+
+    let probes = uniform_probe_section(8, &[0], &[[0, 0x3800, 0]], &[(0, 0)]);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
+    expected += 1;
+    assert_eq!(
+        builds(&renderer),
+        expected,
+        "a fluid install that creates the target rebinds group 5 to it, once"
+    );
+    assert_eq!(target(&renderer), Some((40, 24)));
+
+    // Tier changes on a probe-bound level: a resize rebuilds group 5 over the
+    // new view, the tier it holds builds nothing, Off drops the target over
+    // the placeholder, and leaving Off creates it again.
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
+    expected += 1;
+    assert_eq!(builds(&renderer), expected, "high to medium resizes");
+    assert_eq!(target(&renderer), Some((20, 12)));
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
+    assert_eq!(builds(&renderer), expected, "the tier it holds");
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    expected += 1;
+    assert_eq!(builds(&renderer), expected, "medium to high resizes");
+    assert_eq!(target(&renderer), Some((40, 24)));
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    expected += 1;
+    assert_eq!(builds(&renderer), expected, "Off drops the target");
+    assert_eq!(target(&renderer), None);
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    expected += 1;
+    assert_eq!(builds(&renderer), expected, "leaving Off creates it");
+    assert_eq!(target(&renderer), Some((40, 24)));
+    // High, very high and ultra share a fraction: no target, no group 5.
+    for quality in [
+        FluidReflectionQuality::VeryHigh,
+        FluidReflectionQuality::Ultra,
+        FluidReflectionQuality::High,
+    ] {
+        renderer.set_reflection_quality(quality);
+        assert_eq!(builds(&renderer), expected, "{quality:?}: one fraction");
+        assert_eq!(target(&renderer), Some((40, 24)), "{quality:?}");
+    }
+    // The capture's fraction override resizes as a tier change would, once;
+    // the fraction it holds builds nothing; the next tier change resets it.
+    assert!(renderer.set_reflection_target_fraction(0.3));
+    expected += 1;
+    assert_eq!(builds(&renderer), expected, "the override resizes");
+    assert_eq!(
+        target(&renderer),
+        Some((12, 8)),
+        "ceil(40·0.3), ceil(24·0.3)"
+    );
+    assert!(renderer.set_reflection_target_fraction(0.3));
+    assert_eq!(builds(&renderer), expected, "the fraction it holds");
+    assert!(!renderer.set_reflection_target_fraction(0.0));
+    assert!(!renderer.set_reflection_target_fraction(1.5));
+    assert!(!renderer.set_reflection_target_fraction(f32::NAN));
+    assert_eq!(builds(&renderer), expected, "a rejected fraction");
+    renderer.set_reflection_quality(FluidReflectionQuality::VeryHigh);
+    expected += 1;
+    assert_eq!(builds(&renderer), expected, "a tier change resets it");
+    assert_eq!(target(&renderer), Some((40, 24)));
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    assert_eq!(builds(&renderer), expected);
 
     renderer.set_render_resolution(RenderResolutionPolicy::Fixed { divisor: 2 });
     renderer.record_surface_size(64, 48);
     renderer.commit_extents().expect("both extents changed");
+    expected += 1;
     let scene = renderer.scene_extent();
     assert_eq!(scene, Extent::new(32, 24));
     assert_eq!(
         scene_inputs_extent(&renderer),
-        (scene, built + 2),
-        "resize with a level"
+        (scene, expected),
+        "the scene-target rebuild, with a level"
     );
+    assert_eq!(target(&renderer), Some((32, 24)), "the target follows");
 
     // Capture pins divisor 1, one more scene rebuild; the fogged frame after
-    // it draws over the new depth.
+    // it draws over the new depth, and drawing builds nothing.
     let murk = FluidSurfaceLook {
         fog_distance: Some(0.5),
         ..FluidSurfaceLook::surface_only(0.0)
     };
     renderer.set_fluid_surface_draws(&[look_draw(0, murk)]);
     let pixels = capture(&mut renderer);
+    expected += 1;
     let scene = renderer.scene_extent();
     assert_eq!(scene, Extent::new(64, 48));
     assert_eq!(pixels.len(), (64 * 48 * 4) as usize);
@@ -736,24 +830,34 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
         .map(|px| f32::from(px[0]))
         .sum::<f32>()
         / (64.0 * 48.0);
-    assert_eq!(scene_inputs_extent(&renderer), (scene, built + 3));
+    assert_eq!(scene_inputs_extent(&renderer), (scene, expected));
+    assert_eq!(target(&renderer), Some((64, 48)));
     assert!(
         mean_red < 70.0,
         "fog draws after the resize, got {mean_red}"
     );
+    capture(&mut renderer);
+    assert_eq!(builds(&renderer), expected, "a frame builds nothing");
 
+    let target_builds = renderer.full().fluid_surface.reflection_target_builds();
     renderer.release_level_resources();
+    expected += 1;
     assert_eq!(
         scene_inputs_extent(&renderer),
-        (scene, built + 3),
-        "level release leaves group 5 alone"
+        (scene, expected),
+        "unload rebinds group 5 to the placeholder"
+    );
+    assert_eq!(target(&renderer), None, "and releases the target");
+    assert_eq!(
+        renderer.full().fluid_surface.reflection_target_builds(),
+        target_builds,
+        "release builds no target"
     );
     eprintln!(
-        "[FluidSurfaceProof] P4 scene-inputs GPU case ran: group 5 at {}x{} after {} builds, \
-         mean red {mean_red}",
-        scene.width,
-        scene.height,
-        built + 3
+        "[FluidSurfaceProof] P4 scene-inputs GPU case ran: group 5 at {}x{} after {expected} \
+         builds (full init, two scene-target rebuilds and capture's, install, five tier \
+         changes, a fraction override, unload), mean red {mean_red}",
+        scene.width, scene.height,
     );
 }
 
@@ -818,6 +922,7 @@ fn reference_linear(
     let distances = distance_tiles(section);
     let out = reflection_fragment(
         UNLIT_HALF,
+        REFLECTION_SCREEN_MISS,
         &fragment,
         &section.probes,
         [section.tile_dimension, section.tile_border],
@@ -1750,6 +1855,7 @@ fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
         };
         let out = reflection_fragment(
             Vec4::ZERO,
+            REFLECTION_SCREEN_MISS,
             &fragment,
             &section.probes,
             tile,
@@ -1847,4 +1953,602 @@ fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
         worst <= 2,
         "the GPU samples the texel the CPU search looks up: off by {worst} at {at:?}"
     );
+}
+
+/// A probe-bound water look at reflectivity 1: the reflecting variant at every
+/// tier but Off.
+fn reflecting_look() -> FluidSurfaceLook {
+    FluidSurfaceLook {
+        surface_reflectivity: 1.0,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.5)
+    }
+}
+
+/// The level section binding the full-screen quad's one face to one probe.
+fn one_probe_section() -> ReflectionProbesSection {
+    uniform_probe_section(8, &[0], &[[0, 0x3800, 0]], &[(0, 0)])
+}
+
+fn reflection_pass_records(renderer: &Renderer) -> u32 {
+    renderer.full().fluid_surface.reflection_pass_records()
+}
+
+fn reflection_target_builds(renderer: &Renderer) -> u32 {
+    renderer.full().fluid_surface.reflection_target_builds()
+}
+
+fn reflection_target(renderer: &Renderer) -> Option<(u32, u32)> {
+    renderer.full().fluid_surface.reflection_target_extent()
+}
+
+/// Group 5 and the reflection pass's inputs hold the current scene depth,
+/// scene colour and target (or placeholder), with the matching scale in both
+/// uniforms: no build references a superseded one (P2).
+fn assert_reflection_bindings_current(renderer: &Renderer, context: &str) {
+    let full = renderer.full();
+    let fluid = &full.fluid_surface;
+    let inputs = fluid.scene_inputs();
+    assert!(
+        inputs.scene_depth().0 == &full.depth_view,
+        "{context}: group 5 holds the current scene depth"
+    );
+    assert!(
+        inputs.bound_reflection_target() == fluid.reflection_bound_view(),
+        "{context}: group 5 holds the current target or placeholder"
+    );
+    let (depth, colour) = fluid.reflection_inputs_views();
+    assert!(
+        depth == &full.depth_view,
+        "{context}: the reflection inputs hold the current scene depth"
+    );
+    assert!(
+        colour == full.screen_effects.scene_color_view(),
+        "{context}: the reflection inputs hold the current scene colour"
+    );
+    let scene = renderer.scene_extent();
+    let scale = fluid
+        .reflection_target_extent()
+        .map_or([0.0; 2], |(width, height)| {
+            [
+                width as f32 / scene.width as f32,
+                height as f32 / scene.height as f32,
+            ]
+        });
+    assert_eq!(
+        inputs.pending().ssr_scale,
+        scale,
+        "{context}: group 5 scale"
+    );
+    assert_eq!(
+        fluid.reflection_pending_uniform().target_scale,
+        scale,
+        "{context}: reflection pass scale"
+    );
+}
+
+/// Only the 1×1 placeholder: no target, group 5 bound to the placeholder,
+/// scale 0 in both uniforms.
+fn assert_placeholder_only(renderer: &Renderer, context: &str) {
+    assert_eq!(reflection_target(renderer), None, "{context}: no target");
+    let bound = renderer.full().fluid_surface.reflection_bound_view();
+    assert_eq!(
+        (bound.texture().width(), bound.texture().height()),
+        (1, 1),
+        "{context}: the placeholder is bound"
+    );
+    assert_reflection_bindings_current(renderer, context);
+}
+
+// fluid-ssr-reflections row 19, placeholder cases and Off ↔ tier (P5, P6). With no
+// level, a level with no fluid volumes, and a fluid level with no
+// probe-bound face, every tier allocates only the 1×1 placeholder and
+// builds no group 5, even drawing; a probe-bound level installed at Off
+// does too. On that level Off → medium creates the target and rebinds group
+// 5 once; the tier it holds builds nothing; medium → Off rebinds the
+// placeholder and releases the target before the next frame, which records
+// no reflection pass and draws every volume reflection-free.
+#[test]
+fn the_reflection_target_exists_only_on_a_probe_bound_level_above_off() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let probes = one_probe_section();
+    let draws = [look_draw(0, reflecting_look())];
+    let group_5 = |renderer: &Renderer| scene_inputs_extent(renderer).1;
+    let (built, targets) = (group_5(&renderer), reflection_target_builds(&renderer));
+    assert_placeholder_only(&renderer, "full init");
+
+    for quality in FluidReflectionQuality::ALL {
+        renderer.set_reflection_quality(quality);
+        renderer.release_level_resources();
+        assert_placeholder_only(&renderer, &format!("{quality:?}, no level"));
+        capture(&mut renderer);
+        renderer.install_fluid_surfaces(&[], None);
+        assert_placeholder_only(&renderer, &format!("{quality:?}, no fluid volumes"));
+        capture(&mut renderer);
+        renderer.install_fluid_surfaces(&[full_screen_fluid()], None);
+        assert_placeholder_only(&renderer, &format!("{quality:?}, no probe-bound face"));
+        renderer.set_fluid_surface_draws(&draws);
+        capture(&mut renderer);
+        assert_placeholder_only(&renderer, &format!("{quality:?}, after a frame"));
+    }
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
+    assert_placeholder_only(&renderer, "a probe-bound level at Off");
+    renderer.set_fluid_surface_draws(&draws);
+    capture(&mut renderer);
+    assert_eq!(
+        group_5(&renderer),
+        built,
+        "no placeholder case builds group 5"
+    );
+    assert_eq!(
+        reflection_target_builds(&renderer),
+        targets,
+        "no placeholder case creates a target"
+    );
+    assert_eq!(reflection_pass_records(&renderer), 0);
+
+    // Off → medium on the probe-bound level.
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
+    assert_eq!(reflection_target(&renderer), Some((SIDE / 2, SIDE / 2)));
+    assert_eq!(group_5(&renderer), built + 1, "group 5 rebinds once");
+    assert_eq!(reflection_target_builds(&renderer), targets + 1);
+    assert_reflection_bindings_current(&renderer, "Off to medium");
+    // P5: the tier it holds, from the renderer or the pass.
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
+    {
+        let Renderer { device, full, .. } = &mut renderer;
+        full.as_mut()
+            .unwrap()
+            .fluid_surface
+            .set_reflection_quality(device, FluidReflectionQuality::Medium);
+    }
+    assert_eq!(
+        group_5(&renderer),
+        built + 1,
+        "the tier it holds builds nothing"
+    );
+    assert_eq!(reflection_target_builds(&renderer), targets + 1);
+    let records = reflection_pass_records(&renderer);
+    capture(&mut renderer);
+    assert_eq!(reflection_pass_records(&renderer), records + 1);
+
+    // P6: medium → Off between frames.
+    let live = renderer
+        .full()
+        .fluid_surface
+        .reflection_bound_view()
+        .clone();
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    assert_placeholder_only(&renderer, "medium to Off");
+    assert!(
+        renderer
+            .full()
+            .fluid_surface
+            .scene_inputs()
+            .bound_reflection_target()
+            != &live,
+        "group 5 no longer holds the released target"
+    );
+    assert_eq!(group_5(&renderer), built + 2, "group 5 rebinds once");
+    assert_eq!(
+        reflection_target_builds(&renderer),
+        targets + 1,
+        "Off creates nothing"
+    );
+    capture(&mut renderer);
+    assert_eq!(
+        reflection_pass_records(&renderer),
+        records + 1,
+        "the next frame records no reflection pass"
+    );
+    let variants = renderer
+        .full()
+        .fluid_surface
+        .frame_variants(LightTermMask::ALL);
+    assert_eq!(variants, [FluidShaderVariant::ReflectionFree]);
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    assert_eq!(group_5(&renderer), built + 2);
+    eprintln!(
+        "[FluidSurfaceProof] reflection target lifecycle GPU case ran: placeholder at every \
+         tier on three levels, Off → medium {:?}, medium → Off placeholder, {} group 5 builds",
+        Some((SIDE / 2, SIDE / 2)),
+        group_5(&renderer)
+    );
+}
+
+// fluid-ssr-reflections rows 1, 2 and 19, the low tier: the probe term
+// alone. On a probe-bound level, high → low rebinds group 5 to the
+// placeholder before the next frame and releases the target (P6); the frame
+// records no reflection pass, yet its probe-bound draw keeps the reflecting
+// variant, with group 5's scale 0 so the placeholder reads c = 0. Low → Off
+// → low allocates and rebinds nothing, Off alone turning the draw
+// reflection-free. Low → medium creates the target at medium's fraction and
+// the next frame records the pass. A probe-bound level installed at low
+// allocates only the placeholder.
+#[test]
+fn the_low_tier_draws_the_reflecting_variant_over_the_placeholder_and_records_no_pass() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let probes = one_probe_section();
+    let draws = [look_draw(0, reflecting_look())];
+    let group_5 = |renderer: &Renderer| scene_inputs_extent(renderer).1;
+    let variants = |renderer: &Renderer| {
+        renderer
+            .full()
+            .fluid_surface
+            .frame_variants(LightTermMask::ALL)
+    };
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
+    renderer.set_fluid_surface_draws(&draws);
+    assert_eq!(reflection_target(&renderer), Some((SIDE, SIDE)));
+    let records = reflection_pass_records(&renderer);
+    capture(&mut renderer);
+    assert_eq!(
+        reflection_pass_records(&renderer),
+        records + 1,
+        "high draws"
+    );
+    let (built, targets) = (group_5(&renderer), reflection_target_builds(&renderer));
+
+    // P6: high → low between frames.
+    let live = renderer
+        .full()
+        .fluid_surface
+        .reflection_bound_view()
+        .clone();
+    renderer.set_reflection_quality(FluidReflectionQuality::Low);
+    assert_placeholder_only(&renderer, "high to low");
+    assert!(
+        renderer
+            .full()
+            .fluid_surface
+            .scene_inputs()
+            .bound_reflection_target()
+            != &live,
+        "group 5 no longer holds the released target"
+    );
+    assert_eq!(group_5(&renderer), built + 1, "group 5 rebinds once");
+    assert_eq!(
+        reflection_target_builds(&renderer),
+        targets,
+        "low creates nothing"
+    );
+    capture(&mut renderer);
+    assert_eq!(
+        reflection_pass_records(&renderer),
+        records + 1,
+        "low records no reflection pass"
+    );
+    assert_eq!(variants(&renderer), [FluidShaderVariant::Reflecting]);
+    assert_placeholder_only(&renderer, "a frame at low");
+
+    // Low → Off → low: placeholder throughout, nothing built.
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    assert_placeholder_only(&renderer, "low to Off");
+    capture(&mut renderer);
+    assert_eq!(variants(&renderer), [FluidShaderVariant::ReflectionFree]);
+    renderer.set_reflection_quality(FluidReflectionQuality::Low);
+    assert_placeholder_only(&renderer, "Off to low");
+    capture(&mut renderer);
+    assert_eq!(variants(&renderer), [FluidShaderVariant::Reflecting]);
+    assert_eq!(group_5(&renderer), built + 1, "Off and low rebind nothing");
+    assert_eq!(reflection_target_builds(&renderer), targets);
+    assert_eq!(reflection_pass_records(&renderer), records + 1);
+
+    // Low → medium creates the target.
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
+    let medium = FluidReflectionQuality::Medium.target_extent((SIDE, SIDE));
+    assert_eq!(reflection_target(&renderer), medium);
+    assert_eq!(group_5(&renderer), built + 2, "group 5 rebinds once");
+    assert_eq!(reflection_target_builds(&renderer), targets + 1);
+    assert_reflection_bindings_current(&renderer, "low to medium");
+    capture(&mut renderer);
+    assert_eq!(
+        reflection_pass_records(&renderer),
+        records + 2,
+        "medium draws"
+    );
+
+    // A probe-bound level installed at low.
+    renderer.set_reflection_quality(FluidReflectionQuality::Low);
+    renderer.release_level_resources();
+    let built = group_5(&renderer);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
+    assert_placeholder_only(&renderer, "a probe-bound install at low");
+    assert_eq!(group_5(&renderer), built, "the install rebinds nothing");
+    assert_eq!(reflection_target_builds(&renderer), targets + 1);
+    renderer.set_fluid_surface_draws(&draws);
+    capture(&mut renderer);
+    assert_eq!(variants(&renderer), [FluidShaderVariant::Reflecting]);
+    assert_eq!(reflection_pass_records(&renderer), records + 2);
+    eprintln!(
+        "[FluidSurfaceProof] low-tier lifecycle GPU case ran: high → low placeholder, \
+         low ↔ Off nothing built, low → medium {medium:?}, install at low placeholder, \
+         {} group 5 builds",
+        group_5(&renderer)
+    );
+}
+
+// fluid-ssr-reflections row 19, P3 and P4. Raising the tier with no level, then on a
+// level with no fluid volumes, allocates nothing; the probe-bound level that
+// then installs creates its target at the current tier and rebuilds group 5
+// once. Level A at medium draws; unload rebinds the placeholder and drops
+// A's target; level B, with no fluid, allocates only the placeholder; level
+// C, with fluid, creates its own target at medium.
+#[test]
+fn raising_the_tier_with_no_fluid_level_allocates_nothing_until_one_installs() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let probes = one_probe_section();
+    let group_5 = |renderer: &Renderer| scene_inputs_extent(renderer).1;
+    let built = group_5(&renderer);
+
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    assert_placeholder_only(&renderer, "Off to high with no level");
+    renderer.install_fluid_surfaces(&[], None);
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
+    assert_placeholder_only(&renderer, "Off to medium on a level with no fluid");
+    assert_eq!(group_5(&renderer), built);
+    assert_eq!(reflection_target_builds(&renderer), 0);
+
+    // Level A.
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
+    assert_eq!(reflection_target(&renderer), Some((SIDE / 2, SIDE / 2)));
+    assert_eq!(
+        group_5(&renderer),
+        built + 1,
+        "the install rebuilds group 5 once"
+    );
+    assert_eq!(reflection_target_builds(&renderer), 1);
+    assert_reflection_bindings_current(&renderer, "level A at medium");
+    renderer.set_fluid_surface_draws(&[look_draw(0, reflecting_look())]);
+    capture(&mut renderer);
+    assert_eq!(reflection_pass_records(&renderer), 1, "level A draws");
+    let level_a = renderer
+        .full()
+        .fluid_surface
+        .reflection_bound_view()
+        .clone();
+
+    renderer.release_level_resources();
+    assert_placeholder_only(&renderer, "unload");
+    assert_eq!(
+        group_5(&renderer),
+        built + 2,
+        "unload rebinds the placeholder"
+    );
+    // Level B, no fluid.
+    renderer.install_fluid_surfaces(&[], None);
+    assert_placeholder_only(&renderer, "level B, no fluid");
+    assert_eq!(group_5(&renderer), built + 2);
+    // Level C, fluid with a probe-bound face.
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
+    assert_eq!(reflection_target(&renderer), Some((SIDE / 2, SIDE / 2)));
+    assert_eq!(group_5(&renderer), built + 3);
+    assert_eq!(
+        reflection_target_builds(&renderer),
+        2,
+        "C creates its own target"
+    );
+    assert!(
+        renderer
+            .full()
+            .fluid_surface
+            .scene_inputs()
+            .bound_reflection_target()
+            != &level_a,
+        "no bind group holds level A's target"
+    );
+    assert_reflection_bindings_current(&renderer, "level C at medium");
+    eprintln!(
+        "[FluidSurfaceProof] P3/P4 reflection tier GPU case ran: no target before the fluid \
+         install, A and C each own a medium target, {} group 5 builds",
+        group_5(&renderer)
+    );
+}
+
+// fluid-ssr-reflections row 19, resume with Off stored: the tier is kept in boot state,
+// so a full init with Off kept hands the rebuilt pass Off, and the first
+// fluid install, probe-bound, allocates only the placeholder and records no
+// reflection pass. Raising the tier afterwards creates the target.
+#[test]
+fn full_init_with_off_stored_allocates_only_the_placeholder_at_the_first_fluid_install() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    renderer.finish_full_init().expect("full init rebuilds");
+    assert_eq!(renderer.reflection_quality(), FluidReflectionQuality::Off);
+    assert_eq!(
+        renderer.full().fluid_surface.kept_reflection_quality(),
+        FluidReflectionQuality::Off,
+        "full init consults the kept tier"
+    );
+    assert_eq!(
+        scene_inputs_extent(&renderer).1,
+        1,
+        "group 5 built at full init alone"
+    );
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&one_probe_section()));
+    assert_placeholder_only(&renderer, "first fluid install at Off");
+    assert_eq!(scene_inputs_extent(&renderer).1, 1);
+    assert_eq!(reflection_target_builds(&renderer), 0);
+    renderer.set_fluid_surface_draws(&[look_draw(0, reflecting_look())]);
+    capture(&mut renderer);
+    assert_eq!(reflection_pass_records(&renderer), 0);
+
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    assert_eq!(reflection_target(&renderer), Some((SIDE, SIDE)));
+    assert_eq!(scene_inputs_extent(&renderer).1, 2);
+    capture(&mut renderer);
+    assert_eq!(reflection_pass_records(&renderer), 1);
+    eprintln!(
+        "[FluidSurfaceProof] resume-with-Off GPU case ran: placeholder at the first install, \
+         target {:?} once raised",
+        reflection_target(&renderer)
+    );
+}
+
+// fluid-ssr-reflections row 21 on an adapter, P1 and P2. Each tier resolves at its
+// per-axis fraction of the scene extent, rounded up and at least 1×1, with
+// group 5 and the reflection inputs bound over the current target at the
+// matching scale. A tier and a render resolution changed on one tick: the
+// setter runs on tick N, frame N+1's start commits the extents and rebuilds
+// the scene targets, and the frame binds one target at the new tier's
+// fraction of the new scene extent, with no stale depth, colour or target.
+#[test]
+fn each_tier_resolves_at_its_fraction_and_one_tick_tier_and_resolution_bind_one_target() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.record_surface_size(42, 26);
+    renderer.commit_extents().expect("the surface changed");
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&one_probe_section()));
+    let scene = (42, 26);
+    for (quality, expected) in [
+        (FluidReflectionQuality::Medium, (21, 13)),
+        (FluidReflectionQuality::High, (42, 26)),
+        (FluidReflectionQuality::VeryHigh, (42, 26)),
+        (FluidReflectionQuality::Ultra, (42, 26)),
+    ] {
+        renderer.set_reflection_quality(quality);
+        assert_eq!(reflection_target(&renderer), Some(expected), "{quality:?}");
+        assert_eq!(quality.target_extent(scene), Some(expected));
+        assert_reflection_bindings_current(&renderer, &format!("{quality:?} at 42x26"));
+    }
+    for quality in [FluidReflectionQuality::Off, FluidReflectionQuality::Low] {
+        renderer.set_reflection_quality(quality);
+        assert_placeholder_only(&renderer, &format!("{quality:?} at 42x26"));
+    }
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+
+    // One tick: tier high → medium, render resolution native → half, surface
+    // resized. Then frame N+1's start.
+    renderer.set_reflection_quality(FluidReflectionQuality::Medium);
+    renderer.set_render_resolution(RenderResolutionPolicy::Fixed { divisor: 2 });
+    renderer.record_surface_size(64, 48);
+    renderer.commit_extents().expect("both extents changed");
+    assert_eq!(renderer.scene_extent(), Extent::new(32, 24));
+    assert_eq!(reflection_target(&renderer), Some((16, 12)));
+    assert_reflection_bindings_current(&renderer, "tier and resolution on one tick");
+    assert_eq!(
+        renderer
+            .full()
+            .fluid_surface
+            .scene_inputs()
+            .pending()
+            .ssr_scale,
+        [0.5, 0.5]
+    );
+
+    // The frame draws over them: capture pins divisor 1 at the 64x48
+    // surface, one more coherent rebuild, and records the reflection pass
+    // without a validation error.
+    renderer.set_fluid_surface_draws(&[look_draw(0, reflecting_look())]);
+    let records = reflection_pass_records(&renderer);
+    let pixels = capture(&mut renderer);
+    assert_eq!(pixels.len(), 64 * 48 * 4);
+    assert_eq!(reflection_target(&renderer), Some((32, 24)));
+    assert_reflection_bindings_current(&renderer, "the captured frame");
+    assert_eq!(reflection_pass_records(&renderer), records + 1);
+    eprintln!(
+        "[FluidSurfaceProof] tier-fraction and one-tick P1/P2 GPU case ran: medium, high, \
+         very high and ultra at 42x26 → 21x13, 42x26, 42x26, 42x26; off and low \
+         placeholder; medium at half of 64x48 → 16x12; captured at 32x24"
+    );
+}
+
+// fluid-ssr-reflections row 1. The reflection pass records only on a frame with a
+// reflecting draw at medium, high, very high or ultra, exactly once per
+// frame. No level, a level with no fluid volumes, a fluid level with no
+// probe-bound face, Off, Low (whose draw still takes the reflecting
+// variant), a frame whose draw
+// does not reflect (reflectivity 0), a frame with no fluid
+// draw and an isolating mask record none (P9).
+#[test]
+fn the_reflection_pass_records_once_per_reflecting_frame_and_never_at_off() {
+    use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let reflecting = [look_draw(0, reflecting_look())];
+    let frame = |renderer: &mut Renderer, context: &str, recorded: u32| {
+        let before = reflection_pass_records(renderer);
+        capture(renderer);
+        assert_eq!(
+            reflection_pass_records(renderer) - before,
+            recorded,
+            "{context}"
+        );
+    };
+    frame(&mut renderer, "no level", 0);
+    renderer.install_fluid_surfaces(&[], None);
+    frame(&mut renderer, "a level with no fluid volumes", 0);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], None);
+    renderer.set_fluid_surface_draws(&reflecting);
+    frame(&mut renderer, "a fluid level with no probe-bound face", 0);
+
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&one_probe_section()));
+    renderer.set_fluid_surface_draws(&reflecting);
+    for quality in [
+        FluidReflectionQuality::Medium,
+        FluidReflectionQuality::High,
+        FluidReflectionQuality::VeryHigh,
+        FluidReflectionQuality::Ultra,
+    ] {
+        renderer.set_reflection_quality(quality);
+        frame(
+            &mut renderer,
+            &format!("a reflecting draw at {quality:?}"),
+            1,
+        );
+    }
+    renderer.set_reflection_quality(FluidReflectionQuality::Off);
+    frame(&mut renderer, "Off", 0);
+    renderer.set_reflection_quality(FluidReflectionQuality::Low);
+    frame(&mut renderer, "Low", 0);
+    assert_eq!(
+        renderer
+            .full()
+            .fluid_surface
+            .frame_variants(LightTermMask::ALL),
+        [FluidShaderVariant::Reflecting],
+        "Low draws the reflecting variant"
+    );
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    renderer.set_fluid_surface_draws(&[look_draw(
+        0,
+        FluidSurfaceLook {
+            surface_reflectivity: 0.0,
+            ..reflecting_look()
+        },
+    )]);
+    frame(&mut renderer, "no reflecting draw", 0);
+    renderer.set_fluid_surface_draws(&[]);
+    frame(&mut renderer, "no fluid draw", 0);
+    renderer.set_fluid_surface_draws(&reflecting);
+    let mut isolating = LightTermMask::ALL;
+    isolating.set_enabled(LightTermMask::SPECULAR, false);
+    renderer.set_light_term_mask(isolating);
+    frame(&mut renderer, "an isolating mask", 0);
+    renderer.set_light_term_mask(LightTermMask::ALL);
+    frame(&mut renderer, "the mask restored", 1);
+    eprintln!(
+        "[FluidSurfaceProof] reflection pass-count GPU case ran: {} passes over 13 frames",
+        reflection_pass_records(&renderer)
+    );
+    assert_eq!(reflection_pass_records(&renderer), 5);
 }

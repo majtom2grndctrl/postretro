@@ -34,10 +34,11 @@ Four channels, fixed layout, agreed by both peers (the layout is folded into the
 |---------|----------|---------|
 | Control | reliable-ordered | join traffic both ways: compatibility declarations and join seed client→server; level changes, divergence causes, and the replicated tuning payload server→client |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
-| Input | reliable-ordered | client input/activation commands, HIT declarations, repair/acks and time sync; host activation outcomes, shot verdicts and observer weapon cues |
+| Input | reliable-ordered | client input/activation commands, weapon-switch declarations, HIT declarations, repair/acks and time sync; host activation outcomes, switch outcomes, shot verdicts and observer weapon cues |
 | Presentation | unreliable | participation-epoch-framed host presentation: disposable damage-number spawns, recoverable damaged-enemy rosters, and player-addressed presentation commands |
 
 Reliability is matched to the data: control state and client→server repair/ack traffic must arrive ordered; snapshots are disposable because missing entity or state baselines are repaired by explicit refresh requests.
+Resend is matched to it too. renet resends an unacked message on the first send at least one resend interval after its last, packs resends into that packet and drops duplicates by message id. Input resends at no more than one fixed tick, so a lost command rides the next tick's datagram and a single loss costs gameplay traffic about a tick, not a resend stall; above one tick a 60 Hz sender would resend only every second datagram, after the host had already given up the lost tick. Every gameplay family rides Input for that reason, and one ordered stream keeps switches, starts and presses in the client's order. Control resends at about 100 ms: nothing on it needs faster, and a joiner's pawn holds no inventory until the tuning payload installs, so a lost slice at a slower resend would leave the player unarmed for the whole stall. Control's ordering is what keeps a tuning payload from landing after the demotion or level change that retires it.
 Presentation is an unreliable lane, and every payload is framed by the current
 participation epoch. Disposable damage-number spawns and private commands are offered
 once: they have no per-message ack, resend, replay, or history. A lost payload produces
@@ -150,6 +151,8 @@ A held slot is bounded by the transport, not by the gate: a peer that never reac
 **Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — the host resolves that slot's pawn tuning at the participation transition and resends it whenever it changes, and the client installs it instead of reading its own registry.
 
 The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. So does the slot the host composed the pawn's inventory active with (a carried selection after a level change or rejoin). The client composes its pawn's inventory only from the payload, starting on that slot, or on the first populated slot when it names none. That slot is fixed at spawn and never tracks a switch, so the whole-struct dedupe never resends tuning for one, and a later payload merges into the live inventory without moving the selection. The client drops its installed payload at demotion and at level unload. A pawn baseline that arms before the payload lands (the Control resend still in flight on a lossy link) holds no inventory until it installs, as its movement already waits; it never composes from the client's own descriptor or a previous level's payload. View feel and movement/weapon sound keys are stripped from tuning, so player view-feel settings survive a join and owners retain local sounds. Activation programs, scaling bases, and action aliases come from the host. Observer cues separately carry frozen host fire/impact keys, resolved against local sound assets.
+
+**Timed weapon meters project from the host's samples.** On a connected client, reload progress, weapon cooldown, heat and cell arrive about 30 times a second as owner-private samples, each stamped with its snapshot's server tick. The display projects each between samples from the slope of the host's own samples, never local tuning, and only in the direction the host's fixed tick ramps it: reload progress and cell up, cooldown and heat down. A shot's step moves against that direction and shows raw. Projection advances only while the two newest intervals agree on slope, stops at the slot's bound, and holds once the newest sample is older than a cap, so an outage freezes the meter. It runs on the samples' own timeline, a smooth clock built from time sync that trails the host by the transit time, so the meter stays in step with the raw reload flag and its sounds. It is display only: UI reads of the slot see the projection, while the store, state crossings, reload sounds, fire gating and the cooldown reconcile see the samples. Nothing for it crosses the wire.
 
 **Level environment rides the same payload.** Every pawn's tuning carries the host's level environment: the level default gravity (worldspawn `initialGravity`, then any `setGravity`) and the host's fluid table, name and viscosity per fluid in declaration order. It is level-scoped, so an environment-only change installs without rebuilding the client's pawn tuning. A connected client builds its prediction and replay environment only from the installed values: it never reads its own level gravity, and it resolves level fluid names only against the host table, never its own registry, because admission gates on mod id and never on version. A name the host lacks is dry on the client even if the client declares it. Before the first install the client builds its volumes with every fluid dry and does not predict. Every fluid field but name and viscosity is presentation and resolves locally by name, as sound keys do; a client without the fluid shows none. Peers may therefore see different opacity and murk, a visibility difference non-competitive co-op accepts. Fluid surface drift is the exception: it agrees with the swimmer it depicts, so it resolves from the installed fluid table and tuning, and re-resolves on each install (`rendering_pipeline.md` §7.3a). Changed tuning is queued immediately before the snapshot send, so a mid-level `setGravity` costs at most one correction; loss retransmit or lane reorder on a lossy link can still deliver it after a snapshot. Regional volumes themselves are PRL data the content digest proves, not replicated; a teleporter's armed state is the one runtime exception (§Current contract).
 
@@ -304,7 +307,7 @@ Role is selected once at startup from CLI flags; default is **single-player with
 
 Three paths exercise the netcode under loss and latency:
 
-**In-memory harness (deterministic, unit-test path).** A dev-only packet conditioner (gated on `dev-tools`, always built under `test`) sits between an already-connected server/client pair, conditioning the *connection-level packet buffers* — bypassing the UDP transport entirely. It applies one-way delay, bounded jitter, and loss on a **virtual clock the caller advances** (it never reads wall-clock time), driven by a seeded PRNG. Same seed ⇒ same drops and arrival times, every run, every platform. This is deliberately not turmoil: turmoil conditions tokio sockets, and this path has no socket and no async runtime. It is the deterministic, reproducible unit-test path.
+**In-memory harness (deterministic, unit-test path).** A dev-only packet conditioner (gated on `dev-tools`, always built under `test`) sits between an already-connected server/client pair, conditioning the *connection-level packet buffers* — bypassing the UDP transport entirely. It applies one-way delay, bounded jitter, and loss on a **virtual clock the caller advances** (it never reads wall-clock time), driven by a seeded PRNG. Same seed ⇒ same drops and arrival times, every run, every platform. This is deliberately not turmoil: turmoil conditions tokio sockets, and this path has no socket and no async runtime. It is the deterministic, reproducible unit-test path. The predict/reconcile harness family carries input, acks and time sync over the production channel configuration, so its link has the shipped reliable-ordered semantics and resends, never raw unordered input or instantly applied acks.
 
 **Dev lag proxy (manual, real-socket path; any OS).** Every `dev-tools` `--host` / `--connect` endpoint relays its datagrams through an in-process UDP proxy from the first packet. The proxy sits between the netcode transport and the real socket and forwards unimpaired until configured, so no session needs setup to be conditioned later. It runs on its own threads, off the frame: a datagram leaves the moment it is due, so Off adds no measurable latency and a delay holds to about a millisecond at any frame rate (measured on Linux). The last stretch before each release is a high-resolution sleep rather than a channel wait, so Windows' ~15.6 ms wait granularity does not round delays up. It applies the harness link model — one-way delay, uniform jitter `[0, jitter]`, loss — on the wall clock, to **each direction** through it: one conditioned endpoint adds about twice the delay to RTT, and the symmetric split keeps time sync's one-way estimate unbiased. Either endpoint can condition. One setting per process; a host applies it uniformly to every client link and still sees each client at a distinct address. A change applies to datagrams received afterwards; those in flight keep their arrival times, so lowering the delay lets new datagrams overtake held ones. renetcode's replay window discards a datagram overtaken by 256 newer ones, which only very high send rates reach. IPv4 only, as `--connect` is. Builds without `dev-tools` construct no proxy: the transport owns the real socket, unchanged.
 
@@ -353,7 +356,7 @@ Press **Off** on the Network tab to compare against the unimpaired link mid-sess
 
 ## Time sync
 
-A client clock-sync exchange (`postretro-net` `timesync` module) keeps the client's estimate of the server tick. The client periodically sends a probe on the reliable Input channel; the server echoes its current tick. The client measures round-trip against **its own** monotonic clock — the server's echoed time is telemetry, never compared cross-clock, because the two origins are unrelated. A pure estimator smooths a server-tick offset, RTT, and a link-jitter estimate behind an injected clock, so tests drive it on the harness's virtual clock. Because probes ride a reliable-ordered channel, a probe stuck behind a lost packet waits out a resend in one direction only, inflating its RTT and biasing its midpoint; so every echo enters a short window of recent RTTs, but only a sample near the window minimum folds into the estimate. The window rolls, so a sustained latency increase is adopted within one window. A fast ramp degrades this: the estimate holds at the old minimum until the ramp flattens and that minimum rolls out, while the measured-lag law below covers remotes. A sample that sets the window minimum more than one gate tolerance below the smoothed RTT reseeds offset and RTT outright and zeroes jitter, so a stalled first probe does not linger behind the slow smoothing. A reseed's offset shift biases the snapshot lags folded before it; a raised lag lifts the peak at once, while a lowered one leaves the old peak to decay at its half-life, holding remotes later than needed meanwhile (accepted). The interpolation buffer reads the offset to find the server's current tick, then renders remote pawns behind it by the larger of two delays. The time-sync delay is half the smoothed RTT (snapshot transit) plus a jitter-sized buffer. The measured delay is a decaying peak of each newly accepted snapshot's arrival lag — how far the estimated server tick has run past the snapshot's tick — plus one snapshot interval. Snapshots ride an unreliable channel and see no resend stalls, so their lag shows the arrival spread the min-RTT gate filters out, and any offset error cancels because the render target reads the same estimate. Only a snapshot accepted after a level unload folds; the pre-unload one would read the load time as lag. On a LAN the delay reduces to the 50 ms floor. The delay moves in whole ticks, so the render target slews toward its new value at 0.75–1.25× real-time playback rather than freezing remotes on a raise or jumping them on a drop. Playback runs on frame wall-clock time, not the estimate's advance, so a forward estimate jump such as a reseed slews too. A target already at or past the newest snapshot may hold rather than keep slewing while the delay rises, so a lasting latency rise starves remotes about as long as the rise. The target never rewinds, and snaps only on the first frame or across a gap of half a second. Registry-blind and scalar-only, like the rest of the net crate.
+A client clock-sync exchange (`postretro-net` `timesync` module) keeps the client's estimate of the server tick. The client periodically sends a probe on the reliable Input channel; the server echoes its current tick. The client measures round-trip against **its own** monotonic clock — the server's echoed time is telemetry, never compared cross-clock, because the two origins are unrelated. A pure estimator smooths a server-tick offset, RTT, and a link-jitter estimate behind an injected clock, so tests drive it on the harness's virtual clock. Because probes ride a reliable-ordered channel, a probe stuck behind a lost packet waits out a resend in one direction only (about a tick at Input's resend, longer across an outage), inflating its RTT and biasing its midpoint; so every echo enters a short window of recent RTTs, but only a sample near the window minimum folds into the estimate. At a one-tick resend the gate mostly filters jitter. The window rolls, so a sustained latency increase is adopted within one window. A fast ramp degrades this: the estimate holds at the old minimum until the ramp flattens and that minimum rolls out, while the measured-lag law below covers remotes. A sample that sets the window minimum more than one gate tolerance below the smoothed RTT reseeds offset and RTT outright and zeroes jitter, so a stalled first probe does not linger behind the slow smoothing. A reseed's offset shift biases the snapshot lags folded before it; a raised lag lifts the peak at once, while a lowered one leaves the old peak to decay at its half-life, holding remotes later than needed meanwhile (accepted). The interpolation buffer reads the offset to find the server's current tick, then renders remote pawns behind it by the larger of two delays. The time-sync delay is half the smoothed RTT (snapshot transit) plus a jitter-sized buffer. The measured delay is a decaying peak of each newly accepted snapshot's arrival lag — how far the estimated server tick has run past the snapshot's tick — plus one snapshot interval. Snapshots ride an unreliable channel and see no resend stalls, so their lag shows the arrival spread the min-RTT gate filters out, and any offset error cancels because the render target reads the same estimate. Only a snapshot accepted after a level unload folds; the pre-unload one would read the load time as lag. On a LAN the delay reduces to the 50 ms floor. The delay moves in whole ticks, so the render target slews toward its new value at 0.75–1.25× real-time playback rather than freezing remotes on a raise or jumping them on a drop. Playback runs on frame wall-clock time, not the estimate's advance, so a forward estimate jump such as a reseed slews too. A target already at or past the newest snapshot may hold rather than keep slewing while the delay rises, so a lasting latency rise starves remotes about as long as the rise. The target never rewinds, and snaps only on the first frame or across a gap of half a second. Registry-blind and scalar-only, like the rest of the net crate.
 
 ## Host input command queue — gap policy and bounded playout
 
@@ -447,7 +450,7 @@ the preserved press so weapon-side level dedup sees a genuine rising edge. Use a
 presses ride the same kind of lane: rising edges observed at intake, each delivered once
 on an advancing resolution, so a trim cannot lose a door press or a weapon drop.
 Activation starts and their release/cancel edges have their own lane (§Combat authority).
-Weapon switches have a lane too: up to 64 per client, retained on arrival from Control,
+Weapon switches have a lane too: up to 64 per client, retained on arrival from Input,
 released on any resolution including a non-advancing hold, and applied after command
 resolution and before the tick's simulation. Every lane delivers in the client's tick
 order (§Combat authority).
@@ -573,9 +576,9 @@ lane and binds to the live weapon instance. The host never invents remote restar
 from held input. Committed waits advance once per host simulation tick, independently
 of movement cursor holds or jumps, with at most one shot per execution per tick.
 
-**Starts survive playout.** A reliable-ordered Input stream stalls for a whole resend
-interval when one packet is lost or the host hitches, and the catch-up trim then keeps
-only the newest commands. A start dropped there would lose its shot, and a surviving
+**Starts survive playout.** A reliable-ordered Input stream stalls when packets are lost
+(about a tick for a single loss at Input's resend, seconds across an outage) or the host
+hitches, and the catch-up trim then keeps only the newest commands. A start dropped there would lose its shot, and a surviving
 start judged by host spacing alone would be refused as cooling; either deletes a lagging
 client's predicted bolt mid-flight. Intake therefore retains each start before stale-drop
 and trim, up to 64 per client, and delivers the oldest once its own command tick has
@@ -669,8 +672,13 @@ order with retained starts:
   A frozen hold never replays the raw reload level of a press still held back.
 - A retained start's own release and cancel edges do not age while it waits.
 
-**Switches keep the client's order.** A switch declaration rides reliable Control, apart
-from Input, and names the client tick it was made on. The host retains it and applies it
+**Switches keep the client's order.** A switch declaration rides Input in the same
+ordered stream as the commands, sent before its own tick's command, and names the client
+tick it was made on. Its outcome returns on Input. Participation scopes both directions
+without new framing: a declaration rides the participation frame, so the host's Input
+drain drops one from an earlier participation; and demotion and level unload clear the
+client's pending chain while declaration ids never reset within a connection, so a
+stale outcome meets an empty chain or a newer front and resolves nothing. The host retains it and applies it
 once its own command has resolved and nothing stamped before it is pending: no older
 retained start, no older due press, and a live execution's clock at its tick. Starts and
 presses stamped at or after a waiting switch wait for it; one stamped on the switch's
@@ -681,11 +689,9 @@ without touching the inventory. A client that has sent no command applies its sw
 the next tick. Bounds: a switch applies no later than 240 host ticks after intake,
 whatever is still pending, and at the lane's 64-switch bound the oldest is released at
 once, unordered. On a clean link a switch applies on its own command's resolution, so
-ordering adds no latency. Known gaps: a switch arriving after input stamped later than
-it cannot reorder that input; a drop pressed while the client is still lowering after a
-switch drops the new active slot; a reload squeezed by a stall can be interrupted by the
-following switch; and if Input stalls over 2 s while Control flows, a switch reads as
-stamped too far ahead and is refused as malformed.
+ordering adds no latency. Known gaps: a drop pressed while the client is still lowering
+after a switch drops the new active slot, and a reload squeezed by a stall can be
+interrupted by the following switch.
 
 **A diverged active slot re-converges on the client's.** Nothing else replicates the
 host's active slot to its owner. The tuning payload's spawn active slot keeps
@@ -830,7 +836,7 @@ before prediction starts, but cannot roll back its active prediction. No full we
 rollback.
 
 Client-side ammo, heat, cell, and reload prediction/reconciliation remain out of scope;
-connected clients never run the heat or cell update. Owner-private state-slot projection
+connected clients never run the heat or cell update. Their heat and cell meters project the host's samples for display (§What gates, and what replicates instead), with no client heat state, overheat latch or gameplay read. Owner-private state-slot projection
 supplies each owner with the host's authoritative magazine, reserve, reload progress,
 reload-active, heat, overheat threshold, overheated latch, cell charge, and cell capacity,
 each read from that owner's own pawn and beside the host wieldable slot it describes.
@@ -1091,6 +1097,10 @@ Teleporters advance `WIRE_VERSION` to 32 and `SNAPSHOT_VERSION` to 21: the pawn 
 record and the teleporter armed-state payload ride the snapshot, and the input command's
 yaw stamp shares the wire bump. Peers at 31 are refused at handshake. The application
 protocol remains PRLB.
+
+Moving weapon-switch declarations and outcomes from Control to Input, with the
+gameplay resend, advances the application protocol to PRLC and `WIRE_VERSION` to 33.
+`SNAPSHOT_VERSION` (21) is unchanged. Peers on PRLB or 32 are refused at handshake.
 
 The tuning payload's spawn active slot advances the tuning epoch to 14. The payload is
 JSON carried opaquely, so `WIRE_VERSION` (32), `SNAPSHOT_VERSION` (21) and the

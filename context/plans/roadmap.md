@@ -64,6 +64,10 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
 
 - [ ] **Network lag simulator** — inject latency, jitter and loss into a session from a dev-toolbar control or CLI flag, so co-op playtests at realistic RTT need no OS-level link conditioning.
 
+- [ ] **coop--lossy-link-delivery** — under the dev lag profile a connected client's own pawn rubber-bands, worst in slides and vaults, because one lost datagram stalls reliable-ordered gameplay traffic for a 300 ms resend. Input resends at most one tick later and carries every gameplay family, switches included; Control resends at about 100 ms; the harness runs production channel semantics. Brief: `context/plans/ready/coop--lossy-link-delivery/`.
+
+- [ ] **coop--timed-slot-projection** — a connected client's reload meter fills in steps because the host's samples arrive about 30 times a second and show raw. The client projects reload, cooldown, heat and cell between samples from the host's own stamped slope, display only, with no wire change; the dev HUD gains a heat bar. Brief: `context/plans/ready/coop--timed-slot-projection/`.
+
 - [ ] **coop--pre-arm-fire-resolves-slot-zero** — before a connected client's pawn arms, its Input carries `firing_slot` 0, and a fresh fire press there fires the host pawn's slot-0 weapon whatever its active slot. Traced in source, not yet seen in play. Trace: `context/plans/done/coop--client-inventory-awaits-tuning/research.md`. Needs a draft session.
 
 **Testable outcome:** two-plus players use the selected hosted-session flow, with one joining mid-level and another dropping while the session survives, through a mod-authored lobby.
@@ -201,7 +205,8 @@ Water-surface briefs outside a numbered epic.
 - [ ] **reflection-probe fluid-pass performance** — per-probe light-share precompute for drawn volumes (the blend-cost spike cut a single sample 21% and a 3-probe blend from +78% to +3–4%), a Fresnel early-out at steep views, pixel style at cell rate; measure the Mac 5300M first. Not yet drafted.
 - [x] **fluid base-pass cost** — fluid baked light (ambient floor, SH indirect, baked direct SH) moved to the vertex stage on an install-time SH-lattice grid: the 5300M's reflection-free fluid pass at full-screen 4K fell 52–54 → 2.2 ms, all views faster on the GTX 1660. Done: `context/plans/done/fluid-base-pass-cost/`. Follow-up: fluid surface T-junction closure (below).
 - [x] **fluid surface T-junction closure** — every fluid face pair meeting along a boundary now shares bit-identical vertices, within and across volumes: level-wide weld-then-insert at bake replaces the push-cut gate, and faces with inserted vertices ear-clip at install. stress-env-volumes went from 6,173 open seams to 0 at 75 ms more bake and 13 ms more install. Done: `context/plans/done/fluid-surface-t-junction-closure/`.
-- [ ] **fluid-ssr-reflections** — screen-space reflections composited over the probe term by confidence, so movers, characters and dynamic lights appear in fluid surfaces; player `reflection_quality`. Ready: `context/plans/ready/fluid-ssr-reflections/`.
+- [x] **fluid-ssr-reflections** — screen-space reflections composited over the probe term by confidence, so movers, characters and dynamic lights appear in fluid surfaces; player `reflection_quality` (off/low/medium/high/very_high/ultra). Done (`plans/done/fluid-ssr-reflections`).
+- [ ] **reflection-probe-capture-exclusion** — probes leave out static brushes small relative to their water, so pillars, posts and trim reflect through SSR with true parallax while room-scale walls and undersides stay in the probe; mapper override `_reflection_capture`. Builds after `fluid-ssr-reflections`. Ready: `context/plans/ready/reflection-probe-capture-exclusion/`.
 - [ ] **reflection-probe streaming and seams** — streamed probe residency, and blending across probe boundaries. Drafts on branch `claude/probe-streaming-brief-364a5e`; the seams brief depends on the performance brief's precompute.
 
 ---

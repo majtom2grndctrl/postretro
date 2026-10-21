@@ -609,6 +609,7 @@ fn the_fragment_reference_samples_toward_the_box_hit_from_the_capture_point() {
         let seen = Cell::new(None);
         reflection_fragment(
             Vec4::new(0.2, 0.3, 0.4, 0.6),
+            REFLECTION_SCREEN_MISS,
             &pool_fragment(camera, world_position),
             &probes,
             TILE,
@@ -720,11 +721,21 @@ fn reflectivity_zero_returns_the_surface_unchanged() {
         ..pool_fragment(camera, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &off, &probes, TILE, NO_LIGHTS, red, no_surface),
+        reflection_fragment(
+            surface,
+            REFLECTION_SCREEN_MISS,
+            &off,
+            &probes,
+            TILE,
+            NO_LIGHTS,
+            red,
+            no_surface
+        ),
         surface
     );
     let on = reflection_fragment(
         surface,
+        REFLECTION_SCREEN_MISS,
         &pool_fragment(camera, world_position),
         &probes,
         TILE,
@@ -752,6 +763,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
     assert_eq!(
         reflection_fragment(
             surface,
+            REFLECTION_SCREEN_MISS,
             &pool_fragment(below, world_position),
             &probes,
             TILE,
@@ -764,6 +776,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
     );
     let reflected = reflection_fragment(
         surface,
+        REFLECTION_SCREEN_MISS,
         &pool_fragment(above, world_position),
         &probes,
         TILE,
@@ -782,7 +795,16 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
         ..pool_fragment(above, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &flipped, &probes, TILE, NO_LIGHTS, red, no_surface),
+        reflection_fragment(
+            surface,
+            REFLECTION_SCREEN_MISS,
+            &flipped,
+            &probes,
+            TILE,
+            NO_LIGHTS,
+            red,
+            no_surface
+        ),
         surface
     );
     // A face bound to no probe renders as today.
@@ -791,7 +813,16 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
         ..pool_fragment(above, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &unbound, &probes, TILE, NO_LIGHTS, red, no_surface),
+        reflection_fragment(
+            surface,
+            REFLECTION_SCREEN_MISS,
+            &unbound,
+            &probes,
+            TILE,
+            NO_LIGHTS,
+            red,
+            no_surface
+        ),
         surface
     );
 }
@@ -810,7 +841,17 @@ fn an_eye_inside_the_fog_band_scales_the_reflection_by_its_height() {
     let eye = |height: f32| Vec3::new(0.0, height, -2.0);
     let coverage = |height: f32| {
         let fragment = pool_fragment(eye(height), world_position);
-        reflection_fragment(clear, &fragment, &probes, TILE, NO_LIGHTS, red, no_surface).w
+        reflection_fragment(
+            clear,
+            REFLECTION_SCREEN_MISS,
+            &fragment,
+            &probes,
+            TILE,
+            NO_LIGHTS,
+            red,
+            no_surface,
+        )
+        .w
     };
     for bands in [0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 25.0] {
         let height = bands * FLUID_FOG_BAND;
@@ -869,6 +910,7 @@ fn the_composite_is_reflection_over_surface_over_fog_over_scene() {
         assert!(fogged.w >= alpha && fogged.w > 0.0, "fog adds coverage");
         let out = reflection_fragment(
             fogged,
+            REFLECTION_SCREEN_MISS,
             &frag,
             &probes,
             TILE,
@@ -889,6 +931,7 @@ fn the_composite_is_reflection_over_surface_over_fog_over_scene() {
         assert_eq!(surface, rgb.extend(alpha));
         let out = reflection_fragment(
             surface,
+            REFLECTION_SCREEN_MISS,
             &frag,
             &probes,
             TILE,
@@ -903,12 +946,234 @@ fn the_composite_is_reflection_over_surface_over_fog_over_scene() {
 
     // Opacity never dims the reflection: at zero opacity the face draws the
     // reflection alone at coverage F.
-    let alone = reflection_composite(Vec4::new(0.3, 0.3, 0.3, 0.0), reflection, f);
+    let alone = reflection_layered_composite(
+        Vec4::new(0.3, 0.3, 0.3, 0.0),
+        reflection,
+        1.0,
+        REFLECTION_SCREEN_MISS,
+        f,
+    );
     assert_close(alone.w, f, 1.0e-7, "coverage F");
     assert_vec_close(alone.truncate(), reflection, 1.0e-5, "the capture's colour");
     // Coverage 0 (no Fresnel, no surface) stays finite.
-    let empty = reflection_composite(Vec4::new(0.3, 0.3, 0.3, 0.0), reflection, 0.0);
+    let empty = reflection_layered_composite(
+        Vec4::new(0.3, 0.3, 0.3, 0.0),
+        reflection,
+        1.0,
+        REFLECTION_SCREEN_MISS,
+        0.0,
+    );
     assert!(empty.is_finite() && empty.w == 0.0, "{empty}");
+}
+
+// --- Screen-space layer over the probe term ---------------------------------
+
+/// Sweeps over F (unshadowed), s, the surface's opacity a and confidence c.
+const SWEEP_F: [f32; 5] = [0.0, 0.02, 0.3, 0.7, 1.0];
+const SWEEP_S: [f32; 4] = [0.0, 0.25, 0.6, 1.0];
+const SWEEP_A: [f32; 4] = [0.0, 0.3, 0.6, 1.0];
+const SWEEP_C: [f32; 5] = [0.0, 0.1, 0.5, 0.9, 1.0];
+const PROBE: Vec3 = Vec3::new(2.0, 1.5, 0.25);
+const SSR: Vec3 = Vec3::new(0.2, 0.9, 1.4);
+
+/// The surface (over fog) at opacity `a`.
+fn surface_at(a: f32) -> Vec4 {
+    Vec3::new(0.1, 0.4, 0.3).extend(a)
+}
+
+/// The composite the probe term landed with, before the screen-space layer:
+/// the reflection at weight `fresnel` (F·s there) over the surface at union
+/// coverage. It multiplies F by s before compositing, where the layered
+/// composite multiplies s into the probe's share, so the two agree to float
+/// rounding, not bit for bit.
+fn landed_composite(surface: Vec4, reflection: Vec3, fresnel: f32) -> Vec4 {
+    let coverage = fresnel + (1.0 - fresnel) * surface.w;
+    let rgb = (reflection * fresnel + surface.truncate() * ((1.0 - fresnel) * surface.w))
+        / coverage.max(FLUID_REFLECTION_COVERAGE_EPSILON);
+    rgb.extend(coverage)
+}
+
+/// Premultiplied colour: what blending adds over the scene.
+fn premultiplied(out: Vec4) -> Vec3 {
+    out.truncate() * out.w
+}
+
+/// Equal to within `tolerance` relative to the larger magnitude, at least 1.
+fn assert_vec4_close(actual: Vec4, expected: Vec4, tolerance: f32, what: &str) {
+    let scale = actual.abs().max(expected.abs()).max_element().max(1.0);
+    assert!(
+        actual.abs_diff_eq(expected, tolerance * scale),
+        "{what}: {actual} vs {expected} (± {tolerance} × {scale})"
+    );
+}
+
+// A miss (c = 0) draws the landed probe term: F·s is the landed F, for every
+// F, s and opacity.
+#[test]
+fn at_zero_confidence_the_layered_composite_is_the_landed_composite() {
+    for f in SWEEP_F {
+        for shadow in SWEEP_S {
+            for a in SWEEP_A {
+                let surface = surface_at(a);
+                assert_vec4_close(
+                    reflection_layered_composite(surface, PROBE, shadow, REFLECTION_SCREEN_MISS, f),
+                    landed_composite(surface, PROBE, f * shadow),
+                    1.0e-6,
+                    &format!("F {f}, s {shadow}, a {a}"),
+                );
+            }
+        }
+    }
+}
+
+// Full confidence leaves the probe nothing: any probe colour, at any s,
+// draws the same fragment, the screen-space layer alone at weight F.
+#[test]
+fn at_full_confidence_the_probe_contributes_nothing() {
+    let screen = SSR.extend(1.0);
+    for f in SWEEP_F {
+        for shadow in SWEEP_S {
+            for a in SWEEP_A {
+                let surface = surface_at(a);
+                let out = reflection_layered_composite(surface, PROBE, shadow, screen, f);
+                for probe in [Vec3::ZERO, Vec3::splat(9.0), Vec3::new(0.0, 4.0, 0.5)] {
+                    assert_vec4_close(
+                        reflection_layered_composite(surface, probe, shadow, screen, f),
+                        out,
+                        1.0e-7,
+                        &format!("F {f}, s {shadow}, a {a}, probe {probe}"),
+                    );
+                }
+                assert_vec4_close(
+                    out,
+                    landed_composite(surface, SSR, f),
+                    1.0e-6,
+                    &format!("F {f}, s {shadow}, a {a}: the SSR at weight F"),
+                );
+            }
+        }
+    }
+}
+
+// The IP rule's arithmetic: on the premultiplied output, raising the screen
+// sample's colour from 0 to X at confidence c adds F·c·X, the same at s = 0
+// and s = 1, for every F, c and opacity. s never reaches the screen-space
+// term.
+#[test]
+fn the_screen_space_contribution_is_f_c_ssr_at_every_capture_shadow_weight() {
+    for f in SWEEP_F {
+        for c in SWEEP_C {
+            for a in SWEEP_A {
+                let surface = surface_at(a);
+                let expected = SSR * (f * c);
+                let mut added = Vec::new();
+                for shadow in [0.0, 1.0] {
+                    let lit = reflection_layered_composite(
+                        surface,
+                        PROBE,
+                        shadow,
+                        (SSR * c).extend(c),
+                        f,
+                    );
+                    let dark = reflection_layered_composite(
+                        surface,
+                        PROBE,
+                        shadow,
+                        Vec4::new(0.0, 0.0, 0.0, c),
+                        f,
+                    );
+                    let delta = premultiplied(lit) - premultiplied(dark);
+                    assert_vec_close(
+                        delta,
+                        expected,
+                        1.0e-5,
+                        &format!("F {f}, c {c}, a {a}, s {shadow}"),
+                    );
+                    added.push(delta);
+                }
+                assert_vec_close(added[0], added[1], 1.0e-5, "s = 0 against s = 1");
+            }
+        }
+    }
+
+    // Through the whole fragment: its screen sample reaches the composite at
+    // the fragment's own F (Fresnel × the eye's band, s apart).
+    let camera = Vec3::new(0.0, 1.7, -3.5);
+    let world_position = Vec3::new(0.3, 0.0, 1.0);
+    let fragment = pool_fragment(camera, world_position);
+    let probes = [room_probe([0.0, 0.002, 0.0], 0)];
+    let f = reflection_fresnel((camera - world_position).normalize().y, 1.0);
+    let surface = surface_at(0.6);
+    for c in SWEEP_C {
+        let read = |screen: Vec4| {
+            reflection_fragment(
+                surface,
+                screen,
+                &fragment,
+                &probes,
+                TILE,
+                NO_LIGHTS,
+                |_, _| PROBE,
+                no_surface,
+            )
+        };
+        let delta = premultiplied(read((SSR * c).extend(c)))
+            - premultiplied(read(Vec4::new(0.0, 0.0, 0.0, c)));
+        assert_vec_close(delta, SSR * (f * c), 1.0e-5, &format!("fragment c {c}"));
+    }
+}
+
+// Opacity and fog never dim either layer: for fixed F, c, s, SSR and Probe,
+// what the fragment adds over (1 − W) of the surface over fog over the scene
+// is the same reflected colour, F·[c·SSR + (1 − c)·s·Probe], at every
+// opacity and fog extinction.
+#[test]
+fn the_reflected_colour_is_the_same_at_every_opacity_and_fog_extinction() {
+    let scene = Vec3::new(0.9, 0.8, 0.7);
+    let camera = Vec3::new(0.0, 1.0, -1.0);
+    let world_position = Vec3::new(0.0, 0.0, 0.5);
+    let view_proj = glam::camera::rh::proj::directx::perspective(1.2, 1.0, 0.1, 100.0)
+        * glam::camera::rh::view::look_at_mat4(camera, world_position, Vec3::Y);
+    let fog = |extinction: f32| FluidFogFragment {
+        view_proj,
+        camera,
+        world_position,
+        outward: Vec3::Y,
+        scene_depth: 0.999,
+        extinction,
+        fog_albedo: Vec3::new(0.04, 0.055, 0.048),
+        lighting: Vec3::splat(0.8),
+        weight: 1.0,
+    };
+    for (f, c, shadow) in [
+        (0.3, 0.5, 0.6),
+        (0.02, 0.9, 1.0),
+        (1.0, 0.1, 0.0),
+        (0.7, 0.0, 0.25),
+    ] {
+        let weight = f * (c + (1.0 - c) * shadow);
+        let reflected = (SSR * c + PROBE * ((1.0 - c) * shadow)) * f;
+        for a in SWEEP_A {
+            for extinction in [0.0, 0.5, 3.0, 40.0] {
+                let surface = fog_fragment(Vec3::new(0.1, 0.4, 0.3), a, &fog(extinction));
+                let out =
+                    reflection_layered_composite(surface, PROBE, shadow, (SSR * c).extend(c), f);
+                let behind = over(surface, scene) * (1.0 - weight);
+                assert_vec_close(
+                    over(out, scene) - behind,
+                    reflected,
+                    1.0e-5,
+                    &format!("F {f}, c {c}, s {shadow}, a {a}, extinction {extinction}"),
+                );
+                assert_close(
+                    out.w,
+                    weight + (1.0 - weight) * surface.w,
+                    1.0e-6,
+                    "union coverage",
+                );
+            }
+        }
+    }
 }
 
 // --- Acceptance row 25: lighting mask ---------------------------------------
@@ -934,6 +1199,7 @@ fn the_probe_term_draws_only_under_the_all_terms_mask() {
         assert_ne!(
             reflection_fragment(
                 surface,
+                REFLECTION_SCREEN_MISS,
                 &with_mask(mask),
                 &probes,
                 TILE,
@@ -950,6 +1216,7 @@ fn the_probe_term_draws_only_under_the_all_terms_mask() {
         assert_eq!(
             reflection_fragment(
                 surface,
+                REFLECTION_SCREEN_MISS,
                 &with_mask(mask),
                 &probes,
                 TILE,
@@ -1314,6 +1581,7 @@ fn two_fragments_of_one_probe_read_one_ratio_for_one_direction() {
     let out = |p: Vec3, hit: Vec3| {
         reflection_fragment(
             surface,
+            REFLECTION_SCREEN_MISS,
             &pool_fragment(camera_toward(p, hit), p),
             &probes,
             TILE,

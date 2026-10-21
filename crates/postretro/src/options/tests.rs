@@ -39,6 +39,7 @@ fn assert_options_eq(a: &PlayerOptions, b: &PlayerOptions) {
     assert_eq!(a.shadow_quality, b.shadow_quality);
     assert_eq!(a.fog_quality, b.fog_quality);
     assert_eq!(a.surface_depth_quality, b.surface_depth_quality);
+    assert_eq!(a.reflection_quality, b.reflection_quality);
     assert_eq!(a.render_resolution, b.render_resolution);
     assert_eq!(a.switch_cycle_dwell_ms, b.switch_cycle_dwell_ms);
     assert!(
@@ -60,6 +61,7 @@ fn player_options_roundtrips_through_toml() {
         shadow_quality: ShadowQuality::Low,
         fog_quality: FogQuality::High,
         surface_depth_quality: SurfaceDepthQuality::Off,
+        reflection_quality: ReflectionQuality::Medium,
         render_resolution: RenderResolution::Third,
         switch_cycle_dwell_ms: Some(250),
         scroll_notch_pixels: 96.0,
@@ -97,6 +99,7 @@ fn save_then_load_yields_equal_options() {
         shadow_quality: ShadowQuality::Medium,
         fog_quality: FogQuality::Low,
         surface_depth_quality: SurfaceDepthQuality::On,
+        reflection_quality: ReflectionQuality::Low,
         switch_cycle_dwell_ms: Some(400),
         scroll_notch_pixels: 100.0,
         ..PlayerOptions::default()
@@ -209,6 +212,82 @@ fn an_out_of_vocabulary_surface_depth_state_falls_back_for_that_field_alone() {
 }
 
 #[test]
+fn reflection_quality_persists_each_tier_as_its_snake_case_name() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("settings.toml");
+    for (quality, wire) in [
+        (ReflectionQuality::Off, "off"),
+        (ReflectionQuality::Low, "low"),
+        (ReflectionQuality::Medium, "medium"),
+        (ReflectionQuality::High, "high"),
+        (ReflectionQuality::VeryHigh, "very_high"),
+        (ReflectionQuality::Ultra, "ultra"),
+    ] {
+        let options = PlayerOptions {
+            reflection_quality: quality,
+            ..PlayerOptions::default()
+        };
+        options.save(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(&format!("reflection_quality = \"{wire}\"")),
+            "{quality:?} must persist as `{wire}`; got:\n{text}"
+        );
+        assert_eq!(PlayerOptions::load(&path).reflection_quality, quality);
+        // The live slot shares the TOML vocabulary.
+        assert_eq!(quality.slot_value(), wire);
+        assert_eq!(ReflectionQuality::from_slot_value(wire), Some(quality));
+    }
+    // Neither the dropped probes tier nor a spaced or camel-cased spelling
+    // names a tier.
+    for unknown in ["probes", "very high", "veryHigh", "VERY_HIGH"] {
+        assert_eq!(
+            ReflectionQuality::from_slot_value(unknown),
+            None,
+            "{unknown}"
+        );
+    }
+}
+
+#[test]
+fn settings_without_reflection_quality_load_as_high() {
+    // An absent key takes the default High, so a player with a settings.toml
+    // written before the option shipped gets the new screen-space layer at
+    // the top tier.
+    let loaded = from_toml("invert_y = true\nfog_quality = \"low\"\n");
+    assert_eq!(loaded.reflection_quality, ReflectionQuality::High);
+    assert_eq!(
+        PlayerOptions::default().reflection_quality,
+        ReflectionQuality::High
+    );
+}
+
+#[test]
+fn an_unknown_reflection_quality_falls_back_to_high_alone_and_keeps_every_other_setting() {
+    let capture = LogCapture::start();
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("settings.toml");
+    let text = "invert_y = true\nreflection_quality = \"probes\"\nfog_quality = \"low\"\n\
+                surface_depth_quality = \"off\"\n[accessibility]\nsfx_volume = 0.5\n";
+    fs::write(&path, text).unwrap();
+
+    let (loaded, status) = PlayerOptions::load_with_status(&path);
+
+    assert_eq!(status, PlayerOptionsLoadStatus::Loaded);
+    assert_eq!(loaded.reflection_quality, ReflectionQuality::High);
+    assert!(loaded.invert_y);
+    assert_eq!(loaded.fog_quality, FogQuality::Low);
+    assert_eq!(loaded.surface_depth_quality, SurfaceDepthQuality::Off);
+    assert!((loaded.accessibility.sfx_volume - 0.5).abs() < EPSILON);
+    capture.assert_logged_once(Level::Warn, "unrecognized value for `reflection_quality`");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        text,
+        "loading never writes"
+    );
+}
+
+#[test]
 fn render_resolution_persists_each_value_as_its_snake_case_name() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("settings.toml");
@@ -313,6 +392,7 @@ fn save_leaves_no_tmp_artifact_and_writes_parseable_file() {
         shadow_quality: ShadowQuality::Low,
         fog_quality: FogQuality::High,
         surface_depth_quality: SurfaceDepthQuality::On,
+        reflection_quality: ReflectionQuality::Off,
         switch_cycle_dwell_ms: Some(500),
         scroll_notch_pixels: 80.0,
         ..PlayerOptions::default()

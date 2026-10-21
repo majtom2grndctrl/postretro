@@ -82,18 +82,18 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 | P2 | `arm` and `disarm` in one tick | both apply at one host tick, in call order | Last call wins; no frame on any peer presents a ghost; no ramp starts |
 | P3 | `arm` tick N, `disarm` tick N+1 | target membership changes twice, the ramp follows | Presented membership rises for one tick at the rate cap, then falls to 0 at the rate cap |
 | P4 | `arm` during a ramp-out; member re-enters mid-fade | reversal mid-ramp | Ramps from the presented value, never resets |
-| P5 | `setLook` naming only opacity, mid tint ramp | second set before the first ramp ends | Tint ramp continues to its target; opacity ramps on its own |
-| P6 | `setLook` mid-ramp | from-value captured at the applying host tick | Unclamped ramp value at that tick's host script time; host limiter state never on the wire |
-| P7 | Two `setLook` calls in one tick | applied in call order within one tick | Later call wins per field; its ramp starts from the value before that tick |
+| P5 | `setColorFilter` naming only opacity, mid tint ramp | second set before the first ramp ends | Tint ramp continues to its target; opacity ramps on its own |
+| P6 | `setColorFilter` mid-ramp | from-value captured at the applying host tick | Unclamped ramp value at that tick's host script time; host limiter state never on the wire |
+| P7 | Two `setColorFilter` calls in one tick | applied in call order within one tick | Later call wins per field; its ramp starts from the value before that tick |
 | P8 | Snapshot repeats an identical link record | always-on record every snapshot | No re-rebase; the presented value does not move as the RTT estimate changes |
 | P9 | Joiner before its first link record | install, then the first record lands | Presents local spawn state and style; a disagreeing armed state moves membership at the rate cap, never cuts |
 | P10 | Link record before the presentation clock is ready | record lands, then clock anchor | Armed state applies; look ramp deferred, then rebased |
 | P11 | Record names a link not installed | record before or without a matching install | Binds nothing, warns, not acked; a later baseline binds |
-| P12 | Joiner mid-`setLook` or mid-`setGhostAudio` ramp | join after ramp start, before end | Presents the rebased current value; ends with the host |
+| P12 | Joiner mid-`setColorFilter` or mid-`setGhostAudio` ramp | join after ramp start, before end | Presents the rebased current value; ends with the host |
 | P13 | Level unload or demotion after `setGhostAudio` | record dropped, then next level | Ghost bus returns to the manifest profile on every peer, host included; ghost voices released |
 | P14 | Host level change with links in both levels | old-level record arrives after new install | Matched by index and source entity; a stale record never binds a new link |
-| P15 | Opacity-only `setLook`; peers with differing styles; then staged reload | setLook, replication, reload | Only opacity crosses the wire; tint and desaturation stay local and follow the reload |
-| P16 | Staged reload mid `setLook` ramp; reload on a disarmed link | reload commit during a ramp or while disarmed | Script-set ramps continue to their targets; disarmed links re-resolve too |
+| P15 | Opacity-only `setColorFilter`; peers with differing styles; then staged reload | setColorFilter, replication, reload | Only opacity crosses the wire; tint and desaturation stay local and follow the reload |
+| P16 | Staged reload mid `setColorFilter` ramp; reload on a disarmed link | reload commit during a ramp or while disarmed | Script-set ramps continue to their targets; disarmed links re-resolve too |
 | P17 | Staged reload changing `audio.ghost` | reload after or without `setGhostAudio` | Bus re-resolves; `setGhostAudio` fields stand |
 | P18 | Link arm and a remote pawn's seamless swap on one host tick | each ghost reads link state at its member's presentation time, on client and host seat | Both present on one frame on every peer |
 | P19 | Entity slot freed and re-tenanted on one frame | despawn, then spawn, same frame | Ramp and limiter state key by generation-checked id; the new tenant starts at 0 |
@@ -118,5 +118,5 @@ Read at d6f3471. These findings inform the brief but do not decide anything; the
 | P38 | Client demoted mid-level while received state differs from local spawn state | received state dropped, then the next frame | Local spawn state and style; membership moves at the rate cap |
 | P39 | Mover carrying two tags one link lists | one link, two tag matches | One membership, one ghost transform |
 | P40 | SFX at its cap when a member's sound is requested | real voice refused, then ghost admission | No ghost voice |
-| P41 | `setLook` or `setGhostAudio` naming no field | applying host tick | Warns and drops; no ramp in flight changes |
-| P42 | Game paused mid membership ramp and mid `setLook` ramp | pause while frames keep presenting | `setLook` ramps freeze with script time; the membership ramp runs on presented-frame time |
+| P41 | `setColorFilter` or `setGhostAudio` naming no field | applying host tick | Warns and drops; no ramp in flight changes |
+| P42 | Game paused mid membership ramp and mid `setColorFilter` ramp | pause while frames keep presenting | `setColorFilter` ramps freeze with script time; the membership ramp runs on presented-frame time |

@@ -36,12 +36,12 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - Culled at the mapped position against the viewer's visible cells, whatever the real position's visibility.
   - A projectile ghost gets the same treatment on its billboard or model body.
   - The renderer owns the pipelines; game logic decides membership.
-- **Ghosts pass the photosensitivity limiter.** E23 I2 counts a primitive that changes presented luminance without a clamp as a violation, and `setLook` and arm/disarm are such primitives.
+- **Ghosts pass the photosensitivity limiter.** E23 I2 counts a primitive that changes presented luminance without a clamp as a violation, and `setColorFilter` and arm/disarm are such primitives.
   - A ghost's presented opacity is its link's opacity times its membership. Membership ramps linearly at the limiter's rate cap on arm, disarm, entry and exit, reversing from the presented value. As with fluid tint entry, ordinary reveals are never limited and a strobe is.
   - Each ghost is one limiter channel: presented opacity is its strength and its link's tint is its redness, under the fluid view tint's rules and player-only toggle. Like the screen channels, it judges the change as if it covered the screen (`rendering_pipeline.md` §7.8).
-  - A new ghost's membership starts at 0. Turning the limiter on starts every ghost fresh against its current value, as the screen channels start, so enabling it never dips a ghost. The membership ramp runs on presented-frame time, so it continues through a pause, while `setLook` ramps follow script time.
+  - A new ghost's membership starts at 0. Turning the limiter on starts every ghost fresh against its current value, as the screen channels start, so enabling it never dips a ghost. The membership ramp runs on presented-frame time, so it continues through a pause, while `setColorFilter` ramps follow script time.
   - The clamp applies on the presenting machine to the presented value, and nothing it holds reaches a script or the wire (I9).
-- **Look resolves per link, per field:** floor style, then the named style, then `setLook`. `setLook` ramps each field it names independently. An omitted field keeps its value and any ramp in flight. Presentation flags come from the style alone and never change at runtime.
+- **Look resolves per link, per field:** floor style, then the named style, then `setColorFilter`. `setColorFilter` ramps each field it names independently. An omitted field keeps its value and any ramp in flight. Presentation flags come from the style alone and never change at runtime.
 - **Ghost audio mirrors voices this machine plays.**
   - When a link's style sets `audio`, a sound this machine plays anchored at a member inside the volume also plays a second voice. The voice sits at the mapped fire-time point on the Ghost bus. Admission reads the fire-time point and armed state, not the presented ramp.
   - Impact sounds join under the membership rule when the style sets `impactAudio`, and contacts outside the volume drop.
@@ -51,12 +51,14 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
 - **Ghost voices have their own cap of 16**, so the echo never crowds out sounds a player reacts to. The figure is half the SFX cap and fits the audio manager's capacity without raising it.
 - **The ghost bus profile resolves:** floor profile, then manifest `audio.ghost`, then `setGhostAudio`. A malformed `audio.ghost` field applies the whole floor profile with a warning naming the field, matching `audio.attenuation`. Level unload and demotion return the bus to the resolved manifest profile on every peer. A resolved profile whose high-pass reaches its low-pass, after a reload or against another peer's profile, presents the floor cutoffs and warns once.
 - **Link state and ghost audio replicate as always-on host state, the teleporter precedent.**
-  - `arm`, `disarm`, `setLook` and `setGhostAudio` apply on the host only, at its next tick, in call order, and do nothing on a connected client.
-  - Each link replicates armed state plus the fields `setLook` has set, each with its ramp. One level-scoped record replicates the fields `setGhostAudio` has set. Fields no script has set stay local.
+  - `arm`, `disarm`, `setColorFilter` and `setGhostAudio` apply on the host only, at its next tick, in call order, and do nothing on a connected client.
+  - Each link replicates armed state plus the fields `setColorFilter` has set, each with its ramp. One level-scoped record replicates the fields `setGhostAudio` has set. Fields no script has set stay local.
   - A ramp's from-value is the unclamped value at the applying host tick.
   - Each ghost reads its link's armed state and look at the host time its member presents on that machine: the remote-pawn delay for pawns, on the host seat and on clients alike, and the mover clock for movers. An arm and the motion it reveals therefore present on one frame. A ghost voice reads armed state the same way, for its member, at the frame the voice starts.
   - Until a link's first record lands, a joiner presents its local spawn state and style. Demotion and level unload drop received state, and the client returns to local spawn state through the membership ramp. A record from before a participation reset never binds.
   - This diverges from the bound-presentation lane, which replicates only after a host-only write and lets every-machine origins present locally. Link state needs one authority and a late-joiner baseline, and a client-local early apply would double-apply against the replicated record.
+- **`postretro/audio` is a new SDK namespace, and `setGhostAudio` is its first member.** It is named for the audio subsystem, as the manifest `audio` block, the audio crate and `audio.md` are. Upcoming music work, such as reactions adding and removing music layers, lands there too. It ships as a virtual module in TypeScript and Luau, beside `postretro/ui`. `setGhostAudio` is not also exported from the root `postretro` module.
+- **The look setter is a color filter.** `setColorFilter` names the tint, opacity and desaturation stack the way image-editor filter layers do, and stays a single call with per-field ramps.
 - **Off the level content digest.** Links and their keys are presentation, not a prediction input (`networking.md` §Level identity and level content digest).
 - **First consumer ships with it.** A dev map holds two room copies, a two-way link pair and a two-way seamless pair, with both set-pieces: the barrier puzzle, with the barrier a tagged mover, and the battle swap. The dev mod's manifest declares a sound-carrying style and a ghost bus profile. TypeScript and Luau scripts follow `teleporters.map` / `teleporters-luau.map`. An author section joins `docs/teleporters.md` or a new `docs/ghost-links.md` (executor's call).
 - **Non-goals.**
@@ -68,7 +70,8 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - Suppressing the real voice: the author doc tells mappers to place copies farther apart than the attenuation `maxDistance`.
   - Per-link or per-style filter chains: one shared bus keeps the mix and the voice budget simple.
   - Links that exclude players: an additive key can opt players out later without breaking maps.
-  - Switching a link's style at runtime: `setLook` covers look changes during play.
+  - Switching a link's style at runtime: `setColorFilter` covers look changes during play.
+  - Moving `playSound` and the attenuation types into `postretro/audio`: it breaks existing scripts, so it is its own follow-up ahead of the music-layer work.
   - World geometry ghosts: the other copy's architecture is the copy itself.
   - Lit ghosts: unlit keeps the ghost legible and avoids sampling light at the mapped position.
 
@@ -91,7 +94,7 @@ export default defineMod({
 ```typescript
 // Level script: changes during play
 import { defineReaction, getMapEntities } from "postretro";
-import { setGhostAudio } from "postretro/ui"; // target-less reaction bodies ship here, as setSentiment does
+import { setGhostAudio } from "postretro/audio";
 
 export function setupLevel() {
   const echoes = getMapEntities("ghostLink", { tag: "vault_echo" }); // map order
@@ -99,7 +102,7 @@ export function setupLevel() {
     sequence: [
       ...echoes.flatMap((l) => l.arm()), // also: l.disarm()
       // Each named field ramps on its own; omitted fields keep their value and ramp. periodMs defaults to 0.
-      ...echoes.flatMap((l) => l.setLook({ tint: [1.0, 0.4, 0.3], opacity: 0.6, periodMs: 1500 })),
+      ...echoes.flatMap((l) => l.setColorFilter({ tint: [1.0, 0.4, 0.3], opacity: 0.6, periodMs: 1500 })),
     ],
   });
   // A mod-wide primitive with no target is a whole reaction body, like setSentiment.
@@ -110,11 +113,11 @@ export function setupLevel() {
   };
 }
 ```
-- `defineGhostStyle` is a pure identity helper, like `defineFluid`. `setLook`, `arm` and `disarm` return `SequenceStep[]`. `setGhostAudio` returns a primitive reaction body.
+- `defineGhostStyle` is a pure identity helper, like `defineFluid`. `setColorFilter`, `arm` and `disarm` return `SequenceStep[]`. `setGhostAudio` returns a primitive reaction body.
 - Each member carries `id`, `position` and `tags`.
 - Ranges: `tint` components, `opacity`, `desaturate`, `volume` and `drive` lie in 0..=1, and filter cutoffs in 20..=20000 Hz. `volume` maps on the existing perceptual taper.
 - An out-of-range or non-finite script argument, or a call naming no field, warns and drops that step or reaction. So does a `setGhostAudio` whose targets would leave `highPassHz` at or above `lowPassHz`.
-- The Luau mirror ships: `defineGhostStyle({...})`, `l:arm()`, `l:setLook({...})`, `setGhostAudio({...})`.
+- The Luau mirror ships: `defineGhostStyle({...})`, `l:arm()`, `l:setColorFilter({...})`, and `setGhostAudio({...})` from `require("postretro/audio")`.
 
 ## Acceptance
 Pins are in `research.md`.
@@ -128,9 +131,9 @@ Pins are in `research.md`.
 **Styles**
 - [ ] A link naming a declared style presents that style's values and flags. A link naming no style presents the floor style with no warning. A link naming an undeclared style presents the floor style and warns once at install.
 - [ ] A style with one malformed field drops whole with a warning naming `ghostStyles[i].<field>`, and links naming it get the floor style. A later duplicate name drops with a warning, and the first declaration stands. Both runtimes judge the same entries the same way.
-- [ ] A committed staged reload that changes a style re-resolves every link naming it, armed or not, mid-ramp or not. Fields set by `setLook` keep their values and ramps (P16).
+- [ ] A committed staged reload that changes a style re-resolves every link naming it, armed or not, mid-ramp or not. Fields set by `setColorFilter` keep their values and ramps (P16).
 - [ ] The floor style ghosts no projectiles and carries no sound, and the floor bus profile applies no distortion.
-- [ ] Two peers whose manifests declare one style name with different values each present their own, and the session admits both. After an opacity-only `setLook`, both present the host's opacity and still their own tint and desaturation (P15).
+- [ ] Two peers whose manifests declare one style name with different values each present their own, and the session admits both. After an opacity-only `setColorFilter`, both present the host's opacity and still their own tint and desaturation (P15).
 **Mapping and membership**
 - [ ] For rotated and unrotated pairs, with vertical offset, a ghost pose equals the pose a seamless teleport through the same points produces.
 - [ ] Membership edges, each on host and on a connected client:
@@ -151,15 +154,15 @@ Pins are in `research.md`.
 **Photosensitivity**
 - [ ] With the limiter on and a style at opacity 1, each of these presents at most 3 flashes in any 1 s window and rests at its pre-flash level over budget:
   - a script toggling `arm`/`disarm` at 10 Hz
-  - `setLook` opacity alternating 0 and 1 at `periodMs` 0
+  - `setColorFilter` opacity alternating 0 and 1 at `periodMs` 0
   - a member oscillating across the volume boundary at 10 Hz
-- [ ] With the limiter on, a red `setLook` tint strobe desaturates over budget, keeping luminance, while a single red tint change keeps its hue.
-- [ ] With the limiter on, a single `arm` reaches full style opacity within 250 ms, and the example's 1500 ms `setLook` fade presents exactly as with the limiter off. A new ghost's first presented frame starts from membership 0 (P21). Turning the limiter on while ghosts present dips none (P31).
-- [ ] With the limiter turned off by the player, the 10 Hz `arm`/`disarm` strobe presents unclamped, the membership ramp still applies, and a hitch frame steps at most the hitch ceiling (P30). A pause freezes `setLook` ramps while the membership ramp continues (P42).
+- [ ] With the limiter on, a red `setColorFilter` tint strobe desaturates over budget, keeping luminance, while a single red tint change keeps its hue.
+- [ ] With the limiter on, a single `arm` reaches full style opacity within 250 ms, and the example's 1500 ms `setColorFilter` fade presents exactly as with the limiter off. A new ghost's first presented frame starts from membership 0 (P21). Turning the limiter on while ghosts present dips none (P31).
+- [ ] With the limiter turned off by the player, the 10 Hz `arm`/`disarm` strobe presents unclamped, the membership ramp still applies, and a hitch frame steps at most the hitch ceiling (P30). A pause freezes `setColorFilter` ramps while the membership ramp continues (P42).
 **Look and audio values**
-- [ ] `setLook` overrides the style field by field. An opacity-only `setLook` mid tint ramp leaves the tint ramp running to its target (P5). Two `setLook` calls in one tick apply in order, the later winning per field (P7). A `setLook` or `setGhostAudio` naming no field warns and changes no ramp (P41).
+- [ ] `setColorFilter` overrides the style field by field. An opacity-only `setColorFilter` mid tint ramp leaves the tint ramp running to its target (P5). Two `setColorFilter` calls in one tick apply in order, the later winning per field (P7). A `setColorFilter` or `setGhostAudio` naming no field warns and changes no ramp (P41).
 - [ ] A malformed `audio.ghost` field applies the whole floor profile and warns naming the field. A `highPassHz` at or above `lowPassHz` counts as malformed.
-- [ ] A `periodMs` ramp presents the midpoint value halfway through, and a second set mid-ramp starts from the unclamped value at that moment. `periodMs` 0 lands in one frame. A `setGhostAudio` whose targets cross the cutoffs warns and drops (P29). A resolved profile whose cutoffs cross after a reload, or a client whose own `audio.ghost` crosses against host-set fields, presents the floor cutoffs and warns once (P36). A non-finite or out-of-range `setLook` or `setGhostAudio` argument warns and drops.
+- [ ] A `periodMs` ramp presents the midpoint value halfway through, and a second set mid-ramp starts from the unclamped value at that moment. `periodMs` 0 lands in one frame. A `setGhostAudio` whose targets cross the cutoffs warns and drops (P29). A resolved profile whose cutoffs cross after a reload, or a client whose own `audio.ghost` crosses against host-set fields, presents the floor cutoffs and warns once (P36). A non-finite or out-of-range `setColorFilter` or `setGhostAudio` argument warns and drops.
 - [ ] A fire sound anchored at a ghosted pawn admits a second voice at the mapped fire-time point under a style with `audio` true, and none under one with `audio` false. A sound fired just inside the volume during a ramp-out still admits; one fired just outside does not (P24). A mover's open sound ghosts on the host under a sound-carrying style. A member's sound refused at the SFX cap admits no ghost voice (P40). On a client, a fire cue arriving just after an arm admits by armed state as the shooter's ghost presents it at that frame (P34).
 - [ ] The viewer's own fire admits no ghost voice on its machine (P25).
 - [ ] An impact sound is ghosted only under a style with `audio` and `impactAudio` both true, from a shot whose owner is a member. The host's own impact is never attributed to another entity. An impact without a shot id is never ghosted. Contacts outside the volume drop.
@@ -168,14 +171,14 @@ Pins are in `research.md`.
 - [ ] On the mock backend, a tone through the Ghost bus under the dev profile measures attenuated below the high-pass and above the low-pass cutoffs, and changes after `setGhostAudio`. Ghost voices release their slot on finish, stop and level unload.
 - [ ] After `setGhostAudio`, a level unload or demotion returns the Ghost bus to the manifest profile on host and client (P13). A staged reload changing `audio.ghost` re-resolves the bus, and `setGhostAudio` values stand (P17).
 **Replication**
-- [ ] Host `arm`, `setLook` and `setGhostAudio` reach a connected client, and the client's ramp ends within one snapshot interval of the host's. Repeated identical records do not move the presented value as RTT changes (P8).
-- [ ] A late joiner, including one joining mid-ramp, gets current armed state, `setLook` fields and `setGhostAudio` fields, not its local spawn state (P9, P12). A record landing before the presentation clock applies armed state and defers the ramp (P10). A record naming an uninstalled link binds nothing, and a stale old-level record never binds a new link, the host restarting the same map included (P11, P14, P37). A client demoted mid-level returns to local spawn state through the membership ramp (P38).
-- [ ] A mid-ramp `setLook` carries the unclamped host value: a host with the limiter on and a client with it off present the same ramp, each through its own limiter (P6).
+- [ ] Host `arm`, `setColorFilter` and `setGhostAudio` reach a connected client, and the client's ramp ends within one snapshot interval of the host's. Repeated identical records do not move the presented value as RTT changes (P8).
+- [ ] A late joiner, including one joining mid-ramp, gets current armed state, `setColorFilter` fields and `setGhostAudio` fields, not its local spawn state (P9, P12). A record landing before the presentation clock applies armed state and defers the ramp (P10). A record naming an uninstalled link binds nothing, and a stale old-level record never binds a new link, the host restarting the same map included (P11, P14, P37). A client demoted mid-level returns to local spawn state through the membership ramp (P38).
+- [ ] A mid-ramp `setColorFilter` carries the unclamped host value: a host with the limiter on and a client with it off present the same ramp, each through its own limiter (P6).
 - [ ] The same steps run on a connected client change nothing.
 - [ ] Demotion and level unload drop received link and audio state.
 - [ ] A handshake across the old and new wire versions is refused.
 **Surface fixture**
-- [ ] The dev mod's manifest and the dev map's TypeScript and Luau scripts, which contain the Scripting surface examples, load and run with zero warnings. The `ghostLink` query returns both dev-map links, and their set-pieces drive the arm, look and audio changes the rows above observe (P28).
+- [ ] The dev mod's manifest and the dev map's TypeScript and Luau scripts, which contain the Scripting surface examples, load and run with zero warnings, `setGhostAudio` resolving from `postretro/audio` in both runtimes and the generated declarations. The `ghostLink` query returns both dev-map links, and their set-pieces drive the arm, look and audio changes the rows above observe (P28).
 - [ ] A headless frame capture of the dev map's tagged barrier on a link armed on spawn, at rest, shows tinted, blended pixels with the geometry behind still visible and no ghost shadow (P26, P32). The ghost's pixels are identical under two different dynamic-light setups, and the part behind a nearer wall does not draw.
 ### Manual
 - [ ] Two-peer loopback co-op on the dev map, run once as listen host and once as client, at the harness lag profile:
@@ -205,6 +208,7 @@ Pins are in `research.md`.
   - Per-link look keys and flags: every link would repeat a game's taste.
   - Script-set membership at arm time: map data keeps membership off the wire.
   - A per-entity `ghost` KVP: it cannot vary by link.
+- Namespace: `postretro/ui` is the precedent for a virtual module: `luau_require.rs`, `luau_prelude.rs`, `staged_manifest.rs`, `typedef/luau.rs` and the `ui_sdk_module.d.ts` template. Dev `tsconfig.json` files map module ids to the generated declarations.
 - Split before extending: `crates/net/src/wire.rs`, `crates/netcode/src/replication.rs`, `crates/level-compiler/src/parse.rs`, `crates/renderer/src/render/mesh_pass.rs`.
 
 ## Open questions
@@ -238,7 +242,7 @@ Pins are in `research.md`.
 | Ghosted tags | — | per-link tag list | — | — | `ghost_tags` (whitespace-delimited, like `_tags`; default empty) |
 | Style reference | resolved style | style name string | — | — | `ghost_style` (default empty: floor style) |
 | Style declaration | style table | — | `ghostStyles: [defineGhostStyle({ name, tint: [r, g, b], opacity, desaturate, projectiles, audio, impactAudio })]` | same | — |
-| Look change | host-only command | per-field look ramps in link-state payload | `setLook({ tint, opacity, desaturate, periodMs })` | `l:setLook({...})` | — |
+| Look change | host-only command | per-field look ramps in link-state payload | `setColorFilter({ tint, opacity, desaturate, periodMs })` | `l:setColorFilter({...})` | — |
 | Arm / disarm | host-only commands | armed in link-state payload | `arm()`, `disarm()` | `l:arm()`, `l:disarm()` | — |
 | Ghost bus profile | resolved profile | — | `audio.ghost: { volume, highPassHz, lowPassHz, drive }` | same | — |
-| Ghost bus change | host-only reaction body | per-field level audio payload | `setGhostAudio({ volume, highPassHz, lowPassHz, drive, periodMs })` from `postretro/ui` | `setGhostAudio({...})` | — |
+| Ghost bus change | host-only reaction body | per-field level audio payload | `setGhostAudio({ volume, highPassHz, lowPassHz, drive, periodMs })` from `postretro/audio` | `require("postretro/audio").setGhostAudio({...})` | — |

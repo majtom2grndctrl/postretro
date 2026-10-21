@@ -66,6 +66,20 @@ pub(super) fn materialize_remote_entities(
                         Some((state_name.to_string(), speed))
                     })
                     .collect();
+                // The same clip lookup the host's fixed tick makes, so both
+                // peers end a jump one-shot after the same length.
+                let clip_durations = states
+                    .one_shot_names()
+                    .filter_map(|state_name| {
+                        let state = mesh.animations.get(state_name)?;
+                        let duration = model?
+                            .clips
+                            .iter()
+                            .find(|clip| clip.name == state.clip)?
+                            .duration;
+                        Some((state_name.to_string(), duration))
+                    })
+                    .collect();
                 Some(client::RemotePlayerLocomotionReference {
                     idle_state,
                     states,
@@ -73,6 +87,7 @@ pub(super) fn materialize_remote_entities(
                     run_speed: movement.ground.speed.run,
                     crouch_speed: movement.ground.speed.crouch,
                     derived_travel_speeds,
+                    clip_durations,
                 })
             });
             replication.cache_remote_player_locomotion(remote.network_id, player_locomotion);

@@ -46,9 +46,10 @@ use crate::weapon::FireButtonState;
 pub use descriptor_health::install_descriptor_player_health_range;
 pub use mesh_bindings::{resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities};
 pub use player_locomotion::{
-    CrouchTier, LocomotionInput, LocomotionPosture, LocomotionTier, LocomotionTierKind,
-    PlayerLocomotionStates, classify_locomotion_direction, player_travel_heading_yaw,
-    store_locomotion_direction,
+    CrouchTier, JumpStates, LocomotionFooting, LocomotionInput, LocomotionPosture,
+    LocomotionStance, LocomotionTier, LocomotionTierKind, PlayerLocomotionStates,
+    classify_locomotion_direction, player_travel_heading_yaw, store_locomotion_direction,
+    store_locomotion_memory,
 };
 use postretro_collision::EnvironmentView;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
@@ -1093,8 +1094,9 @@ fn trigger_fire_context(
 /// State selection and rate calibration intentionally match the client presentation
 /// path; ordinary switches use the authored crossfade, preserving no-snap correction.
 /// The forward/backward classification compares travel to the pawn's transform yaw,
-/// which is its aim. This pass is the sole writer of that memory on a peer that
-/// runs it; the pose-input pass and the host seat's delayed presentation read it.
+/// which is its aim. This pass is the sole writer of that memory and of the jump
+/// phase on a peer that runs it; the pose-input pass and the host seat's delayed
+/// presentation read the classification.
 pub fn update_player_animation_locomotion(
     registry: &mut EntityRegistry,
     hit_zone_store: &HitZoneStore,
@@ -1113,43 +1115,54 @@ pub fn update_player_animation_locomotion(
         let walk_speed = movement.ground_params.speed.walk;
         let run_speed = movement.ground_params.speed.run;
         let crouch_speed = movement.ground_params.speed.crouch;
-        let posture = LocomotionPosture::from_movement_state(movement.movement_state.kind());
+        let stance = LocomotionStance::from_movement(movement);
         let Ok(&transform) = registry.get_component::<postretro_entities::Transform>(id) else {
             continue;
         };
         let (aim_yaw, _, _) = transform.rotation.to_euler(EulerRot::YXZ);
 
-        let (stored_direction, direction, selection) = {
-            let Some(animation) = registry
-                .get_component::<MeshComponent>(id)
-                .ok()
-                .and_then(|mesh| mesh.animation.as_ref())
-            else {
+        let (stored_direction, direction, stored_jump, selection) = {
+            let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+                continue;
+            };
+            let Some(animation) = mesh.animation.as_ref() else {
                 continue;
             };
             let direction =
                 classify_locomotion_direction(velocity, aim_yaw, animation.locomotion_direction);
-            let input = LocomotionInput {
+            let mut input = LocomotionInput {
                 speed_xz,
                 walk_speed,
                 run_speed,
                 direction,
-                posture,
+                posture: stance.posture,
+                footing: stance.footing,
+                jump_phase: animation.locomotion_jump,
                 current_state: &animation.current_state,
             };
+            let usable = |state: &str| animation.is_state_usable(state);
             let selection = PlayerLocomotionStates::from_animation(animation).map(|states| {
-                let (state, tier) = states.select(&input, |state| animation.is_state_usable(state));
+                input.jump_phase = states.advance_jump_phase(&input, anim_time, usable, |state| {
+                    clip_duration(animation, mesh, hit_zone_store, state)
+                });
+                let (state, tier) = states.select(&input, usable);
                 let target = state.unwrap_or(&animation.default_state);
                 // Only an actual switch needs an owned name.
                 let switch_to = (animation.current_state != target).then(|| target.to_string());
-                (switch_to, tier)
+                (switch_to, tier, input.jump_phase)
             });
-            (animation.locomotion_direction, direction, selection)
+            (
+                animation.locomotion_direction,
+                direction,
+                animation.locomotion_jump,
+                selection,
+            )
         };
-        if direction != stored_direction {
-            store_locomotion_direction(registry, id, direction);
+        let jump = selection.as_ref().map(|(_, _, jump)| *jump);
+        if direction != stored_direction || jump.is_some_and(|jump| jump != stored_jump) {
+            store_locomotion_memory(registry, id, direction, jump);
         }
-        let Some((switch_to, tier)) = selection else {
+        let Some((switch_to, tier, _)) = selection else {
             continue;
         };
         // A refused switch (an unresolved clip) leaves another state playing,
@@ -1161,7 +1174,9 @@ pub fn update_player_animation_locomotion(
             )
         });
         let (moving, fallback_speed) = match tier {
-            LocomotionTierKind::Idle | LocomotionTierKind::Slide => (false, 1.0),
+            LocomotionTierKind::Idle | LocomotionTierKind::Slide | LocomotionTierKind::Jump => {
+                (false, 1.0)
+            }
             LocomotionTierKind::Walk => (true, walk_speed),
             LocomotionTierKind::Run => (true, run_speed),
             LocomotionTierKind::Crouch => (true, crouch_speed),
@@ -1294,6 +1309,23 @@ fn effective_travel_speed(
             .and_then(|clip| clip.travel_speed)
     });
     state.effective_travel_speed(derived)
+}
+
+/// The clip length of `state`'s clip, read from the model's load-time clips like
+/// [`effective_travel_speed`], for ending the player jump sequence's one-shots.
+fn clip_duration(
+    animation: &MeshAnimation,
+    mesh: &MeshComponent,
+    hit_zone_store: &HitZoneStore,
+    state: &str,
+) -> Option<f32> {
+    let state = animation.states.get(state)?;
+    let model = hit_zone_store.get_by_name(&mesh.model)?;
+    state
+        .clip_index
+        .and_then(|clip_index| model.clips.get(clip_index))
+        .or_else(|| model.clips.iter().find(|clip| clip.name == state.clip))
+        .map(|clip| clip.duration)
 }
 
 /// Produce renderer-facing pose inputs from the registry's currently displayed
@@ -2798,6 +2830,152 @@ mod tests {
             (state_name.as_str(), direction),
             ("walk_forward", LocomotionDirection::Forward)
         );
+    }
+
+    #[test]
+    fn player_locomotion_jump_sequence_plays_jump_states_at_the_authored_rate() {
+        use crate::scripting_systems::hit_zones::ModelHitZones;
+        use postretro_foundation::GroundRef;
+        use postretro_model::ModelHandle;
+        use postretro_model::skeleton::{AnimationClip, Skeleton};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let state = |clip: &str, clip_index, looping, travel_speed| AnimationState {
+            clip: clip.to_string(),
+            looping,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed,
+            clip_index: Some(clip_index),
+        };
+        let states = HashMap::from([
+            ("idle".to_string(), state("idle", 0, true, None)),
+            (
+                "walk_forward".to_string(),
+                state("walk_forward", 1, true, Some(4.0)),
+            ),
+            (
+                "run_forward".to_string(),
+                state("run_forward", 2, true, Some(8.0)),
+            ),
+            ("jump_up".to_string(), state("jump_up", 3, false, None)),
+            ("jump_loop".to_string(), state("jump_loop", 4, true, None)),
+            ("jump_down".to_string(), state("jump_down", 5, false, None)),
+        ]);
+        registry
+            .set_component(
+                pawn,
+                MeshComponent::animated(
+                    "player".to_string(),
+                    MeshAnimation::new(states, "idle".to_string()),
+                ),
+            )
+            .unwrap();
+        // The one-shots' lengths come from the model's clips: `jump_up` 0.4 s,
+        // `jump_down` 0.3 s.
+        let clip = |name: &str, duration| AnimationClip {
+            name: name.to_string(),
+            duration,
+            joints: Vec::new(),
+            travel_speed: None,
+        };
+        let mut hit_zones = HitZoneStore::new();
+        hit_zones.insert_for_test(
+            ModelHandle::from("player"),
+            ModelHitZones {
+                skeleton: std::sync::Arc::new(Skeleton { joints: Vec::new() }),
+                clips: std::sync::Arc::new(vec![
+                    clip("idle", 1.0),
+                    clip("walk_forward", 1.0),
+                    clip("run_forward", 1.0),
+                    clip("jump_up", 0.4),
+                    clip("jump_loop", 1.0),
+                    clip("jump_down", 0.3),
+                ]),
+                joint_zones: Vec::new(),
+                sockets: HashMap::new(),
+                derived_bound: None,
+                legs: Vec::new(),
+                pose_stack: Default::default(),
+            },
+        );
+        // `air_ticks` 0 is grounded; otherwise airborne that many ticks, with the
+        // jump spent when `jumped`.
+        let step = |registry: &mut EntityRegistry,
+                    anim_time: f64,
+                    air_ticks: u32,
+                    jumped: bool,
+                    velocity: Vec3| {
+            let mut movement = trigger_movement();
+            movement.ground = if air_ticks == 0 {
+                GroundRef::World
+            } else {
+                GroundRef::Airborne
+            };
+            movement.air_ticks = air_ticks;
+            movement.jump_spent = jumped;
+            movement.velocity = velocity;
+            registry.set_component(pawn, movement).unwrap();
+            update_player_animation_locomotion(registry, &hit_zones, anim_time);
+            let animation = registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .clone()
+                .unwrap();
+            (animation.current_state.clone(), animation.rate)
+        };
+        let walking = Vec3::NEG_Z * 5.0;
+        let authored = |(state, rate): (String, f32)| {
+            assert!((rate - 1.0).abs() < 1.0e-5, "{state} rate {rate}");
+            state
+        };
+
+        let (state, rate) = step(&mut registry, 0.0, 0, false, walking);
+        assert_eq!(state, "walk_forward");
+        assert!((rate - 1.25).abs() < 1.0e-5, "walk rate-scales, got {rate}");
+        // Takeoff, rising, apex.
+        let rising = Vec3::new(0.0, 6.0, -5.0);
+        assert_eq!(
+            authored(step(&mut registry, 0.02, 1, true, rising)),
+            "jump_up"
+        );
+        let near_apex = Vec3::new(0.0, 0.5, -5.0);
+        assert_eq!(
+            authored(step(&mut registry, 0.2, 12, true, near_apex)),
+            "jump_up"
+        );
+        let falling = Vec3::new(0.0, -0.5, -3.0);
+        assert_eq!(
+            authored(step(&mut registry, 0.22, 13, true, falling)),
+            "jump_loop"
+        );
+        // A walking-pace landing plays `jump_down` until its clip ends.
+        let landed = Vec3::NEG_Z * 3.0;
+        assert_eq!(
+            authored(step(&mut registry, 0.5, 0, false, landed)),
+            "jump_down"
+        );
+        assert_eq!(
+            authored(step(&mut registry, 0.79, 0, false, landed)),
+            "jump_down"
+        );
+        let (state, rate) = step(&mut registry, 0.81, 0, false, landed);
+        assert_eq!(state, "walk_forward");
+        assert!((rate - 0.75).abs() < 1.0e-5, "walk rate-scales, got {rate}");
+
+        // A running jump lands back in the stride.
+        let running = Vec3::NEG_Z * 10.0;
+        assert_eq!(
+            authored(step(&mut registry, 1.0, 1, true, running + Vec3::Y * 6.0)),
+            "jump_up"
+        );
+        assert_eq!(
+            authored(step(&mut registry, 1.3, 18, true, running - Vec3::Y)),
+            "jump_loop"
+        );
+        assert_eq!(step(&mut registry, 1.5, 0, false, running).0, "run_forward");
     }
 
     fn trigger_component(on_fire: &str, armed: bool) -> TriggerVolumeComponent {

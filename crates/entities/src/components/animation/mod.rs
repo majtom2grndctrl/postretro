@@ -125,6 +125,10 @@ pub struct MeshAnimation {
     /// local to each peer: runtime-only and never replicated.
     #[serde(skip, default)]
     pub locomotion_direction: LocomotionDirection,
+    /// Where a player's jump presentation stands: sequencing memory for the
+    /// engine's jump states, local to each peer like `locomotion_direction`.
+    #[serde(skip, default)]
+    pub locomotion_jump: LocomotionJumpPhase,
 }
 
 /// Which way a player's lower body faces relative to its travel. `Backward`
@@ -135,6 +139,22 @@ pub enum LocomotionDirection {
     #[default]
     Forward,
     Backward,
+}
+
+/// A player's place in the engine's jump sequence. The `since` stamps are
+/// animation-clock instants on the peer that wrote them, so a one-shot clip's
+/// completion is judged from when this peer saw the motion begin.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LocomotionJumpPhase {
+    /// On the ground, or airborne too briefly to leave the ground stride.
+    #[default]
+    Grounded,
+    /// Rising from a jump taken at `since`: `jump_up` plays.
+    Rising { since: f64 },
+    /// Past the apex, or falling without a jump: `jump_loop` plays.
+    Falling,
+    /// Landed at walking pace at `since`: `jump_down` plays.
+    Landing { since: f64 },
 }
 
 impl MeshAnimation {
@@ -160,6 +180,7 @@ impl MeshAnimation {
             fade_source: FadeSourceKind::Clip,
             interrupted_outgoing: None,
             locomotion_direction: LocomotionDirection::Forward,
+            locomotion_jump: LocomotionJumpPhase::Grounded,
         }
     }
 

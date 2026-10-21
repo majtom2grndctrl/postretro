@@ -254,8 +254,8 @@ The same keys work in Luau tables.
 
 A player descriptor's `components.mesh.animations` drives its third-person body
 through state names the engine recognizes. You do not switch these states yourself;
-the engine picks one each tick from the player's speed, direction, and whether it
-is crouching or sliding.
+the engine picks one each tick from the player's speed, direction, whether it is
+crouching or sliding, and whether it is in the air.
 
 | State | Plays when |
 |-------|------------|
@@ -267,6 +267,9 @@ is crouching or sliding.
 | `crouch_idle` | Crouching while still, and for the whole of a slide. Needs `crouch_forward` beside it. |
 | `crouch_forward` | Moving forward while crouched, at any speed. Required for any crouch state. |
 | `crouch_backward` | Backpedalling while crouched. Needs `crouch_forward` beside it. |
+| `jump_up` | Taking off from a jump, until the apex or the clip's end. Declare with `loop: false`. Needs `jump_loop` beside it. |
+| `jump_loop` | In the air past the apex, or falling. Required for any jump state. |
+| `jump_down` | Landing at walking speed or slower, until the clip ends. Declare with `loop: false`. Needs `jump_loop` beside it. |
 
 Travel more than 105° from where the player aims counts as backpedalling; travel
 within 75° counts as forward, and anything in between keeps the previous choice.
@@ -292,6 +295,22 @@ the same rule as backward states: a missing `crouch_backward` plays
 pick from the walk and run states as standing does — the player walks while
 crouched until the crouch clip exists.
 
+The jump states play in sequence. A jump plays `jump_up`, then `jump_loop` once the
+player passes the top of its arc or the `jump_up` clip ends, whichever comes first.
+Walking off a ledge keeps the walking or running stride for about 0.15 seconds
+before `jump_loop` takes over, so stairs and small step-downs never show a fall
+pose. A landing at or below `movement.ground.speed.walk` plays `jump_down` until
+its clip ends, then returns to `defaultState` or the stride; jumping again or
+speeding up past walking speed ends it early. A faster landing, such as a running
+jump or a bunny hop, goes straight back to the stride. A crouched player jumps and
+falls with the same states, but lands into its crouch states without `jump_down`.
+Swimming, vaulting, dashing and sliding never play the jump states. Each jump state
+plays at its authored rate. The fallbacks degrade one step at a time: without
+`jump_up` a jump goes straight to `jump_loop`, without `jump_down` a landing goes
+straight back to the ground states, and without `jump_loop` (or with one whose
+clip the model lacks) there is no jump sequence at all and the player keeps its
+ground states in the air.
+
 ```typescript
 defineEntity({
   canonicalName: "player",
@@ -307,6 +326,9 @@ defineEntity({
         crouch_idle: { clip: "idle_crouching", loop: true },
         crouch_forward: { clip: "walk_crouching_forward", loop: true, travelSpeed: 3 },
         crouch_backward: { clip: "walk_crouching_backward", loop: true, travelSpeed: 3 },
+        jump_up: { clip: "jump_up", loop: false },
+        jump_loop: { clip: "jump_loop", loop: true },
+        jump_down: { clip: "jump_down", loop: false },
       },
       defaultState: "idle",
     },

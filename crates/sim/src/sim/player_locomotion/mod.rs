@@ -2,10 +2,16 @@
 // heading, and the engine-recognized locomotion state names.
 // See: context/lib/entity_model.md §7b
 
+mod jump;
+
 use glam::Vec3;
-use postretro_entities::components::mesh::{LocomotionDirection, MeshAnimation, MeshComponent};
+use postretro_entities::components::mesh::{
+    LocomotionDirection, LocomotionJumpPhase, MeshAnimation, MeshComponent,
+};
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::MovementStateKind;
+
+pub use jump::{JumpStates, LocomotionFooting, LocomotionStance};
 
 /// Travel farther than this from aim switches a forward-facing body to backward.
 const BACKWARD_ENTER_ANGLE: f32 = 105.0_f32.to_radians();
@@ -73,14 +79,27 @@ pub fn store_locomotion_direction(
     id: EntityId,
     direction: LocomotionDirection,
 ) {
+    store_locomotion_memory(registry, id, direction, None);
+}
+
+/// Write a selection's presentation memory onto an animated mesh: the
+/// classification, and the jump phase when `jump` names one.
+pub fn store_locomotion_memory(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    direction: LocomotionDirection,
+    jump: Option<LocomotionJumpPhase>,
+) {
     let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
         return;
     };
     let Some(animation) = mesh.animation.as_mut() else {
         return;
     };
-    if animation.locomotion_direction != direction {
+    let jump = jump.unwrap_or(animation.locomotion_jump);
+    if animation.locomotion_direction != direction || animation.locomotion_jump != jump {
         animation.locomotion_direction = direction;
+        animation.locomotion_jump = jump;
         let _ = registry.set_component(id, mesh);
     }
 }
@@ -140,6 +159,11 @@ pub struct LocomotionInput<'a> {
     pub run_speed: f32,
     pub direction: LocomotionDirection,
     pub posture: LocomotionPosture,
+    pub footing: LocomotionFooting,
+    /// The jump sequence's memory. [`PlayerLocomotionStates::advance_jump_phase`]
+    /// reads the previous phase from here; [`PlayerLocomotionStates::select`]
+    /// plays the phase it returned.
+    pub jump_phase: LocomotionJumpPhase,
     /// The active animation state: the tier hysteresis memory.
     pub current_state: &'a str,
 }
@@ -197,7 +221,7 @@ impl LocomotionTier {
 }
 
 /// Which tier a selection landed in; callers pick the tier's reference speed.
-/// `Idle` and `Slide` play at the authored rate.
+/// `Idle`, `Slide` and `Jump` play at the authored rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocomotionTierKind {
     Idle,
@@ -205,6 +229,7 @@ pub enum LocomotionTierKind {
     Run,
     Crouch,
     Slide,
+    Jump,
 }
 
 /// The crouch tier's declared states: `moving` while a crouched body travels,
@@ -225,6 +250,8 @@ pub struct PlayerLocomotionStates {
     pub run: Option<LocomotionTier>,
     /// Absent unless `crouch_forward` is declared.
     pub crouch: Option<CrouchTier>,
+    /// Absent unless `jump_loop` is declared.
+    pub jump: Option<JumpStates>,
 }
 
 impl PlayerLocomotionStates {
@@ -248,6 +275,7 @@ impl PlayerLocomotionStates {
                 idle: is_declared(CROUCH_IDLE_STATE).then_some(CROUCH_IDLE_STATE),
                 moving,
             }),
+            jump: JumpStates::from_declared(&is_declared),
         })
     }
 
@@ -269,9 +297,44 @@ impl PlayerLocomotionStates {
             .flat_map(|tier| std::iter::once(tier.forward).chain(tier.backward))
     }
 
+    /// The jump sequence's one-shot states, which end when their clip has
+    /// played through, for callers that precompute clip lengths.
+    pub fn one_shot_names(self) -> impl Iterator<Item = &'static str> {
+        self.jump.into_iter().flat_map(JumpStates::one_shots)
+    }
+
+    /// Advance the jump sequence memory in `input.jump_phase` from this
+    /// selection's footing; store the result and select with it. `now` is the
+    /// animation clock and `clip_secs` a state's clip length, which together end
+    /// the one-shots.
+    ///
+    /// A jump takeoff rises through `jump_up` until the apex or the clip's end,
+    /// whichever comes first, then falls in `jump_loop`. A fall without a jump
+    /// keeps the ground stride for about 0.15 s first, so step-downs never flicker
+    /// into a fall pose. A landing at walking pace or slower plays
+    /// `jump_down` until the clip ends, the pawn speeds past walking pace, or it
+    /// jumps again; a faster landing goes straight back to the stride. Without a
+    /// usable `jump_loop` the sequence is absent; without `jump_up` takeoff falls
+    /// straight into `jump_loop`; without `jump_down` landing goes straight to
+    /// locomotion.
+    pub fn advance_jump_phase(
+        &self,
+        input: &LocomotionInput<'_>,
+        now: f64,
+        is_usable: impl Fn(&str) -> bool,
+        clip_secs: impl Fn(&str) -> Option<f32>,
+    ) -> LocomotionJumpPhase {
+        self.jump.map_or(LocomotionJumpPhase::Grounded, |jump| {
+            jump.advance(input, now, is_usable, clip_secs)
+        })
+    }
+
     /// Pick the target state: `None` is the descriptor's `defaultState`, which
     /// the caller holds. `is_usable` reports whether a state's clip resolved; an
     /// unusable backward state yields the tier's forward state.
+    ///
+    /// A jump phase in `input.jump_phase` plays its jump state ahead of every
+    /// tier, posture included.
     ///
     /// Posture picks the crouch tier ahead of speed. A crouched body plays
     /// `crouch_idle` still and its moving states otherwise; a slide holds
@@ -283,6 +346,12 @@ impl PlayerLocomotionStates {
         input: &LocomotionInput<'_>,
         is_usable: impl Fn(&str) -> bool,
     ) -> (Option<&'static str>, LocomotionTierKind) {
+        if let Some(state) = self
+            .jump
+            .and_then(|jump| jump.state_for(input.jump_phase, &is_usable))
+        {
+            return (Some(state), LocomotionTierKind::Jump);
+        }
         let speed = input.speed_xz;
         let moving = speed.is_finite() && speed > MOVING_SPEED_EPSILON;
         if let Some(crouch) = self
@@ -482,6 +551,8 @@ mod tests {
             run_speed: 11.0,
             direction,
             posture: LocomotionPosture::Standing,
+            footing: LocomotionFooting::Grounded,
+            jump_phase: LocomotionJumpPhase::Grounded,
             current_state,
         }
     }
@@ -585,6 +656,8 @@ mod tests {
             run_speed: 7.0,
             direction: LocomotionDirection::Forward,
             posture: LocomotionPosture::Standing,
+            footing: LocomotionFooting::Grounded,
+            jump_phase: LocomotionJumpPhase::Grounded,
             current_state: "walk_forward",
         };
         assert_eq!(all.select(&flat(7.0), usable).1, LocomotionTierKind::Walk);

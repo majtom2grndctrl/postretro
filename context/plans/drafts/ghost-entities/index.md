@@ -1,6 +1,6 @@
 # ghost-entities
 
-Brief · resumable · reads: `context/lib/movement.md` §6 (Teleport), `context/lib/networking.md` §Current contract, §What gates, and what replicates instead, §Version gates, `context/lib/rendering_pipeline.md` §4, §7.4, `context/lib/audio.md` §1, §4, §5, `context/lib/scripting.md` §1, §12 · `context/lib/build_pipeline.md` §PRL section IDs · read at d6f3471
+Brief · resumable · reads: `context/lib/movement.md` §6 (Teleport), `context/lib/networking.md` §Current contract, §What gates, and what replicates instead, §Version gates, `context/lib/rendering_pipeline.md` §4, §7.4, §7.8 (Photosensitivity limiter, Fluid view tint), `context/plans/ready/E23--accessibility/index.md` (I2, I9), `context/lib/audio.md` §1, §4, §5, `context/lib/scripting.md` §1, §12 · `context/lib/build_pipeline.md` §PRL section IDs · read at d6f3471
 
 ## Problem
 The game owner wants a new capability for The Dreadgate Trials, the first game on the engine: co-op players in the same room at different moments in time. Each player sees the partner in the other time as a ghost. A barrier one player cannot pass is watched opening from the other time when the partner hits a button there. In battles, each player sees only their own monsters plus the partner's ghost and aim, and a script swaps them so each faces what they could not see. The swap already exists: room copies joined by a seamless teleporter pair (`docs/teleporters.md` "A closet loop and a time shift"). The missing piece is perceiving the other copy. When done, a mapper places a `ghost_link` volume over one room copy, naming a landmark in it, a target in the other copy, the tags it ghosts and a ghost style. A mod declares its ghost styles in its manifest: look, which extras ghost, and whether sound carries. While the link is armed, members inside it draw as translucent ghosts at the mapped pose in the other copy. When the style carries sound, their sounds also play there through a muffled ghost bus. Scripts arm links and change look and ghost audio during play, with ramps.
@@ -21,6 +21,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
 - **An armed link is a dynamic coupling in the cell-visibility relation.** It makes the cells under its source volume perceivable from the cells under its target, stored as if open and masked at runtime by armed state. This is the dynamic-portal shape the relation's generalizability contract reserves for runtime couplings (`context/research/cell-visibility-substrate.md`). Future relevance, cue-recipient and audible-set consumers then inherit it through the relation's one query, and none of them knows about links. Nothing is built now: no consumer queries the relation at runtime yet. At promotion, the coupling is recorded in `build_pipeline.md` beside id 46, so that ghosts and ghost audio do not vanish silently when relevance lands.
 - **Membership is evaluated per frame from presented state.** An entity ghosts through a link when the link is armed and the entity's presented position lies inside the volume: the body point for pawns, the origin for other entities, current bounds center for movers. The ghost draws at the mapped presented pose, so aim pitch, upper-body yaw, pose modifiers and teleport cuts carry over unchanged. A teleport swap cuts the ghost on the same frame with no interpolated smear. An entity inside two armed links ghosts through each.
 - **Ghost draw.** Unlit: the base color is desaturated by `desaturate`, multiplied by `tint`, and blended at `opacity`. Ghosts are depth-tested without depth write, cast no shadows, and are culled at the mapped position against the viewer's visible cells, independent of the real position's visibility. This needs translucent variants of the skinned-mesh and kinematic-brush passes and a second draw transform per mover. A projectile ghost gets the same treatment on its billboard or model body. Placement: renderer owns the pipelines; game logic decides membership and hands the renderer extra instances with look values.
+- **Ghosts pass the photosensitivity limiter.** E23's I2 counts a primitive that changes presented luminance without a clamp as a violation, and `setLook` and arm/disarm are such primitives. Each ghost's presented opacity is a limiter strength, and its link's tint is that ghost's redness, under the same rules and the same player-only toggle as the fluid view tint (`rendering_pipeline.md` §7.8). A ghost's presented opacity is its link's opacity times its membership. Arming, disarming and a member entering or leaving the volume ramp membership linearly at the limiter's rate cap, as fluid tint entry does, so ordinary reveals are never limited and a strobe is. Like any source clamp it cannot see screen coverage, so it assumes the worst (E23 D4). The clamp applies on the presenting machine to the presented value, never to anything a script reads (I9).
 - **Look resolves per link, per field:** floor style, then the link's named style, then `setLook`. An omitted `setLook` field keeps its current value. Presentation flags come from the style alone and do not change at runtime.
 - **Ghost audio.** One Ghost bus under SFX carries volume, high-pass, low-pass and distortion drive. Ghost voices also pass through SFX, so SFX volume and world muffle still apply. When a link's style sets `audio`, a sound anchored at a member inside the volume plays a second voice at the mapped fire-time point on the Ghost bus. This covers fire, dry fire, reload, overheat and a tagged mover's sounds. An impact sound joins under the membership rule only when the style also sets `impactAudio`, and contacts outside the volume drop. The real voice is untouched.
 - **Ghost voices have their own cap of 16.** The echo then never crowds out the sounds a player reacts to. The figure is half the SFX cap and fits the audio manager's existing capacity without raising it.
@@ -42,6 +43,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - Suppressing the real voice: the author doc tells mappers to place copies farther apart than the attenuation `maxDistance`.
   - Per-link or per-style filter chains.
   - Switching a link's style at runtime: `setLook` covers look changes during play. A runtime style switch can be added on demand.
+  - Links that exclude players: players are members of every link. An additive key can opt them out later without breaking maps.
   - Ghosting runtime-spawned entities and world geometry.
   - Lit ghosts.
 
@@ -114,7 +116,7 @@ export function setupLevel() {
   - an entity inside two armed links yields two ghosts
 - [ ] Disarmed link: no ghosts. Arm then disarm on consecutive ticks shows ghosts for exactly the armed span. Arm and disarm in one tick ends in the last call's state.
 - [ ] A ghost draws when its mapped cell is visible and not when it isn't, both with the real cell visible and without.
-- [ ] Two pawns swapped on one tick by arming both seamless teleporters: on the cut frame each ghost appears in the other copy, and no frame draws a ghost between the two poses.
+- [ ] Two pawns swapped on one tick by arming both seamless teleporters: each ghost starts presenting in the other copy on the cut frame and fades in at the rate cap, and no frame draws a ghost between the two poses.
 **Look and audio values**
 - [ ] `setLook` overrides the style field by field, and an omitted field keeps its current value.
 - [ ] A malformed `audio.ghost` field applies the whole floor profile and warns naming the field. A `highPassHz` at or above `lowPassHz` counts as malformed.
@@ -122,6 +124,11 @@ export function setupLevel() {
 - [ ] A fire sound anchored at a ghosted pawn admits a second voice at the mapped point on the Ghost bus under a style with `audio` true, and none under one with `audio` false.
 - [ ] An impact sound is ghosted only under a style with `audio` and `impactAudio` both true, from a shot whose owner is a member. An impact without a shot id is never ghosted. Contacts outside the volume drop.
 - [ ] The seventeenth live ghost voice is refused while a real SFX sound requested in the same frame still plays. Ghost voices release their slot on finish, stop and level unload.
+**Photosensitivity**
+- [ ] With the limiter on, each of these presents at most 3 flashes in any 1 s window and rests at its pre-flash level over budget: a script toggling `arm`/`disarm` at 10 Hz; `setLook` opacity alternating 0 and 1 at `periodMs` 0; a member oscillating across the volume boundary at 10 Hz.
+- [ ] With the limiter on, a red `setLook` tint strobe desaturates over budget, keeping luminance, while a single red tint change keeps its hue.
+- [ ] With the limiter on, a single `arm` reaches full style opacity within 250 ms, and the example's 1500 ms `setLook` fade presents exactly as with the limiter off.
+- [ ] With the limiter turned off by the player, the 10 Hz `arm`/`disarm` strobe presents unchanged. A script cannot change the limiter setting.
 **Replication**
 - [ ] Host `arm`, `setLook` and `setGhostAudio` reach a connected client, and the client's ramp ends when the host's does.
 - [ ] A late joiner gets current armed state and `setLook` values, not `enabled_on_spawn` and its local style.
@@ -146,6 +153,7 @@ export function setupLevel() {
   - Host-only no-op: `group_commands_apply_here`.
   - Ramp rebasing: `apply_presentation_payload`, `presentation_host_time`.
   - Bus profile: `resolve_authored_attenuation`.
+  - Limiter: `ChannelClamp` and its tracked-value budget in `crates/render-cpu/src/flash_clamp.rs`, and the fluid view tint's ramp at the rate cap.
   - Global step: `setSentiment`.
 - Rendering: ghost skinned instances ride the existing batch as extra `MeshInstanceInput`s, the way `attachments::emit_for_holder` adds them, and need a ghost `MeshPaletteCacheKey` variant. Mover upload keys by `mover_id`, and `active_draw_lookup` keeps one instance per id, so a mover ghost needs its own instance path. The instance structs carry no tint or alpha today.
 - Audio:
@@ -154,6 +162,7 @@ export function setupLevel() {
   - An impact's `WeaponEmission.shot_id.pawn` is its owner pawn's stamped `NetworkId`.
   - The bus chain uses kira 0.12.5's built-in `FilterBuilder` (`FilterMode::HighPass`, `LowPass`), `DistortionBuilder` and `VolumeControlBuilder`, added with `TrackBuilder::add_effect` so their handles are kept (`with_effect` discards them). Distortion drive is in decibels, so the 0..=1 `drive` maps onto a dB range the executor picks.
 - Rivals weighed:
+  - Ghosts as registry display copies of each member, so poses, attachments and audio anchors arrive through existing paths. Registry entities enter hit, trigger, overlap and AI paths, and display copies even carry hit volumes. They would need exactly the filters that room copies avoid.
   - Look values and flags as per-link map keys: every link would repeat a game's taste, and restyling a game would mean editing every map.
   - Membership set by script at arm time (`l.arm({ tags, ... })`): map-data membership lets every peer resolve the same members locally, which keeps membership off the wire. A script override can be added later.
   - A per-entity `ghost` KVP: it cannot vary by link, and it needs a mixed mover-id / placement-ordinal table, because movers carry no id-29 ordinal.

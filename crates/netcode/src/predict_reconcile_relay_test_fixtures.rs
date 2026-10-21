@@ -24,7 +24,7 @@ use postretro_entities::{
     SlotTable, Transform,
 };
 use postretro_foundation::{MovementStateKind, PlayerMovementComponent, VaultParams};
-use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
+use postretro_net::harness::{LinkConfig, PacketConditioner, ScriptedDrop, VirtualMillis};
 use postretro_net::replication::ServerReplication;
 use postretro_net::slots::SlotEvent;
 use postretro_net::transport::{NetClient, NetServer};
@@ -291,6 +291,43 @@ impl RelayHarness {
             }
         }
         false
+    }
+
+    /// The client's time sync: its clock and estimator.
+    pub(crate) fn time_sync(&self) -> &ClientTimeSync {
+        match &self.endpoint {
+            NetEndpoint::Client { time_sync, .. } => time_sync,
+            NetEndpoint::Host { .. } => unreachable!("the relay endpoint is a client"),
+        }
+    }
+
+    /// The client's monotonic clock now, in microseconds.
+    pub(crate) fn client_clock_us(&self) -> u64 {
+        self.client_clock_us.load(Ordering::Relaxed)
+    }
+
+    /// Both peers still hold the slot participating: nothing disconnected it.
+    pub(crate) fn both_participating(&self) -> bool {
+        let NetEndpoint::Client { client, .. } = &self.endpoint else {
+            unreachable!("the relay endpoint is a client");
+        };
+        client.is_participating() && self.server.is_participating(CLIENT_ID)
+    }
+
+    /// Cut both directions for `duration_ms` from now: every datagram either
+    /// peer flushes in that window is lost, retransmissions included. Returns
+    /// the window in conditioner milliseconds.
+    pub(crate) fn script_outage(
+        &mut self,
+        duration_ms: VirtualMillis,
+    ) -> (VirtualMillis, VirtualMillis) {
+        let start = self.to_server.now();
+        debug_assert_eq!(start, self.to_client.now(), "both links share one clock");
+        let end = start + duration_ms;
+        for link in [&mut self.to_server, &mut self.to_client] {
+            link.script_drop(ScriptedDrop::Window { start, end });
+        }
+        (start, end)
     }
 
     /// The client's installed host tuning.

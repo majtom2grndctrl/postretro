@@ -103,6 +103,9 @@ mod predict_reconcile_harness_test_fixtures;
 mod predict_reconcile_relay_harness;
 #[cfg(test)]
 mod predict_reconcile_relay_test_fixtures;
+// Time sync over the relay: the min-RTT gate under loss, a lost probe, an outage.
+#[cfg(test)]
+mod time_sync_relay_test;
 // E24 co-op fluid parity: host and client fluid tables through the tuning install.
 #[cfg(test)]
 mod predict_reconcile_harness_fluid_tables;

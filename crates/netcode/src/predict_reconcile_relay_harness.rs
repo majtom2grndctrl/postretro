@@ -164,6 +164,19 @@ fn steady_run_stays_in_ordinary_band_under_dev_profile() {
         run.summary,
         oversized.join("\n"),
     );
+    // A composed offset at the teleport floor snaps at an ordinary magnitude,
+    // so the band check alone would pass it.
+    let snaps: Vec<u64> = run
+        .corrections
+        .iter()
+        .filter(|correction| correction.sample.class == CorrectionClass::Teleport)
+        .map(|correction| correction.frame)
+        .collect();
+    assert!(
+        snaps.is_empty(),
+        "Teleport-class corrections on frames {snaps:?} ({})",
+        run.summary
+    );
 }
 
 // The loss-off control: if this records a correction above the band, jitter rather
@@ -526,4 +539,105 @@ fn single_input_drop_delivers_within_one_way_plus_two_ticks_both_directions() {
             loss.arrival_us,
         );
     }
+}
+
+const OUTAGE_SEED: u64 = 0x150b;
+/// Frames of the course before the cut, and the cut itself: both directions
+/// for two seconds, longer than any redundancy.
+const OUTAGE_LEAD_FRAMES: u64 = 240;
+const OUTAGE_MS: u64 = 2_000;
+/// Frames of the course after the cut, the outage included.
+const OUTAGE_TAIL_FRAMES: u64 = 8 * 60;
+/// Frames after the link returns within which the client must be back to
+/// ordinary corrections: the burst's transit, the trim, and one reconcile.
+const OUTAGE_RECOVERY_FRAMES: u64 = 60;
+
+// P12: a total outage longer than the redundancy falls back to the gap and
+// catch-up policy. The host neutral-walks, the returning burst trims, the
+// client's overflowed history trusts the authority once, and the pawn is back
+// to ordinary corrections afterwards. Nothing disconnects.
+#[test]
+fn two_second_outage_falls_back_to_gap_policy_and_recovers_to_ordinary_corrections() {
+    let (to_server, to_client) = dev_links(OUTAGE_SEED);
+    let mut h = RelayHarness::new(to_server, to_client);
+    assert!(
+        h.run_until_predicting(&idle_command(), JOIN_FRAMES_MAX),
+        "the client joins and predicts within {JOIN_FRAMES_MAX} frames"
+    );
+    for frame in 0..OUTAGE_LEAD_FRAMES {
+        h.frame(&course_command(frame));
+    }
+    let trace_start = h.host_trace.len();
+    let (_, link_returns_ms) = h.script_outage(OUTAGE_MS);
+    let return_frame = (h.frame..)
+        .find(|&frame| frame_start_us(frame) / 1000 >= link_returns_ms)
+        .expect("a frame follows the outage");
+    for frame in OUTAGE_LEAD_FRAMES..OUTAGE_LEAD_FRAMES + OUTAGE_TAIL_FRAMES {
+        h.frame(&course_command(frame));
+    }
+    assert!(h.both_participating(), "the outage disconnects nobody");
+
+    let resolved: Vec<(u32, ResolutionSource)> = h.host_trace[trace_start..]
+        .iter()
+        .filter_map(|trace| trace.resolved.as_ref())
+        .map(|resolved| (resolved.client_tick, resolved.source))
+        .collect();
+    assert!(
+        resolved
+            .iter()
+            .any(|&(_, source)| source == ResolutionSource::Neutral),
+        "the host neutral-walks the outage"
+    );
+    let trims: Vec<u32> = resolved
+        .windows(2)
+        .map(|pair| pair[1].0.wrapping_sub(pair[0].0))
+        .filter(|&step| step > 1)
+        .collect();
+    assert!(
+        !trims.is_empty(),
+        "the returning burst takes the catch-up trim"
+    );
+
+    let settled = return_frame + OUTAGE_RECOVERY_FRAMES;
+    let describe = |correction: &&ClientCorrection| {
+        format!(
+            "frame {} (+{}): {:.3} m {:?}",
+            correction.frame,
+            correction.frame.saturating_sub(return_frame),
+            correction.sample.magnitude,
+            correction.sample.class
+        )
+    };
+    let after: Vec<&ClientCorrection> = h
+        .corrections
+        .iter()
+        .filter(|correction| correction.frame >= return_frame)
+        .collect();
+    let (recovering, settled_corrections): (Vec<&ClientCorrection>, Vec<&ClientCorrection>) = after
+        .into_iter()
+        .partition(|correction| correction.frame < settled);
+    let recovery: Vec<String> = recovering
+        .iter()
+        .filter(|correction| correction.sample.class != CorrectionClass::Ordinary)
+        .map(describe)
+        .collect();
+    let late: Vec<String> = settled_corrections
+        .iter()
+        .filter(|correction| correction.sample.class != CorrectionClass::Ordinary)
+        .map(describe)
+        .collect();
+    eprintln!(
+        "[outage movement] link returns on frame {return_frame}; client-tick steps {trims:?}; \
+         recovery corrections {recovery:?}; {} corrections after frame {settled}",
+        settled_corrections.len()
+    );
+    assert!(
+        !settled_corrections.is_empty(),
+        "the client keeps reconciling after the recovery"
+    );
+    assert!(
+        late.is_empty(),
+        "corrections past the recovery window are all Ordinary:\n{}",
+        late.join("\n")
+    );
 }

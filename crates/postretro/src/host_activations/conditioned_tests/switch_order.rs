@@ -613,3 +613,58 @@ fn conditioned_start_on_the_switchs_own_command_lands_after_it_across_a_loss() {
     );
     fixture.assert_switches_accepted(1);
 }
+
+// Switch outcomes ride the ordered Input stream back, so under the dev profile's
+// loss and jitter they arrive in declaration order even with several switches in
+// flight at once.
+#[test]
+fn conditioned_switch_outcomes_arrive_in_declaration_order_under_the_dev_profile() {
+    /// A switch every few ticks: several declarations and outcomes in flight
+    /// at once against the link's ~100-200 ms round trip.
+    const PERIOD: u32 = 5;
+    const SWITCH_TICKS: u32 = 120;
+    for seed in [MANDATED_SEED, 0x1503, 0x1504, 0x1505] {
+        let link = LinkConfig {
+            seed,
+            ..mandated_link()
+        };
+        let mut fixture = Fixture::new(link, hitscan_rifle("press", 130.0));
+        fixture.equip_second(&hitscan_rifle("press", 130.0));
+        let lost_before = (fixture.up.dropped(), fixture.down.dropped());
+        for offset in 0..SWITCH_TICKS {
+            let command = if offset % PERIOD == 0 {
+                switch_to(1 - fixture.local_inventory().active_slot)
+            } else {
+                neutral()
+            };
+            fixture.step(START + offset, command);
+        }
+        fixture.idle(START + SWITCH_TICKS, 120);
+        let lost = (
+            fixture.up.dropped() - lost_before.0,
+            fixture.down.dropped() - lost_before.1,
+        );
+        assert!(
+            lost.0 > 0 && lost.1 > 0,
+            "seed {seed:#x}: the link loses datagrams both ways while switching: {lost:?}"
+        );
+        let declared: Vec<u32> = fixture
+            .sent_switches
+            .iter()
+            .map(|switch| switch.declaration_id)
+            .collect();
+        let arrived: Vec<u32> = fixture
+            .switch_outcomes
+            .iter()
+            .map(|&(_, id, _)| id)
+            .collect();
+        assert!(
+            declared.len() >= 12,
+            "seed {seed:#x}: several switches in quick succession: {declared:?}"
+        );
+        assert_eq!(
+            arrived, declared,
+            "seed {seed:#x}: one outcome per declaration, in declaration order"
+        );
+    }
+}

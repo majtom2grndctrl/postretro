@@ -189,6 +189,44 @@ pub struct ClockEstimator {
     jitter_us: f64,
     /// Recent raw RTTs of every non-stale echo, the min-RTT gate's reference.
     rtt_window: RttWindow,
+    /// What each echo did, newest last, for relay tests that check the gate
+    /// across loss and outage. Bounded, and compiled out of shipping builds.
+    #[cfg(any(test, feature = "dev-tools"))]
+    echo_fates: std::collections::VecDeque<EchoFate>,
+}
+
+/// Echoes [`ClockEstimator::echo_fates`] keeps before dropping the oldest.
+#[cfg(any(test, feature = "dev-tools"))]
+pub const ECHO_FATE_LOG_CAPACITY: usize = 1024;
+
+/// What one echo did to the estimate. Test and dev-tools observation only.
+#[cfg(any(test, feature = "dev-tools"))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EchoFate {
+    pub sample_id: u32,
+    /// The client-local send and receive microseconds the RTT came from.
+    pub send_us: u64,
+    pub recv_us: u64,
+    pub rtt_us: f64,
+    /// The window minimum after this echo joined it; `None` for an echo
+    /// rejected before the window.
+    pub window_min_us: Option<f64>,
+    pub outcome: EchoOutcome,
+}
+
+/// How [`ClockEstimator::ingest_echo`] treated one echo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EchoOutcome {
+    /// The first sample, adopted outright.
+    Seeded,
+    /// A new window minimum far enough below the estimate to replace it.
+    Reseeded,
+    /// Admitted by the min-RTT gate and smoothed in.
+    Folded,
+    /// Joined the window but sat outside the gate tolerance.
+    Gated,
+    /// Rejected as stale, duplicate, or never sent: touched nothing.
+    Rejected,
 }
 
 /// Fixed-capacity ring of the most recent raw RTT samples, in microseconds. No
@@ -230,8 +268,10 @@ impl RttWindow {
     }
 }
 
-/// The min-RTT gate's tolerance above a window minimum of `min_us`.
-fn gate_tolerance_us(min_us: f64) -> f64 {
+/// The min-RTT gate's tolerance above a window minimum of `min_us`:
+/// `max(RTT_GATE_FLOOR_US, RTT_GATE_FRACTION × min_us)`.
+#[must_use]
+pub fn gate_tolerance_us(min_us: f64) -> f64 {
     (RTT_GATE_FRACTION * min_us).max(RTT_GATE_FLOOR_US)
 }
 
@@ -254,6 +294,8 @@ impl ClockEstimator {
             rtt_us: 0.0,
             jitter_us: 0.0,
             rtt_window: RttWindow::new(),
+            #[cfg(any(test, feature = "dev-tools"))]
+            echo_fates: std::collections::VecDeque::new(),
         }
     }
 
@@ -293,17 +335,14 @@ impl ClockEstimator {
     /// zero RTT rather than an underflow — never a panic.
     pub fn ingest_echo(&mut self, echo: &TimeSyncEcho, recv_time_us: u64) -> bool {
         // Provenance guard: reject an echo we could not have sent.
-        match self.last_issued_id {
-            None => return false, // no probe sent yet
-            Some(max_issued) if echo.sample_id > max_issued => return false,
-            _ => {}
-        }
-
+        let issued = self
+            .last_issued_id
+            .is_some_and(|max_issued| echo.sample_id <= max_issued);
         // Stale-echo guard: only a strictly-newer sample advances state. A
         // reordered or duplicated echo is dropped here.
-        if let Some(last) = self.last_sample_id
-            && echo.sample_id <= last
-        {
+        let fresh = self.last_sample_id.is_none_or(|last| echo.sample_id > last);
+        if !issued || !fresh {
+            self.note_fate(echo, recv_time_us, EchoOutcome::Rejected);
             return false;
         }
         self.last_sample_id = Some(echo.sample_id);
@@ -323,12 +362,59 @@ impl ClockEstimator {
         // Min-RTT gate: the sample joins the window first, so a new minimum
         // always folds. The first sample seeds regardless (it is the minimum).
         self.rtt_window.push(rtt_us);
-        if !self.initialized || self.reseeds_from(rtt_us) {
+        let outcome = if !self.initialized {
             self.seed(sample);
+            EchoOutcome::Seeded
+        } else if self.reseeds_from(rtt_us) {
+            self.seed(sample);
+            EchoOutcome::Reseeded
         } else if self.rtt_window.admits(rtt_us) {
             self.fold(sample);
-        }
+            EchoOutcome::Folded
+        } else {
+            EchoOutcome::Gated
+        };
+        self.note_fate(echo, recv_time_us, outcome);
         true
+    }
+
+    /// Record `outcome` where the observation log is compiled in.
+    fn note_fate(&mut self, echo: &TimeSyncEcho, recv_us: u64, outcome: EchoOutcome) {
+        #[cfg(any(test, feature = "dev-tools"))]
+        self.record_fate(echo, recv_us, outcome);
+        #[cfg(not(any(test, feature = "dev-tools")))]
+        let _ = (echo, recv_us, outcome);
+    }
+
+    /// Log what `echo` did, keeping at most [`ECHO_FATE_LOG_CAPACITY`].
+    #[cfg(any(test, feature = "dev-tools"))]
+    fn record_fate(&mut self, echo: &TimeSyncEcho, recv_us: u64, outcome: EchoOutcome) {
+        if self.echo_fates.len() == ECHO_FATE_LOG_CAPACITY {
+            self.echo_fates.pop_front();
+        }
+        self.echo_fates.push_back(EchoFate {
+            sample_id: echo.sample_id,
+            send_us: echo.client_send_time_us,
+            recv_us,
+            rtt_us: recv_us.saturating_sub(echo.client_send_time_us) as f64,
+            window_min_us: (outcome != EchoOutcome::Rejected)
+                .then(|| self.rtt_window.min())
+                .flatten(),
+            outcome,
+        });
+    }
+
+    /// What each recent echo did, oldest first. Test and dev-tools only.
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub fn echo_fates(&self) -> impl Iterator<Item = &EchoFate> {
+        self.echo_fates.iter()
+    }
+
+    /// The highest probe id issued so far. Test and dev-tools only.
+    #[cfg(any(test, feature = "dev-tools"))]
+    #[must_use]
+    pub fn last_issued_id(&self) -> Option<u32> {
+        self.last_issued_id
     }
 
     /// Does a sample at `rtt_us` reseed the estimate? It must be the window
@@ -940,5 +1026,48 @@ mod tests {
             "one local tick of elapsed time advances the estimate one server tick"
         );
         clock.set(0);
+    }
+
+    // The relay time-sync rows read each echo's fate from this log, so it must
+    // name the branch the estimator actually took.
+    #[test]
+    fn echo_fates_name_seed_fold_gate_reseed_and_rejection() {
+        let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        for id in 0..5 {
+            est.record_sent(id);
+        }
+        // Seed at 200 ms, fold at 220 ms (within the 100 ms tolerance), gate a
+        // 400 ms stall, reseed on a 90 ms minimum far below the estimate, and
+        // reject a duplicate of it.
+        for (id, rtt) in [
+            (0, 200_000),
+            (1, 220_000),
+            (2, 400_000),
+            (3, 90_000),
+            (3, 90_000),
+        ] {
+            let send_us = u64::from(id) * SAMPLE_PERIOD_US;
+            est.ingest_echo(&echo(id, send_us, 600), send_us + rtt);
+        }
+        let fates: Vec<(u32, EchoOutcome, f64)> = est
+            .echo_fates()
+            .map(|fate| (fate.sample_id, fate.outcome, fate.rtt_us))
+            .collect();
+        assert_eq!(
+            fates,
+            [
+                (0, EchoOutcome::Seeded, 200_000.0),
+                (1, EchoOutcome::Folded, 220_000.0),
+                (2, EchoOutcome::Gated, 400_000.0),
+                (3, EchoOutcome::Reseeded, 90_000.0),
+                (3, EchoOutcome::Rejected, 90_000.0),
+            ]
+        );
+        let last = est.echo_fates().last().expect("the duplicate is logged");
+        assert_eq!(
+            last.window_min_us, None,
+            "a rejected echo never joins the window"
+        );
+        assert_eq!(est.last_issued_id(), Some(4));
     }
 }

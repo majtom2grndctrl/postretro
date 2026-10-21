@@ -301,6 +301,9 @@ struct Fixture {
     down: PacketConditioner,
     cut_up: bool,
     cut_packets: usize,
+    /// The downlink twin of `cut_up`: every host datagram flushed while set is lost.
+    cut_down: bool,
+    cut_down_packets: usize,
     host: Rc<RefCell<EntityRegistry>>,
     local: Rc<RefCell<EntityRegistry>>,
     host_actors: Actors,
@@ -357,6 +360,8 @@ struct Fixture {
     /// they were made on. `send_input` sends each just before its command, in
     /// the same Input stream, as production does.
     unsent_switches: BTreeMap<u32, wire::ClientSwitchDeclaration>,
+    /// Every switch declaration put on the client's Input, in send order.
+    sent_switches: Vec<wire::ClientSwitchDeclaration>,
     /// `(host tick, declaration id, accepted)` per switch outcome the client received.
     switch_outcomes: Vec<(u32, u32, bool)>,
     /// `(host tick, active slot)` on the host after each tick's switches applied.
@@ -424,6 +429,8 @@ impl Fixture {
             down: PacketConditioner::new(down_link),
             cut_up: false,
             cut_packets: 0,
+            cut_down: false,
+            cut_down_packets: 0,
             host: Rc::new(RefCell::new(host)),
             local: Rc::new(RefCell::new(local)),
             host_actors,
@@ -467,6 +474,7 @@ impl Fixture {
             weapon_owners: Default::default(),
             next_switch_id: 0,
             unsent_switches: BTreeMap::new(),
+            sent_switches: Vec::new(),
             switch_outcomes: Vec::new(),
             host_active: Vec::new(),
             reloads: Vec::new(),
@@ -554,7 +562,12 @@ impl Fixture {
                 self.up.enqueue(packet);
             }
         }
-        self.down.enqueue_all(self.server.packets_to_send(CLIENT));
+        let downlink = self.server.packets_to_send(CLIENT);
+        if self.cut_down {
+            self.cut_down_packets += downlink.len();
+        } else {
+            self.down.enqueue_all(downlink);
+        }
         self.up.advance(17);
         self.down.advance(17);
         for packet in self.up.take_ready() {
@@ -654,7 +667,7 @@ impl Fixture {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: command.movement.facing_yaw,
-                use_pressed: false,
+                use_pressed: command.movement.use_pressed,
                 drop_pressed: command.movement.drop_pressed,
                 aim_pitch: self.aim_pitch,
                 firing_slot: command.firing_slot,
@@ -729,6 +742,7 @@ impl Fixture {
 
     /// Put one switch declaration on the client's framed Input now.
     fn send_switch_declaration(&mut self, declaration: wire::ClientSwitchDeclaration) {
+        self.sent_switches.push(declaration);
         self.client
             .send_input(wire::encode(&wire::ClientMessage::SwitchDeclaration(
                 declaration,
@@ -3565,6 +3579,9 @@ fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall(
 // Late tuning payloads on join: composition waits, then lands on the host slot.
 mod late_join;
 mod receive_alternate;
+// Reload, use and drop edges and switches delivered once, in client-tick order,
+// across a lost datagram and a two-second outage.
+mod lane_delivery;
 // Weapon-switch declarations ordered by client tick with starts and presses.
 mod switch_order;
 

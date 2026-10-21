@@ -39,6 +39,7 @@ The repoint lands on the client's tick:
 - [ ] A switch made during the raise starts a fresh lower on the host.
 - [ ] A target emptied before the repoint is refused at the repoint, and both peers hold the origin.
 - [ ] After a stall with catch-up trim, the repoint still applies in client-tick order, and a start stamped on the first tick after the client's raise is admitted.
+- [ ] A host-side lower that outlives its own timer by many host ticks (a stalled client) stays lowering, refusing fire and reload, until the repoint.
 - [ ] The 240-tick release bound and the 64-switch lane bound hold with a repoint parked.
 - [ ] A level change, demotion or disconnect mid-lower leaves no parked repoint and no host-side `Lowering`.
 
@@ -58,10 +59,13 @@ Release rule, every path:
 - **Reply timing.** `send_switch_accepted` moves to the repoint. Superseded refusals reuse `send_switch_refusal`. The client side (`resolve_switch_outcome`) needs no change; verify.
 - **Release rule.** `release_wieldable` (sim scripting/builtins/wieldable_inventory.rs). Its callers are the drop (`drop_wieldables`, sim touch.rs) and the client materialize (net_descriptor.rs). Existing tests that pin a non-active release resetting the active slot change with the rule.
 - **Readers of a parked target.** `normalize_inventory_liveness`, seat carry (netcode seat.rs) and the owner projection now meet a host switch target. Check that each repairs or ignores it.
-- **Shape and rival.** Chosen: derived repoint plus a host-side `Lowering`. Rival: a client-declared repoint tick validated against host tuning. Its only use, the reload-expiring case, never reaches a connected client's declaration, so it carries a field with nothing to validate (open question).
+- **Shape and rivals.** Chosen: derived repoint plus a host-side `Lowering` whose only exit is the repoint. That exit rests on `(Lowering, Expired)` leaving the state `Lowering` (`research.md` P7), so pin it with a comment and the stalled-client row. Rivals:
+  - A client-declared repoint tick validated against host tuning. Its only use, the reload-expiring case, never reaches a connected client's declaration (open question).
+  - Running remote switches through the shared sim timer. Host ticks drift from client ticks under stalls and trims, the same reason the raise stays client-only.
+  - A second declaration sent at the repoint. Control can lag Input, which reopens the drop gap until `coop--lossy-link-delivery` lands.
 - **First slice.** A harness repro of drop-mid-lower on a remote pawn and in single-player. It falsifies the riskiest premise: that a host-side `Lowering` with no exit plus the shared release rule lands both peers on the target.
 - **Large files.** `crates/postretro/src/main.rs` and `crates/netcode/src/lib.rs` are far past 800 lines. Keep new logic in host_switch.rs and switch_lane.rs rather than extending them. `command_queue.rs` (past 800) gains only the lane hook.
-- **At promotion.** `networking.md` §Switches keep the client's order gains the begin/repoint split and loses the drop-while-lowering gap. §Version gates records `WIRE_VERSION` 33.
+- **At promotion.** `networking.md` §Switches keep the client's order gains the begin/repoint split and loses the drop-while-lowering gap. Record the ownership change from E16: the client runs the lower, and the host mirrors it in client ticks instead of letting equip timers differ. §Version gates records `WIRE_VERSION` 33.
 
 ## Open questions
 - Keep a client-declared repoint tick as a desync check (the 2026-10-21 ruling), or derive it on the host as above? The ruling assumed the reload-expiring case reaches a declaration; it does not. Recommended: derive. — owner: project lead — **blocks build**

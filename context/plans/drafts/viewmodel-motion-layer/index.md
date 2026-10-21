@@ -2,7 +2,7 @@
 
 Parked `/draft-session` handoff — not yet a brief. Resume with `/draft-brief` from this handoff. Recheck the verified facts if source has moved past `Read at`.
 
-**Prerequisite:** `coop--host-switch-timing` (drafts) (the host follows a remote pawn's lower and raise in client ticks, closing the drop-while-lowering and reload-during-raise gaps) must land before this item flips the `lowerMs`/`raiseMs` default. That item has its own draft session.
+**Prerequisite:** `coop--host-switch-timing` (ready) (the host follows a remote pawn's lower and raise in client ticks, closing the drop-while-lowering and reload-during-raise gaps) must land before this item flips the `lowerMs`/`raiseMs` default. That item has its own draft session.
 
 ## Handoff
 ```markdown

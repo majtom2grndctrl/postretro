@@ -43,7 +43,7 @@ An entity faces the direction of its TrenchBroom arrow: the yaw of its `angle`
 key, or the middle value of `angles` (`"pitch yaw roll"`). This holds for
 everything that has a front: a `player_spawn` looks along the arrow, and a
 `prop_mesh`, an enemy, a pickup, or the enemies an `entity_spawner` releases
-turn their model's front along it. An entity with no angle key faces yaw `0`.
+turn their model's front along it, and a `projectile_trap` fires along it. An entity with no angle key faces yaw `0`.
 When an `entity_spawner` releases several copies, they line up side by side
 to the left of its arrow, starting at the spawner.
 
@@ -437,6 +437,50 @@ relative to a pair of points with their offset, view and momentum kept
 (`seamless`), for shifts between copies of a room. Scripts turn teleporters on
 and off. Keys, room-copy layout, firing rules and scripting are in
 [docs/teleporters.md](teleporters.md).
+
+---
+
+## Projectile Traps
+
+A `projectile_trap` point entity fires a projectile weapon from its origin along
+its arrow. It has no model, no collision and no health: place it where the
+shot should leave, such as just inside a wall slot, facing the room.
+
+| Key | Meaning |
+|---|---|
+| `weapon` | Canonical name of a projectile weapon descriptor. |
+| `angle` / `angles` / `mangle` | Facing. `angle` `-1` fires straight up, `-2` straight down. |
+| `interval_ms` | Time between repeats once started. Default `1000`. Rounded up to whole ticks, at least one. |
+| `phase_ms` | Delay from a start to the first shot. Default `0`, which fires on the start. |
+| `start_on_spawn` | `1` starts it repeating when the level loads. |
+| `_tags` | Tags a trigger or script addresses it by. |
+
+The weapon fires exactly as it does for anyone else: its shot pattern, its
+recovery and its sounds. A trap never runs out of ammo, overheats or reloads.
+A weapon that is not a projectile weapon, a weapon whose primary action
+charges, an unknown name, a bad timing value, or a `start_on_spawn` other than
+`0`/`1` (or `false`/`true`) leaves the trap inert, and the level load warns
+once.
+
+A trap fires once per `fire`. A `fire` that arrives while the weapon is still
+firing or recovering is ignored, not queued. `start` repeats on a fixed rhythm
+that never drifts; a repeat that lands while the weapon is still recovering is
+skipped and the next one stays on time. `stop` ends the repeats and lets a
+shot pattern already under way finish.
+
+Trap shots belong to no one: an enemy they hit takes the damage without
+turning toward the trap, and no player gets credit. In co-op every player
+sees and hears them, and only the host fires them.
+
+**Without a script**, point a `trigger_volume` or `switch` at the trap's tag
+and set its `command`: `fire` shoots once each time a player enters, `start`
+and `stop` switch the repeats. One trigger can drive movers, traps and
+spawners sharing a tag; each takes only the commands it understands (movers
+`start`, `stop`, `reverse`, `go_to_path_node`; traps `fire`, `start`, `stop`;
+spawners `fire`, one batch each). A tag that only reaches things that ignore
+the command warns at level load. Triggers act when a player enters; to stop a
+trap when the player leaves, use a second trigger or a script. Scripting:
+[scripting-reference.md](scripting-reference.md#projectile-trap-members).
 
 ---
 

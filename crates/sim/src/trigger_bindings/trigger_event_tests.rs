@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
 use postretro_entities::{
-    EntityId, EntityRegistry, MoverCommand, ScriptCtx, Transform, TriggerActivation,
+    EntityId, EntityRegistry, ScriptCtx, Transform, TriggerActivation, TriggerCommand,
     TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_scripting_core::data_descriptors::drain_mod_trigger_events_js;
@@ -105,7 +105,7 @@ impl World {
                     String::new(),
                     on_fire.to_string(),
                     String::new(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     fire_mode,
                     0.0,
                     true,

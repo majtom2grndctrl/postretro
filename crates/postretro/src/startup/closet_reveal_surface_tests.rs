@@ -20,9 +20,9 @@ use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::data_descriptors::HealthDescriptor;
 use postretro_entities::{
     AmmoReserve, ComponentKind, EntityId, KinematicMoverComponent, KinematicMoverConfig,
-    KinematicMoverMode, MoverCommand, ReactionDescriptor, ReplicationScope, ScriptCtx, ScriptError,
+    KinematicMoverMode, ReactionDescriptor, ReplicationScope, ScriptCtx, ScriptError,
     SequenceTarget, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
-    TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+    TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::Seat;
 use postretro_level_format::data_script::DataScriptSection;
@@ -131,7 +131,7 @@ impl Level {
                         String::new(),
                         String::new(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,

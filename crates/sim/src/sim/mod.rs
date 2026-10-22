@@ -364,6 +364,9 @@ pub struct TickEvents {
     /// connected clients. The canonical weapon name is transient host event data:
     /// the existing snapshot carries it as the presentation entity's `entity_class`.
     pub enemy_projectile_spawns: Vec<EnemyProjectilePresentationSpawn>,
+    /// Host-authoritative projectile-trap shots, mirrored for connected clients
+    /// exactly as enemy projectiles are, classed by the trap's weapon.
+    pub trap_projectile_spawns: Vec<EnemyProjectilePresentationSpawn>,
     /// Locally simulated projectile contacts that retire listen-host mirror flights.
     pub local_projectile_contacts: Vec<ProjectileContactEvent>,
     pub reload_deliveries: Vec<ReloadDelivery>,
@@ -886,6 +889,12 @@ where
     } = ai_result;
 
     drop(stage);
+    // Traps run after this tick's trigger and teleport requests were issued,
+    // so those act on this tick; work issued later (player events, the
+    // frame-end drain) waits on the trap's pending set for the next one.
+    let stage = cpu.scope(SimStage::Traps);
+    let trap_output = crate::traps::run_trap_stage(&mut registry.borrow_mut(), tick_dt);
+    drop(stage);
     let post_movement_command = post_movement(&registry);
 
     let stage = cpu.scope(SimStage::Steering);
@@ -995,6 +1004,7 @@ where
     #[cfg(test)]
     let weapon_impact_points = local_result.weapon_impact_points;
     weapon.extend(remote_weapon_result.weapon_events);
+    weapon.extend(trap_output.emissions);
     // Projectile contacts fire `impact` as hitscan contacts do, one per
     // shot per tick, whoever fired them.
     weapon.extend(projectile_stage::projectile_impact_emissions(
@@ -1007,6 +1017,7 @@ where
         &mut registry.borrow_mut(),
         enemy_projectile_spawns
             .iter()
+            .chain(&trap_output.projectile_spawns)
             .map(|spawn| spawn.projectile)
             .chain(local_result.projectile_spawns.iter().copied()),
     );
@@ -1050,6 +1061,7 @@ where
         rejected_remote_projectile_fires: remote_weapon_result.rejected_projectile_fires,
         local_projectile_spawns: local_result.projectile_spawns,
         enemy_projectile_spawns,
+        trap_projectile_spawns: trap_output.projectile_spawns,
         local_projectile_contacts,
         reload_deliveries,
         reload,
@@ -1905,6 +1917,8 @@ mod mover_pin_tick_tests;
 pub(crate) mod predict_reconcile;
 #[cfg(test)]
 mod teleport_tick_tests;
+#[cfg(test)]
+mod trap_tick_tests;
 
 /// Single-player / single-pawn movement stage. Resolves the local movement pawn via
 /// the registry marker, then drives it through the shared host multi-pawn seam
@@ -2059,9 +2073,9 @@ mod tests {
         brain
     }
     use postretro_entities::{
-        AmmoReserve, DataRegistry, KinematicMoverComponent, KinematicMoverMode, MoverCommand,
-        NamedReaction, NumericRange, PrimitiveDescriptor, ReactionDescriptor, SlotOwnership,
-        SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation,
+        AmmoReserve, DataRegistry, KinematicMoverComponent, KinematicMoverMode, NamedReaction,
+        NumericRange, PrimitiveDescriptor, ReactionDescriptor, SlotOwnership, SlotRecord,
+        SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation, TriggerCommand,
         TriggerFireMode, TriggerVolumeComponent,
     };
     use postretro_foundation::{
@@ -2984,7 +2998,7 @@ mod tests {
             String::new(),
             on_fire.to_string(),
             String::new(),
-            MoverCommand::Start,
+            TriggerCommand::Start,
             TriggerFireMode::Multiple,
             0.0,
             armed,
@@ -3325,7 +3339,7 @@ mod tests {
                         String::new(),
                         "use_target".to_string(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,

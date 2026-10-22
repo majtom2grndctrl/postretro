@@ -1,4 +1,4 @@
-// Pure-JSON payload check for consequential primitives (grants, `addSlot`).
+// Pure-JSON payload checks for consequential primitives (grants, `addSlot`) and trap verbs.
 // See: context/lib/scripting.md §12 (Entity addressing)
 
 use super::super::DescriptorError;
@@ -10,9 +10,10 @@ pub fn is_consequential_primitive(primitive: &str) -> bool {
     matches!(primitive, "grantHealth" | "grantAmmo" | "addSlot")
 }
 
-/// Validate a consequential primitive's `args` at `site` (`"primitive"`,
-/// `"sequence step 2"`). Non-consequential primitives pass unchecked. The
-/// reason names the reaction so the caller's skip or reject points at it.
+/// Validate a consequential primitive's or trap verb's `args` at `site`
+/// (`"primitive"`, `"sequence step 2"`). Every other primitive passes
+/// unchecked. The reason names the reaction so the caller's skip or reject
+/// points at it.
 ///
 /// Both VM converters and the build-time light pass call this one check, so
 /// a reaction the runtime drops for a bad sequence step reserves no light. A
@@ -24,6 +25,17 @@ pub fn validate_consequential_args(
     primitive: &str,
     args: &serde_json::Value,
 ) -> Result<(), String> {
+    match primitive {
+        "startTrap" => {
+            return validate_start_trap_args(args)
+                .map_err(|detail| format!("reaction `{reaction}` {site}: {detail}"));
+        }
+        "fireTrap" | "stopTrap" => {
+            return validate_no_args(primitive, args)
+                .map_err(|detail| format!("reaction `{reaction}` {site}: {detail}"));
+        }
+        _ => {}
+    }
     if !is_consequential_primitive(primitive) {
         return Ok(());
     }
@@ -56,6 +68,61 @@ pub fn validate_consequential_args(
         })?;
     }
     Ok(())
+}
+
+/// A trap `start`'s per-run options: absent, or an object whose optional
+/// `intervalMs` is finite and positive and whose optional `phaseMs` is finite
+/// and non-negative. A literal outside that rejects the reaction at install, as
+/// the same value on the map KVP leaves the trap inert.
+fn validate_start_trap_args(args: &serde_json::Value) -> Result<(), String> {
+    let object = match args {
+        serde_json::Value::Null => return Ok(()),
+        serde_json::Value::Object(object) => object,
+        _ => return Err("`startTrap` `args` must be an object".to_string()),
+    };
+    for (key, positive) in [("intervalMs", true), ("phaseMs", false)] {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        // Trap timing is f64 end to end, so any finite number is in range.
+        let Some(number) = value.as_f64().filter(|number| number.is_finite()) else {
+            return Err(format!("`startTrap` `args.{key}` must be a finite number"));
+        };
+        if positive && number <= 0.0 {
+            return Err(format!(
+                "`startTrap` `args.{key}` must be positive, got {number}"
+            ));
+        }
+        if !positive && number < 0.0 {
+            return Err(format!(
+                "`startTrap` `args.{key}` must not be negative, got {number}"
+            ));
+        }
+    }
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "intervalMs" | "phaseMs"))
+    {
+        return Err(format!(
+            "`startTrap` `args.{unknown}` is not a trap start option"
+        ));
+    }
+    Ok(())
+}
+
+/// `fireTrap` and `stopTrap` take no options: absent `args` lowers to null or
+/// an empty object, and anything else is an authoring mistake.
+fn validate_no_args(primitive: &str, args: &serde_json::Value) -> Result<(), String> {
+    let empty = match args {
+        serde_json::Value::Null => true,
+        serde_json::Value::Object(object) => object.is_empty(),
+        _ => false,
+    };
+    if empty {
+        Ok(())
+    } else {
+        Err(format!("`{primitive}` takes no `args`"))
+    }
 }
 
 /// A payload number must be finite in f64 and still finite once narrowed to

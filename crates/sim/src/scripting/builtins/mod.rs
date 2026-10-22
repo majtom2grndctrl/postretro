@@ -14,6 +14,7 @@ pub(crate) mod entity_spawner;
 pub mod entity_spawner;
 pub mod host_replicated;
 pub mod net_descriptor;
+pub(crate) mod projectile_trap;
 pub(crate) mod prop_mesh;
 #[cfg(test)]
 mod real_dummy_hit_tests;
@@ -111,6 +112,10 @@ pub fn register_builtins(dispatch: &mut ClassnameDispatch) {
     dispatch.register(
         entity_spawner::CLASSNAME,
         entity_spawner::handle as ClassnameHandler,
+    );
+    dispatch.register(
+        projectile_trap::CLASSNAME,
+        projectile_trap::handle as ClassnameHandler,
     );
 }
 
@@ -220,9 +225,13 @@ mod tests {
             dispatch.lookup("entity_spawner").is_some(),
             "entity_spawner should be registered"
         );
+        assert!(
+            dispatch.lookup("projectile_trap").is_some(),
+            "projectile_trap should be registered"
+        );
         // Lock the count so adding a new built-in is a deliberate, reviewed
         // change rather than an accidental fall-through.
-        assert_eq!(dispatch.len(), 3);
+        assert_eq!(dispatch.len(), 4);
     }
 
     #[test]

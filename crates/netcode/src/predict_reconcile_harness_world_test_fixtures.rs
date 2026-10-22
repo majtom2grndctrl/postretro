@@ -13,8 +13,8 @@ use glam::Vec3;
 use postretro_collision::{EnvironmentView, EnvironmentVolume};
 use postretro_combat_model::FluidMovementTable;
 use postretro_entities::{
-    EntityId, EntityRegistry, KinematicMoverComponent, KinematicMoverMode, MoverCommand, Transform,
-    TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+    EntityId, EntityRegistry, KinematicMoverComponent, KinematicMoverMode, Transform,
+    TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{FluidRegistry, PlayerMovementComponent, SwimParams, VaultParams};
 use postretro_net::harness::LinkConfig;
@@ -221,13 +221,13 @@ impl LoopbackHarness {
             &mut h.host_registry,
             &mut h.host_trigger_bridge,
             TriggerActivation::Touch,
-            MoverCommand::Start,
+            TriggerCommand::Start,
         );
         h.host_use_trigger = Some(spawn_harness_trigger(
             &mut h.host_registry,
             &mut h.host_trigger_bridge,
             TriggerActivation::Use,
-            MoverCommand::GoToPathNode("finish".into()),
+            TriggerCommand::GoToPathNode("finish".into()),
         ));
         h.mover_colliders
             .push(platform_collider(MOVING_PLATFORM_ID));
@@ -440,7 +440,7 @@ fn spawn_harness_trigger(
     registry: &mut EntityRegistry,
     bridge: &mut TriggerVolumeBridge,
     activation: TriggerActivation,
-    command: MoverCommand,
+    command: TriggerCommand,
 ) -> EntityId {
     let id = registry.spawn(Transform::default());
     registry

@@ -908,6 +908,7 @@ mod tests {
                     credit_source: "enemy.rifle".to_string(),
                     owner_pawn: owner,
                     owner_weapon: owner,
+                    attackerless: false,
                     spawned: true,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,
@@ -1380,6 +1381,7 @@ mod tests {
                     // Enemy projectiles preserve the enemy id for common impact
                     // damage provenance; it must never choose the visual class.
                     owner_weapon: enemy,
+                    attackerless: false,
                     spawned: true,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,
@@ -1483,6 +1485,163 @@ mod tests {
                 .canonical_name,
             "enemy_rifle"
         );
+    }
+
+    // Trap shots mirror exactly as enemy shots do, classed by the trap's
+    // weapon. Each trap stamps its own network id into its shot id, so traps
+    // firing on one tick carry distinct observer shot ids.
+    #[test]
+    fn same_tick_trap_shots_mirror_with_their_weapon_class_and_distinct_shot_ids() {
+        use postretro_entities::components::projectile_trap::{
+            ProjectileTrapComponent, TrapRequest,
+        };
+        let weapon =
+            projectile_visual_descriptor_named("trap_bolt", "sprites/projectiles/bolt.png");
+        let mut registry = EntityRegistry::new();
+        let traps: Vec<EntityId> = (0..2)
+            .map(|index| {
+                let trap = registry.spawn(Transform {
+                    position: Vec3::new(index as f32 * 3.0, 1.0, 0.0),
+                    ..Transform::default()
+                });
+                registry
+                    .set_component(
+                        trap,
+                        ProjectileTrapComponent::new("trap_bolt".into(), 1000.0, 0.0, false),
+                    )
+                    .unwrap();
+                trap
+            })
+            .collect();
+        postretro_sim::traps::install::resolve_traps_for_level(
+            &mut registry,
+            std::slice::from_ref(&weapon),
+            true,
+        );
+        for &trap in &traps {
+            postretro_sim::traps::issue_trap_request(&mut registry, trap, TrapRequest::Fire);
+        }
+        let output = postretro_sim::traps::run_trap_stage(&mut registry, 1.0 / 60.0);
+        assert_eq!(output.projectile_spawns.len(), 2);
+        for spawn in &output.projectile_spawns {
+            assert_eq!(spawn.descriptor_class, "trap_bolt");
+            attach_projectile_visual_components(
+                &mut registry,
+                spawn.projectile,
+                weapon.weapon.as_ref().unwrap().projectile.as_ref().unwrap(),
+                41,
+            );
+        }
+
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+        presentations.mirror_enemy_gameplay_projectiles(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &replication,
+            &output.projectile_spawns,
+            41,
+        );
+        assert_eq!(presentations.flights.len(), 2, "one mirror per trap shot");
+        let shot_ids: Vec<ShotId> = output
+            .projectile_spawns
+            .iter()
+            .map(|spawn| {
+                let projectile = registry
+                    .get_component::<ProjectileComponent>(spawn.projectile)
+                    .unwrap();
+                let trap_network = allocator
+                    .network_id_for_entity(projectile.owner_pawn)
+                    .unwrap();
+                let shot = projectile
+                    .source_shot
+                    .expect("a trap shot carries its shot id");
+                assert_eq!(
+                    shot.pawn, trap_network.0,
+                    "stamped with the trap's network id"
+                );
+                shot
+            })
+            .collect();
+        assert_ne!(
+            shot_ids[0], shot_ids[1],
+            "same-tick traps carry distinct shot ids"
+        );
+    }
+
+    // Trap state never crosses the wire: even a started trap forced into the
+    // replicable set snapshots only its transform, since the wire payload
+    // vocabulary has no trap component. The two version constants are pinned
+    // here so a trap change that bumps either has to say so.
+    #[test]
+    fn started_trap_snapshot_carries_no_trap_state_and_versions_hold() {
+        use postretro_entities::components::projectile_trap::{
+            ProjectileTrapComponent, TrapRequest,
+        };
+        use postretro_net::wire::ComponentPayload;
+        let weapon =
+            projectile_visual_descriptor_named("trap_bolt", "sprites/projectiles/bolt.png");
+        let mut registry = EntityRegistry::new();
+        let trap = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                trap,
+                ProjectileTrapComponent::new("trap_bolt".into(), 250.0, 0.0, false),
+            )
+            .unwrap();
+        postretro_sim::traps::install::resolve_traps_for_level(
+            &mut registry,
+            std::slice::from_ref(&weapon),
+            true,
+        );
+        postretro_sim::traps::issue_trap_request(
+            &mut registry,
+            trap,
+            TrapRequest::Start {
+                interval_ms: None,
+                phase_ms: None,
+            },
+        );
+        postretro_sim::traps::run_trap_stage(&mut registry, 1.0 / 60.0);
+        assert!(
+            registry
+                .get_component::<ProjectileTrapComponent>(trap)
+                .unwrap()
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.schedule.is_some()),
+            "the trap is started"
+        );
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        allocator.stamp(trap);
+        replicable.register(trap);
+        let snapshots = produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
+        for snapshot in &snapshots {
+            for payload in &snapshot.components {
+                assert_ne!(
+                    payload.kind(),
+                    postretro_net::wire::COMPONENT_KIND_PROJECTILE_TRAP,
+                    "no trap payload reaches the wire"
+                );
+                assert!(
+                    matches!(payload, ComponentPayload::Transform(_)),
+                    "a trap snapshots nothing beyond its transform: {payload:?}"
+                );
+            }
+        }
+        assert_eq!(postretro_net::handshake::WIRE_VERSION, 33);
+        assert_eq!(postretro_net::wire::SNAPSHOT_VERSION, 21);
     }
 
     // Regression: multiple enemy shots surfaced by one AI tick had no seam-crossing
@@ -2608,6 +2767,7 @@ mod tests {
                 credit_source: "weapon.test.local".to_string(),
                 owner_pawn,
                 owner_weapon: weapon,
+                attackerless: false,
                 spawned: false,
                 predicted_shot_id: None,
                 elapsed_flight_age: 0.0,
@@ -2752,6 +2912,7 @@ mod tests {
                     credit_source: "weapon.test.local".to_string(),
                     owner_pawn,
                     owner_weapon: weapon,
+                    attackerless: false,
                     spawned: false,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,

@@ -43,6 +43,11 @@ const MEMBER_WRAPPER_SOURCES: &[(&str, &str, &str)] = &[
         include_str!("../../../sdk/lib/entities/spawners.luau"),
         "entities/spawners.luau",
     ),
+    (
+        "wrapTrapEntity",
+        include_str!("../../../sdk/lib/entities/traps.luau"),
+        "entities/traps.luau",
+    ),
 ];
 
 /// SDK library prelude — `map_entities.luau` returns `getMapEntities`, which

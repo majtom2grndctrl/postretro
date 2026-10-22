@@ -292,7 +292,7 @@ mod tests {
     use super::*;
     use glam::{Quat, Vec4};
     use postretro_entities::{
-        EntityId, MoverCommand, SlotTable, Transform, TriggerFireMode, TriggerVolumeComponent,
+        EntityId, SlotTable, Transform, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
     };
     use postretro_scripting_core::data_descriptors::{
         NamedReaction, ReactionDescriptor, SequenceStep, SequenceTarget,
@@ -316,7 +316,7 @@ mod tests {
                     String::new(),
                     "open_door".into(),
                     "close_door".into(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     TriggerFireMode::Once,
                     250.0,
                     true,

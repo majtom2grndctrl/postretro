@@ -359,6 +359,18 @@ pub(super) fn bind_command_at(
                 aggro: args.aggro,
             })
         }
+        "fireTrap" | "startTrap" | "stopTrap" => {
+            let Some(target @ BoundTarget::Entity(_)) = target_from_context else {
+                log::warn!("[Trigger] `{primitive}` requires a trap member target; not binding");
+                return None;
+            };
+            let Some(request) = crate::traps::commands::trap_request_for_step(primitive, args)
+            else {
+                log::warn!("[Trigger] `{primitive}` has invalid args; not binding");
+                return None;
+            };
+            Some(BoundTriggerCommand::Trap { target, request })
+        }
         "spawnFromSpawner" => match target_from_context {
             // A spawner member's `fire()` step: that spawner only.
             Some(target @ BoundTarget::Entity(_)) => Some(BoundTriggerCommand::Spawn { target }),

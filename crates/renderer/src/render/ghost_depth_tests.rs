@@ -102,10 +102,10 @@ fn ghost_depth_entries_bind_nothing_share_the_discard_and_keep_position_invarian
         let invariant_position = module.types.iter().any(|(_, ty)| {
             ty.name.as_deref() == Some("VertexOutput")
                 && matches!(&ty.inner, naga::TypeInner::Struct { members, .. }
-                    if members.iter().any(|member| matches!(
-                        member.binding,
-                        Some(naga::Binding::BuiltIn(naga::BuiltIn::Position { invariant: true }))
-                    )))
+                if members.iter().any(|member| matches!(
+                    member.binding,
+                    Some(naga::Binding::BuiltIn(naga::BuiltIn::Position { invariant: true }))
+                )))
         });
         assert!(invariant_position, "{name}: clip position is @invariant");
     }
@@ -173,7 +173,10 @@ fn ghost_passes_seed_and_attach_ghost_depth_and_never_scene_depth() {
 
     let prepass = pass_block(&scene, "GhostDepthPre-Pass");
     assert!(prepass.contains("color_attachments:&[],"), "{prepass}");
-    assert!(prepass.contains("view:self.full().ghost_depth.view(),"), "{prepass}");
+    assert!(
+        prepass.contains("view:self.full().ghost_depth.view(),"),
+        "{prepass}"
+    );
     assert!(
         prepass.contains(
             "depth_ops:Some(wgpu::Operations{load:wgpu::LoadOp::Load,store:wgpu::StoreOp::Store,"
@@ -182,10 +185,17 @@ fn ghost_passes_seed_and_attach_ghost_depth_and_never_scene_depth() {
     );
     for label in ["SkinnedGhostPass", "KinematicGhostPass"] {
         let block = pass_block(&scene, label);
-        assert!(block.contains("view:self.full().ghost_depth.view(),"), "{block}");
+        assert!(
+            block.contains("view:self.full().ghost_depth.view(),"),
+            "{block}"
+        );
         assert!(block.contains("depth_ops:None,"), "{block}");
     }
-    for label in ["GhostDepthPre-Pass", "SkinnedGhostPass", "KinematicGhostPass"] {
+    for label in [
+        "GhostDepthPre-Pass",
+        "SkinnedGhostPass",
+        "KinematicGhostPass",
+    ] {
         assert!(
             !pass_block(&scene, label).contains("depth_view"),
             "{label} never attaches scene depth"
@@ -193,6 +203,9 @@ fn ghost_passes_seed_and_attach_ghost_depth_and_never_scene_depth() {
     }
 
     let billboard = pass_block(&scene, "BillboardGhostPass");
-    assert!(billboard.contains("view:&self.full().depth_view,"), "{billboard}");
+    assert!(
+        billboard.contains("view:&self.full().depth_view,"),
+        "{billboard}"
+    );
     assert!(billboard.contains("depth_ops:None,"), "{billboard}");
 }

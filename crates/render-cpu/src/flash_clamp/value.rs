@@ -283,7 +283,8 @@ impl Strength {
 
     /// Present a decided level.
     pub(super) fn present(&mut self, decided: Decided) {
-        self.tracker.present(decided.level, FLASH_LUMINANCE_THRESHOLD);
+        self.tracker
+            .present(decided.level, FLASH_LUMINANCE_THRESHOLD);
         self.ramp = decided.ramp;
     }
 

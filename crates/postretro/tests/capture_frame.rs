@@ -1552,7 +1552,12 @@ fn ghost_link_capture_draws_only_the_ghosts_nearest_surface_in_both_modes() {
     let (copy_triangles, copy_indices) =
         capture_ghost_controls::mover_triangles(&map, "vault_barrier", offset + push);
     let (barrier, indices) = capture_ghost_controls::mover_triangles(&map, "vault_barrier", offset);
-    let copy_mask = erode(&camera.mask(&copy_triangles, &copy_indices), width, height, 1);
+    let copy_mask = erode(
+        &camera.mask(&copy_triangles, &copy_indices),
+        width,
+        height,
+        1,
+    );
     let barrier_mask = camera.mask(&barrier, &indices);
     let q = |x: f32, y: f32, z: f32| capture_ghost_controls::quake_point(x, y, z);
     let wall_x = GHOST_COPY_B_X + 112.0;

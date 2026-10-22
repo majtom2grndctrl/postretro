@@ -245,6 +245,9 @@ fn with_mover_copy(
         edited += 1;
         section.to_bytes()
     });
-    assert_eq!(edited, 1, "the fixture carries one kinematic geometry section");
+    assert_eq!(
+        edited, 1,
+        "the fixture carries one kinematic geometry section"
+    );
     control
 }

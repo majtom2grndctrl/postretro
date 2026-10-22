@@ -106,12 +106,7 @@ pub(super) fn on_grid(tint: [f32; 3], opacity: f32, low: f32, high: f32) -> [f32
 /// above it, and a darkening at or below its own limit draws at or below it,
 /// even a grid step past `held`. The clamp keeps `held` as presented, so the
 /// rounding never builds up from frame to frame.
-pub(super) fn presented_tint(
-    tint: [f32; 3],
-    opacity: f32,
-    luminance: f32,
-    held: f32,
-) -> [f32; 3] {
+pub(super) fn presented_tint(tint: [f32; 3], opacity: f32, luminance: f32, held: f32) -> [f32; 3] {
     let asked = opacity * luminance;
     if held == asked || opacity <= INVISIBLE_OPACITY {
         return tint;

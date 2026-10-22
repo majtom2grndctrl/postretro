@@ -330,7 +330,10 @@ mod tests {
 
         for state in [blend, dither] {
             assert_eq!(state.depth.depth_write_enabled, Some(false));
-            assert_eq!(state.depth.depth_compare, Some(wgpu::CompareFunction::Equal));
+            assert_eq!(
+                state.depth.depth_compare,
+                Some(wgpu::CompareFunction::Equal)
+            );
             assert_eq!(state.cull_mode, Some(wgpu::Face::Back));
         }
     }

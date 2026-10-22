@@ -98,12 +98,12 @@ mod fluid_reflection_frame_test;
 mod fluid_reflection_frame_test_fixtures;
 #[cfg(test)]
 mod fluid_surface_frame_test;
-#[cfg(test)]
-mod ghost_depth_frame_test;
 mod geometry_install_marks;
 mod geometry_ranges;
 #[cfg(all(test, debug_assertions))]
 mod geometry_ranges_gpu_test;
+#[cfg(test)]
+mod ghost_depth_frame_test;
 mod material_plan;
 mod pipeline_layout;
 mod renderer_capture;

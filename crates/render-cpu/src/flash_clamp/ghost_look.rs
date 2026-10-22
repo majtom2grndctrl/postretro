@@ -126,8 +126,10 @@ impl LookValueClamp {
         let trying = presents(self.opacity.capped(opacity, 0.0, frame));
         let trying_brightness = brightness.unwrap_or(trying * drawn_luminance(tint));
         self.window.moving(Part::Level, trying - opacity_from);
-        self.window.moving(Part::Brightness, trying_brightness - brightness_from);
-        self.window.moving(Part::Darkening, trying - trying_brightness - darkening_from);
+        self.window
+            .moving(Part::Brightness, trying_brightness - brightness_from);
+        self.window
+            .moving(Part::Darkening, trying - trying_brightness - darkening_from);
 
         let level = self.opacity.decide(
             &mut self.window,
@@ -145,8 +147,10 @@ impl LookValueClamp {
         let asked_brightness = brightness.unwrap_or(level.level * luminance);
         let asked_darkening = level.level - asked_brightness;
         self.window.moving(Part::Level, level.level - opacity_from);
-        self.window.moving(Part::Brightness, asked_brightness - brightness_from);
-        self.window.moving(Part::Darkening, asked_darkening - darkening_from);
+        self.window
+            .moving(Part::Brightness, asked_brightness - brightness_from);
+        self.window
+            .moving(Part::Darkening, asked_darkening - darkening_from);
         // A screen-door step carries brightness and darkening with it at the
         // tint's last luminance, past what the opacity's own rate cap moved.
         let stepped = (level.level - opacity_from) - (level.ramp - ramp_from);
@@ -313,7 +317,13 @@ impl KeyClamp for LookValueClamp {
             } else {
                 opacity
             };
-            decided = self.decide(asked_opacity, Some(brightness), look.tint, transparency, frame);
+            decided = self.decide(
+                asked_opacity,
+                Some(brightness),
+                look.tint,
+                transparency,
+                frame,
+            );
             if !decided.presents(opacity, brightness) {
                 *self = start;
                 decided = self.hold(look.tint);

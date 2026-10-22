@@ -316,7 +316,11 @@ mod tests {
         };
         for step in 0..=1000 {
             let opacity = step as f32 / 1000.0;
-            assert_eq!(screen_door_coverage(opacity), tile_share(opacity), "{opacity}");
+            assert_eq!(
+                screen_door_coverage(opacity),
+                tile_share(opacity),
+                "{opacity}"
+            );
         }
         // The nearest sixteenth, not the one below: these round up.
         assert_eq!(screen_door_coverage(0.8124), 13.0 / 16.0);

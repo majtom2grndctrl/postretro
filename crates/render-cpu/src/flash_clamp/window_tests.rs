@@ -66,7 +66,10 @@ fn a_merging_window_counts_one_frames_opacity_and_brightness_change_once() {
     window.push(Part::Red, false);
     assert_eq!(window.count, 4);
     window.push(Part::Level, false);
-    assert_eq!(window.count, 4, "the opacity return joins the brightness one");
+    assert_eq!(
+        window.count, 4,
+        "the opacity return joins the brightness one"
+    );
     assert_eq!(
         window.owed_returns(),
         0,

@@ -58,9 +58,9 @@ read at: 473185e8
 | S2 loop zone | `traps_surface_tests::wave_loop_zone_staggers_repeats_and_stops_on_exit_in_both_runtimes` | pass |
 | S3 trap-volley | `traps_surface_tests::volley_*` (3) | pass |
 | S4 typedefs, drift, parity | typedef `trap_member_handle_and_step_types_are_emitted_in_both_sdk_surfaces` + committed drift fixtures, member-builder parity, light-membership `projectile_traps_join_the_member_table_at_their_origin` | pass |
-| M1 fixture maps play | owner, in-engine | manual — outstanding |
-| M2 co-op client on trap-volley | owner, two machines | manual — outstanding |
-| M3 TrenchBroom FGD | owner, TrenchBroom | manual — outstanding |
+| M1 fixture maps play | owner, in-engine | pass (owner, manual) |
+| M2 co-op client on trap-volley | owner, two machines | pass (owner, manual) |
+| M3 TrenchBroom FGD | owner, TrenchBroom | pass (owner, manual) |
 
 ## Tasks
 

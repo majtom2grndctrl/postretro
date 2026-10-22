@@ -425,6 +425,7 @@ impl ScriptRuntime {
                 next_entity_faction_names,
                 next_maps,
                 next_fluids,
+                next_ghost_styles,
                 next_default_weapon_placement,
                 next_global_reactions,
                 next_global_crossings,
@@ -459,6 +460,7 @@ impl ScriptRuntime {
                         manifest.entity_faction_names.clone(),
                         manifest.maps.clone(),
                         manifest.fluids.clone(),
+                        manifest.ghost_styles.clone(),
                         manifest.default_weapon_placement.clone(),
                         manifest.reactions.clone(),
                         manifest.crossings.clone(),
@@ -493,6 +495,7 @@ impl ScriptRuntime {
                         Vec::new(),
                         Vec::new(),
                         crate::data_descriptors::FluidRegistry::default(),
+                        crate::data_descriptors::GhostStyleRegistry::default(),
                         None,
                         Vec::new(),
                         Vec::new(),
@@ -711,6 +714,9 @@ impl ScriptRuntime {
                 // Fluids may change freely across reloads; the binary
                 // re-resolves the installed level's volumes against them.
                 data_registry.replace_fluids(next_fluids);
+                // Ghost styles likewise; the binary re-resolves the installed
+                // level's ghost links against them.
+                data_registry.replace_ghost_styles(next_ghost_styles);
                 data_registry.set_default_weapon_placement(next_default_weapon_placement);
                 data_registry.replace_global_reactions(next_global_reactions);
                 data_registry.replace_global_crossings(next_global_crossings);
@@ -2039,6 +2045,71 @@ mod tests {
             ["lava", "water"],
             "unlike factions, a reload may add and reorder fluids",
         );
+        fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
+    }
+
+    // A committed reload replaces the ghost style table whole, so a link
+    // re-resolving against it reads the retuned and added styles.
+    #[test]
+    fn staged_commit_replaces_ghost_styles_even_when_it_retunes_and_adds_them() {
+        use crate::data_descriptors::{GhostStyle, GhostStyleDescriptor, GhostStyleRegistry};
+        let mod_root = temp_mod_root("ghost_styles");
+        fs::write(
+            mod_root.join("start-script.js"),
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "ReloadedGhosts",
+                    id: "reloaded-ghosts",
+                    version: "1",
+                    ghostStyles: [
+                        { name: "veil" },
+                        { name: "echo", opacity: 0.9, audio: true },
+                    ],
+                };
+            "#,
+        )
+        .expect("staged mod manifest should be written");
+        let result = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+        assert!(
+            matches!(result.status, StagedManifestBuildStatus::Built(_)),
+            "staged manifest must build before its replacement can commit: {result:?}",
+        );
+
+        let ctx = ScriptCtx::new();
+        ctx.data_registry
+            .borrow_mut()
+            .replace_ghost_styles(GhostStyleRegistry::from_declarations(
+                "test",
+                [Ok(GhostStyleDescriptor {
+                    name: "echo".to_string(),
+                    style: GhostStyle {
+                        opacity: 0.45,
+                        ..GhostStyle::FLOOR
+                    },
+                })],
+            ));
+        let primitive_registry = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitive_registry, &ScriptRuntimeConfig::default(), &ctx)
+                .expect("script runtime should initialize");
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+
+        let outcome = runtime.commit_staged_manifest_result(
+            &result,
+            &ctx,
+            &SequencedPrimitiveRegistry::new(),
+        );
+        assert!(matches!(
+            outcome,
+            StagedManifestCommitOutcome::Committed { generation: 1, .. }
+        ));
+        let registry = ctx.data_registry.borrow();
+        assert_eq!(registry.ghost_styles.names(), ["veil", "echo"]);
+        let (echo, warning) = registry.ghost_styles.resolve("echo");
+        assert_eq!(warning, None);
+        assert_eq!(echo.opacity, 0.9);
+        assert!(echo.audio);
+        drop(registry);
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }
 

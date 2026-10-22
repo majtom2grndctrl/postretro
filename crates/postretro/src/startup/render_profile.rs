@@ -1,10 +1,13 @@
 // App-boundary mappings from player/mod options to renderer-owned settings.
 // See: context/lib/rendering_pipeline.md §7.3a, §7.8 · context/lib/player_options.md §4
 
-use postretro_scripting_core::runtime::{ModBloomResolution, ModReflectionStyle, ModRenderProfile};
+use postretro_scripting_core::runtime::{
+    ModBloomResolution, ModGhostTransparency, ModReflectionStyle, ModRenderProfile,
+};
 
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
+use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::render_extent::RenderResolutionPolicy;
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality as RendererSurfaceDepthQuality;
 
@@ -118,6 +121,16 @@ pub(crate) const fn renderer_reflection_style(style: ModReflectionStyle) -> Flui
     }
 }
 
+/// Translate the authored ghost transparency into the renderer's. The `match`
+/// is exhaustive with no `_` arm: a new authored mode must fail to compile
+/// here rather than silently blend.
+pub(crate) const fn renderer_ghost_transparency(mode: ModGhostTransparency) -> GhostTransparency {
+    match mode {
+        ModGhostTransparency::Blend => GhostTransparency::Blend,
+        ModGhostTransparency::Dither => GhostTransparency::Dither,
+    }
+}
+
 impl App {
     /// Retain the player's spot-shadow tier in renderer boot state. A live full
     /// renderer is deliberately left untouched; `install_level_geometry`
@@ -209,6 +222,19 @@ impl App {
                 .set_fluid_reflection_style(renderer_reflection_style(profile.reflections.style));
         }
     }
+
+    /// Commit a mod's ghost transparency (`render.ghosts`) to the renderer,
+    /// which keeps it in boot state across a full-renderer rebuild. Called
+    /// beside the bloom and reflection commits at boot and on every committed
+    /// staged reload; a committed reload with no start script restores blend.
+    ///
+    /// A `None` renderer is a no-op for the bloom profile's reason: resume
+    /// replays splash frame one, which re-applies the committed mode.
+    pub(crate) fn apply_mod_ghost_transparency(&mut self, profile: ModRenderProfile) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_ghost_transparency(renderer_ghost_transparency(profile.ghosts));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -265,8 +291,35 @@ mod tests {
         );
     }
 
+    // Drift guard both ways, as for the reflection style: the authored modes
+    // map exhaustively onto the renderer's, and an omitted mode draws what a
+    // renderer no manifest has spoken to draws (frame capture's): blend.
+    #[test]
+    fn every_authored_ghost_transparency_maps_to_its_renderer_mode() {
+        for authored in ModGhostTransparency::ALL {
+            let expected = match authored {
+                ModGhostTransparency::Blend => GhostTransparency::Blend,
+                ModGhostTransparency::Dither => GhostTransparency::Dither,
+            };
+            assert_eq!(renderer_ghost_transparency(authored), expected);
+        }
+        for renderer_mode in GhostTransparency::ALL {
+            let authored = match renderer_mode {
+                GhostTransparency::Blend => ModGhostTransparency::Blend,
+                GhostTransparency::Dither => ModGhostTransparency::Dither,
+            };
+            assert_eq!(renderer_ghost_transparency(authored), renderer_mode);
+        }
+        assert_eq!(
+            renderer_ghost_transparency(ModRenderProfile::default().ghosts),
+            GhostTransparency::default(),
+        );
+        assert_eq!(GhostTransparency::default(), GhostTransparency::Blend);
+    }
+
     // The style commits beside bloom at both points a mod's render profile
-    // lands: boot mod init and a committed staged reload.
+    // lands: boot mod init and a committed staged reload. So does the ghost
+    // transparency.
     #[test]
     fn the_reflection_style_commits_beside_bloom_at_boot_and_on_staged_reload() {
         let code_only = |source: &str| -> String {
@@ -280,12 +333,14 @@ mod tests {
         let boot = code_only(include_str!("splash_lifecycle.rs"));
         assert!(boot.contains(
             "self.apply_mod_bloom_render_profile(committed_render_profile);\
-             self.apply_mod_reflection_profile(committed_render_profile);"
+             self.apply_mod_reflection_profile(committed_render_profile);\
+             self.apply_mod_ghost_transparency(committed_render_profile);"
         ));
         let reload = code_only(include_str!("staged_manifest_lifecycle.rs"));
         assert!(reload.contains(
             "self.apply_mod_bloom_render_profile(render_profile);\
-             self.apply_mod_reflection_profile(render_profile);"
+             self.apply_mod_reflection_profile(render_profile);\
+             self.apply_mod_ghost_transparency(render_profile);"
         ));
         // Frame capture loads no manifest: it may set the style from its own
         // scene file, never from a mod's render profile.
@@ -298,6 +353,7 @@ mod tests {
         ] {
             let code = code_only(capture);
             assert!(!code.contains("apply_mod_reflection_profile"));
+            assert!(!code.contains("apply_mod_ghost_transparency"));
             assert!(!code.contains("ModRenderProfile"));
             assert!(!code.contains("ModReflection"));
         }

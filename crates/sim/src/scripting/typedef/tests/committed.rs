@@ -130,6 +130,56 @@ fn committed_sdk_types_contain_reflection_style_and_surface_reflectivity() {
     }
 }
 
+// Ghost styles and `render.ghosts` reach both committed SDK type files and
+// the generator alike.
+#[test]
+fn committed_sdk_types_contain_ghost_styles_and_ghost_transparency() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let generated_ts = generate_typescript(&registry);
+    let generated_luau = generate_luau(&registry);
+    let committed_ts = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.ts"
+    ))
+    .expect("read committed postretro.d.ts");
+    let committed_luau = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.luau"
+    ))
+    .expect("read committed postretro.d.luau");
+
+    for output in [&generated_ts, &committed_ts] {
+        assert!(output.contains("export type GhostTransparency ="));
+        assert!(output.contains("| \"blend\""));
+        assert!(output.contains("| \"dither\";"));
+        assert!(output.contains("ghosts?: GhostTransparency;"));
+        assert!(output.contains("export type GhostStyleDescriptor = {"));
+        assert!(output.contains("tint?: readonly [number, number, number];"));
+        assert!(output.contains("impactAudio?: boolean;"));
+        assert!(output.contains("ghostStyles?: ReadonlyArray<GhostStyleDescriptor>;"));
+        assert!(output.contains(
+            "export function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor;"
+        ));
+    }
+    for output in [&generated_luau, &committed_luau] {
+        assert!(output.contains("export type GhostTransparency ="));
+        assert!(output.contains("\"blend\""));
+        assert!(output.contains("| \"dither\""));
+        assert!(output.contains("ghosts: GhostTransparency?,"));
+        assert!(output.contains("export type GhostStyleDescriptor = {"));
+        assert!(output.contains("impactAudio: boolean?,"));
+        assert!(output.contains("ghostStyles: {GhostStyleDescriptor}?,"));
+        assert!(output.contains(
+            "declare function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor"
+        ));
+        assert!(output.contains("defineGhostStyle: typeof(defineGhostStyle),"));
+    }
+}
+
 #[test]
 fn committed_sdk_types_contain_mod_audio_profile() {
     use crate::scripting::typedef::register_all;

@@ -616,7 +616,7 @@ export function defineEntity<T>(
  * `config.name`, `config.id`, and `config.version` are required. The id gates
  * multiplayer admission; the version is display-only and never compared. The
  * first committed id and version remain active across staged reloads. Optional
- * arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`, `presentationTemplates`,
+ * arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`,
  * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`,
  * `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
  * effects until the manifest is returned and validated. `factionSentimentDecay`
@@ -670,6 +670,22 @@ export function sentiment(
 export function defineFluid(
   desc: import("postretro").FluidDescriptor,
 ): import("postretro").FluidDescriptor {
+  return desc;
+}
+
+/** Identity builder for a ghost style in `defineMod({ ghostStyles: [...] })`.
+ * A map's `ghost_link` names it through its `ghost_style` key. `name` is
+ * required; every other field is optional and an omitted one takes the floor
+ * style's value: `tint` (rgb, default `[1, 1, 1]`), `opacity` (default 0.5)
+ * and `saturation` (default 0, greyscale), each in [0, 1]; `audio` (default
+ * false) plays members' sounds through the Ghost bus, and `impactAudio`
+ * (default false) adds their impact sounds, only when `audio` is true. A
+ * malformed field drops the whole style with a warning naming it, a repeated
+ * name is dropped and the first declaration stands, and a link naming no
+ * declared style uses the floor style. Pure: no engine side effects. */
+export function defineGhostStyle(
+  desc: import("postretro").GhostStyleDescriptor,
+): import("postretro").GhostStyleDescriptor {
   return desc;
 }
 

@@ -622,6 +622,7 @@ impl App {
         }
         self.apply_mod_bloom_render_profile(committed_render_profile);
         self.apply_mod_reflection_profile(committed_render_profile);
+        self.apply_mod_ghost_transparency(committed_render_profile);
         self.apply_mod_audio_profile(committed_audio_profile);
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_presentation_templates(committed_presentation_templates);

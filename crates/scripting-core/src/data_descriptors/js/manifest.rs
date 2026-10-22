@@ -197,6 +197,7 @@ pub fn drain_render_profile_js<'js>(
     Ok(ModRenderProfile {
         bloom: drain_bloom_profile_js(render, scope)?,
         reflections: drain_reflection_profile_js(render, scope)?,
+        ghosts: drain_ghost_transparency_js(render, scope)?,
     })
 }
 
@@ -301,6 +302,39 @@ fn drain_reflection_profile_js<'js>(
         }
     };
     Ok(ModReflectionProfile { style })
+}
+
+/// `render.ghosts`; absent or malformed is blend, the default.
+fn drain_ghost_transparency_js<'js>(
+    render: &Object<'js>,
+    scope: &str,
+) -> Result<ModGhostTransparency, DescriptorError> {
+    if !render.contains_key("ghosts").map_err(js_err)? {
+        return Ok(ModGhostTransparency::default());
+    }
+    let raw: JsValue = render.get("ghosts").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(ModGhostTransparency::default());
+    }
+    let authored = raw.as_string().and_then(|value| value.to_string().ok());
+    Ok(
+        match authored
+            .as_deref()
+            .and_then(ModGhostTransparency::from_authored)
+        {
+            Some(mode) => mode,
+            None => {
+                warn_ghost_transparency(scope);
+                ModGhostTransparency::default()
+            }
+        },
+    )
+}
+
+/// The one diagnostic for an unusable `render.ghosts`, shared by both
+/// runtimes so their warnings match word for word.
+pub(crate) fn warn_ghost_transparency(scope: &str) {
+    log::warn!("[Scripting] {scope}: `render.ghosts` must be `blend` or `dither`; using `blend`");
 }
 
 /// The one diagnostic for an unusable `render.reflections.style`, shared by

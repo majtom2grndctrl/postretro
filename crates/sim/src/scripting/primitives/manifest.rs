@@ -40,6 +40,12 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_enum("GhostTransparency")
+        .doc("How every ghost-link ghost is made translucent, mod-wide. Projectile billboard ghosts blend under both.")
+        .variant("blend", "Alpha-blend each ghost at its presented opacity. This is the default.")
+        .variant("dither", "Screen-door: an ordered screen-space pattern keeps or discards each ghost pixel, keeping about its presented opacity's share of them, so ghosts read as stippled rather than see-through.")
+        .finish();
+    registry
         .register_type("RenderProfile")
         .doc("Static renderer preferences declared once for the entire mod.")
         .field(
@@ -51,6 +57,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "reflections?",
             "ReflectionRenderProfile",
             "Fluid reflection presentation preferences. Optional; defaults to pixel-style reflections.",
+        )
+        .field(
+            "ghosts?",
+            "GhostTransparency",
+            "How ghosts are made translucent. Optional; defaults to `\"blend\"`. An unknown value warns and uses `\"blend\"`.",
         )
         .finish();
     registry
@@ -183,6 +194,16 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field("waveLength?", "NumberOrRange", "Crest-to-crest length, in texture texels: one number L, meaning [L, L], or a `[min, max]` range from which each crest takes its own length. Finite, 0 < min <= max <= 128, and min >= 8 x `waveAmplitude` (the default 8 included). Omitted: [max(48, 8A), max(80, 8A)] for amplitude A.")
         .finish();
     registry
+        .register_type("GhostStyleDescriptor")
+        .doc("A ghost style declared in `ModManifest.ghostStyles`, built with `defineGhostStyle`: how a ghost link's ghosts look and whether their sounds carry. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional; an omitted field takes the floor style's value (neutral, translucent, no sound). A malformed field drops the whole style with a warning naming it, and a second declaration of an existing name is dropped; the first declaration stands and the rest of the manifest is kept. A link naming no declared style uses the floor style. Styles resolve on each machine by name and never affect co-op compatibility.")
+        .field("name", "String", "Non-empty name a `ghost_link`'s `ghost_style` key refers to. Unique within the manifest; a later duplicate is dropped.")
+        .field("tint?", "[f32; 3]", "Colour multiplier as `[r, g, b]`, each finite and in [0, 1]. Omitted: `[1, 1, 1]`.")
+        .field("opacity?", "f32", "Presented opacity, finite and in [0, 1]. Omitted: 0.5.")
+        .field("saturation?", "f32", "Colour saturation, finite and in [0, 1]: 0 is greyscale, 1 the member's own colour. Omitted: 0.")
+        .field("audio?", "bool", "Members' sounds also play at the ghost through the Ghost bus. Omitted: false.")
+        .field("impactAudio?", "bool", "Impact sounds from members' shots ghost too. Takes effect only when `audio` is true. Omitted: false.")
+        .finish();
+    registry
         .register_type("ModManifest")
         .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
@@ -199,7 +220,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "render?",
             "RenderProfile",
-            "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom and pixel-style fluid reflections.",
+            "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom, pixel-style fluid reflections and alpha-blended ghosts.",
         )
         .field(
             "movers?",
@@ -250,6 +271,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "fluids?",
             "Vec<FluidDescriptor>",
             "Engine-global fluid declarations, each built with `defineFluid`. Optional; declaration order assigns each fluid's index. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune fluids.",
+        )
+        .field(
+            "ghostStyles?",
+            "Vec<GhostStyleDescriptor>",
+            "Engine-global ghost style declarations, each built with `defineGhostStyle`. Optional. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune styles.",
         )
         .field(
             "uiTrees?",
@@ -563,7 +589,7 @@ fn register_input_types(registry: &mut PrimitiveRegistry) {
 mod tests {
     use super::*;
     use postretro_entities::{FactionRegistry, slot_table::StoreDeclarationSet};
-    use postretro_foundation::FluidRegistry;
+    use postretro_foundation::{FluidRegistry, GhostStyleRegistry};
     use postretro_scripting_core::data_descriptors::{
         ModFontAssets, ModThemeTokens, PresentationOverlay, PresentationTemplate,
         SwitchingDescriptor,
@@ -607,6 +633,7 @@ mod tests {
             faction_sentiment_decay: 0.0,
             entity_faction_names: Vec::new(),
             fluids: FluidRegistry::default(),
+            ghost_styles: GhostStyleRegistry::default(),
             ui_trees: Vec::new(),
             presentation_templates: Vec::<PresentationTemplate>::new(),
             presentation_overlays: Vec::<PresentationOverlay>::new(),
@@ -639,6 +666,7 @@ mod tests {
             "sentiment",
             "factionSentimentDecay",
             "fluids",
+            "ghostStyles",
             "uiTrees",
             "presentationTemplates",
             "presentationOverlays",
@@ -708,7 +736,10 @@ mod tests {
                 "BloomRenderProfile",
                 ["resolution?", "pixelated?"].as_slice(),
             ),
-            ("RenderProfile", ["bloom?", "reflections?"].as_slice()),
+            (
+                "RenderProfile",
+                ["bloom?", "reflections?", "ghosts?"].as_slice(),
+            ),
         ] {
             let registered = registry
                 .iter_types()
@@ -769,6 +800,67 @@ mod tests {
         };
         let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
         assert_eq!(names, ["style?"]);
+    }
+
+    // Drift guard: the SDK's `GhostTransparency` union is the runtime enum's
+    // authored names, in order, default first. An exhaustive match maps each
+    // variant, so a new runtime mode fails to compile until it is registered.
+    #[test]
+    fn ghost_transparency_sdk_type_derives_from_the_runtime_mode() {
+        use postretro_scripting_core::runtime::ModGhostTransparency;
+        let mut registry = PrimitiveRegistry::new();
+        register_sdk_type(&mut registry);
+        let mode = registry
+            .iter_types()
+            .find(|registered| registered.name == "GhostTransparency")
+            .expect("GhostTransparency must be registered");
+        let TypeShape::StringEnum { variants } = &mode.shape else {
+            panic!(
+                "GhostTransparency must be a StringEnum, got {:?}",
+                mode.shape
+            );
+        };
+        let names: Vec<&str> = variants.iter().map(|variant| variant.name).collect();
+        let expected: Vec<&str> = ModGhostTransparency::ALL
+            .into_iter()
+            .map(|mode| {
+                let name = match mode {
+                    ModGhostTransparency::Blend => "blend",
+                    ModGhostTransparency::Dither => "dither",
+                };
+                assert_eq!(mode.authored_name(), name);
+                name
+            })
+            .collect();
+        assert_eq!(names, expected);
+        assert_eq!(ModGhostTransparency::default().authored_name(), names[0]);
+    }
+
+    // The ghost style descriptor declares `name` required and every other
+    // field optional, matching the drain's floor-filling.
+    #[test]
+    fn ghost_style_descriptor_sdk_type_requires_only_name() {
+        let mut registry = PrimitiveRegistry::new();
+        register_sdk_type(&mut registry);
+        let style = registry
+            .iter_types()
+            .find(|registered| registered.name == "GhostStyleDescriptor")
+            .expect("GhostStyleDescriptor must be registered");
+        let TypeShape::Struct { fields } = &style.shape else {
+            panic!("GhostStyleDescriptor must be a Struct");
+        };
+        let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
+        assert_eq!(
+            names,
+            [
+                "name",
+                "tint?",
+                "opacity?",
+                "saturation?",
+                "audio?",
+                "impactAudio?"
+            ]
+        );
     }
 
     // `surfaceReflectivity` is an optional field of the fluid descriptor,

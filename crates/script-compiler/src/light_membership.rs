@@ -577,6 +577,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineFaction",
     "sentiment",
     "defineFluid",
+    "defineGhostStyle",
     "defineMapCatalog",
     "defineWeaponPlacement",
     "defineTriggerPool",

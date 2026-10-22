@@ -187,7 +187,28 @@ pub fn drain_render_profile_lua(
     Ok(ModRenderProfile {
         bloom: drain_bloom_profile_lua(&render, scope)?,
         reflections: drain_reflection_profile_lua(&render, scope)?,
+        ghosts: drain_ghost_transparency_lua(&render, scope)?,
     })
+}
+
+/// `render.ghosts`; absent or malformed is blend, the default.
+fn drain_ghost_transparency_lua(
+    render: &Table,
+    scope: &str,
+) -> Result<ModGhostTransparency, DescriptorError> {
+    let authored = match render.get::<LuaValue>("ghosts").map_err(lua_err)? {
+        LuaValue::Nil => return Ok(ModGhostTransparency::default()),
+        LuaValue::String(value) => value
+            .to_str()
+            .ok()
+            .as_deref()
+            .and_then(ModGhostTransparency::from_authored),
+        _ => None,
+    };
+    Ok(authored.unwrap_or_else(|| {
+        warn_ghost_transparency(scope);
+        ModGhostTransparency::default()
+    }))
 }
 
 /// `render.bloom`; absent or malformed is the default bloom profile.

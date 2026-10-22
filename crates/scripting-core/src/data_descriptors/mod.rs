@@ -19,9 +19,9 @@ pub use super::data_registry::{ScopedCrossing, ScopedReaction};
 pub use super::registry::EntityId;
 pub use super::runtime::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
-    ModBloomResolution, ModGhostAudio, ModInputBinding, ModInputBlock, ModInputCommand,
-    ModInputGlyphs, ModLoading, ModMapEntry, ModMoverDefaults, ModReflectionProfile,
-    ModReflectionStyle, ModRenderProfile,
+    ModBloomResolution, ModGhostAudio, ModGhostTransparency, ModInputBinding, ModInputBlock,
+    ModInputCommand, ModInputGlyphs, ModLoading, ModMapEntry, ModMoverDefaults,
+    ModReflectionProfile, ModReflectionStyle, ModRenderProfile,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
@@ -59,8 +59,10 @@ pub use super::conv;
 
 mod audio_profile;
 mod charge_interrupts;
+mod declaration_list;
 mod error;
 mod fluids;
+mod ghost_styles;
 mod input_block;
 mod loading_manifest;
 mod movement_sounds;
@@ -112,6 +114,7 @@ pub(crate) use audio_profile::*;
 pub(crate) use charge_interrupts::*;
 pub use error::*;
 pub use fluids::{drain_fluids_js, drain_fluids_lua};
+pub use ghost_styles::{drain_ghost_styles_js, drain_ghost_styles_lua};
 pub(crate) use movement_sounds::*;
 pub use player_events::{PlayerEventSite, drain_player_events_js, drain_player_events_lua};
 pub use runtime_manifest::*;
@@ -131,7 +134,7 @@ pub use postretro_entities::data_descriptors::{
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{
-    behavior::*, combat::*, fluid::*, knockback::*, manifest::*, movement::*,
+    behavior::*, combat::*, fluid::*, ghost_style::*, knockback::*, manifest::*, movement::*,
 };
 
 pub use js::audio_profile::*;

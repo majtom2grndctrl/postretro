@@ -11146,6 +11146,7 @@ mod tests {
                     faction_sentiment_decay: 0.0,
                     entity_faction_names: Vec::new(),
                     fluids: Default::default(),
+                    ghost_styles: Default::default(),
                     maps: Vec::new(),
                     reactions: Vec::new(),
                     crossings: Vec::new(),

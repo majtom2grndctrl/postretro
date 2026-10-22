@@ -44,6 +44,10 @@ pub(crate) fn mod_compatibility_digest(
 /// Named skip: `registry.fluids`. A client resolves fluid names only against
 /// the host's table from the tuning payload, never its own declarations, so
 /// fluids that differ from the host's must not demote participation.
+///
+/// Named skip: `registry.ghost_styles`. Each peer resolves a link's style
+/// locally by name and styles never ride the wire, so peers whose styles
+/// differ each present their own and stay admitted.
 pub(crate) fn mod_compatibility_digest_from_registry(registry: &DataRegistry) -> [u8; 32] {
     mod_compatibility_digest(
         &registry.factions,
@@ -363,6 +367,7 @@ pub(crate) mod tests {
             faction_sentiment_decay: 0.0,
             entity_faction_names: vec![None],
             fluids: Default::default(),
+            ghost_styles: Default::default(),
             ui_trees: Vec::new(),
             presentation_templates: Vec::new(),
             presentation_overlays: Vec::new(),
@@ -396,6 +401,7 @@ pub(crate) mod tests {
         registry.replace_global_trigger_events(manifest.trigger_events.clone());
         registry.replace_global_trigger_pools(manifest.trigger_pools.clone());
         registry.replace_fluids(manifest.fluids.clone());
+        registry.replace_ghost_styles(manifest.ghost_styles.clone());
         mod_compatibility_digest_from_registry(&registry)
     }
 
@@ -910,6 +916,67 @@ pub(crate) mod tests {
             "digest",
             entries.into_iter().map(Ok),
         )
+    }
+
+    fn ghost_styles(entries: Vec<(&str, f32, bool)>) -> postretro_foundation::GhostStyleRegistry {
+        postretro_foundation::GhostStyleRegistry::from_declarations(
+            "digest",
+            entries.into_iter().map(|(name, opacity, audio)| {
+                Ok(postretro_foundation::GhostStyleDescriptor {
+                    name: name.to_string(),
+                    style: postretro_foundation::GhostStyle {
+                        opacity,
+                        audio,
+                        ..postretro_foundation::GhostStyle::FLOOR
+                    },
+                })
+            }),
+        )
+    }
+
+    // Ghost styles and `render.ghosts` are local presentation: peers whose
+    // declarations differ agree on the digest, so the session admits both.
+    #[test]
+    fn digest_ignores_adding_removing_and_retuning_ghost_styles_and_render_ghosts() {
+        let mut baseline = manifest();
+        baseline.ghost_styles = ghost_styles(vec![("echo", 0.45, true), ("veil", 0.5, false)]);
+        let expected = manifest_digest(&baseline);
+        assert_eq!(
+            expected,
+            manifest_digest(&manifest()),
+            "declaring styles at all leaves the digest unchanged"
+        );
+
+        for (edit, edited) in [
+            (
+                "added",
+                vec![
+                    ("echo", 0.45, true),
+                    ("veil", 0.5, false),
+                    ("shade", 0.2, false),
+                ],
+            ),
+            ("removed", vec![("echo", 0.45, true)]),
+            (
+                "reordered",
+                vec![("veil", 0.5, false), ("echo", 0.45, true)],
+            ),
+            ("retuned", vec![("echo", 0.9, false), ("veil", 0.5, false)]),
+            ("cleared", Vec::new()),
+        ] {
+            let mut changed = baseline.clone();
+            changed.ghost_styles = ghost_styles(edited);
+            assert_ne!(changed.ghost_styles, baseline.ghost_styles, "{edit}");
+            assert_eq!(
+                expected,
+                manifest_digest(&changed),
+                "{edit} ghost styles are intentionally outside the mod digest"
+            );
+        }
+
+        let mut dithered = baseline.clone();
+        dithered.render.ghosts = postretro_scripting_core::runtime::ModGhostTransparency::Dither;
+        assert_eq!(expected, manifest_digest(&dithered), "render.ghosts");
     }
 
     // Fluid declarations never demote a client whose fluids differ from the host's.

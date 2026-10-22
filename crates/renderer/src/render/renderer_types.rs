@@ -728,6 +728,12 @@ pub struct Renderer {
     pub(super) fluid_reflection_style:
         postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
 
+    /// The mod's ghost transparency (`render.ghosts`), boot state like the
+    /// reflection style so a full-renderer rebuild keeps it. The ghost passes
+    /// read it to pick each batch's pipeline. Offscreen capture never sets it:
+    /// blend, the default.
+    pub(super) ghost_transparency: postretro_render_cpu::ghost_transparency::GhostTransparency,
+
     /// The player's fluid reflection tier. Boot state, like Surface Depth, so
     /// a change before full init or with no level holds until the next full
     /// init and fluid install consult it, and a full-renderer rebuild after

@@ -1067,6 +1067,7 @@ impl ScriptingCore {
             );
             data_registry.replace_maps(std::mem::take(&mut manifest.maps));
             data_registry.replace_fluids(std::mem::take(&mut manifest.fluids));
+            data_registry.replace_ghost_styles(std::mem::take(&mut manifest.ghost_styles));
             data_registry.set_default_weapon_placement(manifest.default_weapon_placement.take());
             let global_reactions = validate_scoped_sequence_primitives(
                 std::mem::take(&mut manifest.reactions),

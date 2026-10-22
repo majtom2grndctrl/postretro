@@ -203,6 +203,7 @@ fn reflection_style_parses_independently_of_the_bloom_block() {
     let expected = ModRenderProfile {
         bloom: quarter,
         reflections: ModReflectionProfile::default(),
+        ghosts: Default::default(),
     };
     assert_eq!(js, expected);
     assert_eq!(luau, expected);

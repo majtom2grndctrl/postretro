@@ -908,7 +908,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
@@ -928,6 +928,13 @@ declare function sentiment(fromFaction: string, toFaction: string, values: { sen
 --- declaration order assigns its index. A field out of range, or a repeated
 --- name, is rejected with a warning naming the field; the first stands.
 declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
+--- Pure identity builder for a ghost style in `ghostStyles` on the returned
+--- mod manifest. A map's `ghost_link` names it through its `ghost_style` key.
+--- Every field but `name` is optional and takes the floor style's value when
+--- omitted. A malformed field drops the whole style with a warning naming it,
+--- a repeated name is dropped and the first stands, and a link naming no
+--- declared style uses the floor style.
+declare function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -1179,6 +1186,7 @@ export type ModManifestInput = {
   sentiment: {FactionSentimentDescriptor}?,
   factionSentimentDecay: number?,
   fluids: {FluidDescriptor}?,
+  ghostStyles: {GhostStyleDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,

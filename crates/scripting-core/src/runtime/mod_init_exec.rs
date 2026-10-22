@@ -12,18 +12,18 @@ use crate::data_descriptors::{
     drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
     drain_factions_lua, drain_fluids_js, drain_fluids_lua, drain_fonts_js, drain_fonts_lua,
-    drain_frontend_js, drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
-    drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
-    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
-    drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
-    drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_player_events_js, drain_player_events_lua, drain_presentation_overlays_js,
-    drain_presentation_overlays_lua, drain_presentation_templates_js,
-    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
-    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
-    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
-    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
-    entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_frontend_js, drain_frontend_lua, drain_ghost_styles_js, drain_ghost_styles_lua,
+    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
+    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
+    drain_input_block_js, drain_input_block_lua, drain_loading_js, drain_loading_lua,
+    drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js, drain_mod_trigger_events_lua,
+    drain_mover_defaults_js, drain_mover_defaults_lua, drain_player_events_js,
+    drain_player_events_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
+    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
+    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
+    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
+    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    entity_descriptor_from_lua, entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -482,6 +482,15 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let ghost_styles = match drain_ghost_styles_js(&ctx, &obj, "default mod manifest export") {
+            Ok(ghost_styles) => ghost_styles,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `ghostStyles` invalid: {e}"),
+                });
+                return;
+            }
+        };
         let reactions = match drain_global_reactions_js(&ctx, &obj, "default mod manifest export") {
             Ok(r) => r,
             Err(e) => {
@@ -568,6 +577,7 @@ pub(super) fn run_mod_init_quickjs(
             fonts,
             maps,
             fluids,
+            ghost_styles,
             reactions,
             crossings,
             events,
@@ -865,6 +875,13 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let ghost_styles = drain_ghost_styles_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `ghostStyles` invalid: {e}"
+            ),
+        }
+    })?;
     let reactions = drain_global_reactions_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -935,6 +952,7 @@ pub(super) fn run_mod_init_luau(
         fonts,
         maps,
         fluids,
+        ghost_styles,
         reactions,
         crossings,
         events,
@@ -948,6 +966,10 @@ pub(super) fn run_mod_init_luau(
 #[cfg(test)]
 #[path = "reflection_profile_tests.rs"]
 mod reflection_profile_tests;
+
+#[cfg(test)]
+#[path = "ghost_manifest_tests.rs"]
+mod ghost_manifest_tests;
 
 #[cfg(test)]
 mod tests {

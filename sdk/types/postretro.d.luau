@@ -1244,12 +1244,21 @@ export type ReflectionRenderProfile = {
   style: ReflectionStyle?,
 }
 
+--- How every ghost-link ghost is made translucent, mod-wide. Projectile billboard ghosts blend under both. Valid values: `blend`, `dither`.
+export type GhostTransparency =
+  --- Alpha-blend each ghost at its presented opacity. This is the default.
+  "blend"
+  --- Screen-door: an ordered screen-space pattern keeps or discards each ghost pixel, keeping about its presented opacity's share of them, so ghosts read as stippled rather than see-through.
+  | "dither"
+
 --- Static renderer preferences declared once for the entire mod.
 export type RenderProfile = {
   --- Bloom presentation preferences. Optional; defaults to half-resolution smooth bloom.
   bloom: BloomRenderProfile?,
   --- Fluid reflection presentation preferences. Optional; defaults to pixel-style reflections.
   reflections: ReflectionRenderProfile?,
+  --- How ghosts are made translucent. Optional; defaults to `"blend"`. An unknown value warns and uses `"blend"`.
+  ghosts: GhostTransparency?,
 }
 
 --- Static kinematic-mover defaults for the mod. Authored mover `auto_close_ms` values take precedence.
@@ -1508,6 +1517,22 @@ export type FluidDescriptor = {
   waveLength: number | {number}?,
 }
 
+--- A ghost style declared in `ModManifest.ghostStyles`, built with `defineGhostStyle`: how a ghost link's ghosts look and whether their sounds carry. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional; an omitted field takes the floor style's value (neutral, translucent, no sound). A malformed field drops the whole style with a warning naming it, and a second declaration of an existing name is dropped; the first declaration stands and the rest of the manifest is kept. A link naming no declared style uses the floor style. Styles resolve on each machine by name and never affect co-op compatibility.
+export type GhostStyleDescriptor = {
+  --- Non-empty name a `ghost_link`'s `ghost_style` key refers to. Unique within the manifest; a later duplicate is dropped.
+  name: string,
+  --- Colour multiplier as `[r, g, b]`, each finite and in [0, 1]. Omitted: `[1, 1, 1]`.
+  tint: {number}?,
+  --- Presented opacity, finite and in [0, 1]. Omitted: 0.5.
+  opacity: number?,
+  --- Colour saturation, finite and in [0, 1]: 0 is greyscale, 1 the member's own colour. Omitted: 0.
+  saturation: number?,
+  --- Members' sounds also play at the ghost through the Ghost bus. Omitted: false.
+  audio: boolean?,
+  --- Impact sounds from members' shots ghost too. Takes effect only when `audio` is true. Omitted: false.
+  impactAudio: boolean?,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
@@ -1516,7 +1541,7 @@ export type ModManifest = {
   id: string,
   --- Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid.
   version: string,
-  --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom and pixel-style fluid reflections.
+  --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom, pixel-style fluid reflections and alpha-blended ghosts.
   render: RenderProfile?,
   --- Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay.
   movers: MoverDefaults?,
@@ -1538,6 +1563,8 @@ export type ModManifest = {
   factionSentimentDecay: number?,
   --- Engine-global fluid declarations, each built with `defineFluid`. Optional; declaration order assigns each fluid's index. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune fluids.
   fluids: {FluidDescriptor}?,
+  --- Engine-global ghost style declarations, each built with `defineGhostStyle`. Optional. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune styles.
+  ghostStyles: {GhostStyleDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
@@ -2677,7 +2704,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
@@ -2697,6 +2724,13 @@ declare function sentiment(fromFaction: string, toFaction: string, values: { sen
 --- declaration order assigns its index. A field out of range, or a repeated
 --- name, is rejected with a warning naming the field; the first stands.
 declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
+--- Pure identity builder for a ghost style in `ghostStyles` on the returned
+--- mod manifest. A map's `ghost_link` names it through its `ghost_style` key.
+--- Every field but `name` is optional and takes the floor style's value when
+--- omitted. A malformed field drops the whole style with a warning naming it,
+--- a repeated name is dropped and the first stands, and a link naming no
+--- declared style uses the floor style.
+declare function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -2787,6 +2821,7 @@ export type ModManifestInput = {
   sentiment: {FactionSentimentDescriptor}?,
   factionSentimentDecay: number?,
   fluids: {FluidDescriptor}?,
+  ghostStyles: {GhostStyleDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,
@@ -3484,6 +3519,8 @@ export type PostretroModule = {
   sentiment: typeof(sentiment),
   --- Pure identity builder for a fluid declaration in a mod manifest's `fluids`.
   defineFluid: typeof(defineFluid),
+  --- Pure identity builder for a ghost style in a mod manifest's `ghostStyles`.
+  defineGhostStyle: typeof(defineGhostStyle),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.

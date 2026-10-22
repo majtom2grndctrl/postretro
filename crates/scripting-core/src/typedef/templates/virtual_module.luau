@@ -168,6 +168,8 @@ export type PostretroModule = {
   sentiment: typeof(sentiment),
   --- Pure identity builder for a fluid declaration in a mod manifest's `fluids`.
   defineFluid: typeof(defineFluid),
+  --- Pure identity builder for a ghost style in a mod manifest's `ghostStyles`.
+  defineGhostStyle: typeof(defineGhostStyle),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.

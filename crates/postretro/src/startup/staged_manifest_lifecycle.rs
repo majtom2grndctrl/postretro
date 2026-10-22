@@ -307,11 +307,12 @@ impl App {
                 self.refresh_environment_fluids();
             }
             // Ahead of the UI commit so the first frame that presents the
-            // reloaded UI already renders through the reloaded bloom profile
-            // and reflection style.
+            // reloaded UI already renders through the reloaded bloom profile,
+            // reflection style and ghost transparency.
             if let Some(render_profile) = staged_render_profile(&result, &outcome) {
                 self.apply_mod_bloom_render_profile(render_profile);
                 self.apply_mod_reflection_profile(render_profile);
+                self.apply_mod_ghost_transparency(render_profile);
             }
             if let Some(audio_profile) = staged_audio_profile(&result, &outcome) {
                 self.apply_mod_audio_profile(audio_profile);
@@ -359,6 +360,7 @@ mod tests {
             reflections: postretro_scripting_core::runtime::ModReflectionProfile {
                 style: postretro_scripting_core::runtime::ModReflectionStyle::Smooth,
             },
+            ghosts: postretro_scripting_core::runtime::ModGhostTransparency::Dither,
         }
     }
 
@@ -397,6 +399,7 @@ mod tests {
                 faction_sentiment_decay: 0.0,
                 entity_faction_names: Vec::new(),
                 fluids: Default::default(),
+                ghost_styles: Default::default(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),

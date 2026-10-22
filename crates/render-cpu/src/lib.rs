@@ -8,6 +8,7 @@ pub mod flash_limiter;
 pub mod fluid_surface;
 pub mod fog_mask;
 pub mod frame_uniforms;
+pub mod ghost_transparency;
 pub mod lightmap_pool;
 pub mod loaded_texture;
 pub mod material_plan;

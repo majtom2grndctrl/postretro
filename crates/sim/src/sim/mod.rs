@@ -1917,6 +1917,8 @@ mod mover_pin_tick_tests;
 pub(crate) mod predict_reconcile;
 #[cfg(test)]
 mod teleport_tick_tests;
+#[cfg(test)]
+mod trap_tick_tests;
 
 /// Single-player / single-pawn movement stage. Resolves the local movement pawn via
 /// the registry marker, then drives it through the shared host multi-pawn seam

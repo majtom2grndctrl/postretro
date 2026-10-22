@@ -72,7 +72,7 @@ fn brush(center: Vec3, half: f32) -> EnvironmentBrush {
 }
 
 /// A cube region of `half` extent around `center`, sending to `destination`.
-fn classic(center: Vec3, half: f32, destination: Vec3, armed: bool) -> TeleporterRecord {
+pub(super) fn classic(center: Vec3, half: f32, destination: Vec3, armed: bool) -> TeleporterRecord {
     TeleporterRecord {
         source_entity: 0,
         mode: TeleportMode::Classic,

@@ -1980,3 +1980,88 @@ fn teleport_manifests_keep_member_events_and_reject_other_scopes_in_both_vms() {
     assert_eq!(js.reactions.len(), 1);
     assert_eq!(js.teleport_events[0].teleporter, EntityId::from_raw(65536));
 }
+
+// A trap `start`'s literal options reject the reaction at install in both
+// runtimes: a non-positive interval, a negative phase, a non-finite value, an
+// unknown option. A trap verb addresses one member, never a group or a token.
+#[test]
+fn trap_start_literals_and_addressing_are_rejected_in_both_vms() {
+    let step = |args_js: &str, args_lua: &str| {
+        (
+            format!(
+                r#"({{ name: "bad", sequence: [{{ id: 7, primitive: "startTrap", args: {args_js} }}] }})"#
+            ),
+            format!(
+                r#"return {{ name = "bad", sequence = {{ {{ id = 7, primitive = "startTrap", args = {args_lua} }} }} }}"#
+            ),
+        )
+    };
+    let cases = [
+        (
+            step("{ intervalMs: 0 }", "{ intervalMs = 0 }"),
+            "`startTrap` `args.intervalMs` must be positive",
+        ),
+        (
+            step("{ intervalMs: -5 }", "{ intervalMs = -5 }"),
+            "`startTrap` `args.intervalMs` must be positive",
+        ),
+        (
+            step("{ phaseMs: -1 }", "{ phaseMs = -1 }"),
+            "`startTrap` `args.phaseMs` must not be negative",
+        ),
+        (
+            step("{ intervalMs: 1e40 }", "{ intervalMs = 1e40 }"),
+            "`startTrap` `args.intervalMs` must be a finite number",
+        ),
+        (
+            step("{ cadence: 5 }", "{ cadence = 5 }"),
+            "`startTrap` `args.cadence` is not a trap start option",
+        ),
+        (
+            (
+                r#"({ name: "bad", sequence: [{ kind: "npc", primitive: "fireTrap" }] })"#.to_string(),
+                r#"return { name = "bad", sequence = { { kind = "npc", primitive = "fireTrap" } } }"#.to_string(),
+            ),
+            "`fireTrap` addresses one projectile trap member, so it cannot carry a group `kind`",
+        ),
+        (
+            (
+                r#"({ name: "bad", sequence: [{ target: "@activators", primitive: "stopTrap" }] })"#.to_string(),
+                r#"return { name = "bad", sequence = { { target = "@activators", primitive = "stopTrap" } } }"#.to_string(),
+            ),
+            "`stopTrap` addresses one projectile trap member, not `@activators`",
+        ),
+    ];
+    for ((js_source, lua_source), expected) in cases {
+        let error = identical_rejection(&js_source, &lua_source);
+        assert!(error.contains(expected), "unexpected diagnostic: {error}");
+    }
+    // Non-finite numbers fail the runtimes' JSON lowering before the check.
+    for (js, lua) in [
+        ("{ intervalMs: NaN }", "{ intervalMs = 0/0 }"),
+        ("{ phaseMs: Infinity }", "{ phaseMs = math.huge }"),
+    ] {
+        let (js_source, lua_source) = step(js, lua);
+        eval_js(&js_source, |ctx, value| {
+            named_reaction_from_js(ctx, value).unwrap_err()
+        });
+        eval_lua(&lua_source, |value| {
+            named_reaction_from_lua(value).unwrap_err()
+        });
+    }
+    // Valid options, and none at all, install.
+    for (js, lua) in [
+        (
+            "{ intervalMs: 250, phaseMs: 0 }",
+            "{ intervalMs = 250, phaseMs = 0 }",
+        ),
+        ("{}", "{}"),
+    ] {
+        let (js_source, lua_source) = step(js, lua);
+        let js_reaction = eval_js(&js_source, |ctx, value| {
+            named_reaction_from_js(ctx, value).unwrap()
+        });
+        let lua_reaction = eval_lua(&lua_source, |value| named_reaction_from_lua(value).unwrap());
+        assert_eq!(js_reaction, lua_reaction);
+    }
+}

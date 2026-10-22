@@ -2,9 +2,11 @@
 
 mode: resumable
 status: proposed
-read at: 86a5bd62c
+read at: 260f10029
 
 Brief grounded at d6f3471; 76 commits since. Every Decision and Path symbol was re-read at 86a5bd62c (four read-only sweeps: PRL/compiler/map identity, netcode/replication, rendering/limiter, audio/scripting). No Decision premise is false. Path drift is below.
+
+Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time only). It touches `parse.rs`, `map_data.rs` and the FGD, but none of the runtime renderer, capture, limiter or netcode files this plan builds on, and not the pre-BSP peel path `ghost_link` shares with teleporters. No Correction changes.
 
 ## Corrections
 - `WIRE_VERSION` 32 → 33 (Wire format) → it is already 33 (`crates/net/src/handshake.rs:43`, PRLC Input-lane bump ae87ca368). This brief bumps **33 → 34**; `SNAPSHOT_VERSION` 21 → 22 stands (`crates/net/src/wire.rs:357`). AC "handshake across the old and new wire versions is refused" keeps its meaning.

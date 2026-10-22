@@ -48,6 +48,12 @@ pub(crate) fn mod_compatibility_digest(
 /// Named skip: `registry.ghost_styles`. Each peer resolves a link's style
 /// locally by name and styles never ride the wire, so peers whose styles
 /// differ each present their own and stay admitted.
+///
+/// Named skip: descriptor `ghost` and weapon `projectile.ghost`. Entity
+/// descriptors are outside this recipe altogether, and these two opt-ins are
+/// also stripped from the tuning payload: each peer resolves them from its own
+/// descriptors, so peers whose opt-ins differ see different ghosts and stay
+/// admitted.
 pub(crate) fn mod_compatibility_digest_from_registry(registry: &DataRegistry) -> [u8; 32] {
     mod_compatibility_digest(
         &registry.factions,
@@ -407,6 +413,7 @@ pub(crate) mod tests {
 
     fn entity_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("fixture-entity".to_string()),
@@ -889,6 +896,48 @@ pub(crate) mod tests {
                 "entity descriptor {field} is intentionally outside the mod digest"
             );
         }
+    }
+
+    // Acceptance (AC20): flipping a descriptor's `ghost` or a weapon's
+    // `projectile.ghost` leaves the compatibility digest unchanged, so a peer
+    // whose opt-ins differ is never demoted.
+    #[test]
+    fn digest_ignores_descriptor_and_projectile_ghost_opt_ins() {
+        fn digest_with(ghost: bool, projectile_ghost: bool) -> [u8; 32] {
+            let mut player = entity_descriptor();
+            player.canonical_name = Some("player".to_string());
+            player.ghost = ghost;
+            let mut launcher = entity_descriptor();
+            launcher.canonical_name = Some("rocket_launcher".to_string());
+            let (_, weapon) = entity_descriptor_edits()
+                .into_iter()
+                .find(|(field, _)| *field == "weapon")
+                .expect("weapon fixture");
+            let mut weapon = weapon.weapon.expect("weapon fixture declares a weapon");
+            weapon.resolution = postretro_entities::ResolutionMode::Projectile;
+            weapon.projectile = Some(postretro_foundation::ProjectileDescriptor {
+                speed: 30.0,
+                radius: 0.1,
+                lifetime_ms: 2_000.0,
+                visual: postretro_foundation::ProjectileVisual {
+                    body: postretro_foundation::ProjectileBodyVisual::Model {
+                        model: "models/rocket.glb".to_string(),
+                    },
+                    trail: None,
+                    light: None,
+                    impact_light: None,
+                },
+                ghost: projectile_ghost,
+            });
+            launcher.weapon = Some(weapon);
+            let mut manifest = manifest();
+            manifest.entities = vec![player, launcher];
+            manifest_digest(&manifest)
+        }
+        let baseline = digest_with(false, false);
+        assert_eq!(baseline, digest_with(true, false), "descriptor ghost");
+        assert_eq!(baseline, digest_with(false, true), "projectile.ghost");
+        assert_eq!(baseline, digest_with(true, true), "both opt-ins");
     }
 
     fn fluid(name: &str, viscosity: f32) -> postretro_foundation::FluidDescriptor {

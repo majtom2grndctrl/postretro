@@ -301,6 +301,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            ghost_look: None,
         };
         let shadow_only = PlannedInstance {
             forward_visible: false,

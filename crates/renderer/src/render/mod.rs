@@ -25,6 +25,7 @@ mod lightmap_residency;
 mod lightmap_streaming;
 mod loaded_texture;
 mod mesh_depth;
+mod mesh_ghost;
 mod mesh_pass;
 mod promoted_depth_cache;
 pub(crate) mod residency;

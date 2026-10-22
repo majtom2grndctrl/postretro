@@ -1224,6 +1224,12 @@ pub(super) struct FullRenderer {
     /// groups + palette runs each frame by `mesh_instances::plan_mesh_frame`.
     pub(super) mesh_draws: Vec<mesh_instances::MeshInstanceInput>,
 
+    /// Per-frame ghost instances (`rendering_pipeline.md` §7.9): unlit,
+    /// translucent, already culled at their mapped positions and carrying their
+    /// presented look. Refilled each frame via `set_ghost_mesh_draws`; planned
+    /// into `MeshFramePlans::ghost`, which never reaches shadow depth.
+    pub(super) ghost_mesh_draws: Vec<mesh_instances::MeshInstanceInput>,
+
     /// Reusable bone-palette scratch for per-frame per-instance sampling.
     /// `sample_clip` clears then refills it per instance, so steady-state frames
     /// allocate nothing. Lives on the renderer (not in the GPU pass) — it is

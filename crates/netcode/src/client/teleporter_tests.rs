@@ -154,7 +154,7 @@ fn teleport_baseline_that_fails_to_apply_rolls_its_binding_back() {
     assert!(
         !client
             .bindings
-            .teleporter_network_ids
+            .region_network_ids
             .contains_key(&NetworkId(7))
     );
     assert!(armed(&registry, installed));

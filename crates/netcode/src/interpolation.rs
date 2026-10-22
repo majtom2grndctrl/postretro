@@ -470,8 +470,10 @@ fn cut_pose(
     sample: &TransformSample,
     stance: LocomotionStance,
     holds_newest: bool,
+    state_tick: f64,
 ) -> PresentedPose {
     PresentedPose {
+        state_tick,
         transform: sample.transform,
         source: PoseSource::TeleportCut,
         holds_newest,
@@ -489,6 +491,13 @@ fn cut_pose(
 /// implementation: the branch *is* the contract here, not an internal detail).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PresentedPose {
+    /// The host tick, in the buffer's sample units, whose replicated state this
+    /// pose shows, for state read beside it (ghost-link history). The target tick
+    /// itself, except that a blend shows its leading sample, so a state and the
+    /// first motion toward it present together, and a pose held on the near side
+    /// of a teleport cut shows no state of the cut's own tick, so an arm sent with
+    /// a swap presents on the cut frame.
+    pub(crate) state_tick: f64,
     pub(crate) transform: Transform,
     pub(crate) source: PoseSource,
     /// The target is at or past the newest sample and this pose holds it: a
@@ -598,6 +607,7 @@ impl EntityBuffer {
         // not have history that far back.
         if target_tick <= f64::from(oldest.server_tick) {
             return Some(PresentedPose {
+                state_tick: target_tick,
                 transform: oldest.transform,
                 source: PoseSource::HeldOldest,
                 holds_newest: false,
@@ -630,10 +640,16 @@ impl EntityBuffer {
                     b
                 };
                 if crosses_teleport(a, b) {
+                    let state_tick = if target_tick < f64::from(b.server_tick) {
+                        target_tick.min(f64::from(b.server_tick) - 1.0)
+                    } else {
+                        target_tick
+                    };
                     return Some(cut_pose(
                         at,
                         self.stance_at_or_before(at.server_tick),
                         false,
+                        state_tick,
                     ));
                 }
                 let span = f64::from(b.server_tick) - f64::from(a.server_tick);
@@ -645,6 +661,7 @@ impl EntityBuffer {
                     0.0
                 };
                 return Some(PresentedPose {
+                    state_tick: f64::from(b.server_tick),
                     transform: lerp_transform(&a.transform, &b.transform, alpha),
                     source: PoseSource::Interpolated,
                     holds_newest: false,
@@ -661,6 +678,7 @@ impl EntityBuffer {
         // Unreachable: target is strictly between oldest and newest, so some adjacent
         // pair must bracket it. Fall back to the newest pose rather than panic.
         Some(PresentedPose {
+            state_tick: target_tick,
             transform: newest.transform,
             source: PoseSource::HeldNewest,
             holds_newest: true,
@@ -684,7 +702,12 @@ impl EntityBuffer {
             .nth(1)
             .is_some_and(|previous| crosses_teleport(previous, newest))
         {
-            return cut_pose(newest, self.stance_at_or_before(newest.server_tick), true);
+            return cut_pose(
+                newest,
+                self.stance_at_or_before(newest.server_tick),
+                true,
+                target_tick,
+            );
         }
         let overshoot_ticks = target_tick - f64::from(newest.server_tick);
         let overshoot_micros = overshoot_ticks * crate::netcode::SERVER_TICK_MICROS as f64;
@@ -707,6 +730,7 @@ impl EntityBuffer {
                     scale: newest.transform.scale,
                 };
                 PresentedPose {
+                    state_tick: target_tick,
                     transform: predicted,
                     source: PoseSource::Extrapolated,
                     holds_newest: false,
@@ -720,6 +744,7 @@ impl EntityBuffer {
             // No adjacent transform sample or past the extrapolation window: hold the
             // last known pose.
             _ => PresentedPose {
+                state_tick: target_tick,
                 transform: newest.transform,
                 source: PoseSource::HeldNewest,
                 holds_newest: true,

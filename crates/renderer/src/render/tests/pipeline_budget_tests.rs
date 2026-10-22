@@ -62,7 +62,11 @@ fn frame_plan_routes_viewmodels_away_from_shadow_depth() {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: !is_viewmodel,
-            is_viewmodel,
+            presentation: if is_viewmodel {
+                postretro_render_cpu::mesh_instances::MeshPresentation::Viewmodel
+            } else {
+                postretro_render_cpu::mesh_instances::MeshPresentation::World
+            },
         }
     }
 
@@ -72,6 +76,7 @@ fn frame_plan_routes_viewmodels_away_from_shadow_depth() {
             instance("world-weapon", 2, false),
             instance("viewmodel-weapon", 3, true),
         ],
+        &[],
         &TestJoints,
     );
     let (shadow_depth_plan, viewmodel_plan) =

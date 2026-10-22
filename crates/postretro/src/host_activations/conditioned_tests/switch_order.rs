@@ -154,6 +154,7 @@ fn conditioned_charged_release_then_switch_inside_a_stall_fires_the_charge_then_
 /// A drop-capable weapon descriptor: touchable, so the touch stage can place it.
 fn touchable(canonical_name: &str) -> postretro_entities::EntityTypeDescriptor {
     postretro_entities::EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some(canonical_name.to_owned()),

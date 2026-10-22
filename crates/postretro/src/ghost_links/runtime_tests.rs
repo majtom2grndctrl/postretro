@@ -106,7 +106,9 @@ impl Level {
         ]);
         let mut registry = EntityRegistry::new();
         spawn_loaded_ghost_links(&mut registry, &world);
-        let ghosts = GhostLinks::install(&world, &registry);
+        let mut ghosts = GhostLinks::install(&world, &registry);
+        // The player descriptor opts in; the engine never ghosts a pawn by kind.
+        ghosts.refresh_opt_ins(&super::opt_ins_test_fixtures::player_opted_in());
         let mut links: Vec<_> = registry
             .iter_with_kind(ComponentKind::GhostLink)
             .map(|(id, value)| match value {
@@ -189,6 +191,7 @@ impl Level {
                 alpha,
                 elapsed_seconds,
                 view: CandidateView::Authoritative,
+                stamps: super::clocks::PoseStamps::None,
             },
         );
     }

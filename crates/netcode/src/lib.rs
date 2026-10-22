@@ -90,6 +90,10 @@ mod client_switch_relay_test;
 #[cfg(test)]
 mod client_tuning_install_tests;
 
+// Ghost-link records across a participation reset, over the real relay transport.
+#[cfg(test)]
+mod ghost_link_relay_tests;
+
 // The integrated in-memory prediction/reconciliation harnesses and their shared test
 // scaffolding. All are test-only: they drive the real seams end to end over a renet
 // relay pair on the production channel configuration (framed Input, acks and time
@@ -166,7 +170,7 @@ mod ingest_hit_harness_test;
 #[cfg(test)]
 mod snapshot_regression_harness_test;
 
-pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
+pub use client::{ClientPresentationInputs, ClientReplication, GhostLinkUpdate, MoverCorrection};
 #[cfg(test)]
 pub(crate) use client_switch::resolve_switch_outcome;
 pub use client_switch::{
@@ -197,6 +201,7 @@ pub use host_input::{host_handle_client_messages, send_shot_verdict};
 pub use host_presentation::{
     present_client_pawns as host_present_client_pawns,
     presented_client_pawn_host_tick as host_presented_client_pawn_tick,
+    presented_client_pawn_state_tick as host_presented_client_pawn_state_tick,
     probe_presented_client_pawn_feet as host_probe_presented_client_pawn_feet,
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
@@ -211,7 +216,8 @@ pub use lag_seed::seed_lag_profile_from_environment;
 // via the submodule path only; not re-exported here.
 pub use host_address::{dialable_host_address, probe_lan_address};
 pub use interpolation::ObservedTeleport;
-pub(crate) use interpolation::{DemoMover, InterpolationDelayState, RemoteInterpolationBuffer};
+pub use interpolation::RemoteInterpolationBuffer;
+pub(crate) use interpolation::{DemoMover, InterpolationDelayState};
 pub use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
@@ -246,8 +252,8 @@ pub(crate) use replication::produce_owned_snapshots;
 pub use replication::produce_owned_snapshots_with_host_aim;
 pub use replication::{
     ReplicableSet, host_register_descriptor_entities, host_register_descriptor_entity,
-    host_register_loaded_movers, host_register_loaded_teleporters,
-    host_register_presentation_overrides,
+    host_register_loaded_ghost_links, host_register_loaded_movers,
+    host_register_loaded_teleporters, host_register_presentation_overrides,
 };
 pub use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
@@ -763,6 +769,7 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         ComponentPayload::TeleporterState(state) => {
             state.index != postretro_net::wire::NO_WIRE_TELEPORTER
         }
+        ComponentPayload::GhostLinkState(state) => state.validate().is_ok(),
         // The movement payload is received and validated here but not yet applied
         // to any local `PlayerMovementComponent` — the authoritative mover is
         // Transform-only. Validate its floats now so a non-finite payload is
@@ -1586,6 +1593,25 @@ pub fn client_sample_interpolation(
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
     }
+    ClientPresentationInputs {
+        render_server_tick: Some(render_server_tick),
+        ..replication.presented_player_inputs().clone()
+    }
+}
+
+/// Sample every remote at a caller-chosen render tick, as
+/// [`client_sample_interpolation`] does once time sync names one. Binary-level
+/// harnesses drive a deterministic render clock through it; production derives
+/// the tick from time sync.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn client_sample_interpolation_at(
+    registry: &mut EntityRegistry,
+    replication: &mut ClientReplication,
+    render_server_tick: f64,
+    frame_anim_time: f64,
+) -> ClientPresentationInputs {
+    replication.sample_into_registry(registry, render_server_tick, frame_anim_time);
     ClientPresentationInputs {
         render_server_tick: Some(render_server_tick),
         ..replication.presented_player_inputs().clone()
@@ -2973,6 +2999,7 @@ mod tests {
             },
         };
         let descriptor = EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("live_ion_rifle".to_string()),
@@ -3803,6 +3830,7 @@ mod tests {
             )
             .unwrap();
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("reference_pistol".to_string()),
@@ -7264,6 +7292,7 @@ mod tests {
     /// `PlayerMovement` pawn and marks it the local player (the host's own pawn).
     fn host_player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("player".to_string()),

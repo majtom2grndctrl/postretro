@@ -40,7 +40,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// positional tags (`ClientControlMessage` `JoinSeed` 3 to 2, `Revealed` 4 to 3;
 /// `ServerControlMessage` `SessionRoster` 5 to 3). Input's sub-tick resend is a
 /// sender-side setting and does not affect wire compatibility.
-pub const WIRE_VERSION: u32 = 33;
+/// Ghost links advance it to 34: component payloads gained the link-state record
+/// (`SNAPSHOT_VERSION` 22).
+pub const WIRE_VERSION: u32 = 34;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -624,6 +626,46 @@ mod switch_tick_epoch_tests {
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 31);
     }
 
+    // AC42: a wire-33 peer cannot decode the ghost-link record riding entity
+    // records, so both gates refuse it across the bump; the vocabulary did not
+    // change, so the application protocol stays PRLC.
+    #[test]
+    fn ghost_link_record_refuses_wire_33_peers_and_admits_wire_34() {
+        const PRE_GHOST_WIRE_VERSION: u32 = 33;
+        assert_eq!(WIRE_VERSION, 34);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 22);
+        assert_eq!(
+            PROTOCOL_ID, 0x_5052_4C43,
+            "no vocabulary change: still PRLC"
+        );
+        let peer = |wire_version| ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version,
+        };
+        assert_eq!(validate_handshake(protocol_version(), peer(34)), Ok(()));
+        assert!(matches!(
+            validate_handshake(protocol_version(), peer(PRE_GHOST_WIRE_VERSION)),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        // A wire-33 host refuses this peer just the same.
+        assert!(matches!(
+            validate_handshake(peer(PRE_GHOST_WIRE_VERSION), protocol_version()),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_GHOST_WIRE_VERSION),
+            "gate 1 refuses the pre-ghost layout before any decode"
+        );
+    }
+
+    /// The switch declaration as shipped at wire 25, before its client tick.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+    struct PreTickSwitchDeclaration {
+        declaration_id: u32,
+        slot: u8,
+    }
+
     // A PRLB / wire-32 peer carries weapon switches on Control, so it numbers
     // the later Control tags differently (`JoinSeed`, `Revealed`, `SessionRoster`)
     // and cannot share the gameplay channel layout. Both gates refuse it; the
@@ -633,18 +675,17 @@ mod switch_tick_epoch_tests {
         const PRE_LAYOUT_PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
         const PRE_LAYOUT_WIRE_VERSION: u32 = 32;
         assert_eq!(PROTOCOL_ID, 0x_5052_4C43, "the layout is protocol 12, PRLC");
-        assert_eq!(WIRE_VERSION, 33);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 21);
+        const { assert!(WIRE_VERSION > PRE_LAYOUT_WIRE_VERSION) };
         assert_eq!(
             validate_handshake(
                 protocol_version(),
                 ProtocolVersion {
                     app_protocol_id: 0x_5052_4C43,
-                    wire_version: 33,
+                    wire_version: WIRE_VERSION,
                 },
             ),
             Ok(()),
-            "a PRLC / 33 peer is admitted"
+            "a PRLC peer at the current wire version is admitted"
         );
         for (app_protocol_id, wire_version) in [
             (PRE_LAYOUT_PROTOCOL_ID, WIRE_VERSION),
@@ -667,13 +708,6 @@ mod switch_tick_epoch_tests {
                 "gate 1 refuses the pre-layout pair before any decode"
             );
         }
-    }
-
-    /// The switch declaration as shipped at wire 25, before its client tick.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-    struct PreTickSwitchDeclaration {
-        declaration_id: u32,
-        slot: u8,
     }
 
     #[test]

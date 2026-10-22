@@ -75,6 +75,8 @@ export type LocomotionDescriptor = {
 export type EntityTypeDescriptor = {
   --- Stable archetype name used by map classname routing and inventory loadout references. Required for direct map placement and for weapon descriptors named by `components.inventory.loadout`; omit only for archetypes that are never addressed by name.
   canonicalName: string?,
+  --- Whether entities of this archetype can ghost: draw as a translucent ghost in the other room copy while inside an armed ghost link. Optional; defaults to false for every descriptor, a player's included. A link only narrows what descriptors opt in. Each peer reads it from its own descriptors; it never affects simulation.
+  ghost: boolean?,
   --- Optional component presets. Direct map placement materializes light, emitter, movement, mesh, health, and touchable presets; `player_spawn` also composes its inventory loadout into separate wieldable instances.
   components: EntityTypeComponents?,
 }
@@ -245,6 +247,8 @@ export type ProjectileDescriptor = {
   lifetimeMs: number,
   --- What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection.
   visual: ProjectileVisual,
+  --- Whether this projectile can ghost through an armed ghost link, whoever fired it, a monster included. Optional; defaults to false. Presentation only: it changes no damage or hit detection.
+  ghost: boolean?,
 }
 
 --- Direct-hit velocity change independent of damage. Omit the block for no direct knockback.

@@ -1651,6 +1651,7 @@ mod tests {
         speed: f32,
     ) -> ProjectileDescriptor {
         ProjectileDescriptor {
+            ghost: false,
             speed,
             radius: 0.1,
             lifetime_ms: 1_500.0,
@@ -1683,6 +1684,7 @@ mod tests {
         inventory_weapon: Option<&str>,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(name.to_string()),

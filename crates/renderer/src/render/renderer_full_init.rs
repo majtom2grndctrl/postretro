@@ -766,6 +766,7 @@ pub(crate) fn build_full_renderer(
         smoke_pass,
         mesh_pass,
         mesh_draws: Vec::new(),
+        ghost_mesh_draws: Vec::new(),
         bone_palette_scratch: Vec::new(),
         mesh_overflow_last_warn: f32::NEG_INFINITY,
         spot_entity_occluders_submitted: 0,

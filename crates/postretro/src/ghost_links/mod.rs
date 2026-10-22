@@ -1,28 +1,40 @@
 // Ghost-link runtime: installed links, their state history and per-frame membership.
 // See: context/lib/entity_model.md §7d
 
+#[cfg(feature = "capture")]
+mod capture;
 mod clocks;
 mod eligibility;
 mod frame;
 mod history;
 mod install;
+mod look;
 mod membership;
+mod opt_ins;
+#[cfg(test)]
+mod opt_ins_test_fixtures;
+mod replication;
 
 use std::time::Instant;
 
 use glam::Vec3;
 use postretro_collision::TeleporterRegions;
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use postretro_entities::{ComponentKind, ComponentValue, DataRegistry, EntityId, EntityRegistry};
 use postretro_foundation::SeamlessMapping;
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS;
 
-use clocks::PresentationClocks;
+use clocks::{PoseStamps, PresentationClocks};
 use eligibility::CandidateView;
+#[cfg(test)]
+pub(crate) use eligibility::GhostCategory;
 use history::{LinkHistory, LinkState};
 pub(crate) use install::spawn_loaded_ghost_links;
+pub(crate) use look::GhostLook;
 pub(crate) use membership::GhostMember;
 use membership::{GhostKey, MembershipTable, ramp_step};
+use opt_ins::GhostOptIns;
+pub(crate) use opt_ins::warn_if_links_without_opt_ins;
 
 /// One installed link: its mapping, the entity holding its live state, and that
 /// state's history over host time.
@@ -42,6 +54,9 @@ pub(crate) struct GhostLinks {
     /// Link volumes in map order; the point query visits each containing link once.
     regions: TeleporterRegions,
     membership: MembershipTable,
+    /// This peer's descriptor opt-ins, following the committed descriptor
+    /// snapshot ([`Self::refresh_opt_ins`]).
+    opt_ins: GhostOptIns,
     /// Single player's count of completed fixed ticks: the host-tick stand-in
     /// that stamps history and clocks when no endpoint exists.
     completed_ticks: u32,
@@ -49,6 +64,11 @@ pub(crate) struct GhostLinks {
     last_stamp: Option<u32>,
     /// When the previous membership update presented, for the ramp's frame time.
     last_update: Option<Instant>,
+    /// The presented-frame seconds the latest update ramped by: the per-ghost
+    /// flash clamp limits against the same frame time.
+    last_elapsed: f32,
+    /// Each link's resolved style and current look.
+    looks: look::LinkLooks,
 }
 
 /// One frame's inputs to [`GhostLinks::update`].
@@ -59,6 +79,8 @@ pub(crate) struct GhostFrame<'a> {
     /// Presented-frame seconds since the previous update.
     pub elapsed_seconds: f32,
     pub view: CandidateView<'a>,
+    /// Per-member pose stamps for delay-buffered members.
+    pub stamps: PoseStamps<'a>,
 }
 
 impl GhostLinks {
@@ -124,7 +146,6 @@ impl GhostLinks {
 
     /// Link `index`'s state history. Replication pushes received states here and
     /// resets it to spawn state on demotion.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn history_mut(&mut self, index: u16) -> Option<&mut LinkHistory> {
         self.links
             .get_mut(usize::from(index))
@@ -168,6 +189,13 @@ impl GhostLinks {
         }
     }
 
+    /// Follow the committed descriptor snapshot before [`Self::update`], so a
+    /// committed reload that flips an opt-in re-resolves membership on the next
+    /// frame, through the membership ramp.
+    pub(crate) fn refresh_opt_ins(&mut self, data: &DataRegistry) {
+        self.opt_ins.refresh(data);
+    }
+
     /// Presented-frame seconds since the previous update, measured from the
     /// frame's `now` the way the photosensitivity limiter measures its frames.
     pub(crate) fn frame_elapsed(&mut self, now: Instant) -> f32 {
@@ -175,6 +203,7 @@ impl GhostLinks {
             now.saturating_duration_since(previous).as_secs_f32()
         });
         self.last_update = Some(now);
+        self.last_elapsed = elapsed;
         elapsed
     }
 
@@ -187,30 +216,40 @@ impl GhostLinks {
             links,
             regions,
             membership,
+            opt_ins,
             ..
         } = self;
         membership.begin_frame();
         if !links.is_empty() {
             let clocks = frame.clocks;
-            let oldest = clocks.oldest();
+            let oldest = clocks.oldest_readable();
             for link in links.iter_mut() {
                 link.history.prune_before(oldest);
             }
-            eligibility::visit_candidates(registry, frame.view, |entity, category, origin| {
-                let Ok(presented) = registry.interpolated_transform(entity, frame.alpha) else {
-                    return;
-                };
-                let clock = clocks.lane(clocks::member_lane(registry, entity, origin, category));
-                let shown = category.members_bit();
-                // A pawn's presented body point; projectile origins and mover
-                // bounds centers join with their categories.
-                regions.visit_containing(presented.position, |index| {
-                    if links[index].history.state_at(clock).shows(shown) {
-                        let link = u16::try_from(index).expect("ghost link index fits u16");
-                        membership.mark_target(GhostKey { link, entity }, category, presented);
-                    }
-                });
-            });
+            eligibility::visit_candidates(
+                registry,
+                frame.view,
+                opt_ins,
+                |entity, category, origin| {
+                    let Ok(presented) = registry.interpolated_transform(entity, frame.alpha) else {
+                        return;
+                    };
+                    let lane = clocks::member_lane(registry, entity, origin, category);
+                    let clock = frame
+                        .stamps
+                        .state_tick(entity, lane)
+                        .unwrap_or_else(|| clocks.lane(lane));
+                    let shown = category.members_bit();
+                    // A pawn's body point and a descriptor entity's or projectile's
+                    // origin; mover bounds centers join with their category.
+                    regions.visit_containing(presented.position, |index| {
+                        if links[index].history.state_at(clock).shows(shown) {
+                            let link = u16::try_from(index).expect("ghost link index fits u16");
+                            membership.mark_target(GhostKey { link, entity }, category, presented);
+                        }
+                    });
+                },
+            );
         }
         membership.finish_frame(ramp_step(frame.elapsed_seconds), |link| {
             links.get(usize::from(link)).map(|link| link.mapping)

@@ -996,6 +996,7 @@ mod tests {
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -1219,6 +1220,7 @@ mod tests {
 
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("target_dummy".to_string()),
@@ -1660,6 +1662,7 @@ mod tests {
         // without a redundant prefix.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("campfire".to_string()),
@@ -1707,6 +1710,7 @@ mod tests {
         // consumption. Only `initial_velocity` writes to the field.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("campfire".to_string()),
@@ -1751,6 +1755,7 @@ mod tests {
         // `initial_rate` overrides the descriptor's `rate` default at spawn.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("campfire".to_string()),
@@ -1792,6 +1797,7 @@ mod tests {
     fn emitter_initial_burst_kvp_overrides_u32_field() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("burstfire".to_string()),
@@ -1835,6 +1841,7 @@ mod tests {
         // but leave the descriptor's value untouched. No crash.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("smolder".to_string()),
@@ -1897,6 +1904,7 @@ mod tests {
 
         // Register a data-archetype descriptor for the same classname.
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("billboard_emitter".to_string()),
@@ -1967,6 +1975,7 @@ mod tests {
         // captured here).
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: None,
@@ -2086,6 +2095,7 @@ mod tests {
     /// for spawn-point tests that only care about transform / tags / KVPs.
     fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -2103,6 +2113,7 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -2167,6 +2178,7 @@ mod tests {
 
     fn player_with_loadout(classname: &str, loadout: &[&str]) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -2301,6 +2313,7 @@ mod tests {
 
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -2853,6 +2866,7 @@ mod tests {
         let mut sprite = weapon_descriptor("plasma");
         sprite.weapon.as_mut().unwrap().resolution = ResolutionMode::Projectile;
         sprite.weapon.as_mut().unwrap().projectile = Some(ProjectileDescriptor {
+            ghost: false,
             speed: 40.0,
             radius: 0.2,
             lifetime_ms: 2_000.0,
@@ -2888,6 +2902,7 @@ mod tests {
         let mut rocket = weapon_descriptor("rocket");
         rocket.weapon.as_mut().unwrap().resolution = ResolutionMode::Projectile;
         rocket.weapon.as_mut().unwrap().projectile = Some(ProjectileDescriptor {
+            ghost: false,
             speed: 25.0,
             radius: 0.4,
             lifetime_ms: 3_000.0,

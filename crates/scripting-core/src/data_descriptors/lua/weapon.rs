@@ -81,6 +81,7 @@ fn validate_optional_projectile_shapes_lua(weapon: &Table) -> Result<(), Descrip
     else {
         return Ok(());
     };
+    ghost_flag_lua(&projectile, PROJECTILE_GHOST_PATH)?;
     let Some(visual) = optional_table_field_lua(
         &projectile,
         "visual",

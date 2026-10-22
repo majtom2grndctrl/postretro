@@ -972,6 +972,10 @@ mod reflection_profile_tests;
 mod ghost_manifest_tests;
 
 #[cfg(test)]
+#[path = "ghost_descriptor_tests.rs"]
+mod ghost_descriptor_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::data_descriptors::{SwitchingDescriptor, TriggerPoolArm};

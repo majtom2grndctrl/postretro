@@ -930,6 +930,18 @@ impl App {
                 .expect("level installed before ghost links bind"),
             &script_ctx.registry.borrow(),
         );
+        crate::ghost_links::warn_if_links_without_opt_ins(
+            self.level
+                .as_ref()
+                .map_or(0, |level| level.ghost_links.links.len()),
+            &script_ctx.data_registry.borrow(),
+        );
+        self.ghost_links.bind_styles(
+            self.level
+                .as_ref()
+                .expect("level installed before ghost styles bind"),
+            &script_ctx.data_registry.borrow().ghost_styles,
+        );
         // The level's trees joined the tree set.
         session.check_accessibility_entry();
 
@@ -1956,6 +1968,7 @@ pub(crate) mod tests {
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             teleporter_bindings: Default::default(),
             ghost_links: Default::default(),
+            ghost_render: Default::default(),
             player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
@@ -2029,6 +2042,7 @@ pub(crate) mod tests {
 
     pub(super) fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(name.to_string()),

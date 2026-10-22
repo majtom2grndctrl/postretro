@@ -15,6 +15,8 @@ pub(crate) mod attachments;
 pub(crate) mod emitter_bridge;
 #[path = "scripting/frame_systems/fog_volume_bridge.rs"]
 pub(crate) mod fog_volume_bridge;
+#[path = "scripting/frame_systems/ghost_render.rs"]
+pub(crate) mod ghost_render;
 #[path = "scripting/frame_systems/input_mode.rs"]
 pub(crate) mod input_mode;
 #[path = "scripting/frame_systems/light_bridge.rs"]

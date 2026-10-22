@@ -134,6 +134,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_type("EntityTypeDescriptor")
         .doc("Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.")
         .field("canonicalName?", "String", "Stable archetype name used by map classname routing and inventory loadout references. Required for direct map placement and for weapon descriptors named by `components.inventory.loadout`; omit only for archetypes that are never addressed by name.")
+        .field("ghost?", "bool", "Whether entities of this archetype can ghost: draw as a translucent ghost in the other room copy while inside an armed ghost link. Optional; defaults to false for every descriptor, a player's included. A link only narrows what descriptors opt in. Each peer reads it from its own descriptors; it never affects simulation.")
         .field(
             "components?",
             "EntityTypeComponents",
@@ -296,6 +297,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("radius", "f32", "How wide the projectile's hit area is, in metres, measured outward from its flight path. `0` is allowed for a point-sized path; larger values are easier to hit with. Use a finite number of 0 or greater.")
         .field("lifetimeMs", "f32", "The longest time the projectile may exist, in milliseconds. For example, `2000` means two seconds. Use a finite number greater than 0; the weapon's `range` can end the flight sooner.")
         .field("visual", "ProjectileVisual", "What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection.")
+        .field("ghost?", "bool", "Whether this projectile can ghost through an armed ghost link, whoever fired it, a monster included. Optional; defaults to false. Presentation only: it changes no damage or hit detection.")
         .finish();
     registry
         .register_type("KnockbackDescriptor")

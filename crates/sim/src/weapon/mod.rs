@@ -1366,6 +1366,7 @@ pub(crate) mod tests {
         descriptor.resolution = ResolutionMode::Projectile;
         descriptor.muzzle_offset = muzzle_offset.map(|offset| offset.to_array());
         descriptor.projectile = Some(ProjectileDescriptor {
+            ghost: false,
             speed: 20.0,
             radius: 0.1,
             lifetime_ms: 1_000.0,

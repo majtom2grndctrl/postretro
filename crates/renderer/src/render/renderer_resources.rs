@@ -113,6 +113,7 @@ impl Renderer {
         self.full_mut().smoke_pass.clear_collections();
         self.full_mut().mesh_pass.release_level_resources();
         self.full_mut().mesh_draws.clear();
+        self.full_mut().ghost_mesh_draws.clear();
         let full = self.full_mut();
         clear_kinematic_mover_frame_state(
             &mut full.kinematic_mover_draws,

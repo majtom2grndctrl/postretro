@@ -138,3 +138,67 @@ fn member_lane_delays_slot_pawns_on_the_host_and_every_remote_on_a_client() {
         MemberLane::Mover
     );
 }
+
+// P33 at the clock level (movers are not yet ghost members): on a connected
+// client a link arm and a mover phase change applied on one host tick ride one
+// snapshot, stamped S. The mover re-simulates from that phase to the estimated
+// host tick on the frame the snapshot applies; the mover lane reads link state
+// at that same estimated tick, already at or past S, so the arm presents with
+// the motion on that frame and not before it.
+#[test]
+fn mover_lane_reads_a_link_arm_on_the_frame_its_snapshot_applies() {
+    let spawn = LinkState {
+        armed: false,
+        members: GhostMembers::all(),
+    };
+    let mut history = LinkHistory::new(spawn);
+    let snapshot_stamp = 120;
+    let frame = |latest| {
+        PresentationClocks::compute(
+            ClockSource::Client {
+                render_server_tick: Some(112.25),
+                estimated_server_tick: Some(123.4),
+                latest_snapshot_tick: latest,
+            },
+            0.25,
+        )
+    };
+    // The frame before the snapshot lands: no arm, and the mover still plays
+    // its old phase.
+    assert!(
+        !history
+            .state_at(frame(Some(118)).lane(MemberLane::Mover))
+            .armed
+    );
+    history.push(
+        snapshot_stamp,
+        LinkState {
+            armed: true,
+            ..spawn
+        },
+    );
+    let applied = frame(Some(snapshot_stamp));
+    assert!(applied.lane(MemberLane::Mover) >= f64::from(snapshot_stamp));
+    assert!(history.state_at(applied.lane(MemberLane::Mover)).armed);
+    // Remotes trail: a pawn presented at the render tick still reads disarmed.
+    assert!(!history.state_at(applied.lane(MemberLane::Remote)).armed);
+}
+
+// Pose stamps cover delay-buffered members only: movers and simulated members
+// read their lane clock, and a remote with no sampled pose falls back to it.
+#[test]
+fn pose_stamps_apply_to_the_remote_lane_only_and_fall_back_to_the_lane_clock() {
+    let mut registry = EntityRegistry::new();
+    let entity = registry.spawn(Default::default());
+    let replication = crate::netcode::ClientReplication::default();
+    for stamps in [PoseStamps::None, PoseStamps::Client(&replication)] {
+        for lane in [MemberLane::Simulated, MemberLane::Remote, MemberLane::Mover] {
+            assert_eq!(stamps.state_tick(entity, lane), None);
+        }
+    }
+    let clocks = PresentationClocks::compute(ClockSource::Host { tick: 101 }, 0.25);
+    assert_close(
+        clocks.oldest_readable(),
+        clocks.oldest() - POSE_STAMP_LAG_TICKS,
+    );
+}

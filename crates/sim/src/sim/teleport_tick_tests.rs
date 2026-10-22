@@ -1111,6 +1111,7 @@ fn teleport_record_survives_a_movement_descriptor_hot_reload() {
         let mut movement = trigger_movement_descriptor();
         movement.air.jumps = jumps;
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("player".into()),

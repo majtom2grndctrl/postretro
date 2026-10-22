@@ -10377,6 +10377,7 @@ fn projectile_weapon_descriptor(
     cooldown_ms: f32,
 ) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some(canonical_name.to_string()),
@@ -10404,6 +10405,7 @@ fn projectile_weapon_descriptor(
             secondary: None,
             resolution: ResolutionMode::Projectile,
             projectile: Some(ProjectileDescriptor {
+                ghost: false,
                 speed: 18.0,
                 radius: 0.1,
                 lifetime_ms: 1_000.0,

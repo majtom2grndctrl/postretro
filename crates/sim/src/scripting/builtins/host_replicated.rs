@@ -148,6 +148,7 @@ mod tests {
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -170,6 +171,7 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -320,6 +322,26 @@ mod tests {
         assert!(descriptor_is_host_replicated(&mesh_descriptor(
             "crate", false
         )));
+    }
+
+    // `ghost` is a descriptor attribute, not a component kind: opting an
+    // archetype in never moves it across the networked-by-default line.
+    #[test]
+    fn descriptor_ghost_opt_in_never_changes_networked_by_default_classification() {
+        for descriptor in [
+            light_descriptor("torch", true),
+            mesh_descriptor("crate", false),
+            behavior_enemy_descriptor("grunt"),
+        ] {
+            let mut opted_in = descriptor.clone();
+            opted_in.ghost = true;
+            assert_eq!(
+                descriptor_is_host_replicated(&opted_in),
+                descriptor_is_host_replicated(&descriptor),
+                "{:?}",
+                descriptor.canonical_name
+            );
+        }
     }
 
     #[test]

@@ -1198,6 +1198,7 @@ mod tests {
 
     fn grunt_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("grunt".to_string()),

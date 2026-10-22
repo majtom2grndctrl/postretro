@@ -107,6 +107,8 @@ pub enum NetEndpoint {
         loaded_movers: std::collections::HashSet<EntityId>,
         /// Installed teleporter regions registered for authoritative arming.
         loaded_teleporters: std::collections::HashSet<EntityId>,
+        /// Installed ghost links registered for always-on link-state replication.
+        loaded_ghost_links: std::collections::HashSet<EntityId>,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -530,6 +532,7 @@ impl NetEndpoint {
                     descriptor_entities: std::collections::HashSet::new(),
                     loaded_movers: std::collections::HashSet::new(),
                     loaded_teleporters: std::collections::HashSet::new(),
+                    loaded_ghost_links: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
                     last_sent_tuning: HashMap::new(),
@@ -783,6 +786,7 @@ impl NetEndpoint {
             descriptor_entities,
             loaded_movers,
             loaded_teleporters,
+            loaded_ghost_links,
             demo_mover,
             state_slots,
             last_sent_tuning,
@@ -807,6 +811,7 @@ impl NetEndpoint {
         descriptor_entities.clear();
         loaded_movers.clear();
         loaded_teleporters.clear();
+        loaded_ghost_links.clear();
         *demo_mover = DemoMoverState::from_env();
         state_slots.reset_schema();
         last_sent_tuning.clear();

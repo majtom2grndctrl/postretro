@@ -70,6 +70,7 @@ pub fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor 
     };
 
     EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some(classname.to_string()),

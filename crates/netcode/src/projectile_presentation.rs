@@ -757,6 +757,7 @@ mod tests {
 
     fn descriptor() -> ProjectileDescriptor {
         ProjectileDescriptor {
+            ghost: false,
             speed: 4.0,
             radius: 0.1,
             lifetime_ms: 1_000.0,
@@ -800,6 +801,7 @@ mod tests {
 
     fn projectile_visual_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("test_remote_projectile".to_string()),

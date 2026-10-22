@@ -305,6 +305,7 @@ impl App {
                 // A reload that declares, drops or reorders fluids re-resolves
                 // the installed level's fluid volumes against the new table.
                 self.refresh_environment_fluids();
+                self.refresh_ghost_styles();
             }
             // Ahead of the UI commit so the first frame that presents the
             // reloaded UI already renders through the reloaded bloom profile,

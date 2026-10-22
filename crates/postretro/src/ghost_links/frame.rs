@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use super::GhostFrame;
-use super::clocks::{ClockSource, PresentationClocks};
+use super::clocks::{ClockSource, PoseStamps, PresentationClocks};
 use super::eligibility::CandidateView;
 use crate::netcode::NetEndpoint;
 
@@ -30,13 +30,25 @@ impl crate::App {
     /// host-seat client pawns) and before render collection reads entities.
     pub(crate) fn update_ghost_links(&mut self, alpha: f32, now: Instant) {
         let elapsed_seconds = self.ghost_links.frame_elapsed(now);
+        self.drain_received_ghost_link_state();
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let (source, view) = match session.net_endpoint.as_ref() {
-            Some(NetEndpoint::Host { tick, .. }) => (
+        let (source, view, stamps) = match session.net_endpoint.as_ref() {
+            Some(NetEndpoint::Host {
+                tick,
+                client_pawn_presentation,
+                allocator,
+                ..
+            }) => (
                 ClockSource::Host { tick: *tick },
                 CandidateView::Authoritative,
+                PoseStamps::HostSeat {
+                    buffer: client_pawn_presentation,
+                    allocator,
+                    tick: *tick,
+                    alpha,
+                },
             ),
             Some(NetEndpoint::Client {
                 replication,
@@ -49,14 +61,18 @@ impl crate::App {
                     latest_snapshot_tick: replication.latest_server_tick(),
                 },
                 CandidateView::Client(replication),
+                PoseStamps::Client(replication),
             ),
             None => (
                 ClockSource::SinglePlayer {
                     completed_ticks: self.ghost_links.completed_ticks(),
                 },
                 CandidateView::Authoritative,
+                PoseStamps::None,
             ),
         };
+        self.ghost_links
+            .refresh_opt_ins(&session.scripting.script_ctx.data_registry.borrow());
         let registry = session.scripting.script_ctx.registry.borrow();
         self.ghost_links.update(
             &registry,
@@ -65,6 +81,7 @@ impl crate::App {
                 alpha,
                 elapsed_seconds,
                 view,
+                stamps,
             },
         );
     }

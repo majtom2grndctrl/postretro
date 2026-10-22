@@ -47,7 +47,6 @@ impl LinkState {
 pub(crate) struct LinkHistory {
     /// Local spawn state: the installed component's starting armed state and
     /// categories. Replication returns to it on demotion.
-    #[cfg_attr(not(test), allow(dead_code))]
     spawn: LinkState,
     /// The state in force before the first retained change.
     base: LinkState,
@@ -125,8 +124,7 @@ impl LinkHistory {
     }
 
     /// Forget every recorded or received change and present local spawn state.
-    /// Replication calls it on demotion; until then only tests do.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Replication calls it on demotion.
     pub(crate) fn reset_to_spawn(&mut self) {
         self.rebase(self.spawn);
     }

@@ -260,6 +260,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_weapon.clear();
                 app.active_slot_resync.reset();
                 app.observer_weapon_cues.clear();
+                // Received link state is dropped with every other replicated
+                // state; links ramp back to local spawn state.
+                app.ghost_links.reset_received_state();
                 // Demotion dropped the host's tuning: until the next one
                 // installs, this client's volumes keep gravity and push but
                 // every fluid is dry.
@@ -964,6 +967,9 @@ pub(crate) struct App {
     /// The level's ghost links: link-state history and this frame's ghosts,
     /// built at level install and dropped at unload. Render collection reads it.
     ghost_links: ghost_links::GhostLinks,
+    /// This frame's ghost draws and each ghost's flash-clamp channel. Cleared
+    /// at unload with the links.
+    ghost_render: scripting_systems::ghost_render::GhostRenderCollector,
     /// Host-only player events bound from the composed active set, with their
     /// per-player edge memory. Rebuilt with the trigger bindings.
     player_events: postretro_sim::player_events::PlayerEventTable,
@@ -3863,6 +3869,7 @@ impl App {
                 descriptor_entities: _,
                 loaded_movers: _,
                 loaded_teleporters: _,
+                loaded_ghost_links: _,
                 demo_mover: _,
                 state_slots,
                 last_sent_tuning,
@@ -4690,6 +4697,7 @@ impl App {
             descriptor_entities: _,
             loaded_movers: _,
             loaded_teleporters: _,
+            loaded_ghost_links: _,
             demo_mover,
             state_slots,
             last_sent_tuning,
@@ -5571,9 +5579,10 @@ impl App {
         );
     }
 
-    /// Register PRL-loaded kinematic movers for outbound replication after level
-    /// install. Host-gated and reload-safe; connected clients have already spawned
-    /// the same movers locally from PRL and bind incoming baselines by `mover_id`.
+    /// Register PRL-loaded kinematic movers, teleporters and ghost links for
+    /// outbound replication after level install. Host-gated and reload-safe;
+    /// connected clients have already installed the same entities from PRL and
+    /// bind incoming baselines by `mover_id` or by map-order index and source.
     fn host_register_loaded_movers_after_install(&mut self) {
         let Some(script_ctx) = self
             .session
@@ -5587,6 +5596,7 @@ impl App {
             replicable,
             loaded_movers,
             loaded_teleporters,
+            loaded_ghost_links,
             ..
         }) = self
             .session
@@ -5602,6 +5612,12 @@ impl App {
             allocator,
             replicable,
             loaded_teleporters,
+        );
+        netcode::host_register_loaded_ghost_links(
+            &registry,
+            allocator,
+            replicable,
+            loaded_ghost_links,
         );
     }
 
@@ -7150,6 +7166,7 @@ mod tests {
         placement: Option<WeaponPlacementDescriptor>,
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(canonical_name.to_owned()),
@@ -8683,6 +8700,7 @@ mod tests {
         .expect("weapon parses");
         let table = sound_events::DescriptorSoundTable::build(&[
             postretro_entities::EntityTypeDescriptor {
+                ghost: false,
                 faction: None,
                 tolerance: None,
                 canonical_name: Some("pistol".to_string()),
@@ -11949,6 +11967,7 @@ mod tests {
         states.insert("attack".to_string(), unresolved("Attack", false));
 
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("remote_enemy".to_string()),

@@ -1,15 +1,19 @@
 // Ghost eligibility: the one place that decides what can ghost, and as which category.
 // See: context/lib/entity_model.md §7d
 
+use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::components::projectile::ProjectileComponent;
+use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
+use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_level_format::ghost_links::GhostMembers;
 
+use super::opt_ins::GhostOptIns;
 use crate::netcode::{ClientReplication, ReplicatedDescriptorClass};
 
 /// The member category a link shows or hides, in the id-56 bit order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-// Entities and projectiles classify once descriptor opt-ins land.
+// Movers classify once `ghost_tags` resolution lands.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum GhostCategory {
     Players,
@@ -54,39 +58,99 @@ pub(crate) enum CandidateOrigin<'a> {
 /// The ghost eligibility chokepoint: whether `entity` can ever ghost, and as
 /// which category. Nothing else decides eligibility.
 ///
-/// Thin slice: player pawns only, hardcoded here. Task 6 replaces the body with
-/// the descriptor `ghost` attribute (default false for every descriptor, the
-/// player's included) resolved from the class each entity was materialized
-/// from, plus the projectile and entity categories.
+/// Resolved from this peer's own descriptors (`opt_ins`) by the class the
+/// entity was materialized from, the same way on every role:
+/// - a player pawn ghosts when its descriptor sets `ghost`;
+/// - a non-player descriptor entity ghosts when its descriptor sets `ghost`;
+/// - a projectile ghosts when its firing weapon sets `projectile.ghost`,
+///   whoever fired it, a monster included.
+///
+/// The engine never branches on actor kind: a player descriptor that omits
+/// `ghost` puts no pawn in any ghost set. Movers have no descriptor: they
+/// join through their links' `ghost_tags`, which this does not resolve yet.
 pub(crate) fn classify(
     registry: &EntityRegistry,
     entity: EntityId,
     origin: CandidateOrigin<'_>,
+    opt_ins: &GhostOptIns,
 ) -> Option<GhostCategory> {
     match origin {
-        CandidateOrigin::Local => {
-            let provenance = registry
-                .get_component::<DescriptorProvenance>(entity)
-                .ok()?;
-            let pawn = matches!(
-                provenance.spawn_path,
-                DescriptorSpawnPath::PlayerSpawn | DescriptorSpawnPath::NetworkSlot
-            ) && registry.has_component_kind(entity, ComponentKind::PlayerMovement)
-                == Ok(true);
-            pawn.then_some(GhostCategory::Players)
-        }
-        CandidateOrigin::Replicated(ReplicatedDescriptorClass::Pawn(_)) => {
-            Some(GhostCategory::Players)
-        }
-        CandidateOrigin::Replicated(_) => None,
+        CandidateOrigin::Local => classify_local(registry, entity, opt_ins),
+        CandidateOrigin::Replicated(class) => classify_replicated(class, opt_ins),
     }
 }
 
-/// Visit every eligible candidate once, with its category and origin. The
-/// viewer's own pawn never ghosts on its own machine, on any role.
+/// A registry entity this machine owns, by its gameplay projectile state or
+/// the descriptor provenance it spawned with.
+fn classify_local(
+    registry: &EntityRegistry,
+    entity: EntityId,
+    opt_ins: &GhostOptIns,
+) -> Option<GhostCategory> {
+    if let Ok(projectile) = registry.get_component::<ProjectileComponent>(entity) {
+        // Every gameplay projectile records the weapon descriptor it was fired
+        // from, an enemy's included; its `owner_weapon` may be a provenance id.
+        let weapon = projectile.source_weapon.as_deref()?;
+        return opt_ins
+            .projectile(weapon)
+            .then_some(GhostCategory::Projectiles);
+    }
+    let provenance = registry
+        .get_component::<DescriptorProvenance>(entity)
+        .ok()?;
+    let name = provenance.canonical_name.as_str();
+    match provenance.spawn_path {
+        DescriptorSpawnPath::PlayerSpawn | DescriptorSpawnPath::NetworkSlot => {
+            let pawn =
+                registry.has_component_kind(entity, ComponentKind::PlayerMovement) == Ok(true);
+            (pawn && opt_ins.descriptor(name)).then_some(GhostCategory::Players)
+        }
+        DescriptorSpawnPath::MapPlacement | DescriptorSpawnPath::RuntimeSpawn => {
+            // A carried wieldable draws with its holder, never on its own.
+            (!registry.is_inventory_owned(entity) && opt_ins.descriptor(name))
+                .then_some(GhostCategory::Entities)
+        }
+        // A remote client's fire, flown on the host under its weapon's class.
+        // A presentation copy with no body is the host's hidden mirror of a
+        // gameplay projectile that classifies on its own.
+        DescriptorSpawnPath::ProjectilePresentation => (has_projectile_body(registry, entity)
+            && opt_ins.projectile(name))
+        .then_some(GhostCategory::Projectiles),
+        DescriptorSpawnPath::DefaultWeapon => None,
+    }
+}
+
+fn has_projectile_body(registry: &EntityRegistry, entity: EntityId) -> bool {
+    registry.get_component::<SpriteVisual>(entity).is_ok()
+        || registry.get_component::<MeshComponent>(entity).is_ok()
+}
+
+/// A client display copy: only the class tag it was materialized from.
+fn classify_replicated(
+    class: ReplicatedDescriptorClass<'_>,
+    opt_ins: &GhostOptIns,
+) -> Option<GhostCategory> {
+    match class {
+        ReplicatedDescriptorClass::Pawn(name) => {
+            opt_ins.descriptor(name).then_some(GhostCategory::Players)
+        }
+        ReplicatedDescriptorClass::Descriptor(name) => {
+            opt_ins.descriptor(name).then_some(GhostCategory::Entities)
+        }
+        ReplicatedDescriptorClass::Projectile(weapon) => opt_ins
+            .projectile(weapon)
+            .then_some(GhostCategory::Projectiles),
+    }
+}
+
+/// Visit every eligible candidate once, with its category and origin. Bounded
+/// to the kinds that can be members, allocation free. The viewer's own pawn and
+/// projectiles never ghost on its own machine, on any role: a client's
+/// predicted shots are local entities its replicated view never offers.
 pub(crate) fn visit_candidates(
     registry: &EntityRegistry,
     view: CandidateView<'_>,
+    opt_ins: &GhostOptIns,
     mut visit: impl FnMut(EntityId, GhostCategory, CandidateOrigin<'_>),
 ) {
     let viewer = crate::followed_player_pawn(registry);
@@ -94,14 +158,26 @@ pub(crate) fn visit_candidates(
         if Some(entity) == viewer {
             return;
         }
-        if let Some(category) = classify(registry, entity, origin) {
+        if let Some(category) = classify(registry, entity, origin, opt_ins) {
             visit(entity, category, origin);
         }
     };
     match view {
         CandidateView::Authoritative => {
-            for (entity, _) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
-                offer(entity, CandidateOrigin::Local);
+            // Pawns, descriptor entities and remote-fire visuals carry provenance;
+            // gameplay projectiles carry their own state instead.
+            for (entity, _) in registry.iter_with_kind(ComponentKind::DescriptorProvenance) {
+                if registry.has_component_kind(entity, ComponentKind::Projectile) != Ok(true) {
+                    offer(entity, CandidateOrigin::Local);
+                }
+            }
+            for (entity, value) in registry.iter_with_kind(ComponentKind::Projectile) {
+                let ComponentValue::Projectile(projectile) = value else {
+                    continue;
+                };
+                if viewer.is_none_or(|viewer| projectile.owner_pawn != viewer) {
+                    offer(entity, CandidateOrigin::Local);
+                }
             }
         }
         CandidateView::Client(replication) => {
@@ -111,6 +187,10 @@ pub(crate) fn visit_candidates(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "eligibility_tests.rs"]
+mod opt_in_tests;
 
 #[cfg(test)]
 mod tests {

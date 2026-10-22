@@ -76,6 +76,7 @@ fn authored_client_config(cap: usize, linger_ms: u32, template_id: &str) -> Clie
 
 fn descriptor() -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some(CLASS.to_string()),

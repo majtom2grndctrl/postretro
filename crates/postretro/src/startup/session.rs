@@ -344,6 +344,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         teleporter_bindings: Default::default(),
         ghost_links: Default::default(),
+        ghost_render: Default::default(),
         player_events: Default::default(),
         trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),
         client_fire_resolutions: Vec::new(),

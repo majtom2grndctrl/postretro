@@ -46,6 +46,11 @@ pub struct ProjectileDescriptor {
     #[serde(rename = "lifetimeMs")]
     pub lifetime_ms: f32,
     pub visual: ProjectileVisual,
+    /// Whether this projectile can ghost through an armed ghost link, whoever
+    /// fired it. Each peer reads it from its own descriptor, so it never rides
+    /// the tuning payload and is serialized only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ghost: bool,
 }
 
 /// Descriptor-owned radial damage tuning composed onto a projectile impact.
@@ -669,6 +674,7 @@ mod tests {
 
     fn projectile_descriptor() -> ProjectileDescriptor {
         ProjectileDescriptor {
+            ghost: false,
             speed: 24.0,
             radius: 0.1,
             lifetime_ms: 1_500.0,

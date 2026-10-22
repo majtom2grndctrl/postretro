@@ -93,10 +93,64 @@ impl PresentationClocks {
         }
     }
 
-    /// The earliest host time any member reads this frame; history older than
-    /// the change covering it is unreachable.
+    /// The earliest lane clock this frame.
     pub(crate) fn oldest(&self) -> f64 {
         self.simulated.min(self.remote).min(self.mover)
+    }
+
+    /// The earliest host time any member reads this frame, pose stamps
+    /// included; history older than the change covering it is unreachable.
+    pub(crate) fn oldest_readable(&self) -> f64 {
+        self.oldest() - POSE_STAMP_LAG_TICKS
+    }
+}
+
+/// How far below its lane clock a member's pose stamp can read: a pose held on
+/// the near side of a teleport cut reads just before the cut's tick, which trails
+/// the lane clock by less than one tick. History pruning keeps that much more.
+pub(crate) const POSE_STAMP_LAG_TICKS: f64 = 1.0;
+
+/// Where this frame's per-member pose stamps come from: the host time whose
+/// state each delay-buffered member's presented pose actually shows. A blend
+/// shows its leading sample, so a link change and the first motion toward it
+/// present together; a pose held on the near side of a teleport cut shows no
+/// state of the cut's tick, so an arm sent with a swap presents on the cut
+/// frame rather than one tick early (P18). Members with no stamp read their
+/// lane clock.
+#[derive(Clone, Copy)]
+pub(crate) enum PoseStamps<'a> {
+    /// No delay-buffered member: single player.
+    None,
+    /// Listen host: connected-client pawns presented through the host-seat buffer.
+    HostSeat {
+        buffer: &'a crate::netcode::RemoteInterpolationBuffer,
+        allocator: &'a crate::netcode::NetworkIdAllocator,
+        tick: u32,
+        alpha: f32,
+    },
+    /// Connected client: every interpolated remote.
+    Client(&'a crate::netcode::ClientReplication),
+}
+
+impl PoseStamps<'_> {
+    /// The pose stamp of `entity` this frame, in snapshot-stamp units, for a
+    /// member presenting through `lane`. `None` falls back to the lane clock.
+    pub(crate) fn state_tick(&self, entity: EntityId, lane: MemberLane) -> Option<f64> {
+        if lane != MemberLane::Remote {
+            return None;
+        }
+        match *self {
+            Self::None => None,
+            Self::HostSeat {
+                buffer,
+                allocator,
+                tick,
+                alpha,
+            } => crate::netcode::host_presented_client_pawn_state_tick(
+                buffer, allocator, entity, tick, alpha,
+            ),
+            Self::Client(replication) => replication.presented_state_tick(entity),
+        }
     }
 }
 

@@ -280,6 +280,27 @@ pub fn presented_client_pawn_host_tick(current_tick: u32, alpha: f32) -> f64 {
     presentation_target_tick(current_tick, alpha, PRESENTATION_DELAY_TICKS) + 1.0
 }
 
+/// The host time whose state `pawn`'s presented pose shows on the host seat this
+/// frame, in snapshot-stamp units: [`presented_client_pawn_host_tick`], except
+/// that a blend shows its leading sample and a pose held on the near side of a
+/// teleport cut shows no state of the cut's own tick. Link state read at this
+/// value presents an arm sent with a seamless swap on the cut frame (P18).
+/// `None` for a pawn with no recorded sample.
+#[must_use]
+pub fn presented_client_pawn_state_tick(
+    buffer: &RemoteInterpolationBuffer,
+    allocator: &NetworkIdAllocator,
+    pawn: EntityId,
+    current_tick: u32,
+    alpha: f32,
+) -> Option<f64> {
+    let network_id = allocator.network_id_for_entity(pawn)?;
+    let target = presentation_target_tick(current_tick, alpha, PRESENTATION_DELAY_TICKS);
+    buffer
+        .presented_pose(network_id, target)
+        .map(|pose| pose.state_tick + 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +337,7 @@ mod tests {
         registry.set_component(pawn, mesh).unwrap();
         let present = |registry: &mut EntityRegistry, velocity: Vec3| {
             let pose = PresentedPose {
+                state_tick: 0.0,
                 transform: pose_at(0.0, 0.0),
                 source: crate::interpolation::PoseSource::Interpolated,
                 holds_newest: false,
@@ -656,6 +678,119 @@ mod tests {
                 "alpha {alpha}: presented stamp {presented}, reported {stamp}"
             );
         }
+    }
+
+    // P18 on the host seat: a ghost-link arm applied on the tick a client pawn
+    // swaps copies is stamped with that tick's end. The pose stamp keeps it hidden
+    // while the delayed pose still holds the source side of the cut, and shows it
+    // from the first frame drawing the arrival; the lane clock alone
+    // (`presented_client_pawn_host_tick`) would show it one tick early.
+    #[test]
+    fn presented_client_pawn_state_tick_hides_a_cut_ticks_state_until_the_cut_presents() {
+        use postretro_foundation::PlayerMovementComponent;
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut buffer = RemoteInterpolationBuffer::new();
+        let (pawn, _) = spawn_owned_pawn(
+            &mut registry,
+            &mut owners,
+            &mut allocator,
+            7,
+            pose_at(0.0, 0.0),
+        );
+        registry
+            .set_component(
+                pawn,
+                crate::predict_reconcile_harness_test_fixtures::component(),
+            )
+            .unwrap();
+        let mut tick = 100u32;
+        let mut snapshot_due = false;
+        // The swap happens during the tick labelled 103: its end state, the
+        // arrival and any arm applied with it, carries stamp 104.
+        let swap_tick = 103;
+        for _ in 0..6 {
+            if tick == swap_tick {
+                let mut movement = registry
+                    .get_component::<PlayerMovementComponent>(pawn)
+                    .unwrap()
+                    .clone();
+                movement.teleport.generation = 1;
+                registry.set_component(pawn, movement).unwrap();
+            }
+            let x = if tick >= swap_tick { 100.0 } else { 0.0 };
+            registry.set_component(pawn, pose_at(x, 0.0)).unwrap();
+            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            crate::host::complete_host_fixed_tick(&mut tick, &mut snapshot_due);
+        }
+        let swap_stamp = f64::from(swap_tick + 1);
+        let mut saw_source = false;
+        let mut saw_arrival = false;
+        for current_tick in [104, 105, 106] {
+            for alpha in [0.0, 0.25, 0.5, 0.75, 0.99] {
+                present_client_pawns(
+                    &buffer,
+                    &owners,
+                    &allocator,
+                    &mut registry,
+                    current_tick,
+                    alpha,
+                );
+                let x = registry
+                    .get_component::<Transform>(pawn)
+                    .unwrap()
+                    .position
+                    .x;
+                let stamp = presented_client_pawn_state_tick(
+                    &buffer,
+                    &allocator,
+                    pawn,
+                    current_tick,
+                    alpha,
+                )
+                .unwrap();
+                if x < 1.0 {
+                    saw_source = true;
+                    assert!(
+                        stamp.ceil() < swap_stamp,
+                        "{current_tick}+{alpha}: the source side shows no cut-tick state ({stamp})"
+                    );
+                } else {
+                    saw_arrival = true;
+                    assert!(
+                        stamp.ceil() >= swap_stamp,
+                        "{current_tick}+{alpha}: the arrival shows the cut tick's state ({stamp})"
+                    );
+                }
+                // Never further behind the lane clock than one tick.
+                let lane = presented_client_pawn_host_tick(current_tick, alpha);
+                assert!(stamp >= lane - 1.0 && stamp <= lane.ceil() + 1.0);
+            }
+        }
+        assert!(saw_source && saw_arrival, "fixture spans the cut");
+        let lane_alone_shows_early = [104, 105].iter().any(|&current_tick| {
+            [0.25, 0.5, 0.75].iter().any(|&alpha| {
+                present_client_pawns(
+                    &buffer,
+                    &owners,
+                    &allocator,
+                    &mut registry,
+                    current_tick,
+                    alpha,
+                );
+                let x = registry
+                    .get_component::<Transform>(pawn)
+                    .unwrap()
+                    .position
+                    .x;
+                x < 1.0 && presented_client_pawn_host_tick(current_tick, alpha).ceil() >= swap_stamp
+            })
+        });
+        assert!(
+            lane_alone_shows_early,
+            "fixture: ceil of the lane clock alone would present the cut tick's state early"
+        );
     }
 
     #[test]

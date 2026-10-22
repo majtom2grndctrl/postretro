@@ -152,7 +152,11 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
         resample: true,
         forward_visible: true,
         dynamic_shadow_visible: true,
-        is_viewmodel,
+        presentation: if is_viewmodel {
+            postretro_render_cpu::mesh_instances::MeshPresentation::Viewmodel
+        } else {
+            postretro_render_cpu::mesh_instances::MeshPresentation::World
+        },
     }));
     let movers: Vec<_> = world
         .kinematic_geometry

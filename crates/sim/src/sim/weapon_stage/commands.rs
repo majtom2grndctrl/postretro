@@ -432,6 +432,7 @@ mod projectile_spawn_tests {
             damage: 25.0,
             credit_source: "plasma.primary".to_string(),
             descriptor: ProjectileDescriptor {
+                ghost: false,
                 speed: 40.0,
                 radius: 0.2,
                 lifetime_ms: 2000.0,

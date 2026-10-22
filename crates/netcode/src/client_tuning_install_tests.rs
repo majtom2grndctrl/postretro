@@ -18,6 +18,7 @@ const CLIENT_OWN_WEAPON: &str = "local_pistol";
 
 fn weapon(name: &str) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some(name.to_string()),
@@ -65,6 +66,7 @@ fn weapon(name: &str) -> EntityTypeDescriptor {
 
 fn player(loadout: &[&str]) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some("player".to_string()),

@@ -240,10 +240,11 @@ impl Renderer {
         // deliberately sees only the world partition.
         let mesh_frame_plans: Option<mesh_instances::MeshFramePlans> = if render_world
             && self.full().mesh_pass.has_model()
-            && !self.full().mesh_draws.is_empty()
+            && !(self.full().mesh_draws.is_empty() && self.full().ghost_mesh_draws.is_empty())
         {
             Some(mesh_instances::plan_mesh_frame_plans(
                 &self.full().mesh_draws,
+                &self.full().ghost_mesh_draws,
                 &self.full().mesh_pass,
             ))
         } else {
@@ -357,7 +358,11 @@ impl Renderer {
             // palette-slot cap and the instance-count cap. Rigid / zero-joint
             // props still reserve one identity palette entry, so either cap
             // can reject them.
-            let dropped = plans.world.dropped.saturating_add(plans.viewmodel.dropped);
+            let dropped = plans
+                .world
+                .dropped
+                .saturating_add(plans.viewmodel.dropped)
+                .saturating_add(plans.ghost.dropped);
             if dropped > 0 {
                 let now = now_seconds as f32;
                 if now - self.full().mesh_overflow_last_warn >= 1.0 {
@@ -382,7 +387,7 @@ impl Renderer {
                     .expect("renderer full-init must complete before full-ready paths run");
                 full.mesh_pass.plan_and_upload(
                     queue,
-                    &[&plans.world, &plans.viewmodel],
+                    &[&plans.world, &plans.viewmodel, &plans.ghost],
                     &mut full.bone_palette_scratch,
                     &cpu,
                 );
@@ -647,6 +652,44 @@ impl Renderer {
             // unallocated).
             mesh_enc.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
             self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
+        }
+
+        // Ghosts: unlit, translucent, after every opaque pass so they depth-test
+        // against the whole opaque scene, and before fluid so the capture (which
+        // returns after bloom) includes them. Depth is read-only: a ghost hides
+        // nothing drawn after it. Only the ghost plan draws here; it never
+        // reached shadow depth above.
+        if render_world
+            && let Some(plan) = mesh_frame_plans
+                .as_ref()
+                .map(|plans| &plans.ghost)
+                .filter(|plan| !plan.groups.is_empty())
+        {
+            let _ghost_scope = cpu.scope(RenderStage::GhostMesh);
+            let mode = self.ghost_transparency();
+            let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Skinned Ghost Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.full().depth_view,
+                    depth_ops: None,
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+            self.full()
+                .mesh_pass
+                .record_ghost_draws(&mut ghost_pass, plan, mode);
         }
 
         // Fluid surfaces: translucent, after every opaque pass and before

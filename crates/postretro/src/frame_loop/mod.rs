@@ -2094,6 +2094,35 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             }
             renderer.set_mesh_draws(session.mesh_render.instances());
 
+            // Ghosts: each at its mapped pose, culled at its mapped cell, its
+            // presented opacity and tint through its own flash-clamp channel.
+            let ghost_limiter = crate::scripting_systems::ghost_render::ghost_limiter_frame(
+                &script_ctx.slot_table.borrow(),
+                app.ghost_links.presented_elapsed(),
+            );
+            let ghost_links = &app.ghost_links;
+            let hit_zones = &session.hit_zone_store;
+            app.ghost_render.collect(
+                &registry,
+                ghost_links.members(),
+                |link| ghost_links.link_look(link),
+                &crate::scripting_systems::ghost_render::GhostDrawFrame {
+                    world,
+                    visible: &visible_cells,
+                    anim_time: app.anim_time,
+                    camera_pos: render_eye_position,
+                    tables: &session.mesh_clip_tables,
+                    socket_poses: &crate::scripting_systems::attachments::SocketPoseResolver::new(
+                        hit_zones,
+                    ),
+                    force_resample_model: &|handle| {
+                        hit_zones.has_precise_zones(handle) || hit_zones.has_pose_modifiers(handle)
+                    },
+                    limiter: Some(ghost_limiter),
+                },
+            );
+            renderer.set_ghost_mesh_draws(app.ghost_render.instances());
+
             app.kinematic_mover_render.collect(
                 &registry,
                 world,

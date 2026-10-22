@@ -126,6 +126,7 @@ impl App {
         self.trigger_bindings = TriggerBindingTable::default();
         self.teleporter_bindings = Default::default();
         self.ghost_links = Default::default();
+        self.ghost_render.clear();
         self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();

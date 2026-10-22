@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 use bitcode::{Decode, Encode};
 
 mod components;
+mod ghost;
 mod teleport;
 pub use components::{
     COMPONENT_KIND_AGENT, COMPONENT_KIND_AMMO_RESERVE, COMPONENT_KIND_BILLBOARD_EMITTER,
@@ -46,6 +47,11 @@ pub use components::{
     WireFogState, WireGroundRef, WireKinematicMoverState, WireLightAnimation, WireLightState,
     WireMeshAnimationState, WireMovementState, WirePlayerMovementState, WireSpinAnimation,
     WireTransform,
+};
+pub use ghost::{
+    GHOST_LINK_MEMBER_BITS, GHOST_LOOK_FIELD_BITS, GHOST_LOOK_OPACITY, GHOST_LOOK_SATURATION,
+    GHOST_LOOK_TINT, GhostLinkFault, NO_WIRE_GHOST_LINK, WireGhostLinkState, WireGhostScalarRamp,
+    WireGhostTintRamp,
 };
 pub use teleport::{
     NO_WIRE_TELEPORTER, WireTeleportState, WireTeleporterState, teleport_yaw_is_valid,
@@ -355,7 +361,9 @@ impl WeaponCuesMessage {
 /// Bumped to 20 for `WireMovementState::Vault`.
 /// Bumped to 21 for teleporters: player movement state gained the pawn teleport
 /// record, and entity records gained the teleporter armed-state payload.
-pub const SNAPSHOT_VERSION: u16 = 21;
+/// Bumped to 22 for ghost links: component payloads gained the always-on link
+/// record (armed state, member categories, script-set look ramps).
+pub const SNAPSHOT_VERSION: u16 = 22;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -626,6 +634,10 @@ pub enum ValidationError {
     /// A teleporter armed-state payload named the no-teleporter sentinel index.
     /// Whether the index names an installed teleporter is engine-side binding.
     InvalidTeleporterState,
+    /// A ghost-link record broke the wire format: the no-link index, a reserved
+    /// member or look bit, a look mask disagreeing with its ramps, or a
+    /// non-finite value or duration. Binding to an installed link is engine-side.
+    InvalidGhostLinkState(GhostLinkFault),
     InvalidProjectilePresentation,
     NonFinitePresentationState(u16),
     InvalidPresentationState(u16),
@@ -653,6 +665,9 @@ impl std::fmt::Display for ValidationError {
             ValidationError::NonFiniteScriptTime => write!(f, "non-finite server script time"),
             ValidationError::InvalidTeleporterState => {
                 write!(f, "teleporter state names the no-teleporter index")
+            }
+            ValidationError::InvalidGhostLinkState(fault) => {
+                write!(f, "invalid ghost link state: {fault:?}")
             }
             ValidationError::VersionMismatch { expected, received } => write!(
                 f,
@@ -931,9 +946,9 @@ impl RawEntityRecord {
             }
             let carries_finite_transform = components.iter().any(|c| match c {
                 ComponentPayload::Transform(t) => t.all_finite(),
-                ComponentPayload::PlayerMovementState(_) | ComponentPayload::TeleporterState(_) => {
-                    false
-                }
+                ComponentPayload::PlayerMovementState(_)
+                | ComponentPayload::TeleporterState(_)
+                | ComponentPayload::GhostLinkState(_) => false,
                 ComponentPayload::MeshAnimationState(_) => false,
                 ComponentPayload::KinematicMoverState(_)
                 | ComponentPayload::LightState(_)
@@ -1423,6 +1438,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         }
     }
 
@@ -1437,6 +1453,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         }
     }
 
@@ -1453,6 +1470,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         }
     }
 
@@ -1488,6 +1506,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         }
     }
 
@@ -2386,6 +2405,7 @@ mod tests {
                     light: None,
                     emitter: None,
                     fog: None,
+                    ghost_link: None,
                 }],
             )],
             state_schema_fingerprint: [0u8; 32],
@@ -2412,6 +2432,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2434,6 +2455,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2458,6 +2480,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2538,6 +2561,7 @@ mod tests {
                 current_state: "idle".to_string(),
             }),
             ComponentPayload::KinematicMoverState(sample_mover_state()),
+            ComponentPayload::GhostLinkState(WireGhostLinkState::new(0, 1, true, 0b1111)),
         ];
         for payload in cases {
             let expected = match payload {
@@ -2549,6 +2573,7 @@ mod tests {
                 ComponentPayload::EmitterState(_) => 2,
                 ComponentPayload::FogState(_) => 4,
                 ComponentPayload::TeleporterState(_) => 24,
+                ComponentPayload::GhostLinkState(_) => 25,
             };
             assert_eq!(payload.kind(), expected);
         }
@@ -3160,6 +3185,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3189,6 +3215,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         };
         assert_eq!(
             payload.validate(),
@@ -3211,6 +3238,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         }
     }
 
@@ -3294,6 +3322,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         };
 
         assert_eq!(
@@ -3327,6 +3356,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             };
 
             assert_eq!(
@@ -3364,6 +3394,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             };
 
             assert_eq!(
@@ -3406,6 +3437,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3433,6 +3465,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3466,6 +3499,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             };
             assert_eq!(payload.validate(), Err(ValidationError::NonFiniteTransform));
         }
@@ -3495,6 +3529,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             }],
         );
         assert_eq!(record.validate(), Err(ValidationError::NonFiniteTransform));
@@ -3525,6 +3560,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             }],
         );
         record.has_entity_class = true;
@@ -3785,7 +3821,7 @@ mod tests {
         assert!(matches!(
             snapshot.validate(),
             Err(ValidationError::VersionMismatch {
-                expected: 21,
+                expected: SNAPSHOT_VERSION,
                 received: 19
             })
         ));
@@ -3793,6 +3829,18 @@ mod tests {
 
     fn raw_from_typed(payload: &ComponentPayload) -> RawComponentPayload {
         match payload {
+            ComponentPayload::GhostLinkState(state) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_GHOST_LINK,
+                ghost_link: Some(*state),
+                teleporter: None,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
+            },
             ComponentPayload::TeleporterState(state) => RawComponentPayload {
                 component_kind: crate::wire::COMPONENT_KIND_TELEPORTER,
                 teleporter: Some(*state),
@@ -3803,6 +3851,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             },
             ComponentPayload::Transform(t) => RawComponentPayload {
                 teleporter: None,
@@ -3814,6 +3863,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             },
             ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
                 teleporter: None,
@@ -3825,6 +3875,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             },
             ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
                 teleporter: None,
@@ -3836,6 +3887,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             },
             ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
                 teleporter: None,
@@ -3847,6 +3899,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             },
             ComponentPayload::LightState(state) => RawComponentPayload {
                 teleporter: None,
@@ -3858,6 +3911,7 @@ mod tests {
                 light: Some(state.clone()),
                 emitter: None,
                 fog: None,
+                ghost_link: None,
             },
             ComponentPayload::EmitterState(state) => RawComponentPayload {
                 teleporter: None,
@@ -3869,6 +3923,7 @@ mod tests {
                 light: None,
                 emitter: Some(state.clone()),
                 fog: None,
+                ghost_link: None,
             },
             ComponentPayload::FogState(state) => RawComponentPayload {
                 teleporter: None,
@@ -3880,6 +3935,7 @@ mod tests {
                 light: None,
                 emitter: None,
                 fog: Some(state.clone()),
+                ghost_link: None,
             },
         }
     }
@@ -3888,7 +3944,7 @@ mod tests {
     #[test]
     fn teleport_record_snapshot_rejects_the_pre_teleport_layout() {
         const PRE_TELEPORT_SNAPSHOT_VERSION: u16 = 20;
-        assert_eq!(SNAPSHOT_VERSION, PRE_TELEPORT_SNAPSHOT_VERSION + 1);
+        const { assert!(SNAPSHOT_VERSION > PRE_TELEPORT_SNAPSHOT_VERSION) };
         let mut raw = raw_snapshot(1, 2, Vec::new());
         raw.version = PRE_TELEPORT_SNAPSHOT_VERSION;
         assert_eq!(
@@ -3916,6 +3972,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         };
         assert!(matches!(
             raw(0).validate(),
@@ -3931,6 +3988,96 @@ mod tests {
             doubled.validate(),
             Err(ValidationError::MismatchedComponentPayload(
                 COMPONENT_KIND_TELEPORTER
+            ))
+        );
+    }
+
+    // --- Ghost links ---
+
+    #[test]
+    fn ghost_link_record_snapshot_rejects_the_pre_ghost_layout() {
+        const PRE_GHOST_SNAPSHOT_VERSION: u16 = 21;
+        assert_eq!(SNAPSHOT_VERSION, PRE_GHOST_SNAPSHOT_VERSION + 1);
+        let mut raw = raw_snapshot(1, 2, Vec::new());
+        raw.version = PRE_GHOST_SNAPSHOT_VERSION;
+        assert_eq!(
+            raw.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                received: PRE_GHOST_SNAPSHOT_VERSION,
+            })
+        );
+    }
+
+    // AC4 (snapshot half): a ghost-link payload validates through the raw
+    // envelope like any component, and a record the wire format forbids is a
+    // typed rejection before engine binding.
+    #[test]
+    fn ghost_link_payload_validates_its_record_and_its_envelope_slot() {
+        let raw = |state| RawComponentPayload {
+            ghost_link: Some(state),
+            component_kind: COMPONENT_KIND_GHOST_LINK,
+            teleporter: None,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
+        };
+        let valid = WireGhostLinkState::new(3, 17, true, 0b0001);
+        assert_eq!(
+            raw(valid).validate(),
+            Ok(ComponentPayload::GhostLinkState(valid))
+        );
+        for (state, fault) in [
+            (
+                WireGhostLinkState::new(NO_WIRE_GHOST_LINK, 17, true, 0),
+                GhostLinkFault::NoLinkIndex,
+            ),
+            (
+                WireGhostLinkState::new(3, 17, true, 0b1_0000),
+                GhostLinkFault::ReservedMemberBits,
+            ),
+            (
+                WireGhostLinkState {
+                    look_fields: 1 << 5,
+                    ..valid
+                },
+                GhostLinkFault::ReservedLookBits,
+            ),
+            (
+                WireGhostLinkState {
+                    look_fields: GHOST_LOOK_OPACITY,
+                    ..valid
+                },
+                GhostLinkFault::LookFieldMismatch,
+            ),
+        ] {
+            assert_eq!(
+                raw(state).validate(),
+                Err(ValidationError::InvalidGhostLinkState(fault))
+            );
+        }
+        let mut doubled = raw(valid);
+        doubled.teleporter = Some(WireTeleporterState {
+            index: 3,
+            source_entity: 17,
+            armed: true,
+        });
+        assert_eq!(
+            doubled.validate(),
+            Err(ValidationError::MismatchedComponentPayload(
+                COMPONENT_KIND_GHOST_LINK
+            ))
+        );
+        let mut missing = raw(valid);
+        missing.ghost_link = None;
+        assert_eq!(
+            missing.validate(),
+            Err(ValidationError::MissingComponentPayload(
+                COMPONENT_KIND_GHOST_LINK
             ))
         );
     }

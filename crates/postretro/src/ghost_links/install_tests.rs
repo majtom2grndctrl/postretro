@@ -285,6 +285,7 @@ fn ghost_link_armed_on_spawn_presents_its_member_in_full_on_the_first_frame() {
     let partner = pawn(&mut registry, inside, DescriptorSpawnPath::NetworkSlot);
 
     let mut ghosts = crate::ghost_links::GhostLinks::install(&world, &registry);
+    ghosts.refresh_opt_ins(&crate::ghost_links::opt_ins_test_fixtures::player_opted_in());
     ghosts.update(
         &registry,
         crate::ghost_links::GhostFrame {
@@ -295,6 +296,7 @@ fn ghost_link_armed_on_spawn_presents_its_member_in_full_on_the_first_frame() {
             alpha: 0.0,
             elapsed_seconds: 1.0 / 60.0,
             view: crate::ghost_links::CandidateView::Authoritative,
+            stamps: crate::ghost_links::clocks::PoseStamps::None,
         },
     );
     let [ghost] = ghosts.members() else {

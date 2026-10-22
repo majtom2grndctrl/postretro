@@ -246,7 +246,11 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
                 resample: true,
                 forward_visible: true,
                 dynamic_shadow_visible: false,
-                is_viewmodel,
+                presentation: if is_viewmodel {
+                    postretro_render_cpu::mesh_instances::MeshPresentation::Viewmodel
+                } else {
+                    postretro_render_cpu::mesh_instances::MeshPresentation::World
+                },
             })
             .collect();
         renderer.set_mesh_draws(&draws);
@@ -275,6 +279,72 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
         );
     }
     eprintln!("[UploadProof] mesh light params: 4 adapter cases ran");
+}
+
+/// GPU proof for the ghost pass (rendering_pipeline.md §7.9): both
+/// `render.ghosts` pipelines build with the full renderer, and a frame holding a
+/// world mesh and two ghosts of it records and submits under each mode with no
+/// validation error.
+#[test]
+fn ghost_draws_record_through_blend_and_dither_pipelines() {
+    use postretro_render_cpu::ghost_instance::GhostInstanceLook;
+    use postretro_render_cpu::ghost_transparency::GhostTransparency;
+    use postretro_render_cpu::mesh_instances::{
+        MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
+    };
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+    let model = "models/pose-modifier-fixture/joint_zones.gltf";
+    assert!(
+        renderer
+            .load_skinned_model(model, &root, &root.join("cache"))
+            .is_some()
+    );
+    let real = MeshInstanceInput {
+        model: postretro_model::ModelHandle::from(model),
+        transform: Mat4::IDENTITY,
+        shadow_bias_scale: 1.0,
+        phase_seed: 1,
+        palette_cache_key: MeshPaletteCacheKey::Entity(1),
+        sample: postretro_model::sample_params::MeshSampleParams::rest(),
+        pose_inputs: None,
+        capture: None,
+        resample: true,
+        forward_visible: true,
+        dynamic_shadow_visible: true,
+        presentation: MeshPresentation::World,
+    };
+    let ghosts: Vec<_> = [0u16, 1]
+        .map(|link| MeshInstanceInput {
+            transform: Mat4::from_translation(Vec3::new(f32::from(link) + 1.0, 0.0, 0.0)),
+            palette_cache_key: real.palette_cache_key.ghost_through(link),
+            dynamic_shadow_visible: false,
+            presentation: MeshPresentation::Ghost(GhostInstanceLook {
+                opacity: 0.5,
+                saturation: 0.0,
+                tint: [1.0, 0.8, 0.6],
+            }),
+            ..real.clone()
+        })
+        .into();
+    let mut font = postretro_ui::text::build_font_system();
+    for mode in GhostTransparency::ALL {
+        renderer.set_ghost_transparency(mode);
+        renderer.set_mesh_draws(std::slice::from_ref(&real));
+        renderer.set_ghost_mesh_draws(&ghosts);
+        let before = renderer.queue.counts();
+        renderer.update_per_frame_uniforms(Mat4::IDENTITY, Vec3::ZERO, 1.0);
+        let encoder = record_window(&mut renderer, &mut font);
+        renderer.submit_windowed_frame(encoder);
+        assert_submit(&renderer, before, 1);
+        renderer
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+    }
+    eprintln!("[UploadProof] ghost pass: blend and dither frames ran");
 }
 
 #[test]

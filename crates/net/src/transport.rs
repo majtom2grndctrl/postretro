@@ -2539,31 +2539,39 @@ mod tests {
         assert!(server.poll_handshakes().lifecycle.is_empty());
     }
 
-    // A PRLB / wire-32 peer predates the gameplay channel layout. The admission
-    // gate refuses its declaration with a typed cause and admits a PRLC / 33 one.
+    // A PRLB / wire-32 peer predates the gameplay channel layout, and a wire-33
+    // peer predates the ghost-link record (AC42). The admission gate refuses each
+    // declaration with a typed cause and admits a PRLC / 34 one.
     #[test]
-    fn admission_refuses_prlb_or_wire_32_and_admits_prlc_33() {
-        let prlc_33 = wire::ProtocolVersion {
+    fn admission_refuses_prlb_or_wire_32_or_33_and_admits_prlc_34() {
+        let current = wire::ProtocolVersion {
             app_protocol_id: 0x_5052_4C43,
-            wire_version: 33,
+            wire_version: 34,
         };
-        assert_eq!(protocol_version(), prlc_33);
+        assert_eq!(protocol_version(), current);
         let cases = [
             (
                 wire::ProtocolVersion {
                     app_protocol_id: 0x_5052_4C42,
-                    ..prlc_33
+                    ..current
                 },
                 false,
             ),
             (
                 wire::ProtocolVersion {
                     wire_version: 32,
-                    ..prlc_33
+                    ..current
                 },
                 false,
             ),
-            (prlc_33, true),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 33,
+                    ..current
+                },
+                false,
+            ),
+            (current, true),
         ];
         for (declared, admitted) in cases {
             let (mut server, mut client) = relay_pair();
@@ -2587,7 +2595,7 @@ mod tests {
                     ..
                 }) => {
                     assert!(!admitted, "{declared:?} must be admitted");
-                    assert_eq!((*expected, *received), (prlc_33, declared));
+                    assert_eq!((*expected, *received), (current, declared));
                 }
                 other => panic!("{declared:?}: expected an admission verdict, got {other:?}"),
             }

@@ -2940,6 +2940,7 @@ mod tests {
             resample: true,
             forward_visible: false,
             dynamic_shadow_visible: false,
+            ghost_look: None,
         };
         let planned_outside = PlannedInstance {
             transform: glam::Mat4::from_translation(Vec3::new(20.0, 0.0, 0.0)),

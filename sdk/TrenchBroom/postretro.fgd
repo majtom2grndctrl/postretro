@@ -364,7 +364,7 @@
     weapon(string) : "Projectile weapon descriptor canonical name" : ""
     interval_ms(float) : "Repeat interval once started (milliseconds; rounds up to whole ticks, minimum one)" : "1000"
     phase_ms(float) : "Delay from a start to its first execution (milliseconds; rounds up to whole ticks)" : "0"
-    start_on_spawn(choices) : "Start repeating at level load (any other value leaves the trap inert)" : 0 =
+    start_on_spawn(choices) : "Start repeating at level load (a value other than 0/1 or false/true leaves the trap inert)" : 0 =
     [
         0 : "No"
         1 : "Yes"

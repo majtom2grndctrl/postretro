@@ -48,7 +48,7 @@ pub struct TrapSchedule {
 /// The armed half of a trap, present once install resolved its weapon. It
 /// rides this component rather than the registry's `Weapon` column, so weapon
 /// sweeps (passive resources, cancellation, descriptor refresh) never reach a
-/// trap's stripped weapon. The kind never replicates.
+/// trap's stripped weapon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrapRuntime {
     /// Canonical weapon descriptor name: the presentation class and the
@@ -62,6 +62,7 @@ pub struct TrapRuntime {
     pub clock: u32,
 }
 
+/// A map-placed projectile trap. The kind never replicates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectileTrapComponent {
     /// Canonical weapon descriptor name authored in the `weapon` KVP.

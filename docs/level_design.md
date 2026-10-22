@@ -459,7 +459,8 @@ The weapon fires exactly as it does for anyone else: its shot pattern, its
 recovery and its sounds. A trap never runs out of ammo, overheats or reloads.
 A weapon that is not a projectile weapon, a weapon whose primary action
 charges, an unknown name, a bad timing value, or a `start_on_spawn` other than
-`0` or `1` leaves the trap inert, and the level load warns once.
+`0`/`1` (or `false`/`true`) leaves the trap inert, and the level load warns
+once.
 
 A trap fires once per `fire`. A `fire` that arrives while the weapon is still
 firing or recovering is ignored, not queued. `start` repeats on a fixed rhythm

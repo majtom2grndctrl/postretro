@@ -71,4 +71,13 @@ read at: 473185e8
 | 3 | Script surface: `fireTrap`/`startTrap`/`stopTrap` member steps, bound commands, partition lists, literal validation, SDK TS/Luau handle, typedefs, drift and parity fixtures, light-membership kind lists | integrating executor | 1 | done: typedef drift (45), `trap_start_literals…` both VMs, membership tests, `trap_tick_tests` (9) |
 | 4 | Co-op: host mirror wiring in the frame loop, client gating, wire/snapshot diff gate | integrating executor | 1 | done: netcode `same_tick_trap_shots…`, `started_trap_snapshot…`, `client_trap_steps…` |
 | 5 | Fixtures (`trap-volley`, `trap-wave`, `trap-wave-luau`), FGD, surface tests | integrating executor | 2, 3 | done: `traps_surface_tests` (7); FGD class + `fire` choice; author docs |
-| 6 | Preflight, review loop, context docs | integrating executor | 1–5 | review round 1 fixed; preflight pending; context docs at landing |
+| 6 | Preflight, review loop, context docs | integrating executor | 1–5 | done: preflight clean, two review rounds; context docs at landing |
+
+## Review loop
+- Round 1 (2 tracers, 2 contract verifiers, adversarial, hygiene): no 🔴. Fixed: trap timing f64 end to end so the validator, KVP and runtime agree; `fireTrap`/`stopTrap` reject args and a trap verb as a reaction body (no member id) rejects at install; allocation-free trap stage; hot-reload test anchors a running schedule before the reload; client-role install surface test (C1); TS/Luau trap handle step parity (T5); comment drift (headers, plan pointers, trigger command wording, derived docs period).
+- Round 2 (fresh read of the fix commits): no 🔴/🟡; two doc nits fixed (`start_on_spawn` spellings, replication note placement).
+
+## Preflight
+- `cargo fmt --check`, workspace clippy `--all-targets --features postretro/dev-tools -D warnings`, `cargo check --release`, `xtask crate-graph --check`: clean.
+- `cargo test --workspace --features postretro/dev-tools`: 12,284 passed, 2 failed, neither this brief's. `ui::text::tests::runtime_loaded_font_bytes_register_family` fails because the container has JetBrains Mono installed system-wide (fails in isolation too; branch does not touch `crates/ui`). `scripting-core` `the_reflection_scripting_example_parses_identically_in_ts_and_luau` is an intermittent log-capture flake (a concurrent swc trace record); it passes in isolation and its module is untouched.
+

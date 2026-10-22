@@ -130,7 +130,7 @@ fn member_lane_delays_slot_pawns_on_the_host_and_every_remote_on_a_client() {
     );
 }
 
-// P33 at the clock level (movers are not yet ghost members): on a connected
+// At the clock level (movers are not yet ghost members): on a connected
 // client a link arm and a mover phase change applied on one host tick ride one
 // snapshot, stamped S. The mover re-simulates from that phase to the estimated
 // host tick on the frame the snapshot applies; the mover lane reads link state

@@ -456,7 +456,7 @@ pub struct ClientReplication {
     /// Ghost-link states received since presentation last drained them
     /// ([`Self::drain_ghost_link_updates`]). Dropped with every other received
     /// state at unload and demotion.
-    ghost_link_updates: VecDeque<GhostLinkUpdate>,
+    ghost_link_updates: ghost_links::PendingGhostLinkUpdates,
     /// The newest snapshot's level-scoped ghost-audio record, until presentation
     /// takes it ([`Self::take_ghost_audio`]). Dropped with every other received
     /// state at unload and demotion.

@@ -436,6 +436,7 @@
     color(120 200 220)
     = ghost_link : "Ghost link region (members seen from another room copy)"
 [
+    name(string) : "Link name" : ""
     _tags(string) : "Space-delimited tags" : ""
     landmark(string) : "Source landmark name" : "" : "Required teleport_destination inside this room copy. Must differ from target."
     target(string) : "Target name" : "" : "Required teleport_destination in the other room copy, where ghosts draw."

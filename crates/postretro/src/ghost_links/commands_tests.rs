@@ -321,7 +321,7 @@ fn close(a: f32, b: f32) -> bool {
     (a - b).abs() < 1e-5
 }
 
-// AC13 / P3: `arm` on tick N and `disarm` on tick N+1 ramp presented
+// `arm` on tick N and `disarm` on tick N+1 ramp presented
 // membership up and back down at the rate cap, through the real steps.
 #[test]
 fn arm_then_disarm_on_the_next_tick_ramps_up_and_back_down_at_the_rate_cap() {
@@ -362,7 +362,7 @@ fn arm_then_disarm_on_the_next_tick_ramps_up_and_back_down_at_the_rate_cap() {
     assert_eq!(previous, 0.0, "the fall lands on 0 at the rate cap");
 }
 
-// AC13 / P2: `arm` and `disarm` in one tick start no ramp and present no ghost.
+// `arm` and `disarm` in one tick start no ramp and present no ghost.
 #[test]
 fn arm_and_disarm_in_one_tick_present_no_ghost() {
     let mut host = Host::new(false, GhostMembers::all());
@@ -376,9 +376,9 @@ fn arm_and_disarm_in_one_tick_present_no_ghost() {
     }
 }
 
-// AC18: with one category off, that category's members fade at the rate cap
+// With one category off, that category's members fade at the rate cap
 // and the other categories' members stay, for players, entities and
-// projectiles (movers are Task 7's draw).
+// projectiles (movers are covered in `movers_tests`).
 #[test]
 fn a_category_turned_off_fades_its_members_while_the_others_stay() {
     for (field, off) in [
@@ -419,7 +419,7 @@ fn a_category_turned_off_fades_its_members_while_the_others_stay() {
     }
 }
 
-// AC19 / P44 / P45: the map's `ghost_members` default holds from the first
+// The map's `ghost_members` default holds from the first
 // frame; off then on in one tick ends in the last call's state with no ramp;
 // `setMembers` and `arm` on one tick present together; a flip mid-ramp
 // reverses from the presented value.
@@ -460,9 +460,9 @@ fn member_categories_follow_the_map_default_then_the_last_call_of_each_tick() {
     assert!(close(host.membership(partner), risen - ramp_step(FRAME)));
 }
 
-// AC27 / AC29: `setColorFilter` overrides the style field by field; a
+// `setColorFilter` overrides the style field by field; a
 // `periodMs` ramp presents its midpoint halfway through; `periodMs` 0 lands in
-// one frame. P42: a pause freezes the ramp while the membership ramp runs on.
+// one frame. A pause freezes the ramp while the membership ramp runs on.
 #[test]
 fn color_filter_overrides_the_style_per_field_on_script_time() {
     let mut host = Host::new(false, GhostMembers::all());
@@ -522,7 +522,7 @@ fn color_filter_overrides_the_style_per_field_on_script_time() {
     assert_eq!(host.ghosts.link_look(0).opacity, 1.0);
 }
 
-// P16 / AC8: a committed reload that changes the style keeps the fields
+// A committed reload that changes the style keeps the fields
 // `setColorFilter` set and their ramps; unset fields follow the new style.
 #[test]
 fn a_committed_style_reload_keeps_filter_fields_and_ramps() {
@@ -565,7 +565,7 @@ fn a_committed_style_reload_keeps_filter_fields_and_ramps() {
     );
 }
 
-// AC27 / AC29 / P41 through the real sequence dispatcher: a malformed step
+// Through the real sequence dispatcher: a malformed step
 // warns with its reason and is dropped alone; its siblings apply.
 #[test]
 fn a_dispatched_malformed_ghost_link_step_warns_and_drops_only_that_step() {

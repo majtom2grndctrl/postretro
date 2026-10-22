@@ -183,7 +183,7 @@ impl Fixture {
     }
 }
 
-// Acceptance (AC14, movers): a mover ghost draws when its mapped bounds touch a
+// Movers: a mover ghost draws when its mapped bounds touch a
 // visible cell and not otherwise, with the real mover's cell visible and not.
 #[test]
 fn mover_ghost_draws_when_its_mapped_cell_is_visible_whatever_the_real_cell() {
@@ -217,7 +217,7 @@ fn mover_ghost_draws_when_its_mapped_cell_is_visible_whatever_the_real_cell() {
     }
 }
 
-// P27: one mover in two links draws two instances at two mapped transforms; the
+// One mover in two links draws two instances at two mapped transforms; the
 // ghost list never deduplicates by mover id. Ghosts never join the real mover's
 // shadow casters or occluder bounds.
 #[test]
@@ -298,7 +298,7 @@ fn non_mover_members_and_zero_opacity_mover_ghosts_draw_nothing() {
     assert!(fixture.ghosts.instances().is_empty());
 }
 
-// AC 24a wiring: a mover ghost's tint strobing white and black at 10 Hz at
+// Wiring: a mover ghost's tint strobing white and black at 10 Hz at
 // steady opacity is limited through its tint-luminance channel; the limiter
 // off passes it through.
 #[test]

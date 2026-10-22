@@ -746,7 +746,7 @@ mod tests {
         }
     }
 
-    // Pin P9: a manifest reload that changes attenuation or the ghost bus
+    // A manifest reload that changes attenuation or the ghost bus
     // profile reaches the audio subsystem only through a successful commit.
     #[test]
     fn staged_audio_profile_commits_only_successful_whole_snapshots() {

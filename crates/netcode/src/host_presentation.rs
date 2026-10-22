@@ -284,7 +284,7 @@ pub fn presented_client_pawn_host_tick(current_tick: u32, alpha: f32) -> f64 {
 /// frame, in snapshot-stamp units: [`presented_client_pawn_host_tick`], except
 /// that a blend shows its leading sample and a pose held on the near side of a
 /// teleport cut shows no state of the cut's own tick. Link state read at this
-/// value presents an arm sent with a seamless swap on the cut frame (P18).
+/// value presents an arm sent with a seamless swap on the cut frame.
 /// `None` for a pawn with no recorded sample.
 #[must_use]
 pub fn presented_client_pawn_state_tick(
@@ -299,6 +299,25 @@ pub fn presented_client_pawn_state_tick(
     buffer
         .presented_pose(network_id, target)
         .map(|pose| pose.state_tick + 1.0)
+}
+
+/// The pose `pawn` presents at on the host seat this frame: what
+/// [`present_client_pawns`] writes for it, readable before that write (the
+/// audio stage judges ghost voices ahead of it). `None` for a pawn with no
+/// recorded sample, which presents its live pose.
+#[must_use]
+pub fn presented_client_pawn_transform(
+    buffer: &RemoteInterpolationBuffer,
+    allocator: &NetworkIdAllocator,
+    pawn: EntityId,
+    current_tick: u32,
+    alpha: f32,
+) -> Option<Transform> {
+    let network_id = allocator.network_id_for_entity(pawn)?;
+    let target = presentation_target_tick(current_tick, alpha, PRESENTATION_DELAY_TICKS);
+    buffer
+        .presented_pose(network_id, target)
+        .map(|pose| pose.transform)
 }
 
 #[cfg(test)]
@@ -680,7 +699,7 @@ mod tests {
         }
     }
 
-    // P18 on the host seat: a ghost-link arm applied on the tick a client pawn
+    // On the host seat: a ghost-link arm applied on the tick a client pawn
     // swaps copies is stamped with that tick's end. The pose stamp keeps it hidden
     // while the delayed pose still holds the source side of the cut, and shows it
     // from the first frame drawing the arrival; the lane clock alone

@@ -127,7 +127,7 @@ fn descriptor_diagnostic(error: ScriptError) -> String {
         .unwrap_or_else(|| panic!("not a descriptor rejection: {message}"))
 }
 
-// Acceptance (AC21): a non-boolean `ghost` or `projectile.ghost` rejects mod
+// A non-boolean `ghost` or `projectile.ghost` rejects mod
 // init, with the same descriptor error in both runtimes.
 #[test]
 fn a_non_boolean_ghost_or_projectile_ghost_rejects_mod_init_alike_in_both_runtimes() {

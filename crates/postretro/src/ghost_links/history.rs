@@ -82,12 +82,22 @@ impl LinkHistory {
         }
     }
 
+    /// Local spawn state, whatever has been recorded or received since.
+    pub(crate) fn spawn(&self) -> LinkState {
+        self.spawn
+    }
+
     /// The newest known state.
     pub(crate) fn latest(&self) -> LinkState {
         self.changes.back().map_or(self.base, |(_, state)| *state)
     }
 
     /// The state a member presented at fractional host tick `clock` reads.
+    ///
+    /// Under this leading-sample read, a state that lasts one tick presents
+    /// only on frames whose clock falls in the one-tick span ending at its
+    /// stamp. Below one frame per tick a frame can skip that span: an `arm` on
+    /// one tick and a `disarm` on the next then present no rise at all.
     pub(crate) fn state_at(&self, clock: f64) -> LinkState {
         let bound = clock.ceil();
         self.changes

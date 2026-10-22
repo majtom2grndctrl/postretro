@@ -148,7 +148,7 @@ pattern. An unknown value warns and uses `"blend"`, leaving `bloom` and
 
 Every field — and `render`, `bloom` and `reflections` themselves — is
 optional, and omitting them selects the engine defaults: half-resolution
-smooth bloom and pixel-style reflections. Malformed optional values degrade
+smooth bloom, pixel-style reflections and blended (`"blend"`) ghosts. Malformed optional values degrade
 rather than abort: a non-object `render` warns and falls back to the complete
 default profile; a non-object `bloom` or `reflections` warns and falls back to
 that block's default without touching the other; an unrecognized
@@ -2645,6 +2645,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
 | `setSentiment(from, to, value)` | `{ primitive: "setSentiment", args: { from, to, value } }` | Sets the live directional `from` → `to` relationship. Negative values degrade it; positive values bond it. |
+| `setGhostAudio({ volume?, highPassHz?, lowPassHz?, drive?, periodMs? })` | `{ primitive: "setGhostAudio", args: { volume?, highPassHz?, lowPassHz?, drive?, periodMs? } }` | Changes the mod-wide Ghost bus mix. Import it from `postretro/audio` (`require("postretro/audio")` in Luau), not from the root module. Names no target, so pass it whole to `defineReaction`. Each named field ramps on its own over `periodMs` (default 0); at least one of `volume`, `highPassHz`, `lowPassHz` or `drive` is required. See [ghost-links.md](ghost-links.md). |
 | `adjustSentiment(from, to, delta)` | `{ primitive: "adjustSentiment", args: { from, to, delta } }` | Adds `delta` to the live directional `from` → `to` relationship, starting from the authored baseline when unchanged. Negative deltas degrade it; positive deltas bond it. |
 | `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes a global slot at the game-logic stage. Per-owner slots reject this legacy path. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |

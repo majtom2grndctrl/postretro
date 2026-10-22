@@ -1,10 +1,12 @@
-// Ghost look clamp: the tint-luminance channel beside the opacity channel, hue kept
-// over budget, black tints held as grey, and pass-through with the limiter off.
+// Ghost look clamp: tint luminance on the same flash window as opacity, hue kept
+// over budget, black tints held as grey, vanished ghosts, frames that never
+// present, and pass-through with the limiter off.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter), §7.9
 
-use super::super::flash_clamp_test_fixtures::worst_transitions;
+use super::super::flash_clamp_test_fixtures::{worst_transitions, worst_transitions_across};
+use super::super::value::INTENSITY_RATE_PER_SECOND;
 use super::*;
-use crate::flash_limiter::{LimiterFrameInput, pack_limiter_frame};
+use crate::flash_limiter::{HITCH_CEILING_SECONDS, LimiterFrameInput, pack_limiter_frame};
 
 /// A ghost identity: link and generation-checked entity.
 type Key = (u16, u32);
@@ -188,11 +190,10 @@ fn limiter_off_and_capture_pass_the_tint_strobe_through() {
     }
 }
 
-// Keys include the channel: an opacity strobe at a steady tint leaves the tint
-// alone, a tint strobe at steady opacity leaves opacity alone, and a second
-// ghost's history is its own.
+// An opacity strobe at a steady tint spends the window but changes no tint, and
+// a second ghost's history is its own.
 #[test]
-fn opacity_and_luminance_channels_and_ghosts_keep_separate_histories() {
+fn an_opacity_strobe_leaves_a_steady_tint_alone_and_each_ghost_keeps_its_own_history() {
     let fps = 60.0;
     let dt = 1.0 / fps;
     let frame = frame(dt, true);
@@ -210,15 +211,268 @@ fn opacity_and_luminance_channels_and_ghosts_keep_separate_histories() {
 }
 
 #[test]
-fn tint_at_luminance_scales_clamps_and_greys_black() {
+fn tint_at_luminance_scales_and_greys_black() {
     let tint = [0.5, 0.25, 0.1];
     let half = tint_at_luminance(tint, luminance(tint) * 0.5);
     for channel in 0..3 {
         assert!((half[channel] - tint[channel] * 0.5).abs() < 1e-6);
     }
-    let raised = tint_at_luminance([1.0, 0.0, 0.0], 0.9);
-    assert_eq!(raised, [1.0, 0.0, 0.0], "components clamp at 1");
     let grey = tint_at_luminance(BLACK, 0.3);
     assert!(grey[0] == grey[1] && grey[1] == grey[2] && (grey[0] - 0.3).abs() < 1e-6);
     assert_eq!(tint_at_luminance(tint, luminance(tint)), tint);
+}
+
+/// Each component's share of the spread from the darkest component to the
+/// brightest: what scaling and mixing toward white both keep.
+fn hue_shares(rgb: [f32; 3]) -> [f32; 3] {
+    let max = rgb[0].max(rgb[1]).max(rgb[2]);
+    let min = rgb[0].min(rgb[1]).min(rgb[2]);
+    rgb.map(|channel| (channel - min) / (max - min))
+}
+
+// Regression: scaling a saturated tint clipped its components at 1 short of the
+// held luminance, which the clamp still recorded as presented.
+#[test]
+fn tint_at_luminance_draws_exactly_the_held_luminance_for_a_saturated_hue() {
+    for tint in [
+        [0.2, 0.4, 1.0],
+        [1.0, 0.4, 0.3],
+        [1.0, 0.0, 0.0],
+        [0.05, 0.1, 0.4],
+    ] {
+        for held in [0.1, 0.45, 0.6, 0.93, 1.0] {
+            let drawn = tint_at_luminance(tint, held);
+            assert!(
+                (luminance(drawn) - held).abs() < 1e-6,
+                "{tint:?} held at {held}: {drawn:?}"
+            );
+            assert!(
+                drawn.iter().all(|channel| (0.0..=1.0).contains(channel)),
+                "{tint:?} held at {held}: {drawn:?}"
+            );
+            let spread =
+                drawn[0].max(drawn[1]).max(drawn[2]) - drawn[0].min(drawn[1]).min(drawn[2]);
+            if spread > 1e-2 {
+                let (asked, shown) = (hue_shares(tint), hue_shares(drawn));
+                for channel in 0..3 {
+                    assert!(
+                        (asked[channel] - shown[channel]).abs() < 1e-3,
+                        "{tint:?} held at {held} changes hue: {drawn:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// Regression: a white/blue strobe drew blue at its own luminance while the
+// channel held a brighter one, so on screen it escaped both the rate cap and
+// the flash window. Judged here on the luminance actually drawn.
+#[test]
+fn a_10hz_white_blue_tint_strobe_holds_the_rate_cap_and_flash_window_on_the_drawn_luminance() {
+    let fps = 60.0;
+    let dt = 1.0 / fps;
+    let blue = [0.2, 0.4, 1.0];
+    let tints: Vec<_> = (0..(3.0 * fps) as usize)
+        .map(|n| alternate(10.0, n as f32 * dt, WHITE, blue))
+        .collect();
+    let raw = luminances(&look_series(&tints));
+    assert!(worst_transitions(&raw, dt) > 6, "raw strobe");
+
+    let drawn = luminances(&present_tints(&tints, fps, Some(true)));
+    let cap = INTENSITY_RATE_PER_SECOND * dt;
+    for (n, pair) in drawn.windows(2).enumerate() {
+        assert!(
+            (pair[1] - pair[0]).abs() <= cap + 1e-5,
+            "frame {}: drawn luminance {} -> {}",
+            n + 1,
+            pair[0],
+            pair[1]
+        );
+    }
+    let worst = worst_transitions(&drawn, dt);
+    assert!(worst <= 6, "{worst} transitions: {drawn:?}");
+}
+
+// Regression: a vanished ghost counted as its tint going black, so quick
+// re-entries rate-capped the tint up from black and, once its window filled,
+// held the ghost near black. Only its opacity falls while it is gone.
+#[test]
+fn a_ghost_reentering_at_10hz_never_presents_a_dark_tint() {
+    let fps = 60.0;
+    let dt = 1.0 / fps;
+    let step = frame(dt, true);
+    let tint = [0.6, 0.8, 1.0];
+    let mut clamp = GhostLookClamp::default();
+    let mut presented = 0;
+    for n in 0..180 {
+        // Armed for the first half of each 10 Hz period; disarmed, the ghost
+        // leaves the member list and presents nothing.
+        let armed = (n as f32 * dt * 10.0).fract() < 0.5;
+        clamp.begin_frame(Some(&step));
+        if armed {
+            let shown = clamp.present(GHOST, look(0.45, tint));
+            assert_eq!(shown.tint, tint, "frame {n}");
+            presented += 1;
+        }
+        clamp.end_frame();
+    }
+    assert!(presented > 0);
+
+    // The held tint goes with the opacity history: a ghost back after its
+    // window emptied starts fresh against its own tint.
+    for _ in 0..90 {
+        clamp.begin_frame(Some(&step));
+        clamp.end_frame();
+    }
+    clamp.begin_frame(Some(&step));
+    let back = clamp.present(GHOST, look(0.45, BLACK));
+    clamp.end_frame();
+    assert_eq!(back.tint, BLACK);
+}
+
+// Regression: a frame whose surface acquire failed still spent the ghost
+// clamp's presented time, so the first visible frame after a run of them
+// stepped several rate caps at once.
+#[test]
+fn a_frame_that_never_presents_leaves_the_clamp_as_if_it_never_ran_and_merges_its_time() {
+    let dt = 1.0 / 60.0;
+    let step = frame(dt, true);
+    let start = look(0.0, BLACK);
+    let target = look(1.0, WHITE);
+    let mut skipping = GhostLookClamp::default();
+    let mut reference = GhostLookClamp::default();
+    for clamp in [&mut skipping, &mut reference] {
+        clamp.begin_frame(Some(&step));
+        clamp.present(GHOST, start);
+        clamp.end_frame();
+        clamp.finish_presentation(true);
+    }
+    // Five frames that never present, then one that does. The reference never
+    // saw the five: its next frame carries their time.
+    let mut merged = dt;
+    for _ in 0..5 {
+        skipping.begin_frame(Some(&step));
+        skipping.present(GHOST, target);
+        skipping.end_frame();
+        skipping.finish_presentation(false);
+        merged += dt;
+    }
+    for n in 0..30 {
+        let reference_frame = if n == 0 { frame(merged, true) } else { step };
+        skipping.begin_frame(Some(&step));
+        let shown = skipping.present(GHOST, target);
+        skipping.end_frame();
+        skipping.finish_presentation(true);
+        reference.begin_frame(Some(&reference_frame));
+        let expected = reference.present(GHOST, target);
+        reference.end_frame();
+        reference.finish_presentation(true);
+
+        assert!((shown.opacity - expected.opacity).abs() < 1e-6, "frame {n}");
+        for channel in 0..3 {
+            assert!(
+                (shown.tint[channel] - expected.tint[channel]).abs() < 1e-6,
+                "frame {n}: {shown:?} vs {expected:?}"
+            );
+        }
+        if n == 0 {
+            // Six frames' time, hitch-clamped: one hitch ceiling of rate cap.
+            let cap = INTENSITY_RATE_PER_SECOND * HITCH_CEILING_SECONDS;
+            assert!((shown.opacity - cap).abs() < 1e-5, "{shown:?}");
+        }
+    }
+}
+
+/// Presented opacity and drawn tint luminance per frame, one ghost at `fps`
+/// with the limiter on, from `asked(n)`.
+fn present_looks(
+    frames: usize,
+    fps: f32,
+    asked: impl Fn(usize) -> GhostInstanceLook,
+) -> (Vec<f32>, Vec<f32>) {
+    let step = frame(1.0 / fps, true);
+    let mut clamp = GhostLookClamp::default();
+    (0..frames)
+        .map(|n| {
+            clamp.begin_frame(Some(&step));
+            let shown = clamp.present(GHOST, asked(n));
+            clamp.end_frame();
+            (shown.opacity, luminance(shown.tint))
+        })
+        .unzip()
+}
+
+// One ghost's opacity, tint redness and tint luminance share one flash window:
+// opacity strobing 0 ↔ 1 at 10 Hz while its tint strobes black ↔ white half a
+// period behind presents at most three flashes in any second in total, though
+// each alone would fit three of its own.
+#[test]
+fn a_10hz_opacity_strobe_with_an_offset_tint_strobe_presents_at_most_three_flashes_in_total() {
+    for fps in [60.0f32, 240.0] {
+        let dt = 1.0 / fps;
+        // Both start dark; after the first half period the tint is white
+        // exactly while opacity is low.
+        let asked = |n: usize| {
+            let t = n as f32 * dt;
+            let opacity = if (t * 10.0).fract() >= 0.5 { 1.0 } else { 0.0 };
+            let tint = if t >= 0.05 && opacity == 0.0 {
+                WHITE
+            } else {
+                BLACK
+            };
+            look(opacity, tint)
+        };
+        let frames = (3.0 * fps) as usize;
+        let raw_opacity: Vec<f32> = (0..frames).map(|n| asked(n).opacity).collect();
+        let raw_luminance: Vec<f32> = (0..frames).map(|n| luminance(asked(n).tint)).collect();
+        assert!(
+            worst_transitions_across(&[raw_opacity.as_slice(), raw_luminance.as_slice()], dt) > 12,
+            "{fps} Hz: raw strobe"
+        );
+
+        let (opacity, drawn) = present_looks(frames, fps, asked);
+        let worst = worst_transitions_across(&[opacity.as_slice(), drawn.as_slice()], dt);
+        assert!(worst <= 6, "{fps} Hz: {worst} transitions in total");
+        assert!(
+            worst_transitions(&opacity, dt) > 0 && worst_transitions(&drawn, dt) > 0,
+            "{fps} Hz: both parts present some flash"
+        );
+    }
+}
+
+// Regression: an opacity onset that takes the window's last room owes its
+// return that room, so a tint-luminance onset after it holds dark until the
+// window drains; admitted, it would have left the return no room.
+#[test]
+fn a_tint_onset_waits_for_the_return_an_opacity_onset_still_owes() {
+    let fps = 60.0;
+    let dt = 1.0 / fps;
+    // Two quick opacity pulses (3 frames up, 3 down), a third rise held to
+    // frame 32, then opacity falls. The tint turns white on frame 16, after
+    // the third rise was counted, and stays white.
+    let asked = |n: usize| {
+        let opacity = match n {
+            0 => 0.0,
+            1..=12 if (n - 1) % 6 >= 3 => 0.0,
+            1..=32 => 1.0,
+            _ => 0.0,
+        };
+        look(opacity, if n >= 16 { WHITE } else { BLACK })
+    };
+    let (opacity, drawn) = present_looks(150, fps, asked);
+
+    // The tint holds black while the opacity onset owes its return, and
+    // while that return plays out at the rate cap.
+    let returned = 33 + (1.0 / (INTENSITY_RATE_PER_SECOND * dt)).ceil() as usize;
+    assert_eq!(opacity[returned], 0.0, "the opacity return passes");
+    assert!(
+        drawn[16..=returned].iter().all(|&shown| shown == 0.0),
+        "{:?}",
+        &drawn[16..=returned]
+    );
+    let worst = worst_transitions_across(&[opacity.as_slice(), drawn.as_slice()], dt);
+    assert!(worst <= 6, "{worst} transitions in total");
+    // Once the window has room, the tint rises to its asked white.
+    assert_eq!(drawn.last(), Some(&luminance(WHITE)), "{drawn:?}");
 }

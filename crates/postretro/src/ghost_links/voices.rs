@@ -1,7 +1,7 @@
 // Ghost voices: a second voice on the Ghost bus beside each member sound this machine admits.
 // See: context/lib/audio.md §1 (Ghost bus) · context/lib/entity_model.md §7d
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use glam::Vec3;
 use postretro_audio::{SoundAnchor, SoundRequest};
@@ -19,10 +19,12 @@ use super::eligibility::{self, CandidateOrigin, CandidateView, GhostCategory};
 /// The boundary bus name every ghost voice plays on.
 pub(crate) const GHOST_BUS: &str = "ghost";
 
-/// Shots whose owner an impact may still need. A projectile can outlive many
-/// later shots; this bounds the memory, not the flight. Lookups run per impact
-/// sound, never per frame.
-const MAX_SHOT_OWNERS: usize = 256;
+/// Ledger entries kept: the bound on memory, not on a projectile's flight. On
+/// the host each shot takes two (its raw and its normalized id), so this keeps
+/// the last 2048 shots: a battle firing a hundred shots a second keeps a
+/// projectile's fire entry through a 20 s flight. An evicted entry only means
+/// that shot's impact is not ghosted. Record and lookup are constant time.
+const MAX_SHOT_OWNERS: usize = 4096;
 
 /// A sound this machine is about to play, with what ghost admission needs
 /// beyond its anchor: an impact's shot owner, which the contact set alone
@@ -34,6 +36,17 @@ pub(crate) struct LocalSound {
     /// way observer cues normalize it. `None` for every other sound, and for an
     /// impact without a shot id or whose shot this machine never saw fired.
     pub(crate) shot_owner: Option<EntityId>,
+}
+
+impl LocalSound {
+    /// Whether this sound's anchor can ghost at all: an entity or a contact
+    /// set. A point-anchored or unanchored sound never does.
+    fn may_ghost(&self) -> bool {
+        matches!(
+            self.request.anchor,
+            Some(SoundAnchor::Entity { .. } | SoundAnchor::Contacts(_))
+        )
+    }
 }
 
 impl From<SoundRequest> for LocalSound {
@@ -49,10 +62,12 @@ impl From<SoundRequest> for LocalSound {
 /// sub-tick alpha this frame's admission reads clocks at.
 #[derive(Debug, Default)]
 pub(super) struct GhostVoices {
-    /// Recent shots and their owners, newest last. A shot recorded under its
-    /// raw id and, on the host, its normalized one. `None` marks an id two
-    /// different owners fired under: attributed to neither.
-    shot_owners: VecDeque<(ShotId, Option<EntityId>)>,
+    /// Recent shots and their owners. A shot recorded under its raw id and,
+    /// on the host, its normalized one. `None` marks an id two different owners
+    /// fired under: attributed to neither.
+    shot_owners: HashMap<ShotId, Option<EntityId>>,
+    /// The ledger's ids, oldest first, for eviction.
+    shot_order: VecDeque<ShotId>,
     alpha: f32,
 }
 
@@ -73,47 +88,45 @@ impl GhostLinks {
     /// an id two owners fired under belongs to neither, so an impact is never
     /// attributed to an entity that did not fire it.
     pub(crate) fn record_shot_owner(&mut self, shot: ShotId, owner: EntityId) {
-        let owners = &mut self.voices.shot_owners;
-        if let Some(entry) = owners.iter_mut().rev().find(|(id, _)| *id == shot) {
-            if entry.1 != Some(owner) {
-                entry.1 = None;
+        let voices = &mut self.voices;
+        if let Some(entry) = voices.shot_owners.get_mut(&shot) {
+            if *entry != Some(owner) {
+                *entry = None;
             }
             return;
         }
-        if owners.len() == MAX_SHOT_OWNERS {
-            owners.pop_front();
+        if voices.shot_order.len() == MAX_SHOT_OWNERS
+            && let Some(oldest) = voices.shot_order.pop_front()
+        {
+            voices.shot_owners.remove(&oldest);
         }
-        owners.push_back((shot, Some(owner)));
+        voices.shot_order.push_back(shot);
+        voices.shot_owners.insert(shot, Some(owner));
     }
 
     /// The entity that fired `shot`, if this machine saw it fired.
     pub(crate) fn shot_owner(&self, shot: Option<ShotId>) -> Option<EntityId> {
-        let shot = shot?;
-        self.voices
-            .shot_owners
-            .iter()
-            .rev()
-            .find(|(id, _)| *id == shot)
-            .and_then(|(_, owner)| *owner)
+        self.voices.shot_owners.get(&shot?).copied().flatten()
     }
 
     /// Every ghost voice `sound` admits, pushed to `out` (cleared first). The
     /// caller plays them only if `sound`'s own voice was admitted, so a ghost
-    /// voice never starts beside a voice this machine refused (P40).
+    /// voice never starts beside a voice this machine refused.
     ///
     /// - An entity-anchored sound ghosts through each armed link whose volume
     ///   holds its fire-time point, whose style carries audio and which shows
     ///   the entity's category at the clock that entity presents at this
-    ///   frame (P24, P34). The voice sits at the mapped fire-time point and
-    ///   plays out wherever the member goes next (P23).
+    ///   frame. The voice sits at the mapped fire-time point and
+    ///   plays out wherever the member goes next.
     /// - An impact (a contact set) ghosts only when its shot's owner is such a
     ///   member, judged at the owner's point, and the style also carries impact
     ///   audio. Contacts outside the volume drop.
     /// - A point-anchored or unanchored sound never ghosts.
     ///
-    /// The viewer's own pawn, its projectiles and their sounds never ghost
-    /// (P25). Bounded by the links containing one point; no allocation beyond
-    /// the admitted requests.
+    /// The viewer's own pawn, its projectiles and their sounds never ghost.
+    /// Bounded by the links containing one point. Runs per sound, never
+    /// per frame: each admitted voice allocates its request, and an impact's
+    /// voice its mapped contact list too.
     pub(crate) fn ghost_voices(
         &self,
         registry: &EntityRegistry,
@@ -153,15 +166,21 @@ impl GhostLinks {
                 let Some(owner) = sound.shot_owner else {
                     return;
                 };
-                let Ok(pose) = registry.get_component::<Transform>(owner) else {
+                let Some(member) = self.voice_member(registry, frame.view, owner) else {
                     return;
                 };
-                let Some(member) = self.voice_member(registry, frame.view, owner) else {
+                // The owner is judged where membership and its ghost present it.
+                let lane = clocks::member_lane(registry, owner, member.1, member.0);
+                let Some(pose) = frame.stamps.presented_transform(owner, lane).or_else(|| {
+                    registry
+                        .interpolated_transform(owner, self.voices.alpha)
+                        .ok()
+                }) else {
                     return;
                 };
                 let owner_point = self
                     .movers
-                    .member_point(registry, owner, member.0, *pose)
+                    .member_point(registry, owner, member.0, pose)
                     .position;
                 self.visit_member_links(
                     registry,
@@ -291,18 +310,23 @@ pub(crate) struct GhostVoicePlan {
 }
 
 impl GhostVoicePlan {
-    /// Play `sounds` in order through `play`, which reports whether the voice
-    /// was admitted (`Audio::play` returned a handle). Each admitted sound's
-    /// ghost voices start right after it; a refused sound starts none (P40).
+    /// Play `sounds` in order through `play(request, ghost)`, which reports
+    /// whether the voice was admitted (`Audio::play` returned a handle);
+    /// `ghost` is true for a ghost voice. Each admitted sound's ghost voices
+    /// start right after it; a refused sound starts none, so a ghost voice
+    /// never plays beside a voice this machine refused.
     pub(crate) fn play_beside(
-        &self,
-        sounds: Vec<LocalSound>,
-        mut play: impl FnMut(SoundRequest) -> bool,
+        self,
+        sounds: impl IntoIterator<Item = LocalSound>,
+        mut play: impl FnMut(SoundRequest, bool) -> bool,
     ) {
+        // Voices are planned in sound order, so one pass pairs them.
+        let mut voices = self.voices.into_iter().peekable();
         for (index, sound) in sounds.into_iter().enumerate() {
-            if play(sound.request) {
-                for (_, voice) in self.voices.iter().filter(|(of, _)| *of == index) {
-                    play(voice.clone());
+            let admitted = play(sound.request, false);
+            while let Some((_, voice)) = voices.next_if(|(of, _)| *of == index) {
+                if admitted {
+                    play(voice, true);
                 }
             }
         }
@@ -320,6 +344,10 @@ impl crate::App {
         weapons: &[WeaponEmission],
         ai: &[AiEmission],
     ) {
+        // With no link no impact can ghost, so no owner is ever read.
+        if self.ghost_links.links.is_empty() {
+            return;
+        }
         let allocator = match self
             .session
             .as_ref()
@@ -365,7 +393,7 @@ impl crate::App {
     ) -> GhostVoicePlan {
         self.ghost_links.voices.alpha = alpha;
         let mut plan = GhostVoicePlan::default();
-        if self.ghost_links.links.is_empty() {
+        if self.ghost_links.links.is_empty() || !sounds.iter().any(LocalSound::may_ghost) {
             return plan;
         }
         let Some(session) = self.session.as_ref() else {

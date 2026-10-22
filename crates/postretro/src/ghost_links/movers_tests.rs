@@ -279,7 +279,7 @@ impl Level {
 /// center, not its origin, decides membership.
 const OFFSET_BOUNDS: (Vec3, Vec3) = (Vec3::new(3.5, -1.0, -0.5), Vec3::new(4.5, 1.0, 0.5));
 
-// Acceptance (AC12, host and connected client): a mover's presented bounds
+// Host and connected client: a mover's presented bounds
 // center just inside the volume ghosts it and just outside does not, whatever
 // its origin; the client loads the same mover from the level file and decides
 // the same way.
@@ -325,7 +325,7 @@ fn world_clone(world: &LevelWorld) -> LevelWorld {
     )
 }
 
-// Acceptance (AC12): a mover carrying a listed tag ghosts; an untagged mover
+// A mover carrying a listed tag ghosts; an untagged mover
 // beside it does not, and neither does a mover whose tag no link lists, while
 // the ghosted partner pawn beside them ghosts.
 #[test]
@@ -350,7 +350,7 @@ fn a_mover_carrying_a_listed_tag_ghosts_while_an_untagged_partner_mover_does_not
     assert!(level.ghosts_of(lift).is_empty());
 }
 
-// Acceptance (AC12): the same tagged barrier inside two links ghosts through the
+// The same tagged barrier inside two links ghosts through the
 // link that lists its tag and not the other.
 #[test]
 fn a_barrier_inside_two_links_ghosts_only_through_the_link_listing_its_tag() {
@@ -375,7 +375,7 @@ fn a_barrier_inside_two_links_ghosts_only_through_the_link_listing_its_tag() {
     assert_eq!(lift_links, [1]);
 }
 
-// Acceptance (AC12, P27): a mover inside two armed links that both list its tag
+// A mover inside two armed links that both list its tag
 // draws two ghosts at two transforms, each its link's mapping of one pose.
 #[test]
 fn a_mover_inside_two_links_listing_its_tag_ghosts_twice_at_two_transforms() {
@@ -397,7 +397,7 @@ fn a_mover_inside_two_links_listing_its_tag_ghosts_twice_at_two_transforms() {
     assert_eq!(ghosts[1].mapped.position, origin + LINK_1_TARGET);
 }
 
-// Acceptance (AC12, P39): a mover matching two tags of one link ghosts once
+// A mover matching two tags of one link ghosts once
 // through it.
 #[test]
 fn a_mover_matching_two_tags_of_one_link_ghosts_once() {
@@ -411,7 +411,7 @@ fn a_mover_matching_two_tags_of_one_link_ghosts_once() {
     assert_eq!(level.ghosts_of(barrier).len(), 1, "P39");
 }
 
-// Acceptance (AC18, movers): with `movers` off, a link's mover ghosts fade at
+// Movers: with `movers` off, a link's mover ghosts fade at
 // the rate cap while its other categories' members stay; turned back on, the
 // mover ramps back in from its presented value.
 #[test]
@@ -461,7 +461,7 @@ fn unmatched_warnings(capture: &LogCapture) -> Vec<String> {
         .collect()
 }
 
-// Acceptance (AC3): a `ghost_tags` entry matching no mover warns once at level
+// A `ghost_tags` entry matching no mover warns once at level
 // install, on the host and on a client (both install from the same level file
 // through the same install), and the level loads: the link's matched tags still
 // ghost their movers.
@@ -495,4 +495,34 @@ fn an_unmatched_ghost_tag_warns_once_at_install_on_host_and_client_and_the_level
             "once, at install only"
         );
     }
+}
+
+// A headless capture installs and evaluates once, with no fixed tick and no
+// descriptor opt-ins: a tagged mover inside a link armed on spawn presents at
+// full, one inside a link disarmed on spawn does not ghost, and a pawn never
+// ghosts in a capture.
+#[cfg(feature = "capture")]
+#[test]
+fn capture_evaluation_settles_movers_of_links_armed_on_spawn_and_ghosts_no_pawn() {
+    let mut disarmed = link(5, LINK_1, LINK_1_TARGET, &["barrier"]);
+    disarmed.enabled_on_spawn = false;
+    let world = world(
+        vec![link(4, LINK_0, LINK_0_TARGET, &["barrier"]), disarmed],
+        vec![loaded_mover(1, &["barrier"], OFFSET_BOUNDS)],
+    );
+    let mut level = Level::new(world);
+    // Center at x = 8, inside both volumes.
+    let barrier = level.mover(1, Vec3::new(4.0, 0.0, 0.0));
+    let partner = level.pawn(Vec3::new(8.0, 0.0, 0.0));
+    // As the capture builds it: installed, never refreshed against descriptors.
+    level.ghosts = GhostLinks::install(&level.world, &level.registry);
+    level.ghosts.evaluate_for_capture(&level.registry);
+    let ghosts = level.ghosts_of(barrier);
+    assert_eq!(ghosts.len(), 1, "only the link armed on spawn shows it");
+    assert_eq!(ghosts[0].link, 0);
+    assert_eq!(ghosts[0].membership, 1.0, "full on the capture's one frame");
+    assert!(
+        level.ghosts_of(partner).is_empty(),
+        "no opt-ins in a capture"
+    );
 }

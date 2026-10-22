@@ -72,7 +72,7 @@ fn slope_per_frame(period_ms: f32, delta: f32) -> f32 {
     delta / (period_ms / 1000.0) * FRAME_SECONDS
 }
 
-// AC37 (audio): host `setGhostAudio` reaches a connected client at realistic
+// Audio: host `setGhostAudio` reaches a connected client at realistic
 // lag, and the client's ramp ends within one snapshot interval of the host's.
 // Only the fields the call set cross the wire: the client keeps its own
 // manifest's cutoffs and drive, and presents the ramp, not a jump.
@@ -128,7 +128,7 @@ fn host_set_ghost_audio_reaches_the_client_and_its_ramp_ends_with_the_hosts() {
     assert_eq!((ramp.from, ramp.to), (HOST.volume, 0.9));
 }
 
-// AC37 / P8: the always-on record repeats the same ramp every snapshot. With
+// The always-on record repeats the same ramp every snapshot. With
 // the ramp received, a client whose RTT estimate swings presents exactly what
 // one with a steady estimate presents: rebased once and never again.
 #[test]
@@ -164,7 +164,7 @@ fn repeated_identical_ghost_audio_records_do_not_move_the_presented_bus_as_rtt_c
     assert_eq!(steady, swinging);
 }
 
-// AC38 / P12: a client joining mid-`setGhostAudio` ramp presents its own
+// A client joining mid-`setGhostAudio` ramp presents its own
 // manifest until its first snapshot lands, then the rebased current value of
 // the host's ramp, which tracks the host's and ends with it.
 #[test]
@@ -206,7 +206,7 @@ fn a_late_joiner_mid_ghost_audio_ramp_presents_the_hosts_current_value_and_ends_
     assert!(client_end.abs_diff(host_end) <= SNAPSHOT_INTERVAL_FRAMES);
 }
 
-// AC38 / P10: a record landing before the presentation clock anchors (no RTT
+// A record landing before the presentation clock anchors (no RTT
 // sample yet) defers its ramp: the client keeps presenting its own manifest.
 // Once the clock anchors the ramp rebases and presents the host's current value.
 #[test]
@@ -250,7 +250,7 @@ fn a_ghost_audio_record_before_the_presentation_clock_defers_the_ramp() {
     }
 }
 
-// P36 (client half): host-set cutoffs valid against the host's manifest cross
+// Client half: host-set cutoffs valid against the host's manifest cross
 // against the client's own `audio.ghost`. The client presents the floor
 // cutoffs, warning once however many frames resolve, while the host presents
 // its set high-pass.
@@ -287,7 +287,7 @@ fn a_client_whose_own_manifest_crosses_host_set_cutoffs_presents_the_floor_cutof
     capture.assert_logged_once(Level::Warn, CROSSED_PROFILE_WARNING);
 }
 
-// AC36 / P17 (both peers): a committed reload changing `audio.ghost` on either
+// Both peers: a committed reload changing `audio.ghost` on either
 // peer mid-ramp re-resolves that peer's unset fields, and the host's
 // `setGhostAudio` ramp runs on to its target on both.
 #[test]

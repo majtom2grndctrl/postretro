@@ -1,6 +1,6 @@
 --!strict
 -- Audio subsystem vocabulary for `require("postretro/audio")`: the Ghost bus
--- setter first; music layering lands here later.
+-- setter.
 -- See: context/lib/audio.md §1 (Ghost bus) · context/lib/scripting.md §10.4
 
 local AudioSdk = {}

@@ -30,7 +30,7 @@ fn first(trace: &[(Option<f32>, bool)], test: impl Fn(&(Option<f32>, bool)) -> b
         .expect("the barrier ghosts and moves")
 }
 
-// AC16 / P33: a link arm and a member mover's motion (its phase change) on one
+// A link arm and a member mover's motion (its phase change) on one
 // host tick present on one frame, on a connected client and on the host seat.
 // Run with the tick on and off the snapshot cadence: when no snapshot carries
 // the armed tick, the next carries both the arm and the moved phase together.

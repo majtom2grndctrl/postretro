@@ -790,7 +790,7 @@ mod tests {
             .with_spawn_active_slot(2)
     }
 
-    // Acceptance (AC20): `projectile.ghost` resolves on each peer from its own
+    // `projectile.ghost` resolves on each peer from its own
     // descriptor. The host strips it, so flipping it encodes the same bytes:
     // whole-struct dedupe sends no new payload and the client keeps its pawn.
     #[test]

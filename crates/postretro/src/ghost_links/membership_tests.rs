@@ -25,15 +25,21 @@ fn pose(x: f32) -> Transform {
 /// A table past its install frame, so new keys start at 0.
 fn running_table() -> MembershipTable {
     let mut table = MembershipTable::default();
-    table.begin_frame();
+    table.begin_frame(None);
     table.finish_frame(0.0, |_, _| Some((mapping(), LOOK)));
     table
 }
 
 fn frame(table: &mut MembershipTable, marked: &[(GhostKey, Transform)], step: f32) {
-    table.begin_frame();
+    table.begin_frame(None);
     for (key, source) in marked {
-        table.mark_target(*key, GhostCategory::Players, *source, MemberLag::default());
+        table.mark_target(
+            *key,
+            GhostCategory::Players,
+            *source,
+            MemberLag::default(),
+            true,
+        );
     }
     table.finish_frame(step, |_, _| Some((mapping(), LOOK)));
 }
@@ -91,7 +97,7 @@ fn new_ghost_presents_its_first_frame_at_zero_then_ramps_at_the_rate_cap() {
 }
 
 #[test]
-fn install_frame_starts_every_ghost_at_its_target() {
+fn install_frame_starts_ghosts_their_spawn_state_shows_at_full() {
     let mut entities = EntityRegistry::new();
     let ghost = key(&mut entities, 0);
     let mut table = MembershipTable::default();
@@ -103,6 +109,70 @@ fn install_frame_starts_every_ghost_at_its_target() {
         membership(&table, later),
         Some(0.0),
         "only the first evaluation settles"
+    );
+}
+
+// Regression: the install settle gave full membership to any armed state the
+// first evaluation read, so an arm landing on the reveal frame cut in.
+#[test]
+fn install_frame_starts_a_ghost_its_spawn_state_hides_at_zero() {
+    let mut entities = EntityRegistry::new();
+    let armed_since_spawn = key(&mut entities, 0);
+    let armed_on_reveal = key(&mut entities, 1);
+    let mut table = MembershipTable::default();
+    table.begin_frame(None);
+    for (ghost, spawn_shows) in [(armed_since_spawn, true), (armed_on_reveal, false)] {
+        table.mark_target(
+            ghost,
+            GhostCategory::Players,
+            pose(1.0),
+            MemberLag::default(),
+            spawn_shows,
+        );
+    }
+    let step = ramp_step(FRAME);
+    table.finish_frame(step, |_, _| Some((mapping(), LOOK)));
+    assert_eq!(membership(&table, armed_since_spawn), Some(1.0));
+    assert_eq!(
+        membership(&table, armed_on_reveal),
+        Some(0.0),
+        "a state spawn did not show ramps in from 0"
+    );
+    frame(&mut table, &[(armed_on_reveal, pose(1.0))], step);
+    assert!((membership(&table, armed_on_reveal).unwrap() - step).abs() < 1e-6);
+}
+
+// Regression: when the camera came to follow a pawn that was ghosting, its
+// ghost faded over the rate cap instead of vanishing.
+#[test]
+fn a_ghost_of_the_new_viewer_drops_at_once_instead_of_fading() {
+    let mut entities = EntityRegistry::new();
+    let partner = key(&mut entities, 0);
+    let other = key(&mut entities, 1);
+    let mut table = running_table();
+    let step = 0.1;
+    for _ in 0..6 {
+        frame(
+            &mut table,
+            &[(partner, pose(1.0)), (other, pose(2.0))],
+            step,
+        );
+    }
+    assert!(membership(&table, partner).unwrap() > 0.0);
+    // The camera now follows `partner`: candidates no longer offer it.
+    table.begin_frame(Some(partner.entity));
+    table.mark_target(
+        other,
+        GhostCategory::Players,
+        pose(2.0),
+        MemberLag::default(),
+        true,
+    );
+    table.finish_frame(step, |_, _| Some((mapping(), LOOK)));
+    assert_eq!(membership(&table, partner), None, "no fade frame");
+    assert!(
+        membership(&table, other).is_some(),
+        "other ghosts keep presenting"
     );
 }
 

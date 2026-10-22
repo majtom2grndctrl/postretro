@@ -62,7 +62,7 @@ fn ghosts(mode: ModGhostTransparency) -> ModRenderProfile {
     }
 }
 
-// Acceptance (AC9a): `render.ghosts` absent or `"blend"` is blend, `"dither"`
+// `render.ghosts` absent or `"blend"` is blend, `"dither"`
 // is dither, in both runtimes, with no warning.
 #[test]
 fn render_ghosts_absent_or_blend_is_blend_and_dither_is_dither_in_both_runtimes() {
@@ -101,7 +101,7 @@ fn render_ghosts_absent_or_blend_is_blend_and_dither_is_dither_in_both_runtimes(
     assert!(warnings(&capture, "render").is_empty());
 }
 
-// Acceptance (AC9a): a malformed `render.ghosts` warns and uses blend,
+// A malformed `render.ghosts` warns and uses blend,
 // leaving `bloom` and `reflections` as authored; both runtimes judge it
 // alike, word for word.
 #[test]
@@ -208,7 +208,7 @@ fn malformed_ghost_styles_never_reject_mod_init_in_either_runtime() {
     assert!(luau.ghost_styles.is_empty());
 }
 
-// Acceptance (AC6, resolver half): the committed table a link resolves
+// Resolver half: the committed table a link resolves
 // against gives a declared name its style, an empty name the floor silently,
 // and an undeclared name the floor plus the stable `[Ghost]` warning the
 // install path logs once.

@@ -264,12 +264,12 @@ pub struct MeshFramePlan {
 
 /// The control-flow plans sharing this frame's palette and instance SSBOs.
 ///
-/// Budget admission is global across the plans: all forward-visible groups are
-/// considered before dynamic-shadow-only and promoted-static-only groups, and
-/// within a priority world before viewmodel before ghosts, so an overflow drops
-/// ghosts before any real drawable mesh. Dense instance offsets place the
-/// viewmodel after the world plan and ghosts last; no plan owns a separate GPU
-/// buffer. Only `world` reaches shadow depth and SH sampling.
+/// Budget admission is global across the plans: all real forward-visible groups
+/// are considered before dynamic-shadow-only and promoted-static-only groups,
+/// within a priority world before viewmodel, and ghosts after every real group,
+/// so an overflow drops ghosts before any real mesh. Dense instance offsets
+/// place the viewmodel after the world plan and ghosts last; no plan owns a
+/// separate GPU buffer. Only `world` reaches shadow depth and SH sampling.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MeshFramePlans {
     pub world: MeshFramePlan,
@@ -424,15 +424,6 @@ pub fn plan_mesh_frame_plans(
                 &mut instance_cursor,
                 &mut viewmodel,
             );
-            plan_mesh_priority(
-                ghosts,
-                joints,
-                &|_| true,
-                visibility_priority,
-                &mut palette_cursor,
-                &mut instance_cursor,
-                &mut ghost,
-            );
         }
     } else {
         for visibility_priority in 0..3 {
@@ -454,16 +445,21 @@ pub fn plan_mesh_frame_plans(
                 &mut instance_cursor,
                 &mut viewmodel,
             );
-            plan_mesh_priority(
-                ghosts,
-                joints,
-                &|_| true,
-                visibility_priority,
-                &mut palette_cursor,
-                &mut instance_cursor,
-                &mut ghost,
-            );
         }
+    }
+
+    // Ghosts plan after every real group, shadow-only casters included, so an
+    // overflow drops ghosts before any real mesh.
+    for visibility_priority in 0..3 {
+        plan_mesh_priority(
+            ghosts,
+            joints,
+            &|_| true,
+            visibility_priority,
+            &mut palette_cursor,
+            &mut instance_cursor,
+            &mut ghost,
+        );
     }
 
     let mut offset_cursor = 0;
@@ -1569,5 +1565,39 @@ mod tests {
                     MeshPaletteCacheKey::Ghost { link: 0, .. }
                 ))
         );
+    }
+
+    // Regression: ghosts planned inside each visibility priority took the budget
+    // ahead of real dynamic-shadow-only and promoted-static-only meshes.
+    #[test]
+    fn plan_drops_ghosts_before_real_shadow_only_meshes() {
+        // The three real groups fill the palette but for less than one more
+        // group of the same size, so the ghost group cannot fit after them.
+        let per = (MAX_PALETTE_ENTRIES / 3) as u32;
+        let joints = joints(&[
+            ("world-forward", per),
+            ("dynamic", per),
+            ("static-only", per),
+            ("pawn", per),
+        ]);
+        let inputs = [
+            non_forward_instance("static-only", 1.0, 1),
+            dynamic_shadow_instance("dynamic", 2.0, 2),
+            instance("world-forward", 3.0, 3),
+        ];
+        let ghosts = [ghost_of(instance("pawn", 4.0, 7), 0, 1.0)];
+
+        let plans = plan_mesh_frame_plans(&inputs, &ghosts, &joints);
+
+        let world_models: Vec<_> = plans
+            .world
+            .groups
+            .iter()
+            .map(|group| group.model.as_str())
+            .collect();
+        assert_eq!(world_models, ["world-forward", "dynamic", "static-only"]);
+        assert_eq!(plans.world.dropped, 0, "every real shadow-only mesh plans");
+        assert_eq!(plans.ghost.instance_count, 0);
+        assert_eq!(plans.ghost.dropped, 1, "the ghost drops instead");
     }
 }

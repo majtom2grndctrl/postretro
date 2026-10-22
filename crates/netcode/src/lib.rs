@@ -206,6 +206,7 @@ pub use host_presentation::{
     present_client_pawns as host_present_client_pawns,
     presented_client_pawn_host_tick as host_presented_client_pawn_tick,
     presented_client_pawn_state_tick as host_presented_client_pawn_state_tick,
+    presented_client_pawn_transform as host_presented_client_pawn_transform,
     probe_presented_client_pawn_feet as host_probe_presented_client_pawn_feet,
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,

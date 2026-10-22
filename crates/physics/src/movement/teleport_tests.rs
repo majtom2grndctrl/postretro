@@ -1186,7 +1186,7 @@ mod seamless_mapping_parity {
     proptest! {
         // A ghost drawn through a link and a seamless arrival through the same
         // landmark and target must agree, rotated pairs and vertical offsets
-        // included (ghost-entities AC "ghost pose equals the seamless pose").
+        // included.
         #[test]
         fn seamless_teleport_arrival_is_the_shared_mapping_of_the_body_point(
             landmark in origin(),

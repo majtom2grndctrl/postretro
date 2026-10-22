@@ -111,7 +111,7 @@ fn acked(outcome: &ApplyOutcome, network_id: u32) -> bool {
     })
 }
 
-// P11: a record naming a link this client has not installed binds nothing,
+// A record naming a link this client has not installed binds nothing,
 // warns, and is not acked, so the host keeps sending it and a later baseline
 // binds once the link exists.
 #[test]
@@ -262,7 +262,7 @@ fn ghost_link_unbinding_never_despawns_the_installed_link() {
     assert!(registry.exists(installed), "demotion only unbinds the link");
 }
 
-// AC41 / P38: demotion and level unload drop received link state. Queued
+// Demotion and level unload drop received link state. Queued
 // updates never reach presentation after the reset, and the binding is gone,
 // so the next participation's first baseline binds afresh.
 #[test]
@@ -327,7 +327,7 @@ fn pawn_record(x: f32, generation: u8) -> Vec<ComponentPayload> {
     ]
 }
 
-// P18 at the netcode seam: each remote reports the host tick its presented pose
+// At the netcode seam: each remote reports the host tick its presented pose
 // shows. A blend shows its leading sample; a pose held on the near side of a
 // seamless cut shows no state of the cut's own tick, and the cut frame does.
 #[test]
@@ -406,7 +406,7 @@ fn with_audio(
     }
 }
 
-// AC37 / AC41 (audio): the client holds the newest snapshot's ghost-audio
+// Audio: the client holds the newest snapshot's ghost-audio
 // record for presentation. A newer record supersedes an untaken one, an
 // overtaken older snapshot never replaces it, an envelope without a record
 // leaves it, and demotion and unload drop it.
@@ -439,4 +439,46 @@ fn ghost_audio_record_holds_the_newest_snapshots_and_resets_drop_it() {
         }
         assert_eq!(client.take_ghost_audio(), None, "unload={unload}");
     }
+}
+
+// Regression: an overflowing update queue dropped its oldest entry, which
+// could be a link's only copy of an acked state the host never resends.
+#[test]
+fn ghost_link_update_overflow_across_many_links_keeps_every_links_newest_state() {
+    const LINKS: u16 = 600;
+    let mut client = ClientReplication::new();
+    // A first-baseline burst: one state per link, past the coalescing floor.
+    for index in 0..LINKS {
+        client.queue_ghost_link_update(10, WireGhostLinkState::new(index, 0, false, 0));
+    }
+    // Then a change on every link, so each link's first state is superseded.
+    for index in 0..LINKS {
+        let armed = WireGhostLinkState::new(index, 0, true, ALL_MEMBERS);
+        client.queue_ghost_link_update(12, armed);
+    }
+    let updates: Vec<_> = client.drain_ghost_link_updates().collect();
+
+    let mut newest = vec![None; usize::from(LINKS)];
+    let mut ticks = vec![0; usize::from(LINKS)];
+    for update in &updates {
+        let index = usize::from(update.state.index);
+        assert!(
+            update.server_tick >= ticks[index],
+            "link {index}'s states stay in apply order"
+        );
+        ticks[index] = update.server_tick;
+        newest[index] = Some((update.server_tick, update.state.armed));
+    }
+    for (index, state) in newest.iter().enumerate() {
+        assert_eq!(
+            *state,
+            Some((12, true)),
+            "link {index} keeps its newest state"
+        );
+    }
+    assert!(
+        updates.len() < 2 * usize::from(LINKS),
+        "superseded states were coalesced away"
+    );
+    assert_eq!(client.drain_ghost_link_updates().count(), 0, "drained once");
 }

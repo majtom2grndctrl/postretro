@@ -16,7 +16,7 @@ fn in_copy_b(position: Vec3) -> bool {
 
 /// Every ghost on every frame comes from a source pose inside its own link's
 /// volume and draws at that pose's mapping, so nothing ever draws between the
-/// copies (P1).
+/// copies.
 fn assert_every_ghost_maps_an_in_volume_pose(run: &Loopback, frames: &[PresentedFrame], who: &str) {
     for (index, frame) in frames.iter().enumerate() {
         for member in &frame.members {
@@ -141,7 +141,7 @@ fn assert_swap(frames: &[PresentedFrame], pawn: usize, from: u16, who: &str) {
     assert!(*falling.last().unwrap() == 0.0, "{who}: fades out fully");
 }
 
-// AC15 / P1: two pawns swapped on one host tick by arming both seamless
+// Two pawns swapped on one host tick by arming both seamless
 // teleporters, presented by a connected client over a conditioned link and by
 // the host seat for the client pawn it draws delayed.
 #[test]
@@ -189,7 +189,7 @@ fn ghost_swap_on_one_tick_fades_each_old_ghost_in_volume_and_starts_each_new_on_
     assert_swap(host, 1, 1, "host seat");
 }
 
-/// P18 on one peer: link 0's arm, link 1's arm and pawn 1's swap from copy A to
+/// On one peer: link 0's arm, link 1's arm and pawn 1's swap from copy A to
 /// copy B all apply on one host tick. The pawn is never drawn in copy A while
 /// link 0 shows armed, so link 0 never ghosts it; link 1's ghost of it starts on
 /// the cut frame. Returns whether the lane clock alone would have presented the
@@ -212,7 +212,7 @@ fn assert_arm_presents_with_the_swap(frames: &[PresentedFrame], arm_stamp: u32, 
         .any(|frame| frame.remote_clock.ceil() >= f64::from(arm_stamp))
 }
 
-// AC16 / P18: a link arm and a remote pawn's seamless swap on one host tick
+// A link arm and a remote pawn's seamless swap on one host tick
 // present on one frame, on a connected client and on the host seat. Each ghost
 // reads link state at the stamp of the pose actually presented: across the cut
 // the buffers hold the source-side sample, which the lane clock alone would
@@ -246,11 +246,11 @@ fn ghost_link_arm_and_seamless_swap_on_one_tick_present_on_one_frame_on_client_a
     assert_every_ghost_maps_an_in_volume_pose(&run, host, "host seat");
 }
 
-// AC13 / P35 (and P3 on the host seat): `arm` on tick N and `disarm` on N + 1
+// `arm` on tick N and `disarm` on N + 1
 // over a conditioned link. A connected client presents at most one rise and
 // fall, each at the rate cap, and none when no snapshot carries tick N's end
 // state; the host seat, which records every tick, presents one rise and fall
-// either way. Also AC37's thin part: the host's arm reaches the client.
+// either way. Also: the host's arm reaches the client.
 #[test]
 fn ghost_arm_then_disarm_on_consecutive_ticks_presents_at_most_one_rise_and_fall_on_a_client() {
     for snapshot_carries_arm in [true, false] {

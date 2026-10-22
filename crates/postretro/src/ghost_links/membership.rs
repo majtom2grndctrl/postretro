@@ -24,8 +24,6 @@ pub(crate) struct GhostKey {
 /// One ghost this frame, for the draw. Its pose is `source` carried through
 /// `mapping` (`mapped`); a mesh draws at `mapping.matrix() * model(source)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-// The thin-slice draw reads these; until it lands only tests do.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct GhostMember {
     pub link: u16,
     pub entity: EntityId,
@@ -75,8 +73,9 @@ struct Entry {
 pub(crate) struct MembershipTable {
     entries: HashMap<GhostKey, Entry>,
     members: Vec<GhostMember>,
-    /// The first evaluation after a level install: new keys start at their
-    /// target, so members of links armed on spawn present in full on frame 1.
+    /// The first evaluation after a level install: a new key whose link's
+    /// local spawn state already shows it starts at full, so members of links
+    /// armed on spawn present in full on frame 1. Every other key starts at 0.
     settle_at_target: bool,
 }
 
@@ -103,23 +102,30 @@ pub(crate) fn ramp_step(elapsed_seconds: f32) -> f32 {
 }
 
 impl MembershipTable {
-    /// Start a frame: every target drops to 0 until a member marks it.
-    pub(crate) fn begin_frame(&mut self) {
-        for entry in self.entries.values_mut() {
+    /// Start a frame: every target drops to 0 until a member marks it. Ghosts
+    /// of `viewer` drop at once rather than fade: the camera can come to follow
+    /// a pawn that was ghosting, and a viewer never sees its own pawn's ghost.
+    pub(crate) fn begin_frame(&mut self, viewer: Option<EntityId>) {
+        self.entries.retain(|key, entry| {
             entry.target = false;
-        }
+            Some(key.entity) != viewer
+        });
     }
 
     /// `key`'s member is inside the volume of an armed link showing its
     /// category, presented at `source`, `lag` behind this machine's script clock.
+    /// `spawn_shows` says the link's local spawn state already shows it: only
+    /// then may the install settle start a new key at full. An arm or category
+    /// the first evaluation reads from a tick or a received record ramps in.
     pub(crate) fn mark_target(
         &mut self,
         key: GhostKey,
         category: GhostCategory,
         source: Transform,
         lag: MemberLag,
+        spawn_shows: bool,
     ) {
-        let settle = self.settle_at_target;
+        let settle = self.settle_at_target && spawn_shows;
         let entry = self.entries.entry(key).or_insert(Entry {
             category,
             membership: if settle { 1.0 } else { 0.0 },

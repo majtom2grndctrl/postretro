@@ -205,6 +205,26 @@ impl SpatialVoices {
         }
     }
 
+    /// [`stop_all`](Self::stop_all) for the voices on `bus` alone; every
+    /// other voice plays on.
+    pub(crate) fn stop_bus(&mut self, bus: BusId, tween: Tween, buses: &mut BusTree) {
+        self.live.retain(|_, voice| {
+            if voice.bus != bus {
+                return true;
+            }
+            voice.sound.stop(tween);
+            buses.release_voice(bus);
+            false
+        });
+        self.pending.retain(|pending| {
+            if pending.bus != bus {
+                return true;
+            }
+            buses.release_voice(bus);
+            false
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn probe(&self, handle: SoundHandle) -> Option<SpatialProbe> {
         self.live.get(&handle).map(|voice| SpatialProbe {

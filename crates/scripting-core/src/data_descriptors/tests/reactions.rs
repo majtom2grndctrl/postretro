@@ -1946,7 +1946,7 @@ fn ghost_link_steps_reject_subject_tokens_and_group_kinds_in_both_vms() {
     }
 }
 
-// AC29: a non-finite `setColorFilter` argument never reaches the engine as a
+// A non-finite `setColorFilter` argument never reaches the engine as a
 // silent null: both runtimes reject the reaction at load, naming the field.
 #[test]
 fn a_non_finite_color_filter_argument_rejects_the_reaction_in_both_vms() {

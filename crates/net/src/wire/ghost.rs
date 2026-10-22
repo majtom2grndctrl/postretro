@@ -89,7 +89,8 @@ impl WireGhostLinkState {
     }
 
     /// Reject what the wire format forbids. Whether the index names an
-    /// installed link is engine-side binding.
+    /// installed link is engine-side binding, and look values outside `0..=1`
+    /// are the receiving peer's to clamp, as ghost-audio ranges are.
     pub fn validate(&self) -> Result<(), GhostLinkFault> {
         if self.index == NO_WIRE_GHOST_LINK {
             return Err(GhostLinkFault::NoLinkIndex);
@@ -183,7 +184,7 @@ mod tests {
         }
     }
 
-    // AC4 (snapshot half): each case the wire format names is a rejection.
+    // Snapshot half: each case the wire format names is a rejection.
     #[test]
     fn ghost_link_record_rejects_each_case_the_wire_format_names() {
         let base = full();

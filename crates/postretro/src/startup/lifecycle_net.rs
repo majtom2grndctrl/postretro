@@ -196,7 +196,7 @@ impl App {
         self.level = None;
         self.pending_teleport_sounds.clear();
         // `setGhostAudio` fields are level-scoped: the bus returns to the
-        // manifest profile with the level (P13).
+        // manifest profile with the level.
         self.drop_script_ghost_audio();
         self.clear_surface_lifetime_level_state();
         self.nav_graph = None;

@@ -1250,10 +1250,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         requests.extend(app.pending_teleport_sounds.drain(..).map(Into::into));
         (edges, requests, listener_attached)
     };
-    // The Ghost bus takes a client's received host fields, follows its
-    // resolved profile (a script ramp re-targets it each frame), then this
-    // frame's ghost voices are judged before any sound
+    // A client's received link states enter link history once, here, so
+    // ghost-voice admission and the membership update later this frame read
+    // the same history. The Ghost bus takes a client's received host fields,
+    // follows its resolved profile (a script ramp re-targets it each frame),
+    // then this frame's ghost voices are judged before any sound
     // plays: a ghost voice starts only beside a real voice `play` admitted.
+    app.drain_received_ghost_link_state();
     app.drain_received_ghost_audio();
     app.present_ghost_bus(std::time::Duration::try_from_secs_f32(frame_dt).unwrap_or_default());
     let ghost_voices = app.plan_ghost_voices(&descriptor_sounds, frame_result.alpha);
@@ -1263,7 +1266,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         .and_then(|session| session.audio.as_mut())
     {
         audio.set_listener_attached(listener_attached);
-        ghost_voices.play_beside(descriptor_sounds, |request| audio.play(request).is_some());
+        ghost_voices.play_beside(descriptor_sounds, |request, _| {
+            audio.play(request).is_some()
+        });
     }
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::ScriptDrain);
@@ -2615,6 +2620,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 return;
             }
         };
+        // A frame whose surface acquire failed never consumes its presented
+        // time: the ghost look clamps, run before rendering, return to where
+        // they began and carry its time forward, as the resolve's limiter does.
+        let presented = present_handle.is_some();
+        app.ghost_render.finish_presentation(presented);
+        app.mover_ghost_render.finish_presentation(presented);
+        app.billboard_ghost_render.finish_presentation(presented);
         session.mark_sh_streaming_compose_submitted(compose_submitted);
         // Read back the focus rect list the renderer just exported
         // for the top stack layer (the gameplay render above laid it

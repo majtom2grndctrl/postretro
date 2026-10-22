@@ -898,7 +898,7 @@ pub(crate) mod tests {
         }
     }
 
-    // Acceptance (AC20): flipping a descriptor's `ghost` or a weapon's
+    // Flipping a descriptor's `ghost` or a weapon's
     // `projectile.ghost` leaves the compatibility digest unchanged, so a peer
     // whose opt-ins differ is never demoted.
     #[test]

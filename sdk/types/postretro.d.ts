@@ -1883,7 +1883,7 @@ declare module "postretro" {
 
   /** Snapshot of a map-placed ghost link: id, position and tags. */
   export type GhostLinkEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
-  /** Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state, member categories and colour filter are host-authoritative and replicated; each method builds closed command steps that apply on the host at its next tick, in call order, and do nothing on a connected client. A malformed argument warns and drops that step. */
+  /** Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state, member categories and colour filter are host-authoritative and replicated; each method builds closed command steps that apply on the host at its next tick, in call order, and do nothing on a connected client. An out-of-range argument warns and drops that step when it runs; a non-finite argument (NaN or Infinity) drops the whole reaction when the level loads. */
   export interface GhostLinkHandle extends GhostLinkEntity {
     /** Arm the link: its members draw as ghosts at the mapped pose in the other copy. */
     arm(): SequenceStep[];
@@ -2057,7 +2057,7 @@ declare module "postretro" {
   /** Member categories a ghost link shows; an omitted category keeps its value. */
   export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
   /** A ghost link's colour filter. Each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
-  export type GhostColorFilterArgs = { tint?: [number, number, number]; opacity?: number; saturation?: number; periodMs?: number };
+  export type GhostColorFilterArgs = { tint?: readonly [number, number, number]; opacity?: number; saturation?: number; periodMs?: number };
   /** Sequence step that arms one ghost link (`l.arm()`). Applies on the host at its next tick. */
   export type ArmGhostLinkStep = { id: EntityId; primitive: "armGhostLink"; args: Record<string, never> };
   /** Sequence step that disarms one ghost link (`l.disarm()`). Applies on the host at its next tick. */

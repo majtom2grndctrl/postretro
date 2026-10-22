@@ -134,7 +134,7 @@ impl super::GhostLinks {
     /// Link `index`'s look at host-now on this machine (its newest state, at
     /// this frame's script time), before membership and the flash clamp. Each
     /// ghost presents its own member's read instead ([`super::GhostMember::look`]).
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn link_look(&self, index: u16) -> GhostLook {
         let filter = self
             .links
@@ -159,8 +159,6 @@ impl super::GhostLinks {
 
     /// Link `index`'s resolved style, whose `audio` and `impact_audio` flags
     /// decide ghost voices.
-    // Ghost voices read the flags; until they land only tests do.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn link_style(&self, index: u16) -> GhostStyle {
         self.looks.style(index)
     }

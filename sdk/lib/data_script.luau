@@ -243,7 +243,8 @@ export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter"
 export type GhostLinkMembersArgs = { players: boolean?, entities: boolean?, projectiles: boolean?, movers: boolean? }
 --- A ghost link's colour filter: each named field ramps on its own over
 --- `periodMs` (default 0); an omitted field keeps its value and any ramp in
---- flight. Colours are `{ r, g, b }`; every value lies in 0..=1.
+--- flight. `tint` is `{ r, g, b }`; `tint` components, `opacity` and `saturation`
+--- lie in 0..=1, and `periodMs` is finite and at least 0.
 export type GhostColorFilterArgs = { tint: {number}?, opacity: number?, saturation: number?, periodMs: number? }
 export type ArmGhostLinkStep = { id: EntityId, primitive: "armGhostLink", args: {} }
 export type DisarmGhostLinkStep = { id: EntityId, primitive: "disarmGhostLink", args: {} }

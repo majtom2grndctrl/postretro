@@ -626,7 +626,7 @@ mod switch_tick_epoch_tests {
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 31);
     }
 
-    // AC42: a wire-33 peer cannot decode the ghost-link record riding entity
+    // A wire-33 peer cannot decode the ghost-link record riding entity
     // records, so both gates refuse it across the bump; the vocabulary did not
     // change, so the application protocol stays PRLC.
     #[test]

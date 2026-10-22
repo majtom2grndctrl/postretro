@@ -66,7 +66,7 @@ fn slope_per_frame(period_ms: f32, delta: f32) -> f32 {
     delta / (period_ms / 1000.0) * FRAME_SECONDS
 }
 
-// AC37: host `arm`, `setMembers` and `setColorFilter`, run through the host's
+// Host `arm`, `setMembers` and `setColorFilter`, run through the host's
 // registered steps, reach a connected client at realistic lag, and the client's
 // look ramp ends within one snapshot interval of the host's.
 #[test]
@@ -119,7 +119,7 @@ fn host_arm_members_and_color_filter_reach_the_client_and_its_ramp_ends_with_the
     assert!(last.barrier_member(0).is_none(), "movers are off");
 }
 
-// AC37 / P8: the link record repeats its look ramp whenever it rides again,
+// The link record repeats its look ramp whenever it rides again,
 // here each time `setMembers` toggles a category no member uses. With the ramp
 // received, a client whose RTT estimate swings presents exactly what one with
 // a steady estimate presents: the ramp rebased once and never again.
@@ -178,7 +178,7 @@ fn repeated_identical_link_records_do_not_move_the_presented_look_as_rtt_changes
     assert_eq!(steady, swinging);
 }
 
-// AC38 / P9, P12: a client that joins mid-ramp, after the host armed, narrowed
+// A client that joins mid-ramp, after the host armed, narrowed
 // and recoloured the link, presents its local spawn state until the first
 // record lands, then the host's current armed state, categories and the
 // rebased current value of the ramp, which ends with the host's.
@@ -234,7 +234,7 @@ fn a_late_joiner_mid_ramp_presents_the_hosts_current_state_and_rebased_ramp() {
     assert!(last.barrier_member(0).is_none(), "movers are off");
 }
 
-// AC38 / P10: a record landing before the presentation clock anchors (no RTT
+// A record landing before the presentation clock anchors (no RTT
 // sample yet) applies armed state at once and defers the look ramp; once the
 // clock anchors, the ramp rebases and presents the host's current value.
 #[test]
@@ -278,7 +278,7 @@ fn a_record_before_the_presentation_clock_applies_armed_state_and_defers_the_ram
     }
 }
 
-// AC39 / P6: a strobe then a mid-ramp `setColorFilter` on a host whose limiter
+// A strobe then a mid-ramp `setColorFilter` on a host whose limiter
 // is on, presented by a client whose limiter is off. The record carries the
 // host's unclamped value; each peer runs the same unclamped ramp through its
 // own limiter, which holds the strobe on the host and passes it on the client.
@@ -390,7 +390,7 @@ fn a_mid_ramp_color_filter_carries_the_unclamped_host_value_through_each_peers_o
     }
 }
 
-// AC10 / P15, P16: peers whose manifests declare `echo` differently each
+// Peers whose manifests declare `echo` differently each
 // present their own style, and the mod digest admits both. An opacity-only
 // `setColorFilter` gives both the host's opacity, and each keeps its own tint
 // and saturation. A committed reload on either peer re-resolves its own style
@@ -483,7 +483,7 @@ fn peers_present_their_own_style_and_the_hosts_opacity_through_reloads() {
     assert!(close(look(&run.client_frames).opacity, 0.1, EPS));
 }
 
-// AC16 (look): a `setColorFilter` and the motion of the same host tick present
+// Look: a `setColorFilter` and the motion of the same host tick present
 // on one frame per member, each at its own clock: the barrier at the mover
 // clock, the slot pawn through the host seat's delay, and both pawns at the
 // client's remote render tick.
@@ -512,8 +512,8 @@ fn a_color_filter_presents_with_its_members_motion_at_each_members_clock() {
     // `mover_lead`: frames a mover's state may lead its drawn motion. A client
     // reads mover state at the estimated host tick while its registry blends
     // toward the re-simulated pose by alpha, so a mover's link state, its look
-    // included, lands one frame before the first drawn motion: the gap Task 7
-    // measured for P33 and accepted as imperceptible (one frame, under 17 ms).
+    // included, lands one frame before the first drawn motion: the gap,
+    // measured and accepted as imperceptible (one frame, under 17 ms).
     let check = |frames: &[PresentedFrame], who: &str, pawns: &[usize], mover_lead: usize| {
         let rest = frames[start - 1].barrier.unwrap().1;
         let moved = first_frame(frames, start, |frame| {

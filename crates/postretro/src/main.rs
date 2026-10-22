@@ -264,8 +264,16 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 // state; links ramp back to local spawn state.
                 app.ghost_links.reset_received_state();
                 // So are the Ghost bus script fields: the bus returns to this
-                // peer's manifest profile.
+                // peer's manifest profile, and the ghost voices that state
+                // admitted are released, as unload releases them.
                 app.drop_script_ghost_audio();
+                if let Some(audio) = app
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.audio.as_mut())
+                {
+                    audio.fade_out_ghost_voices();
+                }
                 // Demotion dropped the host's tuning: until the next one
                 // installs, this client's volumes keep gravity and push but
                 // every fluid is dry.
@@ -3460,7 +3468,8 @@ impl App {
                         anchor,
                     });
                     // A sound at a ghost member echoes on the Ghost bus, judged
-                    // before it plays and started only if it is admitted.
+                    // before it plays and started only if it is admitted. An
+                    // unanchored sound plans nothing.
                     let ghost_voices = self.plan_ghost_voices_for(&sound);
                     if let Some(audio) = self
                         .session
@@ -3471,9 +3480,18 @@ impl App {
                             audio.set_listener_attached(listener_attached);
                         }
                         // `play` warns-and-drops on an unknown bus or sound, so an
-                        // unregistered sound name never panics.
-                        ghost_voices
-                            .play_beside(vec![sound], |request| audio.play(request).is_some());
+                        // unregistered sound name never panics. The script names
+                        // its sound's bus, so that voice plays through
+                        // `play_script`, which refuses the engine-only Ghost bus;
+                        // the ghost voices beside it are the engine's own.
+                        ghost_voices.play_beside([sound], |request, ghost| {
+                            let played = if ghost {
+                                audio.play(request)
+                            } else {
+                                audio.play_script(request)
+                            };
+                            played.is_some()
+                        });
                     }
                     // Audio init failed ⇒ silent (the game runs without sound).
                 }

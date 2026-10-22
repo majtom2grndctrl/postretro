@@ -1271,7 +1271,7 @@ fn mean_blue_minus_red(image: &RgbaImage, mask: &[bool]) -> f32 {
     sum / count
 }
 
-// AC44 (P26, P32): a headless capture of the dev map's tagged barrier, on the
+// A headless capture of the dev map's tagged barrier, on the
 // link armed on spawn, at rest. Capture loads no manifest, so the scene file
 // stands in for the dev mod's `echo` style and `render.ghosts`. The ghost
 // presents at full membership and full style opacity (capture is outside the

@@ -28,6 +28,8 @@ use postretro_foundation::SeamlessMapping;
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS;
 
+use crate::scripting_systems::billboard_ghost_render::ghost_presented_transform;
+
 pub(crate) use bus::GhostBus;
 use clocks::{PoseStamps, PresentationClocks};
 use eligibility::CandidateView;
@@ -150,7 +152,7 @@ impl GhostLinks {
     }
 
     /// The landmark → target mapping of link `index`.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn mapping(&self, index: u16) -> Option<SeamlessMapping> {
         self.links.get(usize::from(index)).map(|link| link.mapping)
     }
@@ -235,7 +237,9 @@ impl GhostLinks {
             ..
         } = self;
         let clocks = frame.clocks;
-        membership.begin_frame();
+        // The viewer is never a candidate (`visit_candidates`); a ghost it
+        // already has, from before the camera followed it, drops here.
+        membership.begin_frame(crate::followed_player_pawn(registry));
         if !links.is_empty() {
             let oldest = clocks.oldest_readable();
             for link in links.iter_mut() {
@@ -247,7 +251,8 @@ impl GhostLinks {
                 opt_ins,
                 movers,
                 |entity, category, origin| {
-                    let Ok(presented) = registry.interpolated_transform(entity, frame.alpha) else {
+                    let Some(presented) = ghost_presented_transform(registry, entity, frame.alpha)
+                    else {
                         return;
                     };
                     let lane = clocks::member_lane(registry, entity, origin, category);
@@ -257,15 +262,15 @@ impl GhostLinks {
                     let shown = category.members_bit();
                     let point = movers.member_point(registry, entity, category, presented);
                     regions.visit_containing(point.position, |index| {
-                        if movers.listed_by(&point, index)
-                            && links[index].history.state_at(clock).shows(shown)
-                        {
+                        let history = &links[index].history;
+                        if movers.listed_by(&point, index) && history.state_at(clock).shows(shown) {
                             let link = u16::try_from(index).expect("ghost link index fits u16");
                             membership.mark_target(
                                 GhostKey { link, entity },
                                 category,
                                 presented,
                                 lag,
+                                history.spawn().shows(shown),
                             );
                         }
                     });
@@ -286,7 +291,6 @@ impl GhostLinks {
     }
 
     /// This frame's ghosts, ordered by link then entity.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn members(&self) -> &[GhostMember] {
         self.membership.members()
     }

@@ -137,7 +137,7 @@ fn shot_through(
     (registry, struck)
 }
 
-// Acceptance (AC22): a shot along the ghost's mapped position hits nothing,
+// A shot along the ghost's mapped position hits nothing,
 // while the same shot through the real monster hits it. Hitscan and projectile
 // flight share this entity ray query; the ghost is no registry entity.
 #[test]
@@ -167,7 +167,7 @@ fn a_shot_through_a_ghost_hits_nothing_while_the_real_member_is_hit() {
     );
 }
 
-// Acceptance (AC22): a splash centred on the ghost damages nothing through it.
+// A splash centred on the ghost damages nothing through it.
 #[test]
 fn a_splash_on_a_ghost_damages_nothing_while_one_on_the_real_member_does() {
     let (mut scene, wraith, ghost_at) = presenting_monster();
@@ -205,7 +205,7 @@ fn a_splash_on_a_ghost_damages_nothing_while_one_on_the_real_member_does() {
     assert!(health(&scene.registry, wraith) < 100.0);
 }
 
-// Acceptance (AC22): a trigger volume at a ghost pawn's mapped position does
+// A trigger volume at a ghost pawn's mapped position does
 // not fire, while one at the partner's real position does.
 #[test]
 fn a_trigger_at_a_ghost_pawn_does_not_fire_while_one_at_the_real_pawn_does() {
@@ -360,7 +360,7 @@ fn acquired_after_ticks(registry: &mut EntityRegistry, enemy: EntityId) -> Optio
         .acquired_target
 }
 
-// Acceptance (AC22): an enemy facing a ghost pawn's mapped position acquires
+// An enemy facing a ghost pawn's mapped position acquires
 // nothing, while the same enemy beside the real pawn acquires it.
 #[test]
 fn an_enemy_facing_a_ghost_pawn_acquires_nothing_while_the_real_pawn_is_acquired() {

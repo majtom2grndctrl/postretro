@@ -391,7 +391,7 @@ fn typescript_ui_module_declaration_is_generated() {
     );
 }
 
-// AC43: `setGhostAudio` is declared by `postretro/audio` in both outputs, with
+// `setGhostAudio` is declared by `postretro/audio` in both outputs, with
 // a literal Luau `require` overload, and never on the root module.
 #[test]
 fn set_ghost_audio_is_declared_on_postretro_audio_and_not_the_root_module() {

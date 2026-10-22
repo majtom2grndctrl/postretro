@@ -100,7 +100,7 @@ fn null_optional_fields_read_as_omitted_in_both_runtimes() {
     assert_eq!(js.get("echo"), Some(&GhostStyle::FLOOR));
 }
 
-// Acceptance (AC7): a style with one malformed field drops whole with a
+// A style with one malformed field drops whole with a
 // warning naming `ghostStyles[i].<field>`; its siblings stand, and both
 // runtimes word the warning identically.
 #[test]
@@ -174,7 +174,7 @@ fn an_out_of_range_field_names_the_style_it_rejected() {
     assert_eq!(rejected.len(), 2, "{rejected:?}");
 }
 
-// Acceptance (AC7): a later duplicate name drops with a warning, and the
+// A later duplicate name drops with a warning, and the
 // first declaration stands, in both runtimes.
 #[test]
 fn a_later_duplicate_style_name_drops_and_the_first_declaration_stands() {

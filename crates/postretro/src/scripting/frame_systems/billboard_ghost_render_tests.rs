@@ -203,7 +203,7 @@ impl Fixture {
     }
 }
 
-// Acceptance (AC14, billboards): a projectile billboard ghost draws when its
+// Billboards: a projectile billboard ghost draws when its
 // mapped cell is visible and not otherwise, with the real cell visible and not.
 #[test]
 fn billboard_ghost_draws_when_its_mapped_cell_is_visible_whatever_the_real_cell() {
@@ -300,4 +300,40 @@ fn bare_sprites_and_model_bodied_projectiles_draw_no_billboard_ghost() {
         &VisibleCells::DrawAll,
     );
     assert!(fixture.drawn().is_empty());
+}
+
+// Regression: billboard ghosts tested membership and drew at the interpolated
+// pose, up to a tick behind the uninterpolated billboard the real pass draws.
+#[test]
+fn a_billboard_body_presents_at_its_current_transform_and_other_members_interpolate() {
+    let mut registry = EntityRegistry::new();
+    let previous = Vec3::new(10.0, 1.0, 2.0);
+    let shot = spawn_projectile_copy(&mut registry, previous);
+    let pawn = registry.spawn(Transform {
+        position: previous,
+        ..Default::default()
+    });
+    registry
+        .set_component(pawn, MeshComponent::stateless("models/pawn.glb".into()))
+        .unwrap();
+    // A tick moves both; neither has been snapshotted since spawn.
+    for id in [shot, pawn] {
+        registry
+            .set_component(
+                id,
+                Transform {
+                    position: SOURCE,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let alpha = 0.5;
+    let billboard = ghost_presented_transform(&registry, shot, alpha).unwrap();
+    assert!(billboard.position.abs_diff_eq(SOURCE, 1e-6));
+    let mesh = ghost_presented_transform(&registry, pawn, alpha).unwrap();
+    assert!(
+        mesh.position
+            .abs_diff_eq(previous.lerp(SOURCE, alpha), 1e-5)
+    );
 }

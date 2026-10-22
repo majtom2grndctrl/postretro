@@ -18,10 +18,23 @@ enum LookField {
 
 const LOOK_FIELDS: [LookField; 3] = [LookField::Tint, LookField::Opacity, LookField::Saturation];
 
+/// A received look value clamped into its `0..=1` range. An honest host only
+/// sends values its parser accepted; a bad one clamps, warning once for the
+/// record that carried it.
+fn unit(value: f32) -> f32 {
+    value.clamp(0.0, 1.0)
+}
+
+fn in_unit(value: f32) -> bool {
+    (0.0..=1.0).contains(&value)
+}
+
 fn rebase_scalar(ramp: Option<GhostScalarRamp>, offset: f64) -> Option<GhostScalarRamp> {
     ramp.map(|ramp| GhostScalarRamp {
+        from: unit(ramp.from),
+        to: unit(ramp.to),
         start_time: ramp.start_time + offset,
-        ..ramp
+        duration_ms: ramp.duration_ms,
     })
 }
 
@@ -34,6 +47,21 @@ impl LookField {
         }
     }
 
+    /// Whether this field's ramp, if set, lies in range end to end.
+    fn in_range(self, filter: &GhostColorFilter) -> bool {
+        match self {
+            Self::Tint => filter
+                .tint
+                .is_none_or(|ramp| ramp.from.iter().chain(&ramp.to).copied().all(in_unit)),
+            Self::Opacity => filter
+                .opacity
+                .is_none_or(|ramp| in_unit(ramp.from) && in_unit(ramp.to)),
+            Self::Saturation => filter
+                .saturation
+                .is_none_or(|ramp| in_unit(ramp.from) && in_unit(ramp.to)),
+        }
+    }
+
     fn is_set(self, filter: &GhostColorFilter) -> bool {
         match self {
             Self::Tint => filter.tint.is_some(),
@@ -42,14 +70,16 @@ impl LookField {
         }
     }
 
-    /// Write this field of `host` into `local`, its start moved `offset`
-    /// seconds onto this client's script clock.
+    /// Write this field of `host` into `local`, its values clamped into range
+    /// and its start moved `offset` seconds onto this client's script clock.
     fn rebase(self, local: &mut GhostColorFilter, host: &GhostColorFilter, offset: f64) {
         match self {
             Self::Tint => {
                 local.tint = host.tint.map(|ramp| GhostTintRamp {
+                    from: ramp.from.map(unit),
+                    to: ramp.to.map(unit),
                     start_time: ramp.start_time + offset,
-                    ..ramp
+                    duration_ms: ramp.duration_ms,
                 });
             }
             Self::Opacity => local.opacity = rebase_scalar(host.opacity, offset),
@@ -113,10 +143,12 @@ impl GhostLinks {
             return;
         };
         let host = crate::netcode::ghost_color_filter_from_wire(&update.state);
+        let mut out_of_range = false;
         for (slot, field) in LOOK_FIELDS.into_iter().enumerate() {
             if field.same(&host, &received.host) {
                 continue;
             }
+            out_of_range |= !field.in_range(&host);
             match offset {
                 Some(offset) => {
                     field.rebase(&mut received.local, &host, offset);
@@ -128,6 +160,11 @@ impl GhostLinks {
                 }
                 None => received.deferred[slot] = Some(update.server_tick),
             }
+        }
+        if out_of_range {
+            log::warn!(
+                "[Net] received ghost link {index} look carries a value outside 0..=1; clamped"
+            );
         }
         received.host = host;
         link.history.push(
@@ -203,8 +240,9 @@ pub(crate) fn host_clock_offset(
 
 impl crate::App {
     /// On a connected client, move this frame's received link states into link
-    /// history before membership reads it, rebasing look ramps onto this
-    /// client's script clock.
+    /// history, rebasing look ramps onto this client's script clock. Runs once
+    /// per frame at the top of the audio stage, before ghost-voice admission
+    /// and the membership update both read that history.
     pub(crate) fn drain_received_ghost_link_state(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;

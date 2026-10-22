@@ -28,9 +28,11 @@ impl crate::App {
 
     /// Once per frame, after every presented pose is written (remote sampling,
     /// host-seat client pawns) and before render collection reads entities.
+    /// A client's received link states were drained in the audio stage
+    /// ([`Self::drain_received_ghost_link_state`]), so membership reads the
+    /// history ghost-voice admission read.
     pub(crate) fn update_ghost_links(&mut self, alpha: f32, now: Instant) {
         let elapsed_seconds = self.ghost_links.frame_elapsed(now);
-        self.drain_received_ghost_link_state();
         let Some(session) = self.session.as_ref() else {
             return;
         };

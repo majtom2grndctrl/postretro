@@ -66,25 +66,31 @@ impl GhostOptIns {
     pub(crate) fn projectile(&self, weapon: &str) -> bool {
         self.projectile_weapons.contains(weapon)
     }
-
-    fn is_empty(&self) -> bool {
-        self.descriptors.is_empty() && self.projectile_weapons.is_empty()
-    }
 }
 
 /// The install warning's stable wording (acceptance contract).
-pub(crate) const NO_OPT_IN_WARNING: &str =
-    "no loaded descriptor sets `ghost` or `projectile.ghost`; only tagged movers can ghost";
+pub(crate) const NO_OPT_IN_WARNING: &str = "no loaded descriptor sets `ghost`";
 
 /// Warn once, at level install on every role, when the level has links but no
-/// loaded descriptor opts anything in: a forgotten opt-in is never silent.
+/// loaded descriptor sets top-level `ghost`: no pawn or descriptor entity can
+/// ghost, so a forgotten opt-in is never silent. A weapon's `projectile.ghost`
+/// does not quiet it; the warning names what can still ghost.
 pub(crate) fn warn_if_links_without_opt_ins(link_count: usize, data: &DataRegistry) {
     if link_count == 0 {
         return;
     }
     let mut opt_ins = GhostOptIns::default();
     opt_ins.refresh(data);
-    if opt_ins.is_empty() {
-        log::warn!("[Ghost] level has {link_count} ghost links but {NO_OPT_IN_WARNING}");
+    if !opt_ins.descriptors.is_empty() {
+        return;
     }
+    let still_ghost = if opt_ins.projectile_weapons.is_empty() {
+        "tagged movers"
+    } else {
+        "tagged movers and projectiles whose weapon sets `projectile.ghost`"
+    };
+    log::warn!(
+        "[Ghost] level has {link_count} ghost links but {NO_OPT_IN_WARNING}, so no pawn \
+         or descriptor entity ghosts; only {still_ghost} can"
+    );
 }

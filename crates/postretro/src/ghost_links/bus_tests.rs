@@ -49,7 +49,7 @@ fn close(a: f32, b: f32) -> bool {
     (a - b).abs() < 1e-4
 }
 
-// AC29: a periodMs ramp presents its midpoint halfway through; unset fields
+// A periodMs ramp presents its midpoint halfway through; unset fields
 // keep the manifest's values.
 #[test]
 fn a_set_ramp_presents_its_midpoint_halfway_through() {
@@ -63,7 +63,7 @@ fn a_set_ramp_presents_its_midpoint_halfway_through() {
     assert_eq!((end.volume, end.low_pass_hz), (0.9, 5000.0));
 }
 
-// AC29: a second set mid-ramp starts from the unclamped value at its applying
+// A second set mid-ramp starts from the unclamped value at its applying
 // tick; periodMs 0 lands on that tick.
 #[test]
 fn a_second_set_mid_ramp_starts_from_the_value_then_and_period_zero_lands_at_once() {
@@ -94,7 +94,7 @@ fn two_sets_in_one_tick_apply_in_call_order_from_the_pre_tick_value() {
     assert_eq!((ramp.from, ramp.to), (0.5, 0.8));
 }
 
-// P29: targets that would cross the cutoffs, judged against the targets after
+// Targets that would cross the cutoffs, judged against the targets after
 // the step (a ramp in flight by its target), warn and drop the whole call.
 #[test]
 fn a_set_whose_targets_cross_the_cutoffs_warns_and_drops() {
@@ -132,7 +132,7 @@ fn a_set_whose_targets_cross_the_cutoffs_warns_and_drops() {
     assert!(bus.script_fields().low_pass_hz.is_none());
 }
 
-// P36: a reload under a script-set cutoff that crosses the new manifest
+// A reload under a script-set cutoff that crosses the new manifest
 // presents the floor cutoffs and warns once, however many frames resolve.
 #[test]
 fn crossed_resolved_cutoffs_present_the_floor_cutoffs_and_warn_once() {
@@ -179,7 +179,7 @@ fn crossed_resolved_cutoffs_present_the_floor_cutoffs_and_warn_once() {
     );
 }
 
-// P17: a committed reload that changes `audio.ghost` re-resolves the bus;
+// A committed reload that changes `audio.ghost` re-resolves the bus;
 // fields a script set keep their values and ramps.
 #[test]
 fn a_manifest_commit_re_resolves_unset_fields_and_script_fields_stand() {
@@ -201,7 +201,7 @@ fn a_manifest_commit_re_resolves_unset_fields_and_script_fields_stand() {
     );
 }
 
-// P13: unload and demotion drop the script fields and queued calls; the bus
+// Unload and demotion drop the script fields and queued calls; the bus
 // returns to the manifest profile.
 #[test]
 fn dropping_script_fields_returns_the_bus_to_the_manifest_profile() {
@@ -248,8 +248,8 @@ fn presentation_sends_only_changes_and_ramps_each_frame_toward_the_script_value(
     assert!(bus.present(3.6, frame).is_some(), "a commit re-presents");
 }
 
-// AC36 (host half), P13: after `setGhostAudio`, a level unload returns the bus
-// to the manifest profile. P17: a commit changing `audio.ghost` re-resolves it
+// Host half: after `setGhostAudio`, a level unload returns the bus
+// to the manifest profile. A commit changing `audio.ghost` re-resolves it
 // with the script values standing. Driven through the App's own seams.
 #[test]
 fn app_unload_returns_the_bus_to_the_manifest_and_a_commit_keeps_script_fields() {
@@ -311,7 +311,7 @@ fn level_reactions(source: &str, luau: bool) -> Vec<postretro_entities::NamedRea
         .reactions
 }
 
-// AC43: the brief's swell resolves `setGhostAudio` from `postretro/audio` in
+// The brief's swell resolves `setGhostAudio` from `postretro/audio` in
 // both runtimes, each lowering it to the same target-less reaction body, which
 // the reaction parser accepts as the call's targets.
 #[test]
@@ -412,6 +412,49 @@ fn received_fields_rebase_once_defer_before_the_clock_and_drop_when_unset() {
     );
 }
 
+// Regression: a received out-of-range value was stored as presented while the
+// audio bus refused the whole profile and kept its old mix.
+#[test]
+fn received_out_of_range_values_clamp_into_range_and_warn_once_per_record() {
+    let capture = LogCapture::start();
+    let ramp = |from, to| GhostScalarRamp {
+        from,
+        to,
+        start_time: 0.0,
+        duration_ms: 0.0,
+    };
+    let mut client = GhostBus::default();
+    client.set_manifest(ModGhostAudio::FLOOR);
+    let bad = GhostAudioOverride {
+        volume: Some(ramp(0.6, 1.5)),
+        low_pass_hz: Some(ramp(4000.0, 30_000.0)),
+        ..GhostAudioOverride::default()
+    };
+    client.intake_received(Some(bad), Some(0.0));
+    client.intake_received(Some(bad), Some(0.0));
+    let resolved = client.resolve(1.0);
+    assert_eq!(
+        (resolved.volume, resolved.low_pass_hz),
+        (1.0, ModGhostAudio::MAX_CUTOFF_HZ)
+    );
+    assert!(
+        audio_ghost_profile(resolved).is_valid(),
+        "the bus accepts what presents"
+    );
+    capture.assert_logged_once(Level::Warn, "outside its field's range");
+
+    // A bad ramp that waited for the clock anchor clamps on release.
+    let mut waiting = GhostBus::default();
+    waiting.set_manifest(ModGhostAudio::FLOOR);
+    let drive = GhostAudioOverride {
+        drive: Some(ramp(0.0, -0.5)),
+        ..GhostAudioOverride::default()
+    };
+    waiting.intake_received(Some(drive), None);
+    waiting.intake_received(None, Some(0.0));
+    assert_eq!(waiting.resolve(1.0).drive, 0.0);
+}
+
 /// A windowless App connected as a client, its bus under `MANIFEST`.
 fn connected_client_app() -> crate::App {
     let mut app = crate::startup::lifecycle::tests::test_app();
@@ -435,7 +478,7 @@ fn connected_client_app() -> crate::App {
     app
 }
 
-// AC36 (client half), P13, P17: a connected client never applies its own
+// Client half: a connected client never applies its own
 // `setGhostAudio`; received host fields stand through a committed reload that
 // re-resolves its unset fields; demotion (through the production Control
 // drain) and level unload each return the bus to the client's manifest.

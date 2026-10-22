@@ -43,7 +43,10 @@ impl GhostLinkParser {
         }
         let source_entity =
             u32::try_from(index).map_err(|_| anyhow::anyhow!("{entity} index exceeds u32"))?;
-        let landmark = required(props, "landmark", &entity)?.to_owned();
+        let Some(landmark) = optional(props, "landmark") else {
+            bail!("{entity} requires landmark");
+        };
+        let landmark = landmark.to_owned();
         let target = required(props, "target", &entity)?.to_owned();
         if landmark == target {
             bail!("{entity} landmark must differ from target");

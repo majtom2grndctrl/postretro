@@ -4047,7 +4047,7 @@ mod tests {
         );
     }
 
-    // AC4 (snapshot half): a ghost-link payload validates through the raw
+    // Snapshot half: a ghost-link payload validates through the raw
     // envelope like any component, and a record the wire format forbids is a
     // typed rejection before engine binding.
     #[test]
@@ -4120,7 +4120,7 @@ mod tests {
         );
     }
 
-    // AC4 (audio half): the level-scoped ghost-audio record rides the
+    // Audio half: the level-scoped ghost-audio record rides the
     // snapshot envelope under the same SNAPSHOT_VERSION 22 bump, reaches the
     // typed model intact, and a record the wire format forbids rejects the
     // whole envelope before engine apply.

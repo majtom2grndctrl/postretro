@@ -419,6 +419,31 @@ fn unknown_bus_returns_none_without_holding_a_voice() {
     }
 }
 
+// Regression: a script's `playSound(k, { bus: "ghost" })` played on the Ghost
+// bus, holding a ghost voice beside no real voice.
+#[test]
+fn a_script_request_naming_the_ghost_bus_is_an_unknown_bus() {
+    let mut audio = mock_audio();
+    let on_ghost = SoundRequest {
+        bus: "Ghost".to_string(),
+        ..sfx_request()
+    };
+    assert!(audio.play_script(on_ghost.clone()).is_none(), "dropped");
+    for bus in BusId::ALL {
+        assert_eq!(audio.active_voices(bus), 0, "no voice acquired on any bus");
+    }
+    assert!(
+        audio.play_script(sfx_request()).is_some(),
+        "a script's sfx sound still plays"
+    );
+    assert!(
+        audio.play(on_ghost).is_some(),
+        "an engine ghost voice still plays"
+    );
+    assert_eq!(parse_script_bus("ghost"), None);
+    assert_eq!(parse_script_bus("UI"), Some(BusId::UI));
+}
+
 #[test]
 fn unknown_sound_returns_none_without_holding_a_voice() {
     let mut audio = mock_audio();

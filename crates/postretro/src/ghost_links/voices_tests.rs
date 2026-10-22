@@ -360,7 +360,7 @@ impl Level {
     }
 }
 
-// AC30: a fire sound at a ghosted pawn admits one second voice, on the Ghost
+// A fire sound at a ghosted pawn admits one second voice, on the Ghost
 // bus at the mapped fire-time point, under a style that carries sound, and
 // none under one that does not (the floor style included).
 #[test]
@@ -386,7 +386,7 @@ fn a_member_fire_sound_admits_a_ghost_voice_only_under_a_sound_carrying_style() 
     }
 }
 
-// P24: admission reads the fire-time point and armed state, never the
+// Admission reads the fire-time point and armed state, never the
 // presented ramp: a sound fired just inside while the member's ghost fades out
 // still admits, one fired just outside does not, and a disarmed link admits none.
 #[test]
@@ -433,7 +433,7 @@ fn admission_reads_the_fire_time_point_and_armed_state_not_the_presented_ramp() 
     );
 }
 
-// AC31 (P25): the viewer's own fire, and a sound at its own projectile, admit
+// The viewer's own fire, and a sound at its own projectile, admit
 // no ghost voice on its machine, while the partner's do.
 #[test]
 fn the_viewers_own_sounds_never_ghost_on_its_machine() {
@@ -454,7 +454,7 @@ fn the_viewers_own_sounds_never_ghost_on_its_machine() {
     assert_eq!(level.voices(&partner_flight).len(), 1);
 }
 
-// AC33 (P23): a ghost voice is a fixed point, not a follower: after its member
+// A ghost voice is a fixed point, not a follower: after its member
 // despawns and its link disarms, nothing re-judges it and it plays out where it
 // was admitted (the audio crate proves a point voice plays out on the bus).
 #[test]
@@ -474,7 +474,7 @@ fn an_admitted_ghost_voice_stays_at_its_mapped_point_after_the_member_and_link_g
     );
 }
 
-// AC30: a mover's open sound ghosts on the host under a sound-carrying style,
+// A mover's open sound ghosts on the host under a sound-carrying style,
 // at the mapped center of its bounds, through the link that lists its tag.
 #[test]
 fn a_tagged_movers_open_sound_ghosts_on_the_host() {
@@ -520,9 +520,9 @@ fn impact(owner: Option<EntityId>, contacts: &[Vec3]) -> LocalSound {
     }
 }
 
-// AC32: an impact ghosts only under a style carrying both sound and impact
+// An impact ghosts only under a style carrying both sound and impact
 // sound, from a shot whose owner is a member; contacts outside the volume drop;
-// an impact with no shot owner never ghosts; an owner outside the volume (P22)
+// an impact with no shot owner never ghosts; an owner outside the volume
 // admits none.
 #[test]
 fn impacts_ghost_only_from_a_member_owners_shot_under_impact_audio_and_drop_outside_contacts() {
@@ -563,7 +563,7 @@ fn impacts_ghost_only_from_a_member_owners_shot_under_impact_audio_and_drop_outs
     );
 }
 
-// AC32: impact owners come from the shot ids this machine saw fired, matched
+// Impact owners come from the shot ids this machine saw fired, matched
 // whole. The host's own raw shot id (pawn 0) is never read as network id 0,
 // and an id two owners fired under is attributed to neither, so the host's own
 // impact is never attributed to another entity.
@@ -600,9 +600,9 @@ fn shot_owners_match_whole_ids_and_never_attribute_the_hosts_impact_to_another_e
 
 // The app records owners from this frame's fire emissions before attributing
 // impacts: a same-frame hitscan impact and a later flight's impact both find
-// the shooter.
+// the shooter. A level with no link records nothing.
 #[test]
-fn app_records_shot_owners_from_fire_emissions() {
+fn app_records_shot_owners_from_fire_emissions_on_a_level_with_links() {
     let mut app = crate::startup::lifecycle::tests::test_app();
     let shooter = EntityId::from_raw(12);
     let fire = WeaponEmission {
@@ -620,11 +620,40 @@ fn app_records_shot_owners_from_fire_emissions() {
         shot_id: None,
         ..fire.clone()
     };
+    app.record_ghost_shot_owners(&[fire.clone(), unattributed.clone()], &[]);
+    assert_eq!(
+        app.ghost_links.shot_owner(Some(shot(0, 7))),
+        None,
+        "no link, no ledger"
+    );
+
+    let world = world("impacts");
+    let mut registry = EntityRegistry::new();
+    spawn_loaded_ghost_links(&mut registry, &world);
+    app.ghost_links = GhostLinks::install(&world, &registry);
     app.record_ghost_shot_owners(&[fire, unattributed], &[]);
     assert_eq!(app.ghost_links.shot_owner(Some(shot(0, 7))), Some(shooter));
 }
 
-// AC30 (P40): a member's sound refused at the SFX cap admits no ghost voice;
+// Regression: the host records each shot under two ids, so a 256-entry ledger
+// kept only 128 shots and evicted a slow projectile's fire entry mid-battle.
+#[test]
+fn the_shot_owner_ledger_keeps_a_long_flights_owner_through_a_busy_battle() {
+    let mut level = Level::new("impacts");
+    let shooter = level.pawn(Vec3::new(2.0, 0.0, 0.0), DescriptorSpawnPath::NetworkSlot);
+    let other = level.pawn(Vec3::new(3.0, 0.0, 0.0), DescriptorSpawnPath::NetworkSlot);
+    // The slow projectile's shot, raw and normalized, then 1500 more shots.
+    level.ghosts.record_shot_owner(shot(0, 1), shooter);
+    level.ghosts.record_shot_owner(shot(9, 1), shooter);
+    for tick in 2..1502 {
+        level.ghosts.record_shot_owner(shot(0, tick), other);
+        level.ghosts.record_shot_owner(shot(5, tick), other);
+    }
+    assert_eq!(level.ghosts.shot_owner(Some(shot(9, 1))), Some(shooter));
+    assert_eq!(level.ghosts.shot_owner(Some(shot(5, 1501))), Some(other));
+}
+
+// A member's sound refused at the SFX cap admits no ghost voice;
 // one admitted beside it plays its ghost right after it.
 #[test]
 fn a_member_sound_refused_at_the_sfx_cap_starts_no_ghost_voice() {
@@ -654,7 +683,7 @@ fn a_member_sound_refused_at_the_sfx_cap_starts_no_ghost_voice() {
     // The SFX bus has one free voice left and the first request finds it full.
     let mut sfx_free = 0;
     let mut played = Vec::new();
-    plan.play_beside(sounds, |request| {
+    plan.play_beside(sounds, |request, _| {
         let admitted = if request.bus == "sfx" {
             let free = sfx_free > 0 || request.sound == "rifle_reload";
             sfx_free = 0;
@@ -675,7 +704,7 @@ fn a_member_sound_refused_at_the_sfx_cap_starts_no_ghost_voice() {
     );
 }
 
-// AC30 (P34, clock level): a voice reads its member's link state at the clock
+// Clock level: a voice reads its member's link state at the clock
 // that member presents at, so a cue for a delay-buffered remote arriving just
 // after an arm admits exactly when the shooter's ghost presents armed, not at
 // host-now.
@@ -722,6 +751,58 @@ fn a_remote_members_voice_reads_armed_state_at_its_presentation_clock() {
             .iter()
             .any(|member| member.entity == shooter && !member.frozen);
         assert_eq!(targeted, armed, "render tick {render}");
+    }
+}
+
+// Regression: an impact's owner was judged at its simulated pose, so on the host
+// seat a client pawn's impact and its delayed ghost disagreed near the volume's
+// edge for the presentation delay. The owner is judged where its ghost presents.
+#[test]
+fn an_impact_owner_on_the_host_seat_is_judged_at_its_presented_pose() {
+    let inside = Vec3::new(2.0, 0.0, 0.0);
+    let outside = Vec3::new(-3.0, 0.0, 0.0);
+    let contact = Vec3::new(6.0, 0.0, 0.0);
+    for (presented, simulated, ghosts) in [(outside, inside, false), (inside, outside, true)] {
+        let mut level = Level::new("impacts");
+        let partner = level.pawn(presented, DescriptorSpawnPath::NetworkSlot);
+        let mut owners = crate::netcode::MovementOwners::default();
+        owners.set_for_test(partner, 8);
+        let mut allocator = crate::netcode::NetworkIdAllocator::for_test();
+        allocator.stamp(partner);
+        let mut buffer = crate::netcode::RemoteInterpolationBuffer::default();
+        for tick in 1..=4 {
+            crate::netcode::host_record_client_pawn_poses(
+                &mut buffer,
+                &owners,
+                &allocator,
+                &level.registry,
+                tick,
+            );
+        }
+        // The host simulated the pawn on; the seat still presents it delayed.
+        level.place(partner, simulated);
+        let frame = VoiceFrame {
+            clocks: PresentationClocks::compute(ClockSource::Host { tick: 5 }, 0.0),
+            view: CandidateView::Authoritative,
+            stamps: PoseStamps::HostSeat {
+                buffer: &buffer,
+                allocator: &allocator,
+                tick: 5,
+                alpha: 0.0,
+            },
+        };
+        let mut out = Vec::new();
+        level.ghosts.ghost_voices(
+            &level.registry,
+            &frame,
+            &impact(Some(partner), &[contact]),
+            &mut out,
+        );
+        assert_eq!(
+            !out.is_empty(),
+            ghosts,
+            "presented at {presented}, simulated at {simulated}"
+        );
     }
 }
 

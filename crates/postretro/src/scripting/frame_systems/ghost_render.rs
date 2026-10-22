@@ -34,8 +34,8 @@ pub(crate) type GhostDrawKey = (u16, EntityId);
 
 /// The look `member` presents this frame through `clamp`: its link look as the
 /// member reads it ([`GhostMember::look`]) at the member's presented opacity
-/// (link opacity times membership), limited by the ghost's opacity and
-/// tint-luminance channels. The one place a ghost draw
+/// (link opacity times membership), limited with its opacity, tint redness
+/// and tint luminance sharing one flash window. The one place a ghost draw
 /// collector turns a link look into a drawn look; the skinned, mover and
 /// billboard ghost collectors each call it for every presented ghost, culled
 /// or not, between their clamp's `begin_frame` and `end_frame`.
@@ -178,6 +178,13 @@ impl GhostRenderCollector {
     /// The ghost instances to hand the renderer this frame.
     pub(crate) fn instances(&self) -> &[MeshInstanceInput] {
         &self.instances
+    }
+
+    /// Settle this frame's look clamp once the renderer knows whether the
+    /// frame presented: one that presented nothing leaves the clamp as if it
+    /// never ran and carries its time into the next frame.
+    pub(crate) fn finish_presentation(&mut self, presented: bool) {
+        self.clamp.finish_presentation(presented);
     }
 
     /// Rebuild a live member's group from its presented pose: the holder at

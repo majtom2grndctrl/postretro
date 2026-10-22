@@ -1,13 +1,15 @@
 // Bind replicated ghost-link state to its link for presentation history; hold the level-scoped ghost-audio record.
 // See: context/lib/networking.md §Current contract
+use std::collections::{HashMap, VecDeque};
+
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry, GhostLinkComponent};
 use postretro_net::wire::{ComponentPayload, NetworkId, WireGhostAudioState, WireGhostLinkState};
 
 use super::{ApplyOutcome, ClientReplication, IgnoredPayload, RegionBinding};
 
-/// Received updates held between frames. A link changes at most once per host
-/// tick and every applied snapshot is drained the frame it lands, so this only
-/// bounds memory if the presentation side stops draining.
+/// Queue length past which received updates coalesce per link. Every applied
+/// snapshot is drained the frame it lands, so only a burst (a joiner's first
+/// baseline, the re-baseline after an unload) or a stalled drain reaches it.
 const MAX_PENDING_UPDATES: usize = 256;
 
 /// One received link state and the host time it describes: the server tick of
@@ -17,6 +19,67 @@ const MAX_PENDING_UPDATES: usize = 256;
 pub struct GhostLinkUpdate {
     pub server_tick: u32,
     pub state: WireGhostLinkState,
+}
+
+/// Received link states held between frames, in apply order.
+///
+/// Over the limit the queue coalesces per link, keeping each link's newest
+/// state and dropping only states a newer one for the same link supersedes.
+/// It never drops a link's newest state: the host stops resending an acked,
+/// unchanged link, so that state may be its only copy. A queue holding one
+/// state for each of many links therefore grows to the link count, and the
+/// limit rises with it so coalescing stays rare.
+#[derive(Debug, Default)]
+pub(super) struct PendingGhostLinkUpdates {
+    updates: VecDeque<GhostLinkUpdate>,
+    /// Length past which the next push coalesces, beyond the
+    /// [`MAX_PENDING_UPDATES`] floor: twice the last coalesced length.
+    limit: usize,
+    /// Coalescing scratch: queued states per link index.
+    counts: HashMap<u16, u32>,
+}
+
+impl PendingGhostLinkUpdates {
+    fn push(&mut self, update: GhostLinkUpdate) {
+        self.updates.push_back(update);
+        if self.updates.len() > self.limit.max(MAX_PENDING_UPDATES) {
+            self.coalesce();
+        }
+    }
+
+    /// Keep only each link's newest queued state, in apply order.
+    fn coalesce(&mut self) {
+        let before = self.updates.len();
+        self.counts.clear();
+        for update in &self.updates {
+            *self.counts.entry(update.state.index).or_default() += 1;
+        }
+        let counts = &mut self.counts;
+        self.updates.retain(|update| {
+            let Some(count) = counts.get_mut(&update.state.index) else {
+                return true;
+            };
+            *count -= 1;
+            *count == 0
+        });
+        self.limit = self.updates.len().saturating_mul(2);
+        let dropped = before - self.updates.len();
+        if dropped > 0 {
+            log::warn!(
+                "[Net] ghost link update queue past {before} states; dropped {dropped} superseded, kept each link's newest"
+            );
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.updates.clear();
+        self.limit = 0;
+    }
+
+    fn drain(&mut self) -> std::collections::vec_deque::Drain<'_, GhostLinkUpdate> {
+        self.limit = 0;
+        self.updates.drain(..)
+    }
 }
 
 impl ClientReplication {
@@ -83,12 +146,8 @@ impl ClientReplication {
     }
 
     pub(super) fn queue_ghost_link_update(&mut self, server_tick: u32, state: WireGhostLinkState) {
-        if self.ghost_link_updates.len() >= MAX_PENDING_UPDATES {
-            log::warn!("[Net] ghost link update queue full; dropping the oldest update");
-            self.ghost_link_updates.pop_front();
-        }
         self.ghost_link_updates
-            .push_back(GhostLinkUpdate { server_tick, state });
+            .push(GhostLinkUpdate { server_tick, state });
     }
 
     /// Every link state received since the last drain, in apply order. The
@@ -96,7 +155,7 @@ impl ClientReplication {
     /// client's local spawn state, and presentation history takes these instead,
     /// so a state that lasted between two frames is not lost.
     pub fn drain_ghost_link_updates(&mut self) -> impl Iterator<Item = GhostLinkUpdate> + '_ {
-        self.ghost_link_updates.drain(..)
+        self.ghost_link_updates.drain()
     }
 
     /// Hold the newest snapshot's ghost-audio record. The record is level-scoped

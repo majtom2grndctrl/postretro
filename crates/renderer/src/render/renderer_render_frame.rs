@@ -655,10 +655,12 @@ impl Renderer {
         }
 
         // Ghosts: unlit, translucent, after every opaque pass so they depth-test
-        // against the whole opaque scene, and before fluid so the capture (which
-        // returns after bloom) includes them. Depth is read-only: a ghost hides
-        // nothing drawn after it. Only the ghost plan draws here; it never
-        // reached shadow depth above.
+        // against the whole opaque scene. Depth is read-only: a ghost hides
+        // nothing drawn after it, so the later translucent passes (fluid,
+        // billboards) cover a ghost even where they lie behind it. That is the
+        // accepted unsorted-translucency limit; drawing before fluid keeps a
+        // submerged ghost under the water's surface. Only the ghost plan draws
+        // here; it never reached shadow depth above.
         if render_world
             && let Some(plan) = mesh_frame_plans
                 .as_ref()

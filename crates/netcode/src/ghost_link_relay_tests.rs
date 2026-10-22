@@ -153,7 +153,7 @@ fn received_armed(client: &mut ClientReplication) -> Vec<bool> {
         .collect()
 }
 
-// P14 / P37: a link record from the old level is in flight when the host changes
+// A link record from the old level is in flight when the host changes
 // level, or restarts the same map, and re-promotes the client. Index and source
 // entity repeat across a restart, so binding alone cannot tell the record is
 // stale; the participation epoch drops it, and the new link keeps its spawn

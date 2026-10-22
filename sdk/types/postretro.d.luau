@@ -1921,8 +1921,9 @@ export type GhostLinkEntity = { id: EntityId, position: Vec3, tags: {string} }
 --- Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state,
 --- member categories and colour filter are host-authoritative and replicated;
 --- each method returns closed command steps that apply on the host at its next
---- tick, in call order, and do nothing on a connected client. A malformed
---- argument warns and drops that step.
+--- tick, in call order, and do nothing on a connected client. An out-of-range
+--- argument warns and drops that step when it runs; a non-finite argument (NaN
+--- or Infinity) drops the whole reaction when the level loads.
 export type GhostLinkHandle = {
   id: EntityId, position: Vec3, tags: {string},
   --- Arm the link: its members draw as ghosts at the mapped pose in the other

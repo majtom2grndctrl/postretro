@@ -160,7 +160,7 @@ fn ghost_link_parser_defaults_to_all_categories_armed_floor_style_and_no_tags() 
 fn ghost_link_parser_rejects_invalid_authoring_naming_the_link() {
     let label = "entity 1 'ghost_link'";
     for (extra, expected) in [
-        ("\"target\" \"copy_b\"", "requires non-blank `landmark`"),
+        ("\"target\" \"copy_b\"", "requires landmark"),
         ("\"landmark\" \"copy_a\"", "requires non-blank `target`"),
         (
             "\"landmark\" \"copy_a\"\n\"target\" \"nowhere\"",

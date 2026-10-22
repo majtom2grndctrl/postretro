@@ -308,7 +308,7 @@ fn fading_ghost_re_emits_its_cached_group_after_despawn_and_never_its_live_pose(
         .collect();
     assert_eq!(held, live);
 
-    // Then it despawns mid-fade (P20): the cached group still draws, posed as
+    // Then it despawns mid-fade: the cached group still draws, posed as
     // last sampled, at the fading opacity.
     registry.despawn(pawn).unwrap();
     fixture.collect(&registry, &[member(pawn, 0.3, true)]);
@@ -561,7 +561,7 @@ fn a_model_bodied_projectile_ghosts_through_the_skinned_ghost_path() {
     );
 }
 
-// AC 24a wiring: a ghost's tint strobing white and black at 10 Hz at steady
+// Wiring: a ghost's tint strobing white and black at 10 Hz at steady
 // opacity is limited through its tint-luminance channel and rests dark over
 // budget; with the limiter off it passes through.
 #[test]

@@ -1,7 +1,7 @@
 // Container drain shared by the warn-and-drop manifest declaration lists
 // (`fluids`, `ghostStyles`): each VM converts one entry at a time to JSON, so
 // both runtimes judge each entry with one parser and one set of diagnostics.
-// See: context/lib/scripting.md §2 (Fluid declarations)
+// See: context/lib/scripting.md §2 (Context Model)
 
 use super::player_events::{js_conversion_error, lua_conversion_error};
 use super::*;

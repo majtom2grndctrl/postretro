@@ -1021,7 +1021,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // AC43: `setGhostAudio` resolves from `postretro/audio`; the import is an
+    // `setGhostAudio` resolves from `postretro/audio`; the import is an
     // SDK module id like `postretro/ui`, stripped to the prelude global.
     #[test]
     fn bundle_drops_postretro_audio_bare_specifier_imports() {

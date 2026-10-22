@@ -451,6 +451,12 @@ fn audio_profile_malformed_ghost_field_warns_naming_it_and_applies_the_whole_flo
         ),
         ("{ volume: -0.1 }", "{ volume = -0.1 }", "volume", "0..=1"),
         (
+            "{ volume: 1.0000000001 }",
+            "{ volume = 1.0000000001 }",
+            "volume",
+            "0..=1",
+        ),
+        (
             "{ volume: 'loud' }",
             "{ volume = 'loud' }",
             "volume",

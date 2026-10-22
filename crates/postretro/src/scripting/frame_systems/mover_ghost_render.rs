@@ -92,6 +92,13 @@ impl MoverGhostRenderCollector {
     pub(crate) fn instances(&self) -> &[KinematicGhostInstance] {
         &self.instances
     }
+
+    /// Settle this frame's look clamp once the renderer knows whether the
+    /// frame presented: one that presented nothing leaves the clamp as if it
+    /// never ran and carries its time into the next frame.
+    pub(crate) fn finish_presentation(&mut self, presented: bool) {
+        self.clamp.finish_presentation(presented);
+    }
 }
 
 #[cfg(test)]

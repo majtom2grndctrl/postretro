@@ -150,6 +150,13 @@ impl Audio {
         self.core.play(req)
     }
 
+    /// [`play`](Self::play) for a sound a script requested (`playSound`).
+    /// The Ghost bus is engine-only, so a script naming it is an unknown bus:
+    /// the request warns and drops.
+    pub fn play_script(&mut self, req: SoundRequest) -> Option<SoundHandle> {
+        self.core.play_script(req)
+    }
+
     /// Stop a sound started via [`play`](Self::play) and release its voice
     /// slot. A no-op if `handle` is unknown.
     pub fn stop(&mut self, handle: SoundHandle) {
@@ -161,6 +168,13 @@ impl Audio {
     /// (music, UI) are untouched.
     pub fn fade_out_positional(&mut self) {
         self.core.fade_out_positional();
+    }
+
+    /// Fade out every ghost voice and release its slot, leaving every real
+    /// voice playing: a demotion drops the state the echoes stood for while
+    /// the level stays.
+    pub fn fade_out_ghost_voices(&mut self) {
+        self.core.fade_out_ghost_voices();
     }
 
     /// Per-frame audio step, third in frame order: re-anchors the listener,

@@ -84,7 +84,7 @@ fn reason(result: Result<(), SequenceError>) -> String {
     }
 }
 
-// P2 / P44: steps queue and apply at the next tick in call order, so arm then
+// Steps queue and apply at the next tick in call order, so arm then
 // disarm, or a category off then on, in one tick end in the last call's state.
 #[test]
 fn ghost_link_steps_apply_at_the_next_tick_in_call_order_and_the_last_call_wins() {
@@ -115,7 +115,7 @@ fn ghost_link_steps_apply_at_the_next_tick_in_call_order_and_the_last_call_wins(
     assert!(host.state().armed);
 }
 
-// AC40: the same steps run on a connected client change nothing.
+// The same steps run on a connected client change nothing.
 #[test]
 fn ghost_link_steps_on_a_connected_client_change_nothing() {
     let host = Host::new();
@@ -142,7 +142,7 @@ fn ghost_link_steps_on_a_connected_client_change_nothing() {
     assert_eq!(state.filter, GhostColorFilter::default());
 }
 
-// AC27 / P5: each named field ramps on its own; an opacity-only set mid tint
+// Each named field ramps on its own; an opacity-only set mid tint
 // ramp leaves the tint ramp running to its target.
 #[test]
 fn an_opacity_only_filter_mid_tint_ramp_leaves_the_tint_ramp_running() {
@@ -175,7 +175,7 @@ fn an_opacity_only_filter_mid_tint_ramp_leaves_the_tint_ramp_running() {
     assert_eq!(host.look(11.5).opacity, 1.0);
 }
 
-// P7: two calls in one tick apply in order; the later wins per field and its
+// Two calls in one tick apply in order; the later wins per field and its
 // ramp starts from the value before that tick.
 #[test]
 fn two_filters_in_one_tick_apply_in_order_the_later_winning_from_the_pre_tick_value() {
@@ -206,7 +206,7 @@ fn two_filters_in_one_tick_apply_in_order_the_later_winning_from_the_pre_tick_va
     assert_eq!(host.look(4.0).saturation, 1.0, "periodMs 0 lands at once");
 }
 
-// AC29 / P6: a second set mid-ramp starts from the unclamped value at that moment.
+// A second set mid-ramp starts from the unclamped value at that moment.
 #[test]
 fn a_second_filter_mid_ramp_starts_from_the_ramp_value_at_its_tick() {
     let host = Host::new();
@@ -226,7 +226,7 @@ fn a_second_filter_mid_ramp_starts_from_the_ramp_value_at_its_tick() {
     assert_eq!(host.look(1.0).opacity, 0.0);
 }
 
-// AC27 / P41 and AC29: a call naming no field, an out-of-range or non-finite-
+// A call naming no field, an out-of-range or non-finite-
 // as-f32 argument, a non-boolean category and an unknown field each warn with
 // a stable reason and queue nothing, so no ramp in flight changes.
 #[test]
@@ -325,4 +325,18 @@ fn a_step_naming_something_other_than_a_ghost_link_warns_and_queues_nothing() {
     host.steps.get(ARM_GHOST_LINK).unwrap()(other, &json!({})).unwrap();
     capture.assert_logged_once(log::Level::Warn, "is not a live ghost link; skipping");
     assert_eq!(host.queued(), 0);
+}
+
+#[test]
+fn a_color_filter_value_just_above_one_is_refused_before_the_f32_cast() {
+    assert!(
+        parse_ghost_link_command(
+            SET_GHOST_LINK_COLOR_FILTER,
+            &json!({ "opacity": 1.0000000001 })
+        )
+        .is_err()
+    );
+    assert!(
+        parse_ghost_link_command(SET_GHOST_LINK_COLOR_FILTER, &json!({ "opacity": 1.0 })).is_ok()
+    );
 }

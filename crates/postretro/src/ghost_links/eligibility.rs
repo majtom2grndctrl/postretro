@@ -116,7 +116,11 @@ fn classify_local(
                 registry.has_component_kind(entity, ComponentKind::PlayerMovement) == Ok(true);
             (pawn && opt_ins.descriptor(name)).then_some(GhostCategory::Players)
         }
-        DescriptorSpawnPath::MapPlacement | DescriptorSpawnPath::RuntimeSpawn => {
+        // A default-loadout weapon dropped into the world is a world entity like
+        // a placement; clients receive it under its descriptor class too.
+        DescriptorSpawnPath::MapPlacement
+        | DescriptorSpawnPath::RuntimeSpawn
+        | DescriptorSpawnPath::DefaultWeapon => {
             // A carried wieldable draws with its holder, never on its own.
             (!registry.is_inventory_owned(entity) && opt_ins.descriptor(name))
                 .then_some(GhostCategory::Entities)
@@ -127,7 +131,6 @@ fn classify_local(
         DescriptorSpawnPath::ProjectilePresentation => (has_projectile_body(registry, entity)
             && opt_ins.projectile(name))
         .then_some(GhostCategory::Projectiles),
-        DescriptorSpawnPath::DefaultWeapon => None,
     }
 }
 
@@ -228,5 +231,54 @@ mod tests {
             };
             assert_eq!(category.members_bit(), bit);
         }
+    }
+
+    // Drift guard: three crates declare the member bit order on their own (the
+    // PRL section's bitflags, the wire record's mask and the registry column's
+    // raw byte). Each category holds its id-56 position in all three, and a
+    // column's bits reach the wire and the link state unchanged.
+    #[test]
+    fn member_bits_agree_across_the_prl_section_the_wire_and_the_registry_column() {
+        use postretro_entities::GhostLinkComponent;
+        use postretro_net::wire::GHOST_LINK_MEMBER_BITS;
+
+        use super::super::history::LinkState;
+
+        let mut every = 0u8;
+        for category in [
+            GhostCategory::Players,
+            GhostCategory::Entities,
+            GhostCategory::Projectiles,
+            GhostCategory::Movers,
+        ] {
+            // The id-56 format: bit 0 players, 1 entities, 2 projectiles, 3 movers.
+            let bit = 1u8
+                << match category {
+                    GhostCategory::Players => 0,
+                    GhostCategory::Entities => 1,
+                    GhostCategory::Projectiles => 2,
+                    GhostCategory::Movers => 3,
+                };
+            every |= bit;
+            assert_eq!(category.members_bit().bits(), bit, "{category:?}: PRL");
+            assert_eq!(bit & GHOST_LINK_MEMBER_BITS, bit, "{category:?}: wire mask");
+            let column = GhostLinkComponent {
+                index: 0,
+                source_entity: 0,
+                armed: true,
+                members: bit,
+                filter: Default::default(),
+            };
+            let wire = crate::netcode::ghost_link_state_to_wire(&column);
+            assert_eq!(wire.members, bit, "{category:?}: column to wire");
+            assert!(wire.validate().is_ok(), "{category:?}: wire accepts it");
+            assert_eq!(
+                LinkState::from_component(&column).members,
+                category.members_bit(),
+                "{category:?}: column to link state"
+            );
+        }
+        assert_eq!(every, GHOST_LINK_MEMBER_BITS, "no wire bit beyond the four");
+        assert_eq!(GhostMembers::all().bits(), GHOST_LINK_MEMBER_BITS);
     }
 }

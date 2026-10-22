@@ -1,14 +1,37 @@
-// Keyed per-value clamp: strobes, red tints, ramps, fresh starts and key
-// lifetimes, as the per-ghost limiter channel presents them.
+// Keyed clamp over the per-value clamp: strobes, red tints, ramps, fresh starts
+// and key lifetimes, on the opacity and redness rules a ghost's look clamp shares.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter), §7.9
 
 use super::super::flash_clamp_test_fixtures::worst_transitions;
 use super::super::value::{
     FLASH_LUMINANCE_THRESHOLD, INTENSITY_RATE_PER_SECOND, RED_SATURATED, SUPPRESSION_DEADBAND,
-    luminance, redness,
+    ValueClamp, luminance, redness,
 };
 use super::*;
 use crate::flash_limiter::HITCH_CEILING_SECONDS;
+
+/// A strength and its color per key, each on its own flash window.
+impl KeyClamp for ValueClamp {
+    type Value = (f32, [f32; 3]);
+
+    fn fresh((strength, rgb): Self::Value) -> Self {
+        ValueClamp::fresh(strength, rgb)
+    }
+
+    fn limit(&mut self, (strength, rgb): Self::Value, frame: &LimiterFrameUniform) -> Self::Value {
+        ValueClamp::limit(self, strength, rgb, frame)
+    }
+
+    fn absent(&mut self, frame: &LimiterFrameUniform) {
+        ValueClamp::absent(self, frame);
+    }
+
+    fn is_at_rest(&self) -> bool {
+        ValueClamp::is_at_rest(self)
+    }
+}
+
+type KeyedValueClamp<K> = KeyedClamp<K, ValueClamp>;
 
 /// A generation-checked id: slot and generation.
 type Key = (u32, u32);
@@ -48,7 +71,7 @@ fn present(
 ) -> (f32, [f32; 3]) {
     clamp.begin_frame(frame);
     let presented = match value {
-        Some((strength, rgb)) => clamp.limit(GHOST, strength, rgb),
+        Some(value) => clamp.limit(GHOST, value),
         None => (0.0, [0.0; 3]),
     };
     clamp.end_frame();
@@ -261,7 +284,7 @@ fn a_new_key_packs_its_first_frame_unchanged() {
     // A second of 10 Hz strobe spends the strobing key's budget.
     for n in 0..60 {
         clamp.begin_frame(&frame);
-        clamp.limit(strobing, square(10.0, n as f32 * dt), WHITE);
+        clamp.limit(strobing, (square(10.0, n as f32 * dt), WHITE));
         clamp.end_frame();
     }
     // A new ghost at membership 0 ramps in beside it; a new key arriving at
@@ -269,7 +292,7 @@ fn a_new_key_packs_its_first_frame_unchanged() {
     let mut membership = 0.0;
     for n in 60..90 {
         clamp.begin_frame(&frame);
-        clamp.limit(strobing, square(10.0, n as f32 * dt), WHITE);
+        clamp.limit(strobing, (square(10.0, n as f32 * dt), WHITE));
         let first_frame = n == 60;
         membership = if first_frame {
             0.0
@@ -277,12 +300,12 @@ fn a_new_key_packs_its_first_frame_unchanged() {
             ramp(membership, 1.0, dt)
         };
         assert_eq!(
-            clamp.limit(GHOST, membership, WHITE),
+            clamp.limit(GHOST, (membership, WHITE)),
             (membership, WHITE),
             "frame {n}"
         );
         if first_frame {
-            assert_eq!(clamp.limit((9, 1), 0.7, RED), (0.7, RED));
+            assert_eq!(clamp.limit((9, 1), (0.7, RED)), (0.7, RED));
         }
         clamp.end_frame();
     }
@@ -301,7 +324,7 @@ fn turning_the_limiter_on_while_values_present_dips_none() {
     let check = |clamp: &mut KeyedValueClamp<Key>, enabled: bool, what: &str| {
         clamp.begin_frame(&frame(dt, enabled));
         for (key, strength, rgb) in values {
-            assert_eq!(clamp.limit(key, strength, rgb), (strength, rgb), "{what}");
+            assert_eq!(clamp.limit(key, (strength, rgb)), (strength, rgb), "{what}");
         }
         clamp.end_frame();
     };
@@ -370,7 +393,7 @@ fn a_re_tenanted_key_starts_fresh_and_the_old_history_ends() {
     // The old tenant spends its budget on a 10 Hz strobe and ends dark.
     for n in 0..60 {
         clamp.begin_frame(&frame);
-        clamp.limit(old, square(10.0, n as f32 * dt), WHITE);
+        clamp.limit(old, (square(10.0, n as f32 * dt), WHITE));
         clamp.end_frame();
     }
     // Despawn and respawn on one frame: the new tenant rises from 0 at the
@@ -380,7 +403,7 @@ fn a_re_tenanted_key_starts_fresh_and_the_old_history_ends() {
     for _ in 0..90 {
         clamp.begin_frame(&frame);
         membership = ramp(membership, 1.0, dt);
-        rose.push(clamp.limit(new, membership, WHITE).0);
+        rose.push(clamp.limit(new, (membership, WHITE)).0);
         clamp.end_frame();
     }
     assert_eq!(rose[0], INTENSITY_RATE_PER_SECOND * dt, "{rose:?}");

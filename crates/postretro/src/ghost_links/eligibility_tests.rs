@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 
 use glam::Vec3;
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
@@ -290,7 +291,7 @@ fn untagged_mover(scene: &mut Scene, at: Vec3) -> EntityId {
     id
 }
 
-// Acceptance (AC12, host): the partner pawn ghosts while an untagged mover and
+// Host: the partner pawn ghosts while an untagged mover and
 // a monster whose descriptor does not set `ghost` beside it do not; a monster
 // whose descriptor sets `ghost` ghosts as a descriptor entity.
 #[test]
@@ -319,7 +320,7 @@ fn partner_and_opted_in_monster_ghost_while_an_unopted_monster_and_untagged_move
     assert!(scene.ghost(imp).is_none() && scene.ghost(mover).is_none());
 }
 
-// Acceptance (AC12): a player descriptor that omits `ghost` puts no pawn in any
+// A player descriptor that omits `ghost` puts no pawn in any
 // ghost set, whichever path materialized it; the engine never ghosts by kind.
 #[test]
 fn a_player_descriptor_omitting_ghost_puts_no_pawn_in_any_ghost_set() {
@@ -359,22 +360,40 @@ fn warnings(capture: &LogCapture) -> Vec<String> {
         .collect()
 }
 
-// Acceptance (AC12): a level with links while no loaded descriptor opts in
-// warns once at install, so a forgotten opt-in is not silent. Install runs
-// the same check on host and client.
+// A level with links while no loaded descriptor sets
+// top-level `ghost` warns once at install, so a forgotten opt-in is not
+// silent, even when a weapon's `projectile.ghost` opts its shots in; the
+// warning names what can still ghost. Install runs the same check on host and
+// client.
 #[test]
-fn links_with_no_opted_in_descriptor_warn_once_at_install() {
-    {
+fn links_with_no_ghost_opted_descriptor_warn_once_at_install() {
+    for (descriptors, still_ghost) in [
+        (vec![descriptor("player", false)], "only tagged movers can"),
+        (
+            vec![
+                descriptor("player", false),
+                projectile_weapon("rocket_launcher", true),
+            ],
+            "only tagged movers and projectiles whose weapon sets `projectile.ghost` can",
+        ),
+    ] {
         let capture = LogCapture::start();
-        warn_if_links_without_opt_ins(2, &data_registry(vec![descriptor("player", false)]));
+        warn_if_links_without_opt_ins(2, &data_registry(descriptors));
         let warned = warnings(&capture);
         assert_eq!(warned.len(), 1, "{warned:?}");
         assert!(warned[0].contains(NO_OPT_IN_WARNING), "{}", warned[0]);
+        assert!(warned[0].contains(still_ghost), "{}", warned[0]);
     }
 
     for (links, descriptors) in [
         (2, vec![descriptor("player", true)]),
-        (2, vec![projectile_weapon("rocket_launcher", true)]),
+        (
+            2,
+            vec![
+                descriptor("phase_wraith", true),
+                projectile_weapon("rocket_launcher", true),
+            ],
+        ),
         (0, vec![descriptor("player", false)]),
     ] {
         let capture = LogCapture::start();
@@ -383,7 +402,43 @@ fn links_with_no_opted_in_descriptor_warn_once_at_install() {
     }
 }
 
-// Acceptance (AC12): a spawner releasing a ghost-opted descriptor inside an
+// Regression: a dropped default-loadout weapon ghosted on clients, which receive
+// it under its descriptor class, but never on the host.
+#[test]
+fn a_dropped_default_weapon_ghosts_alike_on_host_and_client_while_a_carried_one_does_not() {
+    let mut scene = Scene::new(vec![descriptor("rifle", true)]);
+    let dropped = scene.entity("rifle", INSIDE, DescriptorSpawnPath::DefaultWeapon);
+    let carried = scene.entity(
+        "rifle",
+        INSIDE + Vec3::X,
+        DescriptorSpawnPath::DefaultWeapon,
+    );
+    let mut inventory = Inventory::default();
+    inventory.wieldables[0] = Some(carried);
+    let holder = scene.viewer;
+    scene.registry.set_component(holder, inventory).unwrap();
+    scene.frame();
+    assert_eq!(
+        scene.ghosted(),
+        vec![(dropped, GhostCategory::Entities)],
+        "the host ghosts the dropped weapon; the carried one draws with its holder"
+    );
+
+    // A client holds only the dropped weapon, as a `descriptor:` display copy.
+    let opt_ins = opt_ins_from(&scene.data);
+    assert_eq!(
+        classify(
+            &scene.registry,
+            dropped,
+            CandidateOrigin::Replicated(ReplicatedDescriptorClass::Descriptor("rifle")),
+            &opt_ins,
+            &GhostMovers::default(),
+        ),
+        Some(GhostCategory::Entities)
+    );
+}
+
+// A spawner releasing a ghost-opted descriptor inside an
 // armed link ghosts the spawn, its membership ramping in from 0.
 #[test]
 fn a_runtime_spawn_of_an_opted_in_descriptor_ramps_in_from_zero() {
@@ -401,7 +456,7 @@ fn a_runtime_spawn_of_an_opted_in_descriptor_ramps_in_from_zero() {
     assert!((second.membership - ramp_step(FRAME)).abs() < 1e-6);
 }
 
-// Acceptance (AC12): a projectile ghosts by its weapon's `projectile.ghost`
+// A projectile ghosts by its weapon's `projectile.ghost`
 // whoever fired it, an unghosted monster included; one whose weapon omits it
 // does not. A remote client's fire flown on the host ghosts by the same rule;
 // the host's bodiless mirror of its own gameplay projectile never doubles it.
@@ -436,7 +491,7 @@ fn projectiles_ghost_by_their_weapon_opt_in_whoever_fired_them() {
     assert!(scene.ghost(imp_plasma).is_none() && scene.ghost(mirror).is_none());
 }
 
-// Acceptance (AC12): the viewer's own projectiles never ghost on its machine,
+// The viewer's own projectiles never ghost on its machine,
 // while the partner's do.
 #[test]
 fn the_viewers_own_projectiles_are_absent_from_its_own_ghost_set() {
@@ -450,7 +505,7 @@ fn the_viewers_own_projectiles_are_absent_from_its_own_ghost_set() {
     assert!(scene.ghost(partners).is_some());
 }
 
-// Acceptance (AC17, P22): a ghost-opted projectile keeps ghosting while its
+// A ghost-opted projectile keeps ghosting while its
 // origin is inside after its owner leaves the volume.
 #[test]
 fn a_ghost_opted_projectile_keeps_ghosting_after_its_owner_leaves() {
@@ -470,7 +525,7 @@ fn a_ghost_opted_projectile_keeps_ghosting_after_its_owner_leaves() {
     assert!(!rocket_ghost.frozen && rocket_ghost.membership == 1.0);
 }
 
-// Acceptance (AC20, P46): a committed reload that changes a descriptor's
+// A committed reload that changes a descriptor's
 // `ghost` or a weapon's `projectile.ghost` re-resolves membership on the next
 // frame through the membership ramp, never a cut.
 #[test]
@@ -518,7 +573,7 @@ fn a_committed_reload_flipping_an_opt_in_re_resolves_through_the_ramp() {
     }
 }
 
-// Acceptance (AC12 / AC20, client): display copies classify by the replicated
+// Client: display copies classify by the replicated
 // class they were materialized from, against this peer's own descriptors, and
 // follow its own committed reload.
 #[test]

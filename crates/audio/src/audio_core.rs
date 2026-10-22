@@ -12,7 +12,7 @@ use kira::{AudioManager, Capacities, Tween};
 
 use crate::assets::SoundRegistry;
 use crate::boundary::{
-    Attenuation, AudioError, ListenerState, SoundAnchor, SoundRequest, parse_bus,
+    Attenuation, AudioError, ListenerState, SoundAnchor, SoundRequest, parse_bus, parse_script_bus,
 };
 use crate::buses::{BusId, BusTree};
 use crate::ghost_bus::GhostBusProfile;
@@ -265,7 +265,21 @@ impl<B: Backend> AudioCore<B> {
     /// bus. A positional voice that later fails to start releases that voice at
     /// the audio step.
     pub(crate) fn play(&mut self, req: SoundRequest) -> Option<SoundHandle> {
-        let bus = match parse_bus(&req.bus) {
+        self.play_on(req, parse_bus)
+    }
+
+    /// [`play`](Self::play) for a script's request: an engine-only bus is an
+    /// unknown bus, warned and dropped.
+    pub(crate) fn play_script(&mut self, req: SoundRequest) -> Option<SoundHandle> {
+        self.play_on(req, parse_script_bus)
+    }
+
+    fn play_on(
+        &mut self,
+        req: SoundRequest,
+        parse: fn(&str) -> Option<BusId>,
+    ) -> Option<SoundHandle> {
+        let bus = match parse(&req.bus) {
             Some(bus) => bus,
             None => {
                 log::warn!(
@@ -383,6 +397,18 @@ impl<B: Backend> AudioCore<B> {
         for bus in self.voices.stop_anchored(tween) {
             self.buses.release_voice(bus);
         }
+    }
+
+    /// Fade out every ghost voice and release its slot on the Ghost bus, as
+    /// [`fade_out_positional`](Self::fade_out_positional) does at unload, while
+    /// every real voice plays on. A ghost voice is always positioned at a
+    /// mapped point, never on the listener's pawn, so each is a spatial voice.
+    pub(crate) fn fade_out_ghost_voices(&mut self) {
+        let tween = Tween {
+            duration: POSITIONAL_UNLOAD_FADE,
+            ..Tween::default()
+        };
+        self.spatial.stop_bus(BusId::Ghost, tween, &mut self.buses);
     }
 
     /// Per-frame audio step. Runs third in frame order (Input → Game logic →

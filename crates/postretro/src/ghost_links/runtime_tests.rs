@@ -100,10 +100,14 @@ struct Level {
 
 impl Level {
     fn new(link_0_armed: bool) -> Self {
-        let world = world(vec![
+        Self::with_links(
             link_record(4, LINK_0, link_0_armed, Vec3::new(100.0, 0.0, 0.0), 1.0),
             link_record(5, LINK_1, true, Vec3::new(0.0, 0.0, 100.0), 0.0),
-        ]);
+        )
+    }
+
+    fn with_links(link_0: GhostLinkRecord, link_1: GhostLinkRecord) -> Self {
+        let world = world(vec![link_0, link_1]);
         let mut registry = EntityRegistry::new();
         spawn_loaded_ghost_links(&mut registry, &world);
         let mut ghosts = GhostLinks::install(&world, &registry);
@@ -175,6 +179,17 @@ impl Level {
             .get_component::<GhostLinkComponent>(id)
             .unwrap();
         link.armed = armed;
+        self.registry.set_component(id, link).unwrap();
+    }
+
+    /// Apply `members` to link `index`'s component, as `setMembers` does.
+    fn set_members(&mut self, index: usize, members: GhostMembers) {
+        let id = self.links[index];
+        let mut link = *self
+            .registry
+            .get_component::<GhostLinkComponent>(id)
+            .unwrap();
+        link.members = members.bits();
         self.registry.set_component(id, link).unwrap();
     }
 
@@ -265,6 +280,24 @@ fn partner_pawn_ghosts_inside_the_volume_and_not_just_outside_it() {
     );
 }
 
+// Regression: when the camera came to follow a pawn that was ghosting, the new
+// viewer saw its own pawn's ghost fade out over the rate cap.
+#[test]
+fn a_pawn_the_camera_comes_to_follow_loses_its_ghost_on_that_frame() {
+    let mut level = Level::new(true);
+    let partner = level.pawn(inside_link_0_only(), DescriptorSpawnPath::PlayerSpawn);
+    for _ in 0..10 {
+        level.single_player_frame(0.5);
+    }
+    assert!(level.ghost(0, partner).unwrap().membership > 0.0);
+    level.registry.mark_local_player_pawn(partner).unwrap();
+    level.single_player_frame(0.5);
+    assert!(
+        level.ghost(0, partner).is_none(),
+        "the viewer never sees its own pawn's ghost, not even fading"
+    );
+}
+
 #[test]
 fn pawn_inside_two_armed_links_draws_two_ghosts_at_two_transforms() {
     let mut level = Level::new(true);
@@ -287,6 +320,81 @@ fn link_armed_on_spawn_presents_full_membership_on_the_first_frame_after_install
     level.single_player_frame(0.0);
     assert_eq!(level.ghost(1, partner).unwrap().membership, 1.0, "P26");
     assert!(level.ghost(0, partner).is_none());
+}
+
+// Regression: an `arm` applied on a fixed tick of the reveal frame skipped the
+// arm ramp, the install settle presenting it at full on the first frame.
+#[test]
+fn arm_on_a_reveal_frame_tick_ramps_in_while_spawn_armed_members_present_at_full() {
+    let mut level = Level::new(false);
+    let armed_on_reveal = level.pawn(inside_link_0_only(), DescriptorSpawnPath::PlayerSpawn);
+    let armed_since_spawn = level.pawn(Vec3::new(12.0, 1.0, 0.0), DescriptorSpawnPath::PlayerSpawn);
+    level.set_armed(0, true);
+    level.complete_tick();
+    level.single_player_frame(0.5);
+    assert_eq!(
+        level.ghost(0, armed_on_reveal).unwrap().membership,
+        0.0,
+        "an arm spawn state did not hold ramps in from 0"
+    );
+    assert_eq!(
+        level.ghost(1, armed_since_spawn).unwrap().membership,
+        1.0,
+        "a link armed on spawn still settles at full"
+    );
+    level.single_player_frame(0.5);
+    let risen = level.ghost(0, armed_on_reveal).unwrap().membership;
+    assert!((risen - membership::ramp_step(FRAME)).abs() < 1e-6);
+}
+
+// Regression: a ghost-opted runtime spawn released on the reveal frame, inside
+// a link whose category for it a tick of that frame turned on, presented at
+// full on its first frame.
+#[test]
+fn runtime_spawn_shown_by_a_reveal_frame_category_change_ramps_in_from_zero() {
+    let mut link_0 = link_record(4, LINK_0, true, Vec3::new(100.0, 0.0, 0.0), 1.0);
+    link_0.members = GhostMembers::all().difference(GhostMembers::ENTITIES);
+    let mut level = Level::with_links(
+        link_0,
+        link_record(5, LINK_1, true, Vec3::new(0.0, 0.0, 100.0), 0.0),
+    );
+    // A committed reload past the fixture's snapshot, so the opt-ins rebuild.
+    let mut data = super::opt_ins_test_fixtures::player_opted_in();
+    data.replace_entity_types(vec![
+        super::opt_ins_test_fixtures::descriptor("player", true),
+        super::opt_ins_test_fixtures::descriptor("phase_wraith", true),
+    ]);
+    level.ghosts.refresh_opt_ins(&data);
+    let partner = level.pawn(inside_link_0_only(), DescriptorSpawnPath::PlayerSpawn);
+    // The reveal frame's tick: `setMembers` shows entities and a spawner
+    // releases a ghost-opted descriptor inside the volume.
+    level.set_members(0, GhostMembers::all());
+    let spawn = level.registry.spawn(Transform::default());
+    level.place(spawn, inside_link_0_only() + Vec3::X);
+    level
+        .registry
+        .set_component(
+            spawn,
+            DescriptorProvenance {
+                canonical_name: "phase_wraith".into(),
+                owned_components: BTreeSet::new(),
+                map_overrides: BTreeSet::new(),
+                spawn_path: DescriptorSpawnPath::RuntimeSpawn,
+            },
+        )
+        .unwrap();
+    level.complete_tick();
+    level.single_player_frame(0.5);
+    let first = level
+        .ghost(0, spawn)
+        .expect("the spawn ghosts on the reveal frame");
+    assert_eq!(first.category, GhostCategory::Entities);
+    assert_eq!(first.membership, 0.0, "a category spawn state hid ramps in");
+    assert_eq!(
+        level.ghost(0, partner).unwrap().membership,
+        1.0,
+        "a category the spawn state shows still settles at full"
+    );
 }
 
 #[test]
@@ -490,6 +598,48 @@ fn member_teleported_out_fades_at_its_last_in_volume_mapped_pose() {
         assert_eq!(ghost.mapped, last_inside);
         assert!((ghost.mapped.position - mapping.point(arrival)).length() > 1.0);
     }
+}
+
+// Regression: a late joiner whose first received record armed a link spawn
+// state left disarmed presented that link's members at full on the first frame.
+#[test]
+fn late_joiners_first_record_arming_a_link_ramps_its_members_in_from_zero() {
+    let mut level = Level::new(false);
+    let in_armed_link = level.pawn(inside_link_0_only(), DescriptorSpawnPath::NetworkSlot);
+    let in_spawn_armed_link =
+        level.pawn(Vec3::new(12.0, 1.0, 0.0), DescriptorSpawnPath::NetworkSlot);
+    // The first snapshot lands before the first evaluation: the host armed
+    // link 0 since spawn.
+    level
+        .ghosts
+        .history_mut(0)
+        .unwrap()
+        .push(205, LinkState::new(true, GhostMembers::all()));
+    let client_frame = |level: &mut Level| {
+        level.frame(
+            ClockSource::Client {
+                render_server_tick: Some(204.5),
+                estimated_server_tick: Some(208.5),
+                latest_snapshot_tick: Some(205),
+            },
+            0.0,
+            FRAME,
+        );
+    };
+    client_frame(&mut level);
+    assert_eq!(
+        level.ghost(0, in_armed_link).unwrap().membership,
+        0.0,
+        "a disagreeing armed state moves at the rate cap, never cuts"
+    );
+    assert_eq!(
+        level.ghost(1, in_spawn_armed_link).unwrap().membership,
+        1.0,
+        "local spawn state presents in full"
+    );
+    client_frame(&mut level);
+    let risen = level.ghost(0, in_armed_link).unwrap().membership;
+    assert!((risen - membership::ramp_step(FRAME)).abs() < 1e-6);
 }
 
 #[test]

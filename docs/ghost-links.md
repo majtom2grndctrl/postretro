@@ -275,6 +275,7 @@ const swell = defineReaction("echo.swell", setGhostAudio({ volume: 0.9, lowPassH
 ```
 
 ```lua
+local Postretro = require("postretro")
 local Audio = require("postretro/audio")
 local swell = Postretro.defineReaction("echo.swell",
   Audio.setGhostAudio({ volume = 0.9, lowPassHz = 5000, periodMs = 1500 }))
@@ -288,7 +289,9 @@ All of these apply on the host only, at the start of its next tick, in the
 order they were called, and reach every player from there; on a connected
 client they do nothing. An out-of-range value, a call naming no field, or a
 `setGhostAudio` that would leave `highPassHz` at or above `lowPassHz`, warns
-and drops that step.
+and drops that step. A non-finite value (NaN or Infinity) in any argument is
+caught earlier: it warns when the level loads and drops the whole reaction, so
+every other step in that reaction is lost too.
 
 ### A reveal, a fight and a swell
 
@@ -354,6 +357,9 @@ end
 - Styles, `audio.ghost` and descriptors' `ghost` fields come from each
   player's own mod. Players whose mods declare them differently see different
   ghosts, and can still play together.
+- A script's first `setColorFilter` or `setGhostAudio` on a field fades from
+  the host's style or `audio.ghost` value. A player whose mod declares that
+  field differently sees it jump once to the host's value as the fade starts.
 - A ghost moves exactly as its member does on that screen, so an arm and the
   movement it reveals appear together.
 - Each player hears echoes only of sounds their own machine plays. A connected
@@ -379,7 +385,9 @@ These load, with one warning each when the level starts:
 
 - a `ghost_style` no manifest entry declares (the link uses the floor style);
 - a `ghost_tags` entry that matches no mover;
-- a level with links while no descriptor sets `ghost`, so nothing can ghost.
+- a level with links while no descriptor sets `ghost`, so no pawn or other
+  entity can ghost; only tagged movers, and projectiles whose weapon sets
+  `projectile.ghost`, still can.
 
 ---
 

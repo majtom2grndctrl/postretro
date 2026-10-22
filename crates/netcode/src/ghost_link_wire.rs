@@ -98,7 +98,7 @@ mod tests {
         }
     }
 
-    // AC4 (snapshot half, round trip): a link whose filter sets all three
+    // Snapshot half, round trip: a link whose filter sets all three
     // fields encodes, survives the codec and validation, and applies back to
     // the same ramps, start times on the host clock included.
     #[test]

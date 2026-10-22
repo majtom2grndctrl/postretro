@@ -1767,7 +1767,7 @@ mod tests {
         id
     }
 
-    // P28: `getMapEntities("ghostLink", { tag })` returns the tagged links in
+    // `getMapEntities("ghostLink", { tag })` returns the tagged links in
     // map order with `id`, `position` and `tags`, each verb baking its id into
     // a step; a tag no link carries returns `[]` silently. TS and Luau agree.
     #[test]

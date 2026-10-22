@@ -1,21 +1,40 @@
-// Keyed per-value flash clamps: one limiter channel per presented source (a
-// ghost, today), each judged as a full-screen change on the screen channels' rules.
+// Keyed flash clamps: one limiter clamp per presented source (a ghost, today),
+// each judged as a full-screen change on the screen channels' rules.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter), §7.9
 
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use super::value::ValueClamp;
 use crate::flash_limiter::{LimiterFrameInput, LimiterFrameUniform, pack_limiter_frame};
 
-#[derive(Clone, Copy, Debug)]
-struct Entry {
-    clamp: ValueClamp,
+/// One key's clamp, as a [`KeyedClamp`] holds it: everything the key presents,
+/// judged on the clamp's own flash window.
+pub(super) trait KeyClamp: Clone {
+    /// What a key asks to present on a frame, and what it presents.
+    type Value: Copy;
+
+    /// A clamp starting fresh against `value`: an empty window and nothing to
+    /// rate-cap from, so its first limit of `value` presents it unchanged.
+    fn fresh(value: Self::Value) -> Self;
+
+    /// Limit `value` for one presented frame. Returns what presents.
+    fn limit(&mut self, value: Self::Value, frame: &LimiterFrameUniform) -> Self::Value;
+
+    /// Record a frame on which the key presented nothing.
+    fn absent(&mut self, frame: &LimiterFrameUniform);
+
+    /// Whether the clamp holds nothing a fresh one at zero would not.
+    fn is_at_rest(&self) -> bool;
+}
+
+#[derive(Clone, Debug)]
+struct Entry<C> {
+    clamp: C,
     /// Whether the key was limited this frame.
     limited: bool,
 }
 
-/// One [`ValueClamp`] per key, for sources the renderer packs CPU-side. Keys
+/// One [`KeyClamp`] per key, for sources the renderer packs CPU-side. Keys
 /// should be generation-checked ids, so a re-tenanted slot is a different key
 /// and starts its own history. Renderer-side presentation state only: nothing
 /// here is readable by scripts or crosses the wire.
@@ -28,19 +47,19 @@ struct Entry {
 ///   start every key fresh against its own value, so enabling never dips one.
 /// - A key limited for the first time starts fresh against its value, so its
 ///   first frame packs unchanged.
-/// - A key not limited on a frame presented nothing: it falls to zero and that
-///   fall counts. Its history is kept until its window empties, so a source
-///   strobing by appearing and vanishing is limited like any other strobe;
-///   then it is dropped.
-#[derive(Clone, Debug)]
-pub struct KeyedValueClamp<K> {
-    entries: HashMap<K, Entry>,
+/// - A key not limited on a frame presented nothing ([`KeyClamp::absent`]).
+///   Its history is kept until its clamp is at rest, so a source strobing by
+///   appearing and vanishing is limited like any other strobe; then it is
+///   dropped.
+#[derive(Debug)]
+pub(super) struct KeyedClamp<K, C> {
+    entries: HashMap<K, Entry<C>>,
     frame: LimiterFrameUniform,
     /// Whether the previous frame ran with the limiter on.
     history_live: bool,
 }
 
-impl<K> Default for KeyedValueClamp<K> {
+impl<K, C> Default for KeyedClamp<K, C> {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
@@ -52,12 +71,30 @@ impl<K> Default for KeyedValueClamp<K> {
     }
 }
 
-impl<K: Copy + Eq + Hash> KeyedValueClamp<K> {
+impl<K: Clone, C: Clone> Clone for KeyedClamp<K, C> {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            frame: self.frame,
+            history_live: self.history_live,
+        }
+    }
+
+    /// Reuses this container's allocation, so a per-frame snapshot allocates
+    /// nothing once warm.
+    fn clone_from(&mut self, source: &Self) {
+        self.entries.clone_from(&source.entries);
+        self.frame = source.frame;
+        self.history_live = source.history_live;
+    }
+}
+
+impl<K: Copy + Eq + Hash, C: KeyClamp> KeyedClamp<K, C> {
     /// Start a presented frame. `frame` carries presented-frame time and the
     /// fail-safe enable flag (`pack_limiter_frame`). History starts fresh when
     /// the limiter turns on, on this container's first frame, or when `frame`
     /// says history starts (`init`).
-    pub fn begin_frame(&mut self, frame: &LimiterFrameUniform) {
+    pub(super) fn begin_frame(&mut self, frame: &LimiterFrameUniform) {
         let fresh = frame.enabled && (frame.init || !self.history_live);
         self.history_live = frame.enabled;
         self.frame = *frame;
@@ -68,14 +105,13 @@ impl<K: Copy + Eq + Hash> KeyedValueClamp<K> {
         }
     }
 
-    /// Limit `key`'s blend `strength` and color `rgb` for this frame. Returns
-    /// the presented strength and color.
-    pub fn limit(&mut self, key: K, strength: f32, rgb: [f32; 3]) -> (f32, [f32; 3]) {
+    /// Limit `key`'s `value` for this frame. Returns what presents.
+    pub(super) fn limit(&mut self, key: K, value: C::Value) -> C::Value {
         if !self.frame.enabled {
-            return (strength, rgb);
+            return value;
         }
         let entry = self.entries.entry(key).or_insert_with(|| Entry {
-            clamp: ValueClamp::fresh(strength, rgb),
+            clamp: C::fresh(value),
             limited: false,
         });
         debug_assert!(
@@ -83,12 +119,12 @@ impl<K: Copy + Eq + Hash> KeyedValueClamp<K> {
             "a key is limited once per frame, between begin_frame and end_frame"
         );
         entry.limited = true;
-        entry.clamp.limit(strength, rgb, &self.frame)
+        entry.clamp.limit(value, &self.frame)
     }
 
     /// End the frame: every key not limited presented nothing this frame. A
-    /// key whose window has emptied at zero is dropped, its history over.
-    pub fn end_frame(&mut self) {
+    /// key whose clamp is at rest is dropped, its history over.
+    pub(super) fn end_frame(&mut self) {
         if !self.frame.enabled {
             return;
         }

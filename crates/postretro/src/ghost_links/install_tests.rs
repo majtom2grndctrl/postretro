@@ -235,7 +235,7 @@ fn ghost_link_install_spawns_its_entity_and_never_dispatches_its_companion() {
 }
 
 // A link armed on spawn, through the real compile, load and install: a partner
-// pawn inside it ghosts at full membership on the first evaluated frame (P26),
+// pawn inside it ghosts at full membership on the first evaluated frame,
 // at the pose the authored landmark → target mapping gives.
 #[test]
 fn ghost_link_armed_on_spawn_presents_its_member_in_full_on_the_first_frame() {

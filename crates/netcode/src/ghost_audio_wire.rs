@@ -79,7 +79,7 @@ mod tests {
         fields.set(from, &targets, start);
     }
 
-    // AC4 (audio half, round trip): every field a script set encodes, rides a
+    // Audio half, round trip: every field a script set encodes, rides a
     // snapshot envelope through the codec and validation, and converts back to
     // the same ramps, start times on the host clock included.
     #[test]

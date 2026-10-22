@@ -420,7 +420,36 @@ fn ghost_voices_release_their_own_slot_on_finish_stop_unload_and_failed_start() 
     );
 }
 
-// AC33 (P23), the bus half: a ghost voice sits at its mapped point and plays
+// Regression: a client demoted mid-level kept its ghost voices playing. The
+// demotion release stops ghost voices, live and pending, on their own bus,
+// and leaves every real voice playing.
+#[test]
+fn fading_out_ghost_voices_releases_only_the_ghost_bus() {
+    let listener = forward_listener();
+    let mut audio = mock_audio();
+    hold_one_sfx_voice(&mut audio);
+    let real = audio
+        .play(at([1.0, 0.0, -3.0]))
+        .expect("real voice admitted");
+    audio.play(ghost_at([0.0, 0.0, -3.0])).expect("live");
+    audio.update(listener, 1.0 / 60.0, |_| None);
+    audio.play(ghost_at([0.0, 0.0, -4.0])).expect("pending");
+    assert_eq!(audio.active_voices(BusId::Ghost), 2);
+
+    audio.fade_out_ghost_voices();
+    assert_eq!(
+        audio.active_voices(BusId::Ghost),
+        0,
+        "ghost voices released"
+    );
+    assert_eq!(audio.active_voices(BusId::Sfx), 2, "real voices kept");
+    assert!(
+        audio.spatial.probe(real).is_some(),
+        "the real voice plays on"
+    );
+}
+
+// Bus half: a ghost voice sits at its mapped point and plays
 // out there after its member is gone (the resolver no longer answers for any
 // entity), while the member's own entity-anchored voice freezes where it last
 // was. The ghost voice holds its slot until it finishes.

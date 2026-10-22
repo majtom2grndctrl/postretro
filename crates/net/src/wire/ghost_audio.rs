@@ -59,8 +59,9 @@ impl WireGhostAudioState {
         ]
     }
 
-    /// Reject what the wire format forbids. Cutoff ranges and crossing are the
-    /// receiving peer's to resolve against its own manifest profile.
+    /// Reject what the wire format forbids. Field ranges are the receiving
+    /// peer's to clamp, and crossed cutoffs its to resolve against its own
+    /// manifest profile.
     pub fn validate(&self) -> Result<(), GhostAudioFault> {
         if self.fields & !GHOST_AUDIO_FIELD_BITS != 0 {
             return Err(GhostAudioFault::ReservedFieldBits);
@@ -127,7 +128,7 @@ mod tests {
         }
     }
 
-    // AC4 (audio half): each case the wire format names is a rejection, and
+    // Audio half: each case the wire format names is a rejection, and
     // survives the codec to be rejected.
     #[test]
     fn ghost_audio_record_rejects_each_case_the_wire_format_names() {

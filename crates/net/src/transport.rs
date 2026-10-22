@@ -2540,7 +2540,7 @@ mod tests {
     }
 
     // A PRLB / wire-32 peer predates the gameplay channel layout, and a wire-33
-    // peer predates the ghost-link record (AC42). The admission gate refuses each
+    // peer predates the ghost-link record. The admission gate refuses each
     // declaration with a typed cause and admits a PRLC / 34 one.
     #[test]
     fn admission_refuses_prlb_or_wire_32_or_33_and_admits_prlc_34() {

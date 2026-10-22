@@ -153,7 +153,7 @@ mod tests {
         }
     }
 
-    // AC29: a periodMs ramp presents its midpoint halfway through and holds its
+    // A periodMs ramp presents its midpoint halfway through and holds its
     // target after; an omitted field follows the manifest.
     #[test]
     fn a_ramp_presents_its_midpoint_halfway_and_unset_fields_follow_the_manifest() {
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(fields.resolve(MANIFEST, 40.0).volume, 1.0, "after its end");
     }
 
-    // AC29: a second set mid-ramp starts from the value at that moment, and a
+    // A second set mid-ramp starts from the value at that moment, and a
     // field the second set omits keeps its ramp in flight.
     #[test]
     fn a_second_set_mid_ramp_starts_from_the_value_then_and_leaves_other_ramps() {
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!((low.from, low.to, low.start_time), (4000.0, 2000.0, 0.0));
     }
 
-    // AC29: periodMs 0 lands at its start time.
+    // periodMs 0 lands at its start time.
     #[test]
     fn a_zero_period_lands_at_once() {
         let mut fields = GhostAudioOverride::default();
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(fields.resolve(MANIFEST, 3.0).low_pass_hz, 1000.0);
     }
 
-    // P29: a step is judged against the targets after it, a ramp in flight's
+    // A step is judged against the targets after it, a ramp in flight's
     // target included.
     #[test]
     fn targets_after_a_step_read_ramps_in_flight_by_their_target() {

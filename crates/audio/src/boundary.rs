@@ -19,6 +19,13 @@ pub(crate) fn parse_bus(name: &str) -> Option<BusId> {
     }
 }
 
+/// [`parse_bus`] for a bus a script names. The Ghost bus is engine-only: only
+/// a ghost voice, started beside a real voice, plays on it. A script naming it
+/// reads as an unknown bus.
+pub(crate) fn parse_script_bus(name: &str) -> Option<BusId> {
+    parse_bus(name).filter(|bus| *bus != BusId::Ghost)
+}
+
 /// Failures from audio init or asset loading. Init failure is non-fatal: the
 /// caller logs and runs the game silent (`Audio` stays `None`). The kira
 /// backend error is captured as a string so the backend type never leaks

@@ -154,10 +154,15 @@ fn authored_ghost_field(
 ) -> Option<f32> {
     let value = match authored {
         AuthoredAudioField::Absent => return Some(floor),
-        AuthoredAudioField::Number(value) => Some(value as f32),
+        AuthoredAudioField::Number(value) => Some(value),
         AuthoredAudioField::String(_) | AuthoredAudioField::Other => None,
     };
-    let valid = value.filter(|value| value.is_finite() && range.contains(value));
+    // Judged in f64 before the cast, so a value just past a bound is refused
+    // rather than rounded onto it (the same order `setGhostAudio` uses).
+    let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
+    let valid = value
+        .filter(|value| value.is_finite() && (low..=high).contains(value))
+        .map(|value| value as f32);
     if valid.is_none() {
         log::warn!(
             "[Scripting] {scope}: `audio.ghost.{field}` must be a finite number in {}..={}; using the floor ghost bus profile",

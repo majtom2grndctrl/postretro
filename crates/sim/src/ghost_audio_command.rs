@@ -90,10 +90,13 @@ fn authored_fields(args: &Value) -> Result<Vec<(&str, &Value)>, String> {
 
 /// A finite number inside `range`.
 fn number_in(value: &Value, range: std::ops::RangeInclusive<f32>) -> Option<f32> {
+    // Judged in f64 before the cast, like `ghost_link_commands::unit`, so a
+    // value just past a bound is refused rather than rounded onto it.
+    let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
     value
         .as_f64()
+        .filter(|number| number.is_finite() && (low..=high).contains(number))
         .map(|number| number as f32)
-        .filter(|number| number.is_finite() && range.contains(number))
 }
 
 #[cfg(test)]
@@ -118,9 +121,15 @@ mod tests {
         );
     }
 
-    // AC29: out-of-range and non-finite arguments warn and drop. A non-finite
-    // number reaches the parser as a JSON string or null from both runtimes;
-    // an out-of-f32 value overflows to infinity.
+    // Out-of-range arguments warn and drop. A non-finite number never reaches
+    // the parser (conversion rejects it at load); an out-of-f32 value overflows
+    // to infinity.
+    #[test]
+    fn a_value_just_above_a_bound_is_refused_before_the_f32_cast() {
+        assert!(parse_set_ghost_audio(&json!({ "volume": 1.0000000001 })).is_err());
+        assert!(parse_set_ghost_audio(&json!({ "volume": 1.0 })).is_ok());
+    }
+
     #[test]
     fn out_of_range_and_non_finite_arguments_are_refused_with_the_field_named() {
         for (args, field) in [
@@ -138,7 +147,7 @@ mod tests {
         }
     }
 
-    // AC29 / P41: the registered reaction body queues one typed command for a
+    // The registered reaction body queues one typed command for a
     // valid call, and a malformed one (here, naming no field) fails dispatch,
     // which the dispatcher warns about, and queues nothing.
     #[test]
@@ -181,7 +190,7 @@ mod tests {
         );
     }
 
-    // P41: a call naming no field is refused, so no ramp in flight changes.
+    // A call naming no field is refused, so no ramp in flight changes.
     #[test]
     fn a_call_naming_no_field_is_refused() {
         for args in [

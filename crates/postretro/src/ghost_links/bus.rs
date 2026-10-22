@@ -10,12 +10,10 @@ use postretro_scripting_core::runtime::ModGhostAudio;
 
 use crate::startup::audio_profile::{audio_ghost_profile, ghost_audio_values};
 
-/// A `setGhostAudio` whose targets cross the cutoffs: stable wording
-/// (acceptance contract, P29).
+/// A `setGhostAudio` whose targets cross the cutoffs: stable wording.
 pub(crate) const CROSSING_STEP_WARNING: &str = "would leave highPassHz at or above lowPassHz";
 
-/// A resolved profile whose cutoffs cross: stable wording (acceptance
-/// contract, P36).
+/// A resolved profile whose cutoffs cross: stable wording.
 pub(crate) const CROSSED_PROFILE_WARNING: &str =
     "resolved Ghost bus high-pass reaches its low-pass";
 
@@ -43,11 +41,35 @@ fn slots_mut(fields: &mut GhostAudioOverride) -> [&mut Option<GhostScalarRamp>; 
     ]
 }
 
-/// `ramp` with its start moved `offset` seconds onto this client's script clock.
-fn rebase(ramp: Option<GhostScalarRamp>, offset: f64) -> Option<GhostScalarRamp> {
+/// Each field's accepted range, in slot order: the ranges the manifest drain
+/// and the `setGhostAudio` parser accept.
+const RANGES: [(f32, f32); 4] = [
+    (0.0, 1.0),
+    (ModGhostAudio::MIN_CUTOFF_HZ, ModGhostAudio::MAX_CUTOFF_HZ),
+    (ModGhostAudio::MIN_CUTOFF_HZ, ModGhostAudio::MAX_CUTOFF_HZ),
+    (0.0, 1.0),
+];
+
+/// Whether both ends of `ramp` lie in `range`. Every value between them then
+/// does too.
+fn in_range(ramp: GhostScalarRamp, (min, max): (f32, f32)) -> bool {
+    (min..=max).contains(&ramp.from) && (min..=max).contains(&ramp.to)
+}
+
+/// A received `ramp` with both ends clamped into `range` and its start moved
+/// `offset` seconds onto this client's script clock. An honest host only sends
+/// values its parser accepted; clamping keeps a bad one from reaching the bus,
+/// which would refuse the whole profile and keep its old mix.
+fn rebase(
+    ramp: Option<GhostScalarRamp>,
+    (min, max): (f32, f32),
+    offset: f64,
+) -> Option<GhostScalarRamp> {
     ramp.map(|ramp| GhostScalarRamp {
+        from: ramp.from.clamp(min, max),
+        to: ramp.to.clamp(min, max),
         start_time: ramp.start_time + offset,
-        ..ramp
+        duration_ms: ramp.duration_ms,
     })
 }
 
@@ -99,7 +121,7 @@ impl Default for GhostBus {
 
 impl GhostBus {
     /// A mod init or committed staged reload: the manifest profile the
-    /// unscripted fields follow. Script fields and their ramps stand (P17).
+    /// unscripted fields follow. Script fields and their ramps stand.
     pub(crate) fn set_manifest(&mut self, profile: ModGhostAudio) {
         self.manifest = profile;
         self.presented = None;
@@ -128,13 +150,15 @@ impl GhostBus {
     /// over this peer's own floor and manifest. A field whose host ramp
     /// changed rebases by `offset` (this client's script clock minus the
     /// host's) now; a repeat changes nothing, so the presented value never
-    /// moves as the RTT estimate drifts (P8). Before the presentation clock
+    /// moves as the RTT estimate drifts. Before the presentation clock
     /// anchors (`offset` `None`) a changed ramp waits
     /// ([`Self::release_deferred`]) and the field keeps what it presented,
-    /// while a field the host no longer sets drops at once.
+    /// while a field the host no longer sets drops at once. A changed value
+    /// outside its field's range clamps into it, warning once for the record.
     pub(crate) fn apply_received(&mut self, host: GhostAudioOverride, offset: Option<f64>) {
         let previous = slots(&self.received.host);
         let deferred = &mut self.received.deferred;
+        let mut out_of_range = false;
         for (slot, (local, ramp)) in slots_mut(&mut self.fields)
             .into_iter()
             .zip(slots(&host))
@@ -143,9 +167,10 @@ impl GhostBus {
             if ramp == previous[slot] {
                 continue;
             }
+            out_of_range |= ramp.is_some_and(|ramp| !in_range(ramp, RANGES[slot]));
             match offset {
                 Some(offset) => {
-                    *local = rebase(ramp, offset);
+                    *local = rebase(ramp, RANGES[slot], offset);
                     deferred[slot] = false;
                 }
                 None if ramp.is_none() => {
@@ -155,11 +180,16 @@ impl GhostBus {
                 None => deferred[slot] = true,
             }
         }
+        if out_of_range {
+            log::warn!(
+                "[Audio] received Ghost bus record {host:?} carries a value outside its field's range; clamped"
+            );
+        }
         self.received.host = host;
     }
 
     /// Once the presentation clock anchors, rebase every deferred field and
-    /// put it in force (P10). No work while nothing waits.
+    /// put it in force. No work while nothing waits.
     pub(crate) fn release_deferred(&mut self, offset: Option<f64>) {
         let Some(offset) = offset else {
             return;
@@ -168,7 +198,7 @@ impl GhostBus {
         let deferred = &mut self.received.deferred;
         for (slot, local) in slots_mut(&mut self.fields).into_iter().enumerate() {
             if std::mem::take(&mut deferred[slot]) {
-                *local = rebase(host[slot], offset);
+                *local = rebase(host[slot], RANGES[slot], offset);
             }
         }
     }
@@ -214,7 +244,7 @@ impl GhostBus {
 
     /// The profile the bus presents at script time `time`. A resolution whose
     /// high-pass reaches its low-pass presents the floor cutoffs instead,
-    /// warning once until the cutoffs part again (P36).
+    /// warning once until the cutoffs part again.
     pub(crate) fn resolve(&mut self, time: f64) -> GhostAudioValues {
         let mut resolved = self.fields.resolve(ghost_audio_values(self.manifest), time);
         let crossed = resolved.cutoffs_cross();

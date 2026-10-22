@@ -610,11 +610,10 @@ fn reaction(level: &Level, name: &str) -> ReactionDescriptor {
         .clone()
 }
 
-// AC43: the dev mod's manifest and both twins' level scripts — the brief's
+// The dev mod's manifest and both twins' level scripts — the brief's
 // Scripting surface examples — install and run with zero warnings, emit
 // byte-identical wire, and resolve `setGhostAudio` from `postretro/audio` in
-// both runtimes. The `ghostLink` query returns both dev-map links in map order
-// (P28).
+// both runtimes. The `ghostLink` query returns both dev-map links in map order.
 #[test]
 fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
     let logs = LogCapture::start();
@@ -708,7 +707,7 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
     };
     assert_eq!(manifest_of(&ts), manifest_of(&luau));
 
-    // P28: `getMapEntities("ghostLink", { tag: "vault_echo" })` returned both
+    // `getMapEntities("ghostLink", { tag: "vault_echo" })` returned both
     // links, in map order: `echo.reveal` arms, then filters, each in turn.
     for level in [&ts, &luau] {
         let links: Vec<EntityId> = level.links().into_iter().map(|(id, _)| id).collect();
@@ -748,7 +747,7 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
     }
 }
 
-// AC43: the set-pieces drive what the membership, look, category, replication
+// The set-pieces drive what the membership, look, category, replication
 // and bus rows observe, in both runtimes. The barrier, a tagged mover on the
 // link armed on spawn, ghosts into copy B at full membership; the button in
 // copy B drops it and its ghost follows. The echo plate arms the second link,
@@ -872,7 +871,7 @@ fn run_set_pieces(map: &str, mut level: Level) {
     assert_eq!((volume.from, volume.to), (DEV_BUS.volume, 0.9));
     assert_eq!((low_pass.from, low_pass.to), (DEV_BUS.low_pass_hz, 5000.0));
     assert!(fields.high_pass_hz.is_none() && fields.drive.is_none());
-    // The partner, standing in copy B, ramps in through echo_b from 0 (P21).
+    // The partner, standing in copy B, ramps in through echo_b from 0.
     let partner = level.ghost_of(level.partner);
     assert_eq!(partner.len(), 1, "{map}: the partner ghosts once");
     assert_eq!(

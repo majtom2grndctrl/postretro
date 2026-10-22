@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use postretro_entities::EntityRegistry;
+use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::flash_clamp::GhostLookClamp;
 use postretro_render_cpu::flash_limiter::LimiterFrameUniform;
@@ -24,6 +24,25 @@ pub(crate) struct BillboardGhostFrame<'a> {
     pub presentation_tick: f64,
     /// This presented frame's limiter input, or `None` for a capture.
     pub limiter: Option<LimiterFrameUniform>,
+}
+
+/// The pose a ghost member presents at, the one its real draw uses: a
+/// sprite-bodied projectile's current transform, since the billboard pass
+/// draws billboards uninterpolated, and every other member's interpolated
+/// transform, as the real mesh and mover draws present. Membership tests and
+/// ghost draws both read it, so a billboard ghost enters, leaves and draws at
+/// the mapping of where its billboard is drawn. `None` without a transform.
+pub(crate) fn ghost_presented_transform(
+    registry: &EntityRegistry,
+    entity: EntityId,
+    alpha: f32,
+) -> Option<Transform> {
+    // The flipbook age is unused here; any presentation tick answers whether
+    // the entity is a billboard body.
+    if projectile_sprite_body(registry, entity, 0.0).is_some() {
+        return registry.get_component::<Transform>(entity).ok().copied();
+    }
+    registry.interpolated_transform(entity, alpha).ok()
 }
 
 /// The sprite a ghost last drew: a fading ghost redraws it unchanged, since its
@@ -111,6 +130,13 @@ impl BillboardGhostRenderCollector {
         self.clamp.end_frame();
         self.sprites
             .retain(|_, sprite| std::mem::take(&mut sprite.seen));
+    }
+
+    /// Settle this frame's look clamp once the renderer knows whether the
+    /// frame presented: one that presented nothing leaves the clamp as if it
+    /// never ran and carries its time into the next frame.
+    pub(crate) fn finish_presentation(&mut self, presented: bool) {
+        self.clamp.finish_presentation(presented);
     }
 
     /// Each collection's packed ghost sprites this frame, by registered name.

@@ -2,7 +2,7 @@
 // See: context/lib/entity_model.md §7d · context/lib/networking.md §Current contract
 
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
-use postretro_entities::{EntityId, EntityRegistry};
+use postretro_entities::{EntityId, EntityRegistry, Transform};
 
 use super::eligibility::{CandidateOrigin, GhostCategory};
 
@@ -158,7 +158,7 @@ pub(crate) const POSE_STAMP_LAG_TICKS: f64 = 1.0;
 /// shows its leading sample, so a link change and the first motion toward it
 /// present together; a pose held on the near side of a teleport cut shows no
 /// state of the cut's tick, so an arm sent with a swap presents on the cut
-/// frame rather than one tick early (P18). Members with no stamp read their
+/// frame rather than one tick early. Members with no stamp read their
 /// lane clock.
 #[derive(Clone, Copy)]
 pub(crate) enum PoseStamps<'a> {
@@ -193,6 +193,30 @@ impl PoseStamps<'_> {
                 buffer, allocator, entity, tick, alpha,
             ),
             Self::Client(replication) => replication.presented_state_tick(entity),
+        }
+    }
+
+    /// Where `entity` presents this frame when the registry does not hold it
+    /// yet: a client pawn on the host seat, whose delayed pose is written after
+    /// the audio stage. `None` reads the registry's presented transform, which
+    /// every other member already holds by then.
+    pub(crate) fn presented_transform(
+        &self,
+        entity: EntityId,
+        lane: MemberLane,
+    ) -> Option<Transform> {
+        match *self {
+            Self::HostSeat {
+                buffer,
+                allocator,
+                tick,
+                alpha,
+            } if lane == MemberLane::Remote => {
+                crate::netcode::host_presented_client_pawn_transform(
+                    buffer, allocator, entity, tick, alpha,
+                )
+            }
+            _ => None,
         }
     }
 }

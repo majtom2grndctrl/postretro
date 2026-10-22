@@ -53,8 +53,8 @@ impl App {
     /// reload. The attenuation applies to positional sounds started from now
     /// on; sounds already playing keep theirs. The manifest ghost profile
     /// re-resolves the shared Ghost bus at once (the bus's own de-click ramp):
-    /// fields a script set keep their values and ramps (P17), and cutoffs the
-    /// new profile crosses against them present the floor's (P36). A silent run
+    /// fields a script set keep their values and ramps, and cutoffs the
+    /// new profile crosses against them present the floor's. A silent run
     /// (no audio device) still resolves, so its warnings match.
     pub(crate) fn apply_mod_audio_profile(&mut self, profile: ModAudioProfile) {
         if let Some(audio) = self

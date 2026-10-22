@@ -1,5 +1,5 @@
 // Audio subsystem vocabulary for the `postretro/audio` module: the Ghost bus
-// setter first; music layering lands here later.
+// setter.
 // See: context/lib/audio.md §1 (Ghost bus) · context/lib/scripting.md §10.4
 
 import type { PrimitiveReactionDescriptor } from "./data_script";

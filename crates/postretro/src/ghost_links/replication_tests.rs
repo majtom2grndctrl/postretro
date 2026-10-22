@@ -114,7 +114,7 @@ fn received_link_states_land_at_their_snapshot_stamps_between_frames() {
     );
 }
 
-// P8 at the history level: an always-on record repeating the current state at
+// At the history level: an always-on record repeating the current state at
 // later stamps changes nothing a frame can read, so the presented value never
 // moves as the RTT estimate, and with it the render tick, changes.
 #[test]
@@ -147,9 +147,9 @@ fn repeated_identical_link_records_leave_every_presented_state_unchanged() {
     assert_eq!(membership, 1.0);
 }
 
-// P9: until a link's first record lands, a joiner presents its local spawn
+// Until a link's first record lands, a joiner presents its local spawn
 // state; a disagreeing armed state then moves membership at the rate cap from
-// 0, never cutting. P38 / AC41: dropping received state on demotion returns
+// 0, never cutting. Dropping received state on demotion returns
 // the link to spawn state through the same ramp.
 #[test]
 fn a_joiner_ramps_from_spawn_state_on_its_first_record_and_back_on_demotion() {
@@ -228,10 +228,10 @@ fn latest_filter(client: &Client) -> postretro_foundation::GhostColorFilter {
     client.ghosts.links[0].history.latest().filter
 }
 
-// P8: a received ramp rebases once, when its host ramp changes. The record
+// A received ramp rebases once, when its host ramp changes. The record
 // repeats every snapshot while the host-clock offset drifts with the RTT
 // estimate; the presented ramp never moves. A later opacity-only change
-// rebases opacity alone, and the tint keeps its first rebase (P5).
+// rebases opacity alone, and the tint keeps its first rebase.
 #[test]
 fn a_received_look_ramp_rebases_once_and_repeats_never_move_it_as_the_offset_drifts() {
     let mut client = Client::new();
@@ -259,7 +259,7 @@ fn a_received_look_ramp_rebases_once_and_repeats_never_move_it_as_the_offset_dri
     );
 }
 
-// P10: a record landing before the presentation clock anchors applies its
+// A record landing before the presentation clock anchors applies its
 // armed state and categories now and defers the look ramp; once the clock
 // anchors the ramp rebases and is in force from the carrying record's stamp,
 // through every later change.
@@ -308,7 +308,7 @@ fn a_look_ramp_received_before_the_clock_anchors_defers_then_lands_at_its_stamp(
     assert_eq!(latest_filter(&client).opacity.unwrap().start_time, rebased);
 }
 
-// P38 (look): demotion drops received look ramps with the rest of received
+// Look: demotion drops received look ramps with the rest of received
 // state, and the link presents its local style again.
 #[test]
 fn demotion_drops_received_look_ramps_and_the_link_presents_its_style() {
@@ -330,4 +330,40 @@ fn demotion_drops_received_look_ramps_and_the_link_presents_its_style() {
         latest_filter(&client).opacity.unwrap().start_time,
         LOOK_START + 2.0
     );
+}
+
+// Regression: a received look value outside 0..=1 reached presentation as is.
+#[test]
+fn received_out_of_range_look_values_clamp_into_range_and_warn_once_per_record() {
+    use postretro_net::wire::{
+        GHOST_LOOK_OPACITY, GHOST_LOOK_TINT, WireGhostScalarRamp, WireGhostTintRamp,
+    };
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let mut client = Client::new();
+    let state = WireGhostLinkState {
+        look_fields: GHOST_LOOK_TINT | GHOST_LOOK_OPACITY,
+        tint: Some(WireGhostTintRamp {
+            from: [1.0, 1.0, 1.0],
+            to: [2.0, -1.0, 0.5],
+            start_time: 0.0,
+            duration_ms: 0.0,
+        }),
+        opacity: Some(WireGhostScalarRamp {
+            from: 0.5,
+            to: 3.0,
+            start_time: 0.0,
+            duration_ms: 0.0,
+        }),
+        ..WireGhostLinkState::new(0, 20, true, 0b1111)
+    };
+    // The always-on record repeats unchanged on the next snapshot.
+    for server_tick in [40, 42] {
+        client
+            .ghosts
+            .apply_received(GhostLinkUpdate { server_tick, state }, Some(0.0));
+    }
+    let filter = client.ghosts.links[0].history.state_at(44.0).filter;
+    assert_eq!(filter.tint.map(|ramp| ramp.to), Some([1.0, 0.0, 0.5]));
+    assert_eq!(filter.opacity.map(|ramp| ramp.to), Some(1.0));
+    capture.assert_logged_once(log::Level::Warn, "outside 0..=1; clamped");
 }

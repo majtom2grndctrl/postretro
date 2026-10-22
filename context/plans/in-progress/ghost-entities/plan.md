@@ -37,6 +37,14 @@ Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time onl
 - Owner provisional approvals at the thin-slice checkpoint (2026-10-21), revisited at the manual visual checks (rows 45–46):
   - Tint luminance gets its own per-ghost limiter channel (brief Decision and Acceptance row 24a amended). Over budget the tint holds its last presented luminance and keeps its hue: scale the tint to the clamped luminance, or a grey of that luminance when the tint is black.
   - Blended ghost self-overlap (overlapping front faces blend twice, an x-ray look) is accepted. A ghost-only depth pre-pass is the fix if the visual check rejects it. Dither has no self-overlap.
+- Owner decisions at review (2026-10-22):
+  - First `setColorFilter` / `setGhostAudio` from-value: accepted as is. It carries the host's style or manifest value, and a client whose declaration differs steps once. This is the same style divergence co-op already accepts, and it is documented in `docs/ghost-links.md` §Co-op. No wire change.
+  - Opacity, redness and tint luminance share one per-ghost flash window: at most 3 flashes/s per ghost, not 3 per channel. The brief's Decision is amended to match.
+  - Acceptance row 26 is restated: the freeze applies under dev `freeze_time`, because the shipped pause menu keeps script time running.
+- Review clarifications that keep the meaning:
+  - "Keeps its hue" (Decision; row 24): the hue angle is kept. A saturated tint whose brightest scale cannot reach the held luminance mixes toward white, so the drawn luminance always equals the luminance the limiter recorded. A single white→red change therefore ramps through a lighter red over about 200 ms.
+  - Client mover-lane look ramps present from estimated host-now. That is the mover clock the Decision names, so a client sees a mover ghost's look ramp already one-way latency in, exactly as its motion is. This is not a defect.
+  - The install warning keys on top-level `ghost` alone, matching the Decision. A mod that opts in only `projectile.ghost` now warns, and the warning says tagged movers and those projectiles still ghost.
 - Cell residency (id 51) — no ghost-link term: ghosts are unlit and sample no lightmap or SH at the target copy.
 - Level-scoped ghost-audio record identity — a snapshot-envelope side record (precedent: `faction_sentiment_record`, `host.rs` ~L176-195), level-scoped, with no entity binding. Participation-epoch frame gating rejects stale copies. Level unload and demotion drop it.
 

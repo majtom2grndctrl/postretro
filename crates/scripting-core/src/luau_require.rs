@@ -551,7 +551,7 @@ mod tests {
         );
     }
 
-    // AC43: `setGhostAudio` resolves from `require("postretro/audio")`, a
+    // `setGhostAudio` resolves from `require("postretro/audio")`, a
     // read-only engine singleton a mod file cannot shadow, and stays off the
     // root module and the bare globals.
     #[test]

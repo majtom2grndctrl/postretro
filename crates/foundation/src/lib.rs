@@ -41,7 +41,8 @@ pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams, knockback_
 pub use ir::*;
 pub use movement::{
     DashPrograms, GroundRef, ImmersionComponent, MovementScope, MovementState, MovementStateKind,
-    NO_TELEPORTER, PlayerMovementComponent, TeleportLatches, TeleportState, wrap_teleport_yaw,
+    NO_TELEPORTER, PlayerMovementComponent, SeamlessMapping, TeleportLatches, TeleportState,
+    wrap_teleport_yaw,
 };
 pub use pose::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};
 pub use presentation::{

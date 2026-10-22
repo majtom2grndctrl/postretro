@@ -48,6 +48,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
 - **Ghosts pass the photosensitivity limiter.** E23 I2 counts a primitive that changes presented luminance without a clamp as a violation, and `setColorFilter` and arm/disarm are such primitives.
   - A ghost's presented opacity is its link's opacity times its membership. Membership ramps linearly at the limiter's rate cap on arm, disarm, a category change, entry and exit, reversing from the presented value. As with fluid tint entry, ordinary reveals are never limited and a strobe is.
   - Each ghost is one limiter channel: presented opacity is its strength and its link's tint is its redness, under the fluid view tint's rules and player-only toggle. Like the screen channels, it judges the change as if it covered the screen (`rendering_pipeline.md` §7.8).
+  - Each ghost also presents its tint's luminance through a second channel of its own, so a tint brightness strobe at steady opacity is limited too; over budget the tint holds its last presented luminance, keeping its hue. Provisional owner amendment, 2026-10-21, revisited at the manual legibility check.
   - A new ghost's membership starts at 0. Turning the limiter on starts every ghost fresh against its current value, as the screen channels start, so enabling it never dips a ghost. The membership ramp runs on presented-frame time, so it continues through a pause, while `setColorFilter` ramps follow script time.
   - The clamp applies on the presenting machine to the presented value, and nothing it holds reaches a script or the wire (I9).
   - The per-ghost clamp is a reusable per-value clamp extracted from the screen-channel clamp on the same rules. It is not a ghost-only copy: it is extracted so `drafts/E23--photosensitivity-source-floor` can reuse it for every other source.
@@ -188,6 +189,7 @@ Pins are in `research.md`.
   - `setMembers` toggling a category at 10 Hz
   - a member oscillating across the volume boundary at 10 Hz
 - [ ] With the limiter on, a red `setColorFilter` tint strobe desaturates over budget, keeping luminance, while a single red tint change keeps its hue.
+- [ ] With the limiter on and opacity steady, a `setColorFilter` tint alternating white and black at `periodMs` 0 presents at most 3 flashes in any 1 s window and rests at its pre-flash luminance (provisional amendment).
 - [ ] With the limiter on, a single `arm` reaches full style opacity within 250 ms, and the example's 1500 ms `setColorFilter` fade presents exactly as with the limiter off. A new ghost's first presented frame starts from membership 0 (P21). Turning the limiter on while ghosts present dips none (P31).
 - [ ] With the limiter turned off by the player, the 10 Hz `arm`/`disarm` strobe presents unclamped, the membership ramp still applies, and a hitch frame steps at most the hitch ceiling (P30). A pause freezes `setColorFilter` ramps while the membership ramp continues (P42).
 **Look and audio values**

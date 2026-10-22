@@ -52,10 +52,10 @@ const LAMP_DISARMED: f32 = 0.2;
 const LAMP_ARMED: f32 = 1.0;
 
 /// Wraps `setupLevel` so its raw return, before Rust-side parsing, reaches the capture.
-const JS_CAPTURE: &str = "\n;(function () {\n  const original = globalThis.setupLevel;\n  globalThis.setupLevel = function (ctx) {\n    const result = original(ctx);\n    __teleportFixtureCapture(result);\n    return result;\n  };\n})();\n";
-const LUAU_CAPTURE: &str = "\ndo\n  local original = setupLevel\n  setupLevel = function(ctx)\n    local result = original(ctx)\n    __teleportFixtureCapture(result)\n    return result\n  end\nend\n";
+pub(super) const JS_CAPTURE: &str = "\n;(function () {\n  const original = globalThis.setupLevel;\n  globalThis.setupLevel = function (ctx) {\n    const result = original(ctx);\n    __teleportFixtureCapture(result);\n    return result;\n  };\n})();\n";
+pub(super) const LUAU_CAPTURE: &str = "\ndo\n  local original = setupLevel\n  setupLevel = function(ctx)\n    local result = original(ctx)\n    __teleportFixtureCapture(result)\n    return result\n  end\nend\n";
 
-fn workspace() -> PathBuf {
+pub(super) fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
@@ -67,7 +67,7 @@ fn workspace() -> PathBuf {
 /// running in parallel would otherwise contend on cargo's build lock and rebuild
 /// the same map. Each test still writes and loads its own PRL, since a loaded
 /// level may keep its file open for streaming.
-fn compile(map: &'static str, out: &Path) -> LevelWorld {
+pub(super) fn compile(map: &'static str, out: &Path) -> LevelWorld {
     static COMPILED: OnceLock<Mutex<HashMap<&'static str, Vec<u8>>>> = OnceLock::new();
     let bytes = COMPILED
         .get_or_init(Default::default)
@@ -128,7 +128,7 @@ pub(crate) fn run_prl_build_on(source: &Path, extra: &[&str]) -> Vec<u8> {
 /// one exception is an impact-event handle's `override` method: a function, not
 /// manifest data, which each VM's capture converts differently (`{}` in JS,
 /// `null` in Luau) and the manifest reader never sees.
-fn canonical(value: Value) -> Value {
+pub(super) fn canonical(value: Value) -> Value {
     match value {
         Value::Object(mut map) => {
             if map.get("kind").and_then(Value::as_str) == Some("impact") {
@@ -606,7 +606,7 @@ impl Level {
 }
 
 /// The registrars `Session::build` adds beyond the shared dev-mod fixture set.
-fn register_teleporter_and_trigger_primitives(app: &mut crate::App, ctx: &ScriptCtx) {
+pub(super) fn register_teleporter_and_trigger_primitives(app: &mut crate::App, ctx: &ScriptCtx) {
     let scripting = &mut app.session.as_mut().unwrap().scripting;
     postretro_sim::trigger_system::register_sequenced_trigger_primitives(
         &mut scripting.sequence_registry,

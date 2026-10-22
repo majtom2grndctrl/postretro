@@ -32,8 +32,8 @@ use crate::scripting::reactions::registry::{
     register_fog_reaction_primitives, register_grant_reactions, register_mover_reaction_primitives,
     register_npc_state_reaction_primitives, register_sequenced_fog_primitives,
     register_sequenced_mover_primitives, register_sequenced_spawner_primitives,
-    register_sequenced_trigger_primitives, register_spawner_reaction_primitives,
-    register_trigger_reaction_primitives,
+    register_sequenced_trap_primitives, register_sequenced_trigger_primitives,
+    register_spawner_reaction_primitives, register_trigger_reaction_primitives,
 };
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
@@ -694,6 +694,7 @@ impl Session {
                 Some(netcode::NetEndpoint::Client { .. })
             ));
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
+        let trigger_spawn_context = scripting.spawn_context.clone();
         // A listen host publishes the address players should dial, for the
         // frontend to show. Written after identity setup, which can still
         // demote the endpoint to single-player.
@@ -775,7 +776,8 @@ impl Session {
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
             trigger_system: crate::trigger_system::TriggerSystem::with_mover_auto_close_timers(
                 trigger_auto_close_timers,
-            ),
+            )
+            .with_spawn_context(trigger_spawn_context),
             touch_system: crate::sim::touch::TouchSystem::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_pool: postretro_sim::particle_pool::ParticlePool::new(),
@@ -925,6 +927,7 @@ fn build_scripting_core(
         script_ctx.clone(),
         spawn_context.clone(),
     );
+    register_sequenced_trap_primitives(&mut sequence_registry, script_ctx.clone());
 
     // Reaction-primitive handlers invoked by name when a `Primitive` reaction
     // fires. Populated once at startup; survives level reloads.

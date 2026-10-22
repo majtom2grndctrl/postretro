@@ -5265,6 +5265,7 @@ impl App {
         remote_launches: &[sim::RemoteProjectilePresentationLaunch],
         local_projectile_spawns: &[postretro_entities::EntityId],
         enemy_projectile_spawns: &[sim::EnemyProjectilePresentationSpawn],
+        trap_projectile_spawns: &[sim::EnemyProjectilePresentationSpawn],
     ) {
         let Some(netcode::NetEndpoint::Host {
             allocator,
@@ -5307,6 +5308,15 @@ impl App {
             replicable,
             replication,
             enemy_projectile_spawns,
+            *tick,
+        );
+        // A trap's shot mirrors exactly as an enemy's, classed by its weapon.
+        projectile_presentations.mirror_enemy_gameplay_projectiles(
+            &mut registry,
+            allocator,
+            replicable,
+            replication,
+            trap_projectile_spawns,
             *tick,
         );
     }

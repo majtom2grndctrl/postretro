@@ -38,6 +38,8 @@ export type { GhostLinkEntity, GhostLinkHandle } from "./entities/ghost_links";
 
 export type { SpawnerEntityHandle } from "./entities/spawners";
 
+export type { TrapEntityHandle } from "./entities/traps";
+
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";
 

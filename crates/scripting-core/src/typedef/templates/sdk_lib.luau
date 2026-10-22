@@ -161,9 +161,34 @@ export type SpawnerEntityHandle = {
   fire: (self: SpawnerEntityHandle) -> {SpawnFromSpawnerStep},
 }
 
+--- Snapshot of a map-placed projectile trap: id, position (its muzzle) and
+--- tags.
+export type TrapEntity = { id: EntityId, position: Vec3, tags: {string} }
+--- A trap run's options. Each field omitted takes the trap's authored
+--- `interval_ms` or `phase_ms`. Interval rounds up to whole ticks (minimum
+--- one); phase rounds up with no floor.
+export type TrapStartOptions = { intervalMs: number?, phaseMs: number? }
+
+--- Projectile trap member returned by `getMapEntities("trap")`. Every step is
+--- host-only.
+export type TrapEntityHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  --- Run one execution of the trap's weapon. Dropped while an execution or
+  --- its recovery runs.
+  fire: (self: TrapEntityHandle) -> {FireTrapStep},
+  --- Start repeating: the first execution `phaseMs` after the start tick,
+  --- then one every `intervalMs`. A no-op on a running trap. Options apply to
+  --- this run only.
+  start: (self: TrapEntityHandle, options: TrapStartOptions?) -> {StartTrapStep},
+  --- Cancel future repeats; an execution already running finishes.
+  stop: (self: TrapEntityHandle) -> {StopTrapStep},
+}
+
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -182,6 +207,7 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "fog", filter: MapEntityFilter?) -> {FogVolumeHandle})
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
+  & ((kind: "trap", filter: MapEntityFilter?) -> {TrapEntityHandle})
 
 --- Level default gravity in m/s² (negative = downward; positive = upward):
 --- the gravity outside every gravity volume. Seeded from the worldspawn
@@ -487,6 +513,26 @@ export type SpawnFromSpawnerStep = {
   primitive: "spawnFromSpawner",
 }
 
+--- Sequence step that fires one projectile trap member (`t:fire()`).
+export type FireTrapStep = {
+  id: EntityId,
+  primitive: "fireTrap",
+}
+
+--- Sequence step that starts one projectile trap member repeating
+--- (`t:start(options)`).
+export type StartTrapStep = {
+  id: EntityId,
+  primitive: "startTrap",
+  args: TrapStartOptions?,
+}
+
+--- Sequence step that stops one projectile trap member's repeats (`t:stop()`).
+export type StopTrapStep = {
+  id: EntityId,
+  primitive: "stopTrap",
+}
+
 --- Control-step payload for `WaitStep`. `interruptible` defaults to `false`
 --- when omitted by the author.
 export type WaitArgs = { durationMs: number, interruptible: boolean }
@@ -511,7 +557,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Sequence reaction body: ordered member, group, subject-token and control
 --- steps. Steps begin in array order; `fire` queues a named dispatch, while

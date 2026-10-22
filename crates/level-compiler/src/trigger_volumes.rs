@@ -95,6 +95,7 @@ pub(crate) fn resolve_trigger_volume(
         "stop" | "1" => 1,
         "reverse" | "2" => 2,
         "go_to_path_node" | "goToPathNode" | "3" => 3,
+        "fire" | "4" => 4,
         other => anyhow::bail!("{classname} `{name}` has unknown `command` `{other}`"),
     };
     let command_arg = props
@@ -240,6 +241,15 @@ mod tests {
             cleared.rearm_ms,
             absent.rearm_ms
         );
+    }
+
+    #[test]
+    fn trigger_volume_fire_command_resolves_to_section_value_four() {
+        for spelling in ["fire", "4"] {
+            let resolved = resolve(&[("target_tag", "volley"), ("command", spelling)])
+                .expect("fire is a trigger command");
+            assert_eq!(resolved.command, 4, "{spelling}");
+        }
     }
 
     // Regression: clearing `rearm_ms` in TrenchBroom failed the compile with

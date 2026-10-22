@@ -721,6 +721,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::MapOrdinal => postretro_net::wire::COMPONENT_KIND_MAP_ORDINAL,
         ComponentKind::Immersion => postretro_net::wire::COMPONENT_KIND_IMMERSION,
         ComponentKind::Teleporter => postretro_net::wire::COMPONENT_KIND_TELEPORTER,
+        ComponentKind::ProjectileTrap => postretro_net::wire::COMPONENT_KIND_PROJECTILE_TRAP,
         ComponentKind::GhostLink => postretro_net::wire::COMPONENT_KIND_GHOST_LINK,
     }
 }
@@ -2178,6 +2179,7 @@ fn ingest_hit_declaration(
             open.shot.damage,
             open.shot.weapon,
             open.shot.pawn,
+            true,
             open.shot.credit_source.clone(),
             &mut on_impact,
         );
@@ -6923,7 +6925,8 @@ mod tests {
                 ComponentKind::HitVolume => Some(ComponentKind::MapOrdinal),
                 ComponentKind::MapOrdinal => Some(ComponentKind::Immersion),
                 ComponentKind::Immersion => Some(ComponentKind::Teleporter),
-                ComponentKind::Teleporter => Some(ComponentKind::GhostLink),
+                ComponentKind::Teleporter => Some(ComponentKind::ProjectileTrap),
+                ComponentKind::ProjectileTrap => Some(ComponentKind::GhostLink),
                 ComponentKind::GhostLink => None,
             }
         }

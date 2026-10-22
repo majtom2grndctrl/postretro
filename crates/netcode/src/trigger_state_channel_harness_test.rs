@@ -65,8 +65,8 @@ use crate::trigger_system::TriggerSystem;
 use crate::weapon::FireButtonState;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{
-    EntityId, FogVolumeComponent, MoverCommand, ReplicationScope, ScriptCtx, SlotOwnership,
-    SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation,
+    EntityId, FogVolumeComponent, ReplicationScope, ScriptCtx, SlotOwnership, SlotRecord,
+    SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation, TriggerCommand,
     TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::HealthDescriptor;
@@ -400,7 +400,7 @@ impl PersistentAtmosphereHarness {
                         String::new(),
                         TRIGGER_EVENT.to_string(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Once,
                         0.0,
                         true,

@@ -1,8 +1,12 @@
-//! Trigger-volume PRL section (ID 44). Invisible brush AABBs and declarative mover commands.
+//! Trigger-volume PRL section (ID 44). Invisible brush AABBs and declarative direct commands.
 
 use crate::FormatError;
 
 pub const TRIGGER_VOLUMES_VERSION: u16 = 2;
+
+/// The largest valid `command` value: `fire`. Widening the closed vocabulary
+/// leaves the entry layout unchanged, so the section version holds.
+pub const MAX_TRIGGER_COMMAND: u8 = 4;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TriggerVolumesSection {
@@ -18,6 +22,7 @@ pub struct TriggerVolumeRecord {
     pub aabb_max: [f32; 3],
     pub activation: u8,
     pub target_tag: String,
+    /// 0 `start`, 1 `stop`, 2 `reverse`, 3 `go_to_path_node`, 4 `fire`.
     pub command: u8,
     pub command_arg: String,
     pub fire_mode: u8,
@@ -117,7 +122,7 @@ impl TriggerVolumesSection {
             }
             let target_tag = string_(&mut o, data, &format!("trigger {i} target tag"))?;
             let command = u8_(&mut o, data, &format!("trigger {i} command"))?;
-            if command > 3 {
+            if command > MAX_TRIGGER_COMMAND {
                 return invalid(format!(
                     "trigger volumes: trigger {i} has invalid command {command}"
                 ));
@@ -331,6 +336,20 @@ mod tests {
         let mut v2 = sample().to_bytes();
         v2.push(0);
         assert!(TriggerVolumesSection::from_bytes(&v2).is_err());
+    }
+
+    // The `fire` command (4) round-trips; anything past it fails to load.
+    #[test]
+    fn fire_command_round_trips_and_larger_values_fail() {
+        let mut section = sample();
+        section.triggers[0].command = 4;
+        section.triggers[0].command_arg.clear();
+        let bytes = section.to_bytes();
+        assert_eq!(TriggerVolumesSection::from_bytes(&bytes).unwrap(), section);
+
+        section.triggers[0].command = 5;
+        let error = TriggerVolumesSection::from_bytes(&section.to_bytes()).unwrap_err();
+        assert!(error.to_string().contains("invalid command 5"), "{error}");
     }
 
     #[test]

@@ -108,8 +108,23 @@
     fire(): SequenceStep[];
   }
 
+  /** Snapshot of a map-placed projectile trap: id, position (its muzzle) and tags. */
+  export type TrapEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+  /** A trap run's options. Each field omitted takes the trap's authored `interval_ms` or `phase_ms`. Interval rounds up to whole ticks (minimum one); phase rounds up with no floor. */
+  export type TrapStartOptions = { intervalMs?: number; phaseMs?: number };
+
+  /** Projectile trap member returned by `getMapEntities("trap")`. Every step is host-only. */
+  export interface TrapEntityHandle extends TrapEntity {
+    /** Run one execution of the trap's weapon. Dropped while an execution or its recovery runs. */
+    fire(): SequenceStep[];
+    /** Start repeating: the first execution `phaseMs` after the start tick, then one every `intervalMs`. A no-op on a running trap. Options apply to this run only. */
+    start(options?: TrapStartOptions): SequenceStep[];
+    /** Cancel future repeats; an execution already running finishes. */
+    stop(): SequenceStep[];
+  }
+
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -121,6 +136,7 @@
     K extends "fog" ? FogVolumeHandle :
     K extends "emitter" ? EmitterEntity :
     K extends "spawner" ? SpawnerEntityHandle :
+    K extends "trap" ? TrapEntityHandle :
     never;
 
   /** Narrows a member query to instances carrying `tag`. */
@@ -271,6 +287,12 @@
   export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
   /** Sequence step that spawns one batch from one spawner member (`s.fire()`). */
   export type SpawnFromSpawnerStep = { id: EntityId; primitive: "spawnFromSpawner"; args?: never };
+  /** Sequence step that fires one projectile trap member (`t.fire()`). */
+  export type FireTrapStep = { id: EntityId; primitive: "fireTrap"; args?: never };
+  /** Sequence step that starts one projectile trap member repeating (`t.start(options)`). */
+  export type StartTrapStep = { id: EntityId; primitive: "startTrap"; args?: TrapStartOptions };
+  /** Sequence step that stops one projectile trap member's repeats (`t.stop()`). */
+  export type StopTrapStep = { id: EntityId; primitive: "stopTrap"; args?: never };
 
   /** Control-step payload for `WaitStep`. `interruptible` defaults to `false` when omitted by the author. */
   export interface WaitArgs { readonly durationMs: number; readonly interruptible: boolean; }
@@ -306,6 +328,9 @@
     | ArmTriggerStep
     | DisarmTriggerStep
     | SpawnFromSpawnerStep
+    | FireTrapStep
+    | StartTrapStep
+    | StopTrapStep
     | GroupCommand
     | SubjectTokenCommand
     | WaitStep

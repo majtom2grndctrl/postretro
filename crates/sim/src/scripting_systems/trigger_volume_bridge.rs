@@ -5,7 +5,7 @@ use std::{cmp::Ordering, collections::HashMap};
 
 use glam::{Quat, Vec3};
 use postretro_entities::{
-    EntityId, EntityRegistry, MoverCommand, Transform, TriggerActivation, TriggerFireMode,
+    EntityId, EntityRegistry, Transform, TriggerActivation, TriggerCommand, TriggerFireMode,
     TriggerVolumeComponent,
 };
 use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
@@ -15,7 +15,7 @@ pub struct TriggerVolumeBridge {
     /// Source-record order is unique within one PRL and survives registry slot
     /// recycling across unload/reinstall.
     authored_order: HashMap<EntityId, usize>,
-    #[cfg(any(test, feature = "dev-tools"))]
+    #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
     names: HashMap<EntityId, String>,
 }
 
@@ -24,14 +24,14 @@ impl TriggerVolumeBridge {
         Self {
             aabbs: HashMap::new(),
             authored_order: HashMap::new(),
-            #[cfg(any(test, feature = "dev-tools"))]
+            #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
             names: HashMap::new(),
         }
     }
     pub fn clear(&mut self) {
         self.aabbs.clear();
         self.authored_order.clear();
-        #[cfg(any(test, feature = "dev-tools"))]
+        #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
         self.names.clear();
     }
     pub fn aabb(&self, id: EntityId) -> Option<(Vec3, Vec3)> {
@@ -50,7 +50,7 @@ impl TriggerVolumeBridge {
             (None, None) => a.cmp(&b),
         }
     }
-    #[cfg(any(test, feature = "dev-tools"))]
+    #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
     pub fn name(&self, id: EntityId) -> Option<&str> {
         self.names.get(&id).map(String::as_str)
     }
@@ -83,10 +83,11 @@ impl TriggerVolumeBridge {
                 _ => unreachable!("format validates activation"),
             };
             let command = match record.command {
-                0 => MoverCommand::Start,
-                1 => MoverCommand::Stop,
-                2 => MoverCommand::Reverse,
-                3 => MoverCommand::GoToPathNode(record.command_arg.clone()),
+                0 => TriggerCommand::Start,
+                1 => TriggerCommand::Stop,
+                2 => TriggerCommand::Reverse,
+                3 => TriggerCommand::GoToPathNode(record.command_arg.clone()),
+                4 => TriggerCommand::Fire,
                 _ => unreachable!("format validates command"),
             };
             let fire_mode = match record.fire_mode {
@@ -109,7 +110,7 @@ impl TriggerVolumeBridge {
             );
             self.aabbs.insert(id, (min, max));
             self.authored_order.insert(id, authored_order);
-            #[cfg(any(test, feature = "dev-tools"))]
+            #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
             self.names.insert(id, record.name.clone());
         }
     }
@@ -135,7 +136,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn level_records_preserve_trigger_event_names_on_components() {
+    fn level_records_preserve_trigger_event_names_and_commands_on_components() {
         let record = TriggerVolumeRecord {
             name: "lift_plate".into(),
             tags: vec!["lift".into()],
@@ -154,10 +155,28 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
 
-        bridge.populate_from_level(&mut registry, &[record]);
+        let mut fire = record.clone();
+        fire.command = 4;
+        bridge.populate_from_level(&mut registry, &[record, fire]);
 
-        assert_eq!(bridge.count(), 1);
-        let id = *bridge.aabbs.keys().next().expect("trigger entity spawned");
+        assert_eq!(bridge.count(), 2);
+        let commands: Vec<TriggerCommand> = registry
+            .iter_with_kind(postretro_entities::ComponentKind::TriggerVolume)
+            .map(|(id, _)| {
+                registry
+                    .get_component::<TriggerVolumeComponent>(id)
+                    .unwrap()
+                    .command
+                    .clone()
+            })
+            .collect();
+        assert_eq!(commands, [TriggerCommand::Start, TriggerCommand::Fire]);
+        let id = *bridge
+            .authored_order
+            .iter()
+            .find(|(_, order)| **order == 0)
+            .expect("trigger entity spawned")
+            .0;
         let component = registry
             .get_component::<TriggerVolumeComponent>(id)
             .expect("trigger component attached");

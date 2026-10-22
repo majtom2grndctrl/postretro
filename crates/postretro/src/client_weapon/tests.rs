@@ -1351,6 +1351,7 @@ fn client_weapon_invalid_old_charge_correction_retracts_only_that_activation() {
         sim::ProjectileSource {
             weapon: None,
             activation: None,
+            attackerless: false,
         },
     )
     .unwrap();

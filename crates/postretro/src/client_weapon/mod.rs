@@ -308,6 +308,7 @@ impl App {
                     sim::ProjectileSource {
                         weapon: name,
                         activation: None,
+                        attackerless: false,
                     },
                 ) {
                     sim::set_predicted_projectile_visible(

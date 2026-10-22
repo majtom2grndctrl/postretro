@@ -41,13 +41,13 @@ pub use components::{
     COMPONENT_KIND_HEALTH, COMPONENT_KIND_HIT_VOLUME, COMPONENT_KIND_IMMERSION,
     COMPONENT_KIND_INVENTORY, COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_LIGHT,
     COMPONENT_KIND_MAP_ORDINAL, COMPONENT_KIND_MESH_ANIMATION_STATE,
-    COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_PROJECTILE, COMPONENT_KIND_SPAWNER,
-    COMPONENT_KIND_SPRITE_VISUAL, COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE,
-    COMPONENT_KIND_TRANSFORM, COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON,
-    ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload, WireEmitterState, WireFogAnimation,
-    WireFogState, WireGroundRef, WireKinematicMoverState, WireLightAnimation, WireLightState,
-    WireMeshAnimationState, WireMovementState, WirePlayerMovementState, WireSpinAnimation,
-    WireTransform,
+    COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_PROJECTILE,
+    COMPONENT_KIND_PROJECTILE_TRAP, COMPONENT_KIND_SPAWNER, COMPONENT_KIND_SPRITE_VISUAL,
+    COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM,
+    COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS,
+    RawComponentPayload, WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef,
+    WireKinematicMoverState, WireLightAnimation, WireLightState, WireMeshAnimationState,
+    WireMovementState, WirePlayerMovementState, WireSpinAnimation, WireTransform,
 };
 pub use ghost::{
     GHOST_LINK_MEMBER_BITS, GHOST_LOOK_FIELD_BITS, GHOST_LOOK_OPACITY, GHOST_LOOK_SATURATION,
@@ -2609,7 +2609,7 @@ mod tests {
                 ComponentPayload::EmitterState(_) => 2,
                 ComponentPayload::FogState(_) => 4,
                 ComponentPayload::TeleporterState(_) => 24,
-                ComponentPayload::GhostLinkState(_) => 25,
+                ComponentPayload::GhostLinkState(_) => 26,
             };
             assert_eq!(payload.kind(), expected);
         }

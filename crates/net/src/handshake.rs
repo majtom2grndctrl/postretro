@@ -42,6 +42,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// sender-side setting and does not affect wire compatibility.
 /// Ghost links advance it to 34: component payloads gained the link-state record
 /// and the snapshot envelope the level-scoped ghost-audio record (`SNAPSHOT_VERSION` 22).
+/// Projectile traps reserve component discriminant 25 but never replicate, so
+/// they need no bump of their own; the ghost-link record takes discriminant 26.
 pub const WIRE_VERSION: u32 = 34;
 
 #[must_use]

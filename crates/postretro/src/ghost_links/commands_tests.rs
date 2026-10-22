@@ -241,6 +241,7 @@ impl Host {
                     credit_source: "launcher".to_string(),
                     owner_pawn: owner,
                     owner_weapon: owner,
+                    attackerless: false,
                     spawned: false,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,

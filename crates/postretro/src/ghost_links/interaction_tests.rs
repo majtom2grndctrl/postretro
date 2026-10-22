@@ -9,9 +9,8 @@ use std::rc::Rc;
 use glam::Vec3;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::components::kinematic_mover::MoverCommand;
 use postretro_entities::components::trigger_volume::{
-    TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+    TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_entities::data_descriptors::{
     BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope, MotionVerb,
@@ -105,6 +104,7 @@ fn shot_through(
                     credit_source: "probe".into(),
                     owner_pawn: shooter,
                     owner_weapon: shooter,
+                    attackerless: false,
                     spawned: false,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,
@@ -189,6 +189,7 @@ fn a_splash_on_a_ghost_damages_nothing_while_one_on_the_real_member_does() {
             25.0,
             shooter,
             shooter,
+            true,
             "probe".into(),
             &mut |_| {},
         )
@@ -227,7 +228,7 @@ fn a_trigger_at_a_ghost_pawn_does_not_fire_while_one_at_the_real_pawn_does() {
                     "probe".into(),
                     "probe.fire".into(),
                     String::new(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     TriggerFireMode::Multiple,
                     0.0,
                     true,

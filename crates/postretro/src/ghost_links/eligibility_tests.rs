@@ -196,6 +196,7 @@ impl Scene {
                     // An enemy's projectile carries the enemy as its damage
                     // provenance, never a weapon entity.
                     owner_weapon: owner,
+                    attackerless: false,
                     spawned: false,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,

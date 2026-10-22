@@ -36,6 +36,9 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "setAnimationState",
     "updateNpcState",
     "spawnFromSpawner",
+    "fireTrap",
+    "startTrap",
+    "stopTrap",
 ];
 
 const LIFECYCLE_PRIMITIVES: &[&str] = &["loadLevel", "restartLevel", "returnToFrontend"];

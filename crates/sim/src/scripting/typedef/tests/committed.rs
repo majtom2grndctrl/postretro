@@ -464,8 +464,9 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && ts.contains("K extends \"teleporter\" ? TeleporterHandle :")
             && ts.contains("K extends \"ghostLink\" ? GhostLinkHandle :")
             && ts.contains("K extends \"spawner\" ? SpawnerEntityHandle :")
+            && ts.contains("K extends \"trap\" ? TrapEntityHandle :")
             && ts.contains(
-                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\";"
+                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\" | \"trap\";"
             ),
         "TypeScript must select each member handle by map kind:\n{ts}"
     );
@@ -481,7 +482,8 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
                 .contains("((kind: \"ghostLink\", filter: MapEntityFilter?) -> {GhostLinkHandle})")
             && luau.contains(
                 "((kind: \"spawner\", filter: MapEntityFilter?) -> {SpawnerEntityHandle})"
-            ),
+            )
+            && luau.contains("((kind: \"trap\", filter: MapEntityFilter?) -> {TrapEntityHandle})"),
         "Luau must select each member handle by map kind:\n{luau}"
     );
 }
@@ -512,6 +514,30 @@ fn ghost_link_command_step_types_are_emitted_in_both_sdk_surfaces() {
     }
     assert!(ts.contains("    | SetGhostLinkColorFilterStep\n"));
     assert!(luau.contains("| SetGhostLinkMembersStep | SetGhostLinkColorFilterStep |"));
+}
+
+#[test]
+fn trap_member_handle_and_step_types_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    for (label, output) in [("ts", generate_typescript(&r)), ("luau", generate_luau(&r))] {
+        for needle in [
+            "TrapEntity",
+            "TrapEntityHandle",
+            "TrapStartOptions",
+            "FireTrapStep",
+            "StartTrapStep",
+            "StopTrapStep",
+            "\"fireTrap\"",
+            "\"startTrap\"",
+            "\"stopTrap\"",
+        ] {
+            assert!(output.contains(needle), "{label} typedef lacks {needle}");
+        }
+    }
 }
 
 #[test]

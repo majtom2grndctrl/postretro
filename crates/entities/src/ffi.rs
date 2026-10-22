@@ -183,6 +183,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::MapOrdinal => "map_ordinal",
         ComponentKind::Immersion => "immersion",
         ComponentKind::Teleporter => "teleporter",
+        ComponentKind::ProjectileTrap => "projectile_trap",
         ComponentKind::GhostLink => "ghost_link",
     }
 }
@@ -267,6 +268,10 @@ impl<'js> FromJs<'js> for ComponentValue {
             "teleporter" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "Teleporter component is engine-managed and not exposed to scripts",
+            )),
+            "projectile_trap" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "ProjectileTrap component is engine-managed and not exposed to scripts",
             )),
             "ghost_link" => Err(rquickjs::Exception::throw_type(
                 ctx,
@@ -405,6 +410,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Teleporter component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::ProjectileTrap(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "ProjectileTrap component is engine-managed and not exposed to scripts",
+            )),
             ComponentValue::GhostLink(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "GhostLink component is engine-managed and not exposed to scripts",
@@ -487,6 +496,10 @@ impl FromLua for ComponentValue {
             )),
             "teleporter" => Err(mlua::Error::RuntimeError(
                 "Teleporter component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            "projectile_trap" => Err(mlua::Error::RuntimeError(
+                "ProjectileTrap component is engine-managed and not exposed to scripts"
+                    .to_string(),
             )),
             "ghost_link" => Err(mlua::Error::RuntimeError(
                 "GhostLink component is engine-managed and not exposed to scripts".to_string(),
@@ -593,6 +606,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Teleporter(_) => Err(mlua::Error::RuntimeError(
                 "Teleporter component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::ProjectileTrap(_) => Err(mlua::Error::RuntimeError(
+                "ProjectileTrap component is engine-managed and not exposed to scripts".to_string(),
             )),
             ComponentValue::GhostLink(_) => Err(mlua::Error::RuntimeError(
                 "GhostLink component is engine-managed and not exposed to scripts".to_string(),

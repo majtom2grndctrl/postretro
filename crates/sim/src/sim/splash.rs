@@ -113,8 +113,10 @@ pub(crate) fn splash_damage_amount(
 /// chokepoint. Candidate collection happens before any damage so one target's
 /// health change cannot alter the membership or falloff of another target in
 /// the same blast. `occlusion_origin` may differ from `center` solely to start
-/// the static-world sightline clear of a contacted world triangle. Returns
-/// whether at least one target received a damage or knockback dispatch.
+/// the static-world sightline clear of a contacted world triangle.
+/// `credit_owner` false (a trap's shot) leaves every hit attackerless while
+/// `owner_pawn` still governs self-damage. Returns whether at least one target
+/// received a damage or knockback dispatch.
 #[allow(clippy::too_many_arguments)]
 pub fn emit_splash_damage(
     registry: &mut EntityRegistry,
@@ -126,6 +128,7 @@ pub fn emit_splash_damage(
     damage: f32,
     owner_weapon: EntityId,
     owner_pawn: EntityId,
+    credit_owner: bool,
     credit_source: String,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) -> bool {
@@ -145,7 +148,7 @@ pub fn emit_splash_damage(
         Some(collision_world),
         occlusion_origin,
     );
-    let attacker = registry.exists(owner_pawn).then_some(owner_pawn);
+    let attacker = (credit_owner && registry.exists(owner_pawn)).then_some(owner_pawn);
     let mut dispatched = false;
 
     for target in targets {
@@ -325,6 +328,7 @@ mod tests {
             100.0,
             weapon,
             owner,
+            true,
             "weapon.splash-test".to_string(),
             &mut |_| drains += 1,
         );
@@ -379,6 +383,7 @@ mod tests {
             100.0,
             weapon,
             owner,
+            true,
             "weapon.splash-test".to_string(),
             &mut ignore_impact,
         );
@@ -425,6 +430,7 @@ mod tests {
             100.0,
             weapon,
             owner,
+            true,
             "weapon.splash-test".to_string(),
             &mut ignore_impact,
         );
@@ -463,6 +469,7 @@ mod tests {
             100.0,
             weapon,
             owner,
+            true,
             "weapon.splash-test".to_string(),
             &mut ignore_impact,
         );
@@ -530,6 +537,7 @@ mod tests {
             100.0,
             weapon,
             owner,
+            true,
             "test.rocket".into(),
             &mut |_| drains += 1,
         ));
@@ -579,6 +587,7 @@ mod tests {
             0.0,
             weapon,
             owner,
+            true,
             "test.concussion".into(),
             &mut |_| {},
         );
@@ -637,6 +646,7 @@ mod tests {
             10.0,
             weapon,
             owner,
+            true,
             "test.self".into(),
             &mut |_| {},
         );

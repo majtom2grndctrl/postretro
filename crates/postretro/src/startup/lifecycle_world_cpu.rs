@@ -403,6 +403,20 @@ pub(crate) fn install_world_cpu(
             spawner_diagnostics.invalid_total()
         );
     }
+    // Trap weapons resolve once per install, against the same descriptors. A
+    // host or single player also issues each `start_on_spawn` trap's start
+    // here, before `levelLoad`, so it is the install's first trap request.
+    {
+        let mut registry = script_ctx.registry.borrow_mut();
+        postretro_sim::traps::install::resolve_traps_for_level(
+            &mut registry,
+            &descriptors,
+            !suppress_host_replicated,
+        );
+        // Every map placement now exists, so a trigger whose command reaches
+        // no member carrying its tag can say so once.
+        postretro_sim::trigger_direct_commands::warn_unaccepted_trigger_commands(&registry);
+    }
     // Pool arming is host-only and occurs after every trigger/spawner binding
     // exists, but before `levelLoad` so level-load reactions can override it.
     // Connected clients retain their authored trigger state and an empty report.

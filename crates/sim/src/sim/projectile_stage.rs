@@ -189,9 +189,7 @@ pub fn advance(
                 apply_authorized_weapon_impact_damage(
                     registry,
                     component.owner_weapon,
-                    registry
-                        .exists(component.owner_pawn)
-                        .then_some(component.owner_pawn),
+                    credited_attacker(registry, component),
                     impact,
                     component.credit_source.clone(),
                     0.0,
@@ -206,6 +204,7 @@ pub fn advance(
                     component.damage,
                     component.owner_weapon,
                     component.owner_pawn,
+                    !component.attackerless,
                     component.credit_source.clone(),
                     on_impact,
                 );
@@ -216,13 +215,10 @@ pub fn advance(
                 if target_is_damage_eligible
                     && let ActivationOutcome::Hit(payload) = &impact.outcome
                 {
-                    let attacker = registry
-                        .exists(component.owner_pawn)
-                        .then_some(component.owner_pawn);
                     apply_authorized_weapon_impact_damage(
                         registry,
                         component.owner_weapon,
-                        attacker,
+                        credited_attacker(registry, component),
                         impact,
                         component.credit_source.clone(),
                         payload.amount,
@@ -233,6 +229,16 @@ pub fn advance(
         },
     );
     contacts
+}
+
+/// The attacker a projectile's damage credits: its live owner, unless the shot
+/// is attackerless (a trap's), whose damage comes from an unknown source.
+fn credited_attacker(
+    registry: &EntityRegistry,
+    component: &ProjectileComponent,
+) -> Option<EntityId> {
+    (!component.attackerless && registry.exists(component.owner_pawn))
+        .then_some(component.owner_pawn)
 }
 
 /// Return the origin for a splash static-world sightline. `WorldHit::normal`
@@ -783,6 +789,7 @@ mod tests {
                     credit_source: "test.projectile".to_string(),
                     owner_pawn,
                     owner_weapon,
+                    attackerless: false,
                     spawned: true,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,

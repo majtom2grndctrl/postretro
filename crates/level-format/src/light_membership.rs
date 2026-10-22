@@ -13,8 +13,9 @@ pub const LIGHT_MEMBERSHIP_MANIFEST_VERSION: u32 = 1;
 /// level data script. `_bake_only` lights and buried lights (static lights
 /// whose origin is inside solid) are omitted; each surviving
 /// `index` is its stable `MapData::lights` vector index, not a runtime entity id.
-/// `map_members` carries the runtime-placed movers, trigger volumes and
-/// spawners so build-side member queries answer what runtime answers.
+/// `map_members` carries the runtime-placed movers, trigger volumes,
+/// teleporters, spawners, projectile traps and ghost links, so build-side member queries
+/// answer what runtime answers.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[derive(Clone, Debug, PartialEq)]
@@ -104,15 +105,17 @@ pub enum MapMemberKind {
     TriggerVolume,
     Teleporter,
     Spawner,
+    ProjectileTrap,
     GhostLink,
 }
 
 impl MapMemberKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::KinematicMover,
         Self::TriggerVolume,
         Self::Teleporter,
         Self::Spawner,
+        Self::ProjectileTrap,
         Self::GhostLink,
     ];
 
@@ -123,6 +126,7 @@ impl MapMemberKind {
             Self::TriggerVolume => "trigger_volume",
             Self::Teleporter => "teleporter",
             Self::Spawner => "spawner",
+            Self::ProjectileTrap => "projectile_trap",
             Self::GhostLink => "ghost_link",
         }
     }
@@ -134,8 +138,8 @@ impl MapMemberKind {
     }
 }
 
-/// One runtime-placed mover, trigger volume, teleporter, spawner or ghost link, in authored order
-/// within its kind. Mirrors the runtime identity snapshot
+/// One runtime-placed mover, trigger volume, teleporter, spawner, projectile
+/// trap or ghost link, in authored order within its kind. Mirrors the runtime identity snapshot
 /// (`collect_identity_snapshots_json` in `postretro-sim`); `scripts-build`
 /// assigns the build id.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]

@@ -34,6 +34,8 @@ pub(crate) mod start_pose;
 mod teleporter_unload_tests;
 #[cfg(test)]
 pub(crate) mod teleporters_surface_tests;
+#[cfg(test)]
+mod traps_surface_tests;
 pub(crate) mod worker;
 
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;

@@ -150,6 +150,9 @@ export type SetGhostLinkColorFilterStep = { id: import("postretro").EntityId; pr
 export type ArmTriggerStep = import("postretro").ArmTriggerStep;
 export type DisarmTriggerStep = import("postretro").DisarmTriggerStep;
 export type SpawnFromSpawnerStep = import("postretro").SpawnFromSpawnerStep;
+export type FireTrapStep = import("postretro").FireTrapStep;
+export type StartTrapStep = import("postretro").StartTrapStep;
+export type StopTrapStep = import("postretro").StopTrapStep;
 export type WaitStep = import("postretro").WaitStep;
 export type FireStep = import("postretro").FireStep;
 
@@ -179,6 +182,9 @@ export type SequenceStep =
   | ArmTriggerStep
   | DisarmTriggerStep
   | SpawnFromSpawnerStep
+  | FireTrapStep
+  | StartTrapStep
+  | StopTrapStep
   | GroupCommand
   | SubjectTokenCommand
   | WaitStep

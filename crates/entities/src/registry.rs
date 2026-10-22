@@ -31,6 +31,7 @@ use crate::components::map_ordinal::MapOrdinal;
 use crate::components::mesh::MeshComponent;
 use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::projectile::{ProjectileComponent, ProjectilePresentationAge};
+use crate::components::projectile_trap::ProjectileTrapComponent;
 use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
 use crate::components::teleporter::TeleporterComponent;
@@ -164,10 +165,13 @@ pub enum ComponentKind {
     /// Map-authored teleporter identity and host-owned arming state; scripts
     /// address it through member handles, never raw component attachment.
     Teleporter = 24,
+    /// Map-authored projectile trap: authored timing plus its host-only
+    /// runtime. Never replicated; scripts address it through member handles.
+    ProjectileTrap = 25,
     /// Map-authored ghost-link identity, host-owned arming state and shown
     /// member categories; scripts address it through member handles, never
     /// raw component attachment.
-    GhostLink = 25,
+    GhostLink = 26,
 }
 
 impl ComponentKind {
@@ -202,6 +206,7 @@ impl ComponentKind {
             ComponentKind::MapOrdinal,
             ComponentKind::Immersion,
             ComponentKind::Teleporter,
+            ComponentKind::ProjectileTrap,
             ComponentKind::GhostLink,
         ];
         VARIANTS.len()
@@ -277,6 +282,7 @@ pub enum ComponentValue {
     MapOrdinal(MapOrdinal),
     Immersion(ImmersionComponent),
     Teleporter(TeleporterComponent),
+    ProjectileTrap(ProjectileTrapComponent),
     GhostLink(GhostLinkComponent),
 }
 
@@ -308,6 +314,7 @@ impl ComponentValue {
             ComponentValue::MapOrdinal(_) => ComponentKind::MapOrdinal,
             ComponentValue::Immersion(_) => ComponentKind::Immersion,
             ComponentValue::Teleporter(_) => ComponentKind::Teleporter,
+            ComponentValue::ProjectileTrap(_) => ComponentKind::ProjectileTrap,
             ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
         }
     }
@@ -618,6 +625,21 @@ impl Component for SpawnerComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Spawner(self)
+    }
+}
+
+impl Component for ProjectileTrapComponent {
+    const KIND: ComponentKind = ComponentKind::ProjectileTrap;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::ProjectileTrap(trap) => Some(trap),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::ProjectileTrap(self)
     }
 }
 

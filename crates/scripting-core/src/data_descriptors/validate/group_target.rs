@@ -55,9 +55,14 @@ pub fn validate_authored_group_kind(
     Ok(Some(kind))
 }
 
-/// Reject `spawnFromSpawner` and the ghost-link member steps beside a group
-/// `kind`: each acts on a member addressed by id (or a spawner by `tag`), so
-/// the `kind` would be silently dropped.
+/// The projectile-trap member verbs. A trap is addressed only by member id.
+pub fn is_trap_primitive(primitive: &str) -> bool {
+    matches!(primitive, "fireTrap" | "startTrap" | "stopTrap")
+}
+
+/// Reject `spawnFromSpawner`, the trap verbs and the ghost-link member steps
+/// beside a group `kind`: a spawner is addressed by `tag` or member id, and a
+/// trap or a ghost link by member id, so the `kind` would be silently dropped.
 /// Every other primitive passes; the handler decides what a group applies to.
 pub fn validate_group_kind_primitive(
     reaction: &str,
@@ -67,6 +72,11 @@ pub fn validate_group_kind_primitive(
     if primitive == "spawnFromSpawner" {
         return Err(format!(
             "reaction `{reaction}` {site}: `spawnFromSpawner` addresses spawners, so it cannot carry a group `kind`"
+        ));
+    }
+    if is_trap_primitive(primitive) {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` addresses one projectile trap member, so it cannot carry a group `kind`"
         ));
     }
     if postretro_foundation::is_ghost_link_primitive(primitive) {
@@ -179,6 +189,12 @@ pub fn validate_subject_token_primitive(
     token: SubjectToken,
     primitive: &str,
 ) -> Result<(), String> {
+    if is_trap_primitive(primitive) {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` addresses one projectile trap member, not `{}`",
+            token.as_wire()
+        ));
+    }
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
     if postretro_foundation::is_ghost_link_primitive(primitive) {

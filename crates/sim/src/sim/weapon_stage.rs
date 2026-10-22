@@ -5321,6 +5321,7 @@ mod tests {
                         credit_source: "death-ordering".into(),
                         owner_pawn: attacker,
                         owner_weapon: weapon,
+                        attackerless: false,
                         spawned: false,
                         predicted_shot_id: None,
                         elapsed_flight_age: 0.0,

@@ -21,6 +21,10 @@ use crate::map_data::{
 /// level compiler interprets no other map-entity classname as a member.
 const ENTITY_SPAWNER_CLASSNAME: &str = "entity_spawner";
 
+/// Runtime classname whose built-in handler places a projectile trap
+/// (`postretro-sim` `scripting::builtins::projectile_trap::CLASSNAME`).
+const PROJECTILE_TRAP_CLASSNAME: &str = "projectile_trap";
+
 /// Raw KVP the runtime spawner handler splits on whitespace into the tags its
 /// spawns carry.
 const SPAWNED_TAGS_KEY: &str = "spawned_tags";
@@ -85,15 +89,17 @@ pub(crate) fn light_table_from_lights(
 }
 
 /// Build the non-light member table: exactly the movers, trigger volumes
-/// (switches included), teleporters, spawners and ghost links the runtime places, each with the tags and
-/// Transform position runtime gives it. Order is authored order within each
-/// kind, the order runtime spawns them and therefore answers queries in.
+/// (switches included), teleporters, spawners, projectile traps and ghost
+/// links the runtime places, each with the tags and Transform position runtime
+/// gives it. Order is authored order within each kind, the order runtime spawns
+/// them and therefore answers queries in.
 ///
 /// Positions mirror the runtime spawn sites: a mover's packed origin
 /// (`runtime_movers` spawns at the PRL record origin), a trigger volume's AABB
-/// center (`TriggerVolumeBridge::populate_from_level`), a teleporter's and a
-/// ghost link's companion origin, and a spawner's narrowed entity origin
-/// (`entity_spawner::handle`).
+/// center (`TriggerVolumeBridge::populate_from_level`), a teleporter's entity
+/// origin, a spawner's narrowed entity origin (`entity_spawner::handle`), a
+/// projectile trap's entity origin (`projectile_trap::handle`), and a ghost
+/// link's companion origin.
 pub(crate) fn map_members_from_map(
     movers: &[MapKinematicMover],
     triggers: &[MapTriggerVolume],
@@ -136,6 +142,15 @@ pub(crate) fn map_members_from_map(
             position: vec3(entity.origin),
             spawned_tags: Vec::new(),
         });
+    let traps = entities
+        .iter()
+        .filter(|entity| entity.classname == PROJECTILE_TRAP_CLASSNAME)
+        .map(|entity| MapMember {
+            kind: MapMemberKind::ProjectileTrap,
+            tags: entity.tags.clone(),
+            position: vec3(entity.origin),
+            spawned_tags: Vec::new(),
+        });
     // One companion per link, in link order; runtime install spawns each link
     // at its companion's origin with its tags.
     let ghost_links = entities
@@ -151,6 +166,7 @@ pub(crate) fn map_members_from_map(
         .chain(triggers)
         .chain(spawners)
         .chain(teleporters)
+        .chain(traps)
         .chain(ghost_links)
         .collect()
 }
@@ -870,5 +886,42 @@ mod tests {
             runtime.contains(&tags_read),
             "runtime entity_spawner no longer reads `{tags_read}`"
         );
+    }
+
+    #[test]
+    fn projectile_trap_classname_matches_runtime_handler_source() {
+        let runtime = include_str!("../../sim/src/scripting/builtins/projectile_trap.rs");
+        let classname = format!("pub const CLASSNAME: &str = \"{PROJECTILE_TRAP_CLASSNAME}\";");
+        assert!(
+            runtime.contains(&classname),
+            "runtime projectile_trap no longer defines `{classname}`"
+        );
+    }
+
+    // A trap is a build-side member like a spawner: the light pass answers
+    // `getMapEntities("trap")` with its authored tags and entity origin.
+    #[test]
+    fn projectile_traps_join_the_member_table_at_their_origin() {
+        let map = parse_inline_map(
+            "trap-member",
+            &format!(
+                "{}\n{{\n\"classname\" \"projectile_trap\"\n\"origin\" \"32 64 16\"\n\"weapon\" \"bolt\"\n\"_tags\" \"wave\"\n}}\n",
+                worldspawn()
+            ),
+        );
+        let members = map_members_from_map(
+            &map.kinematic_movers,
+            &map.trigger_volumes,
+            &map.map_entities,
+        );
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].kind, MapMemberKind::ProjectileTrap);
+        assert_eq!(members[0].tags, ["wave"]);
+        let trap = map
+            .map_entities
+            .iter()
+            .find(|entity| entity.classname == "projectile_trap")
+            .expect("trap record");
+        assert_eq!(members[0].position, vec3(trap.origin));
     }
 }

@@ -1021,6 +1021,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &tick_events.remote_projectile_presentation_launches,
                 &tick_events.local_projectile_spawns,
                 &tick_events.enemy_projectile_spawns,
+                &tick_events.trap_projectile_spawns,
             );
             app.host_note_local_projectile_contacts(&tick_events.local_projectile_contacts);
             if app.host_flush_pending_hit_declarations(frame_anim_time, &mut remote_impacts) {

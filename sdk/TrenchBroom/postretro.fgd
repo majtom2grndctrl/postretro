@@ -350,6 +350,27 @@
     spawned_tags(string) : "Space-delimited tags each spawned NPC carries (the spawner's own _tags never pass to its spawns)" : ""
 ]
 
+// Bodiless projectile trap: fires its weapon from its origin along its facing
+// arrow. `weapon` names a projectile weapon descriptor; an unknown, hitscan or
+// charged weapon, or an invalid timing value, leaves it inert with one
+// warning. A trigger's `fire`, `start` or `stop` command on its tag drives it
+// with no script, or a level script drives it as `getMapEntities("trap")`.
+@PointClass base(EntitySpawn)
+    color(240 140 40)
+    size(-8 -8 -8, 8 8 8)
+    = projectile_trap : "Projectile Trap"
+[
+    angles(angles) : "Facing (pitch yaw roll, degrees). A legacy `angle` key of -1 fires straight up, -2 straight down" : "0 0 0"
+    weapon(string) : "Projectile weapon descriptor canonical name" : ""
+    interval_ms(float) : "Repeat interval once started (milliseconds; rounds up to whole ticks, minimum one)" : "1000"
+    phase_ms(float) : "Delay from a start to its first execution (milliseconds; rounds up to whole ticks)" : "0"
+    start_on_spawn(choices) : "Start repeating at level load (a value other than 0/1 or false/true leaves the trap inert)" : 0 =
+    [
+        0 : "No"
+        1 : "Yes"
+    ]
+]
+
 @SolidClass
     color(220 180 60)
     = kinematic_mover : "Kinematic moving brush"
@@ -462,7 +483,7 @@
 
 @SolidClass
     color(220 100 40)
-    = trigger_volume : "Invisible trigger brush for mover commands and named reactions"
+    = trigger_volume : "Invisible trigger brush for direct commands and named reactions"
 [
     name(string) : "Trigger name" : ""
     activation(choices) : "Activation" : "touch" =
@@ -470,15 +491,16 @@
         "touch" : "Touch"
         "use" : "Use"
     ]
-    target_tag(string) : "Target mover tag" : ""
+    target_tag(string) : "Target tag: movers, projectile traps and spawners carrying it take the command" : ""
     on_fire(string) : "Reaction on activation" : "" : "Name of the reaction fired when this trigger activates."
     on_exit(string) : "Reaction on exit" : "" : "Name of the reaction fired when a player leaves after activating this trigger."
-    command(choices) : "Mover command" : "start" =
+    command(choices) : "Command on enter: movers take start/stop/reverse/go_to_path_node, projectile traps fire/start/stop, spawners fire" : "start" =
     [
         "start" : "Start"
         "stop" : "Stop"
         "reverse" : "Reverse"
         "go_to_path_node" : "Go To Path Node"
+        "fire" : "Fire"
     ]
     command_arg(string) : "Command argument (path node for go_to_path_node)" : ""
     fire_mode(choices) : "Fire mode" : "once" =
@@ -556,8 +578,9 @@
 // animation, author a `kinematic_mover` alongside the switch.
 //
 // Everything else matches `trigger_volume`: `on_fire` / `on_exit` named
-// reactions, `target_tag` + `command` / `command_arg` mover control, and the
-// same `fire_mode` / `rearm_ms` / `enabled_on_spawn` firing rules. Clearing any
+// reactions, `target_tag` + `command` / `command_arg` direct commands (movers,
+// traps, spawners), and the same `fire_mode` / `rearm_ms` / `enabled_on_spawn`
+// firing rules. Clearing any
 // of those fields — or `use_reach` — means "unset": the compiler falls back to
 // the default rather than failing.
 //
@@ -569,19 +592,20 @@
 // numbers and nothing else — every behavioural sentence above is unguarded prose.
 @SolidClass
     color(60 200 200)
-    = switch : "Visible, solid brush the player presses use on to fire mover commands and named reactions"
+    = switch : "Visible, solid brush the player presses use on to fire direct commands and named reactions"
 [
     name(string) : "Switch name" : ""
     use_reach(float) : "Press reach in map units — how far each face of the use volume grows into the space in front of it, or up to the nearest solid standing there, whichever is less. Must clear the compiler's flush-tolerance floor (a few hundredths of a unit — a margin below it grows no face at all) and be no more than 128; outside that range is a compile error, and the error names the floor. Blank falls back to the default, about 0.61 m" : "24"
-    target_tag(string) : "Target mover tag" : ""
+    target_tag(string) : "Target tag: movers, projectile traps and spawners carrying it take the command" : ""
     on_fire(string) : "Reaction on activation" : "" : "Name of the reaction fired when this switch is pressed."
     on_exit(string) : "Reaction on exit" : "" : "Name of the reaction fired when a player leaves after pressing this switch."
-    command(choices) : "Mover command" : "start" =
+    command(choices) : "Command on enter: movers take start/stop/reverse/go_to_path_node, projectile traps fire/start/stop, spawners fire" : "start" =
     [
         "start" : "Start"
         "stop" : "Stop"
         "reverse" : "Reverse"
         "go_to_path_node" : "Go To Path Node"
+        "fire" : "Fire"
     ]
     command_arg(string) : "Command argument (path node for go_to_path_node)" : ""
     fire_mode(choices) : "Fire mode" : "once" =

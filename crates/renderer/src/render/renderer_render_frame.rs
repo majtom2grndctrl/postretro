@@ -692,6 +692,41 @@ impl Renderer {
                 .record_ghost_draws(&mut ghost_pass, plan, mode);
         }
 
+        // Mover ghosts: the same placement and depth contract as the skinned
+        // ghosts above, over the mover pass's geometry with world materials.
+        // Never part of shadow depth or the occluder bounds recorded earlier.
+        if render_world && self.full().kinematic_ghost.has_draws() {
+            let _ghost_scope = cpu.scope(RenderStage::GhostMesh);
+            let mode = self.ghost_transparency();
+            let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Kinematic Ghost Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.full().depth_view,
+                    depth_ops: None,
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+            let full = self.full();
+            full.kinematic_ghost.record_draws(
+                &mut ghost_pass,
+                &full.kinematic_brush,
+                &full.gpu_textures,
+                mode,
+            );
+        }
+
         // Fluid surfaces: translucent, after every opaque pass and before
         // billboards, so smoke above the water draws over it undimmed (and
         // smoke below it does too, the accepted draw-order limit). Gated on
@@ -819,6 +854,36 @@ impl Renderer {
                     particle_collections,
                 );
             }
+        }
+
+        // Projectile billboard ghosts: after the billboards they ghost, unlit
+        // and additive in both `render.ghosts` modes, depth-tested without
+        // writing depth, binding each collection's sprite sheet.
+        if render_world && self.full().billboard_ghost.has_draws() {
+            let _ghost_scope = cpu.scope(RenderStage::GhostMesh);
+            let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Billboard Ghost Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.full().depth_view,
+                    depth_ops: None,
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+            let full = self.full();
+            full.billboard_ghost
+                .record_draws(&mut ghost_pass, &full.smoke_pass);
         }
 
         // Volumetric fog: low-res compute raymarch + additive composite.

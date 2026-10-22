@@ -4,12 +4,14 @@
 #[cfg(feature = "capture")]
 mod capture;
 mod clocks;
+mod commands;
 mod eligibility;
 mod frame;
 mod history;
 mod install;
 mod look;
 mod membership;
+mod movers;
 mod opt_ins;
 #[cfg(test)]
 mod opt_ins_test_fixtures;
@@ -26,13 +28,13 @@ use postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS;
 
 use clocks::{PoseStamps, PresentationClocks};
 use eligibility::CandidateView;
-#[cfg(test)]
 pub(crate) use eligibility::GhostCategory;
 use history::{LinkHistory, LinkState};
 pub(crate) use install::spawn_loaded_ghost_links;
 pub(crate) use look::GhostLook;
 pub(crate) use membership::GhostMember;
 use membership::{GhostKey, MembershipTable, ramp_step};
+use movers::GhostMovers;
 use opt_ins::GhostOptIns;
 pub(crate) use opt_ins::warn_if_links_without_opt_ins;
 
@@ -57,6 +59,8 @@ pub(crate) struct GhostLinks {
     /// This peer's descriptor opt-ins, following the committed descriptor
     /// snapshot ([`Self::refresh_opt_ins`]).
     opt_ins: GhostOptIns,
+    /// Each link's movers, by its `ghost_tags`, resolved at install.
+    movers: GhostMovers,
     /// Single player's count of completed fixed ticks: the host-tick stand-in
     /// that stamps history and clocks when no endpoint exists.
     completed_ticks: u32,
@@ -134,6 +138,7 @@ impl GhostLinks {
         Self {
             links,
             regions,
+            movers: GhostMovers::resolve(world),
             ..Self::default()
         }
     }
@@ -172,15 +177,17 @@ impl GhostLinks {
         });
         let restarted = self.last_stamp.is_some_and(|last| stamp < last);
         self.last_stamp = Some(stamp);
-        for link in &mut self.links {
-            let Some(state) = link.entity.and_then(|id| {
+        for (index, link) in self.links.iter_mut().enumerate() {
+            let Some(component) = link.entity.and_then(|id| {
                 registry
                     .get_component::<postretro_entities::GhostLinkComponent>(id)
                     .ok()
-                    .map(LinkState::from_component)
             }) else {
                 continue;
             };
+            // The host's script colour filter, as this tick left it.
+            self.looks.set_filter(index, component.filter);
+            let state = LinkState::from_component(component);
             if restarted {
                 link.history.rebase(state);
             } else {
@@ -217,6 +224,7 @@ impl GhostLinks {
             regions,
             membership,
             opt_ins,
+            movers,
             ..
         } = self;
         membership.begin_frame();
@@ -230,6 +238,7 @@ impl GhostLinks {
                 registry,
                 frame.view,
                 opt_ins,
+                movers,
                 |entity, category, origin| {
                     let Ok(presented) = registry.interpolated_transform(entity, frame.alpha) else {
                         return;
@@ -240,10 +249,11 @@ impl GhostLinks {
                         .state_tick(entity, lane)
                         .unwrap_or_else(|| clocks.lane(lane));
                     let shown = category.members_bit();
-                    // A pawn's body point and a descriptor entity's or projectile's
-                    // origin; mover bounds centers join with their category.
-                    regions.visit_containing(presented.position, |index| {
-                        if links[index].history.state_at(clock).shows(shown) {
+                    let point = movers.member_point(registry, entity, category, presented);
+                    regions.visit_containing(point.position, |index| {
+                        if movers.listed_by(&point, index)
+                            && links[index].history.state_at(clock).shows(shown)
+                        {
                             let link = u16::try_from(index).expect("ghost link index fits u16");
                             membership.mark_target(GhostKey { link, entity }, category, presented);
                         }

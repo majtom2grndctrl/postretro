@@ -91,9 +91,46 @@ pub(super) fn inside(volume: (Vec3, Vec3), point: Vec3) -> bool {
     point.cmpge(volume.0).all() && point.cmple(volume.1).all()
 }
 
+/// The barrier's level-stable mover id, when a scenario places it.
+pub(super) const BARRIER_MOVER_ID: u32 = 1;
+/// Where the barrier rests in copy A, and where it opens to: both inside link
+/// 0's volume, so its ghost stays a member while it moves.
+pub(super) const BARRIER_CLOSED: Vec3 = Vec3::new(4.0, -2.0, 2.0);
+pub(super) const BARRIER_OPEN: Vec3 = Vec3::new(4.0, 2.0, 2.0);
+
+/// The barrier: a tagged mover in copy A, closed until started.
+fn barrier() -> (
+    postretro_level_loader::LoadedKinematicMover,
+    Vec<postretro_level_loader::LoadedKinematicWaypoint>,
+) {
+    let mut mover = crate::runtime_movers::tests::mover(1);
+    mover.mover_id = BARRIER_MOVER_ID;
+    mover.name = "barrier".into();
+    mover.tags = vec!["barrier".into()];
+    mover.origin = BARRIER_CLOSED;
+    mover.path = "barrier_closed".into();
+    mover.speed_mps = 4.0;
+    mover.wait_ms = 0.0;
+    mover.start_on_spawn = false;
+    let waypoints = vec![
+        postretro_level_loader::LoadedKinematicWaypoint {
+            name: "barrier_closed".into(),
+            next: "barrier_open".into(),
+            origin: BARRIER_CLOSED,
+        },
+        postretro_level_loader::LoadedKinematicWaypoint {
+            name: "barrier_open".into(),
+            next: String::new(),
+            origin: BARRIER_OPEN,
+        },
+    ];
+    (mover, waypoints)
+}
+
 /// Link 0 covers copy A and maps it onto copy B; link 1 the reverse. Teleporter
 /// 0 is a seamless pad in copy A arriving in copy B; teleporter 1 the reverse.
-pub(super) fn level(links_armed: bool) -> LevelWorld {
+/// With `barrier`, copy A holds a tagged mover both links list.
+pub(super) fn level(links_armed: bool, barrier: bool) -> LevelWorld {
     let mut world = LevelWorld::new_visibility_only(
         vec![postretro_level_loader::CellData {
             bounds_min: Vec3::splat(-500.0),
@@ -128,10 +165,19 @@ pub(super) fn level(links_armed: bool) -> LevelWorld {
                 landmark_yaw: 0.0,
                 target_origin: [other(index), 0.0, 0.0],
                 target_yaw: 0.0,
-                ghost_tags: Vec::new(),
+                ghost_tags: if barrier {
+                    vec!["barrier".into()]
+                } else {
+                    Vec::new()
+                },
             }
         })
         .collect();
+    if barrier {
+        let (mover, waypoints) = self::barrier();
+        world.kinematic_geometry.movers = vec![mover];
+        world.kinematic_geometry.waypoints = waypoints;
+    }
     world.teleporters.teleporters = (0..2)
         .map(|index| TeleporterRecord {
             source_entity: 30 + index,
@@ -218,9 +264,19 @@ pub(super) struct PresentedFrame {
     /// The delay-buffered lane's clock this frame: what a remote member would
     /// read without its own pose stamp.
     pub remote_clock: f64,
+    /// This peer's barrier mover and where it presents it, when placed.
+    pub barrier: Option<(EntityId, Vec3)>,
 }
 
 impl PresentedFrame {
+    /// The barrier's ghost through link `link` this frame.
+    pub(super) fn barrier_member(&self, link: u16) -> Option<&GhostMember> {
+        let (entity, _) = self.barrier?;
+        self.members
+            .iter()
+            .find(|member| member.link == link && member.entity == entity)
+    }
+
     pub(super) fn member(&self, link: u16, pawn: usize) -> Option<&GhostMember> {
         let entity = self.entities[pawn]?;
         self.members
@@ -251,6 +307,9 @@ impl PresentationBindingResolver for NoBindings {
 pub(super) struct Scenario {
     pub links_armed: bool,
     pub pawns: [Vec3; 2],
+    /// Place the tagged barrier mover in copy A, loaded on both peers and
+    /// replicated as PRL movers are.
+    pub barrier: bool,
 }
 
 pub(super) struct Loopback {
@@ -279,6 +338,11 @@ pub(super) struct Loopback {
     pub pawns: [EntityId; 2],
     links: Vec<EntityId>,
     teleporters: Vec<EntityId>,
+    /// Each peer's barrier entity, when placed, and its mover tick state.
+    host_barrier: Option<EntityId>,
+    host_mover_ticks: postretro_physics::kinematic_mover::MoverTickStateTable,
+    client_barrier: Option<EntityId>,
+    client_mover_ticks: postretro_physics::kinematic_mover::MoverTickStateTable,
     // Client.
     client_ctx: ScriptCtx,
     client_replication: netcode::ClientReplication,
@@ -295,12 +359,13 @@ pub(super) struct Loopback {
 
 impl Loopback {
     pub(super) fn new(scenario: Scenario) -> Self {
-        let world = level(scenario.links_armed);
+        let world = level(scenario.links_armed, scenario.barrier);
         let client_collision = crate::collision::CollisionWorld::from_level(&world).unwrap();
 
         let host = ScriptCtx::new();
-        let (pawns, links, teleporters, host_ghosts, collision) = {
+        let (pawns, links, teleporters, host_ghosts, collision, host_barrier) = {
             let mut registry = host.registry.borrow_mut();
+            let host_barrier = spawn_barrier(&mut registry, &world);
             crate::ghost_links::spawn_loaded_ghost_links(&mut registry, &world);
             crate::runtime_teleporters::spawn_loaded_teleporters(&mut registry, &world);
             let mut collision = crate::collision::CollisionWorld::from_level(&world).unwrap();
@@ -348,6 +413,7 @@ impl Loopback {
                 teleporters.into_iter().map(|(_, id)| id).collect(),
                 ghosts,
                 collision,
+                host_barrier,
             )
         };
 
@@ -379,15 +445,22 @@ impl Loopback {
                 &mut replicable,
                 &mut HashSet::new(),
             );
+            netcode::host_register_loaded_movers(
+                &registry,
+                &mut allocator,
+                &mut replicable,
+                &mut HashSet::new(),
+            );
         }
 
         let client_ctx = ScriptCtx::new();
         client_ctx.data_registry.borrow_mut().entities = vec![descriptor("player", true)];
-        let client_ghosts = {
+        let (client_ghosts, client_barrier) = {
             let mut registry = client_ctx.registry.borrow_mut();
+            let client_barrier = spawn_barrier(&mut registry, &world);
             crate::ghost_links::spawn_loaded_ghost_links(&mut registry, &world);
             crate::runtime_teleporters::spawn_loaded_teleporters(&mut registry, &world);
-            install_ghosts(&world, &registry)
+            (install_ghosts(&world, &registry), client_barrier)
         };
 
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -453,6 +526,10 @@ impl Loopback {
             pawns,
             links,
             teleporters,
+            host_barrier,
+            host_mover_ticks: Default::default(),
+            client_barrier,
+            client_mover_ticks: Default::default(),
             client_ctx,
             client_replication: Default::default(),
             client_state: Default::default(),
@@ -481,6 +558,19 @@ impl Loopback {
             .unwrap();
         link.armed = armed;
         registry.set_component(self.links[index], link).unwrap();
+    }
+
+    /// Start the barrier on the host, as a mover command applies at the start
+    /// of the next tick: it travels from closed to open from that tick on.
+    pub(super) fn start_barrier(&mut self) {
+        let barrier = self.host_barrier.expect("scenario places the barrier");
+        let mut registry = self.host.registry.borrow_mut();
+        let mut mover = registry
+            .get_component::<postretro_entities::KinematicMoverComponent>(barrier)
+            .unwrap()
+            .clone();
+        mover.started = true;
+        registry.set_component(barrier, mover).unwrap();
     }
 
     /// Arm teleporter `index` on the host; the next movement tick fires every
@@ -517,6 +607,12 @@ impl Loopback {
             &mut registry,
         );
         registry.snapshot_transforms();
+        // The host's fixed tick steps its movers after the transform snapshot.
+        postretro_physics::kinematic_mover::run_kinematic_mover_tick(
+            &mut registry,
+            &mut self.host_mover_ticks,
+            TICK_SECONDS,
+        );
         let input = neutral_input();
         let _ = postretro_sim::sim::run_host_movement_tick(
             &mut registry,
@@ -594,6 +690,19 @@ impl Loopback {
 
     fn client_receive(&mut self) {
         let _ = self.client.drain_control();
+        // The client's fixed tick predicts its loaded movers, as production's
+        // `client_predict_loaded_movers_tick` does, before applying snapshots.
+        {
+            let mut registry = self.client_ctx.registry.borrow_mut();
+            if let Some(barrier) = self.client_barrier {
+                registry.snapshot_transform(barrier);
+            }
+            postretro_physics::kinematic_mover::run_kinematic_mover_tick(
+                &mut registry,
+                &mut self.client_mover_ticks,
+                TICK_SECONDS,
+            );
+        }
         let ctx = &self.client_ctx;
         let _ = netcode::client_receive_and_apply(
             &mut ctx.registry.borrow_mut(),
@@ -612,7 +721,8 @@ impl Loopback {
             &self.volumes,
             TICK_SECONDS,
             Duration::from_secs_f32(TICK_SECONDS),
-            None,
+            // Movers re-simulate to the host tick the harness clock estimates.
+            Some(self.tick),
             None,
             None,
             false,
@@ -674,11 +784,13 @@ impl Loopback {
                     .ok()
                     .map(|t| t.position)
             });
+            let barrier = presented_barrier(&registry, self.host_barrier, alpha);
             self.host_frames.push(PresentedFrame {
                 members: self.host_ghosts.members().to_vec(),
                 pawns: host_pawns,
                 entities: self.pawns.map(Some),
                 remote_clock: clocks.lane(MemberLane::Remote),
+                barrier,
             });
             drop(registry);
 
@@ -717,12 +829,34 @@ impl Loopback {
                         .map(|t| t.position)
                 })
             });
+            let barrier = presented_barrier(&registry, self.client_barrier, alpha);
             self.client_frames.push(PresentedFrame {
                 members: self.client_ghosts.members().to_vec(),
                 pawns: client_pawns,
                 entities: client_entities,
                 remote_clock: clocks.lane(MemberLane::Remote),
+                barrier,
             });
         }
     }
+}
+
+/// Spawn the level's movers (the barrier, when placed) as every peer does at
+/// install, from the level file.
+fn spawn_barrier(registry: &mut EntityRegistry, world: &LevelWorld) -> Option<EntityId> {
+    crate::runtime_movers::spawn_loaded_kinematic_movers(registry, world, 0.0)
+        .unwrap()
+        .first()
+        .copied()
+}
+
+/// The barrier as this peer presents it this frame.
+fn presented_barrier(
+    registry: &EntityRegistry,
+    barrier: Option<EntityId>,
+    alpha: f32,
+) -> Option<(EntityId, Vec3)> {
+    let barrier = barrier?;
+    let presented = registry.interpolated_transform(barrier, alpha).ok()?;
+    Some((barrier, presented.position))
 }

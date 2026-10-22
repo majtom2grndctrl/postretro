@@ -14,6 +14,8 @@ import type {
 } from "postretro";
 import { wrapTeleporterEntity } from "./entities/teleporters";
 import type { TeleporterHandle, TeleporterEntity } from "./entities/teleporters";
+import { wrapGhostLinkEntity } from "./entities/ghost_links";
+import type { GhostLinkEntity, GhostLinkHandle } from "./entities/ghost_links";
 import { wrapLightEntity } from "./entities/lights";
 import type { LightEntityHandle } from "./entities/lights";
 import { wrapFogVolumeEntity } from "./entities/fog_volumes";
@@ -31,13 +33,22 @@ import type { SpawnerEntityHandle } from "./entities/spawners";
 declare function worldQuery(filter: { component: string; tag: string | null }): ReadonlyArray<unknown>;
 
 /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner";
+export type MapEntityKind =
+  | "mover"
+  | "trigger"
+  | "teleporter"
+  | "ghostLink"
+  | "light"
+  | "fog"
+  | "emitter"
+  | "spawner";
 
 /** The member handle each map kind yields. */
 export type MapEntityForKind<K extends MapEntityKind> =
   K extends "mover" ? MoverEntityHandle :
   K extends "trigger" ? TriggerVolumeHandle :
   K extends "teleporter" ? TeleporterHandle :
+  K extends "ghostLink" ? GhostLinkHandle :
   K extends "light" ? LightEntityHandle :
   K extends "fog" ? FogVolumeHandle :
   K extends "emitter" ? EmitterEntity :
@@ -52,6 +63,7 @@ const MAP_KIND_COMPONENTS: Readonly<Record<MapEntityKind, string>> = Object.free
   mover: "kinematic_mover",
   trigger: "trigger_volume",
   teleporter: "teleporter",
+  ghostLink: "ghost_link",
   light: "light",
   fog: "fog_volume",
   emitter: "emitter",
@@ -93,6 +105,8 @@ export function getMapEntities<K extends MapEntityKind>(
         return (raw as ReadonlyArray<TriggerVolumeEntity>).map(wrapTriggerVolumeEntity);
       case "teleporter":
         return (raw as ReadonlyArray<TeleporterEntity>).map(wrapTeleporterEntity);
+      case "ghostLink":
+        return (raw as ReadonlyArray<GhostLinkEntity>).map(wrapGhostLinkEntity);
       case "light":
         return (raw as ReadonlyArray<LightEntity>).map(wrapLightEntity);
       case "fog":

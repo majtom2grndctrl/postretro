@@ -1,5 +1,5 @@
-// Ghost instance look: what one ghost draw presents with, its packing into the
-// skinned instance record, and CPU twins of the ghost shader's shade and screen-door.
+// Ghost instance look: what one ghost draw presents with, its packing into the skinned,
+// kinematic-mover and billboard ghost records, and CPU twins of the ghost shade and screen-door.
 // See: context/lib/rendering_pipeline.md §7.9
 
 /// One ghost instance's presented look, after the per-ghost flash clamp.
@@ -57,7 +57,63 @@ impl GhostInstanceLook {
     }
 }
 
-/// CPU twin of the ghost fragment shade (`skinned_ghost.wgsl` `ghost_shade`):
+/// One kinematic-mover ghost to draw: a mover's geometry at a link's mapped
+/// model with its presented look. A mover in two links is two of these, so the
+/// list never deduplicates by mover id.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KinematicGhostInstance {
+    pub mover_id: u32,
+    pub transform: glam::Mat4,
+    pub look: GhostInstanceLook,
+}
+
+/// Byte size of one kinematic-mover ghost instance: the mover's model matrix
+/// (64 bytes) then a `vec4<u32>` whose `xy` is [`GhostInstanceLook::pack`]
+/// and `zw` zero. Matches `Instance` in `kinematic_ghost.wgsl`.
+pub const KINEMATIC_GHOST_INSTANCE_SIZE: usize = 80;
+
+/// One kinematic-mover ghost instance's bytes: `model` column-major, then the
+/// packed look.
+pub fn pack_kinematic_ghost_instance(
+    model: glam::Mat4,
+    look: GhostInstanceLook,
+) -> [u8; KINEMATIC_GHOST_INSTANCE_SIZE] {
+    let mut bytes = [0u8; KINEMATIC_GHOST_INSTANCE_SIZE];
+    for (i, value) in model.to_cols_array().iter().enumerate() {
+        bytes[i * 4..i * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    let [z, w] = look.pack();
+    bytes[64..68].copy_from_slice(&z.to_ne_bytes());
+    bytes[68..72].copy_from_slice(&w.to_ne_bytes());
+    bytes
+}
+
+/// Byte size of one billboard ghost instance, the sprite instance's stride
+/// (`smoke::SPRITE_INSTANCE_SIZE`), so ghost regions lay out like sprite
+/// regions: position and age, size, rotation, then the packed look in place
+/// of the sprite's opacity and pad lanes. Matches `GhostSpriteInstance` in
+/// `billboard_ghost.wgsl`.
+pub const GHOST_SPRITE_INSTANCE_SIZE: usize = 32;
+
+/// Append one billboard ghost instance. The look carries the presented
+/// opacity, which already folds in the sprite's own opacity.
+pub fn pack_ghost_sprite_instance(
+    position: glam::Vec3,
+    age: f32,
+    size: f32,
+    rotation: f32,
+    look: GhostInstanceLook,
+    out: &mut Vec<u8>,
+) {
+    for value in [position.x, position.y, position.z, age, size, rotation] {
+        out.extend_from_slice(&value.to_ne_bytes());
+    }
+    for lane in look.pack() {
+        out.extend_from_slice(&lane.to_ne_bytes());
+    }
+}
+
+/// CPU twin of the ghost fragment shade (`ghost_look.wgsl` `ghost_shade`):
 /// mix the base color toward its luma by `1 - saturation`, then multiply by
 /// `tint`. Unlit, so a base color and tint in `[0, 1]` stay in `[0, 1]`.
 pub fn ghost_shade(base: [f32; 3], look: &GhostInstanceLook) -> [f32; 3] {
@@ -66,7 +122,7 @@ pub fn ghost_shade(base: [f32; 3], look: &GhostInstanceLook) -> [f32; 3] {
     std::array::from_fn(|i| (luma + (base[i] - luma) * s) * look.tint[i])
 }
 
-/// CPU twin of the screen-door threshold (`skinned_ghost.wgsl`
+/// CPU twin of the screen-door threshold (`ghost_look.wgsl`
 /// `screen_door_threshold`): the 4×4 ordered (Bayer) index of the pixel at
 /// `(x, y)`, centered in its sixteenth. A pixel draws when the presented
 /// opacity exceeds it, so a 4×4 tile keeps `round_down(16 · opacity)` pixels.
@@ -134,6 +190,34 @@ mod tests {
         assert_eq!(decoded.saturation, 0.0);
         assert_eq!(decoded.tint[0], 0.0);
         assert_eq!(decoded.tint[1], 1.0);
+    }
+
+    #[test]
+    fn kinematic_and_sprite_ghost_instances_carry_the_packed_look_after_their_pose() {
+        let model = glam::Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 3.0));
+        let ghost = look(0.5, 0.25, [1.0, 0.5, 0.0]);
+        let bytes = pack_kinematic_ghost_instance(model, ghost);
+        let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            f32::from_bits(word(48)),
+            1.0,
+            "translation lives in column 3"
+        );
+        assert_eq!([word(64), word(68)], ghost.pack());
+        assert_eq!([word(72), word(76)], [0, 0]);
+
+        let mut sprite = Vec::new();
+        pack_ghost_sprite_instance(glam::Vec3::X, 0.25, 2.0, 0.5, ghost, &mut sprite);
+        assert_eq!(sprite.len(), GHOST_SPRITE_INSTANCE_SIZE);
+        assert_eq!(
+            GHOST_SPRITE_INSTANCE_SIZE,
+            crate::smoke::SPRITE_INSTANCE_SIZE
+        );
+        let word = |at: usize| u32::from_ne_bytes(sprite[at..at + 4].try_into().unwrap());
+        assert_eq!(f32::from_bits(word(12)), 0.25, "age rides position's w");
+        assert_eq!(f32::from_bits(word(16)), 2.0);
+        assert_eq!(f32::from_bits(word(20)), 0.5);
+        assert_eq!([word(24), word(28)], ghost.pack());
     }
 
     #[test]

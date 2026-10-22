@@ -149,6 +149,7 @@ fn ghost_swap_on_one_tick_fades_each_old_ghost_in_volume_and_starts_each_new_on_
     let mut run = Loopback::new(Scenario {
         links_armed: true,
         pawns: [Vec3::new(1.0, 0.0, 1.0), Vec3::new(101.0, 0.0, -1.0)],
+        barrier: false,
     });
     run.run(90);
     let settled = run.client_frames.last().unwrap();
@@ -221,6 +222,7 @@ fn ghost_link_arm_and_seamless_swap_on_one_tick_present_on_one_frame_on_client_a
     let mut run = Loopback::new(Scenario {
         links_armed: false,
         pawns: [Vec3::new(-50.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)],
+        barrier: false,
     });
     run.run(90);
     assert!(run.client_frames.last().unwrap().members.is_empty());
@@ -255,6 +257,7 @@ fn ghost_arm_then_disarm_on_consecutive_ticks_presents_at_most_one_rise_and_fall
         let mut run = Loopback::new(Scenario {
             links_armed: false,
             pawns: [Vec3::new(-50.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)],
+            barrier: false,
         });
         run.run(90);
         // Snapshots carry even stamps; the arm is stamped with the next tick.

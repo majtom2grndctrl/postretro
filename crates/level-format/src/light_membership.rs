@@ -104,14 +104,16 @@ pub enum MapMemberKind {
     TriggerVolume,
     Teleporter,
     Spawner,
+    GhostLink,
 }
 
 impl MapMemberKind {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::KinematicMover,
         Self::TriggerVolume,
         Self::Teleporter,
         Self::Spawner,
+        Self::GhostLink,
     ];
 
     /// The `worldQuery` component name, which is also the wire spelling.
@@ -121,6 +123,7 @@ impl MapMemberKind {
             Self::TriggerVolume => "trigger_volume",
             Self::Teleporter => "teleporter",
             Self::Spawner => "spawner",
+            Self::GhostLink => "ghost_link",
         }
     }
 
@@ -131,7 +134,7 @@ impl MapMemberKind {
     }
 }
 
-/// One runtime-placed mover, trigger volume, teleporter or spawner, in authored order
+/// One runtime-placed mover, trigger volume, teleporter, spawner or ghost link, in authored order
 /// within its kind. Mirrors the runtime identity snapshot
 /// (`collect_identity_snapshots_json` in `postretro-sim`); `scripts-build`
 /// assigns the build id.

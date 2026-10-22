@@ -24,6 +24,7 @@ use crate::scripting_systems::ghost_render::{GhostDrawFrame, GhostRenderCollecto
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::mesh_anim::MeshClipTables;
 use crate::scripting_systems::mesh_render::MeshRenderCollector;
+use crate::scripting_systems::mover_ghost_render::{MoverGhostFrame, MoverGhostRenderCollector};
 use crate::session::sh_residency::{ShStreamingSession, require_sync_proof_mode};
 use crate::sh_streaming::controller::SyncReadResult;
 use crate::startup::session::content_root_from_map;
@@ -231,6 +232,7 @@ impl PreparedCapture {
         let mut mesh_collector = crate::scripting_systems::mesh_render::MeshRenderCollector::new();
         let mut ghost_links = crate::ghost_links::GhostLinks::install(&world, &registry);
         let mut ghost_collector = GhostRenderCollector::new();
+        let mut mover_ghost_collector = MoverGhostRenderCollector::new();
         collect_capture_receiver_draws(
             &registry,
             &world,
@@ -240,11 +242,13 @@ impl PreparedCapture {
             &mut mesh_collector,
             &mut ghost_links,
             &mut ghost_collector,
+            &mut mover_ghost_collector,
         );
         renderer.set_kinematic_mover_draws(
             mover_collector.instances(),
             mover_collector.shadow_instances(),
         );
+        renderer.set_kinematic_ghost_draws(mover_ghost_collector.instances());
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
         // Capture loads no manifest, so every fluid volume draws at the fixed
         // capture opacity, with no fog or wave, reflecting at reflectivity 1
@@ -597,6 +601,7 @@ pub(super) fn collect_capture_receiver_draws(
     mesh_collector: &mut MeshRenderCollector,
     ghost_links: &mut crate::ghost_links::GhostLinks,
     ghost_collector: &mut GhostRenderCollector,
+    mover_ghost_collector: &mut MoverGhostRenderCollector,
 ) {
     mover_collector.collect(registry, world, visible_cells, 1.0);
 
@@ -626,6 +631,17 @@ pub(super) fn collect_capture_receiver_draws(
             tables: &clip_tables,
             socket_poses: &SocketPoseResolver::new(&hit_zones),
             force_resample_model: &|_| false,
+            limiter: None,
+        },
+    );
+    mover_ghost_collector.collect(
+        registry,
+        ghost_links.members(),
+        |link| ghost_links.link_look(link),
+        &MoverGhostFrame {
+            world,
+            visible: visible_cells,
+            movers: mover_collector,
             limiter: None,
         },
     );

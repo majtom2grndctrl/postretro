@@ -9,7 +9,7 @@ use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::{EntityId, EntityRegistry, SlotTable};
 use postretro_level_loader::LevelWorld;
 use postretro_model::ModelHandle;
-use postretro_render_cpu::flash_clamp::KeyedValueClamp;
+use postretro_render_cpu::flash_clamp::GhostLookClamp;
 use postretro_render_cpu::flash_limiter::{
     FLASH_LIMITER_SLOT, LimiterFrameInput, LimiterFrameUniform, flash_limiter_enabled_value,
     pack_limiter_frame,
@@ -30,7 +30,28 @@ use crate::ghost_links::{GhostLook, GhostMember};
 
 /// One ghost: a member entity seen through one link. Generation-checked, so a
 /// re-tenanted slot is a new ghost, and a mover in two links is two ghosts.
-type GhostDrawKey = (u16, EntityId);
+pub(crate) type GhostDrawKey = (u16, EntityId);
+
+/// The look `member` presents this frame through `clamp`: its link's look at
+/// the member's presented opacity (link opacity times membership), limited by
+/// the ghost's opacity and tint-luminance channels. The one place a ghost draw
+/// collector turns a link look into a drawn look; the skinned, mover and
+/// billboard ghost collectors each call it for every presented ghost, culled
+/// or not, between their clamp's `begin_frame` and `end_frame`.
+pub(crate) fn presented_look(
+    clamp: &mut GhostLookClamp<GhostDrawKey>,
+    member: &GhostMember,
+    link: GhostLook,
+) -> GhostInstanceLook {
+    clamp.present(
+        (member.link, member.entity),
+        GhostInstanceLook {
+            opacity: link.opacity * member.membership,
+            saturation: link.saturation,
+            tint: link.tint,
+        },
+    )
+}
 
 /// The last instance group built for a ghost: the holder then its attachments,
 /// at mapped transforms under ghost palette keys. A fading ghost re-emits it
@@ -82,7 +103,7 @@ pub(crate) struct GhostDrawFrame<'a> {
 pub(crate) struct GhostRenderCollector {
     instances: Vec<MeshInstanceInput>,
     groups: HashMap<GhostDrawKey, GhostGroup>,
-    clamp: KeyedValueClamp<GhostDrawKey>,
+    clamp: GhostLookClamp<GhostDrawKey>,
     /// Entered-state fingerprints per ghost, for the resample policy's
     /// state-change force; rebuilt each frame into the scratch and swapped.
     last_state: HashMap<GhostDrawKey, u64>,
@@ -116,9 +137,7 @@ impl GhostRenderCollector {
     ) {
         self.instances.clear();
         self.last_state_scratch.clear();
-        if let Some(limiter) = &frame.limiter {
-            self.clamp.begin_frame(limiter);
-        }
+        self.clamp.begin_frame(frame.limiter.as_ref());
         for member in members {
             let key = (member.link, member.entity);
             if !member.frozen {
@@ -130,22 +149,14 @@ impl GhostRenderCollector {
                 continue;
             };
             group.seen = true;
-            let link_look = look(member.link);
-            let opacity = link_look.opacity * member.membership;
             // Every presented ghost passes its clamp, culled or not: the
             // limiter judges the source's presented value, not its framing.
-            let (opacity, tint) = match frame.limiter {
-                Some(_) => self.clamp.limit(key, opacity, link_look.tint),
-                None => (opacity, link_look.tint),
-            };
-            if opacity <= 0.0 || !mesh_visible(frame.world, frame.visible, group.mapped_origin) {
+            let ghost_look = presented_look(&mut self.clamp, member, look(member.link));
+            if ghost_look.opacity <= 0.0
+                || !mesh_visible(frame.world, frame.visible, group.mapped_origin)
+            {
                 continue;
             }
-            let ghost_look = GhostInstanceLook {
-                opacity,
-                saturation: link_look.saturation,
-                tint,
-            };
             for instance in &group.instances {
                 let mut ghost = instance.clone();
                 ghost.presentation = MeshPresentation::Ghost(ghost_look);
@@ -158,9 +169,7 @@ impl GhostRenderCollector {
                 self.instances.push(ghost);
             }
         }
-        if frame.limiter.is_some() {
-            self.clamp.end_frame();
-        }
+        self.clamp.end_frame();
         self.groups
             .retain(|_, group| std::mem::take(&mut group.seen));
         std::mem::swap(&mut self.last_state, &mut self.last_state_scratch);

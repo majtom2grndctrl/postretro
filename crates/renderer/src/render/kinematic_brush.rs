@@ -810,6 +810,29 @@ impl KinematicBrushPass {
         self.index_count > 0 && !self.beauty_draws.is_empty()
     }
 
+    /// One uploaded mover's per-material index spans in the shared index
+    /// buffer, as `(world material index, index range)`: what a draw path that
+    /// binds world materials itself (the ghost pass) records per instance.
+    /// `None` for a mover id this level did not upload.
+    pub(super) fn material_spans(
+        &self,
+        mover_id: u32,
+    ) -> Option<impl Iterator<Item = (usize, std::ops::Range<u32>)> + '_> {
+        let mover = &self.movers[*self.mover_lookup.get(&mover_id)?];
+        Some(
+            mover
+                .material_ranges
+                .iter()
+                .filter(|range| range.index_count > 0)
+                .map(|range| {
+                    (
+                        range.material_index,
+                        range.index_start..range.index_start + range.index_count,
+                    )
+                }),
+        )
+    }
+
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
         if !self.has_draws() {
             return;

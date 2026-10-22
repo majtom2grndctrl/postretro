@@ -1,10 +1,10 @@
 // Skinned ghost shader: unlit translucent skinned instances at a mapped pose.
 // See: context/lib/rendering_pipeline.md §7.9
 //
-// Composed alone (no appended helpers): ghosts bind no lights, shadows or SH,
-// so the pipeline layout is camera (0), material (1) and the shared skinned
-// instance data at group 3, the slot the skinned pass binds it at; group 2 is
-// empty, as in the skinned depth pipeline.
+// Composed with `ghost_look.wgsl` only (shade, opacity, screen-door): ghosts
+// bind no lights, shadows or SH, so the pipeline layout is camera (0), material
+// (1) and the shared skinned instance data at group 3, the slot the skinned
+// pass binds it at; group 2 is empty, as in the skinned depth pipeline.
 // `skin_matrix` is mirrored verbatim from `skinned_mesh.wgsl`; a test pins the
 // copies equal. The look rides `Instance.base_and_pad.zw`
 // (`postretro_render_cpu::ghost_instance::GhostInstanceLook::pack`):
@@ -74,32 +74,6 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
     out.uv = in.base_uv;
     out.look = instance.base_and_pad.zw;
     return out;
-}
-
-// Rec. 709 luma, the photosensitivity limiter's luminance weights.
-const GHOST_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
-
-// Unlit: mix the base color toward its luma by `1 - saturation`, then
-// multiply by the tint. A base and tint in [0, 1] stay in [0, 1].
-// CPU twin: `ghost_instance::ghost_shade`.
-fn ghost_shade(base: vec3<f32>, look: vec2<u32>) -> vec3<f32> {
-    let saturation = unpack2x16unorm(look.x).y;
-    let tint = unpack4x8unorm(look.y).rgb;
-    let luma = dot(base, GHOST_LUMA);
-    return mix(vec3<f32>(luma), base, saturation) * tint;
-}
-
-fn ghost_opacity(look: vec2<u32>) -> f32 {
-    return unpack2x16unorm(look.x).x;
-}
-
-// 4×4 ordered (Bayer) threshold of the scene-color pixel, centered in its
-// sixteenth. CPU twin: `ghost_instance::screen_door_threshold`.
-fn screen_door_threshold(pixel: vec2<u32>) -> f32 {
-    let a = (pixel.x ^ pixel.y) & 3u;
-    let b = pixel.y & 3u;
-    let index = ((a & 1u) << 3u) | ((b & 1u) << 2u) | ((a >> 1u) << 1u) | (b >> 1u);
-    return (f32(index) + 0.5) / 16.0;
 }
 
 // `render.ghosts: "blend"`: SrcAlpha / OneMinusSrcAlpha at the presented opacity.

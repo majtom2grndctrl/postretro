@@ -362,7 +362,7 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "setAnimationState"
             | "updateNpcState"
             | "spawnFromSpawner"
-    )
+    ) || postretro_foundation::is_ghost_link_primitive(primitive)
 }
 
 /// Linear scan — entity-type counts per level are small and this runs at instantiation time, not in a hot loop.

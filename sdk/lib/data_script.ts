@@ -139,6 +139,14 @@ export type MoverSetSpinRateStep = import("postretro").MoverSetSpinRateStep;
 export type MoverSetBlockPolicyStep = import("postretro").MoverSetBlockPolicyStep;
 export type ArmTeleporterStep = { id: import("postretro").EntityId; primitive: "armTeleporter"; args: Record<string, never> };
 export type DisarmTeleporterStep = { id: import("postretro").EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
+/** Member categories a ghost link shows; an omitted category keeps its value. */
+export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
+/** A ghost link's colour filter: each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. Colours are `[r, g, b]`; every value lies in 0..=1. */
+export type GhostColorFilterArgs = { tint?: [number, number, number]; opacity?: number; saturation?: number; periodMs?: number };
+export type ArmGhostLinkStep = { id: import("postretro").EntityId; primitive: "armGhostLink"; args: Record<string, never> };
+export type DisarmGhostLinkStep = { id: import("postretro").EntityId; primitive: "disarmGhostLink"; args: Record<string, never> };
+export type SetGhostLinkMembersStep = { id: import("postretro").EntityId; primitive: "setGhostLinkMembers"; args: GhostLinkMembersArgs };
+export type SetGhostLinkColorFilterStep = { id: import("postretro").EntityId; primitive: "setGhostLinkColorFilter"; args: GhostColorFilterArgs };
 export type ArmTriggerStep = import("postretro").ArmTriggerStep;
 export type DisarmTriggerStep = import("postretro").DisarmTriggerStep;
 export type SpawnFromSpawnerStep = import("postretro").SpawnFromSpawnerStep;
@@ -164,6 +172,10 @@ export type SequenceStep =
   | MoverSetBlockPolicyStep
   | ArmTeleporterStep
   | DisarmTeleporterStep
+  | ArmGhostLinkStep
+  | DisarmGhostLinkStep
+  | SetGhostLinkMembersStep
+  | SetGhostLinkColorFilterStep
   | ArmTriggerStep
   | DisarmTriggerStep
   | SpawnFromSpawnerStep

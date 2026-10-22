@@ -19,6 +19,11 @@ const MEMBER_WRAPPER_SOURCES: &[(&str, &str, &str)] = &[
         "entities/teleporters.luau",
     ),
     (
+        "wrapGhostLinkEntity",
+        include_str!("../../../sdk/lib/entities/ghost_links.luau"),
+        "entities/ghost_links.luau",
+    ),
+    (
         "wrapLightEntity",
         include_str!("../../../sdk/lib/entities/lights.luau"),
         "entities/lights.luau",

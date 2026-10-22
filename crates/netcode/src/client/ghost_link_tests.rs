@@ -82,6 +82,7 @@ fn installed_link(registry: &mut EntityRegistry, index: u16, source_entity: u32)
                 source_entity,
                 armed: false,
                 members: ALL_MEMBERS,
+                filter: Default::default(),
             },
         )
         .unwrap();

@@ -73,6 +73,8 @@ impl crate::App {
         };
         self.ghost_links
             .refresh_opt_ins(&session.scripting.script_ctx.data_registry.borrow());
+        self.ghost_links
+            .set_look_time(session.scripting.script_ctx.presentation_script_time.get());
         let registry = session.scripting.script_ctx.registry.borrow();
         self.ghost_links.update(
             &registry,

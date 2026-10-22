@@ -161,6 +161,7 @@ fn ghost_link_install_spawns_its_entity_and_never_dispatches_its_companion() {
             source_entity: 4,
             armed: false,
             members: (GhostMembers::PLAYERS | GhostMembers::MOVERS).bits(),
+            filter: Default::default(),
         }
     );
     assert_eq!(

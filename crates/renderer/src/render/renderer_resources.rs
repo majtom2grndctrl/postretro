@@ -111,6 +111,7 @@ impl Renderer {
         self.install_level_geometry(&empty_geometry, Default::default());
 
         self.full_mut().smoke_pass.clear_collections();
+        self.full_mut().billboard_ghost.clear();
         self.full_mut().mesh_pass.release_level_resources();
         self.full_mut().mesh_draws.clear();
         self.full_mut().ghost_mesh_draws.clear();
@@ -793,6 +794,8 @@ impl Renderer {
             geometry.kinematic_geometry,
             geometry.texture_materials.len(),
         );
+        // Mover ids are the new level's: drop the last frame's mover ghosts.
+        full.kinematic_ghost.clear();
         // Fluid surfaces install after this through `install_fluid_surfaces`;
         // every geometry install (unload included) drops the previous level's,
         // its reflection target with them.

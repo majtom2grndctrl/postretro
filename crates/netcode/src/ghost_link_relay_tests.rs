@@ -26,6 +26,7 @@ fn level_with_link(armed: bool) -> (EntityRegistry, EntityId) {
                 source_entity: 10,
                 armed,
                 members: 0b1111,
+                filter: Default::default(),
             },
         )
         .unwrap();

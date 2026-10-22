@@ -11,6 +11,8 @@ pub(crate) fn eval_curve(curve: &[f32], t: f32) -> f32 {
 
 #[path = "scripting/frame_systems/attachments.rs"]
 pub(crate) mod attachments;
+#[path = "scripting/frame_systems/billboard_ghost_render.rs"]
+pub(crate) mod billboard_ghost_render;
 #[path = "scripting/frame_systems/emitter_bridge.rs"]
 pub(crate) mod emitter_bridge;
 #[path = "scripting/frame_systems/fog_volume_bridge.rs"]
@@ -23,6 +25,8 @@ pub(crate) mod input_mode;
 pub(crate) mod light_bridge;
 #[path = "scripting/frame_systems/mesh_render.rs"]
 pub(crate) mod mesh_render;
+#[path = "scripting/frame_systems/mover_ghost_render.rs"]
+pub(crate) mod mover_ghost_render;
 #[path = "scripting/frame_systems/particle_render.rs"]
 pub(crate) mod particle_render;
 #[path = "scripting/frame_systems/presentation_cells.rs"]

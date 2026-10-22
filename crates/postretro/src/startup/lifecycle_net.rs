@@ -127,6 +127,8 @@ impl App {
         self.teleporter_bindings = Default::default();
         self.ghost_links = Default::default();
         self.ghost_render.clear();
+        self.mover_ghost_render.clear();
+        self.billboard_ghost_render.clear();
         self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
@@ -181,6 +183,12 @@ impl App {
                 .scripting
                 .script_ctx
                 .pending_teleporter_mutations
+                .borrow_mut()
+                .clear();
+            session
+                .scripting
+                .script_ctx
+                .pending_ghost_link_commands
                 .borrow_mut()
                 .clear();
         }

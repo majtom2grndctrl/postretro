@@ -1,9 +1,10 @@
-// Engine-owned map ghost-link identity, arming state and shown member categories.
+// Engine-owned map ghost-link identity, arming state, shown member categories and script colour filter.
 // See: context/lib/entity_model.md §7d (Ghost Links)
 
+use postretro_foundation::GhostColorFilter;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GhostLinkComponent {
     /// Map-order index into the level's GhostLinks (id 56) records.
     pub index: u16,
@@ -14,6 +15,10 @@ pub struct GhostLinkComponent {
     /// (`postretro_level_format::ghost_links::GhostMembers`). `entities`
     /// depends only on `foundation`, so the column stores the validated bits.
     pub members: u8,
+    /// The look fields `setColorFilter` has set, each with its script-time
+    /// ramp. Host state: written at the host's tick start, replicated as set.
+    #[serde(default)]
+    pub filter: GhostColorFilter,
 }
 
 #[cfg(test)]
@@ -30,6 +35,7 @@ mod tests {
             source_entity: 42,
             armed: true,
             members: 0b1111,
+            filter: GhostColorFilter::default(),
         };
         registry.set_component(entity, link).unwrap();
         let value = registry

@@ -55,8 +55,9 @@ pub fn validate_authored_group_kind(
     Ok(Some(kind))
 }
 
-/// Reject `spawnFromSpawner` beside a group `kind`: it acts on a spawner,
-/// addressed by `tag` or member id, so the `kind` would be silently dropped.
+/// Reject `spawnFromSpawner` and the ghost-link member steps beside a group
+/// `kind`: each acts on a member addressed by id (or a spawner by `tag`), so
+/// the `kind` would be silently dropped.
 /// Every other primitive passes; the handler decides what a group applies to.
 pub fn validate_group_kind_primitive(
     reaction: &str,
@@ -66,6 +67,11 @@ pub fn validate_group_kind_primitive(
     if primitive == "spawnFromSpawner" {
         return Err(format!(
             "reaction `{reaction}` {site}: `spawnFromSpawner` addresses spawners, so it cannot carry a group `kind`"
+        ));
+    }
+    if postretro_foundation::is_ghost_link_primitive(primitive) {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` addresses one ghost link member, so it cannot carry a group `kind`"
         ));
     }
     Ok(())
@@ -175,6 +181,12 @@ pub fn validate_subject_token_primitive(
 ) -> Result<(), String> {
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
+    if postretro_foundation::is_ghost_link_primitive(primitive) {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` addresses one ghost link member from `getMapEntities(\"ghostLink\")`; no subject token carries it, so it cannot take `{}`",
+            token.as_wire()
+        ));
+    }
     if arms_a_teleporter && token != SubjectToken::FiredTeleporter {
         return Err(format!(
             "reaction `{reaction}` {site}: `{primitive}` takes `@teleporter` (`on.teleporter`), not `{}`",

@@ -54,6 +54,7 @@ pub(crate) fn spawn_loaded_ghost_links(registry: &mut EntityRegistry, world: &Le
                 source_entity: record.source_entity,
                 armed: record.enabled_on_spawn,
                 members: record.members.bits(),
+                filter: Default::default(),
             },
         );
         if let Some((ordinal, _)) = companion {

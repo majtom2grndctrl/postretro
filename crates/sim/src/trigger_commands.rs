@@ -50,6 +50,12 @@ pub(crate) enum BoundTriggerCommand {
         target: BoundTarget,
         armed: bool,
     },
+    /// A ghost-link member step, validated at bind; queued host-only for the
+    /// next tick like a teleporter change.
+    GhostLink {
+        target: BoundTarget,
+        command: postretro_foundation::GhostLinkCommand,
+    },
     StoreSlot {
         slot: String,
         value: BoundStoreValue,
@@ -137,6 +143,7 @@ pub(crate) enum BoundTriggerCommandKind {
     Arm,
     Disarm,
     TeleporterArmed,
+    GhostLink,
     StoreSlot,
     AddOwnerSlot,
     AnimationState,
@@ -218,6 +225,15 @@ impl BoundTriggerCommand {
                     registry,
                     targets.as_slice(),
                     *armed,
+                );
+            }
+            Self::GhostLink { target, command } => {
+                let targets = target.resolve(registry, fire_context);
+                crate::ghost_link_commands::enqueue_ghost_link_commands(
+                    script_ctx,
+                    registry,
+                    targets.as_slice(),
+                    *command,
                 );
             }
             Self::StoreSlot { slot, value } => match value {
@@ -430,6 +446,9 @@ impl BoundTriggerCommand {
             Self::TeleporterArmed { .. } => {
                 log::warn!("[Teleport] bound command requires a live ScriptCtx queue; skipped")
             }
+            Self::GhostLink { .. } => {
+                log::warn!("[Ghost] bound command requires a live ScriptCtx queue; skipped")
+            }
             Self::StoreSlot { .. } | Self::AddOwnerSlot { .. } => {
                 unreachable!("store slots execute through their store path")
             }
@@ -446,6 +465,7 @@ impl BoundTriggerCommand {
             | Self::Arm { target }
             | Self::Disarm { target }
             | Self::TeleporterArmed { target, .. }
+            | Self::GhostLink { target, .. }
             | Self::AddOwnerSlot { target, .. }
             | Self::AnimationState { target, .. }
             | Self::UpdateNpcState { target, .. }
@@ -468,6 +488,7 @@ impl BoundTriggerCommand {
             Self::Arm { .. } => BoundTriggerCommandKind::Arm,
             Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
             Self::TeleporterArmed { .. } => BoundTriggerCommandKind::TeleporterArmed,
+            Self::GhostLink { .. } => BoundTriggerCommandKind::GhostLink,
             Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,
             Self::AddOwnerSlot { .. } => BoundTriggerCommandKind::AddOwnerSlot,
             Self::AnimationState { .. } => BoundTriggerCommandKind::AnimationState,

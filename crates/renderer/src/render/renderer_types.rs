@@ -1025,6 +1025,10 @@ pub(super) struct FullRenderer {
     /// 5's presence in the shared BGL.
     pub(super) cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
     pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
+    /// Mover ghosts (`rendering_pipeline.md` §7.9): their own instance list over
+    /// the mover pass's geometry, refilled each frame via
+    /// `set_kinematic_ghost_draws`; never in shadow depth or occluder bounds.
+    pub(super) kinematic_ghost: kinematic_ghost::KinematicGhostPass,
     /// Translucent fluid surfaces; idle until a level with fluid faces installs.
     pub(super) fluid_surface: fluid_surface::FluidSurfacePass,
     pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
@@ -1229,6 +1233,10 @@ pub(super) struct FullRenderer {
     /// presented look. Refilled each frame via `set_ghost_mesh_draws`; planned
     /// into `MeshFramePlans::ghost`, which never reaches shadow depth.
     pub(super) ghost_mesh_draws: Vec<mesh_instances::MeshInstanceInput>,
+
+    /// Projectile billboard ghosts, per sprite collection, refilled each frame
+    /// via `set_billboard_ghost_draws`; always blended.
+    pub(super) billboard_ghost: billboard_ghost::BillboardGhostPass,
 
     /// Reusable bone-palette scratch for per-frame per-instance sampling.
     /// `sample_clip` clears then refills it per instance, so steady-state frames

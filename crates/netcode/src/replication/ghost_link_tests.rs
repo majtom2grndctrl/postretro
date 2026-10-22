@@ -17,6 +17,7 @@ fn spawn_link(registry: &mut EntityRegistry, index: u16, armed: bool, members: u
                 source_entity: 40 + u32::from(index),
                 armed,
                 members,
+                filter: Default::default(),
             },
         )
         .unwrap();

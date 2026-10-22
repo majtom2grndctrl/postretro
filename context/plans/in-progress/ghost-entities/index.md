@@ -189,7 +189,7 @@ Pins are in `research.md`.
   - `setMembers` toggling a category at 10 Hz
   - a member oscillating across the volume boundary at 10 Hz
 - [ ] With the limiter on, a red `setColorFilter` tint strobe desaturates over budget, keeping luminance, while a single red tint change keeps its hue.
-- [ ] With the limiter on and opacity steady, a `setColorFilter` tint alternating white and black at `periodMs` 0 presents at most 3 flashes in any 1 s window and rests at its pre-flash luminance (provisional amendment).
+- [ ] With the limiter on and opacity steady, a `setColorFilter` tint alternating white and black at `periodMs` 0 presents at most 3 flashes in any 1 s window and rests at its weaker (darker) luminance, as a limited screen channel rests at its weaker blend (provisional amendment).
 - [ ] With the limiter on, a single `arm` reaches full style opacity within 250 ms, and the example's 1500 ms `setColorFilter` fade presents exactly as with the limiter off. A new ghost's first presented frame starts from membership 0 (P21). Turning the limiter on while ghosts present dips none (P31).
 - [ ] With the limiter turned off by the player, the 10 Hz `arm`/`disarm` strobe presents unclamped, the membership ramp still applies, and a hitch frame steps at most the hitch ceiling (P30). A pause freezes `setColorFilter` ramps while the membership ramp continues (P42).
 **Look and audio values**

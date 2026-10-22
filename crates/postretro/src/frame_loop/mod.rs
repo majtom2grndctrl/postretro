@@ -768,6 +768,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 continue;
             }
 
+            // Host-only ghost-link steps queued before this tick apply now,
+            // at its start, in call order.
+            app.apply_pending_ghost_link_commands();
+
             // Inventory liveness is entity lifecycle, not an input event.
             // Normalize every authoritative pawn even when a remote queue
             // produces no command this tick; active changes reuse the
@@ -1947,6 +1951,32 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 presentation_tick,
                 Some(&postretro_visibility::extract_frustum_planes(view_proj)),
             );
+            // Projectile billboard ghosts: each at its mapped position, culled
+            // at its mapped cell, through the collections the billboards use.
+            if let Some(world) = app.level.as_ref() {
+                let ghost_links = &app.ghost_links;
+                app.billboard_ghost_render.collect(
+                    &registry,
+                    ghost_links.members(),
+                    |link| ghost_links.link_look(link),
+                    &mut session.particle_render,
+                    &crate::scripting_systems::billboard_ghost_render::BillboardGhostFrame {
+                        world,
+                        visible: &visible_cells,
+                        presentation_tick,
+                        limiter: Some(crate::scripting_systems::ghost_render::ghost_limiter_frame(
+                            &script_ctx.slot_table.borrow(),
+                            app.ghost_links.presented_elapsed(),
+                        )),
+                    },
+                );
+                renderer.set_billboard_ghost_draws(
+                    app.billboard_ghost_render
+                        .iter_collections(&session.particle_render),
+                );
+            } else {
+                renderer.set_billboard_ghost_draws(std::iter::empty());
+            }
         }
         app.cpu_timer.nested_mut().extend_from(
             &particle_cpu,
@@ -2133,6 +2163,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 app.kinematic_mover_render.instances(),
                 app.kinematic_mover_render.shadow_instances(),
             );
+            // Mover ghosts, after the real movers collect: each at its link's
+            // mapped model, culled at its mapped bounds, one per link.
+            app.mover_ghost_render.collect(
+                &registry,
+                ghost_links.members(),
+                |link| ghost_links.link_look(link),
+                &crate::scripting_systems::mover_ghost_render::MoverGhostFrame {
+                    world,
+                    visible: &visible_cells,
+                    movers: &app.kinematic_mover_render,
+                    limiter: Some(ghost_limiter),
+                },
+            );
+            renderer.set_kinematic_ghost_draws(app.mover_ghost_render.instances());
             renderer.set_mover_occluder_aabbs(app.kinematic_mover_render.occluder_aabbs());
             let local = script_ctx.data_registry.borrow();
             renderer.set_fluid_surface_draws(

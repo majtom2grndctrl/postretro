@@ -16,6 +16,7 @@ use postretro_test_log_capture::LogCapture;
 
 use super::super::clocks::{ClockSource, PoseStamps, PresentationClocks};
 use super::super::membership::ramp_step;
+use super::super::movers::GhostMovers;
 use super::super::opt_ins::{NO_OPT_IN_WARNING, warn_if_links_without_opt_ins};
 use super::super::opt_ins_test_fixtures::{data_registry, descriptor, projectile_weapon};
 use super::super::{GhostFrame, GhostLinks, GhostMember, spawn_loaded_ghost_links};
@@ -337,6 +338,7 @@ fn a_player_descriptor_omitting_ghost_puts_no_pawn_in_any_ghost_set() {
             slot_pawn,
             CandidateOrigin::Replicated(ReplicatedDescriptorClass::Pawn("player")),
             &opt_ins,
+            &GhostMovers::default(),
         ),
         None
     );
@@ -538,6 +540,7 @@ fn client_display_copies_classify_by_class_against_local_descriptors() {
                 any,
                 CandidateOrigin::Replicated(class),
                 &opt_ins,
+                &GhostMovers::default(),
             )
         })
     };

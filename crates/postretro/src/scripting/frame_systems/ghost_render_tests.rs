@@ -512,3 +512,76 @@ fn zero_opacity_ghost_draws_nothing_and_meshless_members_are_skipped() {
 
     assert!(fixture.collector.instances().is_empty());
 }
+
+// A model-bodied projectile ghosts through this collector like any meshed
+// member: its mesh at the mapped transform, presented as a ghost. A sprite
+// body ghosts through the billboard ghost collector instead.
+#[test]
+fn a_model_bodied_projectile_ghosts_through_the_skinned_ghost_path() {
+    let mut registry = EntityRegistry::new();
+    let shot = registry.spawn(Transform {
+        position: SOURCE,
+        ..Default::default()
+    });
+    registry
+        .set_component(shot, MeshComponent::stateless("models/rocket.glb".into()))
+        .unwrap();
+    let mut fixture = Fixture::new();
+    let ghost = GhostMember {
+        category: GhostCategory::Projectiles,
+        ..member(shot, 1.0, false)
+    };
+    fixture.collect(&registry, &[ghost]);
+    let instances = fixture.collector.instances();
+    assert_eq!(instances.len(), 1);
+    assert!(matches!(
+        instances[0].presentation,
+        MeshPresentation::Ghost(_)
+    ));
+    assert!(
+        instances[0]
+            .transform
+            .abs_diff_eq(mapping().matrix() * real_holder_transform(), 1e-4)
+    );
+}
+
+// AC 24a wiring: a ghost's tint strobing white and black at 10 Hz at steady
+// opacity is limited through its tint-luminance channel and rests dark over
+// budget; with the limiter off it passes through.
+#[test]
+fn a_white_black_tint_strobe_is_limited_through_the_luminance_channel() {
+    let mut registry = EntityRegistry::new();
+    let pawn = spawn_pawn(&mut registry, SOURCE);
+    let dt = 1.0 / 60.0;
+    let tint_at = |n: usize| -> [f32; 3] { [square(10.0, n as f32 * dt); 3] };
+    for enabled in [true, false] {
+        let mut fixture = Fixture::new();
+        let mut luminance = Vec::new();
+        for n in 0..180 {
+            fixture.collect_with(
+                &registry,
+                &[member(pawn, 1.0, false)],
+                &VisibleCells::DrawAll,
+                |_| GhostLook {
+                    tint: tint_at(n),
+                    opacity: 1.0,
+                    saturation: 1.0,
+                },
+                Some(limiter(dt, enabled)),
+            );
+            let (opacity, tint) = fixture.presented();
+            assert_eq!(opacity, 1.0, "opacity steady");
+            luminance.push(tint[0] * 0.2126 + tint[1] * 0.7152 + tint[2] * 0.0722);
+        }
+        if enabled {
+            assert!(worst_transitions(&luminance, dt) <= 6, "{luminance:?}");
+            let tail_white = (120..180).filter(|&n| tint_at(n)[0] == 1.0).count();
+            let held = (120..180)
+                .filter(|&n| tint_at(n)[0] == 1.0 && luminance[n] <= 0.05)
+                .count();
+            assert!(held * 2 > tail_white, "rests at its pre-flash luminance");
+        } else {
+            assert!(worst_transitions(&luminance, dt) > 6);
+        }
+    }
+}

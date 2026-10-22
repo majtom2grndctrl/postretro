@@ -8,8 +8,13 @@ use super::mesh_pass::MeshPass;
 
 /// Unlit ghost shader: skins like the skinned pass, shades base color by the
 /// instance's packed look, and has one fragment entry per transparency mode.
-/// Standalone (no helper append): it binds no lights, shadows or SH.
-pub(super) const SKINNED_GHOST_SHADER_SOURCE: &str = include_str!("../shaders/skinned_ghost.wgsl");
+/// Only the shared ghost look helper is appended: it binds no lights, shadows
+/// or SH.
+pub(super) const SKINNED_GHOST_SHADER_SOURCE: &str = concat!(
+    include_str!("../shaders/skinned_ghost.wgsl"),
+    "\n",
+    include_str!("../shaders/ghost_look.wgsl"),
+);
 
 /// The fixed-function state one transparency mode draws with. Pure data, so
 /// the mode → state mapping is testable without a device.

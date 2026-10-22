@@ -970,6 +970,11 @@ pub(crate) struct App {
     /// This frame's ghost draws and each ghost's flash-clamp channel. Cleared
     /// at unload with the links.
     ghost_render: scripting_systems::ghost_render::GhostRenderCollector,
+    /// This frame's mover ghost draws and their flash-clamp channels.
+    mover_ghost_render: scripting_systems::mover_ghost_render::MoverGhostRenderCollector,
+    /// This frame's projectile billboard ghost draws and their channels.
+    billboard_ghost_render:
+        scripting_systems::billboard_ghost_render::BillboardGhostRenderCollector,
     /// Host-only player events bound from the composed active set, with their
     /// per-player edge memory. Rebuilt with the trigger bindings.
     player_events: postretro_sim::player_events::PlayerEventTable,

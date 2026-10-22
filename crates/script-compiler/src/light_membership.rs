@@ -43,6 +43,11 @@ const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
         "sdk/lib/entities/teleporters.luau",
     ),
     (
+        "wrapGhostLinkEntity",
+        include_str!("../../../sdk/lib/entities/ghost_links.luau"),
+        "sdk/lib/entities/ghost_links.luau",
+    ),
+    (
         "wrapLightEntity",
         include_str!("../../../sdk/lib/entities/lights.luau"),
         "sdk/lib/entities/lights.luau",
@@ -116,7 +121,7 @@ const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 const MAX_VIRTUAL_MODULE_COPY_DEPTH: usize = 32;
 
 /// First build-side id of a non-light map member (mover, trigger volume,
-/// teleporter, spawner). Map-light ids are their raw `MapData::lights` indexes, so the two
+/// teleporter, spawner, ghost link). Map-light ids are their raw `MapData::lights` indexes, so the two
 /// ranges never meet: a member id cannot resolve to a light, or change which
 /// light a step names. Members answer identity snapshots (`id`, `position`,
 /// `tags`, plus `spawnedTags` on a spawner) so a script that indexes one
@@ -1036,6 +1041,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "kinematic_mover",
     "trigger_volume",
     "teleporter",
+    "ghost_link",
     "spawner",
     "particle",
     "sprite_visual",
@@ -1299,8 +1305,8 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
     // players resolved at runtime: it is a legal step that reserves no light
     // slot, so it must not make the caller skip the sequence. Mirror the
     // runtime parser's rejections — an unknown kind, an `id` beside `kind`, a
-    // non-string tag, a control primitive, and `spawnFromSpawner` (a spawner
-    // is a map member, never a group).
+    // non-string tag, a control primitive, and `spawnFromSpawner` or a
+    // ghost-link step (each addresses a map member, never a group).
     match step.get("kind") {
         None | Some(JsonValue::Null) => {}
         Some(JsonValue::String(kind)) => {
@@ -1311,7 +1317,8 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
                     None | Some(JsonValue::Null) | Some(JsonValue::String(_))
                 )
                 && !control
-                && primitive != "spawnFromSpawner";
+                && primitive != "spawnFromSpawner"
+                && !postretro_foundation::is_ghost_link_primitive(primitive);
         }
         Some(_) => return false,
     }
@@ -1344,6 +1351,10 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
 fn subject_token_carries(target: &str, primitive: &str) -> bool {
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
+    // A ghost-link step addresses one link member; no token carries it.
+    if postretro_foundation::is_ghost_link_primitive(primitive) {
+        return false;
+    }
     match target {
         "@activators" | "@player" => !arms_a_trigger && !arms_a_teleporter,
         "@trigger" => arms_a_trigger,
@@ -2752,6 +2763,87 @@ mod tests {
                 &table()
             )
             .is_err()
+        );
+    }
+
+    // `getMapEntities("ghostLink")` answers real members at build in both
+    // hosts: identity snapshots in map order, `[]` for an absent tag, and every
+    // member verb evaluates, leaving the light records the light step reserves.
+    #[test]
+    fn ghost_link_members_evaluate_at_build_in_both_hosts() {
+        let quickjs = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              const echoes = getMapEntities("ghostLink", { tag: "vault_echo" });
+              if (echoes.length !== 2) throw new Error("both tagged links");
+              if (echoes[0].position.x !== 1 || echoes[1].position.x !== 4) throw new Error("map order");
+              if (echoes[0].id < 2147483648) throw new Error("member id in the light range");
+              if (getMapEntities("ghostLink", { tag: "absent" }).length !== 0) throw new Error("no match");
+              return {
+                reactions: [defineReaction("levelLoad", { sequence: [
+                  { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+                  ...echoes.flatMap((l) => l.arm()),
+                  ...echoes.flatMap((l) => l.setColorFilter({ tint: [1, 0.4, 0.3], opacity: 0.6, periodMs: 1500 })),
+                  ...echoes[0].setMembers({ projectiles: false }),
+                  ...echoes[1].disarm(),
+                ] })],
+              };
+            }
+        "#;
+        let luau = r#"
+            function setupLevel(_)
+              local light = getMapEntities("light", { tag = "wave" })[1]
+              local echoes = getMapEntities("ghostLink", { tag = "vault_echo" })
+              if #echoes ~= 2 then error("both tagged links") end
+              if echoes[1].position.x ~= 1 or echoes[2].position.x ~= 4 then error("map order") end
+              if echoes[1].id < 2147483648 then error("member id in the light range") end
+              if #getMapEntities("ghostLink", { tag = "absent" }) ~= 0 then error("no match") end
+              return {
+                reactions = { defineReaction("levelLoad", { sequence = {
+                  { id = light.id, primitive = "setLightAnimation", args = { startActive = false } },
+                  echoes[1]:arm()[1],
+                  echoes[1]:setColorFilter({ tint = { 1, 0.4, 0.3 }, opacity = 0.6, periodMs = 1500 })[1],
+                  echoes[1]:setMembers({ projectiles = false })[1],
+                  echoes[2]:disarm()[1],
+                } }) },
+              }
+            end
+        "#;
+        let baseline = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: [defineReaction("levelLoad", { sequence: [
+                { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+              ] })] };
+            }
+        "#;
+        let link = |x: f32, tags: &[&str]| MapMember {
+            kind: MapMemberKind::GhostLink,
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            position: [x, 2.0, 3.0],
+            spawned_tags: Vec::new(),
+        };
+        let with_members = table().with_map_members(vec![
+            link(1.0, &["vault_echo", "east"]),
+            link(2.0, &["other"]),
+            link(4.0, &["vault_echo"]),
+        ]);
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &with_members)
+                .unwrap_or_else(|error| panic!("{path} evaluates with ghost links: {error:#}"))
+        };
+        let baseline = evaluate(baseline, "fixture.ts");
+        let quickjs_manifest = evaluate(quickjs, "fixture.ts");
+        let luau_manifest = evaluate(luau, "fixture.luau");
+        assert_eq!(baseline.lights.len(), 1);
+        assert_eq!(quickjs_manifest.lights, baseline.lights);
+        assert_eq!(luau_manifest.lights, baseline.lights);
+        assert!(
+            quickjs_manifest.stubbed_primitives.is_empty()
+                && luau_manifest.stubbed_primitives.is_empty(),
+            "ghost-link members are answered, not stubbed: {:?} / {:?}",
+            quickjs_manifest.stubbed_primitives,
+            luau_manifest.stubbed_primitives,
         );
     }
 

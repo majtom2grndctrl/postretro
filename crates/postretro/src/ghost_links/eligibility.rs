@@ -5,16 +5,17 @@ use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
+};
 use postretro_level_format::ghost_links::GhostMembers;
 
+use super::movers::GhostMovers;
 use super::opt_ins::GhostOptIns;
 use crate::netcode::{ClientReplication, ReplicatedDescriptorClass};
 
 /// The member category a link shows or hides, in the id-56 bit order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-// Movers classify once `ghost_tags` resolution lands.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum GhostCategory {
     Players,
     /// Non-player descriptor entities.
@@ -65,28 +66,38 @@ pub(crate) enum CandidateOrigin<'a> {
 /// - a projectile ghosts when its firing weapon sets `projectile.ghost`,
 ///   whoever fired it, a monster included.
 ///
+/// - a kinematic mover ghosts when some link's `ghost_tags` names it; which
+///   links may show it is per link ([`GhostMovers::listed_by`]).
+///
 /// The engine never branches on actor kind: a player descriptor that omits
-/// `ghost` puts no pawn in any ghost set. Movers have no descriptor: they
-/// join through their links' `ghost_tags`, which this does not resolve yet.
+/// `ghost` puts no pawn in any ghost set. Movers have no descriptor: every
+/// peer loads them, tags included, from the level file.
 pub(crate) fn classify(
     registry: &EntityRegistry,
     entity: EntityId,
     origin: CandidateOrigin<'_>,
     opt_ins: &GhostOptIns,
+    movers: &GhostMovers,
 ) -> Option<GhostCategory> {
     match origin {
-        CandidateOrigin::Local => classify_local(registry, entity, opt_ins),
+        CandidateOrigin::Local => classify_local(registry, entity, opt_ins, movers),
         CandidateOrigin::Replicated(class) => classify_replicated(class, opt_ins),
     }
 }
 
-/// A registry entity this machine owns, by its gameplay projectile state or
-/// the descriptor provenance it spawned with.
+/// A registry entity this machine owns or loaded: a mover by its tags, then by
+/// its gameplay projectile state or the descriptor provenance it spawned with.
 fn classify_local(
     registry: &EntityRegistry,
     entity: EntityId,
     opt_ins: &GhostOptIns,
+    movers: &GhostMovers,
 ) -> Option<GhostCategory> {
+    if let Ok(mover) = registry.get_component::<KinematicMoverComponent>(entity) {
+        return movers
+            .can_ghost(mover.mover_id)
+            .then_some(GhostCategory::Movers);
+    }
     if let Ok(projectile) = registry.get_component::<ProjectileComponent>(entity) {
         // Every gameplay projectile records the weapon descriptor it was fired
         // from, an enemy's included; its `owner_weapon` may be a provenance id.
@@ -146,11 +157,14 @@ fn classify_replicated(
 /// Visit every eligible candidate once, with its category and origin. Bounded
 /// to the kinds that can be members, allocation free. The viewer's own pawn and
 /// projectiles never ghost on its own machine, on any role: a client's
-/// predicted shots are local entities its replicated view never offers.
+/// predicted shots are local entities its replicated view never offers. Movers
+/// are local on every role (each peer loads them from the level file) and are
+/// visited only when some link lists one.
 pub(crate) fn visit_candidates(
     registry: &EntityRegistry,
     view: CandidateView<'_>,
     opt_ins: &GhostOptIns,
+    movers: &GhostMovers,
     mut visit: impl FnMut(EntityId, GhostCategory, CandidateOrigin<'_>),
 ) {
     let viewer = crate::followed_player_pawn(registry);
@@ -158,7 +172,7 @@ pub(crate) fn visit_candidates(
         if Some(entity) == viewer {
             return;
         }
-        if let Some(category) = classify(registry, entity, origin, opt_ins) {
+        if let Some(category) = classify(registry, entity, origin, opt_ins, movers) {
             visit(entity, category, origin);
         }
     };
@@ -184,6 +198,11 @@ pub(crate) fn visit_candidates(
             for (entity, class) in replication.remote_entities_by_class() {
                 offer(entity, CandidateOrigin::Replicated(class));
             }
+        }
+    }
+    if !movers.is_empty() {
+        for (entity, _) in registry.iter_with_kind(ComponentKind::KinematicMover) {
+            offer(entity, CandidateOrigin::Local);
         }
     }
 }

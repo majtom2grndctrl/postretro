@@ -462,9 +462,10 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
         ) && ts.contains("K extends \"mover\" ? MoverEntityHandle :")
             && ts.contains("K extends \"trigger\" ? TriggerVolumeHandle :")
             && ts.contains("K extends \"teleporter\" ? TeleporterHandle :")
+            && ts.contains("K extends \"ghostLink\" ? GhostLinkHandle :")
             && ts.contains("K extends \"spawner\" ? SpawnerEntityHandle :")
             && ts.contains(
-                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\";"
+                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\";"
             ),
         "TypeScript must select each member handle by map kind:\n{ts}"
     );
@@ -476,11 +477,41 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && luau.contains(
                 "((kind: \"teleporter\", filter: MapEntityFilter?) -> {TeleporterHandle})"
             )
+            && luau
+                .contains("((kind: \"ghostLink\", filter: MapEntityFilter?) -> {GhostLinkHandle})")
             && luau.contains(
                 "((kind: \"spawner\", filter: MapEntityFilter?) -> {SpawnerEntityHandle})"
             ),
         "Luau must select each member handle by map kind:\n{luau}"
     );
+}
+
+/// The ghost-link member steps and their argument shapes reach both author
+/// surfaces, and join the `SequenceStep` union.
+#[test]
+fn ghost_link_command_step_types_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    let ts = generate_typescript(&r);
+    let luau = generate_luau(&r);
+    for (label, output) in [("ts", &ts), ("luau", &luau)] {
+        for needle in [
+            "GhostLinkHandle",
+            "GhostLinkMembersArgs",
+            "GhostColorFilterArgs",
+            "primitive: \"armGhostLink\"",
+            "primitive: \"disarmGhostLink\"",
+            "primitive: \"setGhostLinkMembers\"",
+            "primitive: \"setGhostLinkColorFilter\"",
+        ] {
+            assert!(output.contains(needle), "{label} is missing {needle}");
+        }
+    }
+    assert!(ts.contains("    | SetGhostLinkColorFilterStep\n"));
+    assert!(luau.contains("| SetGhostLinkMembersStep | SetGhostLinkColorFilterStep |"));
 }
 
 #[test]

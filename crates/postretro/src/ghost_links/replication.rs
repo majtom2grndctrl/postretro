@@ -64,3 +64,7 @@ mod test_fixtures;
 #[cfg(test)]
 #[path = "replication_loopback_tests.rs"]
 mod loopback_tests;
+
+#[cfg(test)]
+#[path = "replication_mover_tests.rs"]
+mod mover_tests;

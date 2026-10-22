@@ -80,6 +80,20 @@
   /** What a teleporter member's `on("teleport", …)` accepts: a sourceless or teleport-scoped reaction, or a reaction's name. */
   export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string;
 
+  /** Snapshot of a map-placed ghost link: id, position and tags. */
+  export type GhostLinkEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+  /** Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state, member categories and colour filter are host-authoritative and replicated; each method builds closed command steps that apply on the host at its next tick, in call order, and do nothing on a connected client. A malformed argument warns and drops that step. */
+  export interface GhostLinkHandle extends GhostLinkEntity {
+    /** Arm the link: its members draw as ghosts at the mapped pose in the other copy. */
+    arm(): SequenceStep[];
+    /** Disarm the link. */
+    disarm(): SequenceStep[];
+    /** Show or hide member categories; an omitted category keeps its value. A category only narrows: it never ghosts what a descriptor's `ghost` or the link's `ghost_tags` did not opt in. */
+    setMembers(members: GhostLinkMembersArgs): SequenceStep[];
+    /** Override the link style's tint, opacity and saturation, field by field. Each named field ramps on its own over `periodMs` (default 0) in script time; an omitted field keeps its value and any ramp in flight. */
+    setColorFilter(filter: GhostColorFilterArgs): SequenceStep[];
+  }
+
   /** Snapshot of a map-placed spawner: id, position, its own tags, and `spawnedTags`, the tags each NPC it spawns carries. Its own tags never pass to its spawns. */
   export type SpawnerEntity = {
     id: EntityId;
@@ -95,13 +109,14 @@
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
     K extends "mover" ? MoverEntityHandle :
     K extends "trigger" ? TriggerVolumeHandle :
     K extends "teleporter" ? TeleporterHandle :
+    K extends "ghostLink" ? GhostLinkHandle :
     K extends "light" ? LightEntityHandle :
     K extends "fog" ? FogVolumeHandle :
     K extends "emitter" ? EmitterEntity :
@@ -238,6 +253,18 @@
   export type ArmTeleporterStep = { id: EntityId; primitive: "armTeleporter"; args: Record<string, never> };
   /** Sequence step that disarms one teleporter (`t.disarm()`). Applies on the host at the start of its next movement tick. */
   export type DisarmTeleporterStep = { id: EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
+  /** Member categories a ghost link shows; an omitted category keeps its value. */
+  export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
+  /** A ghost link's colour filter. Each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
+  export type GhostColorFilterArgs = { tint?: [number, number, number]; opacity?: number; saturation?: number; periodMs?: number };
+  /** Sequence step that arms one ghost link (`l.arm()`). Applies on the host at its next tick. */
+  export type ArmGhostLinkStep = { id: EntityId; primitive: "armGhostLink"; args: Record<string, never> };
+  /** Sequence step that disarms one ghost link (`l.disarm()`). Applies on the host at its next tick. */
+  export type DisarmGhostLinkStep = { id: EntityId; primitive: "disarmGhostLink"; args: Record<string, never> };
+  /** Sequence step that changes one ghost link's member categories (`l.setMembers(...)`). Applies on the host at its next tick. */
+  export type SetGhostLinkMembersStep = { id: EntityId; primitive: "setGhostLinkMembers"; args: GhostLinkMembersArgs };
+  /** Sequence step that sets one ghost link's colour filter (`l.setColorFilter(...)`). Applies on the host at its next tick. */
+  export type SetGhostLinkColorFilterStep = { id: EntityId; primitive: "setGhostLinkColorFilter"; args: GhostColorFilterArgs };
   /** Sequence step that arms one trigger volume. */
   export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
   /** Sequence step that disarms one trigger volume. */
@@ -272,6 +299,10 @@
     | MoverSetBlockPolicyStep
     | ArmTeleporterStep
     | DisarmTeleporterStep
+    | ArmGhostLinkStep
+    | DisarmGhostLinkStep
+    | SetGhostLinkMembersStep
+    | SetGhostLinkColorFilterStep
     | ArmTriggerStep
     | DisarmTriggerStep
     | SpawnFromSpawnerStep

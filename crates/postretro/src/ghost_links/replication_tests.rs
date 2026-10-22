@@ -30,7 +30,7 @@ struct Client {
 
 impl Client {
     fn new() -> Self {
-        let world = level(false);
+        let world = level(false, false);
         let mut registry = EntityRegistry::new();
         crate::ghost_links::spawn_loaded_ghost_links(&mut registry, &world);
         // The viewer, outside every volume: it never ghosts for itself.

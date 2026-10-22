@@ -1918,6 +1918,55 @@ fn spawn_from_spawner_with_a_group_kind_is_rejected_in_both_vms() {
     }
 }
 
+// A ghost-link step addresses one link member by id: no subject token and no
+// group carries it, so either beside it is rejected in both runtimes, naming
+// the reaction.
+#[test]
+fn ghost_link_steps_reject_subject_tokens_and_group_kinds_in_both_vms() {
+    let cases = [
+        (
+            r#"({ name: "bad", primitive: "armGhostLink", target: "@trigger", args: {} })"#,
+            r#"return { name = "bad", primitive = "armGhostLink", target = "@trigger", args = {} }"#,
+            "reaction `bad` primitive: `armGhostLink` addresses one ghost link member from `getMapEntities(\"ghostLink\")`; no subject token carries it, so it cannot take `@trigger`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ target: "@activators", primitive: "setGhostLinkColorFilter", args: { opacity: 1 } }] })"#,
+            r#"return { name = "bad", sequence = { { target = "@activators", primitive = "setGhostLinkColorFilter", args = { opacity = 1 } } } }"#,
+            "reaction `bad` sequence step 0: `setGhostLinkColorFilter` addresses one ghost link member",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ kind: "npc", primitive: "setGhostLinkMembers", args: { players: false } }] })"#,
+            r#"return { name = "bad", sequence = { { kind = "npc", primitive = "setGhostLinkMembers", args = { players = false } } } }"#,
+            "reaction `bad` sequence step 0: `setGhostLinkMembers` addresses one ghost link member, so it cannot carry a group `kind`",
+        ),
+    ];
+    for (js_source, lua_source, expected) in cases {
+        let error = identical_rejection(js_source, lua_source);
+        assert!(error.contains(expected), "unexpected diagnostic: {error}");
+    }
+}
+
+// AC29: a non-finite `setColorFilter` argument never reaches the engine as a
+// silent null: both runtimes reject the reaction at load, naming the field.
+#[test]
+fn a_non_finite_color_filter_argument_rejects_the_reaction_in_both_vms() {
+    let js_error = eval_js(
+        r#"({ name: "bad", sequence: [{ id: 7, primitive: "setGhostLinkColorFilter", args: { opacity: NaN, periodMs: 100 } }] })"#,
+        |ctx, value| named_reaction_from_js(ctx, value).unwrap_err(),
+    );
+    let lua_error = eval_lua(
+        r#"return { name = "bad", sequence = { { id = 7, primitive = "setGhostLinkColorFilter", args = { opacity = 0/0, periodMs = 100 } } } }"#,
+        |value| named_reaction_from_lua(value).unwrap_err(),
+    );
+    // The VM bridges word their wrappers differently; the named field agrees.
+    for error in [js_error.to_string(), lua_error.to_string()] {
+        assert!(
+            error.contains("non-finite number at `opacity`"),
+            "unexpected diagnostic: {error}"
+        );
+    }
+}
+
 // Sequence-step diagnostics count steps from 0 in both runtimes, so a Luau
 // author and a TS author read the same index for the same entry.
 #[test]

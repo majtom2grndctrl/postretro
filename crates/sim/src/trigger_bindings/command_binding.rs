@@ -267,6 +267,18 @@ pub(super) fn bind_command_at(
             target: target(primitive)?,
             armed: primitive == "armTeleporter",
         }),
+        primitive if postretro_foundation::is_ghost_link_primitive(primitive) => {
+            match crate::ghost_link_commands::parse_ghost_link_command(primitive, args) {
+                Ok(command) => Some(BoundTriggerCommand::GhostLink {
+                    target: target(primitive)?,
+                    command,
+                }),
+                Err(reason) => {
+                    log::warn!("[Trigger] {primitive} has invalid args; not binding: {reason}");
+                    None
+                }
+            }
+        }
         "armTrigger" => Some(BoundTriggerCommand::Arm {
             target: target(primitive)?,
         }),

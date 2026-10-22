@@ -445,6 +445,7 @@ mod tests {
                     source_entity: 0,
                     armed: true,
                     members: 0b1111,
+                    filter: Default::default(),
                 })
             }
             ComponentKind::Immersion => ComponentValue::Immersion(

@@ -59,10 +59,15 @@ pub(super) struct KeyedClamp<K, C> {
     history_live: bool,
 }
 
+/// Keys a container holds room for from construction. A table that never
+/// allocated is the shared empty one, and cloning from it into a snapshot frees
+/// the snapshot's table, so every container starts with one.
+const INITIAL_KEYS: usize = 16;
+
 impl<K, C> Default for KeyedClamp<K, C> {
     fn default() -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: HashMap::with_capacity(INITIAL_KEYS),
             // Fail safe: limited at the default frame time until the first
             // `begin_frame` says otherwise.
             frame: pack_limiter_frame(LimiterFrameInput::default(), true, true),
@@ -80,8 +85,8 @@ impl<K: Clone, C: Clone> Clone for KeyedClamp<K, C> {
         }
     }
 
-    /// Reuses this container's allocation, so a per-frame snapshot allocates
-    /// nothing once warm.
+    /// Reuses this container's table while it is the source's size, so a
+    /// per-frame snapshot allocates only when the source has grown past it.
     fn clone_from(&mut self, source: &Self) {
         self.entries.clone_from(&source.entries);
         self.frame = source.frame;
@@ -120,6 +125,12 @@ impl<K: Copy + Eq + Hash, C: KeyClamp> KeyedClamp<K, C> {
         );
         entry.limited = true;
         entry.clamp.limit(value, &self.frame)
+    }
+
+    /// Keys the container holds room for without allocating.
+    #[cfg(test)]
+    pub(super) fn capacity(&self) -> usize {
+        self.entries.capacity()
     }
 
     /// End the frame: every key not limited presented nothing this frame. A

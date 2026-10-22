@@ -25,13 +25,13 @@ fn pose(x: f32) -> Transform {
 /// A table past its install frame, so new keys start at 0.
 fn running_table() -> MembershipTable {
     let mut table = MembershipTable::default();
-    table.begin_frame(None);
+    table.begin_frame(None, |_| None);
     table.finish_frame(0.0, |_, _| Some((mapping(), LOOK)));
     table
 }
 
 fn frame(table: &mut MembershipTable, marked: &[(GhostKey, Transform)], step: f32) {
-    table.begin_frame(None);
+    table.begin_frame(None, |_| None);
     for (key, source) in marked {
         table.mark_target(
             *key,
@@ -120,7 +120,7 @@ fn install_frame_starts_a_ghost_its_spawn_state_hides_at_zero() {
     let armed_since_spawn = key(&mut entities, 0);
     let armed_on_reveal = key(&mut entities, 1);
     let mut table = MembershipTable::default();
-    table.begin_frame(None);
+    table.begin_frame(None, |_| None);
     for (ghost, spawn_shows) in [(armed_since_spawn, true), (armed_on_reveal, false)] {
         table.mark_target(
             ghost,
@@ -160,7 +160,7 @@ fn a_ghost_of_the_new_viewer_drops_at_once_instead_of_fading() {
     }
     assert!(membership(&table, partner).unwrap() > 0.0);
     // The camera now follows `partner`: candidates no longer offer it.
-    table.begin_frame(Some(partner.entity));
+    table.begin_frame(Some(partner.entity), |_| None);
     table.mark_target(
         other,
         GhostCategory::Players,

@@ -248,9 +248,9 @@ fn presentation_sends_only_changes_and_ramps_each_frame_toward_the_script_value(
     assert!(bus.present(3.6, frame).is_some(), "a commit re-presents");
 }
 
-// Host half: after `setGhostAudio`, a level unload returns the bus
-// to the manifest profile. A commit changing `audio.ghost` re-resolves it
-// with the script values standing. Driven through the App's own seams.
+// On the host, a level unload after `setGhostAudio` returns the bus to the
+// manifest profile. A commit changing `audio.ghost` re-resolves it with the
+// script values standing. Driven through the App's own seams.
 #[test]
 fn app_unload_returns_the_bus_to_the_manifest_and_a_commit_keeps_script_fields() {
     let mut app = crate::startup::lifecycle::tests::test_app();
@@ -478,10 +478,10 @@ fn connected_client_app() -> crate::App {
     app
 }
 
-// Client half: a connected client never applies its own
-// `setGhostAudio`; received host fields stand through a committed reload that
-// re-resolves its unset fields; demotion (through the production Control
-// drain) and level unload each return the bus to the client's manifest.
+// A connected client never applies its own `setGhostAudio`; received host
+// fields stand through a committed reload that re-resolves its unset fields;
+// demotion (through the production Control drain) and level unload each
+// return the bus to the client's manifest.
 #[test]
 fn client_app_keeps_received_fields_through_a_reload_and_demotion_and_unload_drop_them() {
     let mut app = connected_client_app();

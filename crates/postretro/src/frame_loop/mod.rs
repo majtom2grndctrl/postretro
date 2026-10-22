@@ -2162,7 +2162,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             renderer.set_mesh_draws(session.mesh_render.instances());
 
             // Ghosts: each at its mapped pose, culled at its mapped cell, its
-            // presented opacity and tint through its own flash-clamp channel.
+            // presented opacity and tint limited on its one flash window.
             let ghost_limiter = crate::scripting_systems::ghost_render::ghost_limiter_frame(
                 &script_ctx.slot_table.borrow(),
                 app.ghost_links.presented_elapsed(),

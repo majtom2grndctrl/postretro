@@ -14,11 +14,15 @@
 // into the floor, the player in copy B watches its ghost drop in copy B, and the
 // player in copy A walks into the alcove. Each link volume reaches below the
 // floor so the sinking barrier stays a member until it is out of sight.
+// Split: the first press of the purple use pad in either copy sends whoever
+// stands on it alone into the other copy, through the seamless split teleporter
+// laid over each pad. Two players who start in one copy separate this way.
 // Battle swap: two monsters per copy, passive until the swap. Their descriptor
 // does not opt into ghosting, so each player sees only their own monsters plus
-// the partner ghost. The purple use pad in either copy arms both seamless swap
-// teleporters and rouses every echo monster. Each player then faces the other
-// copy monsters. The first teleport through either swap teleporter disarms both.
+// the partner ghost. Every later pad press arms both seamless swap teleporters
+// and rouses every echo monster, so both players change copies. Each player then
+// faces the other copy monsters. The first teleport through either swap
+// teleporter disarms both.
 // The blue touch plate in either copy runs echo.reveal and echo.swell.
 // Player spawn 1 is in copy A and spawn 2 in copy B. Body centres are 40 units up.
 // An animated-bake lamp in each alcove, tagged alcove_lamp, shines out through
@@ -422,7 +426,7 @@
 "_tags" "swap_pad"
 "activation" "use"
 "fire_mode" "multiple"
-"enabled_on_spawn" "1"
+"enabled_on_spawn" "0"
 {
 ( -168 0 0 ) ( -168 1 0 ) ( -168 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( -88 0 0 ) ( -88 0 1 ) ( -88 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
@@ -454,6 +458,38 @@
 "_tags" "swap_pad"
 "activation" "use"
 "fire_mode" "multiple"
+"enabled_on_spawn" "0"
+{
+( 3928 0 0 ) ( 3928 1 0 ) ( 3928 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 4008 0 0 ) ( 4008 0 1 ) ( 4008 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -168 0 ) ( 0 -168 1 ) ( 1 -168 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -88 0 ) ( 1 -88 0 ) ( 0 -88 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 80 ) ( 0 1 80 ) ( 1 0 80 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "trigger_volume"
+"name" "split_pad"
+"_tags" "split_pad"
+"activation" "use"
+"fire_mode" "once"
+"enabled_on_spawn" "1"
+{
+( -168 0 0 ) ( -168 1 0 ) ( -168 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( -88 0 0 ) ( -88 0 1 ) ( -88 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -168 0 ) ( 0 -168 1 ) ( 1 -168 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -88 0 ) ( 1 -88 0 ) ( 0 -88 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 80 ) ( 0 1 80 ) ( 1 0 80 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "trigger_volume"
+"name" "split_pad"
+"_tags" "split_pad"
+"activation" "use"
+"fire_mode" "once"
 "enabled_on_spawn" "1"
 {
 ( 3928 0 0 ) ( 3928 1 0 ) ( 3928 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
@@ -496,6 +532,40 @@
 ( 0 192 0 ) ( 1 192 0 ) ( 0 192 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 0 112 ) ( 0 1 112 ) ( 1 0 112 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "trigger_teleport"
+"name" "split_a_to_b"
+"_tags" "echo_split"
+"mode" "seamless"
+"target" "era_b"
+"landmark" "era_a"
+"enabled_on_spawn" "0"
+{
+( -168 0 0 ) ( -168 1 0 ) ( -168 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( -88 0 0 ) ( -88 0 1 ) ( -88 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -168 0 ) ( 0 -168 1 ) ( 1 -168 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -88 0 ) ( 1 -88 0 ) ( 0 -88 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 80 ) ( 0 1 80 ) ( 1 0 80 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "trigger_teleport"
+"name" "split_b_to_a"
+"_tags" "echo_split"
+"mode" "seamless"
+"target" "era_a"
+"landmark" "era_b"
+"enabled_on_spawn" "0"
+{
+( 3928 0 0 ) ( 3928 1 0 ) ( 3928 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 4008 0 0 ) ( 4008 0 1 ) ( 4008 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -168 0 ) ( 0 -168 1 ) ( 1 -168 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -88 0 ) ( 1 -88 0 ) ( 0 -88 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 80 ) ( 0 1 80 ) ( 1 0 80 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 }
 }
 {

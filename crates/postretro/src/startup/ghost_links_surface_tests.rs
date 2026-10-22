@@ -17,7 +17,7 @@ use log::Level as LogLevel;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{
     ComponentKind, EntityId, GhostLinkComponent, KinematicMoverComponent, ReactionDescriptor,
-    ScriptCtx, ScriptError, SequenceTarget, TeleporterComponent, Transform,
+    ScriptCtx, ScriptError, SequenceTarget, TeleporterComponent, Transform, TriggerVolumeComponent,
 };
 use postretro_foundation::{GhostStyle, PlayerMovementComponent};
 use postretro_level_format::ghost_links::GhostMembers;
@@ -84,11 +84,13 @@ const UNRELATED_WARNINGS: [&str; 4] = [
     "components.behavior: activities [startle] are unreachable",
 ];
 
-const LEVEL_REACTIONS: [&str; 6] = [
+const LEVEL_REACTIONS: [&str; 8] = [
     "echo.reveal",
     "echo.swell",
     "echo.fight",
     "barrier.open",
+    "split.arm",
+    "split.settle",
     "battle.swap",
     "battle.settle",
 ];
@@ -254,6 +256,7 @@ impl Level {
         app.ghost_links = crate::ghost_links::GhostLinks::install(&world, &ctx.registry.borrow());
         crate::ghost_links::warn_if_links_without_opt_ins(
             world.ghost_links.links.len(),
+            app.ghost_links.ghosts_movers(),
             &ctx.data_registry.borrow(),
         );
         app.ghost_links
@@ -331,6 +334,15 @@ impl Level {
             .collect();
         links.sort_by_key(|(_, link)| link.index);
         links
+    }
+
+    fn trigger_armed(&self, trigger: EntityId) -> bool {
+        self.ctx
+            .registry
+            .borrow()
+            .get_component::<TriggerVolumeComponent>(trigger)
+            .unwrap()
+            .armed
     }
 
     fn teleporter(&self, teleporter: EntityId) -> TeleporterComponent {
@@ -685,12 +697,12 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
         let mut expected = LEVEL_REACTIONS.to_vec();
         expected.sort_unstable();
         assert_eq!(names, expected, "every level reaction installs");
-        // Echo plate and swap pad in each copy, the button in copy B.
-        assert_eq!(data.volume_trigger_events().len(), 5);
+        // Echo plate, split pad and swap pad in each copy, the button in copy B.
+        assert_eq!(data.volume_trigger_events().len(), 7);
         assert_eq!(
             data.teleport_events().len(),
-            2,
-            "both swap teleporters bind"
+            4,
+            "both split and both swap teleporters bind"
         );
     }
     let manifest_of = |level: &Level| {
@@ -752,9 +764,11 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
 // link armed on spawn, ghosts into copy B at full membership; the button in
 // copy B drops it and its ghost follows. The echo plate arms the second link,
 // so the partner in copy B ghosts into copy A, and both links' colour filters
-// and the Ghost bus ramp. The swap pad narrows projectiles, rouses the
-// monsters, and swaps the player standing in copy A into copy B. Monsters,
-// whose descriptor does not opt in, and the viewer's own pawn never ghost.
+// and the Ghost bus ramp. The first purple-pad press splits the player
+// standing on copy A's pad alone into copy B, and runs nothing else. The next
+// press narrows projectiles, rouses the monsters, and swaps that player back
+// into copy A. Monsters, whose descriptor does not opt in, and the viewer's
+// own pawn never ghost.
 #[test]
 fn ghost_link_dev_level_runs_the_barrier_puzzle_and_battle_swap() {
     let out = tempfile::tempdir().unwrap();
@@ -921,11 +935,23 @@ fn run_set_pieces(map: &str, mut level: Level) {
         "{map}: the swell mid-ramp {bus:?}"
     );
 
-    // The battle swap: the swap pad in copy A arms both seamless teleporters,
-    // rouses the monsters and stops ghosting projectiles; the player standing
-    // in copy A lands in copy B, and the first crossing disarms both.
+    // The split: the first press of copy A's purple pad arms both split
+    // teleporters and turns both split pads off, so only the presser crosses,
+    // into copy B. The press runs nothing else: the swap pads stay off until
+    // the crossing, so neither the swap nor echo.fight fires on it.
     let swap = level.entities(ComponentKind::Teleporter, "echo_swap");
     assert_eq!(swap.len(), 2, "{map}: a two-way seamless pair");
+    let split = level.entities(ComponentKind::Teleporter, "echo_split");
+    assert_eq!(split.len(), 2, "{map}: a split teleporter over each pad");
+    let split_pads = level.entities(ComponentKind::TriggerVolume, "split_pad");
+    let swap_pads = level.entities(ComponentKind::TriggerVolume, "swap_pad");
+    assert_eq!((split_pads.len(), swap_pads.len()), (2, 2), "{map}");
+    for &pad in &split_pads {
+        assert!(level.trigger_armed(pad), "{map}: split pads start on");
+    }
+    for &pad in &swap_pads {
+        assert!(!level.trigger_armed(pad), "{map}: swap pads start off");
+    }
     for &npc in &monsters {
         assert!(
             !level
@@ -938,24 +964,92 @@ fn run_set_pieces(map: &str, mut level: Level) {
             "{map}: monsters wait for the swap"
         );
     }
-    level.place(level.trigger_center("swap_pad", false), height);
+    level.place(level.trigger_center("split_pad", false), height);
     for _ in 0..SETTLE {
         assert!(level.frame().is_empty());
     }
     let before = level.position(level.pawn);
     assert!(
         level.frame_with(true).is_empty(),
-        "{map}: the use queues the arm"
+        "{map}: the use queues the split"
     );
-    let swapped = level.frame();
-    assert_eq!(swapped.len(), 1, "{map}: the player in copy A swaps");
-    assert_eq!(swapped[0].0, level.pawn);
+    let crossed = level.frame();
+    assert_eq!(crossed.len(), 1, "{map}: the presser splits");
+    assert_eq!(crossed[0].0, level.pawn);
     let after = level.position(level.pawn);
     assert!(
         (Vec3::new(after.x, 0.0, after.z) - Vec3::new(before.x, 0.0, before.z + COPY_OFFSET.z))
             .length()
             < 1e-2,
-        "{map}: the swap carries the player into copy B: {before} → {after}"
+        "{map}: the split carries the presser into copy B: {before} → {after}"
+    );
+    // The arrival latch holds the presser on copy B's pad, inside the armed
+    // B-to-A split teleporter, until the crossing disarms both directions.
+    for _ in 0..SETTLE {
+        assert!(
+            level.frame().is_empty(),
+            "{map}: the presser stays in copy B"
+        );
+    }
+    for &teleporter in &split {
+        assert!(
+            !level.teleporter(teleporter).armed,
+            "{map}: the crossing disarms the split"
+        );
+    }
+    for &pad in &split_pads {
+        assert!(!level.trigger_armed(pad), "{map}: the split runs once");
+    }
+    for &pad in &swap_pads {
+        assert!(
+            level.trigger_armed(pad),
+            "{map}: the crossing arms the swap"
+        );
+    }
+    for &teleporter in &swap {
+        assert!(
+            !level.teleporter(teleporter).armed,
+            "{map}: the split press does not arm the swap"
+        );
+    }
+    for &npc in &monsters {
+        assert!(
+            !level
+                .ctx
+                .registry
+                .borrow()
+                .get_component::<BrainComponent>(npc)
+                .unwrap()
+                .aggro_armed,
+            "{map}: the split press does not rouse the monsters"
+        );
+    }
+    for (_, link) in level.links() {
+        assert_eq!(
+            link.members,
+            GhostMembers::all().bits(),
+            "{map}: the split press does not run echo.fight"
+        );
+    }
+
+    // The battle swap: the next press, on copy B's pad where the split landed,
+    // arms both seamless swap teleporters, rouses the monsters and stops
+    // ghosting projectiles; the presser lands back in copy A, and the first
+    // crossing disarms both.
+    let before = level.position(level.pawn);
+    assert!(
+        level.frame_with(true).is_empty(),
+        "{map}: the use queues the arm"
+    );
+    let swapped = level.frame();
+    assert_eq!(swapped.len(), 1, "{map}: the player in copy B swaps");
+    assert_eq!(swapped[0].0, level.pawn);
+    let after = level.position(level.pawn);
+    assert!(
+        (Vec3::new(after.x, 0.0, after.z) - Vec3::new(before.x, 0.0, before.z - COPY_OFFSET.z))
+            .length()
+            < 1e-2,
+        "{map}: the swap carries the player into copy A: {before} → {after}"
     );
     for (_, link) in level.links() {
         assert_eq!(

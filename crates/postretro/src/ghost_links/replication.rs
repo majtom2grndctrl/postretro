@@ -201,8 +201,10 @@ impl GhostLinks {
     }
 
     /// One frame's received link states, in apply order, then any look ramp
-    /// the clock anchoring released. Every state is kept, so one that lasted
-    /// only between two frames still presents at its own host time.
+    /// the clock anchoring released. Every state handed here is kept, so one
+    /// that lasted only between two frames still presents at its own host
+    /// time. The netcode queue may coalesce a burst before it arrives; that
+    /// keeps each link's newest state and drops only superseded ones.
     pub(crate) fn intake_received(
         &mut self,
         updates: impl Iterator<Item = GhostLinkUpdate>,

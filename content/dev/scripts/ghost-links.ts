@@ -1,7 +1,9 @@
 // Ghost-link acceptance fixture (maps/ghost-links.map). Luau twin: ghost-links.luau.
 // The first block is the brief's level-script example verbatim; the barrier
-// puzzle and the battle swap follow. Explicit names and member-ordered lists keep
-// the two runtimes' installed manifests equal.
+// puzzle, the split and the battle swap follow. The first press of a purple pad
+// sends whoever stands on it alone into the other copy; every later press swaps
+// both players. Explicit names and member-ordered lists keep the two runtimes'
+// installed manifests equal.
 import { defineReaction, getMapEntities, npcs } from "postretro";
 import { setGhostAudio } from "postretro/audio";
 
@@ -24,6 +26,20 @@ export function setupLevel() {
   const barrier = getMapEntities("mover", { tag: "vault_barrier" });
   const open = defineReaction("barrier.open", { sequence: barrier.flatMap((door) => door.start()) });
 
+  // Split: the first pad press arms both split teleporters, one over each pad,
+  // so only whoever stands on a pad crosses, and turns the split pads off.
+  const splitPads = getMapEntities("trigger", { tag: "split_pad" });
+  const swapPads = getMapEntities("trigger", { tag: "swap_pad" });
+  const split = getMapEntities("teleporter", { tag: "echo_split" });
+  const splitArm = defineReaction("split.arm", {
+    sequence: [...split.flatMap((t) => t.arm()), ...splitPads.flatMap((p) => p.disarm())],
+  });
+  // The crossing turns the split off and only then turns the swap pads on. A
+  // swap pad armed on the press itself could fire on that same press.
+  const splitSettle = defineReaction("split.settle", {
+    sequence: [...split.flatMap((t) => t.disarm()), ...swapPads.flatMap((p) => p.arm())],
+  });
+
   // Battle swap: the pad arms both seamless swap teleporters, so each player
   // lands in the other copy, facing the monsters only the partner could see.
   // The monsters wake, and the links stop ghosting the partner's projectiles.
@@ -36,12 +52,16 @@ export function setupLevel() {
   const settle = defineReaction("battle.settle", { sequence: swap.flatMap((t) => t.disarm()) });
 
   return {
-    reactions: [reveal, swell, fight, open, battle, settle],
+    reactions: [reveal, swell, fight, open, splitArm, splitSettle, battle, settle],
     triggerEvents: [
       ...getMapEntities("trigger", { tag: "echo_plate" }).map((t) => t.on("enter", [reveal, swell])),
       ...getMapEntities("trigger", { tag: "vault_button" }).map((t) => t.on("enter", [open])),
-      ...getMapEntities("trigger", { tag: "swap_pad" }).map((t) => t.on("enter", [battle, fight])),
+      ...splitPads.map((t) => t.on("enter", [splitArm])),
+      ...swapPads.map((t) => t.on("enter", [battle, fight])),
     ],
-    teleportEvents: swap.map((t) => t.on("teleport", [settle])),
+    teleportEvents: [
+      ...split.map((t) => t.on("teleport", [splitSettle])),
+      ...swap.map((t) => t.on("teleport", [settle])),
+    ],
   };
 }

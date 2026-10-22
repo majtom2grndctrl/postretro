@@ -74,8 +74,14 @@ pub(crate) const NO_OPT_IN_WARNING: &str = "no loaded descriptor sets `ghost`";
 /// Warn once, at level install on every role, when the level has links but no
 /// loaded descriptor sets top-level `ghost`: no pawn or descriptor entity can
 /// ghost, so a forgotten opt-in is never silent. A weapon's `projectile.ghost`
-/// does not quiet it; the warning names what can still ghost.
-pub(crate) fn warn_if_links_without_opt_ins(link_count: usize, data: &DataRegistry) {
+/// or a matched `ghost_tags` does not quiet it; the warning names what can
+/// still ghost, or says nothing can. `movers_ghost`: some link's `ghost_tags`
+/// matched a mover at install.
+pub(crate) fn warn_if_links_without_opt_ins(
+    link_count: usize,
+    movers_ghost: bool,
+    data: &DataRegistry,
+) {
     if link_count == 0 {
         return;
     }
@@ -84,13 +90,17 @@ pub(crate) fn warn_if_links_without_opt_ins(link_count: usize, data: &DataRegist
     if !opt_ins.descriptors.is_empty() {
         return;
     }
-    let still_ghost = if opt_ins.projectile_weapons.is_empty() {
-        "tagged movers"
-    } else {
-        "tagged movers and projectiles whose weapon sets `projectile.ghost`"
+    let still_ghost = match (movers_ghost, !opt_ins.projectile_weapons.is_empty()) {
+        (true, false) => "only tagged movers can",
+        (true, true) => {
+            "only tagged movers and projectiles whose weapon sets `projectile.ghost` can"
+        }
+        (false, true) => "only projectiles whose weapon sets `projectile.ghost` can",
+        (false, false) => "nothing can ghost",
     };
+    let links = if link_count == 1 { "link" } else { "links" };
     log::warn!(
-        "[Ghost] level has {link_count} ghost links but {NO_OPT_IN_WARNING}, so no pawn \
-         or descriptor entity ghosts; only {still_ghost} can"
+        "[Ghost] level has {link_count} ghost {links} but {NO_OPT_IN_WARNING}, so no pawn \
+         or descriptor entity ghosts; {still_ghost}"
     );
 }

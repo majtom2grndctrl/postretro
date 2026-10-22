@@ -362,27 +362,64 @@ fn warnings(capture: &LogCapture) -> Vec<String> {
 
 // A level with links while no loaded descriptor sets
 // top-level `ghost` warns once at install, so a forgotten opt-in is not
-// silent, even when a weapon's `projectile.ghost` opts its shots in; the
-// warning names what can still ghost. Install runs the same check on host and
-// client.
+// silent, even when a weapon's `projectile.ghost` opts its shots in or a link's
+// `ghost_tags` matches a mover; the warning names what can still ghost, or
+// says nothing can. Install runs the same check on host and client.
 #[test]
 fn links_with_no_ghost_opted_descriptor_warn_once_at_install() {
-    for (descriptors, still_ghost) in [
-        (vec![descriptor("player", false)], "only tagged movers can"),
+    let shots = || {
+        vec![
+            descriptor("player", false),
+            projectile_weapon("rocket_launcher", true),
+        ]
+    };
+    for (links, movers_ghost, descriptors, still_ghost) in [
         (
-            vec![
-                descriptor("player", false),
-                projectile_weapon("rocket_launcher", true),
-            ],
+            2,
+            true,
+            vec![descriptor("player", false)],
+            "only tagged movers can",
+        ),
+        (
+            2,
+            true,
+            shots(),
             "only tagged movers and projectiles whose weapon sets `projectile.ghost` can",
+        ),
+        (
+            2,
+            false,
+            shots(),
+            "only projectiles whose weapon sets `projectile.ghost` can",
+        ),
+        (
+            2,
+            false,
+            vec![descriptor("player", false)],
+            "nothing can ghost",
+        ),
+        (
+            1,
+            false,
+            vec![descriptor("player", false)],
+            "has 1 ghost link but",
+        ),
+        (
+            2,
+            false,
+            vec![descriptor("player", false)],
+            "has 2 ghost links but",
         ),
     ] {
         let capture = LogCapture::start();
-        warn_if_links_without_opt_ins(2, &data_registry(descriptors));
+        warn_if_links_without_opt_ins(links, movers_ghost, &data_registry(descriptors));
         let warned = warnings(&capture);
         assert_eq!(warned.len(), 1, "{warned:?}");
         assert!(warned[0].contains(NO_OPT_IN_WARNING), "{}", warned[0]);
         assert!(warned[0].contains(still_ghost), "{}", warned[0]);
+        if !movers_ghost {
+            assert!(!warned[0].contains("movers"), "{}", warned[0]);
+        }
     }
 
     for (links, descriptors) in [
@@ -397,7 +434,7 @@ fn links_with_no_ghost_opted_descriptor_warn_once_at_install() {
         (0, vec![descriptor("player", false)]),
     ] {
         let capture = LogCapture::start();
-        warn_if_links_without_opt_ins(links, &data_registry(descriptors));
+        warn_if_links_without_opt_ins(links, true, &data_registry(descriptors));
         assert!(warnings(&capture).is_empty(), "{links} links");
     }
 }
@@ -503,6 +540,28 @@ fn the_viewers_own_projectiles_are_absent_from_its_own_ghost_set() {
     scene.frame();
     assert!(scene.ghost(own).is_none());
     assert!(scene.ghost(partners).is_some());
+}
+
+// Regression: when the camera came to follow a pawn whose projectile was
+// ghosting, the new viewer saw its own projectile's ghost fade out over the
+// rate cap.
+#[test]
+fn a_viewer_switch_drops_the_new_viewers_projectile_ghost_on_that_frame() {
+    let mut scene = Scene::new(vec![projectile_weapon("rocket_launcher", true)]);
+    let partner = scene.pawn(OUTSIDE + Vec3::Z, DescriptorSpawnPath::NetworkSlot);
+    let rocket = scene.projectile("rocket_launcher", partner, INSIDE);
+    let other = scene.pawn(OUTSIDE - Vec3::Z, DescriptorSpawnPath::NetworkSlot);
+    let others = scene.projectile("rocket_launcher", other, INSIDE + Vec3::X);
+    scene.frame();
+    assert!(scene.ghost(rocket).is_some());
+
+    scene.registry.mark_local_player_pawn(partner).unwrap();
+    scene.frame();
+    assert!(scene.ghost(rocket).is_none(), "no fade frame");
+    assert!(
+        scene.ghost(others).is_some(),
+        "another pawn's projectile keeps ghosting"
+    );
 }
 
 // A ghost-opted projectile keeps ghosting while its

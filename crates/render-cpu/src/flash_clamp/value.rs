@@ -55,7 +55,7 @@ fn desaturation_to_redness(rgb: [f32; 3], held: f32) -> f32 {
 }
 
 /// A finite strength in [0, 1]; anything else is no effect.
-fn unit_strength(strength: f32) -> f32 {
+pub(super) fn unit_strength(strength: f32) -> f32 {
     if strength.is_finite() {
         strength.clamp(0.0, 1.0)
     } else {
@@ -136,30 +136,82 @@ impl Tracker {
 }
 
 /// Which tracked part of a value a window slot's transition belongs to.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Part {
-    #[default]
     Level,
     Red,
-    /// A ghost tint's luminance, on the ghost's window beside its opacity
-    /// and redness.
-    Luminance,
+    /// A ghost's drawn brightness (presented opacity times its tint's
+    /// luminance), on the ghost's window beside its opacity and redness.
+    Brightness,
 }
 
 const PARTS: usize = 3;
 
+impl Part {
+    /// This part's bit in a slot's part set.
+    fn bit(self) -> u8 {
+        1u8 << self as u8
+    }
+
+    /// Whether this part's transitions merge with another part's on a merging
+    /// window. Opacity and drawn brightness are two views of one drawn change.
+    /// Redness is a separate criterion, so a red transition always spends a
+    /// slot of its own.
+    fn merges(self) -> bool {
+        !matches!(self, Part::Red)
+    }
+}
+
+/// One counted transition: the parts it counts for, and whether it was an
+/// onset.
+#[derive(Clone, Copy, Debug, Default)]
+struct Slot {
+    parts: u8,
+    onset: bool,
+}
+
 /// Transitions counted in the last second, aged by presented-frame time,
-/// oldest first. Each slot records its part and whether it was an onset.
-/// Every part limited on one window spends the same budget of six
+/// oldest first. Each slot records the parts it counts for and whether it was
+/// an onset. Every part limited on one window spends the same budget of six
 /// transitions, so together they present at most three flashes a second.
+///
+/// A merging window (a ghost's look) counts opacity and brightness
+/// transitions on one frame, in one direction, as one transition: both are
+/// views of one change in what draws, and any one background sees a single
+/// change. A screen channel's window never merges, so its strength and red
+/// transitions each spend their own slot.
+///
+/// An onset is admitted with room for itself and one return. A part joining it
+/// on the same frame owes its own return too, which later onsets must leave
+/// room for. If the joined parts then return on different frames, the second
+/// return is one past what the onset's admission reserved: the same excess a
+/// return whose onset aged out, or predates a fresh start, already allows.
+/// The window never holds more than eight transitions: those it holds plus
+/// the parts that may still return never exceed eight.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct FlashWindow {
     ages: [f32; WINDOW_SLOTS],
-    kinds: [(Part, bool); WINDOW_SLOTS],
+    kinds: [Slot; WINDOW_SLOTS],
     count: usize,
+    /// Slots from here on were counted this frame.
+    frame_start: usize,
+    /// Whether transitions of mergeable parts on one frame, in one direction,
+    /// share a slot.
+    merges: bool,
 }
 
 impl FlashWindow {
+    /// An empty window that merges same-frame, same-direction transitions of
+    /// a ghost's opacity and brightness.
+    pub(super) fn merging() -> Self {
+        Self {
+            merges: true,
+            ..Self::default()
+        }
+    }
+
+    /// Age the window by a frame's time and start that frame: slots counted
+    /// from here on are this frame's.
     pub(super) fn age(&mut self, dt: f32) {
         let mut kept = 0;
         for i in 0..self.count {
@@ -171,27 +223,57 @@ impl FlashWindow {
             }
         }
         self.count = kept;
+        self.frame_start = kept;
+    }
+
+    /// The slot this frame's transition of `part` in this direction joins: a
+    /// slot counted this frame in the same direction that does not count
+    /// `part` yet. Only on a merging window.
+    fn joinable(&self, part: Part, onset: bool) -> Option<usize> {
+        if !self.merges || !part.merges() {
+            return None;
+        }
+        (self.frame_start..self.count).find(|&slot| {
+            let kind = self.kinds[slot];
+            kind.onset == onset && kind.parts & part.bit() == 0
+        })
     }
 
     fn push(&mut self, part: Part, onset: bool) {
+        if let Some(slot) = self.joinable(part, onset) {
+            self.kinds[slot].parts |= part.bit();
+            return;
+        }
+        debug_assert!(
+            self.count < WINDOW_SLOTS,
+            "the flash window never holds more than {WINDOW_SLOTS} transitions"
+        );
         if self.count < WINDOW_SLOTS {
             self.ages[self.count] = 0.0;
-            self.kinds[self.count] = (part, onset);
+            self.kinds[self.count] = Slot {
+                parts: part.bit(),
+                onset,
+            };
             self.count += 1;
         }
     }
 
     /// Returns the window still owes: onsets in it whose return it does not
     /// hold yet, counted per part across every part. A return with no onset
-    /// of its part before it owes nothing.
+    /// of its part before it owes nothing. A slot counting several parts
+    /// opens or settles each of them.
     fn owed_returns(&self) -> usize {
         let mut open = [0usize; PARTS];
-        for &(part, onset) in &self.kinds[..self.count] {
-            let owed = &mut open[part as usize];
-            if onset {
-                *owed += 1;
-            } else {
-                *owed = owed.saturating_sub(1);
+        for kind in &self.kinds[..self.count] {
+            for (part, owed) in open.iter_mut().enumerate() {
+                if kind.parts & (1u8 << part) == 0 {
+                    continue;
+                }
+                if kind.onset {
+                    *owed += 1;
+                } else {
+                    *owed = owed.saturating_sub(1);
+                }
             }
         }
         open.iter().sum()
@@ -210,7 +292,9 @@ impl FlashWindow {
 
 /// Decide one tracked part's next presented level. Onsets (rises) are admitted
 /// only while the window holds them, their return, and the returns earlier
-/// onsets still owe; over budget the part holds. Returns always pass.
+/// onsets still owe; over budget the part holds. Returns always pass. On a
+/// merging window, an onset joining one another part counted this frame is
+/// that admitted transition.
 fn decide(
     tracker: &mut Tracker,
     window: &mut FlashWindow,
@@ -220,13 +304,13 @@ fn decide(
     deadband: f32,
     counts: bool,
 ) -> f32 {
-    let fits = window.onset_fits();
-    if fits {
-        tracker.suppressing = false;
-    }
     let (excursion, _) = tracker.excursion(target, threshold);
     let sign: i8 = if excursion > 0.0 { 1 } else { -1 };
     let onset = sign > 0;
+    let fits = window.onset_fits() || (onset && window.joinable(part, true).is_some());
+    if fits {
+        tracker.suppressing = false;
+    }
     if counts && sign != tracker.last_sign && excursion.abs() >= threshold {
         if !onset || fits {
             window.push(part, onset);
@@ -254,8 +338,8 @@ pub(super) fn vanishing(frame: &LimiterFrameUniform) -> LimiterFrameUniform {
     }
 }
 
-/// One strength-like level (a blend strength, a tint's luminance) limited on
-/// a flash window its owner holds and ages once a frame.
+/// One strength-like level (a blend strength, a ghost's drawn brightness)
+/// limited on a flash window its owner holds and ages once a frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Strength(Tracker);
 
@@ -263,6 +347,11 @@ impl Strength {
     /// Start fresh at `strength`: nothing to rate-cap from.
     pub(super) fn restart(&mut self, strength: f32) {
         self.0.restart(unit_strength(strength));
+    }
+
+    /// The level last presented.
+    pub(super) fn presented(&self) -> f32 {
+        self.0.out
     }
 
     /// The level presented this frame for `strength`, its transitions counted
@@ -461,7 +550,7 @@ mod tests {
         }
         assert!(window.onset_fits(), "4 held + 0 owed + 2 fits in six");
         window.push(Part::Level, true);
-        // The opacity onset's return takes the last room: a luminance onset
+        // The opacity onset's return takes the last room: a brightness onset
         // admitted now would leave it none.
         assert!(!window.onset_fits());
         window.push(Part::Level, false);
@@ -469,15 +558,48 @@ mod tests {
 
         // Each part's onsets owe their own returns, summed across parts.
         let mut window = FlashWindow::default();
-        window.push(Part::Luminance, true);
+        window.push(Part::Brightness, true);
         window.push(Part::Red, true);
         assert_eq!(window.owed_returns(), 2);
         assert!(window.onset_fits(), "2 held + 2 owed + 2 fits in six");
         window.push(Part::Level, true);
         assert!(!window.onset_fits(), "3 held + 3 owed + 2 is over six");
         // A return of one part settles only that part's onset.
-        window.push(Part::Luminance, false);
+        window.push(Part::Brightness, false);
         assert_eq!(window.owed_returns(), 2);
+    }
+
+    #[test]
+    fn a_merging_window_counts_one_frames_opacity_and_brightness_change_once() {
+        let mut window = FlashWindow::merging();
+        window.age(0.1);
+        window.push(Part::Level, true);
+        window.push(Part::Brightness, true);
+        assert_eq!(window.count, 1, "one frame's rise in both is one onset");
+        assert_eq!(window.owed_returns(), 2, "each part owes its own return");
+        window.push(Part::Red, true);
+        assert_eq!(window.count, 2, "a red onset spends a slot of its own");
+
+        // The next frame starts new slots: a return there never joins the
+        // previous frame's, and opposite directions never share one.
+        window.age(0.1);
+        window.push(Part::Brightness, false);
+        window.push(Part::Red, false);
+        assert_eq!(window.count, 4);
+        window.push(Part::Level, false);
+        assert_eq!(window.count, 4, "the opacity return joins this frame's");
+        assert_eq!(
+            window.owed_returns(),
+            0,
+            "a joined return settles each part"
+        );
+
+        // A screen channel's window keeps every part's transitions apart.
+        let mut window = FlashWindow::default();
+        window.age(0.1);
+        window.push(Part::Level, true);
+        window.push(Part::Brightness, true);
+        assert_eq!(window.count, 2);
     }
 
     #[test]

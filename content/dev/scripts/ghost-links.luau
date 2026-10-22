@@ -1,5 +1,7 @@
 -- Ghost-link acceptance fixture (maps/ghost-links-luau.map). TypeScript twin: ghost-links.ts.
--- Every reaction is explicitly named, and member traversal preserves map order.
+-- The first press of a purple pad sends whoever stands on it alone into the
+-- other copy; every later press swaps both players. Every reaction is
+-- explicitly named, and member traversal preserves map order.
 local Postretro = require("postretro")
 local Audio = require("postretro/audio")
 
@@ -38,6 +40,20 @@ function setupLevel(_ctx)
     sequence = each(barrier, function(door) return door:start() end),
   })
 
+  -- Split: the first pad press arms both split teleporters, one over each pad,
+  -- so only whoever stands on a pad crosses, and turns the split pads off.
+  local splitPads = Postretro.getMapEntities("trigger", { tag = "split_pad" })
+  local swapPads = Postretro.getMapEntities("trigger", { tag = "swap_pad" })
+  local split = Postretro.getMapEntities("teleporter", { tag = "echo_split" })
+  local splitArmSteps = each(split, function(t) return t:arm() end)
+  append(splitArmSteps, each(splitPads, function(p) return p:disarm() end))
+  local splitArm = Postretro.defineReaction("split.arm", { sequence = splitArmSteps })
+  -- The crossing turns the split off and only then turns the swap pads on. A
+  -- swap pad armed on the press itself could fire on that same press.
+  local splitSettleSteps = each(split, function(t) return t:disarm() end)
+  append(splitSettleSteps, each(swapPads, function(p) return p:arm() end))
+  local splitSettle = Postretro.defineReaction("split.settle", { sequence = splitSettleSteps })
+
   -- Battle swap: the pad arms both seamless swap teleporters, so each player
   -- lands in the other copy, facing the monsters only the partner could see.
   -- The monsters wake, and the links stop ghosting the partner's projectiles.
@@ -54,11 +70,13 @@ function setupLevel(_ctx)
   local triggerEvents = {}
   bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "echo_plate" }), "enter", { reveal, swell })
   bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "vault_button" }), "enter", { open })
-  bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "swap_pad" }), "enter", { battle, fight })
+  bind(triggerEvents, splitPads, "enter", { splitArm })
+  bind(triggerEvents, swapPads, "enter", { battle, fight })
   local teleportEvents = {}
+  bind(teleportEvents, split, "teleport", { splitSettle })
   bind(teleportEvents, swap, "teleport", { settle })
   return {
-    reactions = { reveal, swell, fight, open, battle, settle },
+    reactions = { reveal, swell, fight, open, splitArm, splitSettle, battle, settle },
     triggerEvents = triggerEvents,
     teleportEvents = teleportEvents,
   }

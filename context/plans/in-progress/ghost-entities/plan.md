@@ -35,11 +35,12 @@ Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time onl
 - Docs placement — a new `docs/ghost-links.md`, with a short pointer added to `docs/teleporters.md` "A closet loop and a time shift". Ghost links stand apart from teleporters (a link can look into a copy nobody teleports to), and the page carries styles, the bus and the photosensitivity notes.
 - Blank `ghost_members` — reads as absent (all four categories), as the teleporter parser reads every blank region key; blank `ghost_tags` means no movers, blank `ghost_style` the floor style.
 - Owner provisional approvals at the thin-slice checkpoint (2026-10-21), revisited at the manual visual checks (rows 45–46):
-  - Tint luminance gets its own per-ghost limiter channel (brief Decision and Acceptance row 24a amended). Over budget the tint holds its last presented luminance and keeps its hue: scale the tint to the clamped luminance, or a grey of that luminance when the tint is black.
+  - Tint luminance gets its own per-ghost limiter channel (brief Decision and Acceptance row 24a amended). Over budget the tint holds its last presented luminance and keeps its hue: scale the tint to the clamped luminance, or a grey of that luminance when the tint is black. Superseded at review: see Owner decisions at review and Review clarifications below.
   - Blended ghost self-overlap (overlapping front faces blend twice, an x-ray look) is accepted. A ghost-only depth pre-pass is the fix if the visual check rejects it. Dither has no self-overlap.
 - Owner decisions at review (2026-10-22):
   - First `setColorFilter` / `setGhostAudio` from-value: accepted as is. It carries the host's style or manifest value, and a client whose declaration differs steps once. This is the same style divergence co-op already accepts, and it is documented in `docs/ghost-links.md` §Co-op. No wire change.
   - Opacity, redness and tint luminance share one per-ghost flash window: at most 3 flashes/s per ghost, not 3 per channel. The brief's Decision is amended to match.
+  - Round 2: the clamp judges drawn brightness (presented opacity × tint luminance) in place of tint luminance alone, alongside opacity. Same-frame transitions of one ghost's parts count once. Saturation stays unlimited and documented. The brief's Decision is amended to match.
   - Acceptance row 26 is restated: the freeze applies under dev `freeze_time`, because the shipped pause menu keeps script time running.
 - Review clarifications that keep the meaning:
   - "Keeps its hue" (Decision; row 24): the hue angle is kept. A saturated tint whose brightest scale cannot reach the held luminance mixes toward white, so the drawn luminance always equals the luminance the limiter recorded. A single white→red change therefore ramps through a lighter red over about 200 ms.
@@ -78,9 +79,9 @@ Row numbers follow the brief's Acceptance order; 9a is the owner-amended `render
 | 22 ghost never a hit, overlap, trigger or AI target | `postretro` test with a presenting ghost: hitscan, splash, trigger and AI acquisition through the mapped pose | achievable as stated |
 | 23 four 10 Hz strobes ≤ 3 flashes, rest at pre-flash level | ghost clamp tests driving membership and look through the per-ghost channel | achievable as stated |
 | 24 red tint strobe desaturates; single change keeps hue | ghost clamp test | achievable as stated |
-| 24a white↔black tint strobe at steady opacity limited; rests at the darker luminance (provisional amendment) | ghost clamp wiring test on the tint-luminance channel | achievable as stated |
+| 24a white↔black tint strobe at steady opacity limited; rests at the darker luminance (provisional amendment) | ghost clamp wiring test on drawn brightness | achievable as stated |
 | 25 arm ≤ 250 ms; 1500 ms fade unchanged; P21, P31 | ghost clamp + ramp tests | achievable as stated |
-| 26 limiter off strobe; hitch ceiling (P30); pause (P42) | ramp tests with injected frame time | achievable as stated |
+| 26 limiter off strobe; hitch ceiling (P30); script-time freeze (P42) | ramp tests with injected frame time | achievable as stated |
 | 27 per-field `setColorFilter`, P5, P7, P41 | look-resolution unit tests + sim primitive validation tests | achievable as stated |
 | 28 malformed `audio.ghost` → whole floor, warns | `scripting-core` audio-profile tests, JS and Luau | achievable as stated |
 | 29 `periodMs` ramps; P29, P36; non-finite args | look/bus ramp unit tests + primitive validation tests with log capture | achievable as stated |

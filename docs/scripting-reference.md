@@ -148,13 +148,14 @@ pattern. An unknown value warns and uses `"blend"`, leaving `bloom` and
 
 Every field — and `render`, `bloom` and `reflections` themselves — is
 optional, and omitting them selects the engine defaults: half-resolution
-smooth bloom, pixel-style reflections and blended (`"blend"`) ghosts. Malformed optional values degrade
-rather than abort: a non-object `render` warns and falls back to the complete
-default profile; a non-object `bloom` or `reflections` warns and falls back to
-that block's default without touching the other; an unrecognized
-`resolution` warns and uses `"half"`, a non-boolean `pixelated` warns and uses
-`false`, and a `style` other than `"pixel"` or `"smooth"` warns and uses
-`"pixel"`. None of these reject an otherwise valid manifest.
+smooth bloom, pixel-style reflections and blended (`"blend"`) ghosts. Malformed
+optional values degrade rather than abort: a non-object `render` warns and
+falls back to the complete default profile; a non-object `bloom` or
+`reflections` warns and falls back to that block's default without touching the
+other; an unrecognized `resolution` warns and uses `"half"`, a non-boolean
+`pixelated` warns and uses `false`, and a `style` other than `"pixel"` or
+`"smooth"` warns and uses `"pixel"`. None of these reject an otherwise valid
+manifest.
 
 The profile is static and mod-wide. It is committed at mod init and reapplied
 by a debug staged reload, so it cannot vary per level, per material, or from a

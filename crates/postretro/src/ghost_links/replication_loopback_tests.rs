@@ -189,11 +189,11 @@ fn ghost_swap_on_one_tick_fades_each_old_ghost_in_volume_and_starts_each_new_on_
     assert_swap(host, 1, 1, "host seat");
 }
 
-/// On one peer: link 0's arm, link 1's arm and pawn 1's swap from copy A to
-/// copy B all apply on one host tick. The pawn is never drawn in copy A while
-/// link 0 shows armed, so link 0 never ghosts it; link 1's ghost of it starts on
-/// the cut frame. Returns whether the lane clock alone would have presented the
-/// arm while the pawn was still drawn in copy A.
+/// Checks one peer's presented frames, where link 0's arm, link 1's arm and
+/// pawn 1's swap from copy A to copy B all apply on one host tick. The pawn is
+/// never drawn in copy A while link 0 shows armed, so link 0 never ghosts it;
+/// link 1's ghost of it starts on the cut frame. Returns whether the lane clock
+/// alone would have presented the arm while the pawn was still drawn in copy A.
 fn assert_arm_presents_with_the_swap(frames: &[PresentedFrame], arm_stamp: u32, who: &str) -> bool {
     let cut = first_frame_in_copy_b(frames, 1, false);
     assert!(

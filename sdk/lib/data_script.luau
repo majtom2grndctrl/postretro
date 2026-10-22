@@ -244,7 +244,8 @@ export type GhostLinkMembersArgs = { players: boolean?, entities: boolean?, proj
 --- A ghost link's colour filter: each named field ramps on its own over
 --- `periodMs` (default 0); an omitted field keeps its value and any ramp in
 --- flight. `tint` is `{ r, g, b }`; `tint` components, `opacity` and `saturation`
---- lie in 0..=1, and `periodMs` is finite and at least 0.
+--- lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of
+--- `tint`, `opacity` and `saturation` warns and drops the step.
 export type GhostColorFilterArgs = { tint: {number}?, opacity: number?, saturation: number?, periodMs: number? }
 export type ArmGhostLinkStep = { id: EntityId, primitive: "armGhostLink", args: {} }
 export type DisarmGhostLinkStep = { id: EntityId, primitive: "disarmGhostLink", args: {} }

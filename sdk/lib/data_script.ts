@@ -141,7 +141,7 @@ export type ArmTeleporterStep = { id: import("postretro").EntityId; primitive: "
 export type DisarmTeleporterStep = { id: import("postretro").EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
 /** Member categories a ghost link shows; an omitted category keeps its value. */
 export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
-/** A ghost link's colour filter: each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. */
+/** A ghost link's colour filter: each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
 export type GhostColorFilterArgs = { tint?: readonly [number, number, number]; opacity?: number; saturation?: number; periodMs?: number };
 export type ArmGhostLinkStep = { id: import("postretro").EntityId; primitive: "armGhostLink"; args: Record<string, never> };
 export type DisarmGhostLinkStep = { id: import("postretro").EntityId; primitive: "disarmGhostLink"; args: Record<string, never> };

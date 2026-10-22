@@ -20,6 +20,23 @@ pub(super) fn worst_transitions_across(series: &[&[f32]], dt: f32) -> usize {
     most_in_any_second(&times)
 }
 
+/// Count transitions of a ghost's drawn brightness in any one second: each
+/// frame's presented opacity times its drawn tint luminance, judged as one
+/// series. Over black that product is what the ghost draws, so a strobe that
+/// moves opacity and tint together counts on the product, not on either part.
+pub(super) fn worst_brightness_transitions(
+    opacity: &[f32],
+    tint_luminance: &[f32],
+    dt: f32,
+) -> usize {
+    let brightness: Vec<f32> = opacity
+        .iter()
+        .zip(tint_luminance)
+        .map(|(level, luminance)| level * luminance)
+        .collect();
+    worst_transitions(&brightness, dt)
+}
+
 /// When each transition of `series` is counted, in order.
 fn transition_times(series: &[f32], dt: f32) -> Vec<f32> {
     let mut times = Vec::new();

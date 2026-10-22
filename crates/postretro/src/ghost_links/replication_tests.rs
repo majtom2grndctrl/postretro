@@ -114,9 +114,10 @@ fn received_link_states_land_at_their_snapshot_stamps_between_frames() {
     );
 }
 
-// At the history level: an always-on record repeating the current state at
-// later stamps changes nothing a frame can read, so the presented value never
-// moves as the RTT estimate, and with it the render tick, changes.
+// In a client's received link history, an always-on record repeating the
+// current state at later stamps changes nothing a frame can read, so the
+// presented value never moves as the RTT estimate, and with it the render
+// tick, changes.
 #[test]
 fn repeated_identical_link_records_leave_every_presented_state_unchanged() {
     let mut client = Client::new();
@@ -308,8 +309,8 @@ fn a_look_ramp_received_before_the_clock_anchors_defers_then_lands_at_its_stamp(
     assert_eq!(latest_filter(&client).opacity.unwrap().start_time, rebased);
 }
 
-// Look: demotion drops received look ramps with the rest of received
-// state, and the link presents its local style again.
+// Demotion drops received look ramps with the rest of received state, and
+// the link presents its local style again.
 #[test]
 fn demotion_drops_received_look_ramps_and_the_link_presents_its_style() {
     let mut client = Client::new();
@@ -366,4 +367,47 @@ fn received_out_of_range_look_values_clamp_into_range_and_warn_once_per_record()
     assert_eq!(filter.tint.map(|ramp| ramp.to), Some([1.0, 0.0, 0.5]));
     assert_eq!(filter.opacity.map(|ramp| ramp.to), Some(1.0));
     capture.assert_logged_once(log::Level::Warn, "outside 0..=1; clamped");
+}
+
+// Regression: the drain ran inside the membership update, after ghost-voice
+// admission had already read the previous frame's history. A client's
+// received link states now enter history once per frame, in the audio stage
+// before ghost-voice admission, and the membership update reads that history.
+#[test]
+fn received_link_state_drains_before_ghost_voice_admission_and_not_in_membership_update() {
+    let frame_loop = include_str!("../frame_loop/mod.rs");
+    let redraw = frame_loop
+        .split("pub(crate) fn redraw(")
+        .nth(1)
+        .expect("the frame loop keeps `redraw`");
+    let drain = redraw
+        .find("app.drain_received_ghost_link_state();")
+        .expect("redraw drains received link state");
+    let voices = redraw
+        .find("app.plan_ghost_voices(")
+        .expect("redraw plans ghost voices");
+    assert!(
+        drain < voices,
+        "received link state enters history before ghost-voice admission reads it"
+    );
+    assert_eq!(
+        frame_loop
+            .matches("drain_received_ghost_link_state(")
+            .count(),
+        1,
+        "the frame loop drains received link state once per frame"
+    );
+
+    let frame = include_str!("frame.rs");
+    let membership_update = frame
+        .split("fn update_ghost_links(")
+        .nth(1)
+        .expect("ghost_links keeps `update_ghost_links`")
+        .split("\n    }\n")
+        .next()
+        .unwrap();
+    assert!(
+        !membership_update.contains("drain_received_ghost_link_state("),
+        "the membership update reads history the audio stage already filled"
+    );
 }

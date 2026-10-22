@@ -42,8 +42,8 @@ impl LinkStyle {
 pub(crate) struct LinkLooks {
     links: Vec<LinkStyle>,
     /// Script time filter ramps present at this frame for a member presenting
-    /// at host-now. Script time, not presented-frame time, so a pause freezes
-    /// them.
+    /// at host-now. Script time, not presented-frame time, so they hold still
+    /// while script time is frozen (the dev `freeze_time`).
     time: f64,
 }
 
@@ -151,8 +151,9 @@ impl super::GhostLinks {
     }
 
     /// The script time this frame's looks present at: the frame's script
-    /// clock, so a pause freezes `setColorFilter` ramps while the membership
-    /// ramp, on presented-frame time, runs on.
+    /// clock, so `setColorFilter` ramps hold still while script time is frozen
+    /// (the dev `freeze_time`) and the membership ramp, on presented-frame
+    /// time, runs on.
     pub(crate) fn set_look_time(&mut self, time: f64) {
         self.looks.set_time(time);
     }

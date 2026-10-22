@@ -934,6 +934,7 @@ impl App {
             self.level
                 .as_ref()
                 .map_or(0, |level| level.ghost_links.links.len()),
+            self.ghost_links.ghosts_movers(),
             &script_ctx.data_registry.borrow(),
         );
         self.ghost_links.bind_styles(

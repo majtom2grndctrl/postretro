@@ -10,10 +10,11 @@ use postretro_scripting_core::runtime::ModGhostAudio;
 
 use crate::startup::audio_profile::{audio_ghost_profile, ghost_audio_values};
 
-/// A `setGhostAudio` whose targets cross the cutoffs: stable wording.
+/// Warning text for a `setGhostAudio` whose targets cross the cutoffs; keep it
+/// stable.
 pub(crate) const CROSSING_STEP_WARNING: &str = "would leave highPassHz at or above lowPassHz";
 
-/// A resolved profile whose cutoffs cross: stable wording.
+/// Warning text for a resolved profile whose cutoffs cross; keep it stable.
 pub(crate) const CROSSED_PROFILE_WARNING: &str =
     "resolved Ghost bus high-pass reaches its low-pass";
 

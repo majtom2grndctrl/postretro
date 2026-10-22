@@ -386,8 +386,9 @@ These load, with one warning each when the level starts:
 - a `ghost_style` no manifest entry declares (the link uses the floor style);
 - a `ghost_tags` entry that matches no mover;
 - a level with links while no descriptor sets `ghost`, so no pawn or other
-  entity can ghost; only tagged movers, and projectiles whose weapon sets
-  `projectile.ghost`, still can.
+  entity can ghost. The warning names what still can: movers a link's
+  `ghost_tags` matched, and projectiles whose weapon sets `projectile.ghost`.
+  With neither, it says nothing can ghost.
 
 ---
 
@@ -397,8 +398,10 @@ The SDK bundle's dev mod ships a two-copy fixture with both set-pieces:
 `content/dev/maps/ghost-links.map` (its Luau twin is `ghost-links-luau.map`).
 Copy A has a yellow barrier in its east doorway; copy B has a red button on its
 north wall. The blue plate in either copy reveals the second link and swells
-the echo; the purple pad swaps the copies and wakes the monsters. From the
-bundle root:
+the echo. The first press of a purple pad sends whoever stands on it alone into
+the other copy, so two players who start in the same copy can split up. Every
+later press swaps both players' copies and wakes the monsters. From the bundle
+root:
 
 ```bash
 bin/prl-build content/dev/maps/ghost-links.map \
@@ -410,8 +413,8 @@ bin/postretro-tool run maps/ghost-links.prl
 Alone, press the purple pad to cross into copy B, press the red button, and
 watch the barrier's ghost sink; press the pad again to return. For two players,
 run a host and a client on one machine as in
-[diagnostics.md](diagnostics.md): the host spawns in copy A, the client in
-copy B.
+[diagnostics.md](diagnostics.md). If both start in the same copy, one of you
+presses the purple pad first to cross over alone.
 
 ```bash
 # Terminal 1

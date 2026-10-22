@@ -981,12 +981,12 @@ pub(crate) struct App {
     /// The Ghost bus profile this peer presents: the manifest profile, the
     /// host's level-scoped `setGhostAudio` fields and their queued calls.
     ghost_bus: ghost_links::GhostBus,
-    /// This frame's ghost draws and each ghost's flash-clamp channel. Cleared
-    /// at unload with the links.
+    /// This frame's ghost draws and each ghost's flash window. Cleared at
+    /// unload with the links.
     ghost_render: scripting_systems::ghost_render::GhostRenderCollector,
-    /// This frame's mover ghost draws and their flash-clamp channels.
+    /// This frame's mover ghost draws and their flash windows.
     mover_ghost_render: scripting_systems::mover_ghost_render::MoverGhostRenderCollector,
-    /// This frame's projectile billboard ghost draws and their channels.
+    /// This frame's projectile billboard ghost draws and their flash windows.
     billboard_ghost_render:
         scripting_systems::billboard_ghost_render::BillboardGhostRenderCollector,
     /// Host-only player events bound from the composed active set, with their

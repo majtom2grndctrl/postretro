@@ -98,6 +98,10 @@ impl LinkHistory {
     /// only on frames whose clock falls in the one-tick span ending at its
     /// stamp. Below one frame per tick a frame can skip that span: an `arm` on
     /// one tick and a `disarm` on the next then present no rise at all.
+    ///
+    /// At α exactly 0, a sprite-bodied projectile's ghost, whose pose is its
+    /// current transform (tick N), reads link state N−1: an arm on tick N that
+    /// reveals it starts one frame late. It never draws outside the volume.
     pub(crate) fn state_at(&self, clock: f64) -> LinkState {
         let bound = clock.ceil();
         self.changes

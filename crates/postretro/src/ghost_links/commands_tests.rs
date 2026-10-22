@@ -126,7 +126,7 @@ struct Host {
     steps: SequencedPrimitiveRegistry,
     link: EntityId,
     viewer: EntityId,
-    /// Script time, advanced per presented frame unless paused.
+    /// Script time, advanced per presented frame unless frozen.
     time: f64,
 }
 
@@ -269,7 +269,7 @@ impl Host {
             .record_after_fixed_tick(&self.ctx.registry.borrow(), None);
     }
 
-    /// One presented frame; `advance` moves script time (false: paused).
+    /// One presented frame; `advance` moves script time (false: frozen).
     fn present(&mut self, advance: bool) {
         if advance {
             self.time += f64::from(FRAME);
@@ -462,7 +462,8 @@ fn member_categories_follow_the_map_default_then_the_last_call_of_each_tick() {
 
 // `setColorFilter` overrides the style field by field; a
 // `periodMs` ramp presents its midpoint halfway through; `periodMs` 0 lands in
-// one frame. A pause freezes the ramp while the membership ramp runs on.
+// one frame. Frozen script time (the dev `freeze_time`) holds the ramp still
+// while the membership ramp runs on.
 #[test]
 fn color_filter_overrides_the_style_per_field_on_script_time() {
     let mut host = Host::new(false, GhostMembers::all());
@@ -491,7 +492,7 @@ fn color_filter_overrides_the_style_per_field_on_script_time() {
     assert_eq!(look.saturation, 1.0, "periodMs 0 lands on the first frame");
     assert_eq!(look.tint, ECHO.tint, "an unset field keeps the style");
 
-    // Paused: script time holds, so the filter ramp holds; membership rises.
+    // Script time frozen: the filter ramp holds; membership rises.
     let before = host.membership(partner);
     for _ in 0..4 {
         host.present(false);

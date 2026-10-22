@@ -35,7 +35,7 @@ pub(crate) type GhostDrawKey = (u16, EntityId);
 /// The look `member` presents this frame through `clamp`: its link look as the
 /// member reads it ([`GhostMember::look`]) at the member's presented opacity
 /// (link opacity times membership), limited with its opacity, tint redness
-/// and tint luminance sharing one flash window. The one place a ghost draw
+/// and drawn brightness sharing one flash window. The one place a ghost draw
 /// collector turns a link look into a drawn look; the skinned, mover and
 /// billboard ghost collectors each call it for every presented ghost, culled
 /// or not, between their clamp's `begin_frame` and `end_frame`.
@@ -90,9 +90,10 @@ pub(crate) struct GhostDrawFrame<'a> {
 /// Per ghost member with a mesh: rebuild its group from the presented pose
 /// while it is a live member (the same sample, pose inputs and attachment
 /// emission as the real draw, under `mapping.matrix()`), or keep the cached
-/// group while it fades; limit its presented opacity and tint through its own
-/// flash-clamp channel; then cull the group at its mapped origin against the
-/// viewer's visible cells, whatever the real position's visibility.
+/// group while it fades; limit its presented opacity and tint on the ghost's
+/// one flash window, which opacity, tint redness and drawn brightness share; then
+/// cull the group at its mapped origin against the viewer's visible cells,
+/// whatever the real position's visibility.
 ///
 /// Palette caching: ghost instances take [`MeshPaletteCacheKey::Ghost`] keys,
 /// never the real entity's. A live ghost samples the same pose as its real

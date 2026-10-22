@@ -130,12 +130,12 @@ fn member_lane_delays_slot_pawns_on_the_host_and_every_remote_on_a_client() {
     );
 }
 
-// At the clock level (movers are not yet ghost members): on a connected
-// client a link arm and a mover phase change applied on one host tick ride one
-// snapshot, stamped S. The mover re-simulates from that phase to the estimated
-// host tick on the frame the snapshot applies; the mover lane reads link state
-// at that same estimated tick, already at or past S, so the arm presents with
-// the motion on that frame and not before it.
+// On a connected client, a link arm and a mover phase change applied on one
+// host tick ride one snapshot, stamped S. The mover re-simulates from that
+// phase to the estimated host tick on the frame the snapshot applies; the
+// mover lane reads link state at that same estimated tick, already at or past
+// S, so the arm presents with the motion on that frame and not before it.
+// Checked on the lane clock and link history alone.
 #[test]
 fn mover_lane_reads_a_link_arm_on_the_frame_its_snapshot_applies() {
     let spawn = LinkState::new(false, GhostMembers::all());

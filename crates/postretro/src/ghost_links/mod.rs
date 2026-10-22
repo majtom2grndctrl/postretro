@@ -23,6 +23,7 @@ use std::time::Instant;
 
 use glam::Vec3;
 use postretro_collision::TeleporterRegions;
+use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::{ComponentKind, ComponentValue, DataRegistry, EntityId, EntityRegistry};
 use postretro_foundation::SeamlessMapping;
 use postretro_level_loader::LevelWorld;
@@ -151,6 +152,11 @@ impl GhostLinks {
         }
     }
 
+    /// Whether some link's `ghost_tags` matched a mover at install.
+    pub(crate) fn ghosts_movers(&self) -> bool {
+        !self.movers.is_empty()
+    }
+
     /// The landmark → target mapping of link `index`.
     #[cfg(test)]
     pub(crate) fn mapping(&self, index: u16) -> Option<SeamlessMapping> {
@@ -237,9 +243,15 @@ impl GhostLinks {
             ..
         } = self;
         let clocks = frame.clocks;
-        // The viewer is never a candidate (`visit_candidates`); a ghost it
-        // already has, from before the camera followed it, drops here.
-        membership.begin_frame(crate::followed_player_pawn(registry));
+        // The viewer and its projectiles are never candidates
+        // (`visit_candidates`); ghosts of them from before the camera followed
+        // the viewer drop here.
+        membership.begin_frame(crate::followed_player_pawn(registry), |entity| {
+            registry
+                .get_component::<ProjectileComponent>(entity)
+                .ok()
+                .map(|projectile| projectile.owner_pawn)
+        });
         if !links.is_empty() {
             let oldest = clocks.oldest_readable();
             for link in links.iter_mut() {

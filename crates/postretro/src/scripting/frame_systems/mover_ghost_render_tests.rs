@@ -299,10 +299,10 @@ fn non_mover_members_and_zero_opacity_mover_ghosts_draw_nothing() {
 }
 
 // Wiring: a mover ghost's tint strobing white and black at 10 Hz at
-// steady opacity is limited through its tint-luminance channel; the limiter
-// off passes it through.
+// steady opacity is limited on its tint luminance; the limiter off passes it
+// through.
 #[test]
-fn a_mover_ghost_tint_strobe_is_limited_through_its_luminance_channel() {
+fn a_mover_ghost_tint_strobe_is_limited_on_its_tint_luminance() {
     let mut registry = EntityRegistry::new();
     let mover = spawn_mover(&mut registry, SOURCE);
     let members = [member(mover, 0, pose(SOURCE), false)];

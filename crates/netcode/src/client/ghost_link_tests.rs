@@ -327,7 +327,7 @@ fn pawn_record(x: f32, generation: u8) -> Vec<ComponentPayload> {
     ]
 }
 
-// At the netcode seam: each remote reports the host tick its presented pose
+// Client replication reports, per remote, the host tick its presented pose
 // shows. A blend shows its leading sample; a pose held on the near side of a
 // seamless cut shows no state of the cut's own tick, and the cut frame does.
 #[test]

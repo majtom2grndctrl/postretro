@@ -699,11 +699,12 @@ mod tests {
         }
     }
 
-    // On the host seat: a ghost-link arm applied on the tick a client pawn
-    // swaps copies is stamped with that tick's end. The pose stamp keeps it hidden
-    // while the delayed pose still holds the source side of the cut, and shows it
-    // from the first frame drawing the arrival; the lane clock alone
-    // (`presented_client_pawn_host_tick`) would show it one tick early.
+    // The host's presentation of a client pawn stamps a ghost-link arm applied
+    // on the tick that pawn swaps copies with that tick's end. The pose stamp
+    // keeps it hidden while the delayed pose still holds the source side of
+    // the cut, and shows it from the first frame drawing the arrival; the lane
+    // clock alone (`presented_client_pawn_host_tick`) would show it one tick
+    // early.
     #[test]
     fn presented_client_pawn_state_tick_hides_a_cut_ticks_state_until_the_cut_presents() {
         use postretro_foundation::PlayerMovementComponent;

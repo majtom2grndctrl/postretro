@@ -562,10 +562,10 @@ fn a_model_bodied_projectile_ghosts_through_the_skinned_ghost_path() {
 }
 
 // Wiring: a ghost's tint strobing white and black at 10 Hz at steady
-// opacity is limited through its tint-luminance channel and rests dark over
-// budget; with the limiter off it passes through.
+// opacity is limited on its tint luminance and rests dark over budget; with
+// the limiter off it passes through.
 #[test]
-fn a_white_black_tint_strobe_is_limited_through_the_luminance_channel() {
+fn a_white_black_tint_strobe_is_limited_on_its_tint_luminance() {
     let mut registry = EntityRegistry::new();
     let pawn = spawn_pawn(&mut registry, SOURCE);
     let dt = 1.0 / 60.0;

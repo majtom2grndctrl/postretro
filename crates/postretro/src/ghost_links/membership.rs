@@ -77,6 +77,8 @@ pub(crate) struct MembershipTable {
     /// local spawn state already shows it starts at full, so members of links
     /// armed on spawn present in full on frame 1. Every other key starts at 0.
     settle_at_target: bool,
+    /// The viewer the last frame began with, so a viewer switch is seen.
+    viewer: Option<EntityId>,
 }
 
 impl Default for MembershipTable {
@@ -85,13 +87,15 @@ impl Default for MembershipTable {
             entries: HashMap::new(),
             members: Vec::new(),
             settle_at_target: true,
+            viewer: None,
         }
     }
 }
 
 /// How far presented membership moves this frame: the limiter's rate cap over
 /// presented-frame time, a hitch stepping at most the hitch ceiling. The ramp
-/// runs whether the limiter is on or off and continues through a game pause.
+/// runs whether the limiter is on or off, and continues while script time is
+/// frozen (the dev `freeze_time`).
 pub(crate) fn ramp_step(elapsed_seconds: f32) -> f32 {
     let elapsed = if elapsed_seconds.is_finite() {
         elapsed_seconds.max(0.0)
@@ -103,12 +107,22 @@ pub(crate) fn ramp_step(elapsed_seconds: f32) -> f32 {
 
 impl MembershipTable {
     /// Start a frame: every target drops to 0 until a member marks it. Ghosts
-    /// of `viewer` drop at once rather than fade: the camera can come to follow
-    /// a pawn that was ghosting, and a viewer never sees its own pawn's ghost.
-    pub(crate) fn begin_frame(&mut self, viewer: Option<EntityId>) {
+    /// of `viewer`'s pawn and of its projectiles drop at once rather than fade:
+    /// the camera can come to follow a pawn that was ghosting, and a viewer
+    /// never sees its own pawn's or projectiles' ghosts. `projectile_owner`
+    /// names a projectile's owning pawn; it is asked only on a frame whose
+    /// viewer differs from the last frame's, since candidates never offer the
+    /// viewer's projectiles while the viewer holds.
+    pub(crate) fn begin_frame(
+        &mut self,
+        viewer: Option<EntityId>,
+        projectile_owner: impl Fn(EntityId) -> Option<EntityId>,
+    ) {
+        let switched = viewer.is_some() && viewer != self.viewer;
+        self.viewer = viewer;
         self.entries.retain(|key, entry| {
             entry.target = false;
-            Some(key.entity) != viewer
+            Some(key.entity) != viewer && !(switched && projectile_owner(key.entity) == viewer)
         });
     }
 

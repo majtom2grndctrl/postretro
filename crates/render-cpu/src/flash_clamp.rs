@@ -2,7 +2,7 @@
 // `screen.flash`, `screen.vignette` and the engine's fluid view tint are each a
 // per-value clamp (`value.rs`), limited as they pack into the resolve's effect
 // uniform. `keyed.rs` holds one clamp per draw-side source, and `ghost_look.rs`
-// limits each ghost's opacity, tint redness and tint luminance on one window.
+// limits each ghost's opacity, tint redness and drawn brightness on one window.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter)
 
 mod ghost_look;

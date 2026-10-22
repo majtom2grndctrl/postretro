@@ -28,6 +28,13 @@ fn unorm(value: f32, max: f32) -> u32 {
     (clamped * max).round() as u32
 }
 
+/// `tint` as a ghost shader decodes it from [`GhostInstanceLook::pack`]: each
+/// channel on the 8-bit grid `pack4x8unorm` stores. This is the tint that
+/// draws, so the flash clamp measures a tint's luminance on it.
+pub fn drawn_tint(tint: [f32; 3]) -> [f32; 3] {
+    tint.map(|channel| unorm(channel, 255.0) as f32 / 255.0)
+}
+
 impl GhostInstanceLook {
     /// Pack into the skinned `Instance.base_and_pad.zw` lanes, which the opaque
     /// draw leaves zero. The instance record keeps its 80-byte stride.
@@ -170,6 +177,22 @@ mod tests {
                     "{case:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn drawn_tint_is_the_tint_the_packed_look_decodes_to() {
+        for tint in [
+            [0.0; 3],
+            [1.0; 3],
+            [0.398, 1.0, 0.005843],
+            [0.6, 0.8, 1.0],
+            [0.01, 0.5, 0.99],
+            [-1.0, 1.5, f32::NAN],
+        ] {
+            let decoded = GhostInstanceLook::unpack(look(0.5, 0.5, tint).pack()).tint;
+            assert_eq!(drawn_tint(tint), decoded, "{tint:?}");
+            assert_eq!(drawn_tint(decoded), decoded, "a drawn tint packs as itself");
         }
     }
 

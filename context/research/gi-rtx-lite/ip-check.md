@@ -4,7 +4,7 @@
 **Status:** Engineering triage for counsel, not legal advice. Companion to [index.md](index.md). "Appears present", "appears absent" and "reads on" are engineering readings of claim text, not opinions on infringement, validity or freedom to operate.
 
 > **Read this when:** designing probe selection, a runtime radiosity update, or any probe that changes with lighting at runtime.
-> **Key limit (read first):** every patent database (Google Patents, Justia, USPTO, Espacenet, Patentscope) was blocked by the session's network policy. **All claims below come from search-result summaries, not claim text.** Element charts are paraphrases of paraphrases; statuses, priority dates and expiry projections are unverified. Treat each verdict as a lookup list. Re-chart against certified claims before any design decision rests on it. Tencent WO2026113651A1 is charted from [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md), itself read from a machine translation.
+> **Key limit (read first):** every patent database (Google Patents, Justia, USPTO, Espacenet, Patentscope) was blocked by the session's network policy. **All claims below come from search-result summaries, not claim text.** Element charts are paraphrases of paraphrases; statuses, priority dates and expiry projections are unverified. Treat each verdict as a lookup list. To re-chart, allow `patents.google.com`, `patents.justia.com`, `ppubs.uspto.gov`, `worldwide.espacenet.com` and `patentscope.wipo.int` in the environment's network policy. Re-chart against certified claims before any design decision rests on it. Tencent WO2026113651A1 is charted from [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md), itself read from a machine translation.
 
 ---
 
@@ -31,6 +31,8 @@
 | US20250037360A1 | Sony Interactive Entertainment | ≈2023 | Pending | 2 |
 | US8451270B2 "Real-time radiosity system in a video game" | Microsoft | 2008-06-25 | Expired (fees); prior art | 3 |
 | US7408550 (Bunnell) | Intel | 2006 | Expired (fees); prior art | 3 |
+
+**NVIDIA as prior art.** US20210012562A1 published 2021-01-14, before Tencent US12293451B2's 2021-04-02 priority. Where its description overlaps '451's claims it may be prior art; counsel's reading list.
 
 Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-derived probes; Epic (Lumen surface or radiance cache); EA, Activision or Unity probe placement; portal- or door-gated light transport. Filings published in the last 18 months are invisible to search.
 

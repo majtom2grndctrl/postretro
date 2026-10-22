@@ -817,6 +817,14 @@ impl HostCommandQueues {
             .retain_switch(declaration);
     }
 
+    /// Switches this client's lane holds, not yet released.
+    #[cfg(test)]
+    pub(crate) fn retained_switch_count(&self, client_id: u64) -> usize {
+        self.clients
+            .get(&client_id)
+            .map_or(0, |state| state.switches.retained_len())
+    }
+
     /// Switches this client's lane released since the last call, in arrival
     /// order. Call after [`Self::resolve_tick`] and before the tick's
     /// simulation, so a switch reaches the weapon ahead of the starts and
@@ -842,6 +850,18 @@ impl HostCommandQueues {
     /// authority metadata. `None` until the first command resolves.
     pub(crate) fn resolved_cursor(&self, client_id: u64) -> Option<u32> {
         self.clients.get(&client_id).and_then(|s| s.resolved_cursor)
+    }
+
+    /// Whether `client_id`'s command for `tick` has arrived and waits in the
+    /// playout buffer, not yet resolved.
+    #[cfg(test)]
+    pub(crate) fn has_pending_tick(&self, client_id: u64, tick: u32) -> bool {
+        self.clients.get(&client_id).is_some_and(|state| {
+            state
+                .pending
+                .iter()
+                .any(|command| command.client_tick == tick)
+        })
     }
 
     /// Latest finite aim pitch accepted by authoritative command playout. Input
@@ -1803,6 +1823,16 @@ mod tests {
                  of the catch-up trim"
             );
         };
+    }
+
+    // Grep gate: the Input resend fixes lost-datagram stalls in the channel, so
+    // the gap and catch-up policy keep their values and handle genuine outages
+    // only. Moving one of these means the channel fix was not enough.
+    #[test]
+    fn gap_policy_keeps_hold_3_buffer_target_2_and_buffer_max_8() {
+        assert_eq!(INPUT_HOLD_TICKS, 3);
+        assert_eq!(INPUT_BUFFER_TARGET, 2);
+        assert_eq!(INPUT_BUFFER_MAX, 8);
     }
 
     // Test #3 (coordinator-required): the bounded deep-yield walk plus the silent-client

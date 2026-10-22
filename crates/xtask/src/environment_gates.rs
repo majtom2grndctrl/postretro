@@ -107,6 +107,11 @@ const BUNDLE_BINDING_SUFFIX_NAMES: &[&str] = &["_s", "_n", "_e", "_h"];
 const REFLECTION_VOLUME_CLASS: &str = "reflection_volume";
 const REFLECTION_VOLUME_KEYS: &[&str] = &["_capture_offset"];
 
+/// The probe-capture override: which brushes a probe's bake keeps, never how a
+/// surface reflects. Allowed on exactly these classes; on any other it fails.
+const REFLECTION_CAPTURE_KEY: &str = "_reflection_capture";
+const REFLECTION_CAPTURE_CLASSES: &[&str] = &["func_group", "switch"];
+
 /// The audio crate's sources. Its public API carries primitives only, so the
 /// muffle and every other control cross the boundary without kira.
 const AUDIO_CRATE_SRC: &str = "crates/audio/src";
@@ -617,7 +622,8 @@ fn player_options_name_no_reflection_style() {
 
 // Reflections take no world-material input: no material, material property,
 // texture prefix or surface-map suffix rule names one, and the FGD's only
-// reflection authoring is `reflection_volume`'s probe box.
+// reflection authoring is `reflection_volume`'s probe box plus the
+// `_reflection_capture` probe-capture override on `func_group` and `switch`.
 #[test]
 fn no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input() {
     let root = workspace_root();
@@ -713,7 +719,11 @@ fn no_world_material_fgd_key_or_texture_rule_takes_a_reflection_input() {
         if names_reflection(class) {
             violations.push(format!("{FGD_FILE}: class `{class}`"));
         }
+        let capture_override_allowed = REFLECTION_CAPTURE_CLASSES.contains(&class.as_str());
         for key in keys.iter().filter(|key| names_reflection(key)) {
+            if capture_override_allowed && key == REFLECTION_CAPTURE_KEY {
+                continue;
+            }
             violations.push(format!("{FGD_FILE}: `{class}` key `{key}`"));
         }
     }

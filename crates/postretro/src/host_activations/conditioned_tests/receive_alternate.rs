@@ -256,6 +256,7 @@ impl Fixture {
                 &mut fixture.replication,
                 &mut fixture.slots,
                 &mut fixture.queues,
+                &fixture.owners,
                 &mut fixture.pending,
                 &mut fixture.open,
                 CLIENT,

@@ -4,7 +4,7 @@
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
-    self, ClientSwitchDeclaration, ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused,
+    self, ClientSwitchDeclaration, ServerMessage, ServerSwitchAccepted, ServerSwitchRefused,
 };
 
 use crate::command_queue::{HostCommandQueues, MovementOwners, SwitchDelivery, WeaponOwners};
@@ -12,9 +12,17 @@ use crate::command_queue::{HostCommandQueues, MovementOwners, SwitchDelivery, We
 /// Retain a client's switch declaration in its command queue's switch lane.
 /// The lane releases it on a later fixed tick, in client-tick order with the
 /// client's retained starts and presses; see [`host_apply_switch_deliveries`].
-/// A client that owns no pawn gets no reply, as a declaration has no meaning
-/// before its slot owns one.
+/// A client that owns no pawn gets an immediate refusal for the declaration's
+/// id and slot, through the same reply a refused slot uses: the client resolves
+/// its pending chain strictly in declaration order, so a dropped declaration
+/// would leave the front unresolved and discard every later outcome.
+///
+/// The immediate refusal assumes a client's owner entry goes only with its
+/// switch lane, at participation exit or slot replacement. Were the owner
+/// removed alone, this refusal could overtake a declaration the lane still
+/// retains and answer the chain out of order.
 pub fn host_retain_switch_declaration(
+    server: &mut NetServer,
     command_queues: &mut HostCommandQueues,
     owners: &MovementOwners,
     client_id: u64,
@@ -22,6 +30,13 @@ pub fn host_retain_switch_declaration(
 ) {
     if owners.iter().any(|(_, owner)| owner == client_id) {
         command_queues.retain_switch(client_id, declaration);
+    } else {
+        send_switch_refusal(
+            server,
+            client_id,
+            declaration.declaration_id,
+            declaration.slot,
+        );
     }
 }
 
@@ -29,9 +44,9 @@ pub fn host_retain_switch_declaration(
 /// resolution and before the simulation, replying to each client in arrival
 /// order. Validation is the host's: the client owns its equip presentation,
 /// while the host owns the committed slot used by snapshots and server-side
-/// systems. A refusal is owner-private reliable Control because a snapshot
-/// cannot recover a stationary client with no later baseline change to
-/// compare against.
+/// systems. Each outcome is owner-private reliable Input, in the same ordered
+/// stream as the client's commands, because a snapshot cannot recover a
+/// stationary client with no later baseline change to compare against.
 pub fn host_apply_switch_deliveries(
     registry: &mut EntityRegistry,
     server: &mut NetServer,
@@ -135,23 +150,85 @@ pub(crate) fn apply_host_switch_declaration(
 }
 
 fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
-    server.send_control(
+    server.send_input(
         client_id,
-        wire::encode(&ServerControlMessage::SwitchAccepted(
-            ServerSwitchAccepted {
-                declaration_id,
-                slot,
-            },
-        )),
-    );
-}
-
-fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
-    server.send_control(
-        client_id,
-        wire::encode(&ServerControlMessage::SwitchRefused(ServerSwitchRefused {
+        wire::encode(&ServerMessage::SwitchAccepted(ServerSwitchAccepted {
             declaration_id,
             slot,
         })),
     );
+}
+
+fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
+    server.send_input(
+        client_id,
+        wire::encode(&ServerMessage::SwitchRefused(ServerSwitchRefused {
+            declaration_id,
+            slot,
+        })),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, UdpSocket};
+    use std::time::Duration;
+
+    use postretro_net::transport::NetClient;
+
+    use super::*;
+
+    #[test]
+    fn declaration_from_client_without_owner_entry_is_refused_once() {
+        let server_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = server_socket.local_addr().unwrap();
+        let mut server =
+            NetServer::new(server_socket, address, 2, Duration::from_secs(1), None).unwrap();
+        let client_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut client = NetClient::new(
+            client_socket,
+            address,
+            7,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .unwrap();
+        server.add_relay_connection(7, None);
+        client.set_connected();
+
+        let mut command_queues = HostCommandQueues::new();
+        host_retain_switch_declaration(
+            &mut server,
+            &mut command_queues,
+            &MovementOwners::default(),
+            7,
+            ClientSwitchDeclaration {
+                declaration_id: 41,
+                slot: 3,
+                client_tick: 100,
+            },
+        );
+
+        for packet in server.packets_to_send(7) {
+            client.process_packet(&packet);
+        }
+        let replies: Vec<ServerMessage> = client
+            .drain_input()
+            .iter()
+            .map(|bytes| wire::decode(bytes).unwrap())
+            .collect();
+        assert_eq!(
+            replies,
+            vec![ServerMessage::SwitchRefused(ServerSwitchRefused {
+                declaration_id: 41,
+                slot: 3,
+            })]
+        );
+        assert_eq!(
+            command_queues.retained_switch_count(7),
+            0,
+            "the refused declaration is not retained"
+        );
+    }
 }

@@ -53,7 +53,7 @@ pub(crate) fn client_tick_le(a: u32, b: u32) -> bool {
 // never re-typed magic numbers.
 
 /// Ordinary correction cap: an offset magnitude at or below this (in metres) is a
-/// small mispredict smoothed over a few render frames. The common case under
+/// small mispredict smoothed over a few predicted fixed ticks. The common case under
 /// loopback latency.
 pub(crate) const ORDINARY_CORRECTION_MAX_M: f32 = 0.5;
 
@@ -65,15 +65,18 @@ pub(crate) const DASH_CORRECTION_MAX_M: f32 = 2.0;
 /// Teleport threshold: a correction at or above this (in metres) is too large to
 /// smooth without a visible rubber-band slide. It is snapped — history and the
 /// presentation offset are cleared and the registry transform stamps prev == current
-/// — so the pawn appears at the authoritative pose immediately.
+/// — so the pawn appears at the authoritative pose immediately. The same floor bounds
+/// the composed presentation offset: a smoothed correction whose sum with the
+/// in-flight remainder reaches it snaps the eye too (history kept).
 pub(crate) const TELEPORT_CORRECTION_MIN_M: f32 = 3.0;
 
-/// Fraction of the presentation offset retained per render frame as it decays to
-/// zero. `offset *= DECAY_PER_FRAME` each frame, so a smoothed correction converges
-/// over a bounded handful of frames (≈10 frames to fall below ~3% of its initial
-/// magnitude at 0.7) — fast enough to feel responsive, slow enough to hide the
-/// snap. Render-rate, not tick-rate: smoothing is presentation, not simulation.
-const DECAY_PER_FRAME: f32 = 0.7;
+/// Fraction of the presentation offset retained per decay step as it decays to
+/// zero. `offset *= DECAY_PER_STEP` once per predicted fixed tick, after that tick's
+/// camera pose has baked the offset in, so a smoothed correction converges over a
+/// bounded handful of ticks (≈10 to fall below ~3% of its initial magnitude at 0.7)
+/// — fast enough to feel responsive, slow enough to hide the snap. Smoothing is
+/// presentation, not simulation: the registry never carries it.
+const DECAY_PER_STEP: f32 = 0.7;
 
 /// Below this magnitude (metres) the presentation offset is treated as fully
 /// converged and zeroed, so the decaying geometric tail does not leave a permanent
@@ -81,8 +84,9 @@ const DECAY_PER_FRAME: f32 = 0.7;
 const OFFSET_SETTLED_EPSILON_M: f32 = 1e-4;
 
 /// How a reconcile correction was classified. The classification drives whether
-/// the registry-snapped correction is smoothed (seeded as a decaying presentation
-/// offset) or snapped hard (teleport: offset cleared, prev == current stamped).
+/// the registry-snapped correction is smoothed (composed onto the decaying
+/// presentation offset) or snapped hard (teleport: offset cleared, prev == current
+/// stamped).
 /// Returned by the reconcile entry point so the harness can assert the class
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,8 +100,11 @@ pub(crate) enum CorrectionClass {
     /// record (generation, accumulated yaw or last teleporter) differs from the
     /// prediction: that identity change keeps the unacked history, since stamped
     /// rotation keeps its replay valid. A plain correction at or past
-    /// `TELEPORT_CORRECTION_MIN_M` takes it too, and clears the history. Either
-    /// way reconcile reports a [`LocalTeleportAdoption`] for the app's camera hold.
+    /// `TELEPORT_CORRECTION_MIN_M` takes it too, and clears the history. So does a
+    /// smoothed-class correction whose composition with the in-flight presentation
+    /// offset reaches that floor; it keeps the history, since the reconcile itself
+    /// was ordinary. Every way, reconcile reports a [`LocalTeleportAdoption`] for the
+    /// app's camera hold.
     Teleport,
     /// In the gap between the smoothed caps and the teleport floor (or a dash-sized
     /// correction on a non-dash tick): smoothed like an ordinary correction, but the
@@ -167,7 +174,9 @@ pub(crate) struct ArmedPawn {
 }
 
 /// App-facing presentation facts from a teleport-class own-pawn correction. A
-/// fixed arrival point prevents cues from resolving a delayed render pose.
+/// fixed arrival point prevents cues from resolving a delayed render pose. A
+/// composed-offset snap reports an eye cut only: `camera_cut` with no view turn,
+/// no carry detach and no cue.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LocalTeleportAdoption {
     pub entity_id: EntityId,
@@ -219,12 +228,13 @@ pub struct ClientPrediction {
     /// increasing `client_tick` stream. Lives here (not on `App`) so the send-stamp
     /// allocator stays with the prediction state it feeds.
     next_client_tick: u32,
-    /// Local-pawn correction smoothing. The decaying difference between the
-    /// pre-reconcile predicted pose and the reconciled authoritative pose, in world
-    /// space. The registry transform always snaps to the authoritative result
-    /// (gameplay/collision/AI read it); only the local first-person *presentation*
-    /// adds this offset, decaying it to zero over a bounded number of render frames
-    /// so the correction is continuous on screen without lying to the simulation.
+    /// Local-pawn correction smoothing. The decaying sum of each smoothed
+    /// correction's difference between the pre-reconcile predicted pose and the
+    /// reconciled authoritative pose, in world space. The registry transform always
+    /// snaps to the authoritative result (gameplay/collision/AI read it); only the
+    /// local first-person *presentation* adds this offset, decaying it to zero over a
+    /// bounded number of ticks so the correction is continuous on screen without
+    /// lying to the simulation.
     /// Owned here, never on `App`/`main.rs` — the source-layout gate.
     presentation_offset: Vec3,
     /// Off-by-default client input send-rate diagnostics (see `netdiag`). Inert
@@ -481,38 +491,55 @@ impl ClientPrediction {
         self.history.iter().any(|entry| entry.included_dash)
     }
 
-    /// Seed the local-pawn presentation offset from a fresh correction: the
-    /// `correction` vector is `predicted_pose - reconciled_pose`, so adding it back to
-    /// the (snapped) registry pose reproduces the pre-reconcile predicted pose, and
-    /// decaying it to zero glides the rendered eye from where the client *thought* it
-    /// was to where the authority says it is. Replaces any in-flight offset outright
-    /// (the newest correction is authoritative over a stale one). Smoothing only —
-    /// the caller has already snapped the registry to the reconciled result.
-    pub(crate) fn seed_presentation_offset(&mut self, correction: Vec3) {
-        self.presentation_offset = correction;
+    /// Compose a fresh smoothed correction onto the local-pawn presentation offset.
+    /// `correction` is `predicted_pose - reconciled_pose`: the registry just moved by
+    /// `-correction`, so adding it to whatever remainder is still decaying keeps the
+    /// presented eye (registry pose + offset) exactly where it was before this
+    /// reconcile, and decaying the sum glides it to the authority. That holds for a
+    /// correction landing before the previous one decayed, and for two in one frame.
+    /// Smoothing only — the caller has already snapped the registry.
+    ///
+    /// Returns `true` when the composed offset reaches [`TELEPORT_CORRECTION_MIN_M`]:
+    /// too far to glide, so the offset is cleared and the caller cuts the camera, the
+    /// same rule a single teleport-floor correction follows. A teleport-class
+    /// correction, a first-record adoption and a level unload clear the offset
+    /// instead, so nothing composes across them. A non-finite composed offset snaps
+    /// the same way: kept, it would never decay or settle.
+    #[must_use = "a composed offset at the teleport floor snaps; the caller emits the camera cut"]
+    pub(crate) fn seed_presentation_offset(&mut self, correction: Vec3) -> bool {
+        let composed = self.presentation_offset + correction;
+        if !composed.is_finite() || composed.length() >= TELEPORT_CORRECTION_MIN_M {
+            self.presentation_offset = Vec3::ZERO;
+            return true;
+        }
+        self.presentation_offset = composed;
+        false
     }
 
-    /// Clear the presentation offset immediately (no decay). Used on a teleport: the
-    /// pawn snaps to the authoritative pose with no smoothed glide, so any in-flight
-    /// offset from a prior small correction is discarded too.
+    /// Clear the presentation offset immediately (no decay). Used on a teleport and a
+    /// first-record adoption: the pawn snaps to the authoritative pose with no
+    /// smoothed glide, so any in-flight offset from a prior small correction is
+    /// discarded too, and the next correction composes from zero.
     pub(crate) fn clear_presentation_offset(&mut self) {
         self.presentation_offset = Vec3::ZERO;
     }
 
-    /// The current local-pawn presentation offset (decaying toward zero). The render
-    /// seam adds it to the registry transform to produce the presented first-person
-    /// pose; gameplay never reads it. `ZERO` when no correction is in flight.
-    pub(crate) fn presentation_offset(&self) -> Vec3 {
+    /// The current local-pawn presentation offset (decaying toward zero). Added to the
+    /// registry transform for the presented first-person eye: by the client's predicted
+    /// tick before its frame-timing push, and by the app's adoption camera hold after
+    /// snapshot apply. Gameplay never reads it. `ZERO` when no correction is in flight.
+    pub fn presentation_offset(&self) -> Vec3 {
         self.presentation_offset
     }
 
     /// Produce the presented local pose: the gameplay-authoritative `registry_pose`
     /// with the decaying correction offset added to its position. The
     /// presentation-pose accessor in `Transform` form — used wherever a full pose
-    /// (not just the offset) is convenient. The `main.rs` render seam folds the same
-    /// offset onto the interpolated *camera eye* via
-    /// [`presentation_offset`](Self::presentation_offset) (it works with the
-    /// interpolated position, not a registry Transform). Rotation/scale are not
+    /// (not just the offset) is convenient. Production folds the same offset onto the
+    /// camera eye at tick rate instead, via
+    /// [`presentation_offset`](Self::presentation_offset), before each predicted tick's
+    /// frame-timing push; the render stage interpolates those presented eyes and never
+    /// re-adds it. Rotation/scale are not
     /// corrected (Phase 3 is movement-only; orientation comes from the live look
     /// input, not the reconciled snapshot). Test-only presentation-pose accessor;
     /// no production caller.
@@ -524,16 +551,17 @@ impl ClientPrediction {
         }
     }
 
-    /// Decay the presentation offset one render frame toward zero. Called at render
-    /// rate (not tick rate): correction smoothing is presentation, decoupled from the
-    /// fixed sim step. Geometric decay by [`DECAY_PER_FRAME`]; snaps to exactly zero
+    /// Decay the presentation offset one step toward zero. Production calls it once
+    /// per predicted fixed tick, after that tick's presented camera pose has baked
+    /// the offset in (`client_decay_local_correction`); the render stage interpolates
+    /// those presented poses. Geometric decay by [`DECAY_PER_STEP`]; snaps to exactly zero
     /// once below [`OFFSET_SETTLED_EPSILON_M`] so the rendered eye fully converges
     /// rather than carrying a permanent sub-visible bias. No-op when already zero.
     pub(crate) fn decay_presentation_offset(&mut self) {
         if self.presentation_offset == Vec3::ZERO {
             return;
         }
-        self.presentation_offset *= DECAY_PER_FRAME;
+        self.presentation_offset *= DECAY_PER_STEP;
         if self.presentation_offset.length() < OFFSET_SETTLED_EPSILON_M {
             self.presentation_offset = Vec3::ZERO;
         }
@@ -1108,7 +1136,7 @@ mod tests {
         let mut prediction = ClientPrediction::new();
         assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
 
-        prediction.seed_presentation_offset(Vec3::new(0.3, 0.0, -0.4));
+        assert!(!prediction.seed_presentation_offset(Vec3::new(0.3, 0.0, -0.4)));
         let seeded = prediction.presentation_offset().length();
         assert!(seeded > EPSILON, "a nonzero offset is seeded");
 
@@ -1138,6 +1166,32 @@ mod tests {
         assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
     }
 
+    // Regression: a NaN correction composed into a NaN offset that never decayed or
+    // cleared, so the presented eye stayed NaN.
+    #[test]
+    fn non_finite_composed_offset_snaps_and_clears() {
+        for bad in [
+            Vec3::new(f32::NAN, 0.0, 0.0),
+            Vec3::new(0.0, f32::INFINITY, 0.0),
+        ] {
+            let mut prediction = ClientPrediction::new();
+            assert!(!prediction.seed_presentation_offset(Vec3::new(0.2, 0.0, 0.1)));
+            assert!(
+                prediction.seed_presentation_offset(bad),
+                "a non-finite composed offset snaps like the floor: {bad:?}"
+            );
+            assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+
+            let next = Vec3::new(0.0, 0.0, 0.3);
+            assert!(!prediction.seed_presentation_offset(next));
+            assert!(
+                (prediction.presentation_offset() - next).length() < EPSILON,
+                "the next correction composes from zero: {:?}",
+                prediction.presentation_offset()
+            );
+        }
+    }
+
     // --- clear_presentation_offset / clear_history wipe state for the teleport +
     // reset paths. ---
     #[test]
@@ -1153,7 +1207,7 @@ mod tests {
             postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
-        prediction.seed_presentation_offset(Vec3::new(1.0, 0.0, 0.0));
+        assert!(!prediction.seed_presentation_offset(Vec3::new(1.0, 0.0, 0.0)));
         assert!(!prediction.history().is_empty());
 
         prediction.clear_history();
@@ -1163,6 +1217,31 @@ mod tests {
         );
         prediction.clear_presentation_offset();
         assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+    }
+
+    // --- A level unload (or demotion, which shares the reset) clears an in-flight
+    // offset, and the next correction starts from zero: nothing composes across it. ---
+    #[test]
+    fn level_unload_clears_in_flight_offset_and_next_correction_starts_from_zero() {
+        let mut prediction = ClientPrediction::new();
+        let before_unload = Vec3::new(0.4, 0.0, -0.2);
+        assert!(!prediction.seed_presentation_offset(before_unload));
+        prediction.decay_presentation_offset();
+        assert!(
+            prediction.presentation_offset().length() > EPSILON,
+            "an offset is in flight at the unload"
+        );
+
+        prediction.reset_for_level_unload();
+        assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+
+        let after_unload = Vec3::new(0.0, 0.0, 0.3);
+        assert!(!prediction.seed_presentation_offset(after_unload));
+        assert!(
+            (prediction.presentation_offset() - after_unload).length() < EPSILON,
+            "the next correction does not compose with the pre-unload remainder: {:?}",
+            prediction.presentation_offset()
+        );
     }
 
     // --- Re-arming to the same pawn preserves unacked history; re-arming to a

@@ -10,9 +10,10 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// the client's revealed-level declaration and the two revealed holding
 /// causes advance it to protocol 10. The id is four ASCII bytes, so the
 /// counter byte continues as a hex digit: protocol 10 is "PRLA". Player-addressed
-/// presentation commands advance it to protocol 11, "PRLB". Independent of
-/// the baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
+/// presentation commands advance it to protocol 11, "PRLB". The gameplay
+/// channel layout, with weapon switches moving from Control to Input, advances
+/// it to protocol 12, "PRLC". Independent of the baked PRL file format.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -34,7 +35,12 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// Teleporters advance it to 32: the pawn teleport record in player movement
 /// state, the replicated teleporter armed state, and the input command's
 /// teleport yaw stamp share the bump.
-pub const WIRE_VERSION: u32 = 32;
+/// Moving weapon switches from Control to Input advances it to 33: removing the
+/// switch variants from the middle of the Control enums renumbers the later
+/// positional tags (`ClientControlMessage` `JoinSeed` 3 to 2, `Revealed` 4 to 3;
+/// `ServerControlMessage` `SessionRoster` 5 to 3). Input's sub-tick resend is a
+/// sender-side setting and does not affect wire compatibility.
+pub const WIRE_VERSION: u32 = 33;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -77,22 +83,21 @@ mod tests {
     use super::*;
     use bitcode::{Decode, Encode};
 
-    /// The five shipped variants before [`ServerControlMessage::SessionRoster`]
-    /// was appended. Keeping this local historical mirror lets the test measure
-    /// bitcode's enum-tag layout rather than assuming that a sixth variant leaves
-    /// it unchanged.
+    /// The server Control variants before [`ServerControlMessage::SessionRoster`],
+    /// in the current layout (the switch outcomes left Control at wire 33).
+    /// Keeping this local mirror lets the test measure bitcode's enum-tag layout
+    /// rather than assuming that the appended variant leaves it unchanged.
     #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
     enum PreRosterServerControlMessage {
         Divergence(DivergenceReason),
         Tuning(Vec<u8>),
         Relevel(String),
-        SwitchRefused(crate::wire::ServerSwitchRefused),
-        SwitchAccepted(crate::wire::ServerSwitchAccepted),
     }
 
-    /// Historical client Control layout before `JoinSeed` was appended. This
-    /// measures positional bitcode tags directly, guarding the shipped
-    /// admission/parity/switch discriminants against an accidental insertion.
+    /// Client Control variants before `JoinSeed`, in the current layout (the
+    /// switch declaration left Control at wire 33). This measures positional
+    /// bitcode tags directly, guarding the admission/parity discriminants
+    /// against an accidental insertion.
     #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
     enum PreJoinSeedClientControlMessage {
         Admission {
@@ -101,10 +106,9 @@ mod tests {
             mod_version: String,
         },
         Parity(crate::wire::ParityDeclaration),
-        SwitchDeclaration(crate::wire::ClientSwitchDeclaration),
     }
 
-    /// Historical client Control layout before `Revealed` was appended.
+    /// Client Control variants before `Revealed`, in the current layout.
     #[derive(Debug, Clone, PartialEq, Encode, Decode)]
     enum PreRevealedClientControlMessage {
         Admission {
@@ -113,7 +117,6 @@ mod tests {
             mod_version: String,
         },
         Parity(crate::wire::ParityDeclaration),
-        SwitchDeclaration(crate::wire::ClientSwitchDeclaration),
         JoinSeed {
             slots: std::collections::BTreeMap<String, crate::wire::JoinSeedValue>,
         },
@@ -167,10 +170,12 @@ mod tests {
     #[test]
     fn knockback_snapshot_layout_refuses_previous_wire_version() {
         const PRE_KNOCKBACK_WIRE_VERSION: u32 = 21;
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C42,
-            "player-addressed presentation commands require application protocol PRLB (protocol 11)"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C42,
+                "player-addressed presentation commands require application protocol PRLB (protocol 11) or later"
+            );
+        };
         const {
             assert!(
                 WIRE_VERSION > PRE_KNOCKBACK_WIRE_VERSION,
@@ -194,7 +199,7 @@ mod tests {
 
     #[test]
     fn session_roster_append_preserves_shipped_control_encodings() {
-        use crate::wire::{ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused};
+        use crate::wire::ServerControlMessage;
 
         let divergence = DivergenceReason::Closing(ClosingCause::Protocol {
             expected: ProtocolVersion {
@@ -219,26 +224,6 @@ mod tests {
                 PreRosterServerControlMessage::Relevel("campaign-test".to_owned()),
                 ServerControlMessage::Relevel("campaign-test".to_owned()),
             ),
-            (
-                PreRosterServerControlMessage::SwitchRefused(ServerSwitchRefused {
-                    declaration_id: 17,
-                    slot: 3,
-                }),
-                ServerControlMessage::SwitchRefused(ServerSwitchRefused {
-                    declaration_id: 17,
-                    slot: 3,
-                }),
-            ),
-            (
-                PreRosterServerControlMessage::SwitchAccepted(ServerSwitchAccepted {
-                    declaration_id: 18,
-                    slot: 4,
-                }),
-                ServerControlMessage::SwitchAccepted(ServerSwitchAccepted {
-                    declaration_id: 18,
-                    slot: 4,
-                }),
-            ),
         ];
 
         for (before, after) in cases {
@@ -252,7 +237,7 @@ mod tests {
 
     #[test]
     fn join_seed_append_preserves_shipped_client_control_encodings() {
-        use crate::wire::{ClientControlMessage, ClientSwitchDeclaration, ParityDeclaration};
+        use crate::wire::{ClientControlMessage, ParityDeclaration};
 
         let protocol = ProtocolVersion {
             app_protocol_id: 0x5052_4c36,
@@ -261,11 +246,6 @@ mod tests {
         let parity = ParityDeclaration {
             mod_digest: [0x17; 32],
             level: Some(("campaign-test".to_owned(), [0x18; 32])),
-        };
-        let switch = ClientSwitchDeclaration {
-            declaration_id: 17,
-            slot: 3,
-            client_tick: 17,
         };
         let cases = [
             (
@@ -284,10 +264,6 @@ mod tests {
                 PreJoinSeedClientControlMessage::Parity(parity.clone()),
                 ClientControlMessage::Parity(parity),
             ),
-            (
-                PreJoinSeedClientControlMessage::SwitchDeclaration(switch),
-                ClientControlMessage::SwitchDeclaration(switch),
-            ),
         ];
 
         for (before, after) in cases {
@@ -301,9 +277,7 @@ mod tests {
 
     #[test]
     fn revealed_append_preserves_shipped_client_control_encodings() {
-        use crate::wire::{
-            ClientControlMessage, ClientSwitchDeclaration, JoinSeedValue, ParityDeclaration,
-        };
+        use crate::wire::{ClientControlMessage, JoinSeedValue, ParityDeclaration};
         use std::collections::BTreeMap;
 
         let protocol = ProtocolVersion {
@@ -313,11 +287,6 @@ mod tests {
         let parity = ParityDeclaration {
             mod_digest: [0x25; 32],
             level: Some(("campaign-test".to_owned(), [0x26; 32])),
-        };
-        let switch = ClientSwitchDeclaration {
-            declaration_id: 25,
-            slot: 2,
-            client_tick: 26,
         };
         let slots = BTreeMap::from([("kplayer0000000001".to_owned(), JoinSeedValue::Number(3.0))]);
         let cases = [
@@ -336,10 +305,6 @@ mod tests {
             (
                 PreRevealedClientControlMessage::Parity(parity.clone()),
                 ClientControlMessage::Parity(parity),
-            ),
-            (
-                PreRevealedClientControlMessage::SwitchDeclaration(switch),
-                ClientControlMessage::SwitchDeclaration(switch),
             ),
             (
                 PreRevealedClientControlMessage::JoinSeed {
@@ -449,14 +414,10 @@ mod tests {
         const PRE_COMMAND_PROTOCOL_ID: u32 = 0x_5052_4C41; // "PRLA"
         const {
             assert!(
-                PROTOCOL_ID == PRE_COMMAND_PROTOCOL_ID + 1,
-                "player-addressed presentation advances the application protocol by one"
+                PROTOCOL_ID > PRE_COMMAND_PROTOCOL_ID,
+                "player-addressed presentation advances the application protocol"
             );
         };
-        assert_eq!(
-            WIRE_VERSION, 32,
-            "the teleport record, teleporter arming and input yaw stamp extend the shipped layout"
-        );
         let previous = ProtocolVersion {
             app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
             wire_version: WIRE_VERSION,
@@ -558,8 +519,8 @@ mod activation_epoch_tests {
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
         const {
             assert!(WIRE_VERSION >= 26);
+            assert!(PROTOCOL_ID >= 0x5052_4c42);
         }
-        assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         for received in [
             ProtocolVersion {
                 app_protocol_id: PROTOCOL_ID,
@@ -587,8 +548,8 @@ mod switch_tick_epoch_tests {
     fn shared_overlay_roster_refuses_wire_27_without_changing_snapshot_layout() {
         const {
             assert!(WIRE_VERSION >= 28);
+            assert!(PROTOCOL_ID >= 0x5052_4c42);
         }
-        assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: 27,
@@ -648,8 +609,10 @@ mod switch_tick_epoch_tests {
     // arming, or the input yaw stamp, so gate 1 refuses it before any decode.
     #[test]
     fn teleport_record_refuses_wire_31_peers() {
-        assert_eq!(WIRE_VERSION, 32);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 21);
+        const {
+            assert!(WIRE_VERSION >= 32);
+            assert!(crate::wire::SNAPSHOT_VERSION >= 21);
+        }
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: 31,
@@ -661,6 +624,51 @@ mod switch_tick_epoch_tests {
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 31);
     }
 
+    // A PRLB / wire-32 peer carries weapon switches on Control, so it numbers
+    // the later Control tags differently (`JoinSeed`, `Revealed`, `SessionRoster`)
+    // and cannot share the gameplay channel layout. Both gates refuse it; the
+    // snapshot layout did not change, so `SNAPSHOT_VERSION` stays.
+    #[test]
+    fn gameplay_channel_layout_refuses_prlb_and_wire_32_peers() {
+        const PRE_LAYOUT_PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
+        const PRE_LAYOUT_WIRE_VERSION: u32 = 32;
+        assert_eq!(PROTOCOL_ID, 0x_5052_4C43, "the layout is protocol 12, PRLC");
+        assert_eq!(WIRE_VERSION, 33);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 21);
+        assert_eq!(
+            validate_handshake(
+                protocol_version(),
+                ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C43,
+                    wire_version: 33,
+                },
+            ),
+            Ok(()),
+            "a PRLC / 33 peer is admitted"
+        );
+        for (app_protocol_id, wire_version) in [
+            (PRE_LAYOUT_PROTOCOL_ID, WIRE_VERSION),
+            (PROTOCOL_ID, PRE_LAYOUT_WIRE_VERSION),
+            (PRE_LAYOUT_PROTOCOL_ID, PRE_LAYOUT_WIRE_VERSION),
+        ] {
+            assert!(matches!(
+                validate_handshake(
+                    protocol_version(),
+                    ProtocolVersion {
+                        app_protocol_id,
+                        wire_version,
+                    },
+                ),
+                Err(ClosingCause::Protocol { .. })
+            ));
+            assert_ne!(
+                transport_protocol_id(),
+                (u64::from(app_protocol_id) << 32) | u64::from(wire_version),
+                "gate 1 refuses the pre-layout pair before any decode"
+            );
+        }
+    }
+
     /// The switch declaration as shipped at wire 25, before its client tick.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
     struct PreTickSwitchDeclaration {
@@ -668,26 +676,17 @@ mod switch_tick_epoch_tests {
         slot: u8,
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-    enum PreTickClientControlMessage {
-        Admission {
-            protocol: ProtocolVersion,
-            mod_id: String,
-            mod_version: String,
-        },
-        Parity(crate::wire::ParityDeclaration),
-        SwitchDeclaration(PreTickSwitchDeclaration),
-    }
-
     #[test]
     fn switch_tick_advances_only_the_wire_version_and_refuses_wire_25_peers() {
         const {
             assert!(WIRE_VERSION >= 26);
         }
-        assert_eq!(
-            PROTOCOL_ID, 0x5052_4c42,
-            "the switch tick changed no vocabulary; player-addressed presentation later advanced it to PRLB"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x5052_4c42,
+                "the switch tick changed no vocabulary; later vocabulary advanced it to PRLB and past"
+            );
+        }
         const {
             assert!(
                 crate::wire::SNAPSHOT_VERSION >= 18,
@@ -706,26 +705,99 @@ mod switch_tick_epoch_tests {
         ));
     }
 
+    // The declaration left Control at wire 33, so the wire-25 envelope it
+    // shipped in no longer exists; the tick still pins the payload layout.
     #[test]
     fn switch_tick_changes_the_declaration_layout() {
-        use crate::wire::{ClientControlMessage, ClientSwitchDeclaration};
-        let before = bitcode::encode(&PreTickClientControlMessage::SwitchDeclaration(
-            PreTickSwitchDeclaration {
-                declaration_id: 9,
-                slot: 2,
-            },
-        ));
-        let after = crate::wire::encode(&ClientControlMessage::SwitchDeclaration(
-            ClientSwitchDeclaration {
-                declaration_id: 9,
-                slot: 2,
-                client_tick: 0x0102_0304,
-            },
-        ));
+        use crate::wire::ClientSwitchDeclaration;
+        let before = bitcode::encode(&PreTickSwitchDeclaration {
+            declaration_id: 9,
+            slot: 2,
+        });
+        let after = crate::wire::encode(&ClientSwitchDeclaration {
+            declaration_id: 9,
+            slot: 2,
+            client_tick: 0x0102_0304,
+        });
         assert_ne!(before, after, "the added tick changes the layout");
         assert!(
-            crate::wire::decode::<ClientControlMessage>(&before).is_err(),
+            crate::wire::decode::<ClientSwitchDeclaration>(&before).is_err(),
             "a wire-25 declaration never decodes as a tick-stamped one"
         );
+    }
+
+    /// The Input envelopes before the switch variants were appended at wire 33.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreSwitchClientMessage {
+        Input(crate::wire::InputCommand),
+        Ack(crate::wire::AckMessage),
+        BaselineRefresh(crate::wire::BaselineRefreshRequest),
+        TimeSync(crate::timesync::TimeSyncRequest),
+        StateBaselineRefresh(crate::wire::StateBaselineRefreshRequest),
+        HitDeclaration(crate::wire::HitDeclaration),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreSwitchServerMessage {
+        TimeSync(crate::timesync::TimeSyncEcho),
+        ShotVerdicts(crate::wire::ShotVerdictsMessage),
+        ActivationOutcomes(Vec<crate::wire::ActivationOutcome>),
+        WeaponCues(crate::wire::WeaponCuesMessage),
+        HitRefused(crate::wire::WireShotId),
+    }
+
+    #[test]
+    fn switch_append_preserves_shipped_input_message_tags() {
+        use crate::wire::{ClientMessage, HitDeclaration, ServerMessage, WireShotId};
+        let probe = crate::timesync::TimeSyncRequest {
+            sample_id: 3,
+            client_send_tick: 4,
+            client_send_time_us: 5,
+        };
+        let shot_id = WireShotId {
+            pawn: 1,
+            start_tick: 2,
+            lane: 0,
+            ordinal: 0,
+        };
+        let declaration = HitDeclaration {
+            shot_id,
+            records: Vec::new(),
+        };
+        let client_cases = [
+            (
+                PreSwitchClientMessage::TimeSync(probe),
+                ClientMessage::TimeSync(probe),
+            ),
+            (
+                PreSwitchClientMessage::HitDeclaration(declaration.clone()),
+                ClientMessage::HitDeclaration(declaration),
+            ),
+        ];
+        for (historical, current) in client_cases {
+            assert_eq!(
+                bitcode::encode(&historical),
+                crate::wire::encode(&current),
+                "appending SwitchDeclaration changed a shipped client Input tag"
+            );
+        }
+        let echo = probe.echo(10, 11);
+        let server_cases = [
+            (
+                PreSwitchServerMessage::TimeSync(echo),
+                ServerMessage::TimeSync(echo),
+            ),
+            (
+                PreSwitchServerMessage::HitRefused(shot_id),
+                ServerMessage::HitRefused(shot_id),
+            ),
+        ];
+        for (historical, current) in server_cases {
+            assert_eq!(
+                bitcode::encode(&historical),
+                crate::wire::encode(&current),
+                "appending the switch outcomes changed a shipped server Input tag"
+            );
+        }
     }
 }

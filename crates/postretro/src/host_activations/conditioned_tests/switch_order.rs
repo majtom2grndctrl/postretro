@@ -8,10 +8,10 @@ const START: u32 = 1000;
 
 impl Fixture {
     /// Drive client ticks `START..START + ticks` with `command(offset)`, then
-    /// idle. Input commands stamped inside `stall` are withheld until it ends,
-    /// as when a lost packet stalls the reliable Input stream; switch
-    /// declarations still flow on Control, so a switch reaches the host ahead
-    /// of the commands stamped before it.
+    /// idle. Input commands stamped inside `stall`, and the switch declarations
+    /// made on them, are withheld until it ends, as in an outage or host hitch.
+    /// The backlog then lands at once, so the host's playout and lanes, not
+    /// arrival, decide what applies first.
     fn run_stalled(
         &mut self,
         ticks: u32,
@@ -349,13 +349,11 @@ fn conditioned_switch_with_a_malformed_tick_is_refused_without_switching() {
     fixture.idle(START, 10);
     let newest = START + 9;
     for (declaration_id, slot, client_tick) in [(0, 1, newest + 1), (1, 0, newest + 100_000)] {
-        fixture
-            .client
-            .send_switch_declaration(wire::ClientSwitchDeclaration {
-                declaration_id,
-                slot,
-                client_tick,
-            });
+        fixture.send_switch_declaration(wire::ClientSwitchDeclaration {
+            declaration_id,
+            slot,
+            client_tick,
+        });
     }
     fixture.idle(START + 10, 30);
     let outcomes: Vec<(u32, bool)> = fixture
@@ -402,13 +400,7 @@ impl Fixture {
         .expect("the local pawn holds a weapon");
         let declared = resync.observe(observation, DT);
         if let Some(slot) = declared {
-            self.client
-                .send_switch_declaration(wire::ClientSwitchDeclaration {
-                    declaration_id: self.next_switch_id,
-                    slot: u8::try_from(slot).unwrap(),
-                    client_tick: tick,
-                });
-            self.next_switch_id += 1;
+            self.declare_switch(slot, tick);
         }
         self.send_input(tick, &command);
         self.advance_projectiles();
@@ -527,4 +519,152 @@ fn conditioned_active_slot_resync_fires_after_an_accepted_switch() {
         "the host converged"
     );
     assert_eq!(fixture.local_inventory().active_slot, 1);
+}
+
+impl Fixture {
+    /// Drive client ticks `START..START + ticks` with `command(offset)` over
+    /// the real renet link, losing the uplink datagram flushed on `lost_at`:
+    /// the one carrying that tick's switch declaration and command. renet
+    /// resends them on the next flush. Then idle.
+    fn run_with_lost_uplink(
+        &mut self,
+        ticks: u32,
+        lost_at: u32,
+        command: impl Fn(u32) -> sim::SimCommand,
+    ) {
+        for offset in 0..ticks {
+            self.cut_up = offset == lost_at;
+            self.step(START + offset, command(offset));
+        }
+        self.cut_up = false;
+        assert!(self.cut_up_packets > 0, "the switch's datagram was lost");
+        self.idle(START + ticks, 60);
+    }
+
+    /// The host tick that resolved the command stamped `client_tick`.
+    fn resolved_on(&self, client_tick: u32) -> u32 {
+        self.resolved_commands
+            .iter()
+            .find(|(_, resolved)| resolved.client_tick == client_tick)
+            .map(|(tick, _)| *tick)
+            .expect("the command resolves")
+    }
+}
+
+// A switch and a start stamped after it share one ordered Input stream, so a
+// loss on the switch's datagram holds the start behind the resent switch: the
+// start fires from the switched-to weapon (P4). On Control the switch waited
+// out its own resend while the start went ahead on Input.
+#[test]
+fn conditioned_lost_switch_datagram_still_resolves_before_a_later_start() {
+    const SWITCH: u32 = 10;
+    const FIRE: u32 = SWITCH + 1;
+    let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
+    fixture.mirror_rejection_despawn = true;
+    let second = fixture.equip_second(&hitscan_rifle("press", 130.0));
+    fixture.run_with_lost_uplink(30, SWITCH, |offset| match offset {
+        SWITCH => switch_to(1),
+        FIRE => stamped_start(START + FIRE),
+        _ => neutral(),
+    });
+    let fired: Vec<EntityId> = fixture.authorized.iter().map(|shot| shot.weapon).collect();
+    assert_eq!(fired, [second], "the later start fires from slot 1");
+    assert_host_fires_what_the_client_fired(&fixture);
+    assert!(
+        fixture.host_switched_to(1) <= fixture.resolved_on(START + FIRE),
+        "the switch applies no later than the start's own command resolves"
+    );
+    assert!(
+        fixture.host_switched_to(1) <= fixture.authorized[0].fire_tick,
+        "the switch applies before the start fires"
+    );
+    fixture.assert_switches_accepted(1);
+}
+
+// A start on the switch's own command lands after the switch in the same
+// resolution, as the client's equip pass runs before its fire, even when the
+// datagram carrying both is lost once (P5). Host order only: this fixture's
+// client predicts no shot on a switch tick, a client-side question apart from
+// delivery.
+#[test]
+fn conditioned_start_on_the_switchs_own_command_lands_after_it_across_a_loss() {
+    const SWITCH: u32 = 10;
+    let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
+    let second = fixture.equip_second(&hitscan_rifle("press", 130.0));
+    fixture.run_with_lost_uplink(30, SWITCH, |offset| match offset {
+        SWITCH => {
+            let mut command = stamped_start(START + SWITCH);
+            command.select_slot = Some(1);
+            command
+        }
+        _ => neutral(),
+    });
+    let fired: Vec<EntityId> = fixture.authorized.iter().map(|shot| shot.weapon).collect();
+    assert_eq!(fired, [second], "the start fires from the switched-to slot");
+    assert_eq!(
+        fixture.accepted(token(START + SWITCH, ActivationLane::Primary)),
+        1,
+        "the host accepts the start once"
+    );
+    assert_eq!(
+        fixture.host_switched_to(1),
+        fixture.resolved_on(START + SWITCH),
+        "the switch applies in the resolution of its own command"
+    );
+    fixture.assert_switches_accepted(1);
+}
+
+// Switch outcomes ride the ordered Input stream back, so under the dev profile's
+// loss and jitter they arrive in declaration order even with several switches in
+// flight at once.
+#[test]
+fn conditioned_switch_outcomes_arrive_in_declaration_order_under_the_dev_profile() {
+    /// A switch every few ticks: several declarations and outcomes in flight
+    /// at once against the link's ~100-200 ms round trip.
+    const PERIOD: u32 = 5;
+    const SWITCH_TICKS: u32 = 120;
+    for seed in [MANDATED_SEED, 0x1503, 0x1504, 0x1505] {
+        let link = LinkConfig {
+            seed,
+            ..mandated_link()
+        };
+        let mut fixture = Fixture::new(link, hitscan_rifle("press", 130.0));
+        fixture.equip_second(&hitscan_rifle("press", 130.0));
+        let lost_before = (fixture.up.dropped(), fixture.down.dropped());
+        for offset in 0..SWITCH_TICKS {
+            let command = if offset % PERIOD == 0 {
+                switch_to(1 - fixture.local_inventory().active_slot)
+            } else {
+                neutral()
+            };
+            fixture.step(START + offset, command);
+        }
+        fixture.idle(START + SWITCH_TICKS, 120);
+        let lost = (
+            fixture.up.dropped() - lost_before.0,
+            fixture.down.dropped() - lost_before.1,
+        );
+        assert!(
+            lost.0 > 0 && lost.1 > 0,
+            "seed {seed:#x}: the link loses datagrams both ways while switching: {lost:?}"
+        );
+        let declared: Vec<u32> = fixture
+            .sent_switches
+            .iter()
+            .map(|switch| switch.declaration_id)
+            .collect();
+        let arrived: Vec<u32> = fixture
+            .switch_outcomes
+            .iter()
+            .map(|&(_, id, _)| id)
+            .collect();
+        assert!(
+            declared.len() >= 12,
+            "seed {seed:#x}: several switches in quick succession: {declared:?}"
+        );
+        assert_eq!(
+            arrived, declared,
+            "seed {seed:#x}: one outcome per declaration, in declaration order"
+        );
+    }
 }

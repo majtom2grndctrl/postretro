@@ -60,8 +60,8 @@ Owner playtest under the dev lag proxy (45 ms + 0–60 ms jitter + 5% loss each 
 
 **Time sync**
 - [ ] Regression guard: the RTT estimate tracks the true RTT within the existing estimator tolerance under the profile.
-- [ ] Across the two-second outage the server-tick offset stays within one tick, no outage probe folds into the estimate, and no reseed fires (P13).
-- [ ] A probe whose datagram is lost once yields one echo, and its RTT sample is at most one resend above the unlost round trip (P14).
+- [ ] Across the two-second outage the server-tick offset stays within one tick, no probe whose round trip the outage lengthened by more than the gate tolerance folds into the estimate, and no reseed fires (P13).
+- [ ] A probe whose datagram is lost once yields one echo, and its RTT sample is at most one fixed tick above the unlost round trip (P14).
 
 **Presentation offset**
 - [ ] Two corrections landing before the first has decayed, or in one frame, leave the presented eye position continuous (P18).

@@ -576,6 +576,47 @@
         1 : "On"
     ]
     _tags(string) : "Space-delimited tags" : ""
+    // Whether the water's reflection probe captures this entity's brushes.
+    // Auto leaves small decor near water out of the probe, so it reflects
+    // through screen-space reflections with true parallax, and not at
+    // reflection quality Low. Always keeps every brush in the probe; never
+    // leaves the brush out except where the probe would otherwise see through
+    // the level (an outer wall, or a brush buried in solid, still shows its
+    // own surface). Where the probe's box reaches past a never or left-out
+    // wall, the reflection shows what lies beyond; always fixes it. Any other
+    // value warns and acts as auto.
+    _reflection_capture(choices) : "Reflection probe capture (auto leaves small decor near water to screen-space reflections)" : "auto" =
+    [
+        "auto" : "Auto (default)"
+        "always" : "Always"
+        "never" : "Never"
+    ]
+]
+
+// Authored brush entity: brushwork that compiles exactly like worldspawn
+// brushwork but can carry keys. Select brushes and use Create Brush Entity.
+// A TrenchBroom group or layer is also a `func_group` in the .map file, but
+// TrenchBroom keeps no custom key on a group or layer when it saves, so the
+// compiler ignores these keys there with a warning.
+@SolidClass
+    color(200 200 200)
+    = func_group : "Brushwork that carries keys (brush)"
+[
+    // Whether the water's reflection probe captures this entity's brushes.
+    // Auto leaves small decor near water out of the probe, so it reflects
+    // through screen-space reflections with true parallax, and not at
+    // reflection quality Low. Always keeps every brush in the probe; never
+    // leaves the brush out except where the probe would otherwise see through
+    // the level (an outer wall, or a brush buried in solid, still shows its
+    // own surface). Where the probe's box reaches past a never or left-out
+    // wall, the reflection shows what lies beyond; always fixes it. Any other
+    // value warns and acts as auto.
+    _reflection_capture(choices) : "Reflection probe capture (auto leaves small decor near water to screen-space reflections)" : "auto" =
+    [
+        "auto" : "Auto (default)"
+        "always" : "Always"
+        "never" : "Never"
+    ]
 ]
 
 // Environment volumes: non-solid brush regions that hold a fluid, change

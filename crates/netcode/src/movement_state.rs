@@ -202,6 +202,25 @@ fn movement_state_enum_to_wire(state: MovementState) -> WireMovementState {
     }
 }
 
+/// The posture and footing a replicated movement state presents on a remote
+/// avatar, which carries no local movement component to read them from. Built
+/// from the same fields the host's own selection reads, so both peers agree.
+pub(crate) fn wire_locomotion_stance(
+    movement: &WirePlayerMovementState,
+) -> crate::sim::LocomotionStance {
+    let kind = wire_to_movement_state_enum(movement.movement_state).kind();
+    crate::sim::LocomotionStance {
+        posture: crate::sim::LocomotionPosture::from_movement_state(kind),
+        footing: crate::sim::LocomotionFooting::from_movement(
+            kind,
+            movement.ground != WireGroundRef::Airborne,
+            movement.air_ticks,
+            movement.velocity[1],
+            movement.jump_spent,
+        ),
+    }
+}
+
 /// Inverse of [`movement_state_enum_to_wire`]. Exhaustive (no `_` arm) for the
 /// same drift-guard reason.
 fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {
@@ -294,6 +313,8 @@ mod tests {
                 accel: 10.0,
                 step_height: 0.3,
                 max_slope: 45.0,
+                friction: GroundParams::DEFAULT_FRICTION,
+                stop_speed: GroundParams::DEFAULT_STOP_SPEED,
             },
             air: AirParams {
                 forward_steer: 0.1,

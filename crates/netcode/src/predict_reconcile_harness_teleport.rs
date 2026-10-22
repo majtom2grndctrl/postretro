@@ -773,11 +773,12 @@ fn teleport_divergent_command_frames_one_tick_skew_takes_no_cut_or_second_cue() 
     assert_converged(&rig);
 }
 
-// Under the lossy profile the client's commands around its seamless
-// teleport tick never reach the host. The host's held and neutral commands
-// (reusing the last real, pre-teleport facing and stamp) and the late real
-// commands after the gap all face and move in the post-teleport frame; the
-// avatar the host replicates never turns back to the old facing.
+// Under the lossy profile, with the uplink cut for six ticks across the
+// client's seamless teleport tick, its commands there never reach the host.
+// The host's held and neutral commands (reusing the last real, pre-teleport
+// facing and stamp) and the late real commands after the gap all face and
+// move in the post-teleport frame; the avatar the host replicates never turns
+// back to the old facing.
 #[test]
 fn teleport_gap_command_stamp_held_neutral_late_run_in_post_teleport_frame() {
     let mut rig = Rig::new(mandated_link(), &[seamless_entry()]);
@@ -785,7 +786,9 @@ fn teleport_gap_command_stamp_held_neutral_late_run_in_post_teleport_frame() {
     let mut dropped = 0;
     let mut teleported = false;
     for _ in 0..200 {
-        let near = rig.ticks.last().unwrap().position_after.z <= -5.6;
+        // The gap opens within the held-command budget's reach of the trigger
+        // at z = -6, so the host's held forward commands carry it across.
+        let near = rig.ticks.last().unwrap().position_after.z <= -5.8;
         let drop = !teleported && near || (dropped > 0 && dropped < 6);
         teleported |= rig.step_with(FORWARD, !drop, &[]).is_some();
         if drop {
@@ -1151,15 +1154,13 @@ fn rig_idle_input() -> crate::movement::MovementInput {
 // The joiner's host tuning installs after its arming baseline: the reliable
 // Control payload was lost and retransmitted, and lands in a frame that
 // carries no snapshot. The arming record could not merge without tuning, and
-// the idle pawn's later deltas carry no movement. The pawn stands where a
+// the idle pawn's later records arrive only while its cursor advances. The pawn stands where a
 // teleport before the join left it, latched in a second armed region. The
 // client must neither predict from its empty record (which would fire that
 // region and then cut back) nor wait for movement to change: it asks for a
 // full baseline, whose record is the first to merge and adopts silently.
 #[test]
 fn teleport_join_unmerged_arming_record_rebaselines_before_predicting() {
-    use postretro_net::harness::{LinkConfig, PacketConditioner};
-
     // The spawn room sends its traveller into a second region's interior.
     let arrival_region = Spec::classic(
         region((37.0, 43.0), (-3.0, 3.0)),
@@ -1170,10 +1171,7 @@ fn teleport_join_unmerged_arming_record_rebaselines_before_predicting() {
     teleport_host_pawn_before_join(&mut rig);
     assert_eq!(&rig.host_teleport().arrival_latches[..], &[1]);
     // The tuning send is lost: it waits on the Control lane until retransmitted.
-    rig.h.to_client_control = PacketConditioner::new(LinkConfig {
-        delay: 1_000_000,
-        ..clean_link()
-    });
+    rig.h.hold_tuning();
     for _ in 0..200 {
         if rig.h.client_pawn.is_some() {
             break;
@@ -1186,15 +1184,7 @@ fn teleport_join_unmerged_arming_record_rebaselines_before_predicting() {
     assert!(rig.corrections.is_empty(), "nothing merged without tuning");
 
     // The retransmit lands in a frame with no snapshot.
-    let mut lost = std::mem::replace(
-        &mut rig.h.to_client_control,
-        PacketConditioner::new(LinkConfig::perfect()),
-    );
-    lost.advance(2_000_000);
-    for packet in lost.take_ready() {
-        rig.h.to_client_control.enqueue(packet);
-    }
-    rig.h.client_drain_control();
+    rig.h.land_tuning();
     assert!(rig.h.client_tuning.is_some());
     for _ in 0..60 {
         if rig.client_teleport() == rig.host_teleport() {

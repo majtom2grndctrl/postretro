@@ -1,0 +1,93 @@
+# coop--lossy-link-delivery
+
+Brief · resumable · reads: `context/lib/networking.md` §Channel model, §Wire/codec invariants, §Time sync, §Host input command queue, §Combat authority, §Version gates, §Testing the conditioned link · read at b0a5c0f · direction rechecked at d6f3471 (after `coop--client-inventory-awaits-tuning`, `movement--static-overlap-invariant` and c7752fc landed)
+
+## Problem
+Owner playtest under the dev lag proxy (45 ms + 0–60 ms jitter + 5% loss each way) after PR #601: a connected client's own pawn rubber-bands, worst in slides and vaults. Basis: observed defect. Cause: gameplay traffic rides reliable-ordered channels, where one lost datagram stalls everything behind it for at least the 300 ms resend. For movement this means the host holds, neutral-walks, then stale-drops or trims the stalled commands, so the host never simulates a client's real input across a stall. The test harnesses hide it because they send input unordered and apply acks instantly. When done, under the dev profile a client's own movement, including slide and vault entry, matches the host closely enough that only small smoothed corrections occur. A single lost datagram costs gameplay traffic about one tick of delay, not a resend interval. The harness reproduces production channel semantics, so a regression fails a test.
+
+## Decisions
+- **Input stays reliable-ordered, with a resend of at most one fixed tick.** renet 2.0 resends an unacked message on the first send at least one resend interval after its last, packs the resends into that packet and dedupes by message id on receipt. The transport sends once per frame. At a resend of one tick or less, a lost command therefore rides the next tick's datagram: Quake-3-style redundancy that keeps exactly-once, in-order delivery. Above one tick, a 60 Hz client resends only every second datagram, and by then the host has given up the lost tick and stale-drops it (`research.md` P2). A boomer shooter's slide or vault lost for one tick is a visible pull, so the cap is the Decision; the value under it is delegated.
+  - The edge lanes, activation starts and catch-up keep their guarantees unchanged, including "a trim cannot lose a door press or a weapon drop" (`networking.md` §Host input command queue).
+  - The channel M15 phase 3 chose stays (`plans/done/M15--p3-movement-prediction-reconciliation`). Only its resend changes: that phase assumed the gap policy absorbs a 300 ms stall, and it does not absorb a stall followed by a burst.
+- **Every gameplay family rides Input at that resend.**
+  - Client→host: input commands, acks, refresh requests, time-sync probes, HIT declarations, and weapon-switch declarations, which move from Control.
+  - Host→client: shot verdicts, HIT refusals, activation outcomes, observer weapon cues, time-sync echoes, and switch outcomes, which move from Control.
+
+  One ordered stream for input and switches closes the Control-versus-Input ordering gaps that `networking.md` §Combat authority names. At a one-tick resend, head-of-line blocking costs about a tick, so splitting ordering domains across channels buys nothing.
+- **Switches keep their participation scoping off Control, without new framing.** On Control, ordering alone scoped them against relevel, demotion and divergence: the client→host send is unframed, and the client reads the host frame's epoch only to arm or retire participation. Declarations will ride `send_input`'s participation frame, so the host's Input drain drops one from an earlier participation, which tightens today's gate. A stale outcome meets an empty chain or a newer front, so outcomes take no epoch filter. Rows pin both directions; the derivation is in `research.md` §Switch scoping off Control.
+- **Join traffic and tuning stay on Control, at about a 100 ms resend.** Control keeps admission, parity, join seed, revealed, participation, divergence, relevel, roster and the tuning payload. A joining client's pawn holds no inventory until the tuning payload installs (`networking.md` §What gates), so at today's 300 ms resend one lost slice leaves the player unarmed for about 400 ms; about 100 ms cuts that to about 150 ms. Once switches leave, nothing on Control needs faster. Control's ordering is what guarantees a tuning payload never lands after the demotion or level change that retires it. `coop--client-inventory-awaits-tuning` relies on that guarantee, and the tuning payload carries no participation or level framing of its own.
+- **No renet fork, no own reliability layer, no new channel.** Channel configuration delivers the policy. Adaptive RTO gains nothing at one-tick resend. `research.md` §Resend policy has the arithmetic and the sources.
+- **A new reconcile correction composes with the presentation offset still in flight.** Today it replaces that offset, so a correction landing before the previous one decays makes the camera jump. A composed offset at or past the teleport floor snaps, as a single correction there does: one rule for when the eye cuts.
+- **The harness reproduces production channel semantics.** The predict/reconcile harness family carries input, acks and time sync over the production channel configuration, and its 3 m ceiling gate is retired.
+- **The offset fix rides this brief, but not its gate.** Replacing an in-flight offset is a local reconcile defect with its own cause. It rides here because the same playtest found it, and one conditioned-link manual pass proves both fixes.
+- **One protocol bump covers the change.** The application protocol id moves for the channel layout and the families that change channel. `WIRE_VERSION` moves for layout. `SNAPSHOT_VERSION` does not move. The previous peer is refused at the handshake.
+- **Placement.** Channel layout and resend policy go in `postretro-net`, as does the wire vocabulary: the switch variants move from the Control enums to the Input `ClientMessage` and `ServerMessage`, and the host's Input classification gains them. Send-site routing and switch-lane intake from Input go in `postretro-netcode`. Host gap policy and catch-up stay as they are; they now handle only genuine outages.
+- **Non-goals.**
+  - Smooth client display of host-projected timed values, such as the reload meter stepping. The owner reported it in the same playtest, but its cause is sample rate, not loss: `ready/coop--timed-slot-projection` owns it.
+  - Clipping the smoothed camera path against geometry. Corrections become small, and `movement--static-overlap-invariant` removed real embeds.
+  - Lag compensation (`networking.md` §Non-goals).
+  - Time dilation, steering the client's tick rate to hold the host's buffer depth. Buffer depth stays the gap and catch-up policy's, which this brief leaves unchanged.
+
+## Acceptance
+### Automated
+**Own-pawn movement under the dev profile** (production channel semantics, seeded)
+- [ ] Reproduces first, and gates the transport change. On the commit the build starts from, a steady-run scenario records at least one correction above the ordinary band, and the test is committed failing. That base includes `movement--static-overlap-invariant`, so a result is not confounded by the embeds it fixed. If it records none, stop and report before changing the transport. The same seed with loss off and jitter kept records none (P1); if the loss-off run also records one, stop and report, since jitter, not loss, is then the cause. The presentation-offset row does not wait on it.
+- [ ] Steady run, sustained strafe and repeated slides over a seeded minute: no snap-class correction, and none above the ordinary band, slide and vault windows included, where the Dash band would otherwise pass up to 2 m.
+- [ ] A slide or vault the client enters starts on the host on the same client tick, including one whose entry command's datagram is lost (P3).
+- [ ] On a fixed-delay link with no jitter, one scripted lost Input datagram causes no host hold, neutral tick or trim, and its command resolves Real on its own tick (P2). The conditioner gains a test-only scripted drop.
+- [ ] Grep gate: `INPUT_HOLD_TICKS`, `INPUT_BUFFER_TARGET` and `INPUT_BUFFER_MAX` keep 3, 2 and 8.
+
+**Outage longer than the redundancy**
+- [ ] A two-second total outage, followed by recovery: no disconnect. Every edge and switch sent during it is delivered exactly once, in client-tick order. Each start reaches one terminal: delivered, or refused for lag under the existing 500 ms allowance; none is dropped silently or minted twice. No switch is refused as malformed (P12). Movement falls back to the existing gap and catch-up policy.
+
+**Ordering and exactly-once** (regression guards)
+- [ ] A switch and a start stamped after it resolve in client-tick order when the loss falls on the datagram carrying the switch (P4). A start on the switch's own command lands after the switch in the same resolution across a loss (P5).
+- [ ] Switch outcomes arrive in declaration order under loss and jitter.
+- [ ] Two edges on one client tick both deliver, and no edge delivers twice under loss (P11).
+- [ ] Refuse: a switch outcome from before a demotion or level change, delivered after it, resolves nothing, and a declaration pending in the new participation still resolves on its own outcome. Permit: an outcome in the current participation resolves its declaration (P9, P10).
+- [ ] A switch declaration sent before a demotion and delivered after re-promotion never reaches the host's switch lane (P6). Permit: one sent after re-promotion reaches the lane and is answered.
+- [ ] A declaration the host drops by epoch never leaves the client's chain waiting. Holding and the next participation marker in one Control drain still clear the chain before the first new declaration, and that declaration resolves on its own outcome (P7).
+- [ ] A switch retained in the host lane at demotion is never applied or answered after re-promotion (P8).
+- [ ] Grep gate: no send site puts a switch declaration or outcome on Control, and Control intake yields no switch declaration.
+
+**Latency and cost**
+- [ ] On a relay pair under the profile, a scripted single drop on Input in either direction is delivered within the profile's largest one-way delay plus two ticks (P2).
+- [ ] A newly spawned entity's first baseline is not frozen more than one snapshot past a single lost ack, with the ack carried on the production Input channel (P15).
+- [ ] A tuning payload larger than one slice, sent on Control under loss, delays no Input message: every Input message sent while its slices are in flight meets the single-loss latency bound (P16).
+- [ ] A tuning payload sent before a demotion or level change never applies after it (P17). Permit: the payload sent after re-promotion installs.
+- [ ] Client upstream bytes under the profile with no outage stay at or below 40 KB/s at 60 Hz, and the measurement is reported.
+- [ ] On join under the profile, a single lost tuning slice delays the pawn's inventory composition by no more than one Control resend plus the profile's largest one-way delay.
+
+**Time sync**
+- [ ] Regression guard: the RTT estimate tracks the true RTT within the existing estimator tolerance under the profile.
+- [ ] Across the two-second outage the server-tick offset stays within one tick, no probe whose round trip the outage lengthened by more than the gate tolerance folds into the estimate, and no reseed fires (P13).
+- [ ] A probe whose datagram is lost once yields one echo, and its RTT sample is at most one fixed tick above the unlost round trip (P14).
+
+**Presentation offset**
+- [ ] Two corrections landing before the first has decayed, or in one frame, leave the presented eye position continuous (P18).
+- [ ] Refuse: a teleport-class correction, a first-record adoption or a level reset still clears an in-flight offset, and nothing composes across it (P18). A composed offset at or past the teleport floor snaps.
+
+**Version gate**
+- [ ] A peer on the previous protocol id or wire version is refused at the handshake. Permit: a peer on the new pair is admitted. `SNAPSHOT_VERSION` does not move.
+- [ ] The channel-list test pins four channels in order: Control reliable-ordered at about 100 ms, Snapshot and Presentation unreliable, Input reliable-ordered at the chosen gameplay resend. renet stays pinned at `=2.0.0`.
+
+### Manual
+- [ ] Loopback recipe (`networking.md` §Manual loopback recipe), client conditioned at 45/60/5, then at 10% loss: a run, slide and vault course with no visible pull-back. Spawned projectiles and enemies don't freeze. Weapon switches land promptly. The Network tab RTT is plausible.
+- [ ] Two-client session at 45/60/5: remote pawns, hit markers and observer cues show no bursts after a loss.
+- [ ] Press Off on the Network tab mid-session: the link recovers with no lasting correction.
+
+## Path
+- Channels and pins: `connection_config`, `RELIABLE_RESEND`. handshake.rs `PROTOCOL_ID`, `WIRE_VERSION` and their pin tests. The transport channel-list test.
+- Check renet's per-channel `max_memory_usage_bytes` and `available_bytes_per_tick` against the two-second outage: about 120 retained commands resent every tick.
+- Switch routing: `send_switch_declaration` (Control today) moves onto the framed `send_input` path; host switch-lane intake from `drain_input`; `resolve_switch_outcome`, whose comment cites Control ordering, and the outcome sends in `host_switch.rs`.
+- Offset: `ClientPrediction::seed_presentation_offset`, called from `reconcile_local_pawn_with_mover_history`.
+- Harness: `predict_reconcile_harness_test_fixtures.rs` (raw unreliable input through `PacketConditioner`; instant `apply_acks`). Relay precedent: `e18_timed_reaction_replication_harness_test.rs`.
+- Chosen shape: keep the existing channel set; a resend of at most one tick on Input, ~100 ms on Control.
+  - Strongest rival: a custom unreliable redundant command stream. It avoids blocking during long outages, but it makes edges, starts and switches deliverable only within the redundancy window, and it needs an edge-identity rework. Rejected.
+- First slice: the faithful harness and the failing steady-run row.
+- Time sync: keep the min-RTT window gate; it now filters jitter rather than stalls. Change it only if the RTT rows fail.
+- Files past ~800 lines that this extends: transport.rs, wire.rs, lib.rs, client.rs, command_queue.rs, prediction.rs, timesync.rs and the harness fixtures. Split a file first, in its own behaviour-preserving commit, where the change lands inside it.
+- At promotion: rewrite `networking.md` §Channel model, §Time sync, §Host input command queue (the switch lane's channel), the "Starts survive playout" rationale in §Combat authority, and §Version gates.
+
+## Open questions
+- Gameplay resend value at or below one fixed tick. — **delegated**: pick from the harness and report the choice in the plan of record.

@@ -56,6 +56,7 @@ movement: {
     ground: {
       speed: { walk, run },                            // crouch speed moved out
       accel, stepHeight, maxSlope,
+      friction?, stopSpeed?,                           // landed after this draft; also run in crouch (movement.md §4 Ground friction), so placement is open
       dash?: { /* sparse override of modifiers.dash */ },
     },
     air: {

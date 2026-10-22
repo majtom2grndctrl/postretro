@@ -348,7 +348,7 @@ fn begin_lowering(component: &mut WeaponComponent, duration_ms: u32) {
     component.reload_credited = 0;
 }
 
-pub(super) fn finish_lowering(component: &mut WeaponComponent) {
+pub(crate) fn finish_lowering(component: &mut WeaponComponent) {
     // A press held over a fire gate belongs to the wielding moment: a holstered
     // weapon must not replay it on its next raise.
     component.primary_press_held_over_gate = false;

@@ -41,7 +41,7 @@ export type AnimationStateDescriptor = {
   loop: boolean?,
   --- Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.
   crossfadeMs: number?,
-  --- Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and the AI alert-mapped locomotion state.
+  --- Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and the AI alert-mapped locomotion state; player `crouch_idle` and jump states play at the authored rate and ignore it.
   travelSpeed: number?,
   --- How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth".
   interrupt: InterruptPolicy?,
@@ -57,7 +57,7 @@ export type MeshDescriptor = {
   shadowBiasScale: number?,
   --- When true, renders this mesh into shadow-depth passes only. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward.
   shadowOnly: boolean?,
-  --- Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. On a player descriptor the engine selects locomotion by state name: `defaultState` when still; `walk_forward` (or `walk`) and `walk_backward` at walking speed; `run_forward` (or `run`) and `run_backward` once speed passes the midpoint between `movement.ground.speed.walk` and `.run`, with a band either side so the clip does not flicker. Backward states play when travel points behind the aim, with the legs turned against travel, toward the aim; a missing or unresolved backward state plays its tier's forward state instead, and `run_backward` needs a run forward state beside it. Without `walk_forward` or `walk` the engine drives none of these.
+  --- Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. On a player descriptor the engine selects locomotion by state name: `defaultState` when standing idle; `walk_forward` (or `walk`) and `walk_backward` at walking speed; `run_forward` (or `run`) and `run_backward` once speed passes the midpoint between `movement.ground.speed.walk` and `.run`, with a band either side so the clip does not flicker. Backward states play when travel points behind the aim, with the legs turned against travel, toward the aim; a missing or unresolved backward state plays its tier's forward state instead, and `run_backward` needs a run forward state beside it. Crouching, not speed, selects `crouch_idle` when still and `crouch_forward` or `crouch_backward` when moving, rate-scaled against `travelSpeed`, falling back to `.crouch`; a slide holds `crouch_idle` at its authored rate. A missing `crouch_backward` plays `crouch_forward`, a missing `crouch_idle` plays `defaultState`, and without a resolved `crouch_forward` crouching and sliding select as standing does. In the air, `jump_up` plays from a jump's takeoff until the apex or its clip ends, then `jump_loop`; a fall without a jump keeps the ground stride for about 0.15 s first. An air jump after takeoff keeps `jump_loop`; a launch without a jump (knockback, a push) falls into `jump_loop` after the delay. A landing at or below `.walk` plays `jump_down` until its clip ends, the player speeds up, or jumps again; a faster landing returns straight to the stride. Swim, vault, dash and slide never play jump states. A missing `jump_up` takes off into `jump_loop`, a missing `jump_down` lands straight into the ground states, and without a resolved `jump_loop` there is no jump sequence. `loop` defaults to false: declare `loop: true` on the repeating states (walk, run, crouch and `jump_loop`); `jump_up` and `jump_down` play once. Without `walk_forward` or `walk` the engine drives none of these.
   animations: { [string]: AnimationStateDescriptor }?,
   --- The state entered at spawn. Required exactly when `animations` is present; must name a declared state.
   defaultState: string?,
@@ -859,12 +859,16 @@ export type CapsuleParams = {
 export type GroundParams = {
   --- Horizontal walk, run, and crouch target speeds in metres/sec.
   speed: SpeedParams,
-  --- Ground acceleration in metres/sec². Must be finite and ≥ 0.
+  --- Ground acceleration rate per second: how quickly the player reaches speed and changes direction. Each second adds up to `accel` times the speed target. While walking, running or crouching it turns velocity but never lifts ground speed past the speed target. Must be finite and ≥ 0.
   accel: number,
   --- Maximum automatic step-up height in metres. Must be finite and ≥ 0; 0 disables stepping.
   stepHeight: number,
   --- Steepest walkable surface angle in degrees. Must be finite and lie in [0, 90].
   maxSlope: number,
+  --- Ground friction rate per second, applied each tick the player walks, runs or crouches on ground (not while sliding or dashing), before acceleration: how quickly the player stops, and how fast speed banked above the target (a dash or slide exit) bleeds away. With `accel` below `friction`, ground speed settles at `accel / friction` of the target instead of reaching it; knockback `control` scales `accel` the same way while a shove lasts. Grounded wind drift settles at push / friction, and grows to terminal velocity at 0. At 60 or more (the tick rate) every tick stops ground motion dead. Defaults to 8. Must be finite and ≥ 0.
+  friction: number?,
+  --- Speed in metres/sec below which friction, with no movement input, brakes as if moving at this speed, so a stop ends at exactly zero instead of creeping. 0 leaves pure exponential decay. Defaults to 2.5. Must be finite and ≥ 0.
+  stopSpeed: number?,
 }
 
 --- Walk, run, and crouch ground speeds in metres/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0.

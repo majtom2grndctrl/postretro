@@ -303,11 +303,15 @@ pub(crate) fn normalize_inventory_liveness(
         .switch_target
         .is_none_or(|slot| inventory.wieldables.get(slot).copied().flatten().is_some());
     if !active_is_live || !target_is_live {
-        inventory.active_slot = inventory
-            .wieldables
-            .iter()
-            .position(Option::is_some)
-            .unwrap_or_default();
+        // A dead target alone ends the switch on the weapon still in hand; only
+        // a dead active slot falls back to the lowest occupied slot.
+        if !active_is_live {
+            inventory.active_slot = inventory
+                .wieldables
+                .iter()
+                .position(Option::is_some)
+                .unwrap_or_default();
+        }
         inventory.switch_target = None;
         inventory.switch_origin = None;
         for weapon in inventory.wieldables.iter().flatten().copied() {

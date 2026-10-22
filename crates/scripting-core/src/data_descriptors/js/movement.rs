@@ -60,6 +60,14 @@ pub fn movement_descriptor_from_js<'js>(
             90.0,
             "movement.ground.maxSlope",
         )?,
+        friction: match get_optional_f32_js(&ground_obj, "friction")? {
+            Some(v) => validate_non_negative_finite(v, "movement.ground.friction")?,
+            None => GroundParams::DEFAULT_FRICTION,
+        },
+        stop_speed: match get_optional_f32_js(&ground_obj, "stopSpeed")? {
+            Some(v) => validate_non_negative_finite(v, "movement.ground.stopSpeed")?,
+            None => GroundParams::DEFAULT_STOP_SPEED,
+        },
     };
 
     let air_obj: Object = get_required_object_js(obj, "air")?;

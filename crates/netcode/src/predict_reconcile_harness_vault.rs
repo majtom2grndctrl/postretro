@@ -17,10 +17,10 @@ use crate::sim::SimCommand;
 use postretro_foundation::GroundRef;
 
 /// The riser faces +Z at this z; `forward_command` runs the pawn along -Z.
-const RISER_Z: f32 = -6.0;
-const TOP_Y: f32 = 1.2;
+pub(crate) const RISER_Z: f32 = -6.0;
+pub(crate) const TOP_Y: f32 = 1.2;
 
-fn vault(from: VaultEntry) -> VaultParams {
+pub(crate) fn vault(from: VaultEntry) -> VaultParams {
     VaultParams {
         max_height: 1.6,
         swim_max_height: 0.9,
@@ -32,7 +32,7 @@ fn vault(from: VaultEntry) -> VaultParams {
 
 /// Floor at y = 0 for z > `RISER_Z`, a riser facing +Z, and a top at `TOP_Y`
 /// beyond it.
-fn ledge_world() -> CollisionWorld {
+pub(crate) fn ledge_world() -> CollisionWorld {
     let (x0, x1) = (-500.0, 500.0);
     let points = vec![
         // Floor.
@@ -79,7 +79,7 @@ fn run(from: VaultEntry, steps: u32, command_at: impl Fn(Vec3) -> SimCommand) ->
 }
 
 fn run_on(mut h: LoopbackHarness, steps: u32, command_at: impl Fn(Vec3) -> SimCommand) -> VaultRun {
-    h.step_until_armed(&idle_command());
+    h.step_until_predicting(&idle_command());
     let mut run = VaultRun {
         corrections: Vec::new(),
         windows: Vec::new(),

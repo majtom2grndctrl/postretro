@@ -797,7 +797,7 @@ successful present path.
 
 Windows and rates run on **presented-frame time** — not frame count, and not UI time, which pauses with game logic while frames keep presenting — so a strobe limits the same at 30 Hz and 240 Hz. Time runs between resolve frames, so a load's splash frames age the window by their whole length. A frame longer than 1/30 s is a hitch: its intensity allowance is clamped to 1/30 s of the rate cap, so a hitch never turns the cap into one step, while window aging takes the full elapsed time. A frame whose surface acquire fails never consumes its presented time; the renderer merges it into the next frame's. Turning the limiter off passes every channel through and keeps no history. The frame that turns it on (a new renderer's first frame included) starts fresh against its own values: an empty window, nothing to rate-cap from, so that frame packs unchanged and no earlier on-period's transition counts. Frontend frames run the same resolve and share that history. Capture writes an at-rest uniform and never involves the limiter (below).
 
-Nothing else is limited today: world lights and light animation, UI panels, emissives, flipbooks, camera cuts, and load loops through the boot splash reach the player unlimited. A source-level floor for them is planned, not built. A GPU frame limiter over the composited frame was built and withdrawn: its per-cell means could not tell light added to a region from light moved through it, so ordinary camera motion read as flashes.
+Nothing else is limited today: world lights and light animation, UI panels, emissives, flipbooks, camera cuts, and load loops through the boot splash reach the player unlimited. A source-level floor for them is planned, not built. Ghost draws (§7.9) are its first source (decided, not yet built): each ghost is one per-value channel on these rules, its presented opacity the strength and its tint the redness, through a per-value clamp extracted from the channel clamp so later sources reuse it rather than copy it. A GPU frame limiter over the composited frame was built and withdrawn: its per-cell means could not tell light added to a region from light moved through it, so ordinary camera motion read as flashes.
 
 **World-less capture.** A third capture entry reads back a frame with no level through the real UI-layer and resolve passes, which the scene capture below omits — what a player sees on a Frontend or Loading frame.
 
@@ -878,6 +878,16 @@ their PRL section ids and compose-only resources are marked derived. This is ren
 allocation accounting, not driver-reported process VRAM: opaque driver padding and
 unrelated renderer resources remain outside the total. Non-renderer callers receive plain
 report values, never `wgpu` types or handles.
+
+### 7.9 Ghost Draws (decided, not yet built)
+
+A ghost is an extra instance of a member drawn at its mapped pose (`entity_model.md` §7d). Game logic decides membership and hands the renderer instances with look values; the renderer owns the translucent pipelines.
+
+- **Look.** Unlit: the base color's saturation is scaled by `saturation`, multiplied by `tint`, and drawn translucent at the presented opacity. Unlit keeps ghosts legible and samples no light at the mapped position.
+- **Depth.** Depth-tested against the scene, no depth write, no shadows cast. Alpha blend or screen-door transparency is an implementation choice; the presented opacity means the same either way.
+- **Culling.** At the mapped position, against the viewer's visible cells, whatever the real position's visibility.
+- **Kinds.** Skinned models, kinematic-brush movers and projectile bodies, each through a translucent variant of its own pass. A mover may draw once per link it belongs to.
+- **Presented opacity** is the link's opacity times the ghost's membership. Membership ramps linearly at the limiter's rate cap (§7.8) on arm, disarm, category change, entry and exit, reversing from the presented value. It starts at 0 for a new ghost and at full for members of links armed on spawn at level install. The ramp runs on presented-frame time; script-set look ramps follow script time.
 
 ---
 

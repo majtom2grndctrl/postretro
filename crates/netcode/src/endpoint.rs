@@ -229,39 +229,6 @@ pub fn apply_client_session_roster(
     (changed, open_seats)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PendingSwitchDeclaration {
-    pub declaration_id: u32,
-    pub target_slot: u8,
-    /// Slot the client actually presented as active when this local switch chain
-    /// began. Older host outcomes may move the authoritative rollback point, but
-    /// must not turn an unpresented intermediate target into last-weapon history.
-    pub held_origin_slot: usize,
-    /// Host-authoritative active slot restored if this declaration is refused.
-    /// Ordered predecessor outcomes rebase this without changing local history.
-    pub rollback_slot: usize,
-    pub rollback_last_weapon_slot: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SwitchOutcome {
-    Accepted(ServerSwitchAccepted),
-    Refused(ServerSwitchRefused),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CurrentSwitchResolution {
-    None,
-    Accepted {
-        last_weapon_slot: Option<usize>,
-    },
-    Refused {
-        target_slot: usize,
-        rollback_slot: usize,
-        last_weapon_slot: Option<usize>,
-    },
-}
-
 #[derive(Debug, Default)]
 pub struct ClientApplyFrameOutcome {
     /// One latest accepted generation-change sample per remote pawn this frame.
@@ -281,6 +248,24 @@ pub struct ClientApplyFrameOutcome {
     /// Final authoritative mover correction per mover received this frame.
     /// App consumes these after snapshot apply to refresh the live carry table.
     pub mover_corrections: Vec<client::MoverCorrection>,
+    /// Every own-pawn reconcile this frame, in apply order, for the relay
+    /// harness: production reads only the offset it seeds.
+    #[cfg(test)]
+    pub(crate) local_corrections: Vec<LocalCorrectionSample>,
+}
+
+/// One own-pawn reconcile as the receive path ran it: the distance from the
+/// predicted pose to the reconciled one, and how reconcile classified it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LocalCorrectionSample {
+    pub(crate) server_tick: u32,
+    pub(crate) acked_tick: Option<u32>,
+    pub(crate) magnitude: f32,
+    pub(crate) class: crate::netcode::prediction::CorrectionClass,
+    /// The first record's silent adoption, which is a camera hold rather than a
+    /// smoothed correction.
+    pub(crate) first_record_adoption: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,10 +281,18 @@ pub struct ClientArmedLocalPawn {
 /// it never aliases the `sender`/`estimator` borrows.
 pub(crate) struct EngineClock {
     origin: std::time::Instant,
+    /// A test-driven clock in place of `origin`, so a relay harness runs the
+    /// production probe/echo path on its virtual time.
+    #[cfg(test)]
+    virtual_now_us: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl MonotonicClock for EngineClock {
     fn now_micros(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(now) = &self.virtual_now_us {
+            return now.load(std::sync::atomic::Ordering::Relaxed);
+        }
         // Saturate at u64::MAX rather than panic on the (practically unreachable)
         // overflow of microseconds since process start.
         self.origin.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
@@ -312,6 +305,9 @@ impl MonotonicClock for EngineClock {
 pub struct ClientTimeSync {
     activation_outcomes: std::collections::VecDeque<postretro_net::wire::ActivationOutcome>,
     weapon_cues: VecDeque<wire::WeaponCue>,
+    /// Switch outcomes from this frame's Input drain, resolved against the
+    /// pending declaration chain in arrival order before activation outcomes.
+    switch_outcomes: VecDeque<SwitchOutcome>,
     pub(crate) clock: EngineClock,
     sender: TimeSyncSender,
     pub(crate) estimator: ClockEstimator,
@@ -324,13 +320,24 @@ impl Default for ClientTimeSync {
 }
 
 impl ClientTimeSync {
+    /// Client time sync reading `now_us` as its monotonic clock.
+    #[cfg(test)]
+    pub(crate) fn with_virtual_clock(now_us: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Self {
+        let mut time_sync = Self::new();
+        time_sync.clock.virtual_now_us = Some(now_us);
+        time_sync
+    }
+
     pub fn new() -> Self {
         Self {
             clock: EngineClock {
                 origin: std::time::Instant::now(),
+                #[cfg(test)]
+                virtual_now_us: None,
             },
             activation_outcomes: std::collections::VecDeque::new(),
             weapon_cues: VecDeque::new(),
+            switch_outcomes: VecDeque::new(),
             sender: TimeSyncSender::new(),
             // The engine sim runs at 60 Hz; the estimator converts microseconds to
             // ticks at the same rate so its offset is in sim ticks.
@@ -374,6 +381,20 @@ impl ClientTimeSync {
         self.weapon_cues.drain(..)
     }
 
+    pub(crate) fn retain_switch_outcome(&mut self, outcome: SwitchOutcome) {
+        self.switch_outcomes.push_back(outcome);
+    }
+
+    pub(crate) fn drain_switch_outcomes(&mut self) -> impl Iterator<Item = SwitchOutcome> + '_ {
+        self.switch_outcomes.drain(..)
+    }
+
+    /// Drop Input facts that belong to a world or participation now gone.
+    fn clear_retired_input_facts(&mut self) {
+        self.weapon_cues.clear();
+        self.switch_outcomes.clear();
+    }
+
     /// Emit a 5 Hz probe if the cadence is due, recording the issued `sample_id`
     /// with the estimator in the same step. Sending and recording are fused here so
     /// a caller cannot queue a probe whose echo the estimator's provenance guard
@@ -407,6 +428,18 @@ impl ClientTimeSync {
             .is_initialized()
             .then(|| self.estimator.jitter_micros())
     }
+}
+
+/// Old-world reliable facts must not wait for a replacement world. A switch
+/// outcome dropped here may reach a pending chain not yet cleared: a suspend
+/// retracts parity without an unload, and the Holding it provokes clears the
+/// chain at least a round trip later. Nothing stays stuck, because that Holding
+/// clears the declaration the dropped outcome answered. Separately, the host's
+/// epoch filter drops any declaration still on the old epoch, so none is
+/// answered into the new participation.
+pub(crate) fn discard_world_less_input(client: &mut NetClient, time_sync: &mut ClientTimeSync) {
+    let _ = client.drain_input();
+    time_sync.clear_retired_input_facts();
 }
 
 /// The world-independent result of advancing a live network endpoint.
@@ -446,65 +479,6 @@ impl NetEndpoint {
             client.is_participating(),
             session_status.local_seat(),
         ))
-    }
-
-    /// Send a client-local switch declaration over reliable Control. The client
-    /// transport refuses to queue it before participation, so an old level cannot
-    /// leak a selection into a newly promoted pawn. `client_tick` is the tick of
-    /// the input command the switch was made on; the host orders the switch
-    /// against that command's neighbours by it.
-    pub fn send_client_switch_declaration(
-        &mut self,
-        slot: u8,
-        client_tick: u32,
-        rollback_slot: usize,
-        rollback_last_weapon_slot: Option<usize>,
-    ) {
-        if let Self::Client {
-            client,
-            next_switch_declaration_id,
-            pending_switch_declarations,
-            ..
-        } = self
-        {
-            let declaration_id = *next_switch_declaration_id;
-            *next_switch_declaration_id = (*next_switch_declaration_id).wrapping_add(1);
-            pending_switch_declarations.push_back(PendingSwitchDeclaration {
-                declaration_id,
-                target_slot: slot,
-                held_origin_slot: rollback_slot,
-                rollback_slot,
-                rollback_last_weapon_slot,
-            });
-            client.send_switch_declaration(ClientSwitchDeclaration {
-                declaration_id,
-                slot,
-                client_tick,
-            });
-        }
-    }
-
-    /// Whether this client has a switch declaration the host has not yet
-    /// answered. `false` on a host.
-    pub fn has_pending_switch_declarations(&self) -> bool {
-        matches!(
-            self,
-            Self::Client {
-                pending_switch_declarations,
-                ..
-            } if !pending_switch_declarations.is_empty()
-        )
-    }
-
-    pub fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
-        let Self::Client {
-            pending_switch_declarations,
-            ..
-        } = self
-        else {
-            return CurrentSwitchResolution::None;
-        };
-        resolve_switch_outcome(pending_switch_declarations, outcome)
     }
 
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
@@ -741,9 +715,7 @@ impl NetEndpoint {
                     // epoch bytes too: otherwise a snapshot queued between unload
                     // and replacement install can mutate the new world later.
                     discard_world_less_snapshots(client);
-                    // Old-world reliable facts must not wait for a replacement world.
-                    let _ = client.drain_input();
-                    time_sync.weapon_cues.clear();
+                    discard_world_less_input(client, time_sync);
                     WorldLessPoll::Client(client.drain_control())
                 }
             }
@@ -788,7 +760,7 @@ impl NetEndpoint {
         *tuning = None;
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
-        time_sync.weapon_cues.clear();
+        time_sync.clear_retired_input_facts();
     }
 
     /// Clear state whose entity ids belong to the old host level. This is separate
@@ -878,7 +850,7 @@ impl NetEndpoint {
         *tuning = None;
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
-        time_sync.weapon_cues.clear();
+        time_sync.clear_retired_input_facts();
     }
 
     /// The host's level state (level gravity and fluid table) from this

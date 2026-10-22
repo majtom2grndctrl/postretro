@@ -790,7 +790,7 @@ fn swimmer_in_a_fluid_with_a_coincident_push_volume_drifts_with_the_current() {
         assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
     }
     // The fluid decays the drift: it settles at push / viscosity, not at the
-    // ground-friction drift push / 6. A sideways current adds no vertical drift.
+    // ground-friction drift push / `ground.friction`. A sideways current adds no vertical drift.
     let current = push.x / WATER_VISCOSITY;
     assert!(
         (component.push_velocity.x - current).abs() < 1.0e-3,

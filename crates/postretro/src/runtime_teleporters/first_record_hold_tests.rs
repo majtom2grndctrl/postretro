@@ -71,6 +71,7 @@ fn gated_merge(hold: bool) -> (crate::App, [f32; 5], [f32; 5]) {
             &mut app.pending_teleport_sounds,
             &app.collision_world.teleporters,
             &registry,
+            Vec3::ZERO,
             &[],
             hold.then_some(pawn),
         );

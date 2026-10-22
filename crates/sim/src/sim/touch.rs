@@ -674,6 +674,8 @@ mod tests {
                 accel: 10.0,
                 step_height: 0.3,
                 max_slope: 45.0,
+                friction: GroundParams::DEFAULT_FRICTION,
+                stop_speed: GroundParams::DEFAULT_STOP_SPEED,
             },
             air: AirParams {
                 forward_steer: 0.0,
@@ -2437,6 +2439,150 @@ mod tests {
         // Map yaw 90 is engine `-X`; the model's `+Z` front points along it.
         let front = dropped * Vec3::Z;
         assert!(front.abs_diff_eq(Vec3::NEG_X, 1e-6), "model front {front}");
+    }
+
+    // Regression: dropping the lowering weapon of an in-flight switch left the
+    // switch target set on an Idle weapon, so the switch never finished and the
+    // target slot could not be selected again.
+    #[test]
+    fn drop_mid_lower_holds_the_switch_target_idle_and_allows_a_normal_next_switch() {
+        use crate::collision::CollisionWorld as World;
+        use crate::scripting_systems::hit_zones::HitZoneStore;
+        use crate::sim::weapon_stage::run_local_weapon_command;
+        use crate::weapon::{FireButtonState, WeaponFireCommand};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let mut items = Vec::new();
+        let mut inventory = Inventory::default();
+        for slot in 0..3 {
+            let item = spawn_item(
+                &mut registry,
+                "ion",
+                Vec3::new(10.0 + slot as f32, 2.0, 0.0),
+                TouchMode::Auto,
+                3,
+            );
+            let _ = registry.remove_component::<TouchableComponent>(item);
+            let _ = registry.remove_component::<MeshComponent>(item);
+            let mut component = registry
+                .get_component::<WeaponComponent>(item)
+                .unwrap()
+                .clone();
+            component.lower_ms = 100;
+            component.raise_ms = 50;
+            registry.set_component(item, component).unwrap();
+            inventory.wieldables[slot] = Some(item);
+            items.push(item);
+        }
+        registry.set_component(pawn, inventory).unwrap();
+        let registry = Rc::new(RefCell::new(registry));
+        let command = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+        let run = |select_slot, tick_dt| {
+            let mut no_impact = |_: &mut EntityRegistry| {};
+            run_local_weapon_command(
+                &registry,
+                Some(pawn),
+                false,
+                select_slot,
+                &command,
+                false,
+                &World::default(),
+                &HitZoneStore::new(),
+                0.0,
+                tick_dt,
+                &mut no_impact,
+            )
+        };
+
+        // A -> B starts lowering A; the lower is far from finished.
+        let _ = run(Some(1), 0.016);
+        {
+            let registry = registry.borrow();
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+            assert_eq!(inventory.active_slot, 0);
+            assert_eq!(inventory.switch_target, Some(1));
+            assert_eq!(inventory.switch_origin, Some(0));
+            assert_eq!(
+                registry
+                    .get_component::<WeaponComponent>(items[0])
+                    .unwrap()
+                    .state,
+                WieldableState::Lowering
+            );
+        }
+
+        // Drop before the lower finishes, through the real touch tick.
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+        let events = tick_with_edges(
+            &mut system,
+            &mut registry.borrow_mut(),
+            &floor_world(),
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+        assert_eq!(events.repointed_pawns, vec![pawn]);
+        {
+            let registry = registry.borrow();
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+            assert_eq!(inventory.wieldables[0], None);
+            assert_eq!(
+                registry
+                    .get_component::<WeaponComponent>(items[0])
+                    .unwrap()
+                    .state,
+                WieldableState::Idle,
+                "the dropped weapon does not rest in the world mid-lower"
+            );
+            assert_eq!(inventory.active_slot, 1, "the drop holds the switch target");
+            assert_eq!(inventory.switch_target, None);
+            assert_eq!(inventory.switch_origin, None);
+            let held = registry.get_component::<WeaponComponent>(items[1]).unwrap();
+            assert_eq!(held.state, WieldableState::Idle, "a drop starts no raise");
+        }
+
+        // The next selection starts a normal switch and completes it.
+        let _ = run(Some(2), 0.016);
+        {
+            let registry = registry.borrow();
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+            assert_eq!(inventory.active_slot, 1);
+            assert_eq!(inventory.switch_target, Some(2));
+            assert_eq!(inventory.switch_origin, Some(1));
+            assert_eq!(
+                registry
+                    .get_component::<WeaponComponent>(items[1])
+                    .unwrap()
+                    .state,
+                WieldableState::Lowering
+            );
+        }
+        let _ = run(None, 0.2);
+        let registry = registry.borrow();
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 2);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(items[2])
+                .unwrap()
+                .state,
+            WieldableState::Raising
+        );
     }
 
     #[test]

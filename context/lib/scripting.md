@@ -70,6 +70,8 @@ Luau manifest validation reject author templates in that namespace before commit
 
 Validation follows the fluid policy above: a rule broken drops that fluid with a warning naming the field. Wave rules apply whether or not a period is set. The amplitude range is checked before the length rules, and the 8× rule binds a defaulted amplitude as it does a written one. A defaulted length always passes, so a warning never names a length the author did not write.
 
+**Ghost style declarations (decided, not yet built).** `ModManifest.ghostStyles` declares named ghost presentation with `defineGhostStyle`, a pure identity helper: `name`, `tint`, `opacity`, `saturation`, and whether sound and impact sound carry (`entity_model.md` §7d). A map's `ghost_link` names a style. Validation, local resolution by name, staged reload and the digest stance all follow fluids. The name is an explicit field, not binding-name sugar, because map files reference it as a string. A link naming no style, or an undeclared one, uses the engine floor style: neutral and legible, carrying no sound. Which archetypes can ghost is a descriptor attribute, `ghost`, defaulting to false; a malformed value rejects mod init like any descriptor field.
+
 **Mod render profile.** `ModManifest.render` is optional static mod data.
 `bloom` accepts `resolution: "half" | "quarter" | "eighth"` and
 `pixelated: boolean`; omitted fields use half and smooth defaults.
@@ -235,7 +237,9 @@ Type-definition files are generated from the primitive registry via `cargo run -
 The TypeScript declaration file declares both SDK module IDs:
 `"postretro"` for non-UI authoring APIs and `"postretro/ui"` for UI factories,
 tree/state helpers, UI reactions, game-state refs used by UI, and theme token
-helpers. Dev script `tsconfig.json` files resolve both module IDs to the same
+helpers. A third, `"postretro/audio"` (decided, not yet built), holds audio
+subsystem APIs: the ghost-bus setter first, then music layering. Moving
+`playSound` there is a later breaking change. Dev script `tsconfig.json` files resolve both module IDs to the same
 generated declaration file. Luau exposes the same split through literal
 `require("postretro")` and `require("postretro/ui")` overloads in
 `postretro.d.luau`.
@@ -408,6 +412,9 @@ writes have that in-tick trigger surface: a consequential system reaction that
 writes an engine-owned overlay rather than a tick-context slot — the runtime
 sentiment verbs — drains at frame-end from every source,
 trigger fires included, so it lands the next tick with no same-tick visibility.
+`setGhostAudio` (decided, not yet built) is another target-less reaction body,
+from `postretro/audio`. Like ghost-link handle steps, it applies on the host
+at its next tick and replicates (`networking.md` §Current contract).
 
 Crossing watchers (`onStateCrossing`) may return through `setupLevel`'s
 manifest or through `ModManifest.crossings`. Mod-global watchers compose into
@@ -577,6 +584,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on("teleport", …)` |
+| ghost link member (decided, not yet built) | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire`; snapshot adds `spawnedTags` |
 | emitter member | `getMapEntities("emitter")` | none; snapshot only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |

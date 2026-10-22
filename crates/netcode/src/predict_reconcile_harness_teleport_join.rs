@@ -11,7 +11,6 @@ use std::f32::consts::FRAC_PI_2;
 
 use glam::{Vec2, Vec3};
 use postretro_entities::Transform;
-use postretro_net::harness::{LinkConfig, PacketConditioner};
 
 use postretro_entities::EntityRegistry;
 use postretro_net::wire::{
@@ -38,23 +37,12 @@ fn entry_ahead() -> Spec {
 /// Hold the host tuning on the Control lane, as a lost reliable send waits for
 /// its retransmit.
 fn hold_tuning(rig: &mut Rig) {
-    rig.h.to_client_control = PacketConditioner::new(LinkConfig {
-        delay: 1_000_000,
-        ..clean_link()
-    });
+    rig.h.hold_tuning();
 }
 
 /// Land the held tuning between frames, in a frame that carries no snapshot.
 fn land_tuning(rig: &mut Rig) {
-    let mut held = std::mem::replace(
-        &mut rig.h.to_client_control,
-        PacketConditioner::new(LinkConfig::perfect()),
-    );
-    held.advance(2_000_000);
-    for packet in held.take_ready() {
-        rig.h.to_client_control.enqueue(packet);
-    }
-    rig.h.client_drain_control();
+    rig.h.land_tuning();
     assert!(rig.h.client_tuning.is_some(), "the tuning installed");
 }
 
@@ -76,8 +64,7 @@ fn frame(rig: &mut Rig, wish: Vec2) {
     rig.predict(wish, true);
     rig.h.advance_clock();
     rig.host_ticks(1);
-    let acks = rig.h.client_receive();
-    rig.h.apply_acks(&acks);
+    rig.h.client_receive();
 }
 
 fn unmerged_requests(rig: &Rig) -> usize {

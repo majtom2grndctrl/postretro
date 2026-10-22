@@ -958,6 +958,8 @@ mod tests {
                     accel: 12.0,
                     step_height: 0.35,
                     max_slope: 45.0,
+                    friction: GroundParams::DEFAULT_FRICTION,
+                    stop_speed: GroundParams::DEFAULT_STOP_SPEED,
                 },
                 air: AirParams {
                     forward_steer: 0.3,
@@ -2197,6 +2199,7 @@ mod tests {
             interrupted_outgoing: None,
             speed_scale: true,
             locomotion_direction: Default::default(),
+            locomotion_jump: Default::default(),
         };
         let live = MeshComponent {
             model: "decraniated".into(),

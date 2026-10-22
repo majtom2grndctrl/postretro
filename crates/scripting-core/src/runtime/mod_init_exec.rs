@@ -1095,8 +1095,8 @@ mod tests {
     }
 
     #[test]
-    fn mod_init_audio_attenuation_matches_in_both_runtimes_and_degrades_without_rejecting() {
-        use crate::runtime::{ModAttenuation, ModAttenuationCurve, ModAudioProfile};
+    fn mod_init_audio_profile_matches_in_both_runtimes_and_degrades_without_rejecting() {
+        use crate::runtime::{ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModGhostAudio};
 
         let registry = PrimitiveRegistry::new();
         let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
@@ -1121,14 +1121,18 @@ mod tests {
         };
 
         let authored = cold(
-            ", audio: { attenuation: { minDistance: 3, maxDistance: 45, curve: 'quadratic' } }",
-            ", audio = { attenuation = { minDistance = 3, maxDistance = 45, curve = 'quadratic' } }",
+            ", audio: { attenuation: { minDistance: 3, maxDistance: 45, curve: 'quadratic' }, ghost: { lowPassHz: 3000 } }",
+            ", audio = { attenuation = { minDistance = 3, maxDistance = 45, curve = 'quadratic' }, ghost = { lowPassHz = 3000 } }",
         );
         let expected = ModAudioProfile {
             attenuation: ModAttenuation {
                 min_distance: 3.0,
                 max_distance: 45.0,
                 curve: ModAttenuationCurve::Quadratic,
+            },
+            ghost: ModGhostAudio {
+                low_pass_hz: 3000.0,
+                ..ModGhostAudio::FLOOR
             },
         };
         assert_eq!(authored, (expected, expected));
@@ -1139,8 +1143,8 @@ mod tests {
         );
         assert_eq!(
             cold(
-                ", audio: { attenuation: { minDistance: 50, maxDistance: 5 } }",
-                ", audio = { attenuation = { minDistance = 50, maxDistance = 5 } }",
+                ", audio: { attenuation: { minDistance: 50, maxDistance: 5 }, ghost: { drive: 7 } }",
+                ", audio = { attenuation = { minDistance = 50, maxDistance = 5 }, ghost = { drive = 7 } }",
             ),
             (ModAudioProfile::default(), ModAudioProfile::default())
         );

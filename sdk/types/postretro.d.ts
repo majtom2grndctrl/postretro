@@ -1276,10 +1276,24 @@ declare module "postretro" {
     curve?: AttenuationCurve;
   };
 
+  /** Mod-wide mix of the Ghost bus, the shared bus ghost-link echoes play through. It sits under SFX, so the player's SFX volume and the underwater muffle apply on top. Every field is optional; an omitted field takes the floor value. A malformed field — not a number, non-finite or out of range — or a `highPassHz` at or above `lowPassHz` once omitted fields are filled warns naming the field and applies the whole floor profile (0.6, 200 Hz, 4000 Hz, drive 0). */
+  export type AudioGhostProfile = {
+    /** Bus volume, 0 to 1, on the same perceptual taper as the player's volume options; 0 silences ghost audio. Optional; defaults to 0.6. */
+    volume?: number;
+    /** High-pass cutoff in Hz, 20 to 20000, below `lowPassHz`: thins out the low end. Optional; defaults to 200. */
+    highPassHz?: number;
+    /** Low-pass cutoff in Hz, 20 to 20000, above `highPassHz`: muffles the top end. Optional; defaults to 4000. */
+    lowPassHz?: number;
+    /** Distortion drive, 0 to 1; 0 applies no distortion, and higher values saturate the echo harder. Optional; defaults to 0. */
+    drive?: number;
+  };
+
   /** Static audio preferences declared once for the entire mod. */
   export type AudioProfile = {
     /** Distance attenuation for positional sounds. Optional; defaults to 2 to 60 metres, linear. */
     attenuation?: AudioAttenuation;
+    /** Ghost bus mix for ghost-link echoes. Optional; defaults to the floor profile: volume 0.6, 200 Hz to 4000 Hz, no drive. */
+    ghost?: AudioGhostProfile;
   };
 
   /** Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`. */
@@ -1507,7 +1521,7 @@ declare module "postretro" {
     render?: RenderProfile;
     /** Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay. */
     movers?: MoverDefaults;
-    /** Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation. */
+    /** Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation and the floor ghost bus profile. */
     audio?: AudioProfile;
     /** The game's commands, default bindings, and glyph art. Optional; omission keeps the engine's default bindings. Malformed entries warn and fall back per command and device class; they never reject the manifest. */
     input?: ModInput;

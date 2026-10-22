@@ -1331,8 +1331,8 @@ mod tests {
     }
 
     #[test]
-    fn staged_manifest_audio_attenuation_snapshot_matches_in_both_runtimes() {
-        use crate::runtime::{ModAttenuation, ModAttenuationCurve, ModAudioProfile};
+    fn staged_manifest_audio_profile_snapshot_matches_in_both_runtimes() {
+        use crate::runtime::{ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModGhostAudio};
 
         let staged_audio = |name: &str, entry: &str, source: &str| {
             let dir = temp_mod_root(name);
@@ -1351,7 +1351,10 @@ mod tests {
                     name: "AudioMod",
                     id: "audio-mod",
                     version: "1",
-                    audio: { attenuation: { minDistance: 1, maxDistance: 25, curve: "quadratic" } },
+                    audio: {
+                        attenuation: { minDistance: 1, maxDistance: 25, curve: "quadratic" },
+                        ghost: { volume: 0.7, highPassHz: 250, lowPassHz: 3000, drive: 0.3 },
+                    },
                 };
             "#,
         );
@@ -1363,7 +1366,10 @@ mod tests {
                     name = "AudioMod",
                     id = "audio-mod",
                     version = "1",
-                    audio = { attenuation = { minDistance = 1, maxDistance = 25, curve = "quadratic" } },
+                    audio = {
+                        attenuation = { minDistance = 1, maxDistance = 25, curve = "quadratic" },
+                        ghost = { volume = 0.7, highPassHz = 250, lowPassHz = 3000, drive = 0.3 },
+                    },
                 }
             "#,
         );
@@ -1372,6 +1378,12 @@ mod tests {
                 min_distance: 1.0,
                 max_distance: 25.0,
                 curve: ModAttenuationCurve::Quadratic,
+            },
+            ghost: ModGhostAudio {
+                volume: 0.7,
+                high_pass_hz: 250.0,
+                low_pass_hz: 3000.0,
+                drive: 0.3,
             },
         };
         assert_eq!(js, expected);

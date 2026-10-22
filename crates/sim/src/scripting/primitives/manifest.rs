@@ -94,12 +94,41 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("AudioGhostProfile")
+        .doc("Mod-wide mix of the Ghost bus, the shared bus ghost-link echoes play through. It sits under SFX, so the player's SFX volume and the underwater muffle apply on top. Every field is optional; an omitted field takes the floor value. A malformed field — not a number, non-finite or out of range — or a `highPassHz` at or above `lowPassHz` once omitted fields are filled warns naming the field and applies the whole floor profile (0.6, 200 Hz, 4000 Hz, drive 0).")
+        .field(
+            "volume?",
+            "f32",
+            "Bus volume, 0 to 1, on the same perceptual taper as the player's volume options; 0 silences ghost audio. Optional; defaults to 0.6.",
+        )
+        .field(
+            "highPassHz?",
+            "f32",
+            "High-pass cutoff in Hz, 20 to 20000, below `lowPassHz`: thins out the low end. Optional; defaults to 200.",
+        )
+        .field(
+            "lowPassHz?",
+            "f32",
+            "Low-pass cutoff in Hz, 20 to 20000, above `highPassHz`: muffles the top end. Optional; defaults to 4000.",
+        )
+        .field(
+            "drive?",
+            "f32",
+            "Distortion drive, 0 to 1; 0 applies no distortion, and higher values saturate the echo harder. Optional; defaults to 0.",
+        )
+        .finish();
+    registry
         .register_type("AudioProfile")
         .doc("Static audio preferences declared once for the entire mod.")
         .field(
             "attenuation?",
             "AudioAttenuation",
             "Distance attenuation for positional sounds. Optional; defaults to 2 to 60 metres, linear.",
+        )
+        .field(
+            "ghost?",
+            "AudioGhostProfile",
+            "Ghost bus mix for ghost-link echoes. Optional; defaults to the floor profile: volume 0.6, 200 Hz to 4000 Hz, no drive.",
         )
         .finish();
     register_input_types(registry);
@@ -180,7 +209,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "audio?",
             "AudioProfile",
-            "Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation.",
+            "Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation and the floor ghost bus profile.",
         )
         .field(
             "input?",
@@ -764,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_attenuation_sdk_types_are_closed_and_optional() {
+    fn audio_profile_sdk_types_are_closed_and_optional() {
         let mut registry = PrimitiveRegistry::new();
         register_sdk_type(&mut registry);
 
@@ -785,7 +814,11 @@ mod tests {
                 "AudioAttenuation",
                 ["minDistance?", "maxDistance?", "curve?"].as_slice(),
             ),
-            ("AudioProfile", ["attenuation?"].as_slice()),
+            (
+                "AudioGhostProfile",
+                ["volume?", "highPassHz?", "lowPassHz?", "drive?"].as_slice(),
+            ),
+            ("AudioProfile", ["attenuation?", "ghost?"].as_slice()),
         ] {
             let registered = registry
                 .iter_types()

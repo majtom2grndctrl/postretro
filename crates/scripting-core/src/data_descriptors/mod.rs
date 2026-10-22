@@ -19,9 +19,9 @@ pub use super::data_registry::{ScopedCrossing, ScopedReaction};
 pub use super::registry::EntityId;
 pub use super::runtime::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
-    ModBloomResolution, ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs,
-    ModLoading, ModMapEntry, ModMoverDefaults, ModReflectionProfile, ModReflectionStyle,
-    ModRenderProfile,
+    ModBloomResolution, ModGhostAudio, ModInputBinding, ModInputBlock, ModInputCommand,
+    ModInputGlyphs, ModLoading, ModMapEntry, ModMoverDefaults, ModReflectionProfile,
+    ModReflectionStyle, ModRenderProfile,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
@@ -74,6 +74,7 @@ mod view_pose_block;
 mod vm_adapters;
 
 mod js {
+    pub mod audio_profile;
     pub mod entity;
     pub mod input_block;
     pub mod loading_manifest;
@@ -89,6 +90,7 @@ mod js {
 }
 
 mod lua {
+    pub mod audio_profile;
     pub mod entity;
     pub mod input_block;
     pub mod loading_manifest;
@@ -132,6 +134,7 @@ pub use postretro_foundation::data_descriptors::types::{
     behavior::*, combat::*, fluid::*, knockback::*, manifest::*, movement::*,
 };
 
+pub use js::audio_profile::*;
 pub use js::entity::*;
 pub use js::input_block::*;
 pub use js::loading_manifest::*;
@@ -144,6 +147,7 @@ pub use js::trigger_events::*;
 pub use js::ui_binds::*;
 pub use js::ui_widgets::*;
 
+pub use lua::audio_profile::*;
 pub use lua::entity::*;
 pub use lua::input_block::*;
 pub use lua::loading_manifest::*;

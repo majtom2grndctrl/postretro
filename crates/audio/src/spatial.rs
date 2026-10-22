@@ -1,5 +1,5 @@
 // Positional-voice chokepoint: the only code that creates kira spatial tracks or
-// updates their parameters. Owns each positional voice's anchor and position;
+// updates their parameters. Owns each positional voice's bus, anchor and position;
 // the track carries the attenuation it started with. Later directional cues
 // extend this module.
 // See: context/lib/audio.md §5
@@ -13,6 +13,7 @@ use kira::track::{SpatialTrackBuilder, SpatialTrackHandle, TrackHandle};
 use kira::{Easing, Tween};
 
 use crate::boundary::{Attenuation, AttenuationCurve, SoundAnchor};
+use crate::buses::{BusId, BusTree};
 use crate::playable::Playable;
 use crate::voices::{KiraVoice, SoundHandle};
 
@@ -29,6 +30,8 @@ const MAX_REPOSITION_TWEEN_SECONDS: f32 = 0.1;
 /// frame's listener, and an entity anchor takes that frame's pose.
 struct PendingVoice {
     handle: SoundHandle,
+    /// The bus the voice holds its slot on and parents its track to.
+    bus: BusId,
     playable: Playable,
     anchor: SoundAnchor,
     attenuation: Attenuation,
@@ -39,13 +42,16 @@ struct PendingVoice {
 struct LiveVoice {
     sound: KiraVoice,
     track: SpatialTrackHandle,
+    /// The bus whose slot the voice holds, released when it ends.
+    bus: BusId,
     /// Entity key still being followed; `None` once frozen or for a fixed point.
     tracking: Option<u64>,
     position: [f32; 3],
 }
 
 /// Every positional voice, pending and live, keyed by the shared `SoundHandle`
-/// id space.
+/// id space. Each voice carries its bus and releases that bus's slot when it
+/// finishes, stops, fails to start or is faded out with its world.
 #[derive(Default)]
 pub(crate) struct SpatialVoices {
     pending: Vec<PendingVoice>,
@@ -53,24 +59,32 @@ pub(crate) struct SpatialVoices {
 }
 
 impl SpatialVoices {
-    /// Whether kira has a sub-track slot under `sfx` for one more positional
-    /// voice. Admitted-but-unstarted voices count, and kira keeps a removed
-    /// track's slot until its own thread frees it, so this can refuse a request
-    /// the engine's voice counter would accept.
-    pub(crate) fn has_room(&self, sfx: &TrackHandle) -> bool {
-        sfx.num_sub_tracks() + self.pending.len() < sfx.sub_track_capacity()
+    /// Whether kira has a sub-track slot under `bus`'s `track` for one more
+    /// positional voice. Admitted-but-unstarted voices on that bus count, and
+    /// kira keeps a removed track's slot until its own thread frees it, so this
+    /// can refuse a request the engine's voice counter would accept. SFX's own
+    /// count includes the Ghost track, which its capacity reserves a slot for.
+    pub(crate) fn has_room(&self, bus: BusId, track: &TrackHandle) -> bool {
+        let pending = self
+            .pending
+            .iter()
+            .filter(|pending| pending.bus == bus)
+            .count();
+        track.num_sub_tracks() + pending < track.sub_track_capacity()
     }
 
     /// Queue an admitted request to start at the next audio step.
     pub(crate) fn admit(
         &mut self,
         handle: SoundHandle,
+        bus: BusId,
         playable: Playable,
         anchor: SoundAnchor,
         attenuation: Attenuation,
     ) {
         self.pending.push(PendingVoice {
             handle,
+            bus,
             playable,
             anchor,
             attenuation,
@@ -78,16 +92,17 @@ impl SpatialVoices {
     }
 
     /// Per-frame step: move live voices to their anchors' current positions,
-    /// then start pending voices against this frame's listener. Returns how many
-    /// admitted voices failed to start, so the caller releases their slots.
+    /// then start pending voices against this frame's listener, each on a child
+    /// track of its own bus. An admitted voice that fails to start releases its
+    /// slot on that bus.
     pub(crate) fn update(
         &mut self,
-        sfx: &mut TrackHandle,
+        buses: &mut BusTree,
         listener: ListenerId,
         listener_position: [f32; 3],
         dt: f32,
         resolve: &mut dyn FnMut(u64) -> Option<[f32; 3]>,
-    ) -> usize {
+    ) {
         let tween = Tween {
             duration: Duration::from_secs_f32(if dt.is_finite() {
                 dt.clamp(0.0, MAX_REPOSITION_TWEEN_SECONDS)
@@ -111,8 +126,7 @@ impl SpatialVoices {
             }
         }
 
-        let mut failed = 0;
-        for pending in std::mem::take(&mut self.pending) {
+        for pending in self.pending.drain(..) {
             let Some((position, tracking)) =
                 start_position(&pending.anchor, listener_position, resolve)
             else {
@@ -121,11 +135,11 @@ impl SpatialVoices {
                 if !matches!(&pending.anchor, SoundAnchor::Contacts(points) if points.is_empty()) {
                     log::warn!("[Audio] positional sound has no finite position — dropped");
                 }
-                failed += 1;
+                buses.release_voice(pending.bus);
                 continue;
             };
             match start_voice(
-                sfx,
+                buses.track_mut(pending.bus),
                 listener,
                 position,
                 pending.attenuation,
@@ -137,6 +151,7 @@ impl SpatialVoices {
                         LiveVoice {
                             sound,
                             track,
+                            bus: pending.bus,
                             tracking,
                             position,
                         },
@@ -144,44 +159,50 @@ impl SpatialVoices {
                 }
                 Err(err) => {
                     log::warn!("[Audio] kira rejected positional sound: {err}");
-                    failed += 1;
+                    buses.release_voice(pending.bus);
                 }
             }
         }
-        failed
     }
 
-    /// Drop every voice whose sound has finished, returning how many were
-    /// reclaimed. Dropping the track handle then lets kira remove the track;
-    /// its sound is already done, so no tail is cut.
-    pub(crate) fn reclaim_finished(&mut self) -> usize {
-        let before = self.live.len();
-        self.live
-            .retain(|_, voice| voice.sound.state() != PlaybackState::Stopped);
-        before - self.live.len()
+    /// Drop every voice whose sound has finished, releasing its slot on its
+    /// bus. Dropping the track handle then lets kira remove the track; its
+    /// sound is already done, so no tail is cut.
+    pub(crate) fn reclaim_finished(&mut self, buses: &mut BusTree) {
+        self.live.retain(|_, voice| {
+            let finished = voice.sound.state() == PlaybackState::Stopped;
+            if finished {
+                buses.release_voice(voice.bus);
+            }
+            !finished
+        });
     }
 
-    /// Stop one voice, live or pending. Returns whether `handle` was ours.
-    pub(crate) fn stop(&mut self, handle: SoundHandle, tween: Tween) -> bool {
+    /// Stop one voice, live or pending, returning the bus whose slot the caller
+    /// must release, or `None` when `handle` is not ours.
+    pub(crate) fn stop(&mut self, handle: SoundHandle, tween: Tween) -> Option<BusId> {
         if let Some(mut voice) = self.live.remove(&handle) {
             voice.sound.stop(tween);
-            return true;
+            return Some(voice.bus);
         }
-        let before = self.pending.len();
-        self.pending.retain(|pending| pending.handle != handle);
-        before != self.pending.len()
+        let index = self
+            .pending
+            .iter()
+            .position(|pending| pending.handle == handle)?;
+        Some(self.pending.remove(index).bus)
     }
 
-    /// Stop every voice, fading live ones over `tween`, and return how many
-    /// voice slots the caller must release. A faded track persists in kira until
-    /// its fade ends, so it never outlives the fade but never cuts it either.
-    pub(crate) fn stop_all(&mut self, tween: Tween) -> usize {
-        let count = self.live.len() + self.pending.len();
+    /// Stop every voice, fading live ones over `tween`, and release each slot
+    /// on its bus. A faded track persists in kira until its fade ends, so it
+    /// never outlives the fade but never cuts it either.
+    pub(crate) fn stop_all(&mut self, tween: Tween, buses: &mut BusTree) {
         for (_, mut voice) in self.live.drain() {
             voice.sound.stop(tween);
+            buses.release_voice(voice.bus);
         }
-        self.pending.clear();
-        count
+        for pending in self.pending.drain(..) {
+            buses.release_voice(pending.bus);
+        }
     }
 
     #[cfg(test)]
@@ -240,7 +261,7 @@ pub(crate) fn is_finite_point(point: [f32; 3]) -> bool {
 }
 
 fn start_voice(
-    sfx: &mut TrackHandle,
+    parent: &mut TrackHandle,
     listener: ListenerId,
     position: [f32; 3],
     attenuation: Attenuation,
@@ -255,7 +276,7 @@ fn start_voice(
         .persist_until_sounds_finish(true)
         .sound_capacity(1)
         .sub_track_capacity(0);
-    let mut track = sfx
+    let mut track = parent
         .add_spatial_sub_track(listener, position, builder)
         .map_err(|err| err.to_string())?;
     let sound = match playable {

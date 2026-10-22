@@ -9,6 +9,7 @@ use kira::AudioManagerSettings;
 use kira::backend::mock::MockBackend;
 use kira::backend::{Backend, Renderer};
 
+mod ghost;
 mod muffle;
 mod spatial;
 
@@ -110,11 +111,17 @@ impl CapturingBackend {
 /// frames carry the tone at full resolution (kira's `MockBackend` defaults
 /// to 1 Hz, which would resample the clip away to near-nothing).
 pub(super) fn capturing_audio() -> AudioCore<CapturingBackend> {
+    capturing_audio_at(8_000)
+}
+
+/// [`capturing_audio`] rendering at `sample_rate`, for tests whose synthesized
+/// signal needs more bandwidth than the 8 kHz fixture rate carries.
+pub(super) fn capturing_audio_at(sample_rate: u32) -> AudioCore<CapturingBackend> {
     let mono = MonoFoldHandle::default();
     let settings = AudioManagerSettings::<CapturingBackend> {
         capacities: CAPACITIES,
         main_track_builder: main_track_builder(&mono),
-        backend_settings: 8_000,
+        backend_settings: sample_rate,
         ..Default::default()
     };
     let manager =
@@ -334,6 +341,7 @@ fn parse_bus_is_case_insensitive_and_rejects_unknown() {
     assert_eq!(parse_bus("sfx"), Some(BusId::Sfx));
     assert_eq!(parse_bus("Music"), Some(BusId::Music));
     assert_eq!(parse_bus("UI"), Some(BusId::UI));
+    assert_eq!(parse_bus("ghost"), Some(BusId::Ghost));
     assert_eq!(parse_bus("master"), None);
     assert_eq!(parse_bus(""), None);
 }

@@ -131,7 +131,7 @@ fn committed_sdk_types_contain_reflection_style_and_surface_reflectivity() {
 }
 
 #[test]
-fn committed_sdk_types_contain_mod_audio_attenuation() {
+fn committed_sdk_types_contain_mod_audio_profile() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
 
@@ -159,6 +159,9 @@ fn committed_sdk_types_contain_mod_audio_attenuation() {
         assert!(output.contains("curve?: AttenuationCurve;"));
         assert!(output.contains("export type AudioProfile = {"));
         assert!(output.contains("attenuation?: AudioAttenuation;"));
+        assert!(output.contains("export type AudioGhostProfile = {"));
+        assert!(output.contains("highPassHz?: number;"));
+        assert!(output.contains("ghost?: AudioGhostProfile;"));
         assert!(output.contains("audio?: AudioProfile;"));
     }
     for output in [&generated_luau, &committed_luau] {
@@ -170,6 +173,9 @@ fn committed_sdk_types_contain_mod_audio_attenuation() {
         assert!(output.contains("curve: AttenuationCurve?,"));
         assert!(output.contains("export type AudioProfile = {"));
         assert!(output.contains("attenuation: AudioAttenuation?,"));
+        assert!(output.contains("export type AudioGhostProfile = {"));
+        assert!(output.contains("highPassHz: number?,"));
+        assert!(output.contains("ghost: AudioGhostProfile?,"));
         assert!(output.contains("audio: AudioProfile?,"));
     }
 }

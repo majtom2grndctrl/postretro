@@ -140,11 +140,52 @@ impl Default for ModAttenuation {
     }
 }
 
+/// The Ghost bus mix, parsed from `audio.ghost`. Mirrors the audio crate's
+/// `GhostBusProfile` without depending on it; the binary converts between the
+/// two at one chokepoint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModGhostAudio {
+    /// Linear `0..=1`, on the perceptual volume taper; 0 silences the bus.
+    pub volume: f32,
+    /// High-pass cutoff in Hz, within the cutoff range and below `low_pass_hz`.
+    pub high_pass_hz: f32,
+    /// Low-pass cutoff in Hz, within the cutoff range and above `high_pass_hz`.
+    pub low_pass_hz: f32,
+    /// Distortion drive `0..=1`; 0 applies no distortion.
+    pub drive: f32,
+}
+
+impl ModGhostAudio {
+    /// The engine floor: band-limited, quieter than SFX and undistorted, a
+    /// neutral echo rather than any game's taste. The single source of these
+    /// values: a manifest field it omits, a malformed `audio.ghost`, and a
+    /// resolved profile whose cutoffs cross all fall back to it.
+    pub const FLOOR: Self = Self {
+        volume: 0.6,
+        high_pass_hz: 200.0,
+        low_pass_hz: 4000.0,
+        drive: 0.0,
+    };
+
+    /// Lowest accepted filter cutoff, in Hz.
+    pub const MIN_CUTOFF_HZ: f32 = 20.0;
+    /// Highest accepted filter cutoff, in Hz.
+    pub const MAX_CUTOFF_HZ: f32 = 20_000.0;
+}
+
+impl Default for ModGhostAudio {
+    fn default() -> Self {
+        Self::FLOOR
+    }
+}
+
 /// Mod-global audio preferences parsed from the optional `audio` manifest
 /// object. Omission or malformed values normalize to the engine seed.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ModAudioProfile {
     pub attenuation: ModAttenuation,
+    /// The Ghost bus profile from `audio.ghost`; the floor when omitted.
+    pub ghost: ModGhostAudio,
 }
 
 #[derive(Clone, Debug, PartialEq)]

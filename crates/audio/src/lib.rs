@@ -7,6 +7,7 @@ mod assets;
 mod audio_core;
 mod boundary;
 mod buses;
+mod ghost_bus;
 mod mono;
 mod muffle;
 mod orientation;
@@ -19,10 +20,12 @@ pub use boundary::{
     Attenuation, AttenuationCurve, AudioError, ListenerState, SoundAnchor, SoundRequest,
 };
 pub use buses::BusId;
+pub use ghost_bus::GhostBusProfile;
 pub use voices::SoundHandle;
 pub use volume::linear_volume_to_decibels;
 
 use std::path::Path;
+use std::time::Duration;
 
 use kira::{AudioManager, AudioManagerSettings, DefaultBackend};
 
@@ -106,6 +109,16 @@ impl Audio {
         self.core.set_world_muffle(amount);
     }
 
+    /// Move the Ghost bus to `profile` over `ramp` (at least 10 ms, linear).
+    /// A change made mid-ramp starts from the bus's current values, so a
+    /// reversed ramp turns back rather than stepping. The bus is silent until
+    /// the first profile applies. An invalid profile (a field non-finite or out
+    /// of range, or `high_pass_hz` at or above `low_pass_hz`) warns and leaves
+    /// the bus as it is; callers resolve and validate first.
+    pub fn set_ghost_bus_profile(&mut self, profile: GhostBusProfile, ramp: Duration) {
+        self.core.set_ghost_bus_profile(profile, ramp);
+    }
+
     /// Load every decodable sound under `<content_root>/sounds/` into the
     /// registry, replacing any sounds from a previously installed level.
     /// Missing directory or undecodable files degrade gracefully (warn, skip);
@@ -128,8 +141,9 @@ impl Audio {
     /// Start playing the requested sound, returning an opaque [`SoundHandle`]
     /// the caller can later pass to [`stop`](Self::stop), or `None` — never
     /// panicking — when the request can't be honored (unknown bus or key, a
-    /// positioned request off SFX or looping, a full bus, or a kira refusal;
-    /// each warns). An unanchored request starts now; an anchored one is
+    /// positioned request off SFX and Ghost or looping, a full bus, or a kira
+    /// refusal; each warns). `Some` is the admission outcome: the request holds
+    /// a voice on its bus. An unanchored request starts now; an anchored one is
     /// admitted now and starts at the next [`update`](Self::update), unless it
     /// is anchored on the listener's own pawn, which starts now, unpositioned.
     pub fn play(&mut self, req: SoundRequest) -> Option<SoundHandle> {

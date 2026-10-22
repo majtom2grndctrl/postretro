@@ -742,8 +742,8 @@ mod tests {
         }
     }
 
-    // Pin P9: a manifest reload that changes attenuation reaches the audio
-    // subsystem only through a successful commit.
+    // Pin P9: a manifest reload that changes attenuation or the ghost bus
+    // profile reaches the audio subsystem only through a successful commit.
     #[test]
     fn staged_audio_profile_commits_only_successful_whole_snapshots() {
         let authored = ModAudioProfile {
@@ -751,6 +751,12 @@ mod tests {
                 min_distance: 4.0,
                 max_distance: 80.0,
                 curve: postretro_scripting_core::runtime::ModAttenuationCurve::Quadratic,
+            },
+            ghost: postretro_scripting_core::runtime::ModGhostAudio {
+                volume: 0.7,
+                high_pass_hz: 250.0,
+                low_pass_hz: 3000.0,
+                drive: 0.3,
             },
         };
         let result = built_result_with(

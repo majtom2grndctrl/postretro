@@ -87,6 +87,34 @@ A source-scan test enforces rows 3 and 4 on the new shaders: no `fresnel`, no `f
 - CPU: `mirror_walk` time and path (seeded or fallback), mirror-visible cells and leaves, mirror-only cell count, mask coverage %, draw calls, Mac `render_submit` delta.
 - Manual visual read (owner): planar against SSR High; precision at grazing angles; the waterline seam; how visible the D and R fade bands are.
 
+## Status and execution notes
+
+- **Status (2026-10-22):** contract written; the owner has not yet approved it. Show the owner the decisions and the IP table before T1 starts. No code is written yet.
+- **Process:** follow `.claude/skills/build-session/SKILL.md` §3–§5, adapted for a spike. Run the tracks in order on this branch. Do one review track at the end, then `/preflight`. The final deliverable is the findings note with a recommendation (`experimental_spikes.md` §Deliverable). Don't open a shipping PR, and don't fold anything into `context/lib/`.
+- **Environment:**
+  - Agent edits on Windows can turn files into CRLF. Normalise to LF before running tests, because `include_str!` source-scan tests break on CRLF.
+  - Close the engine and `xtask` processes as soon as a manual run's logs have been read.
+  - Run focused tests only: `cargo test -p <crate> <filter>`, and require a non-zero test count.
+- **Source map** (from the design sweep at `473185e88`; reopen each file before designing against it):
+  - Composite: `fluid_reflection_layered_composite` in `shaders/fluid_reflection.wgsl:73`. It's called from `fs_main_reflecting` in `shaders/fluid_surface.wgsl:521`.
+  - Screen layer: `fluid_reflection_screen_layer` at `:500`. It reads `reflection_target` (group 5 binding 2, `:177`) and scales by `fluid_scene.ssr_scale`.
+  - Reflecting gate: `fluid_reflection_gate` at `:537`. It needs a probe.
+  - SSR target ownership: `fluid_surface/reflection_pass.rs` — `bound_view` and `target_scale` at `:458`, `wanted_reflection_target` at `:555`, `rebind_reflection_target` at `:634`, `has_reflecting_draws` at `:705`, `reflection_pass_records` at `:805`.
+  - Pins that must stay green: `crates/renderer/src/render/fluid_surface_tests.rs` — `:1630` and `:2033` (composite), `:3204` (rebuild callers), `:4737` and `:4915` (IP scan, screen layer).
+  - Second-camera precedent: the viewmodel uniform and bind group in `mesh_pass.rs:1262` and `renderer_render_frame.rs:922`.
+  - Main-view group-0 uniform: `build_uniform_data` and the SDF flag in `renderer_frame.rs:176` and `:216`. The forward SDF upsample skip is at `forward.wgsl:1153`.
+  - Cull:
+    - `candidate_cull.rs:446`: `dispatch` takes its buffers as arguments.
+    - `compute_cull.rs`: the `bucket_ranges` field is at `:82`, and `draw_indirect_buckets` at `:774`.
+  - Pipelines: depth prepass `renderer_init_pipelines.rs:376`, forward `:129`, mover `kinematic_brush.rs:413` (`record_draws` at `:813`), skinned `mesh_pass.rs:1186` (draws at `:1809`).
+  - Frame order: the SSR slot sits after skinned and before fluid, at `renderer_render_frame.rs:663`. Main-pass bind groups are at `:519`. Animated-lightmap compose input is `renderer_pre_scene.rs:547`. Extent rebuild is `renderer_extent.rs:111` (resize before `:126`).
+  - Visibility:
+    - `determine_visible_cells` is at `crates/visibility/src/visibility.rs:599`.
+    - The solid-cell fallback warning is at `:378`.
+    - Flood start is `portal_vis.rs:290`; `narrow_frustum` keeps the far plane at `:761`; `MAX_PORTAL_WALK_STEPS` is at `:26`.
+  - Timing pairs: `pipeline_layout.rs:189` (`TIMING_PAIR_COUNT`). Labels are at `renderer_init_resources.rs:610`.
+  - App: mesh and mover collection `frame_loop/mod.rs:2015` and `:2091`; `ShSampleRegionSets` `sh_sample_regions.rs:30`; per-face normal `face_normal` in `render-cpu/src/fluid_surface/mod.rs`.
+
 ## Open questions
 
 - Whether the seeded walk in the lake's open hall trips the step limit. Expected yes; the frustum fallback is accepted.

@@ -12,21 +12,25 @@
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/reflection-lake-test.map -o content/dev/maps/reflection-lake-test.prl
 // Run:     cargo run -p postretro-tool -- run --install-root . maps/reflection-lake-test.prl
 // ----
-// LAYOUT, one hall, interior x 0 to 2816, y 0 to 2816, 71.5 m square:
-//   Shore     floor z 0, ceiling z 512, walls yellow west, red east, green north, stone south.
-//   Lake      x 320 to 2496, y 320 to 2496, 2176 u = 55.27 m square, surface z -48, bed z -160.
+// LAYOUT, one hall, interior x 0 to 3840, y 0 to 3840, 97.5 m square:
+//   Shore     floor z 0, ceiling z 768, 19.5 m. Walls yellow west, red east, green north, stone south.
+//             The shore is 832 u, 21 m, wide from each wall to the water.
+//   Lake      x 832 to 3008, y 832 to 3008, 2176 u = 55.27 m square, surface z -48, bed z -160.
 //   Quay      the shore walls, 16 thick, bed to z 0, ring the lake.
-//   Dock      north shore, x 896 to 1024, y 2096 to 2496, deck z -40 to 0 on four legs.
-//   Boathouse north shore, x 1856 to 2240, y 2304 to 2688, half over the water, roof z 192 to 216.
+//   Dock      north shore, x 1408 to 1536, y 2608 to 3008, deck z -40 to 0 on four legs.
+//   Boathouse north shore, x 2368 to 2752, y 2816 to 3200, half over the water, roof z 192 to 216.
 //   Posts     P1 to P5 and P7 in the water, 12 u square, bed to z 96. P6, purple, is the always override.
-//   Rails     on the north quay: thin bars x 352 to 864, a thick capped rail x 1280 to 1792.
+//   Rails     on the north quay: thin bars x 864 to 1376, a thick capped rail x 1792 to 2304.
 //   Crates    north shore beside the dock, and one sunk into the dock deck.
-//   Never     purple long wall on the north shore, x 256 to 1280, y 2720 to 2752.
-//   Start     1408 152 on the south shore, facing north across the lake.
+//   Never     purple long wall on the north shore, x 768 to 1792, y 3232 to 3264.
+//   Start     1920 664 on the south shore, in the dark, facing north across the lake.
 //   Probe     an authored reflection_volume, the hall interior, binds the whole lake to one
 //             probe. Derived, the lake splits into 8 probes, under the dock and around the
 //             boathouse, each with a smaller W. Delete the box to see that split.
-//   Lights    a 3 by 3 grid at z 448; all but the centre one are bake only.
+//   Lights    eleven lamps and the boathouse light, each its own pool with dark hall between.
+//             Every falloff range is under half the distance to the nearest other light, so
+//             no two pools overlap. Lamps hang at z 160 to 224; the roof stays dark. Only the
+//             centre lamp, the north shore lamp and the boathouse light are runtime lights.
 // ----
 // AT W 55.2 m the size threshold t is about 17.2 m, 677 u, and the thin floor f
 // about 0.41 m, 16 u. Each brush comment below names its expected class.
@@ -38,462 +42,462 @@
 "_lightmap_density" "0.125"
 // sub-slab, its top is the lake bed at z -160
 {
-( -16 2832 -176 ) ( -16 -16 -160 ) ( -16 -16 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 -16 -176 ) ( 2832 -16 -160 ) ( 2832 -16 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 -16 -176 ) ( 2832 2832 -176 ) ( -16 2832 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 2832 -160 ) ( 2832 -16 -160 ) ( -16 -16 -160 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
-( 2832 2832 -176 ) ( -16 2832 -160 ) ( -16 2832 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2832 -16 -176 ) ( 2832 2832 -160 ) ( 2832 2832 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 3856 -176 ) ( -16 -16 -160 ) ( -16 -16 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -176 ) ( 3856 -16 -160 ) ( 3856 -16 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -176 ) ( 3856 3856 -176 ) ( -16 3856 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 3856 -160 ) ( 3856 -16 -160 ) ( -16 -16 -160 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 3856 3856 -176 ) ( -16 3856 -160 ) ( -16 3856 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3856 -16 -176 ) ( 3856 3856 -160 ) ( 3856 3856 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
-// roof, ceiling at z 512
+// roof, ceiling at z 768
 {
-( -16 2832 512 ) ( -16 -16 528 ) ( -16 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 -16 512 ) ( 2832 -16 528 ) ( 2832 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 -16 512 ) ( 2832 2832 512 ) ( -16 2832 512 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( -16 2832 528 ) ( 2832 -16 528 ) ( -16 -16 528 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2832 2832 512 ) ( -16 2832 528 ) ( -16 2832 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2832 -16 512 ) ( 2832 2832 528 ) ( 2832 2832 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 3856 768 ) ( -16 -16 784 ) ( -16 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 768 ) ( 3856 -16 784 ) ( 3856 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 768 ) ( 3856 3856 768 ) ( -16 3856 768 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( -16 3856 784 ) ( 3856 -16 784 ) ( -16 -16 784 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3856 3856 768 ) ( -16 3856 784 ) ( -16 3856 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3856 -16 768 ) ( 3856 3856 784 ) ( 3856 3856 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 // west wall, yellow inside
 {
-( -16 2832 -160 ) ( -16 -16 512 ) ( -16 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 -16 -160 ) ( 0 -16 512 ) ( 0 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 -16 -160 ) ( 0 2832 -160 ) ( -16 2832 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 2832 512 ) ( 0 -16 512 ) ( -16 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 2832 -160 ) ( -16 2832 512 ) ( -16 2832 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 -16 -160 ) ( 0 2832 512 ) ( 0 2832 -160 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
+( -16 3856 -160 ) ( -16 -16 768 ) ( -16 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -160 ) ( 0 -16 768 ) ( 0 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -160 ) ( 0 3856 -160 ) ( -16 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 3856 768 ) ( 0 -16 768 ) ( -16 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3856 -160 ) ( -16 3856 768 ) ( -16 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 -16 -160 ) ( 0 3856 768 ) ( 0 3856 -160 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
 }
 // east wall, red inside
 {
-( 2816 2832 -160 ) ( 2816 -16 512 ) ( 2816 -16 -160 ) DebugTextures/debug_wall_red 0 0 0 1 1
-( 2816 -16 -160 ) ( 2832 -16 512 ) ( 2832 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 -16 -160 ) ( 2832 2832 -160 ) ( 2816 2832 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 2832 512 ) ( 2832 -16 512 ) ( 2816 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2832 2832 -160 ) ( 2816 2832 512 ) ( 2816 2832 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2832 -16 -160 ) ( 2832 2832 512 ) ( 2832 2832 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 3856 -160 ) ( 3840 -16 768 ) ( 3840 -16 -160 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 3840 -16 -160 ) ( 3856 -16 768 ) ( 3856 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 -16 -160 ) ( 3856 3856 -160 ) ( 3840 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 3856 768 ) ( 3856 -16 768 ) ( 3840 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3856 3856 -160 ) ( 3840 3856 768 ) ( 3840 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3856 -16 -160 ) ( 3856 3856 768 ) ( 3856 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 // south wall, stone inside
 {
-( 0 0 -160 ) ( 0 -16 512 ) ( 0 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 -16 -160 ) ( 2816 -16 512 ) ( 2816 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 -16 -160 ) ( 2816 0 -160 ) ( 0 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 0 512 ) ( 2816 -16 512 ) ( 0 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 0 -160 ) ( 0 0 512 ) ( 0 0 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2816 -16 -160 ) ( 2816 0 512 ) ( 2816 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -160 ) ( 0 -16 768 ) ( 0 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 -16 -160 ) ( 3840 -16 768 ) ( 3840 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 -16 -160 ) ( 3840 0 -160 ) ( 0 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 768 ) ( 3840 -16 768 ) ( 0 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 0 -160 ) ( 0 0 768 ) ( 0 0 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3840 -16 -160 ) ( 3840 0 768 ) ( 3840 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 // north wall, green inside
 {
-( 0 2832 -160 ) ( 0 2816 512 ) ( 0 2816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 2816 -160 ) ( 2816 2816 512 ) ( 2816 2816 -160 ) DebugTextures/debug_wall_green 0 0 0 1 1
-( 0 2816 -160 ) ( 2816 2832 -160 ) ( 0 2832 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 2832 512 ) ( 2816 2816 512 ) ( 0 2816 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 2832 -160 ) ( 0 2832 512 ) ( 0 2832 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 2816 -160 ) ( 2816 2832 512 ) ( 2816 2832 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3856 -160 ) ( 0 3840 768 ) ( 0 3840 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3840 -160 ) ( 3840 3840 768 ) ( 3840 3840 -160 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 3840 -160 ) ( 3840 3856 -160 ) ( 0 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3856 768 ) ( 3840 3840 768 ) ( 0 3840 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 3856 -160 ) ( 0 3856 768 ) ( 0 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 3840 -160 ) ( 3840 3856 768 ) ( 3840 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 // south shore
 {
-( 0 304 -160 ) ( 0 0 0 ) ( 0 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 0 -160 ) ( 2816 0 0 ) ( 2816 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 0 -160 ) ( 2816 304 -160 ) ( 0 304 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 304 0 ) ( 2816 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 304 -160 ) ( 0 304 0 ) ( 0 304 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 0 -160 ) ( 2816 304 0 ) ( 2816 304 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 816 -160 ) ( 0 0 0 ) ( 0 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -160 ) ( 3840 0 0 ) ( 3840 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -160 ) ( 3840 816 -160 ) ( 0 816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 816 0 ) ( 3840 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 816 -160 ) ( 0 816 0 ) ( 0 816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 0 -160 ) ( 3840 816 0 ) ( 3840 816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 // north shore
 {
-( 0 2816 -160 ) ( 0 2512 0 ) ( 0 2512 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 2512 -160 ) ( 2816 2512 0 ) ( 2816 2512 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 2512 -160 ) ( 2816 2816 -160 ) ( 0 2816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 2816 0 ) ( 2816 2512 0 ) ( 0 2512 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 2816 -160 ) ( 0 2816 0 ) ( 0 2816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 2512 -160 ) ( 2816 2816 0 ) ( 2816 2816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3840 -160 ) ( 0 3024 0 ) ( 0 3024 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3024 -160 ) ( 3840 3024 0 ) ( 3840 3024 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3024 -160 ) ( 3840 3840 -160 ) ( 0 3840 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3840 0 ) ( 3840 3024 0 ) ( 0 3024 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 3840 -160 ) ( 0 3840 0 ) ( 0 3840 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 3024 -160 ) ( 3840 3840 0 ) ( 3840 3840 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 // west shore
 {
-( 0 2512 -160 ) ( 0 304 0 ) ( 0 304 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 304 -160 ) ( 304 304 0 ) ( 304 304 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 304 -160 ) ( 304 2512 -160 ) ( 0 2512 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 2512 0 ) ( 304 304 0 ) ( 0 304 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 304 2512 -160 ) ( 0 2512 0 ) ( 0 2512 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 304 304 -160 ) ( 304 2512 0 ) ( 304 2512 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3024 -160 ) ( 0 816 0 ) ( 0 816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 816 -160 ) ( 816 816 0 ) ( 816 816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 816 -160 ) ( 816 3024 -160 ) ( 0 3024 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3024 0 ) ( 816 816 0 ) ( 0 816 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 816 3024 -160 ) ( 0 3024 0 ) ( 0 3024 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 816 816 -160 ) ( 816 3024 0 ) ( 816 3024 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 // east shore
 {
-( 2512 2512 -160 ) ( 2512 304 0 ) ( 2512 304 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2512 304 -160 ) ( 2816 304 0 ) ( 2816 304 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2512 304 -160 ) ( 2816 2512 -160 ) ( 2512 2512 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2512 2512 0 ) ( 2816 304 0 ) ( 2512 304 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 2512 -160 ) ( 2512 2512 0 ) ( 2512 2512 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 2816 304 -160 ) ( 2816 2512 0 ) ( 2816 2512 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3024 3024 -160 ) ( 3024 816 0 ) ( 3024 816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3024 816 -160 ) ( 3840 816 0 ) ( 3840 816 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3024 816 -160 ) ( 3840 3024 -160 ) ( 3024 3024 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3024 3024 0 ) ( 3840 816 0 ) ( 3024 816 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 3024 -160 ) ( 3024 3024 0 ) ( 3024 3024 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 816 -160 ) ( 3840 3024 0 ) ( 3840 3024 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 // SHORE WALL south quay, KEPT, size 56 m
 {
-( 304 320 -160 ) ( 304 304 0 ) ( 304 304 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 304 -160 ) ( 2512 304 0 ) ( 2512 304 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 304 -160 ) ( 2512 320 -160 ) ( 304 320 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 320 0 ) ( 2512 304 0 ) ( 304 304 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2512 320 -160 ) ( 304 320 0 ) ( 304 320 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2512 304 -160 ) ( 2512 320 0 ) ( 2512 320 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 832 -160 ) ( 816 816 0 ) ( 816 816 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 816 -160 ) ( 3024 816 0 ) ( 3024 816 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 816 -160 ) ( 3024 832 -160 ) ( 816 832 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 832 0 ) ( 3024 816 0 ) ( 816 816 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3024 832 -160 ) ( 816 832 0 ) ( 816 832 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3024 816 -160 ) ( 3024 832 0 ) ( 3024 832 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
 }
 // SHORE WALL north quay, KEPT, size 56 m
 {
-( 304 2512 -160 ) ( 304 2496 0 ) ( 304 2496 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 2496 -160 ) ( 2512 2496 0 ) ( 2512 2496 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 2496 -160 ) ( 2512 2512 -160 ) ( 304 2512 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 2512 0 ) ( 2512 2496 0 ) ( 304 2496 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2512 2512 -160 ) ( 304 2512 0 ) ( 304 2512 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2512 2496 -160 ) ( 2512 2512 0 ) ( 2512 2512 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 3024 -160 ) ( 816 3008 0 ) ( 816 3008 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 3008 -160 ) ( 3024 3008 0 ) ( 3024 3008 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 3008 -160 ) ( 3024 3024 -160 ) ( 816 3024 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 3024 0 ) ( 3024 3008 0 ) ( 816 3008 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3024 3024 -160 ) ( 816 3024 0 ) ( 816 3024 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3024 3008 -160 ) ( 3024 3024 0 ) ( 3024 3024 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
 }
 // SHORE WALL west quay, KEPT, size 55 m
 {
-( 304 2496 -160 ) ( 304 320 0 ) ( 304 320 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 320 -160 ) ( 320 320 0 ) ( 320 320 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 320 -160 ) ( 320 2496 -160 ) ( 304 2496 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 304 2496 0 ) ( 320 320 0 ) ( 304 320 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 320 2496 -160 ) ( 304 2496 0 ) ( 304 2496 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 320 320 -160 ) ( 320 2496 0 ) ( 320 2496 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 3008 -160 ) ( 816 832 0 ) ( 816 832 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 832 -160 ) ( 832 832 0 ) ( 832 832 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 832 -160 ) ( 832 3008 -160 ) ( 816 3008 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 816 3008 0 ) ( 832 832 0 ) ( 816 832 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 832 3008 -160 ) ( 816 3008 0 ) ( 816 3008 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 832 832 -160 ) ( 832 3008 0 ) ( 832 3008 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
 }
 // SHORE WALL east quay, KEPT, size 55 m
 {
-( 2496 2496 -160 ) ( 2496 320 0 ) ( 2496 320 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2496 320 -160 ) ( 2512 320 0 ) ( 2512 320 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2496 320 -160 ) ( 2512 2496 -160 ) ( 2496 2496 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2496 2496 0 ) ( 2512 320 0 ) ( 2496 320 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2512 2496 -160 ) ( 2496 2496 0 ) ( 2496 2496 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
-( 2512 320 -160 ) ( 2512 2496 0 ) ( 2512 2496 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3008 3008 -160 ) ( 3008 832 0 ) ( 3008 832 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3008 832 -160 ) ( 3024 832 0 ) ( 3024 832 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3008 832 -160 ) ( 3024 3008 -160 ) ( 3008 3008 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3008 3008 0 ) ( 3024 832 0 ) ( 3008 832 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3024 3008 -160 ) ( 3008 3008 0 ) ( 3008 3008 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 3024 832 -160 ) ( 3024 3008 0 ) ( 3024 3008 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
 }
 // POST P1, EXCLUDED
 {
-( 1600 1612 -160 ) ( 1600 1600 96 ) ( 1600 1600 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1600 1600 -160 ) ( 1612 1600 96 ) ( 1612 1600 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1600 1600 -160 ) ( 1612 1612 -160 ) ( 1600 1612 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1600 1612 96 ) ( 1612 1600 96 ) ( 1600 1600 96 ) metal/metal_rough_046a 0 0 0 1 1
-( 1612 1612 -160 ) ( 1600 1612 96 ) ( 1600 1612 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1612 1600 -160 ) ( 1612 1612 96 ) ( 1612 1612 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2112 2124 -160 ) ( 2112 2112 96 ) ( 2112 2112 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2112 2112 -160 ) ( 2124 2112 96 ) ( 2124 2112 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2112 2112 -160 ) ( 2124 2124 -160 ) ( 2112 2124 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2112 2124 96 ) ( 2124 2112 96 ) ( 2112 2112 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 2124 2124 -160 ) ( 2112 2124 96 ) ( 2112 2124 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2124 2112 -160 ) ( 2124 2124 96 ) ( 2124 2124 -160 ) metal/metal_rough_046a 0 0 0 1 1
 }
 // POST P2, EXCLUDED
 {
-( 1120 876 -160 ) ( 1120 864 96 ) ( 1120 864 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1120 864 -160 ) ( 1132 864 96 ) ( 1132 864 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1120 864 -160 ) ( 1132 876 -160 ) ( 1120 876 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1120 876 96 ) ( 1132 864 96 ) ( 1120 864 96 ) metal/metal_rough_046a 0 0 0 1 1
-( 1132 876 -160 ) ( 1120 876 96 ) ( 1120 876 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1132 864 -160 ) ( 1132 876 96 ) ( 1132 876 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1632 1388 -160 ) ( 1632 1376 96 ) ( 1632 1376 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1632 1376 -160 ) ( 1644 1376 96 ) ( 1644 1376 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1632 1376 -160 ) ( 1644 1388 -160 ) ( 1632 1388 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1632 1388 96 ) ( 1644 1376 96 ) ( 1632 1376 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1644 1388 -160 ) ( 1632 1388 96 ) ( 1632 1388 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1644 1376 -160 ) ( 1644 1388 96 ) ( 1644 1388 -160 ) metal/metal_rough_046a 0 0 0 1 1
 }
 // POST P3, EXCLUDED
 {
-( 608 1708 -160 ) ( 608 1696 96 ) ( 608 1696 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 608 1696 -160 ) ( 620 1696 96 ) ( 620 1696 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 608 1696 -160 ) ( 620 1708 -160 ) ( 608 1708 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 608 1708 96 ) ( 620 1696 96 ) ( 608 1696 96 ) metal/metal_rough_046a 0 0 0 1 1
-( 620 1708 -160 ) ( 608 1708 96 ) ( 608 1708 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 620 1696 -160 ) ( 620 1708 96 ) ( 620 1708 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 2220 -160 ) ( 1120 2208 96 ) ( 1120 2208 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 2208 -160 ) ( 1132 2208 96 ) ( 1132 2208 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 2208 -160 ) ( 1132 2220 -160 ) ( 1120 2220 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 2220 96 ) ( 1132 2208 96 ) ( 1120 2208 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1132 2220 -160 ) ( 1120 2220 96 ) ( 1120 2220 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1132 2208 -160 ) ( 1132 2220 96 ) ( 1132 2220 -160 ) metal/metal_rough_046a 0 0 0 1 1
 }
 // POST P4, EXCLUDED
 {
-( 2208 1068 -160 ) ( 2208 1056 96 ) ( 2208 1056 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 2208 1056 -160 ) ( 2220 1056 96 ) ( 2220 1056 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 2208 1056 -160 ) ( 2220 1068 -160 ) ( 2208 1068 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 2208 1068 96 ) ( 2220 1056 96 ) ( 2208 1056 96 ) metal/metal_rough_046a 0 0 0 1 1
-( 2220 1068 -160 ) ( 2208 1068 96 ) ( 2208 1068 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 2220 1056 -160 ) ( 2220 1068 96 ) ( 2220 1068 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2720 1580 -160 ) ( 2720 1568 96 ) ( 2720 1568 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2720 1568 -160 ) ( 2732 1568 96 ) ( 2732 1568 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2720 1568 -160 ) ( 2732 1580 -160 ) ( 2720 1580 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2720 1580 96 ) ( 2732 1568 96 ) ( 2720 1568 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 2732 1580 -160 ) ( 2720 1580 96 ) ( 2720 1580 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2732 1568 -160 ) ( 2732 1580 96 ) ( 2732 1580 -160 ) metal/metal_rough_046a 0 0 0 1 1
 }
 // POST P5, EXCLUDED
 {
-( 1776 460 -160 ) ( 1776 448 96 ) ( 1776 448 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1776 448 -160 ) ( 1788 448 96 ) ( 1788 448 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1776 448 -160 ) ( 1788 460 -160 ) ( 1776 460 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1776 460 96 ) ( 1788 448 96 ) ( 1776 448 96 ) metal/metal_rough_046a 0 0 0 1 1
-( 1788 460 -160 ) ( 1776 460 96 ) ( 1776 460 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1788 448 -160 ) ( 1788 460 96 ) ( 1788 460 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 972 -160 ) ( 2288 960 96 ) ( 2288 960 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 960 -160 ) ( 2300 960 96 ) ( 2300 960 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 960 -160 ) ( 2300 972 -160 ) ( 2288 972 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2288 972 96 ) ( 2300 960 96 ) ( 2288 960 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 2300 972 -160 ) ( 2288 972 96 ) ( 2288 972 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 2300 960 -160 ) ( 2300 972 96 ) ( 2300 972 -160 ) metal/metal_rough_046a 0 0 0 1 1
 }
 // POST P7 auto twin of the always post P6, EXCLUDED
 {
-( 1280 1804 -160 ) ( 1280 1792 96 ) ( 1280 1792 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1280 1792 -160 ) ( 1292 1792 96 ) ( 1292 1792 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1280 1792 -160 ) ( 1292 1804 -160 ) ( 1280 1804 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1280 1804 96 ) ( 1292 1792 96 ) ( 1280 1792 96 ) metal/metal_rough_046a 0 0 0 1 1
-( 1292 1804 -160 ) ( 1280 1804 96 ) ( 1280 1804 -160 ) metal/metal_rough_046a 0 0 0 1 1
-( 1292 1792 -160 ) ( 1292 1804 96 ) ( 1292 1804 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1792 2316 -160 ) ( 1792 2304 96 ) ( 1792 2304 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1792 2304 -160 ) ( 1804 2304 96 ) ( 1804 2304 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1792 2304 -160 ) ( 1804 2316 -160 ) ( 1792 2316 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1792 2316 96 ) ( 1804 2304 96 ) ( 1792 2304 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1804 2316 -160 ) ( 1792 2316 96 ) ( 1792 2316 -160 ) metal/metal_rough_046a 0 0 0 1 1
+( 1804 2304 -160 ) ( 1804 2316 96 ) ( 1804 2316 -160 ) metal/metal_rough_046a 0 0 0 1 1
 }
 // DOCK deck 128 x 400 x 40, KEPT by the underside rule
 {
-( 896 2496 -40 ) ( 896 2096 0 ) ( 896 2096 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2096 -40 ) ( 1024 2096 0 ) ( 1024 2096 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2096 -40 ) ( 1024 2496 -40 ) ( 896 2496 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2496 0 ) ( 1024 2096 0 ) ( 896 2096 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1024 2496 -40 ) ( 896 2496 0 ) ( 896 2496 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1024 2096 -40 ) ( 1024 2496 0 ) ( 1024 2496 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 3008 -40 ) ( 1408 2608 0 ) ( 1408 2608 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2608 -40 ) ( 1536 2608 0 ) ( 1536 2608 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2608 -40 ) ( 1536 3008 -40 ) ( 1408 3008 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 3008 0 ) ( 1536 2608 0 ) ( 1408 2608 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1536 3008 -40 ) ( 1408 3008 0 ) ( 1408 3008 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1536 2608 -40 ) ( 1536 3008 0 ) ( 1536 3008 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // DOCK leg 1, EXCLUDED
 {
-( 896 2128 -160 ) ( 896 2112 -40 ) ( 896 2112 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2112 -160 ) ( 912 2112 -40 ) ( 912 2112 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2112 -160 ) ( 912 2128 -160 ) ( 896 2128 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2128 -40 ) ( 912 2112 -40 ) ( 896 2112 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 912 2128 -160 ) ( 896 2128 -40 ) ( 896 2128 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 912 2112 -160 ) ( 912 2128 -40 ) ( 912 2128 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2640 -160 ) ( 1408 2624 -40 ) ( 1408 2624 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2624 -160 ) ( 1424 2624 -40 ) ( 1424 2624 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2624 -160 ) ( 1424 2640 -160 ) ( 1408 2640 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2640 -40 ) ( 1424 2624 -40 ) ( 1408 2624 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1424 2640 -160 ) ( 1408 2640 -40 ) ( 1408 2640 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1424 2624 -160 ) ( 1424 2640 -40 ) ( 1424 2640 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // DOCK leg 2, EXCLUDED
 {
-( 1008 2128 -160 ) ( 1008 2112 -40 ) ( 1008 2112 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1008 2112 -160 ) ( 1024 2112 -40 ) ( 1024 2112 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1008 2112 -160 ) ( 1024 2128 -160 ) ( 1008 2128 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1008 2128 -40 ) ( 1024 2112 -40 ) ( 1008 2112 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1024 2128 -160 ) ( 1008 2128 -40 ) ( 1008 2128 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1024 2112 -160 ) ( 1024 2128 -40 ) ( 1024 2128 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1520 2640 -160 ) ( 1520 2624 -40 ) ( 1520 2624 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1520 2624 -160 ) ( 1536 2624 -40 ) ( 1536 2624 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1520 2624 -160 ) ( 1536 2640 -160 ) ( 1520 2640 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1520 2640 -40 ) ( 1536 2624 -40 ) ( 1520 2624 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1536 2640 -160 ) ( 1520 2640 -40 ) ( 1520 2640 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1536 2624 -160 ) ( 1536 2640 -40 ) ( 1536 2640 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // DOCK leg 3, EXCLUDED
 {
-( 896 2304 -160 ) ( 896 2288 -40 ) ( 896 2288 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2288 -160 ) ( 912 2288 -40 ) ( 912 2288 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2288 -160 ) ( 912 2304 -160 ) ( 896 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 896 2304 -40 ) ( 912 2288 -40 ) ( 896 2288 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 912 2304 -160 ) ( 896 2304 -40 ) ( 896 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 912 2288 -160 ) ( 912 2304 -40 ) ( 912 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2816 -160 ) ( 1408 2800 -40 ) ( 1408 2800 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2800 -160 ) ( 1424 2800 -40 ) ( 1424 2800 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2800 -160 ) ( 1424 2816 -160 ) ( 1408 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1408 2816 -40 ) ( 1424 2800 -40 ) ( 1408 2800 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1424 2816 -160 ) ( 1408 2816 -40 ) ( 1408 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1424 2800 -160 ) ( 1424 2816 -40 ) ( 1424 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // DOCK leg 4, EXCLUDED
 {
-( 1008 2304 -160 ) ( 1008 2288 -40 ) ( 1008 2288 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1008 2288 -160 ) ( 1024 2288 -40 ) ( 1024 2288 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1008 2288 -160 ) ( 1024 2304 -160 ) ( 1008 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1008 2304 -40 ) ( 1024 2288 -40 ) ( 1008 2288 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1024 2304 -160 ) ( 1008 2304 -40 ) ( 1008 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1024 2288 -160 ) ( 1024 2304 -40 ) ( 1024 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1520 2816 -160 ) ( 1520 2800 -40 ) ( 1520 2800 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1520 2800 -160 ) ( 1536 2800 -40 ) ( 1536 2800 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1520 2800 -160 ) ( 1536 2816 -160 ) ( 1520 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1520 2816 -40 ) ( 1536 2800 -40 ) ( 1520 2800 -40 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1536 2816 -160 ) ( 1520 2816 -40 ) ( 1520 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1536 2800 -160 ) ( 1536 2816 -40 ) ( 1536 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // DOCK crate 32 cube sitting flush on the deck, EXCLUDED, its bottom is CSG-cut
 {
-( 944 2192 0 ) ( 944 2160 32 ) ( 944 2160 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 944 2160 0 ) ( 976 2160 32 ) ( 976 2160 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 944 2160 0 ) ( 976 2192 0 ) ( 944 2192 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 944 2192 32 ) ( 976 2160 32 ) ( 944 2160 32 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 976 2192 0 ) ( 944 2192 32 ) ( 944 2192 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 976 2160 0 ) ( 976 2192 32 ) ( 976 2192 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1456 2704 0 ) ( 1456 2672 32 ) ( 1456 2672 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1456 2672 0 ) ( 1488 2672 32 ) ( 1488 2672 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1456 2672 0 ) ( 1488 2704 0 ) ( 1456 2704 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1456 2704 32 ) ( 1488 2672 32 ) ( 1456 2672 32 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1488 2704 0 ) ( 1456 2704 32 ) ( 1456 2704 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1488 2672 0 ) ( 1488 2704 32 ) ( 1488 2704 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE west wall, water part, EXCLUDED
 {
-( 1856 2496 -160 ) ( 1856 2304 192 ) ( 1856 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1856 2304 -160 ) ( 1872 2304 192 ) ( 1872 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1856 2304 -160 ) ( 1872 2496 -160 ) ( 1856 2496 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1856 2496 192 ) ( 1872 2304 192 ) ( 1856 2304 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2496 -160 ) ( 1856 2496 192 ) ( 1856 2496 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2304 -160 ) ( 1872 2496 192 ) ( 1872 2496 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2368 3008 -160 ) ( 2368 2816 192 ) ( 2368 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2368 2816 -160 ) ( 2384 2816 192 ) ( 2384 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2368 2816 -160 ) ( 2384 3008 -160 ) ( 2368 3008 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2368 3008 192 ) ( 2384 2816 192 ) ( 2368 2816 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 3008 -160 ) ( 2368 3008 192 ) ( 2368 3008 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 2816 -160 ) ( 2384 3008 192 ) ( 2384 3008 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE west wall, shore part, EXCLUDED
 {
-( 1856 2688 0 ) ( 1856 2496 192 ) ( 1856 2496 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1856 2496 0 ) ( 1872 2496 192 ) ( 1872 2496 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1856 2496 0 ) ( 1872 2688 0 ) ( 1856 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1856 2688 192 ) ( 1872 2496 192 ) ( 1856 2496 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2688 0 ) ( 1856 2688 192 ) ( 1856 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2496 0 ) ( 1872 2688 192 ) ( 1872 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2368 3200 0 ) ( 2368 3008 192 ) ( 2368 3008 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2368 3008 0 ) ( 2384 3008 192 ) ( 2384 3008 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2368 3008 0 ) ( 2384 3200 0 ) ( 2368 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2368 3200 192 ) ( 2384 3008 192 ) ( 2368 3008 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 3200 0 ) ( 2368 3200 192 ) ( 2368 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 3008 0 ) ( 2384 3200 192 ) ( 2384 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE east wall, water part, EXCLUDED
 {
-( 2224 2496 -160 ) ( 2224 2304 192 ) ( 2224 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2304 -160 ) ( 2240 2304 192 ) ( 2240 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2304 -160 ) ( 2240 2496 -160 ) ( 2224 2496 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2496 192 ) ( 2240 2304 192 ) ( 2224 2304 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2240 2496 -160 ) ( 2224 2496 192 ) ( 2224 2496 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2240 2304 -160 ) ( 2240 2496 192 ) ( 2240 2496 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 3008 -160 ) ( 2736 2816 192 ) ( 2736 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 2816 -160 ) ( 2752 2816 192 ) ( 2752 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 2816 -160 ) ( 2752 3008 -160 ) ( 2736 3008 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 3008 192 ) ( 2752 2816 192 ) ( 2736 2816 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2752 3008 -160 ) ( 2736 3008 192 ) ( 2736 3008 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2752 2816 -160 ) ( 2752 3008 192 ) ( 2752 3008 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE east wall, shore part, EXCLUDED
 {
-( 2224 2688 0 ) ( 2224 2496 192 ) ( 2224 2496 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2496 0 ) ( 2240 2496 192 ) ( 2240 2496 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2496 0 ) ( 2240 2688 0 ) ( 2224 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2688 192 ) ( 2240 2496 192 ) ( 2224 2496 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2240 2688 0 ) ( 2224 2688 192 ) ( 2224 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2240 2496 0 ) ( 2240 2688 192 ) ( 2240 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 3200 0 ) ( 2736 3008 192 ) ( 2736 3008 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 3008 0 ) ( 2752 3008 192 ) ( 2752 3008 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 3008 0 ) ( 2752 3200 0 ) ( 2736 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 3200 192 ) ( 2752 3008 192 ) ( 2736 3008 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2752 3200 0 ) ( 2736 3200 192 ) ( 2736 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2752 3008 0 ) ( 2752 3200 192 ) ( 2752 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE lake front, west stub in the water, EXCLUDED
 {
-( 1872 2320 -160 ) ( 1872 2304 192 ) ( 1872 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2304 -160 ) ( 1920 2304 192 ) ( 1920 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2304 -160 ) ( 1920 2320 -160 ) ( 1872 2320 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2320 192 ) ( 1920 2304 192 ) ( 1872 2304 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1920 2320 -160 ) ( 1872 2320 192 ) ( 1872 2320 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1920 2304 -160 ) ( 1920 2320 192 ) ( 1920 2320 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 2832 -160 ) ( 2384 2816 192 ) ( 2384 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 2816 -160 ) ( 2432 2816 192 ) ( 2432 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 2816 -160 ) ( 2432 2832 -160 ) ( 2384 2832 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 2832 192 ) ( 2432 2816 192 ) ( 2384 2816 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2432 2832 -160 ) ( 2384 2832 192 ) ( 2384 2832 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2432 2816 -160 ) ( 2432 2832 192 ) ( 2432 2832 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE lake front, east stub in the water, EXCLUDED
 {
-( 2176 2320 -160 ) ( 2176 2304 192 ) ( 2176 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2176 2304 -160 ) ( 2224 2304 192 ) ( 2224 2304 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2176 2304 -160 ) ( 2224 2320 -160 ) ( 2176 2320 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2176 2320 192 ) ( 2224 2304 192 ) ( 2176 2304 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2320 -160 ) ( 2176 2320 192 ) ( 2176 2320 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2304 -160 ) ( 2224 2320 192 ) ( 2224 2320 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2688 2832 -160 ) ( 2688 2816 192 ) ( 2688 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2688 2816 -160 ) ( 2736 2816 192 ) ( 2736 2816 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2688 2816 -160 ) ( 2736 2832 -160 ) ( 2688 2832 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2688 2832 192 ) ( 2736 2816 192 ) ( 2688 2816 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 2832 -160 ) ( 2688 2832 192 ) ( 2688 2832 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 2816 -160 ) ( 2736 2832 192 ) ( 2736 2832 -160 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE lake front lintel over the boat opening, KEPT by the underside rule
 {
-( 1920 2320 128 ) ( 1920 2304 192 ) ( 1920 2304 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1920 2304 128 ) ( 2176 2304 192 ) ( 2176 2304 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1920 2304 128 ) ( 2176 2320 128 ) ( 1920 2320 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1920 2320 192 ) ( 2176 2304 192 ) ( 1920 2304 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2176 2320 128 ) ( 1920 2320 192 ) ( 1920 2320 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2176 2304 128 ) ( 2176 2320 192 ) ( 2176 2320 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2432 2832 128 ) ( 2432 2816 192 ) ( 2432 2816 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2432 2816 128 ) ( 2688 2816 192 ) ( 2688 2816 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2432 2816 128 ) ( 2688 2832 128 ) ( 2432 2832 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2432 2832 192 ) ( 2688 2816 192 ) ( 2432 2816 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2688 2832 128 ) ( 2432 2832 192 ) ( 2432 2832 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2688 2816 128 ) ( 2688 2832 192 ) ( 2688 2832 128 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE back wall, west stub on the shore, EXCLUDED
 {
-( 1872 2688 0 ) ( 1872 2672 192 ) ( 1872 2672 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2672 0 ) ( 1984 2672 192 ) ( 1984 2672 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2672 0 ) ( 1984 2688 0 ) ( 1872 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1872 2688 192 ) ( 1984 2672 192 ) ( 1872 2672 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1984 2688 0 ) ( 1872 2688 192 ) ( 1872 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1984 2672 0 ) ( 1984 2688 192 ) ( 1984 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 3200 0 ) ( 2384 3184 192 ) ( 2384 3184 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 3184 0 ) ( 2496 3184 192 ) ( 2496 3184 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 3184 0 ) ( 2496 3200 0 ) ( 2384 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2384 3200 192 ) ( 2496 3184 192 ) ( 2384 3184 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2496 3200 0 ) ( 2384 3200 192 ) ( 2384 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2496 3184 0 ) ( 2496 3200 192 ) ( 2496 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE back wall, east stub on the shore, EXCLUDED
 {
-( 2112 2688 0 ) ( 2112 2672 192 ) ( 2112 2672 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2112 2672 0 ) ( 2224 2672 192 ) ( 2224 2672 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2112 2672 0 ) ( 2224 2688 0 ) ( 2112 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2112 2688 192 ) ( 2224 2672 192 ) ( 2112 2672 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2688 0 ) ( 2112 2688 192 ) ( 2112 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2224 2672 0 ) ( 2224 2688 192 ) ( 2224 2688 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2624 3200 0 ) ( 2624 3184 192 ) ( 2624 3184 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2624 3184 0 ) ( 2736 3184 192 ) ( 2736 3184 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2624 3184 0 ) ( 2736 3200 0 ) ( 2624 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2624 3200 192 ) ( 2736 3184 192 ) ( 2624 3184 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 3200 0 ) ( 2624 3200 192 ) ( 2624 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2736 3184 0 ) ( 2736 3200 192 ) ( 2736 3200 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE back door lintel over the shore, EXCLUDED, no underside over water
 {
-( 1984 2688 112 ) ( 1984 2672 192 ) ( 1984 2672 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1984 2672 112 ) ( 2112 2672 192 ) ( 2112 2672 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1984 2672 112 ) ( 2112 2688 112 ) ( 1984 2688 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1984 2688 192 ) ( 2112 2672 192 ) ( 1984 2672 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2112 2688 112 ) ( 1984 2688 192 ) ( 1984 2688 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 2112 2672 112 ) ( 2112 2688 192 ) ( 2112 2688 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2496 3200 112 ) ( 2496 3184 192 ) ( 2496 3184 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2496 3184 112 ) ( 2624 3184 192 ) ( 2624 3184 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2496 3184 112 ) ( 2624 3200 112 ) ( 2496 3200 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2496 3200 192 ) ( 2624 3184 192 ) ( 2496 3184 192 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2624 3200 112 ) ( 2496 3200 192 ) ( 2496 3200 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 2624 3184 112 ) ( 2624 3200 192 ) ( 2624 3200 112 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // BOATHOUSE roof 448 x 448 x 24 with 32 overhang, KEPT by the underside rule
 {
-( 1824 2720 192 ) ( 1824 2272 216 ) ( 1824 2272 192 ) metal/metal_rough_046a 0 0 0 1 1
-( 1824 2272 192 ) ( 2272 2272 216 ) ( 2272 2272 192 ) metal/metal_rough_046a 0 0 0 1 1
-( 1824 2272 192 ) ( 2272 2720 192 ) ( 1824 2720 192 ) metal/metal_rough_046a 0 0 0 1 1
-( 1824 2720 216 ) ( 2272 2272 216 ) ( 1824 2272 216 ) metal/metal_rough_046a 0 0 0 1 1
-( 2272 2720 192 ) ( 1824 2720 216 ) ( 1824 2720 192 ) metal/metal_rough_046a 0 0 0 1 1
-( 2272 2272 192 ) ( 2272 2720 216 ) ( 2272 2720 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 2336 3232 192 ) ( 2336 2784 216 ) ( 2336 2784 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 2336 2784 192 ) ( 2784 2784 216 ) ( 2784 2784 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 2336 2784 192 ) ( 2784 3232 192 ) ( 2336 3232 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 2336 3232 216 ) ( 2784 2784 216 ) ( 2336 2784 216 ) metal/metal_rough_046a 0 0 0 1 1
+( 2784 3232 192 ) ( 2336 3232 216 ) ( 2336 3232 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 2784 2784 192 ) ( 2784 3232 216 ) ( 2784 3232 192 ) metal/metal_rough_046a 0 0 0 1 1
 }
 // THIN RAIL post 4 x 4 x 40, EXCLUDED
 {
-( 352 2506 0 ) ( 352 2502 40 ) ( 352 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 352 2502 0 ) ( 356 2502 40 ) ( 356 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 352 2502 0 ) ( 356 2506 0 ) ( 352 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 352 2506 40 ) ( 356 2502 40 ) ( 352 2502 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 356 2506 0 ) ( 352 2506 40 ) ( 352 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 356 2502 0 ) ( 356 2506 40 ) ( 356 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 864 3018 0 ) ( 864 3014 40 ) ( 864 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 864 3014 0 ) ( 868 3014 40 ) ( 868 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 864 3014 0 ) ( 868 3018 0 ) ( 864 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 864 3018 40 ) ( 868 3014 40 ) ( 864 3014 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 868 3018 0 ) ( 864 3018 40 ) ( 864 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 868 3014 0 ) ( 868 3018 40 ) ( 868 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THIN RAIL post 4 x 4 x 40, EXCLUDED
 {
-( 480 2506 0 ) ( 480 2502 40 ) ( 480 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 480 2502 0 ) ( 484 2502 40 ) ( 484 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 480 2502 0 ) ( 484 2506 0 ) ( 480 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 480 2506 40 ) ( 484 2502 40 ) ( 480 2502 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 484 2506 0 ) ( 480 2506 40 ) ( 480 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 484 2502 0 ) ( 484 2506 40 ) ( 484 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 992 3018 0 ) ( 992 3014 40 ) ( 992 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 992 3014 0 ) ( 996 3014 40 ) ( 996 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 992 3014 0 ) ( 996 3018 0 ) ( 992 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 992 3018 40 ) ( 996 3014 40 ) ( 992 3014 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 996 3018 0 ) ( 992 3018 40 ) ( 992 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 996 3014 0 ) ( 996 3018 40 ) ( 996 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THIN RAIL post 4 x 4 x 40, EXCLUDED
 {
-( 608 2506 0 ) ( 608 2502 40 ) ( 608 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 608 2502 0 ) ( 612 2502 40 ) ( 612 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 608 2502 0 ) ( 612 2506 0 ) ( 608 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 608 2506 40 ) ( 612 2502 40 ) ( 608 2502 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 612 2506 0 ) ( 608 2506 40 ) ( 608 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 612 2502 0 ) ( 612 2506 40 ) ( 612 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1120 3018 0 ) ( 1120 3014 40 ) ( 1120 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1120 3014 0 ) ( 1124 3014 40 ) ( 1124 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1120 3014 0 ) ( 1124 3018 0 ) ( 1120 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1120 3018 40 ) ( 1124 3014 40 ) ( 1120 3014 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1124 3018 0 ) ( 1120 3018 40 ) ( 1120 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1124 3014 0 ) ( 1124 3018 40 ) ( 1124 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THIN RAIL post 4 x 4 x 40, EXCLUDED
 {
-( 736 2506 0 ) ( 736 2502 40 ) ( 736 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 736 2502 0 ) ( 740 2502 40 ) ( 740 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 736 2502 0 ) ( 740 2506 0 ) ( 736 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 736 2506 40 ) ( 740 2502 40 ) ( 736 2502 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 740 2506 0 ) ( 736 2506 40 ) ( 736 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 740 2502 0 ) ( 740 2506 40 ) ( 740 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1248 3018 0 ) ( 1248 3014 40 ) ( 1248 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1248 3014 0 ) ( 1252 3014 40 ) ( 1252 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1248 3014 0 ) ( 1252 3018 0 ) ( 1248 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1248 3018 40 ) ( 1252 3014 40 ) ( 1248 3014 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1252 3018 0 ) ( 1248 3018 40 ) ( 1248 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1252 3014 0 ) ( 1252 3018 40 ) ( 1252 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THIN RAIL post 4 x 4 x 40, EXCLUDED
 {
-( 860 2506 0 ) ( 860 2502 40 ) ( 860 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 860 2502 0 ) ( 864 2502 40 ) ( 864 2502 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 860 2502 0 ) ( 864 2506 0 ) ( 860 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 860 2506 40 ) ( 864 2502 40 ) ( 860 2502 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 864 2506 0 ) ( 860 2506 40 ) ( 860 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 864 2502 0 ) ( 864 2506 40 ) ( 864 2506 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1372 3018 0 ) ( 1372 3014 40 ) ( 1372 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1372 3014 0 ) ( 1376 3014 40 ) ( 1376 3014 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1372 3014 0 ) ( 1376 3018 0 ) ( 1372 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1372 3018 40 ) ( 1376 3014 40 ) ( 1372 3014 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1376 3018 0 ) ( 1372 3018 40 ) ( 1372 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1376 3014 0 ) ( 1376 3018 40 ) ( 1376 3018 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THIN RAIL top bar 512 long, 4 tall, KEPT by the thin floor
 {
-( 352 2506 40 ) ( 352 2502 44 ) ( 352 2502 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 352 2502 40 ) ( 864 2502 44 ) ( 864 2502 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 352 2502 40 ) ( 864 2506 40 ) ( 352 2506 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 352 2506 44 ) ( 864 2502 44 ) ( 352 2502 44 ) metal/metal_brushed_012 0 0 0 1 1
-( 864 2506 40 ) ( 352 2506 44 ) ( 352 2506 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 864 2502 40 ) ( 864 2506 44 ) ( 864 2506 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 864 3018 40 ) ( 864 3014 44 ) ( 864 3014 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 864 3014 40 ) ( 1376 3014 44 ) ( 1376 3014 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 864 3014 40 ) ( 1376 3018 40 ) ( 864 3018 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 864 3018 44 ) ( 1376 3014 44 ) ( 864 3014 44 ) metal/metal_brushed_012 0 0 0 1 1
+( 1376 3018 40 ) ( 864 3018 44 ) ( 864 3018 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1376 3014 40 ) ( 1376 3018 44 ) ( 1376 3018 40 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THICK RAIL post 4 x 8 x 40, EXCLUDED
 {
-( 1280 2508 0 ) ( 1280 2500 40 ) ( 1280 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1280 2500 0 ) ( 1284 2500 40 ) ( 1284 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1280 2500 0 ) ( 1284 2508 0 ) ( 1280 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1280 2508 40 ) ( 1284 2500 40 ) ( 1280 2500 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1284 2508 0 ) ( 1280 2508 40 ) ( 1280 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1284 2500 0 ) ( 1284 2508 40 ) ( 1284 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1792 3020 0 ) ( 1792 3012 40 ) ( 1792 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1792 3012 0 ) ( 1796 3012 40 ) ( 1796 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1792 3012 0 ) ( 1796 3020 0 ) ( 1792 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1792 3020 40 ) ( 1796 3012 40 ) ( 1792 3012 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1796 3020 0 ) ( 1792 3020 40 ) ( 1792 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1796 3012 0 ) ( 1796 3020 40 ) ( 1796 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THICK RAIL post 4 x 8 x 40, EXCLUDED
 {
-( 1408 2508 0 ) ( 1408 2500 40 ) ( 1408 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1408 2500 0 ) ( 1412 2500 40 ) ( 1412 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1408 2500 0 ) ( 1412 2508 0 ) ( 1408 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1408 2508 40 ) ( 1412 2500 40 ) ( 1408 2500 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1412 2508 0 ) ( 1408 2508 40 ) ( 1408 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1412 2500 0 ) ( 1412 2508 40 ) ( 1412 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1920 3020 0 ) ( 1920 3012 40 ) ( 1920 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1920 3012 0 ) ( 1924 3012 40 ) ( 1924 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1920 3012 0 ) ( 1924 3020 0 ) ( 1920 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1920 3020 40 ) ( 1924 3012 40 ) ( 1920 3012 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1924 3020 0 ) ( 1920 3020 40 ) ( 1920 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1924 3012 0 ) ( 1924 3020 40 ) ( 1924 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THICK RAIL post 4 x 8 x 40, EXCLUDED
 {
-( 1536 2508 0 ) ( 1536 2500 40 ) ( 1536 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1536 2500 0 ) ( 1540 2500 40 ) ( 1540 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1536 2500 0 ) ( 1540 2508 0 ) ( 1536 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1536 2508 40 ) ( 1540 2500 40 ) ( 1536 2500 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1540 2508 0 ) ( 1536 2508 40 ) ( 1536 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1540 2500 0 ) ( 1540 2508 40 ) ( 1540 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2048 3020 0 ) ( 2048 3012 40 ) ( 2048 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2048 3012 0 ) ( 2052 3012 40 ) ( 2052 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2048 3012 0 ) ( 2052 3020 0 ) ( 2048 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2048 3020 40 ) ( 2052 3012 40 ) ( 2048 3012 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 2052 3020 0 ) ( 2048 3020 40 ) ( 2048 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2052 3012 0 ) ( 2052 3020 40 ) ( 2052 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THICK RAIL post 4 x 8 x 40, EXCLUDED
 {
-( 1664 2508 0 ) ( 1664 2500 40 ) ( 1664 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1664 2500 0 ) ( 1668 2500 40 ) ( 1668 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1664 2500 0 ) ( 1668 2508 0 ) ( 1664 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1664 2508 40 ) ( 1668 2500 40 ) ( 1664 2500 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1668 2508 0 ) ( 1664 2508 40 ) ( 1664 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1668 2500 0 ) ( 1668 2508 40 ) ( 1668 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2176 3020 0 ) ( 2176 3012 40 ) ( 2176 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2176 3012 0 ) ( 2180 3012 40 ) ( 2180 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2176 3012 0 ) ( 2180 3020 0 ) ( 2176 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2176 3020 40 ) ( 2180 3012 40 ) ( 2176 3012 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 2180 3020 0 ) ( 2176 3020 40 ) ( 2176 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2180 3012 0 ) ( 2180 3020 40 ) ( 2180 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THICK RAIL post 4 x 8 x 40, EXCLUDED
 {
-( 1788 2508 0 ) ( 1788 2500 40 ) ( 1788 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1788 2500 0 ) ( 1792 2500 40 ) ( 1792 2500 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1788 2500 0 ) ( 1792 2508 0 ) ( 1788 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1788 2508 40 ) ( 1792 2500 40 ) ( 1788 2500 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1792 2508 0 ) ( 1788 2508 40 ) ( 1788 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
-( 1792 2500 0 ) ( 1792 2508 40 ) ( 1792 2508 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2300 3020 0 ) ( 2300 3012 40 ) ( 2300 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2300 3012 0 ) ( 2304 3012 40 ) ( 2304 3012 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2300 3012 0 ) ( 2304 3020 0 ) ( 2300 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2300 3020 40 ) ( 2304 3012 40 ) ( 2300 3012 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 2304 3020 0 ) ( 2300 3020 40 ) ( 2300 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 2304 3012 0 ) ( 2304 3020 40 ) ( 2304 3020 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // THICK RAIL cap 512 long, 24 tall, EXCLUDED by size
 {
-( 1280 2508 40 ) ( 1280 2500 64 ) ( 1280 2500 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1280 2500 40 ) ( 1792 2500 64 ) ( 1792 2500 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1280 2500 40 ) ( 1792 2508 40 ) ( 1280 2508 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1280 2508 64 ) ( 1792 2500 64 ) ( 1280 2500 64 ) metal/metal_brushed_012 0 0 0 1 1
-( 1792 2508 40 ) ( 1280 2508 64 ) ( 1280 2508 40 ) metal/metal_brushed_012 0 0 0 1 1
-( 1792 2500 40 ) ( 1792 2508 64 ) ( 1792 2508 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1792 3020 40 ) ( 1792 3012 64 ) ( 1792 3012 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1792 3012 40 ) ( 2304 3012 64 ) ( 2304 3012 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1792 3012 40 ) ( 2304 3020 40 ) ( 1792 3020 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 1792 3020 64 ) ( 2304 3012 64 ) ( 1792 3012 64 ) metal/metal_brushed_012 0 0 0 1 1
+( 2304 3020 40 ) ( 1792 3020 64 ) ( 1792 3020 40 ) metal/metal_brushed_012 0 0 0 1 1
+( 2304 3012 40 ) ( 2304 3020 64 ) ( 2304 3020 40 ) metal/metal_brushed_012 0 0 0 1 1
 }
 // SHORE crate 32 cube, EXCLUDED
 {
-( 1088 2592 0 ) ( 1088 2560 32 ) ( 1088 2560 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1088 2560 0 ) ( 1120 2560 32 ) ( 1120 2560 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1088 2560 0 ) ( 1120 2592 0 ) ( 1088 2592 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1088 2592 32 ) ( 1120 2560 32 ) ( 1088 2560 32 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1120 2592 0 ) ( 1088 2592 32 ) ( 1088 2592 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1120 2560 0 ) ( 1120 2592 32 ) ( 1120 2592 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1600 3104 0 ) ( 1600 3072 32 ) ( 1600 3072 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1600 3072 0 ) ( 1632 3072 32 ) ( 1632 3072 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1600 3072 0 ) ( 1632 3104 0 ) ( 1600 3104 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1600 3104 32 ) ( 1632 3072 32 ) ( 1600 3072 32 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1632 3104 0 ) ( 1600 3104 32 ) ( 1600 3104 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1632 3072 0 ) ( 1632 3104 32 ) ( 1632 3104 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 // SHORE crate 48 cube, EXCLUDED
 {
-( 1152 2592 0 ) ( 1152 2544 48 ) ( 1152 2544 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1152 2544 0 ) ( 1200 2544 48 ) ( 1200 2544 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1152 2544 0 ) ( 1200 2592 0 ) ( 1152 2592 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1152 2592 48 ) ( 1200 2544 48 ) ( 1152 2544 48 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1200 2592 0 ) ( 1152 2592 48 ) ( 1152 2592 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
-( 1200 2544 0 ) ( 1200 2592 48 ) ( 1200 2592 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1664 3104 0 ) ( 1664 3056 48 ) ( 1664 3056 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1664 3056 0 ) ( 1712 3056 48 ) ( 1712 3056 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1664 3056 0 ) ( 1712 3104 0 ) ( 1664 3104 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1664 3104 48 ) ( 1712 3056 48 ) ( 1664 3056 48 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1712 3104 0 ) ( 1664 3104 48 ) ( 1664 3104 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
+( 1712 3056 0 ) ( 1712 3104 48 ) ( 1712 3104 0 ) 50-free-textures/wood_bark_046 0 0 0 1 1
 }
 }
 // OVERRIDE always: post P6 in a func_group, KEPT though the rule would exclude it
@@ -501,12 +505,12 @@
 "classname" "func_group"
 "_reflection_capture" "always"
 {
-( 1152 1804 -160 ) ( 1152 1792 96 ) ( 1152 1792 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 1152 1792 -160 ) ( 1164 1792 96 ) ( 1164 1792 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 1152 1792 -160 ) ( 1164 1804 -160 ) ( 1152 1804 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 1152 1804 96 ) ( 1164 1792 96 ) ( 1152 1792 96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 1164 1804 -160 ) ( 1152 1804 96 ) ( 1152 1804 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 1164 1792 -160 ) ( 1164 1804 96 ) ( 1164 1804 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1664 2316 -160 ) ( 1664 2304 96 ) ( 1664 2304 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1664 2304 -160 ) ( 1676 2304 96 ) ( 1676 2304 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1664 2304 -160 ) ( 1676 2316 -160 ) ( 1664 2316 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1664 2316 96 ) ( 1676 2304 96 ) ( 1664 2304 96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1676 2316 -160 ) ( 1664 2316 96 ) ( 1664 2316 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1676 2304 -160 ) ( 1676 2316 96 ) ( 1676 2316 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 }
 }
 // OVERRIDE never: north shore long wall, 1024 long, size 26 m above t, EXCLUDED
@@ -514,18 +518,18 @@
 "classname" "func_group"
 "_reflection_capture" "never"
 {
-( 256 2752 0 ) ( 256 2720 160 ) ( 256 2720 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 256 2720 0 ) ( 1280 2720 160 ) ( 1280 2720 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 256 2720 0 ) ( 1280 2752 0 ) ( 256 2752 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 256 2752 160 ) ( 1280 2720 160 ) ( 256 2720 160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 1280 2752 0 ) ( 256 2752 160 ) ( 256 2752 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 1280 2720 0 ) ( 1280 2752 160 ) ( 1280 2752 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 768 3264 0 ) ( 768 3232 160 ) ( 768 3232 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 768 3232 0 ) ( 1792 3232 160 ) ( 1792 3232 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 768 3232 0 ) ( 1792 3264 0 ) ( 768 3264 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 768 3264 160 ) ( 1792 3232 160 ) ( 768 3232 160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1792 3264 0 ) ( 768 3264 160 ) ( 768 3264 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1792 3232 0 ) ( 1792 3264 160 ) ( 1792 3264 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 }
 }
 // player start: south shore, facing north across the lake at the dock and boathouse
 {
 "classname" "player_spawn"
-"origin" "1408 152 24"
+"origin" "1920 664 24"
 "angles" "0 90 0"
 "_tags" "player"
 }
@@ -534,119 +538,138 @@
 "classname" "fluid_volume"
 "fluid" "water"
 {
-( 320 2496 -160 ) ( 320 320 -48 ) ( 320 320 -160 ) fluids/water_64 0 0 0 1 1
-( 320 320 -160 ) ( 2496 320 -48 ) ( 2496 320 -160 ) fluids/water_64 0 0 0 1 1
-( 320 320 -160 ) ( 2496 2496 -160 ) ( 320 2496 -160 ) fluids/water_64 0 0 0 1 1
-( 320 2496 -48 ) ( 2496 320 -48 ) ( 320 320 -48 ) fluids/water_64 0 0 0 1 1
-( 2496 2496 -160 ) ( 320 2496 -48 ) ( 320 2496 -160 ) fluids/water_64 0 0 0 1 1
-( 2496 320 -160 ) ( 2496 2496 -48 ) ( 2496 2496 -160 ) fluids/water_64 0 0 0 1 1
+( 832 3008 -160 ) ( 832 832 -48 ) ( 832 832 -160 ) fluids/water_64 0 0 0 1 1
+( 832 832 -160 ) ( 3008 832 -48 ) ( 3008 832 -160 ) fluids/water_64 0 0 0 1 1
+( 832 832 -160 ) ( 3008 3008 -160 ) ( 832 3008 -160 ) fluids/water_64 0 0 0 1 1
+( 832 3008 -48 ) ( 3008 832 -48 ) ( 832 832 -48 ) fluids/water_64 0 0 0 1 1
+( 3008 3008 -160 ) ( 832 3008 -48 ) ( 832 3008 -160 ) fluids/water_64 0 0 0 1 1
+( 3008 832 -160 ) ( 3008 3008 -48 ) ( 3008 3008 -160 ) fluids/water_64 0 0 0 1 1
 }
 }
 // authored probe box: the hall interior, so the whole lake binds one probe
 {
 "classname" "reflection_volume"
 {
-( 0 2816 -160 ) ( 0 0 512 ) ( 0 0 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 0 0 -160 ) ( 2816 0 512 ) ( 2816 0 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 0 0 -160 ) ( 2816 2816 -160 ) ( 0 2816 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 0 2816 512 ) ( 2816 0 512 ) ( 0 0 512 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 2816 2816 -160 ) ( 0 2816 512 ) ( 0 2816 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
-( 2816 0 -160 ) ( 2816 2816 512 ) ( 2816 2816 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 3840 -160 ) ( 0 0 768 ) ( 0 0 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 0 -160 ) ( 3840 0 768 ) ( 3840 0 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 0 -160 ) ( 3840 3840 -160 ) ( 0 3840 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 3840 768 ) ( 3840 0 768 ) ( 0 0 768 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 3840 3840 -160 ) ( 0 3840 768 ) ( 0 3840 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 3840 0 -160 ) ( 3840 3840 768 ) ( 3840 3840 -160 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 }
 }
-// hall fill light 470 470, bake only, so faces keep at most four specular owners
+// lamp centre, runtime, range 448, over the lake north of the capture point, lights P6 and P7 side by side and P1
 {
 "classname" "light"
-"origin" "470 470 448"
-"light" "350"
+"origin" "1824 2208 224"
+"light" "500"
 "_color" "255 244 230"
-"_falloff_range" "1600"
+"_falloff_range" "448"
+"delay" "0"
+}
+// lamp north shore, runtime, range 384, lights the dock tail, the shore crates, the rail ends either side and the never wall
+{
+"classname" "light"
+"origin" "1584 3104 160"
+"light" "450"
+"_color" "255 244 230"
+"_falloff_range" "384"
+"delay" "0"
+}
+// lamp north-west shore, bake only, range 320, lights the west end of the never wall and of the thin rail
+{
+"classname" "light"
+"origin" "800 3136 192"
+"light" "450"
+"_color" "255 244 230"
+"_falloff_range" "320"
 "delay" "0"
 "_bake_only" "1"
 }
-// hall fill light 1408 470, bake only, so faces keep at most four specular owners
+// lamp west lake, bake only, range 384, lights P3
 {
 "classname" "light"
-"origin" "1408 470 448"
-"light" "350"
+"origin" "928 2048 224"
+"light" "500"
 "_color" "255 244 230"
-"_falloff_range" "1600"
+"_falloff_range" "384"
 "delay" "0"
 "_bake_only" "1"
 }
-// hall fill light 2346 470, bake only, so faces keep at most four specular owners
+// lamp south lake, bake only, range 384, lights P2
 {
 "classname" "light"
-"origin" "2346 470 448"
-"light" "350"
+"origin" "1600 1312 224"
+"light" "500"
 "_color" "255 244 230"
-"_falloff_range" "1600"
+"_falloff_range" "384"
 "delay" "0"
 "_bake_only" "1"
 }
-// hall fill light 470 1408, bake only, so faces keep at most four specular owners
+// lamp east lake, bake only, range 384, lights P4
 {
 "classname" "light"
-"origin" "470 1408 448"
-"light" "350"
+"origin" "2752 1536 224"
+"light" "500"
 "_color" "255 244 230"
-"_falloff_range" "1600"
+"_falloff_range" "384"
 "delay" "0"
 "_bake_only" "1"
 }
-// hall light over the lake centre, the one runtime light
+// lamp south quay, bake only, range 352, lights P5 and the south quay
 {
 "classname" "light"
-"origin" "1408 1408 448"
-"light" "350"
+"origin" "2176 784 224"
+"light" "500"
 "_color" "255 244 230"
-"_falloff_range" "1600"
-"delay" "0"
-}
-// hall fill light 2346 1408, bake only, so faces keep at most four specular owners
-{
-"classname" "light"
-"origin" "2346 1408 448"
-"light" "350"
-"_color" "255 244 230"
-"_falloff_range" "1600"
+"_falloff_range" "352"
 "delay" "0"
 "_bake_only" "1"
 }
-// hall fill light 470 2346, bake only, so faces keep at most four specular owners
+// lamp west wall, bake only, range 384, washes the yellow wall
 {
 "classname" "light"
-"origin" "470 2346 448"
-"light" "350"
+"origin" "192 1600 224"
+"light" "450"
 "_color" "255 244 230"
-"_falloff_range" "1600"
+"_falloff_range" "384"
 "delay" "0"
 "_bake_only" "1"
 }
-// hall fill light 1408 2346, bake only, so faces keep at most four specular owners
+// lamp east wall, bake only, range 384, washes the red wall
 {
 "classname" "light"
-"origin" "1408 2346 448"
-"light" "350"
+"origin" "3648 2304 224"
+"light" "450"
 "_color" "255 244 230"
-"_falloff_range" "1600"
+"_falloff_range" "384"
 "delay" "0"
 "_bake_only" "1"
 }
-// hall fill light 2346 2346, bake only, so faces keep at most four specular owners
+// lamp south wall, bake only, range 384, washes the stone wall
 {
 "classname" "light"
-"origin" "2346 2346 448"
-"light" "350"
+"origin" "1024 192 224"
+"light" "450"
 "_color" "255 244 230"
-"_falloff_range" "1600"
+"_falloff_range" "384"
 "delay" "0"
 "_bake_only" "1"
 }
-// boathouse interior light, warm
+// lamp north wall, bake only, range 384, washes the green wall
 {
 "classname" "light"
-"origin" "2048 2592 160"
+"origin" "3328 3648 224"
+"light" "450"
+"_color" "255 244 230"
+"_falloff_range" "384"
+"delay" "0"
+"_bake_only" "1"
+}
+// boathouse interior light, warm, runtime
+{
+"classname" "light"
+"origin" "2560 3104 160"
 "light" "220"
 "_color" "255 190 120"
 "_falloff_range" "448"

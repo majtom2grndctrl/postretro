@@ -189,7 +189,7 @@ pub fn advance(
                 apply_authorized_weapon_impact_damage(
                     registry,
                     component.owner_weapon,
-                    credited_attacker(registry, &component),
+                    credited_attacker(registry, component),
                     impact,
                     component.credit_source.clone(),
                     0.0,
@@ -218,7 +218,7 @@ pub fn advance(
                     apply_authorized_weapon_impact_damage(
                         registry,
                         component.owner_weapon,
-                        credited_attacker(registry, &component),
+                        credited_attacker(registry, component),
                         impact,
                         component.credit_source.clone(),
                         payload.amount,

@@ -279,7 +279,7 @@ fn fire_during_execution_or_recovery_is_dropped() {
     rig.step();
     // Every later tick of the execution and its recovery asks again.
     let last = 2 * activation_duration_ticks(50.0);
-    while rig.tick <= last + recovery_ticks(100.0) - 1 {
+    while rig.tick < last + recovery_ticks(100.0) {
         rig.fire(trap);
         rig.step();
     }

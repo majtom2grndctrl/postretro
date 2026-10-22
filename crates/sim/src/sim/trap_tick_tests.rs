@@ -1,6 +1,4 @@
-// Projectile-trap request timing through the authoritative fixed-tick seam:
-// which sources act on their own tick, which latch to the next, and how they
-// order. Pin ids (P#) name the brief's ordering pins.
+// Trap request timing through the authoritative tick: which sources act on their tick, which latch.
 // See: context/lib/scripting.md §12 (Entity addressing) · context/lib/entity_model.md §Components
 
 use glam::Vec3;
@@ -451,7 +449,7 @@ impl Rig {
     }
 }
 
-// P7 and P1: a trigger-bound reaction's step before its first `wait` acts on
+// A trigger-bound reaction's step before its first `wait` acts on
 // the Enter tick, and a no-script `fire` on the same trap that tick dedupes.
 #[test]
 fn trigger_bound_trap_step_acts_on_the_enter_tick_and_dedupes_with_the_direct_fire() {
@@ -470,7 +468,7 @@ fn trigger_bound_trap_step_acts_on_the_enter_tick_and_dedupes_with_the_direct_fi
     );
 }
 
-// P24: the direct command is issued first, then the bound step.
+// The direct command is issued first, then the bound step.
 #[test]
 fn direct_command_precedes_bound_trap_steps() {
     for (command, bound, running) in [
@@ -496,7 +494,7 @@ fn direct_command_precedes_bound_trap_steps() {
     }
 }
 
-// P21: a teleport-bound trap step acts on the teleport's tick.
+// A teleport-bound trap step acts on the teleport's tick.
 #[test]
 fn teleport_bound_trap_step_acts_on_the_teleport_tick() {
     let mut rig = Rig::new();
@@ -512,7 +510,7 @@ fn teleport_bound_trap_step_acts_on_the_teleport_tick() {
     assert_eq!(rig.shot_ticks(trap), vec![3]);
 }
 
-// P14 and P15: a post-`wait` step latches to the next authoritative tick, and
+// A post-`wait` step latches to the next authoritative tick, and
 // landings from different ticks of one multi-tick frame all act on that one
 // next tick. Both tails park at the Enter frame's drain.
 #[test]
@@ -556,7 +554,7 @@ fn post_wait_steps_latch_to_the_next_tick_even_from_a_catch_up_frame() {
     );
 }
 
-// P17: on a tick, latched requests apply before that tick's trigger-bound ones.
+// On a tick, latched requests apply before that tick's trigger-bound ones.
 #[test]
 fn latched_requests_apply_before_trigger_requests() {
     // A latched start, then a trigger stop on the next tick: nothing fires.
@@ -591,7 +589,7 @@ fn latched_requests_apply_before_trigger_requests() {
     );
 }
 
-// P18: a frame of several ticks runs every tick's due check, and a mid-frame
+// A frame of several ticks runs every tick's due check, and a mid-frame
 // trigger-bound start anchors on its own tick: shot ticks match one tick per frame.
 #[test]
 fn catch_up_frame_matches_one_tick_per_frame() {
@@ -622,7 +620,7 @@ fn catch_up_frame_matches_one_tick_per_frame() {
     assert_eq!(run(5), single);
 }
 
-// P2: duplicate fire steps dedupe on a trap but not on a spawner, as do two
+// Duplicate fire steps dedupe on a trap but not on a spawner, as do two
 // activators entering a zero-re-arm `multiple` trigger on one tick.
 #[test]
 fn duplicate_fire_dedupes_on_traps_but_not_spawners() {
@@ -665,7 +663,7 @@ fn duplicate_fire_dedupes_on_traps_but_not_spawners() {
     );
 }
 
-// P8: two players on a zero-re-arm sweep plate on one tick produce one sweep;
+// Two players on a zero-re-arm sweep plate on one tick produce one sweep;
 // a second player entering while the traps recover adds no shot.
 #[test]
 fn two_activators_on_a_zero_rearm_plate_fire_one_sweep() {
@@ -715,11 +713,10 @@ fn two_activators_on_a_zero_rearm_plate_fire_one_sweep() {
     assert_eq!(rig.shot_ticks(second).len(), 1, "its tail met recovery too");
 }
 
-// P11: a connected client issues no trap request from any member step.
+// A connected client issues no trap request from any member step.
 #[test]
 fn client_trap_steps_issue_and_latch_nothing() {
-    let rig = Rig::new();
-    let mut rig = rig;
+    let mut rig = Rig::new();
     let trap = rig.trap("a");
     rig.ctx.owner_slot_writes_enabled.set(false);
     for step in [step(trap, "fireTrap"), start(trap, 100.0, 0.0)] {

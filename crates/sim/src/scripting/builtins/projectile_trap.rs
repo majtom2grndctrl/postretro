@@ -1,8 +1,5 @@
-//! Built-in classname handler for `projectile_trap` map entities.
+//! Built-in classname handler for `projectile_trap`: keeps the authored configuration for install.
 //! See: context/lib/build_pipeline.md §Custom FGD · context/lib/entity_model.md §Components
-//!
-//! The handler preserves the authored configuration; install resolves the
-//! weapon once the level's descriptor table exists (`crate::traps::install`).
 
 use glam::Vec3;
 
@@ -25,12 +22,12 @@ fn optional_value<'a>(entity: &'a MapEntity, key: &str) -> Option<&'a str> {
 }
 
 /// The first invalid timing KVP, described for the one inert warning.
-fn timing_from_entity(entity: &MapEntity) -> Result<(f32, f32, bool), String> {
-    let number = |key: &str, default: f32| -> Result<f32, String> {
+fn timing_from_entity(entity: &MapEntity) -> Result<(f64, f64, bool), String> {
+    let number = |key: &str, default: f64| -> Result<f64, String> {
         match optional_value(entity, key) {
             None => Ok(default),
             Some(raw) => raw
-                .parse::<f32>()
+                .parse::<f64>()
                 .ok()
                 .filter(|value| value.is_finite())
                 .ok_or_else(|| format!("`{key}` `{raw}` is not a finite number")),

@@ -19,7 +19,7 @@ pub enum TriggerFireMode {
 
 /// The closed command a trigger's `command` KVP applies on Enter to every
 /// brainless member carrying its `target_tag` whose kind accepts it. The
-/// acceptance table lives with the trigger tick (`postretro-sim`).
+/// acceptance table lives in `postretro_sim::trigger_direct_commands`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerCommand {

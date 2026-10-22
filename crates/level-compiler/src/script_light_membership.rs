@@ -88,9 +88,10 @@ pub(crate) fn light_table_from_lights(
 }
 
 /// Build the non-light member table: exactly the movers, trigger volumes
-/// (switches included), teleporters, spawners and projectile traps the runtime places, each with the tags and
-/// Transform position runtime gives it. Order is authored order within each
-/// kind, the order runtime spawns them and therefore answers queries in.
+/// (switches included), teleporters, spawners and projectile traps the
+/// runtime places, each with the tags and Transform position runtime gives it.
+/// Order is authored order within each kind, the order runtime spawns them and
+/// therefore answers queries in.
 ///
 /// Positions mirror the runtime spawn sites: a mover's packed origin
 /// (`runtime_movers` spawns at the PRL record origin), a trigger volume's AABB

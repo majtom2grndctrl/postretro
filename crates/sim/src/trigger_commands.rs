@@ -71,7 +71,8 @@ pub(crate) enum BoundTriggerCommand {
     Spawn {
         target: BoundTarget,
     },
-    /// A trap member step: host-only, acting at this tick's trap stage.
+    /// A trap member step: host-only; queues a request for the next trap
+    /// stage, this tick's when a trigger or teleport issues it.
     Trap {
         target: BoundTarget,
         request: TrapRequest,

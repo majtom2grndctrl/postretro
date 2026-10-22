@@ -1,8 +1,4 @@
-// E18 projectile-trap wave: the Scripting surface example as a level script.
-// The sweep plate fires the `wave` traps in order, three passes; standing in
-// the loop zone makes every trap repeat on one period, phase-staggered so the
-// wave rolls. Its Luau twin is trap-wave.luau; both name every reaction so
-// their wire matches.
+// Projectile-trap wave: a sweep plate fires the `wave` traps in order; a loop zone repeats them.
 // See: context/lib/scripting.md §12 (Entity addressing)
 
 import { defineReaction, getMapEntities, wait } from "postretro";

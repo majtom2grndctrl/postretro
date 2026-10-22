@@ -1,5 +1,4 @@
-// A trigger's no-script `command` on Enter, over every brainless member kind,
-// through the real trigger tick; and the install warning for unaccepted tags.
+// A trigger's no-script `command` on Enter through the real trigger tick, and its install warning.
 // See: context/lib/build_pipeline.md §Custom FGD (trigger_volume)
 
 use glam::Vec3;
@@ -275,7 +274,7 @@ fn direct_start_and_stop_reach_movers_and_traps() {
     assert!(!level.trap_running(trap));
 }
 
-// P12: only accepting members act, and one accepting member keeps it quiet.
+// Only accepting members act, and one accepting member keeps it quiet.
 #[test]
 fn direct_commands_reach_only_accepting_kinds() {
     let capture = LogCapture::start();

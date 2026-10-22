@@ -243,10 +243,6 @@ mod tests {
         );
     }
 
-    // Regression: clearing `rearm_ms` in TrenchBroom failed the compile with
-    // "cannot parse float from empty string", and clearing `activation`, `command`,
-    // `fire_mode`, or `enabled_on_spawn` reported an unknown value that printed as
-    // empty backticks — all for a value the author could no longer see.
     #[test]
     fn trigger_volume_fire_command_resolves_to_section_value_four() {
         for spelling in ["fire", "4"] {
@@ -256,6 +252,10 @@ mod tests {
         }
     }
 
+    // Regression: clearing `rearm_ms` in TrenchBroom failed the compile with
+    // "cannot parse float from empty string", and clearing `activation`, `command`,
+    // `fire_mode`, or `enabled_on_spawn` reported an unknown value that printed as
+    // empty backticks — all for a value the author could no longer see.
     #[test]
     fn trigger_volume_cleared_optional_keys_resolve_like_absent_ones() {
         let absent = resolve(&[("on_fire", "open_gate")]).expect("bare trigger resolves");

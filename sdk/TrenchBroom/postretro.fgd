@@ -351,20 +351,20 @@
 ]
 
 // Bodiless projectile trap: fires its weapon from its origin along its facing
-// arrow. `weapon` names a projectile weapon descriptor; a hitscan or charged
-// weapon, or an invalid timing value, leaves it inert with one warning. A
-// trigger's `fire`, `start` or `stop` command on its tag drives it with no
-// script, or a level script drives it as `getMapEntities("trap")`.
+// arrow. `weapon` names a projectile weapon descriptor; an unknown, hitscan or
+// charged weapon, or an invalid timing value, leaves it inert with one
+// warning. A trigger's `fire`, `start` or `stop` command on its tag drives it
+// with no script, or a level script drives it as `getMapEntities("trap")`.
 @PointClass base(EntitySpawn)
     color(240 140 40)
     size(-8 -8 -8, 8 8 8)
     = projectile_trap : "Projectile Trap"
 [
-    angles(angles) : "Facing (pitch yaw roll, degrees). `angle` -1 fires straight up, -2 straight down" : "0 0 0"
+    angles(angles) : "Facing (pitch yaw roll, degrees). A legacy `angle` key of -1 fires straight up, -2 straight down" : "0 0 0"
     weapon(string) : "Projectile weapon descriptor canonical name" : ""
     interval_ms(float) : "Repeat interval once started (milliseconds; rounds up to whole ticks, minimum one)" : "1000"
     phase_ms(float) : "Delay from a start to its first execution (milliseconds; rounds up to whole ticks)" : "0"
-    start_on_spawn(choices) : "Start repeating at level load" : 0 =
+    start_on_spawn(choices) : "Start repeating at level load (any other value leaves the trap inert)" : 0 =
     [
         0 : "No"
         1 : "Yes"
@@ -558,8 +558,9 @@
 // animation, author a `kinematic_mover` alongside the switch.
 //
 // Everything else matches `trigger_volume`: `on_fire` / `on_exit` named
-// reactions, `target_tag` + `command` / `command_arg` mover control, and the
-// same `fire_mode` / `rearm_ms` / `enabled_on_spawn` firing rules. Clearing any
+// reactions, `target_tag` + `command` / `command_arg` direct commands (movers,
+// traps, spawners), and the same `fire_mode` / `rearm_ms` / `enabled_on_spawn`
+// firing rules. Clearing any
 // of those fields — or `use_reach` — means "unset": the compiler falls back to
 // the default rather than failing.
 //

@@ -1,6 +1,4 @@
-//! The trap member verbs `fireTrap`, `startTrap` and `stopTrap`: their step
-//! arguments and the sequenced primitives named dispatch and `wait` landings
-//! run. In-tick binding lowers the same verbs in `trigger_bindings`.
+//! Trap member verbs: step arguments and sequenced primitives (in-tick: `trigger_bindings`).
 //! See: context/lib/scripting.md §12 (Entity addressing)
 
 use postretro_entities::ScriptCtx;
@@ -14,8 +12,8 @@ use serde::Deserialize;
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StartTrapArgs {
-    interval_ms: Option<f32>,
-    phase_ms: Option<f32>,
+    interval_ms: Option<f64>,
+    phase_ms: Option<f64>,
 }
 
 /// The request one trap verb issues, or `None` for another primitive or

@@ -107,10 +107,10 @@ fn normalize_aim_direction(direction: Vec3) -> Option<Vec3> {
     Some(direction / length_squared.sqrt())
 }
 
-/// Where a projectile came from, recorded at spawn for its contact
-/// presentation: the weapon descriptor it was fired from, and the first
-/// projectile of its shot (`None` for the first, or a lone projectile).
-/// `attackerless` marks a shot no shooter is credited for (a trap's).
+/// Where a projectile came from, recorded at spawn: the weapon descriptor it
+/// was fired from and the first projectile of its shot (`None` for the first,
+/// or a lone projectile), for its contact presentation; and whether it is
+/// `attackerless`, a shot no shooter is credited for (a trap's).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectileSource {
     pub weapon: Option<String>,

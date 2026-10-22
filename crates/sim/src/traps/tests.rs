@@ -1,6 +1,5 @@
-// Trap stage: requests, repeat schedules, the shared weapon gate, and trap
-// shots' launch and attribution.
-// See: context/lib/entity_model.md §Components (ProjectileTrap) · context/plans E18 ordering pins
+// Trap stage: requests, repeat schedules, the shared weapon gate, shot launch and attribution.
+// See: context/lib/entity_model.md §Components (ProjectileTrap)
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,8 +26,8 @@ use crate::scripting_systems::hit_zones::HitZoneStore;
 
 const DT: f32 = 1.0 / 60.0;
 
-fn ms_ticks(ms: f32) -> u32 {
-    crate::scripting_systems::reaction_scheduler::ms_to_ticks(f64::from(ms))
+fn ms_ticks(ms: f64) -> u32 {
+    crate::scripting_systems::reaction_scheduler::ms_to_ticks(ms)
 }
 
 /// One host's registry of traps, stepped one trap stage per tick.
@@ -53,8 +52,8 @@ impl Rig {
     fn trap_at(
         &mut self,
         weapon: &str,
-        interval_ms: f32,
-        phase_ms: f32,
+        interval_ms: f64,
+        phase_ms: f64,
         start_on_spawn: bool,
         transform: Transform,
     ) -> EntityId {
@@ -73,7 +72,7 @@ impl Rig {
         id
     }
 
-    fn trap(&mut self, weapon: &str, interval_ms: f32, phase_ms: f32) -> EntityId {
+    fn trap(&mut self, weapon: &str, interval_ms: f64, phase_ms: f64) -> EntityId {
         self.trap_at(weapon, interval_ms, phase_ms, false, Transform::default())
     }
 
@@ -93,7 +92,7 @@ impl Rig {
         self.start_with(trap, None, None);
     }
 
-    fn start_with(&mut self, trap: EntityId, interval_ms: Option<f32>, phase_ms: Option<f32>) {
+    fn start_with(&mut self, trap: EntityId, interval_ms: Option<f64>, phase_ms: Option<f64>) {
         self.issue(
             trap,
             TrapRequest::Start {
@@ -298,7 +297,7 @@ fn fire_during_execution_or_recovery_is_dropped() {
     );
 }
 
-// P1: duplicate requests on one tick are one execution.
+// Duplicate requests on one tick are one execution.
 #[test]
 fn two_fires_on_one_tick_give_one_execution() {
     let (mut rig, trap) = single_bolt_rig(100.0);
@@ -396,7 +395,7 @@ fn inert_weapons_warn_once_and_valid_projectile_arms() {
     }
 }
 
-// P13: an inert trap takes no request from any source.
+// An inert trap takes no request from any source.
 #[test]
 fn inert_trap_ignores_every_request() {
     let mut rig = Rig::new(Vec::new());
@@ -443,7 +442,7 @@ fn start_on_spawn_starts_only_on_an_authoritative_install() {
     }
 }
 
-// P20: `start_on_spawn` is the install's first request, so a `levelLoad`
+// `start_on_spawn` is the install's first request, so a `levelLoad`
 // `stop` wins and a `levelLoad` `start(opts)` finds it running.
 #[test]
 fn start_on_spawn_precedes_level_load_requests() {
@@ -498,7 +497,7 @@ fn authored_defaults_repeat_every_rounded_second() {
     );
 }
 
-// P5 and the per-run options rule.
+// `start` and `stop` apply in issue order, and options apply to one run only.
 #[test]
 fn start_stop_rules_follow_issue_order_and_per_run_options() {
     let interval = ms_ticks(100.0);
@@ -578,7 +577,7 @@ fn stop_halts_repeats_and_lets_the_inflight_execution_finish() {
     assert!(!rig.running(trap));
 }
 
-// P3: a `fire` and a phase-0 `start` on one tick, either order.
+// A `fire` and a phase-0 `start` on one tick, either order.
 #[test]
 fn fire_and_phase_zero_start_share_one_execution() {
     for fire_first in [true, false] {
@@ -595,7 +594,7 @@ fn fire_and_phase_zero_start_share_one_execution() {
     }
 }
 
-// P23: `stop` cancels repeats, never a `fire`.
+// `stop` cancels repeats, never a `fire`.
 #[test]
 fn fire_and_stop_on_one_tick_fire_once_and_stay_stopped() {
     for fire_first in [true, false] {
@@ -615,7 +614,7 @@ fn fire_and_stop_on_one_tick_fire_once_and_stay_stopped() {
     }
 }
 
-// P4 and P19: an off-schedule `fire` never moves the schedule.
+// An off-schedule `fire` never moves the schedule.
 #[test]
 fn off_schedule_fire_never_moves_the_schedule() {
     // Recovery spans six ticks; the repeat is due every nine.
@@ -638,7 +637,7 @@ fn off_schedule_fire_never_moves_the_schedule() {
     assert_eq!(rig.shot_ticks(trap), vec![0, 6, 18, 27, 36]);
 }
 
-// P16: overlapping repeats drop; the schedule stays anchored.
+// Overlapping repeats drop; the schedule stays anchored.
 #[test]
 fn interval_shorter_than_execution_drops_overlapping_repeats() {
     let recovery = recovery_ticks(90.0);

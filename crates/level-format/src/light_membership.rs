@@ -13,8 +13,9 @@ pub const LIGHT_MEMBERSHIP_MANIFEST_VERSION: u32 = 1;
 /// level data script. `_bake_only` lights and buried lights (static lights
 /// whose origin is inside solid) are omitted; each surviving
 /// `index` is its stable `MapData::lights` vector index, not a runtime entity id.
-/// `map_members` carries the runtime-placed movers, trigger volumes and
-/// spawners and projectile traps so build-side member queries answer what runtime answers.
+/// `map_members` carries the runtime-placed movers, trigger volumes,
+/// teleporters, spawners and projectile traps, so build-side member queries
+/// answer what runtime answers.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[derive(Clone, Debug, PartialEq)]

@@ -1,6 +1,4 @@
-//! A trigger's no-script `command`: which brainless member kinds accept each
-//! command, its Enter application, and the install check for a tag some
-//! member carries that no member accepts.
+//! A trigger's no-script `command`: per-kind acceptance, Enter application, install check.
 //! See: context/lib/build_pipeline.md §Custom FGD (trigger_volume) · context/lib/scripting.md §12
 
 use postretro_entities::components::projectile_trap::TrapRequest;
@@ -157,7 +155,7 @@ pub fn warn_unaccepted_trigger_commands(registry: &EntityRegistry) {
         });
         if carried && !accepted {
             log::warn!(
-                "[Trigger] trigger {id}: command `{}` reaches no member tagged `{tag}`; no member carrying the tag accepts it",
+                "[Trigger] trigger {id}: command `{}` reaches no member tagged `{tag}`; no brainless member carrying the tag accepts it",
                 command_name(&trigger.command)
             );
         }

@@ -2017,16 +2017,20 @@ const traps = getMapEntities("trap", { tag: "wave" }).sort((a, b) => a.position.
 const sweep = defineReaction("wave.sweep", {
   sequence: traps.flatMap((t, i) => [...(i ? wait(250) : []), ...t.fire()]),
 });
+// One period covers the whole wave plus a pause, so the wave rolls.
+const periodMs = traps.length * 250 + 1500;
 const loopOn = defineReaction("wave.loopOn", {
-  sequence: traps.flatMap((t, i) => t.start({ intervalMs: 2750, phaseMs: i * 250 })),
+  sequence: traps.flatMap((t, i) => t.start({ intervalMs: periodMs, phaseMs: i * 250 })),
 });
 ```
 
 ```lua
 local traps = Postretro.getMapEntities("trap", { tag = "wave" })
+table.sort(traps, function(a, b) return a.position.x < b.position.x end)
+local periodMs = #traps * 250 + 1500
 local steps = {}
 for i, t in traps do
-  for _, step in t:start({ intervalMs = 2750, phaseMs = (i - 1) * 250 }) do
+  for _, step in t:start({ intervalMs = periodMs, phaseMs = (i - 1) * 250 }) do
     table.insert(steps, step)
   end
 end

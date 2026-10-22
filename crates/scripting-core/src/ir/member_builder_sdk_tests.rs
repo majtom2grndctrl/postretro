@@ -1,5 +1,5 @@
-// Light and fog member builders in both runtimes: every verb emits the same
-// step wire, unset animation fields omitted rather than null.
+// Light, fog and trap member builders in both runtimes: every verb emits the
+// same step wire, unset fields omitted rather than null.
 // See: context/lib/scripting.md §7 (Animation capabilities)
 use super::*;
 
@@ -10,9 +10,11 @@ use crate::primitives_registry::ContextScope;
 
 const LIGHT_ID: u32 = 7;
 const FOG_ID: u32 = 11;
+const TRAP_ID: u32 = 13;
 
-/// A registry whose only primitive is a `worldQuery` answering one light and
-/// one fog volume, so `getMapEntities` wraps real member handles.
+/// A registry whose only primitive is a `worldQuery` answering one light, one
+/// fog volume and one projectile trap, so `getMapEntities` wraps real member
+/// handles.
 fn member_registry() -> PrimitiveRegistry {
     let mut registry = PrimitiveRegistry::new();
     registry
@@ -31,6 +33,11 @@ fn member_registry() -> PrimitiveRegistry {
                         "id": FOG_ID,
                         "position": position,
                         "tags": ["mist"],
+                    }]),
+                    "projectile_trap" => serde_json::json!([{
+                        "id": TRAP_ID,
+                        "position": position,
+                        "tags": ["wave"],
                     }]),
                     _ => serde_json::json!([]),
                 }))
@@ -173,5 +180,70 @@ fn light_and_fog_member_builders_emit_byte_identical_steps_in_both_runtimes() {
             .map(String::as_str)
             .collect();
         assert_eq!(keys, fields, "{verb} args carry exactly the fields it sets");
+    }
+}
+
+// Every trap verb, and `start` with no options, empty options, either one and
+// both: only the options the author named reach the wire, so an omitted one
+// takes the trap's authored value in both runtimes.
+#[test]
+fn trap_member_builders_emit_identical_steps_in_both_runtimes() {
+    let ts = quickjs_member_steps(
+        r#"
+        import { getMapEntities } from "postretro";
+        const trap = getMapEntities("trap")[0];
+        (globalThis as any).__memberSteps = {
+          fire: trap.fire(),
+          stop: trap.stop(),
+          startBare: trap.start(),
+          startEmpty: trap.start({}),
+          startInterval: trap.start({ intervalMs: 250 }),
+          startPhase: trap.start({ phaseMs: 40 }),
+          startBoth: trap.start({ intervalMs: 250, phaseMs: 40 }),
+        };
+        "#,
+    );
+    let luau = luau_member_steps(
+        r#"
+        local trap = getMapEntities("trap")[1]
+        return {
+          fire = trap:fire(),
+          stop = trap:stop(),
+          startBare = trap:start(),
+          startEmpty = trap:start({}),
+          startInterval = trap:start({ intervalMs = 250 }),
+          startPhase = trap:start({ phaseMs = 40 }),
+          startBoth = trap:start({ intervalMs = 250, phaseMs = 40 }),
+        }
+        "#,
+    );
+    assert_eq!(
+        serde_json::to_vec(&ts).unwrap(),
+        serde_json::to_vec(&luau).unwrap(),
+        "TS and Luau trap steps diverged:\n  ts:   {ts}\n  luau: {luau}"
+    );
+    let step = |verb: &str| {
+        let steps = ts[verb]
+            .as_array()
+            .unwrap_or_else(|| panic!("{verb} returns steps"));
+        assert_eq!(steps.len(), 1, "{verb} returns one step");
+        assert_eq!(steps[0]["id"], TRAP_ID, "{verb} bakes the member id");
+        steps[0].clone()
+    };
+    assert_eq!(step("fire")["primitive"], "fireTrap");
+    assert_eq!(step("stop")["primitive"], "stopTrap");
+    for (verb, args) in [
+        ("startBare", serde_json::json!({})),
+        ("startEmpty", serde_json::json!({})),
+        ("startInterval", serde_json::json!({ "intervalMs": 250 })),
+        ("startPhase", serde_json::json!({ "phaseMs": 40 })),
+        (
+            "startBoth",
+            serde_json::json!({ "intervalMs": 250, "phaseMs": 40 }),
+        ),
+    ] {
+        let step = step(verb);
+        assert_eq!(step["primitive"], "startTrap", "{verb} primitive");
+        assert_eq!(step["args"], args, "{verb} args carry only named options");
     }
 }

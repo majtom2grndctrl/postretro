@@ -1,5 +1,4 @@
--- Luau twin of trap-wave.ts: the same wave, byte-identical wire. Every
--- reaction is named, because derived ids differ per runtime.
+-- Luau twin of trap-wave.ts; every reaction is named so the two wires match.
 -- See: context/lib/scripting.md §12 (Entity addressing)
 
 local Postretro = require("postretro")

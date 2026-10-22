@@ -1982,8 +1982,9 @@ fn teleport_manifests_keep_member_events_and_reject_other_scopes_in_both_vms() {
 }
 
 // A trap `start`'s literal options reject the reaction at install in both
-// runtimes: a non-positive interval, a negative phase, a non-finite value, an
-// unknown option. A trap verb addresses one member, never a group or a token.
+// runtimes: a non-positive interval, a negative phase, a non-number, an
+// unknown option; `fire` and `stop` take none. A trap verb addresses one
+// member from a sequence step, never a group, a token or a reaction body.
 #[test]
 fn trap_start_literals_and_addressing_are_rejected_in_both_vms() {
     let step = |args_js: &str, args_lua: &str| {
@@ -2010,8 +2011,22 @@ fn trap_start_literals_and_addressing_are_rejected_in_both_vms() {
             "`startTrap` `args.phaseMs` must not be negative",
         ),
         (
-            step("{ intervalMs: 1e40 }", "{ intervalMs = 1e40 }"),
+            step(r#"{ intervalMs: "fast" }"#, r#"{ intervalMs = "fast" }"#),
             "`startTrap` `args.intervalMs` must be a finite number",
+        ),
+        (
+            (
+                r#"({ name: "bad", sequence: [{ id: 7, primitive: "fireTrap", args: { count: 2 } }] })"#.to_string(),
+                r#"return { name = "bad", sequence = { { id = 7, primitive = "fireTrap", args = { count = 2 } } } }"#.to_string(),
+            ),
+            "`fireTrap` takes no `args`",
+        ),
+        (
+            (
+                r#"({ name: "bad", primitive: "stopTrap", tag: "gate" })"#.to_string(),
+                r#"return { name = "bad", primitive = "stopTrap", tag = "gate" }"#.to_string(),
+            ),
+            "`stopTrap` addresses one projectile trap member by id, so it runs only as a sequence step",
         ),
         (
             step("{ cadence: 5 }", "{ cadence = 5 }"),
@@ -2055,6 +2070,7 @@ fn trap_start_literals_and_addressing_are_rejected_in_both_vms() {
             "{ intervalMs: 250, phaseMs: 0 }",
             "{ intervalMs = 250, phaseMs = 0 }",
         ),
+        ("{ intervalMs: 1e40 }", "{ intervalMs = 1e40 }"),
         ("{}", "{}"),
     ] {
         let (js_source, lua_source) = step(js, lua);

@@ -258,8 +258,9 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
 /// Collect identity-only member snapshots (`id`, `position`, `tags`) for a map
 /// kind whose runtime phase stays engine-owned: kinematic movers (deterministic
 /// phase), trigger volumes (arming and activation phase), spawners (fire-time
-/// materialization) and projectile traps (host-only schedules). Position reads the entity's Transform. A spawner snapshot
-/// also carries `spawnedTags`, the tags each NPC it spawns carries.
+/// materialization) and projectile traps (host-only schedules). Position
+/// reads the entity's Transform. A spawner snapshot also carries
+/// `spawnedTags`, the tags each NPC it spawns carries.
 fn collect_identity_snapshots_json(
     ctx: &ScriptCtx,
     kind: ComponentKind,

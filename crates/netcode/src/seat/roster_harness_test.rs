@@ -107,9 +107,7 @@ fn drain_rosters(
             ServerControlMessage::SessionRoster(roster) => Some(roster),
             ServerControlMessage::Divergence(_)
             | ServerControlMessage::Relevel(_)
-            | ServerControlMessage::Tuning(_)
-            | ServerControlMessage::SwitchAccepted(_)
-            | ServerControlMessage::SwitchRefused(_) => None,
+            | ServerControlMessage::Tuning(_) => None,
         })
         .collect()
 }

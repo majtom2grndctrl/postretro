@@ -308,8 +308,7 @@ impl Rig {
     /// Deliver due snapshots through the production apply + reconcile, then
     /// present what the app would: adoptions turn the camera and cue.
     pub(super) fn receive(&mut self) {
-        let acks = self.h.client_receive();
-        self.h.apply_acks(&acks);
+        self.h.client_receive();
         let classes = &self.h.latest_local_correction_classes;
         let magnitudes = &self.h.latest_local_corrections;
         let windows = &self.h.latest_reconcile_windows;

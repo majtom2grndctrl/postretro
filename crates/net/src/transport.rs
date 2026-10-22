@@ -16,12 +16,15 @@ use renet_netcode::{
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
 use crate::wire::{
-    self, ClientControlMessage, ClientSwitchDeclaration, ConnectClaim, JoinSeedValue,
-    NETCODE_USER_DATA_BYTES, ParityDeclaration, ParticipationFrame, ServerControlFrame,
-    ServerControlMessage, ServerPresentationMessage,
+    self, ClientControlMessage, ConnectClaim, JoinSeedValue, NETCODE_USER_DATA_BYTES,
+    ParityDeclaration, ParticipationFrame, ServerControlFrame, ServerControlMessage,
+    ServerPresentationMessage,
 };
 
 pub use crate::handshake::*;
+
+#[cfg(test)]
+mod protocol_gate_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
@@ -38,7 +41,17 @@ impl From<Channel> for u8 {
 }
 
 const CHANNEL_MEMORY_BYTES: usize = 5 * 1024 * 1024;
-const RELIABLE_RESEND: Duration = Duration::from_millis(300);
+/// Input's resend, kept below one 60 Hz fixed tick with margin. renet resends
+/// an unacked message on the first poll at least this long after its last
+/// send, and the transport polls once per frame, so a lost command rides the
+/// next frame's datagram even when that frame runs a few ms short. At a full
+/// tick or more a short frame would push the resend to the second datagram,
+/// after the host has given up the lost tick.
+const GAMEPLAY_RESEND: Duration = Duration::from_millis(10);
+/// Control's resend. Nothing on Control needs a faster one, and a joiner's
+/// inventory waits on the tuning payload, so a lost slice costs about this
+/// plus one transit rather than a longer stall.
+const CONTROL_RESEND: Duration = Duration::from_millis(100);
 
 #[must_use]
 pub fn connection_config() -> ConnectionConfig {
@@ -47,7 +60,7 @@ pub fn connection_config() -> ConnectionConfig {
             channel_id: Channel::Control.into(),
             max_memory_usage_bytes: CHANNEL_MEMORY_BYTES,
             send_type: SendType::ReliableOrdered {
-                resend_time: RELIABLE_RESEND,
+                resend_time: CONTROL_RESEND,
             },
         },
         ChannelConfig {
@@ -59,7 +72,7 @@ pub fn connection_config() -> ConnectionConfig {
             channel_id: Channel::Input.into(),
             max_memory_usage_bytes: CHANNEL_MEMORY_BYTES,
             send_type: SendType::ReliableOrdered {
-                resend_time: RELIABLE_RESEND,
+                resend_time: GAMEPLAY_RESEND,
             },
         },
         ChannelConfig {
@@ -109,9 +122,6 @@ pub struct ServerPoll {
     pub disconnects: Vec<ClientId>,
     pub handshakes: Vec<HandshakeOutcome>,
     pub lifecycle: Vec<SlotEvent>,
-    /// Registry-blind reliable controls from currently participating clients.
-    /// Engine code resolves the client id into a pawn and validates its state.
-    pub switch_declarations: Vec<(ClientId, ClientSwitchDeclaration)>,
     /// Registry-blind join seeds. The engine owns buffering, validation, and
     /// per-seat application because the transport has no slot declarations.
     pub join_seeds: Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
@@ -119,7 +129,6 @@ pub struct ServerPoll {
 
 type ControlMessages = (
     Vec<HandshakeOutcome>,
-    Vec<(ClientId, ClientSwitchDeclaration)>,
     Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
 );
 
@@ -285,7 +294,7 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, switch_declarations, join_seeds) = self.process_control_messages();
+        let (handshakes, join_seeds) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
@@ -294,7 +303,6 @@ impl NetServer {
             disconnects,
             handshakes,
             lifecycle,
-            switch_declarations,
             join_seeds,
         })
     }
@@ -353,10 +361,9 @@ impl NetServer {
 
     fn process_control_messages(&mut self) -> ControlMessages {
         let mut outcomes = Vec::new();
-        let mut switch_declarations = Vec::new();
         let mut join_seeds = Vec::new();
         let Some((expected_id, expected_version)) = self.mod_identity.clone() else {
-            return (outcomes, switch_declarations, join_seeds);
+            return (outcomes, join_seeds);
         };
         let expected_protocol = protocol_version();
 
@@ -443,15 +450,6 @@ impl NetServer {
                             break;
                         }
                     }
-                    ClientControlMessage::SwitchDeclaration(declaration) => {
-                        // A declaration has no meaning before a slot owns a live
-                        // pawn. Keeping it inside the participation gate also
-                        // prevents pre-admission controls from leaking into a later
-                        // promotion generation.
-                        if self.is_participating(client_id) {
-                            switch_declarations.push((client_id, declaration));
-                        }
-                    }
                     ClientControlMessage::JoinSeed { slots } => {
                         // The engine validates the durable keys against its
                         // committed declarations and applies only eligible
@@ -496,7 +494,7 @@ impl NetServer {
                 }
             }
         }
-        (outcomes, switch_declarations, join_seeds)
+        (outcomes, join_seeds)
     }
 
     fn reject(&mut self, client_id: ClientId, cause: ClosingCause) {
@@ -730,6 +728,7 @@ impl NetServer {
                 | Ok(crate::wire::ClientMessage::TimeSync(_))
                 | Ok(crate::wire::ClientMessage::StateBaselineRefresh(_))
                 | Ok(crate::wire::ClientMessage::HitDeclaration(_))
+                | Ok(crate::wire::ClientMessage::SwitchDeclaration(_))
                 | Err(_) => messages.push(frame.payload),
             }
         }
@@ -882,7 +881,7 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, switch_declarations, join_seeds) = self.process_control_messages();
+        let (handshakes, join_seeds) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
@@ -890,7 +889,6 @@ impl NetServer {
             disconnects,
             handshakes,
             lifecycle,
-            switch_declarations,
             join_seeds,
         }
     }
@@ -1340,19 +1338,6 @@ impl NetClient {
                 participation_epoch,
                 payload: input,
             }),
-        );
-    }
-
-    /// Send one gameplay control only while a participation generation is active.
-    /// Admission and parity still own the early Control ordering; game declarations
-    /// are valid only after the host has made the client a participant.
-    pub fn send_switch_declaration(&mut self, declaration: ClientSwitchDeclaration) {
-        if self.active_participation_epoch.is_none() {
-            return;
-        }
-        self.client.send_message(
-            Channel::Control,
-            wire::encode(&ClientControlMessage::SwitchDeclaration(declaration)),
         );
     }
 
@@ -1847,29 +1832,75 @@ mod tests {
         client
     }
 
+    /// The delivery a channel is configured with, comparable in a test.
+    fn delivery(send_type: &SendType) -> (&'static str, Option<Duration>) {
+        match send_type {
+            SendType::Unreliable => ("unreliable", None),
+            SendType::ReliableOrdered { resend_time } => ("reliable-ordered", Some(*resend_time)),
+            SendType::ReliableUnordered { resend_time } => {
+                ("reliable-unordered", Some(*resend_time))
+            }
+        }
+    }
+
+    // The channel layout is folded into the protocol gate, so both peers must
+    // build the same four channels, in order, with the same resends.
     #[test]
-    fn presentation_channel_is_the_fourth_dedicated_unreliable_channel() {
+    fn connection_config_pins_four_channels_with_gameplay_resend_under_one_tick() {
+        let expected = vec![
+            (
+                u8::from(Channel::Control),
+                ("reliable-ordered", Some(CONTROL_RESEND)),
+            ),
+            (u8::from(Channel::Snapshot), ("unreliable", None)),
+            (
+                u8::from(Channel::Input),
+                ("reliable-ordered", Some(GAMEPLAY_RESEND)),
+            ),
+            (u8::from(Channel::Presentation), ("unreliable", None)),
+        ];
         let config = connection_config();
-        let channel_ids: Vec<u8> = config
-            .server_channels_config
-            .iter()
-            .map(|channel| channel.channel_id)
-            .collect();
-        assert_eq!(
-            channel_ids,
-            vec![
-                Channel::Control.into(),
-                Channel::Snapshot.into(),
-                Channel::Input.into(),
-                Channel::Presentation.into(),
-            ]
-        );
-        let presentation = config
-            .server_channels_config
-            .iter()
-            .find(|channel| channel.channel_id == Channel::Presentation.into())
-            .expect("presentation channel is configured");
-        assert!(matches!(&presentation.send_type, SendType::Unreliable));
+        for (side, channels) in [
+            ("server", &config.server_channels_config),
+            ("client", &config.client_channels_config),
+        ] {
+            let layout: Vec<_> = channels
+                .iter()
+                .map(|channel| (channel.channel_id, delivery(&channel.send_type)))
+                .collect();
+            assert_eq!(layout, expected, "{side} channel layout");
+        }
+        assert_eq!(CONTROL_RESEND, Duration::from_millis(100));
+        assert_eq!(GAMEPLAY_RESEND, Duration::from_millis(10));
+
+        // renet resends on the first poll at least one resend after the last
+        // send. Below one fixed tick, with margin for a short frame, a lost
+        // command rides the next frame's datagram rather than every second one.
+        const FIXED_TICK: Duration = Duration::from_micros(16_667);
+        const SHORT_FRAME_MARGIN: Duration = Duration::from_millis(5);
+        const {
+            assert!(
+                GAMEPLAY_RESEND.as_micros() + SHORT_FRAME_MARGIN.as_micros()
+                    <= FIXED_TICK.as_micros(),
+                "the gameplay resend plus a short-frame margin fits inside one fixed tick"
+            );
+        }
+    }
+
+    // `harness::renet_packet_channel` and the resend arithmetic above read
+    // renet 2.0.0's behaviour; an upgrade must re-check both.
+    #[test]
+    fn renet_stays_pinned_at_2_0_0() {
+        let manifest = include_str!("../Cargo.toml");
+        for dependency in ["renet", "renet_netcode"] {
+            let pin = format!("{dependency} = {{ version = \"=2.0.0\"");
+            assert!(
+                manifest
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(&pin)),
+                "crates/net/Cargo.toml pins {dependency} at =2.0.0"
+            );
+        }
     }
 
     #[test]
@@ -2319,17 +2350,18 @@ mod tests {
     }
 
     #[test]
-    fn participating_switch_declaration_reaches_the_server_poll() {
+    fn participating_switch_declaration_reaches_the_server_input_drain() {
         let (mut server, mut client) = participate_relay_pair();
-        // The participation marker normally establishes this before gameplay
-        // controls are emitted. Set it directly here so the public client send
-        // path, rather than the test-only raw Renet handle, is exercised.
-        client.active_participation_epoch = Some(1);
-        client.send_switch_declaration(ClientSwitchDeclaration {
+        // The participation marker arms the client's epoch before gameplay
+        // traffic is framed on Input.
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        let declaration = wire::ClientMessage::SwitchDeclaration(wire::ClientSwitchDeclaration {
             declaration_id: 9,
             slot: 2,
             client_tick: 4_000,
         });
+        client.send_input(wire::encode(&declaration));
 
         relay_client_to_server(&mut client, &mut server);
         let poll = server.poll_handshakes();
@@ -2337,15 +2369,9 @@ mod tests {
         assert!(poll.handshakes.is_empty());
         assert!(poll.lifecycle.is_empty());
         assert_eq!(
-            poll.switch_declarations,
-            vec![(
-                RELAY_CLIENT_ID,
-                ClientSwitchDeclaration {
-                    declaration_id: 9,
-                    slot: 2,
-                    client_tick: 4_000,
-                },
-            )]
+            server.drain_input(RELAY_CLIENT_ID),
+            vec![wire::encode(&declaration)],
+            "a switch declaration rides framed Input to the host's Input drain"
         );
     }
 
@@ -2511,6 +2537,61 @@ mod tests {
             }]
         );
         assert!(server.poll_handshakes().lifecycle.is_empty());
+    }
+
+    // A PRLB / wire-32 peer predates the gameplay channel layout. The admission
+    // gate refuses its declaration with a typed cause and admits a PRLC / 33 one.
+    #[test]
+    fn admission_refuses_prlb_or_wire_32_and_admits_prlc_33() {
+        let prlc_33 = wire::ProtocolVersion {
+            app_protocol_id: 0x_5052_4C43,
+            wire_version: 33,
+        };
+        assert_eq!(protocol_version(), prlc_33);
+        let cases = [
+            (
+                wire::ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C42,
+                    ..prlc_33
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 32,
+                    ..prlc_33
+                },
+                false,
+            ),
+            (prlc_33, true),
+        ];
+        for (declared, admitted) in cases {
+            let (mut server, mut client) = relay_pair();
+            server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+            client.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Admission {
+                    protocol: declared,
+                    mod_id: "postretro.test".to_string(),
+                    mod_version: "1".to_string(),
+                }),
+            );
+            relay_client_to_server(&mut client, &mut server);
+            let poll = server.poll_handshakes();
+            match poll.handshakes.first() {
+                Some(HandshakeOutcome::Admitted { .. }) => {
+                    assert!(admitted, "{declared:?} must be refused");
+                }
+                Some(HandshakeOutcome::Rejected {
+                    cause: ClosingCause::Protocol { expected, received },
+                    ..
+                }) => {
+                    assert!(!admitted, "{declared:?} must be admitted");
+                    assert_eq!((*expected, *received), (prlc_33, declared));
+                }
+                other => panic!("{declared:?}: expected an admission verdict, got {other:?}"),
+            }
+        }
     }
 
     // Regression: admission rejection disconnected after one send attempt, so one

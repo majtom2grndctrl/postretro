@@ -226,28 +226,6 @@ fn append_tick_weapon_script_events(
 fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
-            ServerControlMessage::SwitchAccepted(accepted) => {
-                let Some(session) = app.session.as_mut() else {
-                    continue;
-                };
-                let Some(endpoint) = session.net_endpoint.as_mut() else {
-                    continue;
-                };
-                let resolution =
-                    endpoint.take_switch_outcome(netcode::SwitchOutcome::Accepted(accepted));
-                apply_client_switch_resolution(session, resolution);
-            }
-            ServerControlMessage::SwitchRefused(refusal) => {
-                let Some(session) = app.session.as_mut() else {
-                    continue;
-                };
-                let Some(endpoint) = session.net_endpoint.as_mut() else {
-                    continue;
-                };
-                let resolution =
-                    endpoint.take_switch_outcome(netcode::SwitchOutcome::Refused(refusal));
-                apply_client_switch_resolution(session, resolution);
-            }
             ServerControlMessage::Relevel(catalog_id) => app.follow_relevel_catalog(catalog_id),
             ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
                 log::error!(
@@ -360,18 +338,6 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             }
         }
     }
-}
-
-fn apply_client_switch_resolution(
-    session: &mut session::Session,
-    resolution: netcode::CurrentSwitchResolution,
-) {
-    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-    client_weapon::settle_switch_resolution(
-        &mut registry,
-        &mut session.gameplay_input_latch,
-        resolution,
-    );
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -1728,13 +1694,13 @@ fn viewmodel_world_transform(
         )
 }
 
-/// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
-/// Phase 3 Task 5 local-pawn correction offset (the decaying difference between the
-/// predicted and reconciled pose); it is added to the gameplay-authoritative
-/// registry transform so the first-person eye glides smoothly across a reconcile
-/// correction without rubber-banding. The offset is always `Vec3::ZERO` at tick rate
-/// (both the single-player/host path and the connected-client tick path pass zero);
-/// the real offset is read from `ClientPrediction` at render rate by the render seam.
+/// Follow the camera to the local pawn's eye. `presentation_offset` is the local-pawn
+/// correction offset (the decaying composition of smoothed reconcile corrections); it
+/// is added to the gameplay-authoritative registry transform so the first-person eye
+/// glides across a reconcile correction without rubber-banding. Single-player and the
+/// host pass `Vec3::ZERO`. The connected client's predicted tick passes the live
+/// offset at tick rate, before its frame-timing push, so the render stage
+/// interpolates presented eyes and never re-adds it.
 fn follow_camera_to_local_pawn(
     camera: &mut Camera,
     registry: &postretro_entities::EntityRegistry,
@@ -1745,21 +1711,34 @@ fn follow_camera_to_local_pawn(
     }
 }
 
-/// The followed local pawn's eye: its registry position, plus the presentation
-/// offset, plus the capsule's eye height. The one place the eye offset is
-/// applied, so level install holds, and preloads lightmaps for, the same
-/// point the first tick moves the camera to.
+/// The followed local pawn's eye; see [`pawn_eye_position`].
 fn local_pawn_eye_position(
     registry: &postretro_entities::EntityRegistry,
     presentation_offset: Vec3,
 ) -> Option<Vec3> {
+    pawn_eye_position(
+        registry,
+        followed_player_pawn(registry)?,
+        presentation_offset,
+    )
+}
+
+/// A movement pawn's presented eye: its registry position, plus the
+/// presentation offset, plus the capsule's eye height. The one place the eye
+/// offset is applied, so level install holds, and preloads lightmaps for, the
+/// same point the first tick moves the camera to, and an adoption's camera cut
+/// holds the eye the next tick presents.
+fn pawn_eye_position(
+    registry: &postretro_entities::EntityRegistry,
+    pawn: postretro_entities::EntityId,
+    presentation_offset: Vec3,
+) -> Option<Vec3> {
     use postretro_entities::Transform;
 
-    let id = followed_player_pawn(registry)?;
     let component = registry
-        .get_component::<postretro_foundation::PlayerMovementComponent>(id)
+        .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
         .ok()?;
-    let transform = registry.get_component::<Transform>(id).ok()?;
+    let transform = registry.get_component::<Transform>(pawn).ok()?;
     Some(
         transform.position
             + presentation_offset
@@ -4197,16 +4176,6 @@ impl App {
                                 );
                             }
                         }
-                        // Switches apply on the fixed tick their lane releases
-                        // them, ordered with the client's starts and presses.
-                        for &(client_id, declaration) in &poll.switch_declarations {
-                            netcode::host_retain_switch_declaration(
-                                command_queues,
-                                owners,
-                                client_id,
-                                declaration,
-                            );
-                        }
                         if let Some(seats) = seat_table {
                             netcode::clear_released_seat_slot_values(
                                 &mut script_ctx.slot_table.borrow_mut(),
@@ -4230,7 +4199,8 @@ impl App {
                 // `net_serialize_and_send`, just before the snapshot send.
                 // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
-                // and echo time-sync probes with the current server tick. The echo
+                // retain switch declarations in the switch lane, and echo
+                // time-sync probes with the current server tick. The echo
                 // microseconds are telemetry only, derived from the monotonic tick.
                 let server_tick = *tick;
                 let server_now_us = u64::from(server_tick) * netcode::SERVER_TICK_MICROS;
@@ -4241,6 +4211,7 @@ impl App {
                         replication,
                         state_slots,
                         command_queues,
+                        owners,
                         pending_hit_declarations,
                         open_shots,
                         client_id,
@@ -4259,6 +4230,7 @@ impl App {
                 tuning_generation,
                 applied_movement_tuning_generation,
                 session_status,
+                pending_switch_declarations,
                 ..
             }) => {
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
@@ -4280,6 +4252,19 @@ impl App {
                 // once per rendered frame before this frame can spawn new ones.
                 sim::advance_client_presentation_effects(&mut registry, frame_dt);
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
+                // Switch outcomes settle before activation outcomes, as the host
+                // applies a released switch before that tick's simulation. The
+                // Control drain above already ran, so a Holding in this frame
+                // cleared the chain these resolve against.
+                for resolution in
+                    netcode::client_resolve_switch_outcomes(time_sync, pending_switch_declarations)
+                {
+                    client_weapon::settle_switch_resolution(
+                        &mut registry,
+                        &mut session.gameplay_input_latch,
+                        resolution,
+                    );
+                }
                 for outcome in time_sync.drain_activation_outcomes() {
                     if let Some(effect) = self.client_weapon.records.outcome(&mut registry, outcome)
                     {
@@ -4381,6 +4366,7 @@ impl App {
                     &mut self.pending_teleport_sounds,
                     &self.collision_world.teleporters,
                     &registry,
+                    prediction.presentation_offset(),
                     &apply_outcome.local_teleport_adoptions,
                     apply_outcome.local_first_record_hold,
                 );

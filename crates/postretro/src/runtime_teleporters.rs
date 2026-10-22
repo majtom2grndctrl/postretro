@@ -270,9 +270,14 @@ pub(crate) fn host_observed_arrival_cues(
 
 /// Present one frame's own-pawn adoptions, drained after its snapshots apply. Each
 /// turns the view by its yaw delta; any camera cut holds the final adopted eye.
+/// That eye is the presented one: registry pose plus `presentation_offset` (the
+/// offset after the frame's last reconcile) plus eye height. A smoothed correction
+/// after the cut in the same frame leaves a nonzero offset that the next predicted
+/// tick presents, so a bare registry eye would bounce; after a final cut it is zero.
 /// Mover carry detaches only for an adoption that changed the pawn's teleport
 /// identity: a plain teleport-class correction of three metres or more keeps the
-/// platform's yaw carry. Of several cues in one frame, only the last plays, at its
+/// platform's yaw carry, as does a composed-offset snap, which reports a camera cut
+/// alone (no view turn or cue). Of several cues in one frame, only the last plays, at its
 /// own arrival point, since unseen teleports coalesce to the last cue.
 /// `first_record_hold` holds the camera the same way and nothing more: the pawn's
 /// first record was written over a stale gated pose, which the eye must not blend
@@ -285,6 +290,7 @@ pub(crate) fn apply_local_adoptions(
     sounds: &mut Vec<postretro_audio::SoundRequest>,
     teleporters: &postretro_physics::teleporters::Teleporters,
     registry: &EntityRegistry,
+    presentation_offset: Vec3,
     adoptions: &[postretro_netcode::LocalTeleportAdoption],
     first_record_hold: Option<postretro_entities::EntityId>,
 ) {
@@ -303,11 +309,8 @@ pub(crate) fn apply_local_adoptions(
         }
     }
     if let Some(entity) = cut {
-        if let (Ok(pose), Ok(movement)) = (
-            registry.get_component::<Transform>(entity),
-            registry.get_component::<postretro_foundation::PlayerMovementComponent>(entity),
-        ) {
-            camera.position = pose.position + Vec3::Y * movement.capsule.eye_height;
+        if let Some(eye) = crate::pawn_eye_position(registry, entity, presentation_offset) {
+            camera.position = eye;
         }
         timing.hold_state(crate::frame_timing::InterpolableState::new(camera.position));
     }
@@ -506,6 +509,7 @@ mod tests {
             &mut sounds,
             &physical,
             &registry,
+            Vec3::ZERO,
             &[postretro_netcode::LocalTeleportAdoption {
                 entity_id: pawn,
                 yaw_delta: 1.0,

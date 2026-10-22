@@ -1,6 +1,5 @@
-// Dev-only latency-sim harness: an in-memory packet relay conditioner, plus
-// relay-pair participation fixtures (`reveal_both`). Gated on
-// `dev-tools` (and always built under `test`).
+// Dev-only latency-sim harness: relay conditioner with scripted drops and renet datagram
+// inspection, plus relay-pair fixtures (`reveal_both`). Gated on `dev-tools` or `test`.
 // See: context/lib/networking.md
 //
 // This is the in-process latency simulator for the transport's
@@ -110,6 +109,205 @@ impl LinkConfig {
     }
 }
 
+/// A test-scripted loss on top of the seeded link model: the datagram is
+/// dropped even when the loss coin passes it. A test that needs "the
+/// datagram carrying command t" lost targets it by its position among one
+/// channel's datagrams; `NthOnChannel` reads the renet channel byte through
+/// [`renet_packet_channel`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptedDrop {
+    /// The `index`th datagram (0-based) whose renet header names `channel`
+    /// ([`renet_packet_channel`]), counting every such datagram whatever its
+    /// fate. An ack-only datagram carries no channel and never matches.
+    NthOnChannel {
+        channel: crate::transport::Channel,
+        index: u64,
+    },
+    /// Every datagram enqueued while the virtual clock is in `[start, end)`.
+    Window {
+        start: VirtualMillis,
+        end: VirtualMillis,
+    },
+}
+
+impl ScriptedDrop {
+    fn matches(self, channel_index: Option<(u8, u64)>, now: VirtualMillis) -> bool {
+        match self {
+            Self::NthOnChannel {
+                channel,
+                index: target,
+            } => channel_index == Some((u8::from(channel), target)),
+            Self::Window { start, end } => (start..end).contains(&now),
+        }
+    }
+}
+
+/// The renet channel id a connection-level datagram carries, or `None` for an
+/// ack-only or unparseable one.
+///
+/// Couples to the pinned renet `=2.0.0` packet layout (`Packet::to_bytes`):
+/// byte 0 is the packet type (0 SmallReliable, 1 SmallUnreliable,
+/// 2 ReliableSlice, 3 UnreliableSlice, 4 Ack), then a QUIC-varint sequence,
+/// then the channel id byte. A renet upgrade must re-check it; the
+/// conditioner's scripted-drop self-test reads real renet datagrams through it.
+#[must_use]
+pub fn renet_packet_channel(packet: &[u8]) -> Option<u8> {
+    let (&kind, rest) = packet.split_first()?;
+    if kind > 3 {
+        return None;
+    }
+    // A QUIC varint's top two bits give its length: 1, 2, 4 or 8 bytes.
+    let varint_len = 1usize << (rest.first()? >> 6);
+    rest.get(varint_len).copied()
+}
+
+/// What one renet datagram carries, read back for test inspection: which
+/// messages a flush packed, which slice of a large message it is, or a renet
+/// ack. Message bytes are the transport's own (a participation or Control
+/// frame on most channels); [`participation_frame_payload`] and
+/// [`server_control_payload`] unwrap them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenetDatagram {
+    /// Small reliable messages for one channel, each with its renet message id.
+    Reliable {
+        channel: u8,
+        messages: Vec<(u64, Vec<u8>)>,
+    },
+    /// Small unreliable messages for one channel.
+    Unreliable { channel: u8, messages: Vec<Vec<u8>> },
+    /// One slice of a message larger than renet's 1200-byte slice size.
+    Slice {
+        channel: u8,
+        reliable: bool,
+        message_id: u64,
+        slice_index: u64,
+        num_slices: u64,
+    },
+    /// renet's own ack packet: no channel and no message.
+    Ack,
+}
+
+/// Parse one connection-level datagram. Couples to the pinned renet `=2.0.0`
+/// layout as [`renet_packet_channel`] does (`Packet::to_bytes`: type byte,
+/// QUIC-varint sequence, channel byte, then a big-endian `u16` message count
+/// with varint-length messages, or a slice header). `None` for anything that
+/// does not parse.
+#[must_use]
+pub fn parse_renet_datagram(packet: &[u8]) -> Option<RenetDatagram> {
+    let mut reader = DatagramReader(packet);
+    let kind = reader.u8()?;
+    if kind == 4 {
+        return Some(RenetDatagram::Ack);
+    }
+    let _sequence = reader.varint()?;
+    let channel = reader.u8()?;
+    let datagram = match kind {
+        0 => {
+            let count = reader.u16()?;
+            let mut messages = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                let message_id = reader.varint()?;
+                messages.push((message_id, reader.varint_bytes()?.to_vec()));
+            }
+            RenetDatagram::Reliable { channel, messages }
+        }
+        1 => {
+            let count = reader.u16()?;
+            let mut messages = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                messages.push(reader.varint_bytes()?.to_vec());
+            }
+            RenetDatagram::Unreliable { channel, messages }
+        }
+        2 | 3 => {
+            let message_id = reader.varint()?;
+            let slice_index = reader.varint()?;
+            let num_slices = reader.varint()?;
+            let _payload = reader.varint_bytes()?;
+            RenetDatagram::Slice {
+                channel,
+                reliable: kind == 2,
+                message_id,
+                slice_index,
+                num_slices,
+            }
+        }
+        _ => return None,
+    };
+    reader.0.is_empty().then_some(datagram)
+}
+
+/// The engine payload inside a Snapshot, client Input or Presentation message,
+/// with the transport's participation frame removed.
+#[must_use]
+pub fn participation_frame_payload(message: &[u8]) -> Option<Vec<u8>> {
+    crate::wire::decode::<crate::wire::ParticipationFrame>(message)
+        .ok()
+        .map(|frame| frame.payload)
+}
+
+/// The engine payload inside a server Control message, or `None` for the
+/// transport-only participation-start marker.
+#[must_use]
+pub fn server_control_payload(message: &[u8]) -> Option<Vec<u8>> {
+    crate::wire::decode::<crate::wire::ServerControlFrame>(message)
+        .ok()
+        .and_then(|frame| frame.payload)
+}
+
+/// A cursor over one datagram's bytes in renet's (octets') byte order.
+struct DatagramReader<'a>(&'a [u8]);
+
+impl<'a> DatagramReader<'a> {
+    fn take(&mut self, len: usize) -> Option<&'a [u8]> {
+        if self.0.len() < len {
+            return None;
+        }
+        let (head, rest) = self.0.split_at(len);
+        self.0 = rest;
+        Some(head)
+    }
+
+    fn u8(&mut self) -> Option<u8> {
+        self.take(1).map(|bytes| bytes[0])
+    }
+
+    fn u16(&mut self) -> Option<u16> {
+        self.take(2)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+    }
+
+    /// A QUIC varint: the top two bits of the first byte give its length.
+    fn varint(&mut self) -> Option<u64> {
+        let len = 1usize << (self.0.first()? >> 6);
+        let bytes = self.take(len)?;
+        Some(
+            bytes
+                .iter()
+                .enumerate()
+                .fold(0u64, |value, (index, &byte)| {
+                    let byte = if index == 0 { byte & 0x3f } else { byte };
+                    (value << 8) | u64::from(byte)
+                }),
+        )
+    }
+
+    fn varint_bytes(&mut self) -> Option<&'a [u8]> {
+        let len = usize::try_from(self.varint()?).ok()?;
+        self.take(len)
+    }
+}
+
+/// What became of one datagram the conditioner enqueued, read back by its
+/// position among one channel's datagrams ([`PacketConditioner::channel_datagram`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DatagramFate {
+    /// Virtual time it was enqueued: the sender's flush.
+    pub enqueued_at: VirtualMillis,
+    /// Virtual time it arrives, or `None` when the link or a scripted drop lost it.
+    pub arrives_at: Option<VirtualMillis>,
+}
+
 /// One packet buffer scheduled for delivery at a virtual arrival time.
 #[derive(Debug, Clone)]
 struct ScheduledPacket {
@@ -138,8 +336,16 @@ pub struct PacketConditioner {
     now: VirtualMillis,
     /// Packets in flight, not yet due. Not kept sorted; `take_ready` scans.
     queue: Vec<ScheduledPacket>,
-    /// Count of packets dropped by the loss model, for test assertions/telemetry.
+    /// Count of packets dropped by the loss model or a scripted drop, for test
+    /// assertions/telemetry.
     dropped: u64,
+    /// The scripted share of `dropped`.
+    scripted_dropped: u64,
+    /// Scripted drops in force, applied after the seeded draw.
+    scripted: Vec<ScriptedDrop>,
+    /// Per renet channel id, the fate of every datagram enqueued carrying it,
+    /// in enqueue order: index `n` is the [`ScriptedDrop::NthOnChannel`] index.
+    channel_datagrams: std::collections::HashMap<u8, Vec<DatagramFate>>,
 }
 
 impl PacketConditioner {
@@ -152,7 +358,82 @@ impl PacketConditioner {
             now: 0,
             queue: Vec::new(),
             dropped: 0,
+            scripted_dropped: 0,
+            scripted: Vec::new(),
+            channel_datagrams: std::collections::HashMap::new(),
         }
+    }
+
+    /// Add a scripted drop, effective from the next enqueue. A scripted run
+    /// draws the same PRNG stream as the unscripted one, so its other
+    /// datagrams keep their fates and arrival times.
+    pub fn script_drop(&mut self, drop: ScriptedDrop) {
+        self.scripted.push(drop);
+    }
+
+    /// How many of [`Self::dropped`] were scripted drops.
+    #[must_use]
+    pub fn scripted_dropped(&self) -> u64 {
+        self.scripted_dropped
+    }
+
+    /// Datagrams enqueued so far carrying `channel`: the index the next one
+    /// will take for [`ScriptedDrop::NthOnChannel`].
+    #[must_use]
+    pub fn enqueued_on_channel(&self, channel: crate::transport::Channel) -> u64 {
+        self.channel_datagrams
+            .get(&u8::from(channel))
+            .map_or(0, |fates| fates.len() as u64)
+    }
+
+    /// The fate of the `index`th datagram (0-based) carrying `channel`, once it
+    /// has been enqueued: when it left and when, if ever, it arrives.
+    #[must_use]
+    pub fn channel_datagram(
+        &self,
+        channel: crate::transport::Channel,
+        index: u64,
+    ) -> Option<DatagramFate> {
+        let fates = self.channel_datagrams.get(&u8::from(channel))?;
+        fates.get(usize::try_from(index).ok()?).copied()
+    }
+
+    /// The link decision for the next enqueued datagram: its arrival time, or
+    /// `None` when it is dropped. The seeded draw runs first and unchanged, so a
+    /// scripted drop never shifts the stream for later datagrams.
+    fn schedule(&mut self, packet: &[u8]) -> Option<VirtualMillis> {
+        let channel = renet_packet_channel(packet);
+        let channel_index = channel.map(|channel| {
+            let count = self.channel_datagrams.get(&channel).map_or(0, Vec::len);
+            (channel, count as u64)
+        });
+        let arrives_at = match self.config.sample_delay(&mut self.rng) {
+            None => {
+                self.dropped += 1;
+                None
+            }
+            Some(_)
+                if self
+                    .scripted
+                    .iter()
+                    .any(|drop| drop.matches(channel_index, self.now)) =>
+            {
+                self.dropped += 1;
+                self.scripted_dropped += 1;
+                None
+            }
+            Some(delay) => Some(self.now + delay),
+        };
+        if let Some(channel) = channel {
+            self.channel_datagrams
+                .entry(channel)
+                .or_default()
+                .push(DatagramFate {
+                    enqueued_at: self.now,
+                    arrives_at,
+                });
+        }
+        arrives_at
     }
 
     /// The conditioner's current virtual time.
@@ -161,7 +442,8 @@ impl PacketConditioner {
         self.now
     }
 
-    /// How many packets have been dropped by the loss model so far.
+    /// How many packets have been dropped so far, seeded and scripted alike
+    /// (see [`Self::scripted_dropped`] for the scripted share).
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.dropped
@@ -173,20 +455,17 @@ impl PacketConditioner {
         self.queue.len()
     }
 
-    /// Enqueue one packet buffer. The loss coin is flipped first: a dropped
-    /// packet is counted and discarded (returns `false`, never scheduled). A
-    /// surviving packet is scheduled at `now + delay + jitter_draw` and returns
-    /// `true`. PRNG consumption follows [`LinkConfig::sample_delay`], so the
-    /// stream position is a deterministic function of the enqueue sequence.
+    /// Enqueue one packet buffer. The loss coin is flipped first, then any
+    /// scripted drop applies: a dropped packet is counted and discarded
+    /// (returns `false`, never scheduled). A surviving packet is scheduled at
+    /// `now + delay + jitter_draw` and returns `true`. PRNG consumption follows
+    /// [`LinkConfig::sample_delay`], so the stream position is a deterministic
+    /// function of the enqueue sequence.
     pub fn enqueue(&mut self, packet: Vec<u8>) -> bool {
-        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
-            self.dropped += 1;
+        let Some(deliver_at) = self.schedule(&packet) else {
             return false;
         };
-        self.queue.push(ScheduledPacket {
-            deliver_at: self.now + delay,
-            packet,
-        });
+        self.queue.push(ScheduledPacket { deliver_at, packet });
         true
     }
 
@@ -200,12 +479,11 @@ impl PacketConditioner {
     /// without consuming twice. Clones only the surviving buffer.
     fn enqueue_one(&mut self, packet: &[u8]) -> bool {
         // Mirror `enqueue` but avoid cloning a dropped buffer.
-        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
-            self.dropped += 1;
+        let Some(deliver_at) = self.schedule(packet) else {
             return false;
         };
         self.queue.push(ScheduledPacket {
-            deliver_at: self.now + delay,
+            deliver_at,
             packet: packet.to_vec(),
         });
         true
@@ -259,7 +537,7 @@ pub fn reveal_both(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{NetClient, NetServer};
+    use crate::transport::{Channel, NetClient, NetServer};
     use crate::wire::{
         self, COMPONENT_KIND_TRANSFORM, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
         RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION, WireTransform,
@@ -596,6 +874,242 @@ mod tests {
         let second = rng.next_unit_f64();
         assert!(first < 0.5, "first flip must drop (got {first})");
         assert!(second >= 0.5, "second flip must pass (got {second})");
+    }
+
+    // --- Scripted drop ---
+
+    /// Real renet datagrams, one server flush per relay step. Each flush carries
+    /// one new Input message beside the join's Control traffic and renet acks,
+    /// so the stream mixes channels as a live link does.
+    fn captured_server_flushes(steps: u8) -> Vec<Vec<Vec<u8>>> {
+        let (mut server, mut client) = relay_pair();
+        let mut flushes = Vec::new();
+        for step in 0..steps {
+            server.send_input(CLIENT_ID, vec![step; 24]);
+            server.update_connections(RELAY_DT);
+            let packets = server.packets_to_send(CLIENT_ID);
+            for packet in &packets {
+                client.process_packet(packet);
+            }
+            client.update_connections(RELAY_DT);
+            for packet in client.packets_to_send() {
+                server.process_packet_from(&packet, CLIENT_ID);
+            }
+            flushes.push(packets);
+        }
+        flushes
+    }
+
+    /// Relay `flushes` one per step, then drain, returning each arrival with
+    /// the virtual time it was taken.
+    fn relay_flushes(
+        cond: &mut PacketConditioner,
+        flushes: &[Vec<Vec<u8>>],
+    ) -> Vec<(VirtualMillis, Vec<u8>)> {
+        let mut arrivals = Vec::new();
+        let drain_steps = std::iter::repeat_n(&[][..], 16);
+        for flush in flushes.iter().map(Vec::as_slice).chain(drain_steps) {
+            cond.enqueue_all(flush.iter().cloned());
+            cond.advance(RELAY_DT_MS);
+            let now = cond.now();
+            arrivals.extend(cond.take_ready().into_iter().map(|p| (now, p)));
+        }
+        arrivals
+    }
+
+    #[test]
+    fn scripted_drop_loses_one_input_datagram_and_keeps_other_arrivals() {
+        const TARGET: u64 = 6;
+        let flushes = captured_server_flushes(24);
+        let input = u8::from(Channel::Input);
+        let all: Vec<&Vec<u8>> = flushes.iter().flatten().collect();
+        assert!(
+            all.iter().any(|p| renet_packet_channel(p) != Some(input)),
+            "the captured stream must mix Input with other datagrams"
+        );
+        let target = all
+            .iter()
+            .filter(|p| renet_packet_channel(p) == Some(input))
+            .nth(TARGET as usize)
+            .copied()
+            .expect("the captured stream carries enough Input datagrams");
+
+        let link = LinkConfig {
+            delay: 45,
+            jitter: 60,
+            loss_probability: 0.05,
+            seed: 0x5C41,
+        };
+        let mut unscripted = PacketConditioner::new(link);
+        let baseline = relay_flushes(&mut unscripted, &flushes);
+        let mut scripted = PacketConditioner::new(link);
+        scripted.script_drop(ScriptedDrop::NthOnChannel {
+            channel: Channel::Input,
+            index: TARGET,
+        });
+        let observed = relay_flushes(&mut scripted, &flushes);
+
+        assert!(
+            baseline.iter().any(|(_, p)| p == target),
+            "precondition: the seeded link delivers the targeted Input datagram"
+        );
+        assert_eq!(scripted.scripted_dropped(), 1);
+        assert_eq!(scripted.dropped(), unscripted.dropped() + 1);
+        let fate = |cond: &PacketConditioner, index| {
+            cond.channel_datagram(Channel::Input, index)
+                .expect("the Input datagram was enqueued")
+        };
+        assert_eq!(fate(&scripted, TARGET).arrives_at, None);
+        assert_eq!(
+            fate(&scripted, TARGET).enqueued_at,
+            fate(&unscripted, TARGET).enqueued_at
+        );
+        assert!(fate(&unscripted, TARGET).arrives_at.is_some());
+        assert_eq!(
+            fate(&scripted, TARGET + 1),
+            fate(&unscripted, TARGET + 1),
+            "the next Input datagram keeps its seeded arrival"
+        );
+        let expected: Vec<_> = baseline.into_iter().filter(|(_, p)| p != target).collect();
+        assert_eq!(
+            observed, expected,
+            "every other datagram keeps its fate and arrival time"
+        );
+    }
+
+    #[test]
+    fn scripted_window_drops_every_datagram_enqueued_inside_it() {
+        let mut cond = PacketConditioner::new(LinkConfig {
+            delay: 10,
+            ..LinkConfig::perfect()
+        });
+        cond.script_drop(ScriptedDrop::Window { start: 32, end: 64 });
+        let mut arrivals = Vec::new();
+        // Enqueued at virtual 0, 16, 32, 48, 64 and 80 ms.
+        for step in 0..6u8 {
+            cond.enqueue(vec![step]);
+            cond.advance(16);
+            arrivals.extend(cond.take_ready());
+        }
+        cond.advance(16);
+        arrivals.extend(cond.take_ready());
+        assert_eq!(arrivals, vec![vec![0], vec![1], vec![4], vec![5]]);
+        assert_eq!(cond.scripted_dropped(), 2);
+    }
+
+    // The datagram reader the relay fixtures tap flushes with, against real renet
+    // datagrams: packed Input messages with their ids, a Control payload past the
+    // slice size, a snapshot's participation frame, and renet's acks.
+    #[test]
+    fn datagram_reader_reads_real_renet_flushes() {
+        let (mut server, mut client) = relay_pair();
+        let mut cond = PacketConditioner::new(LinkConfig::perfect());
+        pump_client_to_server(&mut server, &mut client, &mut cond);
+        assert!(server.is_participating(CLIENT_ID));
+
+        // Incompressible bytes: bitcode packs a run, which would fit one datagram.
+        let mut rng = SplitMix64::new(0xC7);
+        let large_control: Vec<u8> = (0..3_000).map(|_| rng.next_u64() as u8).collect();
+        server.send_control(CLIENT_ID, large_control);
+        server.send_input(CLIENT_ID, vec![1; 24]);
+        server.send_input(CLIENT_ID, vec![2; 24]);
+        let snapshot = sample_snapshot();
+        assert!(server.send_snapshot(CLIENT_ID, wire::encode(&snapshot)));
+        server.update_connections(RELAY_DT);
+        let packets = server.packets_to_send(CLIENT_ID);
+        let datagrams: Vec<RenetDatagram> = packets
+            .iter()
+            .map(|packet| parse_renet_datagram(packet).expect("a renet datagram parses"))
+            .collect();
+
+        let input = u8::from(Channel::Input);
+        let input_messages: Vec<Vec<u8>> = datagrams
+            .iter()
+            .filter_map(|datagram| match datagram {
+                RenetDatagram::Reliable { channel, messages } if *channel == input => {
+                    Some(messages.iter().map(|(_, bytes)| bytes.clone()))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(input_messages, vec![vec![1; 24], vec![2; 24]]);
+
+        let control = u8::from(Channel::Control);
+        let slices: Vec<(u64, u64, u64)> = datagrams
+            .iter()
+            .filter_map(|datagram| match datagram {
+                RenetDatagram::Slice {
+                    channel,
+                    reliable: true,
+                    message_id,
+                    slice_index,
+                    num_slices,
+                } if *channel == control => Some((*message_id, *slice_index, *num_slices)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(slices.len(), 3, "3000 B of Control payload is three slices");
+        assert!(
+            slices
+                .iter()
+                .enumerate()
+                .all(|(index, &(id, slice, count))| id == slices[0].0
+                    && slice == index as u64
+                    && count == 3),
+            "{slices:?}"
+        );
+
+        let snapshot_channel = u8::from(Channel::Snapshot);
+        let snapshots: Vec<RawSnapshotMessage> = datagrams
+            .iter()
+            .filter_map(|datagram| match datagram {
+                RenetDatagram::Unreliable { channel, messages } if *channel == snapshot_channel => {
+                    Some(messages.iter().map(|message| {
+                        let payload = participation_frame_payload(message)
+                            .expect("a snapshot rides a participation frame");
+                        wire::decode::<RawSnapshotMessage>(&payload).expect("snapshot decodes")
+                    }))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(snapshots, vec![snapshot]);
+
+        // The client acks what it received in a renet ack packet, and a small
+        // Control message unwraps to the payload the host sent.
+        let small_control = vec![0x5c; 8];
+        server.send_control(CLIENT_ID, small_control.clone());
+        server.update_connections(RELAY_DT);
+        let control_payloads: Vec<Vec<u8>> = server
+            .packets_to_send(CLIENT_ID)
+            .iter()
+            .filter_map(|packet| match parse_renet_datagram(packet)? {
+                RenetDatagram::Reliable { channel, messages } if channel == control => Some(
+                    messages
+                        .into_iter()
+                        .filter_map(|(_, bytes)| server_control_payload(&bytes)),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            control_payloads.contains(&small_control),
+            "{control_payloads:?}"
+        );
+        for packet in &packets {
+            client.process_packet(packet);
+        }
+        client.update_connections(RELAY_DT);
+        let client_packets = client.packets_to_send();
+        assert!(
+            client_packets
+                .iter()
+                .any(|packet| parse_renet_datagram(packet) == Some(RenetDatagram::Ack)),
+            "the client's flush carries a renet ack"
+        );
     }
 
     // A non-conditioned sanity baseline: a perfect link relays the handshake and

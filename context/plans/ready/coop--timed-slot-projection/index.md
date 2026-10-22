@@ -18,7 +18,7 @@ Owner playtest under the dev lag proxy after PR #601: a connected client's reloa
 - **Docs owed at promotion.** `ui.md` §3: amend the intro sentence and the first bullet (the authoritative slot is the target) and the crossings-versus-display bullet, so UI reads of an enumerated slot on a connected client see its projection. `networking.md` §What gates: the client-derived timed-slot projection. `networking.md` §Combat authority: projected heat and cell are display, with no client heat state, overheat latch or gameplay read. `docs/scripting-reference.md` ships in SDK bundles, so it changes with the build, not at promotion: reload, cooldown, heat and cell meters ramp smoothly on clients with no author change.
 - **Non-goals.**
   - The UI clock and frontend tweens: `drafts/ui-tween-clock` owns them. A tween on a projected slot eases on UI time, so the two land in either order.
-  - Loss recovery on the reliable channels: `ready/coop--lossy-link-delivery` owns it; this brief smooths what arrives.
+  - Loss recovery on the reliable channels: `done/coop--lossy-link-delivery` owns it; this brief smooths what arrives.
   - Client ammo, heat, cell and reload prediction (`networking.md` §Combat authority). The host keeps the reload timer and reserve transfer.
 
 ## Acceptance

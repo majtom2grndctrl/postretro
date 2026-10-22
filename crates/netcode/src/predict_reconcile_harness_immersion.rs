@@ -83,7 +83,7 @@ fn immersion(registry: &EntityRegistry, pawn: EntityId) -> Option<f32> {
 fn a_stale_immersion_component_changes_no_prediction_replay_or_merge() {
     let mut h = LoopbackHarness::with_fluid_tables(light_link(), pool(), water(), water())
         .with_player_swim(swim());
-    h.step_until_armed(&idle_command());
+    h.step_until_predicting(&idle_command());
     let client_pawn = h.client_pawn.expect("armed");
 
     let mut corrections = Vec::new();

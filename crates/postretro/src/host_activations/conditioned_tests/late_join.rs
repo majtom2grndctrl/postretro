@@ -207,16 +207,6 @@ impl Fixture {
         switched.is_some() || resynced.is_some()
     }
 
-    fn declare_switch(&mut self, slot: usize, tick: u32) {
-        self.client
-            .send_switch_declaration(wire::ClientSwitchDeclaration {
-                declaration_id: self.next_switch_id,
-                slot: u8::try_from(slot).unwrap(),
-                client_tick: tick,
-            });
-        self.next_switch_id += 1;
-    }
-
     fn join_tick(&mut self, input: &mut JoinInput, tick: u32, press: Option<Action>) -> bool {
         self.join_frame(input, tick, press, false)
     }

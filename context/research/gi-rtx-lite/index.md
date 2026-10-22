@@ -85,6 +85,31 @@ All replace the dense SH grid; none replaces the shadowmask, the shadow pool or 
 
 Same art style: soft baked shadows, neon palette. More reactive: closing a door darkens the next room; bounce follows doors and lights over a frame or two; wet concrete and metal catch neon. Risks: flatter entity and fog gradients in large cells; possible patch blotchiness at 0.5 m; small area-light shading losses where shading moves from bake to analytic.
 
+### Direction and animation
+
+Direction is about the same overall. Gains sit in runtime-evaluated lights and glossy surfaces; patch bounce loses some.
+
+| Term | Today | Redesign | Verdict |
+|---|---|---|---|
+| Direct, baked lights (default) | One dominant direction per lightmap texel | Unchanged | Same |
+| Direct, runtime-evaluated lights (door-gated, mover-shadowed, animated with shadows) | True direction on movers and entities only; world gets baked direct | True direction per pixel on world too | Better |
+| Bounce on world | Per pixel from octahedral irradiance probes; full normal response | Patch RGB + one dominant direction | Slightly worse. L1 SH per patch (~12 values instead of 4) closes most of the gap |
+| Bounce on entities and fog | Octahedral irradiance, 8 grid probes | Same form, or L2 SH via probe links, from per-cell probes | Same direction; coarser spatial gradient in large cells |
+| Glossy surfaces | Water only | Full directional radiance from per-cell tiles | New |
+
+Diffuse bounce is low-frequency; L2 SH holds it nearly as well as the octahedral tile. The patch loss is a format choice, not a design limit.
+
+Animation gains are new kinds of change and lower cost, not more expressive per-light curves:
+
+| Change | Today | Redesign |
+|---|---|---|
+| Baked-position light pulses or recolours | Per-light grid deltas (id 27), GPU compose per frame; the costly path | Per-light bounce on patches × curve; same flexibility, far fewer samples |
+| Door opens or closes | No effect on light | Sealed-portal links zero; bounce re-solves over a frame or two |
+| Mover blocks light | Direct only, through fixed pool slots | Direct via slab shadows for every nearby light; bounce still ignores movers |
+| Light in reflection probes | Share ratio: top 4 lights × 5 lobes | Unchanged; runtime re-shading of tiles reads on Tencent WO2026113651A1 claims 11–13 |
+| Probe diffuse | Composed from grid deltas | Follows the patch solution through probe links, doors included |
+| Moving (dynamic-tier) lights add bounce | No | No. Injecting them needs per-patch visibility to a moving light; only a leaky unshadowed estimate fits |
+
 ### Scaling
 
 | System | Today scales with | Redesign scales with |

@@ -1214,9 +1214,15 @@ mod seamless_mapping_parity {
             prop_assert!((arrival.y - (target.y + (position.y - landmark.y))).abs() < 1.0e-4);
             let by_matrix = mapping.matrix().transform_point3(position);
             prop_assert!((by_matrix - arrival).length() < 1.0e-3, "{by_matrix:?} != {arrival:?}");
+            // Compare rotated basis vectors: a quaternion angle between nearly
+            // equal rotations is ill-conditioned at this tolerance.
             let facing = Quat::from_rotation_y(landmark_yaw + 0.3);
-            let ghost_facing = Quat::from_mat4(&(mapping.matrix() * Mat4::from_quat(facing)));
-            prop_assert!(ghost_facing.angle_between(mapping.rotation() * facing) < 1.0e-3);
+            let ghost = mapping.matrix() * Mat4::from_quat(facing);
+            for axis in [Vec3::X, Vec3::Z] {
+                let by_matrix = ghost.transform_vector3(axis);
+                let by_rotation = mapping.rotation() * facing * axis;
+                prop_assert!((by_matrix - by_rotation).length() < 1.0e-4, "{by_matrix:?} != {by_rotation:?}");
+            }
         }
     }
 }

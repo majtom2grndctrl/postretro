@@ -207,7 +207,7 @@ mod tests {
 
     use glam::Vec3;
     use postretro_entities::{
-        MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+        Transform, TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
     };
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
@@ -246,7 +246,7 @@ mod tests {
                     String::new(),
                     String::new(),
                     String::new(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     TriggerFireMode::Multiple,
                     0.0,
                     enabled_on_spawn,

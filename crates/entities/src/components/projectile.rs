@@ -36,6 +36,11 @@ pub struct ProjectileComponent {
     pub credit_source: String,
     pub owner_pawn: EntityId,
     pub owner_weapon: EntityId,
+    /// A shot with no shooter to credit (a projectile trap). Its damage,
+    /// direct or splash, carries no attacker even while `owner_pawn` lives;
+    /// the owner still keys shot identity and collision exclusion.
+    #[serde(default)]
+    pub attackerless: bool,
     /// The spawn pass clears this without integrating, ensuring a projectile
     /// cannot impact on its fire tick.
     pub spawned: bool,

@@ -19,6 +19,7 @@ pub mod light;
 pub mod mesh;
 pub mod player_movement;
 pub mod projectile;
+pub mod projectile_trap;
 pub mod spawner;
 pub mod sprite_visual;
 pub mod teleporter;

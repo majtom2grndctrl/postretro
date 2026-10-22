@@ -23,6 +23,7 @@ pub use crate::fx::fog_reactions::{
 
 pub use crate::mover_commands::register_sequenced_mover_primitives;
 pub use crate::spawner::register_sequenced_spawner_primitives;
+pub use crate::traps::commands::register_sequenced_trap_primitives;
 pub use crate::trigger_system::register_sequenced_trigger_primitives;
 
 pub fn register_spawner_reaction_primitives(

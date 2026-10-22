@@ -93,8 +93,8 @@ use postretro_entities::provenance::{
 };
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, MeshDescriptor,
-    MoverCommand, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ScriptCtx, Transform,
-    TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+    NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ScriptCtx, Transform,
+    TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{
     AirParams, BRAIN_TARGET_DISTANCE_INPUT, CapsuleParams, FallParams, GroundParams, IrNode,
@@ -1146,7 +1146,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
                 String::new(),
                 "trapPools.spawn".to_string(),
                 String::new(),
-                MoverCommand::Start,
+                TriggerCommand::Start,
                 TriggerFireMode::Once,
                 0.0,
                 false,

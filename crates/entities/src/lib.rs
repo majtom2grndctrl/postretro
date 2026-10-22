@@ -28,7 +28,9 @@ pub use components::kinematic_mover::{
     BlockPolicy, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand,
 };
 pub use components::teleporter::TeleporterComponent;
-pub use components::trigger_volume::{TriggerActivation, TriggerFireMode, TriggerVolumeComponent};
+pub use components::trigger_volume::{
+    TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
+};
 pub use ctx::ScriptCtx;
 pub use data_descriptors::*;
 pub use data_registry::{

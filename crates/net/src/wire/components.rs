@@ -32,6 +32,8 @@ pub const COMPONENT_KIND_HIT_VOLUME: u16 = 21;
 pub const COMPONENT_KIND_MAP_ORDINAL: u16 = 22;
 pub const COMPONENT_KIND_IMMERSION: u16 = 23;
 pub const COMPONENT_KIND_TELEPORTER: u16 = 24;
+/// Reserved discriminant; trap state never replicates.
+pub const COMPONENT_KIND_PROJECTILE_TRAP: u16 = 25;
 
 /// Maximum key count in any replicated presentation animation channel.
 pub const MAX_WIRE_CURVE_KEYS: usize = 64;

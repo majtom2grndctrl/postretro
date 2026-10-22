@@ -51,11 +51,10 @@ use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
 };
 use postretro_entities::{
-    CrossingCondition, CrossingDescriptor, DataRegistry, EntityId, EntityRegistry, MoverCommand,
-    NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ReplicationScope, ScriptCtx,
-    SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform,
-    TriggerActivation, TriggerFireMode, TriggerPoolArm, TriggerPoolDescriptor,
-    TriggerVolumeComponent,
+    CrossingCondition, CrossingDescriptor, DataRegistry, EntityId, EntityRegistry, NamedReaction,
+    PrimitiveDescriptor, ReactionDescriptor, ReplicationScope, ScriptCtx, SlotOwnership,
+    SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation,
+    TriggerCommand, TriggerFireMode, TriggerPoolArm, TriggerPoolDescriptor, TriggerVolumeComponent,
 };
 use postretro_entities::{SequenceStep, SequenceTarget};
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
@@ -373,7 +372,7 @@ impl SimHarness {
                         String::new(),
                         "determinismTrigger".to_string(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,
@@ -402,7 +401,7 @@ impl SimHarness {
                             String::new(),
                             String::new(),
                             String::new(),
-                            MoverCommand::Start,
+                            TriggerCommand::Start,
                             TriggerFireMode::Multiple,
                             0.0,
                             false,
@@ -423,7 +422,7 @@ impl SimHarness {
                         String::new(),
                         String::new(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         false,

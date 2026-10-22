@@ -80,7 +80,7 @@ pub fn register_reaction_control_primitives(
 /// durations; this clamp is defensive so a stray value never yields a 0-tick
 /// countdown and clamps huge finite values to `u32::MAX` rather than overflowing
 /// the cast before that pass lands.
-fn ms_to_ticks(duration_ms: f64) -> u32 {
+pub(crate) fn ms_to_ticks(duration_ms: f64) -> u32 {
     let micros = crate::frame_timing::TICK_DURATION.as_micros() as f64;
     if !duration_ms.is_finite() || duration_ms <= 0.0 {
         return 1;

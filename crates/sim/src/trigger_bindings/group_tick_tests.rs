@@ -13,8 +13,8 @@ use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::data_descriptors::HealthDescriptor;
 use postretro_entities::{
-    ComponentKind, EntityId, EntityRegistry, MoverCommand, ScriptCtx, Transform, TriggerActivation,
-    TriggerFireMode, TriggerVolumeComponent,
+    ComponentKind, EntityId, EntityRegistry, ScriptCtx, Transform, TriggerActivation,
+    TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
@@ -298,7 +298,7 @@ fn spawn_volume(
                 String::new(),
                 String::new(),
                 String::new(),
-                MoverCommand::Start,
+                TriggerCommand::Start,
                 TriggerFireMode::Multiple,
                 0.0,
                 true,

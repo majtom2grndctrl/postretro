@@ -856,6 +856,7 @@ impl Fixture {
                     sim::ProjectileSource {
                         weapon: Some("conditioned-weapon".into()),
                         activation: None,
+                        attackerless: false,
                     },
                 )
                 .expect("semantic predicted projectile");

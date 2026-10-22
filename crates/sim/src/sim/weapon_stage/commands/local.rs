@@ -378,6 +378,7 @@ fn run_local_weapon_command_inner(
             let source = ProjectileSource {
                 weapon: weapon_name.clone(),
                 activation,
+                attackerless: false,
             };
             if let Some(projectile_id) =
                 spawn_projectile(&mut registry, pawn, weapon_id, launch, None, source)

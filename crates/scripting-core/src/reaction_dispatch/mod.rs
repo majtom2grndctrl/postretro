@@ -362,6 +362,9 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "setAnimationState"
             | "updateNpcState"
             | "spawnFromSpawner"
+            | "fireTrap"
+            | "startTrap"
+            | "stopTrap"
     )
 }
 

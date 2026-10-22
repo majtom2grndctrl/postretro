@@ -13,7 +13,7 @@ use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
 use crate::kinematic_mover::MoverAutoCloseTimers;
-use crate::mover_commands::{MoverCommandDiagnostics, apply_mover_command_to_known_movers};
+use crate::mover_commands::MoverCommandDiagnostics;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 
 /// Stable player identity for per-player trigger state and event ordering.
@@ -109,7 +109,7 @@ pub struct TriggerSystem {
     occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>,
     paired_enters: BTreeSet<(EntityId, PlayerId)>,
     warned_duplicate_players: HashSet<PlayerId>,
-    mover_auto_close_timers: Option<MoverAutoCloseTimers>,
+    direct_commands: crate::trigger_direct_commands::DirectCommandHandles,
     // Per-system test probes prevent parallel trigger tests from sharing traces.
     // They survive `clear` so level-replacement tests can observe both levels.
     #[cfg(test)]
@@ -121,9 +121,18 @@ pub struct TriggerSystem {
 impl TriggerSystem {
     pub fn with_mover_auto_close_timers(auto_close_timers: MoverAutoCloseTimers) -> Self {
         Self {
-            mover_auto_close_timers: Some(auto_close_timers),
+            direct_commands: crate::trigger_direct_commands::DirectCommandHandles {
+                auto_close_timers: Some(auto_close_timers),
+                spawn_context: None,
+            },
             ..Self::default()
         }
+    }
+
+    /// The spawn context a direct `fire` command spawns a spawner's batch through.
+    pub fn with_spawn_context(mut self, spawn_context: crate::spawner::SpawnContext) -> Self {
+        self.direct_commands.spawn_context = Some(spawn_context);
+        self
     }
 
     pub fn clear(&mut self) {
@@ -179,7 +188,7 @@ impl TriggerSystem {
     }
 
     /// Evaluate and dispatch every trigger edge in one stable stream. The
-    /// callback runs immediately after the direct mover command and gate-state
+    /// callback runs immediately after the direct command and gate-state
     /// update, before the next `(trigger, player)` edge is evaluated. This lets
     /// a trigger reaction arm or disarm a later trigger in the same fixed tick
     /// without bringing a script VM into the simulation seam. The occupant slice
@@ -345,19 +354,11 @@ impl TriggerSystem {
                         #[cfg(test)]
                         self.recorded_gate_fires.push(player_id);
 
-                        let mut targets: Vec<EntityId> = registry
-                            .query_by_component_and_tag(
-                                ComponentKind::KinematicMover,
-                                Some(&trigger.target_tag),
-                            )
-                            .map(|(id, _)| id)
-                            .collect();
-                        targets.sort_unstable();
-                        apply_mover_command_to_known_movers(
+                        crate::trigger_direct_commands::apply_direct_trigger_command(
                             registry,
-                            &targets,
+                            &trigger.target_tag,
                             &trigger.command,
-                            self.mover_auto_close_timers.as_ref(),
+                            &self.direct_commands,
                         );
                         update_after_fire(&mut trigger);
                         let event_name = trigger.on_fire.clone();
@@ -677,7 +678,7 @@ mod tests {
     use glam::Quat;
     use postretro_entities::components::brain::{BrainComponent, attach_brain_graph};
     use postretro_entities::{
-        KinematicMoverComponent, KinematicMoverMode, MoverCommand, ScriptCtx,
+        KinematicMoverComponent, KinematicMoverMode, ScriptCtx, TriggerCommand,
     };
     use postretro_foundation::{
         AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
@@ -831,7 +832,7 @@ mod tests {
                     "lift".into(),
                     String::new(),
                     String::new(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     fire_mode,
                     rearm_ms,
                     enabled,
@@ -2467,7 +2468,7 @@ mod tests {
                         "tripwire".into(),
                         String::new(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Once,
                         100.0,
                         true,

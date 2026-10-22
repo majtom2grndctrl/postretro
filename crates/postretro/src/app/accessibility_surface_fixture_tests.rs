@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use postretro_entities::{
-    EntityId, MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+    EntityId, Transform, TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
@@ -233,7 +233,7 @@ fn the_strobe_fixture_evaluates() {
                             String::new(),
                             String::new(),
                             String::new(),
-                            MoverCommand::Start,
+                            TriggerCommand::Start,
                             TriggerFireMode::Multiple,
                             0.0,
                             true,

@@ -135,8 +135,8 @@ pub fn drain_frame_residuals(
 mod tests {
     use postretro_entities::reactions::system_commands::SystemReactionCommand;
     use postretro_entities::{
-        MoverCommand, PrimitiveDescriptor, ReactionDescriptor, TriggerActivation, TriggerFireMode,
-        TriggerVolumeComponent,
+        PrimitiveDescriptor, ReactionDescriptor, TriggerActivation, TriggerCommand,
+        TriggerFireMode, TriggerVolumeComponent,
     };
     use postretro_foundation::Seat;
     use postretro_scripting_core::data_descriptors::{NamedReaction, PlayerEventEdge};
@@ -181,7 +181,7 @@ mod tests {
                         String::new(),
                         "plateBeep".to_string(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,
@@ -373,7 +373,7 @@ mod tests {
                         String::new(),
                         "occupants".to_string(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,

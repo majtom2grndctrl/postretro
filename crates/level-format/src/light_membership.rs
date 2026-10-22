@@ -13,8 +13,9 @@ pub const LIGHT_MEMBERSHIP_MANIFEST_VERSION: u32 = 1;
 /// level data script. `_bake_only` lights and buried lights (static lights
 /// whose origin is inside solid) are omitted; each surviving
 /// `index` is its stable `MapData::lights` vector index, not a runtime entity id.
-/// `map_members` carries the runtime-placed movers, trigger volumes and
-/// spawners so build-side member queries answer what runtime answers.
+/// `map_members` carries the runtime-placed movers, trigger volumes,
+/// teleporters, spawners and projectile traps, so build-side member queries
+/// answer what runtime answers.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[derive(Clone, Debug, PartialEq)]
@@ -104,14 +105,16 @@ pub enum MapMemberKind {
     TriggerVolume,
     Teleporter,
     Spawner,
+    ProjectileTrap,
 }
 
 impl MapMemberKind {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::KinematicMover,
         Self::TriggerVolume,
         Self::Teleporter,
         Self::Spawner,
+        Self::ProjectileTrap,
     ];
 
     /// The `worldQuery` component name, which is also the wire spelling.
@@ -121,6 +124,7 @@ impl MapMemberKind {
             Self::TriggerVolume => "trigger_volume",
             Self::Teleporter => "teleporter",
             Self::Spawner => "spawner",
+            Self::ProjectileTrap => "projectile_trap",
         }
     }
 
@@ -131,7 +135,7 @@ impl MapMemberKind {
     }
 }
 
-/// One runtime-placed mover, trigger volume, teleporter or spawner, in authored order
+/// One runtime-placed mover, trigger volume, teleporter, spawner or projectile trap, in authored order
 /// within its kind. Mirrors the runtime identity snapshot
 /// (`collect_identity_snapshots_json` in `postretro-sim`); `scripts-build`
 /// assigns the build id.

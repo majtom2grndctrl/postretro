@@ -3,7 +3,7 @@ use crate::trigger_commands::{BoundStoreValue, BoundTarget};
 use postretro_entities::components::ammo_reserve::AmmoReserve;
 use postretro_entities::components::brain::{BrainComponent, attach_brain_graph};
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::{MoverCommand, TriggerVolumeComponent};
+use postretro_entities::{MoverCommand, TriggerCommand, TriggerVolumeComponent};
 use postretro_entities::{
     NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     Transform, TriggerActivation, TriggerFireMode,
@@ -45,7 +45,7 @@ fn spawn_trigger(registry: &mut EntityRegistry, on_fire: &str) -> EntityId {
                 String::new(),
                 on_fire.to_string(),
                 String::new(),
-                MoverCommand::Start,
+                TriggerCommand::Start,
                 TriggerFireMode::Multiple,
                 0.0,
                 true,

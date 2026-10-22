@@ -21,6 +21,8 @@ pub enum SimStage {
     Projectiles,
     /// Enemy AI policy through the injected runner.
     Ai,
+    /// Projectile traps: pending requests, repeat schedules and their shots.
+    Traps,
     /// Agent steering, animation locomotion, presentation poses, auto-close
     /// timers and the mover blocking pass.
     Steering,
@@ -62,6 +64,7 @@ impl StageSet for SimStage {
         Self::Triggers,
         Self::Projectiles,
         Self::Ai,
+        Self::Traps,
         Self::Steering,
         Self::Weapons,
         Self::SteerAgents,
@@ -85,6 +88,7 @@ impl StageSet for SimStage {
             Self::Triggers => "sim_triggers",
             Self::Projectiles => "sim_projectiles",
             Self::Ai => "sim_ai",
+            Self::Traps => "sim_traps",
             Self::Steering => "sim_steering",
             Self::Weapons => "sim_weapons",
             Self::SteerAgents => "sim_steer_agents",

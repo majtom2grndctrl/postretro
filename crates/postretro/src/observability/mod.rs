@@ -64,6 +64,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::MapOrdinal,
     ComponentKind::Immersion,
     ComponentKind::Teleporter,
+    ComponentKind::ProjectileTrap,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -100,6 +101,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::MapOrdinal => "map_ordinal",
         ComponentKind::Immersion => "immersion",
         ComponentKind::Teleporter => "teleporter",
+        ComponentKind::ProjectileTrap => "projectile_trap",
     }
 }
 
@@ -395,7 +397,7 @@ mod tests {
                     "sample".to_string(),
                     String::new(),
                     String::new(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     TriggerFireMode::Once,
                     0.0,
                     true,
@@ -437,6 +439,14 @@ mod tests {
                     on_teleport: String::new(),
                 })
             }
+            ComponentKind::ProjectileTrap => ComponentValue::ProjectileTrap(
+                postretro_entities::components::projectile_trap::ProjectileTrapComponent::new(
+                    "enemy_rifle".to_string(),
+                    1000.0,
+                    0.0,
+                    false,
+                ),
+            ),
             ComponentKind::Immersion => ComponentValue::Immersion(
                 postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },
             ),
@@ -465,6 +475,7 @@ mod tests {
                 credit_source: "test.projectile".to_string(),
                 owner_pawn: EntityId::from_raw(1),
                 owner_weapon: EntityId::from_raw(2),
+                attackerless: false,
                 spawned: false,
                 predicted_shot_id: None,
                 elapsed_flight_age: 0.0,

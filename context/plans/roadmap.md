@@ -211,6 +211,17 @@ Water-surface briefs outside a numbered epic.
 
 ---
 
+## Lighting and GI
+
+Grafts from the RTX-lite exploration (`context/research/gi-rtx-lite/`), each gated by its own measurement. Ordered by owner priority.
+
+- [ ] **lightmap penumbra floor** — bake each static light at an effective emitter size of at least ~2 mask texels at the lit surface, and log the softened lights, so no baked shadow edge shows a texel stair-step. Bake-only; no format or runtime change. Open owner decision: whether authored `_light_size 0` (hard) is exempt. Not yet drafted.
+- [ ] **SH probe classification and relocation** — keep only probes that bracket a receiver in their cell, and move probes out of walls instead of invalidating them (Majercik et al. 2021). Bake-only plus a small per-probe offset; shrinks stored tiles and SH residency. IP appears clear. Not yet drafted.
+- [ ] **door and mover light flow** — analytic convex-brush shadows for lights near kinematic movers, beside the shadow pool (which keeps skinned characters), and portal-gated light reach from `blocked_portals` for runtime-evaluated lights. Meets "doors and movers change how light flows" for direct light and scales live mover shadows past the fixed promoted-slot budget. Not yet drafted.
+- [ ] **GI scaling measurement spike** — measure on the stress warrens before any indirect redesign: cells, cell volumes, surface area by patch size and lights per mover (hallway inspection first), probes per cell on `stress-env-volumes`, door-event reach on the showcase, and the 5300M forward pass with world SH off. Plan in the research doc. Not yet drafted.
+
+---
+
 ## Future / Speculative
 
 Features below are intended but not yet sequenced. Rough priority ordering within each group.
@@ -229,6 +240,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 - **Rigid model reuse** — the shipped skinned/rigid mesh path can later serve props and pickups. New model consumers remain unsequenced.
 - **UI compositor fidelity + image asset pipeline** — exact source-over ordering between translucent quads/images and glyphon text (one glyphon render call cannot interleave with translucent UI geometry), and an authored registration path for UI image assets through the renderer-owned registry. Left over from Epic 13.
+- **Indirect-light redesign** — replace the dense SH grid over empty space with indirect light that lives on receivers and follows doors: door-driven bounce deltas, per-cell probes read for both diffuse and glossy, or patch radiosity re-solved on change. Gated by the GI scaling spike and counsel on Square Enix US10137372B2, Tencent US12293451B2 and Tencent WO2026113651A1. Options, costs and IP triage: `context/research/gi-rtx-lite/`.
 - **Directional fog** — the remaining fog enhancement. Existing fog volumes and portal-aware culling are shipped.
 - **Moving-light shadow-depth invalidation** — re-render a moving light's cached static depth only when its transform changes, so projectile-attached and other moving lights do not redraw the full world every frame. Not sequenced until a moving shadow-caster needs it.
 - **Post-processing** — optional CRT/scanline filter. HDR scene color, additive emissive, tonemapping, and bloom are shipped.

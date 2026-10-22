@@ -107,7 +107,7 @@
 
 **Retro-inspired FPS engine** — a hybrid of new and old. Doom/Quake boomer shooter with a cyberpunk aesthetic. Monster closets and scripted reveals are first-class set-pieces rather than engine-fighting workarounds, making for theatrical gameplay experiences. Inspired by retro look and feel but game design is a meaningful iteration beyond games of the period.
 
-**Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, dynamic direct lighting, and billboard sprite volumetrics that react to light.
+**Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (octahedral irradiance probe volumes), normal-mapped surfaces, dynamic direct lighting, and billboard sprite volumetrics that react to light.
 
 **Architectural northstar:** Lean, wgpu-driven pipeline — not a resource heavy modern engine with retro filters. Near-instant boot, tiny binary, and _some_ retro filters, but used sparingly.
 
@@ -151,7 +151,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Visibility | prl-build (portal generation — runtime traverses portal graph each frame) |
 | Cell locator | prl-build (compiler BSP-derived point-to-cell decision tree) |
 | Light entities | FGD entities parsed and translated to canonical format at compile time |
-| Indirect lighting | SH L2 irradiance volume baked from canonical lights |
+| Indirect lighting | DDGI-style octahedral irradiance probe atlas, with per-probe depth moments, baked from canonical lights |
 | Fog volumes | FGD fog entities + `FogCellMasks` over runtime cells |
 | Acoustic zones | FGD brush entities intended to resolve through runtime cells for reverb |
 | Reflection probes | prl-build: probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time into colour and distance tiles |

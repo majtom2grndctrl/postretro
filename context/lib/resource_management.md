@@ -52,9 +52,9 @@ Frame ordering derives from the numeric suffix. Playback rate is defined by the 
 
 World textures use individual bind groups — one per unique material. Draw calls batch by material to minimize bind group switches. No atlas; atlas packing is an unscheduled optimization.
 
-### 2.1 SH Irradiance Volume
+### 2.1 Irradiance Probe Volume
 
-Indirect lighting is carried by an SH L2 irradiance volume (3D probe grid), not by per-face lightmaps. The probe section is loaded from PRL. Sampling is a manual 8-corner `textureLoad` blend: invalid (in-wall) corners are dropped via a baked per-probe validity bit, backfacing corners are downweighted (forward pass only), and surviving weights are renormalized. See `rendering_pipeline.md` §4.
+Indirect lighting is carried by a DDGI-style octahedral irradiance probe atlas over a 3D probe grid, not by per-face lightmaps. The probe sections load from PRL (id 34 base, plus streamed residency). Sampling blends the 8 neighbouring probes, one hardware-bilinear atlas tap each: invalid (in-wall) probes drop via a baked validity bit, backfacing probes are rejected (forward pass only), baked depth moments weight each probe by Chebyshev visibility, and surviving weights renormalize. See `rendering_pipeline.md` §4.
 
 ---
 

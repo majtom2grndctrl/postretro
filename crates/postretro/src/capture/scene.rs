@@ -6,6 +6,7 @@ use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use serde::Deserialize;
 use thiserror::Error;
 
+use super::ghosts::{CaptureGhostStyle, CaptureGhostTransparency, validate_ghost_styles};
 use crate::render::LightTermMask;
 
 /// Default horizontal field of view in degrees, matching `camera::HFOV`.
@@ -69,6 +70,15 @@ pub(crate) struct CaptureScene {
     /// after `reflection_quality`. Every member is optional. Ignored, with a
     /// warning, at a tier that runs no screen-space layer (off, low).
     pub(crate) reflection_march: Option<CaptureReflectionMarch>,
+    /// Capture-only ghost styles the map's `ghost_link` styles resolve
+    /// against. Capture loads no mod manifest, so this stands in for
+    /// `ghostStyles`. Omitted, every link presents the floor style with no
+    /// warning; given, a link naming a style it lacks presents the floor and
+    /// warns once, as at a level install.
+    pub(crate) ghost_styles: Option<Vec<CaptureGhostStyle>>,
+    /// Capture-only ghost transparency, `"blend"` or `"dither"`, standing in
+    /// for `render.ghosts`. Omitted keeps the renderer's default, blend.
+    pub(crate) ghost_transparency: Option<CaptureGhostTransparency>,
 }
 
 impl CaptureScene {
@@ -250,6 +260,17 @@ pub(crate) enum SceneError {
     NonFiniteReflectionThickness,
     #[error("invalid capture scene: reflection_march thickness must be at least 0, got {value}")]
     ReflectionThicknessNegative { value: f32 },
+    #[error("invalid capture scene: ghost_styles[{index}].{field} {requirement}, got {got}")]
+    GhostStyleField {
+        index: usize,
+        field: &'static str,
+        requirement: &'static str,
+        got: String,
+    },
+    #[error(
+        "invalid capture scene: ghost_styles[{index}].name repeats an earlier style's name `{name}`"
+    )]
+    DuplicateGhostStyle { index: usize, name: String },
 }
 
 /// Parse a scene document and validate all GPU-independent authoring limits.
@@ -349,6 +370,9 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     }
     if let Some(march) = &scene.reflection_march {
         validate_reflection_march(march)?;
+    }
+    if let Some(styles) = &scene.ghost_styles {
+        validate_ghost_styles(styles)?;
     }
     if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&scene.camera.fov_deg) {
         return Err(SceneError::FovOutOfRange {
@@ -854,6 +878,8 @@ mod tests {
             reflection_quality: None,
             reflection_style: None,
             reflection_march: None,
+            ghost_styles: None,
+            ghost_transparency: None,
         };
         assert!(matches!(
             validate_scene(&scene),

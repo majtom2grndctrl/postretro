@@ -41,7 +41,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// `ServerControlMessage` `SessionRoster` 5 to 3). Input's sub-tick resend is a
 /// sender-side setting and does not affect wire compatibility.
 /// Ghost links advance it to 34: component payloads gained the link-state record
-/// (`SNAPSHOT_VERSION` 22).
+/// and the snapshot envelope the level-scoped ghost-audio record (`SNAPSHOT_VERSION` 22).
 pub const WIRE_VERSION: u32 = 34;
 
 #[must_use]

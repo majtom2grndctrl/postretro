@@ -41,6 +41,8 @@ struct Host {
     allocator: crate::NetworkIdAllocator,
     set: ReplicableSet,
     replication: ServerReplication,
+    /// The level-scoped ghost-audio record every snapshot carries.
+    ghost_audio: postretro_net::wire::WireGhostAudioState,
     tick: u32,
 }
 
@@ -53,6 +55,7 @@ impl Host {
             allocator: crate::NetworkIdAllocator::new(),
             set: ReplicableSet::new(),
             replication: ServerReplication::new(),
+            ghost_audio: Default::default(),
             tick: 0,
         };
         host.install();
@@ -77,7 +80,23 @@ impl Host {
         self.replication.reset_for_level_unload();
         self.set = ReplicableSet::new();
         (self.registry, self.link) = level_with_link(false);
+        // Unload drops the level's `setGhostAudio` fields with the level.
+        self.ghost_audio = Default::default();
         self.install();
+    }
+
+    /// A `setGhostAudio` volume ramp, as the host bus holds it.
+    fn set_ghost_audio_volume(&mut self) {
+        self.ghost_audio = postretro_net::wire::WireGhostAudioState {
+            fields: postretro_net::wire::GHOST_AUDIO_VOLUME,
+            volume: Some(postretro_net::wire::WireGhostScalarRamp {
+                from: 0.6,
+                to: 0.9,
+                start_time: 1.0,
+                duration_ms: 0.0,
+            }),
+            ..Default::default()
+        };
     }
 
     fn arm(&mut self) {
@@ -100,10 +119,11 @@ impl Host {
         );
         self.replication.ingest_tick(owned);
         let sequence = self.replication.begin_batch();
-        let raw = self
+        let mut raw = self
             .replication
             .encode_in_batch(RelaySession::CLIENT, self.tick, sequence)
             .expect("registered client");
+        raw.ghost_audio = Some(self.ghost_audio);
         assert!(
             session
                 .server
@@ -137,7 +157,8 @@ fn received_armed(client: &mut ClientReplication) -> Vec<bool> {
 // level, or restarts the same map, and re-promotes the client. Index and source
 // entity repeat across a restart, so binding alone cannot tell the record is
 // stale; the participation epoch drops it, and the new link keeps its spawn
-// state until the new level's first record.
+// state until the new level's first record. The level-scoped ghost-audio
+// record rides the same frames and is dropped the same way.
 #[test]
 fn ghost_link_stale_old_level_record_never_binds_the_new_link() {
     for restart_same_map in [false, true] {
@@ -152,10 +173,12 @@ fn ghost_link_stale_old_level_record_never_binds_the_new_link() {
             1
         );
         assert_eq!(received_armed(&mut client), [false]);
+        assert_eq!(client.take_ghost_audio(), Some(Default::default()));
 
-        // The old level arms the link; that record is in flight when the host
-        // leaves the level.
+        // The old level arms the link and sets the Ghost bus; that record is
+        // in flight when the host leaves the level.
         host.arm();
+        host.set_ghost_audio_volume();
         host.send_snapshot(&mut session);
         session.server.update_connections(RelaySession::STEP);
         let stale = session.server.packets_to_send(RelaySession::CLIENT);
@@ -195,6 +218,7 @@ fn ghost_link_stale_old_level_record_never_binds_the_new_link() {
             "restart={restart_same_map}: the retired epoch's record never reaches apply"
         );
         assert!(received_armed(&mut client).is_empty());
+        assert_eq!(client.take_ghost_audio(), None, "nor does its audio record");
         assert!(client.network_id_for_entity(new_link).is_none());
 
         // The new level's first record binds and carries the new level's state.
@@ -208,6 +232,11 @@ fn ghost_link_stale_old_level_record_never_binds_the_new_link() {
             received_armed(&mut client),
             [false],
             "restart={restart_same_map}: the new link's first record is the new level's"
+        );
+        assert_eq!(
+            client.take_ghost_audio(),
+            Some(Default::default()),
+            "the new level's audio record carries no old-level field"
         );
         assert!(client.network_id_for_entity(new_link).is_some());
     }

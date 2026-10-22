@@ -326,6 +326,7 @@ fn presentation_budget_fresh_stress_map_cpu_install_and_host_capture_measurement
             &ctx.registry.borrow(),
             &ctx.slot_table.borrow(),
             &ctx.faction_sentiment.borrow(),
+            &Default::default(),
             &identity,
             &mut server,
             &mut allocator,

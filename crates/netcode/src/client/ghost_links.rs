@@ -1,7 +1,7 @@
-// Bind replicated ghost-link state to the installed link and queue it for presentation history.
+// Bind replicated ghost-link state to its link for presentation history; hold the level-scoped ghost-audio record.
 // See: context/lib/networking.md §Current contract
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry, GhostLinkComponent};
-use postretro_net::wire::{ComponentPayload, NetworkId, WireGhostLinkState};
+use postretro_net::wire::{ComponentPayload, NetworkId, WireGhostAudioState, WireGhostLinkState};
 
 use super::{ApplyOutcome, ClientReplication, IgnoredPayload, RegionBinding};
 
@@ -97,6 +97,21 @@ impl ClientReplication {
     /// so a state that lasted between two frames is not lost.
     pub fn drain_ghost_link_updates(&mut self) -> impl Iterator<Item = GhostLinkUpdate> + '_ {
         self.ghost_link_updates.drain(..)
+    }
+
+    /// Hold the newest snapshot's ghost-audio record. The record is level-scoped
+    /// and whole, so the newest supersedes any untaken one; an envelope without
+    /// a record leaves the held one alone.
+    pub(super) fn receive_ghost_audio(&mut self, record: Option<WireGhostAudioState>) {
+        if record.is_some() {
+            self.ghost_audio = record;
+        }
+    }
+
+    /// The newest ghost-audio record received since the last take, if any. The
+    /// presentation side rebases it onto this client's script clock.
+    pub fn take_ghost_audio(&mut self) -> Option<WireGhostAudioState> {
+        self.ghost_audio.take()
     }
 }
 

@@ -1250,9 +1250,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         requests.extend(app.pending_teleport_sounds.drain(..).map(Into::into));
         (edges, requests, listener_attached)
     };
-    // The Ghost bus follows its resolved profile (a script ramp re-targets it
-    // each frame), then this frame's ghost voices are judged before any sound
+    // The Ghost bus takes a client's received host fields, follows its
+    // resolved profile (a script ramp re-targets it each frame), then this
+    // frame's ghost voices are judged before any sound
     // plays: a ghost voice starts only beside a real voice `play` admitted.
+    app.drain_received_ghost_audio();
     app.present_ghost_bus(std::time::Duration::try_from_secs_f32(frame_dt).unwrap_or_default());
     let ghost_voices = app.plan_ghost_voices(&descriptor_sounds, frame_result.alpha);
     if let Some(audio) = app

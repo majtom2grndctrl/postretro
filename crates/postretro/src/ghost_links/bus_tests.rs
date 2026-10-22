@@ -355,3 +355,133 @@ fn set_ghost_audio_resolves_from_postretro_audio_in_both_runtimes_alike() {
         Ok(step(Some(0.9), None, Some(5000.0), 1500.0)),
     );
 }
+
+/// The host's fields as a client receives them: `targets` applied at host
+/// script time `time` on a bus under the host's own manifest.
+fn host_fields(targets: GhostAudioTargets, time: f64) -> GhostAudioOverride {
+    let mut host = bus();
+    set(&mut host, targets, time);
+    *host.script_fields()
+}
+
+// Client intake: a received ramp rebases by the clock offset once; a repeat
+// moves nothing; a field the host stops setting drops; before the clock
+// anchors a changed ramp waits, keeping what the field presented, and the
+// anchor releases it rebased.
+#[test]
+fn received_fields_rebase_once_defer_before_the_clock_and_drop_when_unset() {
+    let mut client = GhostBus::default();
+    client.set_manifest(ModGhostAudio::FLOOR);
+    let swell = host_fields(step(Some(1.0), None, None, 1000.0), 10.0);
+    client.intake_received(Some(swell), Some(2.0));
+    let rebased = client.script_fields().volume.unwrap();
+    assert_eq!(rebased.start_time, 12.0, "host 10 s is client 12 s");
+    client.intake_received(Some(swell), Some(5.0));
+    assert_eq!(
+        client.script_fields().volume.unwrap().start_time,
+        12.0,
+        "a repeat never re-rebases (P8)"
+    );
+
+    // Before the anchor: a new volume ramp waits; the old one keeps presenting.
+    let mut waiting = GhostBus::default();
+    waiting.set_manifest(ModGhostAudio::FLOOR);
+    waiting.intake_received(Some(swell), Some(0.0));
+    let retarget = host_fields(step(Some(0.2), None, Some(3000.0), 0.0), 20.0);
+    waiting.intake_received(Some(retarget), None);
+    assert_eq!(waiting.script_fields().volume.unwrap().to, 1.0, "deferred");
+    assert!(
+        waiting.script_fields().low_pass_hz.is_none(),
+        "deferred too"
+    );
+    waiting.intake_received(None, Some(1.0));
+    let volume = waiting.script_fields().volume.unwrap();
+    assert_eq!(
+        (volume.to, volume.start_time),
+        (0.2, 21.0),
+        "released rebased"
+    );
+    assert_eq!(waiting.resolve(21.0).low_pass_hz, 3000.0);
+
+    // The host no longer setting a field drops it, clock or not.
+    waiting.intake_received(Some(GhostAudioOverride::default()), None);
+    assert!(waiting.script_fields().is_empty());
+    assert_eq!(
+        waiting.resolve(30.0),
+        ghost_audio_values(ModGhostAudio::FLOOR)
+    );
+}
+
+/// A windowless App connected as a client, its bus under `MANIFEST`.
+fn connected_client_app() -> crate::App {
+    let mut app = crate::startup::lifecycle::tests::test_app();
+    app.session
+        .as_mut()
+        .expect("test app session installed")
+        .net_endpoint = Some(
+        crate::netcode::NetEndpoint::from_role(
+            &crate::netcode::NetRole::Connect {
+                addr: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint"),
+    );
+    app.apply_mod_audio_profile(ModAudioProfile {
+        ghost: MANIFEST,
+        ..ModAudioProfile::default()
+    });
+    app
+}
+
+// AC36 (client half), P13, P17: a connected client never applies its own
+// `setGhostAudio`; received host fields stand through a committed reload that
+// re-resolves its unset fields; demotion (through the production Control
+// drain) and level unload each return the bus to the client's manifest.
+#[test]
+fn client_app_keeps_received_fields_through_a_reload_and_demotion_and_unload_drop_them() {
+    let mut app = connected_client_app();
+    app.queue_ghost_audio(step(Some(0.1), None, None, 0.0));
+    app.apply_pending_ghost_audio_commands();
+    assert!(
+        app.ghost_bus.script_fields().is_empty(),
+        "the client drops its own call"
+    );
+
+    let received = host_fields(step(Some(0.9), None, None, 0.0), 0.0);
+    app.ghost_bus.intake_received(Some(received), Some(0.0));
+    app.apply_mod_audio_profile(ModAudioProfile {
+        ghost: ModGhostAudio {
+            low_pass_hz: 6000.0,
+            ..MANIFEST
+        },
+        ..ModAudioProfile::default()
+    });
+    let reloaded = app.ghost_bus.resolve(1.0);
+    assert_eq!((reloaded.volume, reloaded.low_pass_hz), (0.9, 6000.0));
+
+    crate::client_drain_control(
+        &mut app,
+        vec![postretro_net::wire::ServerControlMessage::Divergence(
+            postretro_net::wire::DivergenceReason::Holding(
+                postretro_net::wire::HoldingCause::HostLevelAbsent,
+            ),
+        )],
+    );
+    assert!(
+        app.ghost_bus.script_fields().is_empty(),
+        "demotion drops them"
+    );
+    assert_eq!(app.ghost_bus.resolve(1.0).volume, MANIFEST.volume);
+    // A repeat of the same record after re-promotion installs it afresh.
+    app.ghost_bus.intake_received(Some(received), Some(0.0));
+    assert_eq!(app.ghost_bus.resolve(1.0).volume, 0.9);
+
+    app.unload_level();
+    assert!(
+        app.ghost_bus.script_fields().is_empty(),
+        "unload drops them"
+    );
+    assert_eq!(app.ghost_bus.resolve(1.0).volume, MANIFEST.volume);
+}

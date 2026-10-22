@@ -1358,6 +1358,7 @@ fn remote_enemy_spawn_baseline_applies_initial_mesh_animation_state() {
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),
         faction_sentiment_record: None,
+        ghost_audio: None,
         server_script_time: 0.0,
         records: vec![EntityRecord::FullBaseline {
             network_id: net_id.0,
@@ -1923,6 +1924,7 @@ fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),
         faction_sentiment_record: None,
+        ghost_audio: None,
         server_script_time: 0.0,
         records: vec![EntityRecord::FullBaseline {
             network_id: net_id.0,
@@ -2059,6 +2061,7 @@ fn despawn_for_unmapped_network_id_is_a_clean_noop() {
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),
         faction_sentiment_record: None,
+        ghost_audio: None,
         server_script_time: 0.0,
         records: vec![EntityRecord::Despawn {
             network_id: phantom_net_id,

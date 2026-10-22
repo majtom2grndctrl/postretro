@@ -110,6 +110,7 @@ pub fn host_replicate(
     registry: &EntityRegistry,
     slot_table: &SlotTable,
     faction_sentiment: &FactionSentimentState,
+    ghost_audio: &postretro_foundation::GhostAudioOverride,
     replication_identity: &state_slots::ReplicatedSlotIdentity<'_>,
     server: &mut NetServer,
     allocator: &mut NetworkIdAllocator,
@@ -172,6 +173,9 @@ pub fn host_replicate(
     // Faction sentiment is host-authoritative runtime state, not a static slot.
     // Sample its complete sparse set once before per-client baseline/delta production.
     state_slots.ingest_faction_sentiment(faction_sentiment);
+    // The level-scoped Ghost bus fields ride every snapshot whole, so a late
+    // joiner's first snapshot is its baseline and no ack path is needed.
+    let ghost_audio = ghost_audio_to_wire(ghost_audio);
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
@@ -192,6 +196,7 @@ pub fn host_replicate(
             }
             raw.faction_sentiment_record =
                 state_slots.produce_faction_sentiment_for_client(client_id);
+            raw.ghost_audio = Some(ghost_audio);
             let bytes = wire::encode(&raw);
             let deferred = replication.deferred_baseline_count(client_id);
             if deferred > 0 {

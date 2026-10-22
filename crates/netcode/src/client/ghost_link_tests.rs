@@ -66,6 +66,7 @@ fn snapshot(sequence: u32, server_tick: u32, records: Vec<EntityRecord>) -> Snap
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),
         faction_sentiment_record: None,
+        ghost_audio: None,
         server_script_time: 0.0,
     }
 }
@@ -380,4 +381,62 @@ fn ghost_link_presented_state_tick_holds_before_a_cut_and_leads_a_blend() {
     // Before time sync names a render tick, remotes hold and report nothing.
     client.apply_held_remote_player_presentation(&mut registry, 0.0);
     assert_eq!(client.presented_state_tick(pawn), None);
+}
+
+fn audio(volume_to: f32) -> postretro_net::wire::WireGhostAudioState {
+    postretro_net::wire::WireGhostAudioState {
+        fields: postretro_net::wire::GHOST_AUDIO_VOLUME,
+        volume: Some(postretro_net::wire::WireGhostScalarRamp {
+            from: 0.6,
+            to: volume_to,
+            start_time: 1.0,
+            duration_ms: 500.0,
+        }),
+        ..Default::default()
+    }
+}
+
+fn with_audio(
+    sequence: u32,
+    record: Option<postretro_net::wire::WireGhostAudioState>,
+) -> SnapshotMessage {
+    SnapshotMessage {
+        ghost_audio: record,
+        ..snapshot(sequence, sequence * 2, Vec::new())
+    }
+}
+
+// AC37 / AC41 (audio): the client holds the newest snapshot's ghost-audio
+// record for presentation. A newer record supersedes an untaken one, an
+// overtaken older snapshot never replaces it, an envelope without a record
+// leaves it, and demotion and unload drop it.
+#[test]
+fn ghost_audio_record_holds_the_newest_snapshots_and_resets_drop_it() {
+    let mut registry = EntityRegistry::new();
+    let mut client = ClientReplication::new();
+    client.apply_snapshot(&mut registry, &with_audio(3, Some(audio(0.7))));
+    client.apply_snapshot(&mut registry, &with_audio(4, Some(audio(0.9))));
+    client.apply_snapshot(&mut registry, &with_audio(2, Some(audio(0.1))));
+    client.apply_snapshot(&mut registry, &with_audio(5, None));
+    assert_eq!(client.take_ghost_audio(), Some(audio(0.9)));
+    assert_eq!(client.take_ghost_audio(), None, "taken once");
+
+    let empty = postretro_net::wire::WireGhostAudioState::default();
+    client.apply_snapshot(&mut registry, &with_audio(6, Some(empty)));
+    assert_eq!(
+        client.take_ghost_audio(),
+        Some(empty),
+        "an empty mask is a record: the host has set no field"
+    );
+
+    for unload in [false, true] {
+        let sequence = if unload { 20 } else { 10 };
+        client.apply_snapshot(&mut registry, &with_audio(sequence, Some(audio(0.8))));
+        if unload {
+            let _ = client.reset_for_level_unload();
+        } else {
+            client.reset_for_demotion();
+        }
+        assert_eq!(client.take_ghost_audio(), None, "unload={unload}");
+    }
 }

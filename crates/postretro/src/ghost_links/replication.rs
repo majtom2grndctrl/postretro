@@ -243,3 +243,7 @@ mod mover_tests;
 #[cfg(test)]
 #[path = "replication_look_tests.rs"]
 mod look_tests;
+
+#[cfg(test)]
+#[path = "replication_audio_tests.rs"]
+mod audio_tests;

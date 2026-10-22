@@ -269,6 +269,10 @@ export function setupLevel() {
 }
 ```
 
+To let players in the two copies see each other while the shift is off — a
+partner's ghost, a barrier opening in the other time — lay a ghost link over
+each copy, reusing the same two points: see [ghost-links.md](ghost-links.md).
+
 `progress` counts a closet monster when it is removed from the level, not the
 moment its health reaches zero. Give the monsters a death policy that removes
 them, such as an impact event whose effect is `impact.target.despawn()`, and the

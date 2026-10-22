@@ -53,8 +53,8 @@ the manifest lacks any required field.
 
 **Imports and `require`.**
 
-- TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` and `"postretro/ui"` symbols are stripped (the symbols arrive as runtime globals).
-- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")` and `require("postretro/ui")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
+- TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
+- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -140,6 +140,11 @@ shimmer and ripples, so the reflection reads as moving water. `"smooth"`
 reflects the flat surface: a still mirror. Drift and a declared wave never
 tilt the reflection in either style. How strongly a fluid reflects is its own
 `surfaceReflectivity` (see `defineFluid`).
+
+`ghosts` sets how every ghost-link ghost is made translucent: `"blend"` (the
+default) blends it over the scene, `"dither"` draws it as a fine screen-door
+pattern. An unknown value warns and uses `"blend"`, leaving `bloom` and
+`reflections` as written. See [ghost-links.md](ghost-links.md#blend-or-dither).
 
 Every field — and `render`, `bloom` and `reflections` themselves — is
 optional, and omitting them selects the engine defaults: half-resolution
@@ -1901,7 +1906,7 @@ A map names its data script with the `data_script` key on `worldspawn`, a path r
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, lights, fog volumes, emitters, spawners. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
 - **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
 
@@ -1914,6 +1919,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
+| ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
@@ -1940,6 +1946,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
 | `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
+| `"ghostLink"` | `GhostLinkHandle` (`arm`, `disarm`, `setMembers`, `setColorFilter`; see [ghost-links.md](ghost-links.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |

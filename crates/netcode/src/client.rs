@@ -457,6 +457,10 @@ pub struct ClientReplication {
     /// ([`Self::drain_ghost_link_updates`]). Dropped with every other received
     /// state at unload and demotion.
     ghost_link_updates: VecDeque<GhostLinkUpdate>,
+    /// The newest snapshot's level-scoped ghost-audio record, until presentation
+    /// takes it ([`Self::take_ghost_audio`]). Dropped with every other received
+    /// state at unload and demotion.
+    ghost_audio: Option<postretro_net::wire::WireGhostAudioState>,
     /// Per remote, the host tick whose state this frame's presented pose shows
     /// ([`Self::presented_state_tick`]). Rebuilt each sample pass.
     presented_state_ticks: HashMap<NetworkId, f64>,
@@ -799,6 +803,7 @@ impl ClientReplication {
         self.bindings.clear_presentation();
         self.mover_history.clear();
         self.ghost_link_updates.clear();
+        self.ghost_audio = None;
         self.presented_state_ticks.clear();
 
         let mut requests = Vec::with_capacity(known.len());
@@ -849,6 +854,7 @@ impl ClientReplication {
         self.bindings.clear_presentation();
         self.mover_history.clear();
         self.ghost_link_updates.clear();
+        self.ghost_audio = None;
         self.presented_state_ticks.clear();
     }
 
@@ -1051,6 +1057,7 @@ impl ClientReplication {
             self.acked_server_tick = snapshot.server_tick;
             self.bindings
                 .accept_presentation_clock(snapshot.server_script_time, local_script_time);
+            self.receive_ghost_audio(snapshot.ghost_audio);
         }
 
         let mut outcome = ApplyOutcome {
@@ -3512,6 +3519,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
             server_script_time: 0.0,
         }
     }

@@ -29,6 +29,7 @@ use postretro_net::replication::ServerReplication;
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_physics::movement::MovementInput;
 
+use crate::ghost_links::bus::GhostBus;
 use crate::ghost_links::clocks::{ClockSource, MemberLane, PoseStamps, PresentationClocks};
 use crate::ghost_links::eligibility::CandidateView;
 use crate::ghost_links::opt_ins_test_fixtures::{data_registry, descriptor};
@@ -269,6 +270,9 @@ pub(super) struct PresentedFrame {
     /// Each link's look at host-now on this peer, before membership and the
     /// flash clamp.
     pub link_looks: [GhostLook; 2],
+    /// The Ghost bus profile this peer resolves this frame, at its own script
+    /// time: what it hands its audio bus.
+    pub ghost_audio: postretro_foundation::GhostAudioValues,
 }
 
 impl PresentedFrame {
@@ -326,6 +330,8 @@ pub(super) struct Loopback {
     /// The host's registered ghost-link member steps, as level scripts call them.
     host_steps: postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
     host_ghosts: GhostLinks,
+    /// The host's Ghost bus: `setGhostAudio` applies here at each tick's start.
+    pub host_bus: GhostBus,
     collision: crate::collision::CollisionWorld,
     allocator: netcode::NetworkIdAllocator,
     replicable: netcode::ReplicableSet,
@@ -359,6 +365,10 @@ pub(super) struct Loopback {
     volumes: postretro_collision::EnvironmentVolumes,
     hit_zones: crate::scripting_systems::hit_zones::HitZoneStore,
     pub client_ghosts: GhostLinks,
+    /// The client's Ghost bus: its own manifest under the host's received fields.
+    pub client_bus: GhostBus,
+    /// Every ghost-audio record the client received, in apply order.
+    pub client_audio_received: Vec<postretro_net::wire::WireGhostAudioState>,
     /// The smoothed RTT the client's time sync reports; `None` before its
     /// first echo, when the presentation clock cannot anchor.
     pub client_rtt_micros: Option<f64>,
@@ -528,6 +538,7 @@ impl Loopback {
             client_collision,
             host,
             host_ghosts,
+            host_bus: GhostBus::default(),
             collision,
             allocator,
             replicable,
@@ -557,6 +568,8 @@ impl Loopback {
             volumes: Default::default(),
             hit_zones: Default::default(),
             client_ghosts,
+            client_bus: GhostBus::default(),
+            client_audio_received: Vec::new(),
             client_rtt_micros: Some(120_000.0),
             client_received: Vec::new(),
             host_frames: Vec::new(),
@@ -606,6 +619,14 @@ impl Loopback {
     pub(super) fn host_step(&self, link: usize, primitive: &str, args: serde_json::Value) {
         self.host_steps.get(primitive).expect("registered")(self.links[link], &args)
             .expect("a valid step");
+    }
+
+    /// Run one `setGhostAudio` on the host, as its reaction drain queues it:
+    /// parsed as the primitive parses it, applied at the next tick's start.
+    pub(super) fn host_set_ghost_audio(&mut self, args: serde_json::Value) {
+        let targets = postretro_sim::ghost_audio_command::parse_set_ghost_audio(&args)
+            .expect("a valid setGhostAudio");
+        self.host_bus.queue(targets);
     }
 
     /// Move host pawn `index` by `delta` during the next tick, as its
@@ -687,6 +708,8 @@ impl Loopback {
             .presentation_script_time
             .set(f64::from(self.tick + 1) * f64::from(TICK_SECONDS));
         self.host_ghosts.apply_pending_commands(&self.host);
+        self.host_bus
+            .apply_pending(self.host.presentation_script_time.get());
         let mut registry = self.host.registry.borrow_mut();
         netcode::host_restore_client_pawn_authoritative_poses(
             &self.seat_buffer,
@@ -739,6 +762,7 @@ impl Loopback {
             &registry,
             &self.host.slot_table.borrow(),
             &self.host.faction_sentiment.borrow(),
+            self.host_bus.script_fields(),
             &Default::default(),
             &mut self.server,
             &mut self.allocator,
@@ -840,6 +864,13 @@ impl Loopback {
         self.client_received.extend_from_slice(&updates);
         self.client_ghosts
             .intake_received(updates.into_iter(), offset);
+        // The audio stage's drain: the newest ghost-audio record, rebased.
+        let record = self.client_replication.take_ghost_audio();
+        self.client_audio_received.extend(record);
+        self.client_bus.intake_received(
+            record.map(|state| netcode::ghost_audio_from_wire(&state)),
+            offset,
+        );
     }
 
     /// The client's entity for host pawn `index`, once replicated.
@@ -914,6 +945,7 @@ impl Loopback {
             remote_clock: clocks.lane(MemberLane::Remote),
             barrier,
             link_looks: [0, 1].map(|link| self.host_ghosts.link_look(link)),
+            ghost_audio: self.host_bus.resolve(script_time),
         });
     }
 
@@ -965,6 +997,7 @@ impl Loopback {
             remote_clock: clocks.lane(MemberLane::Remote),
             barrier,
             link_looks: [0, 1].map(|link| self.client_ghosts.link_look(link)),
+            ghost_audio: self.client_bus.resolve(script_time),
         });
     }
 }

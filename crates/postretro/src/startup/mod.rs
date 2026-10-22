@@ -14,6 +14,8 @@ pub(crate) mod environment_install;
 pub(crate) mod first_launch_hold;
 #[cfg(test)]
 mod fluids_swim_surface_tests;
+#[cfg(test)]
+mod ghost_links_surface_tests;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
 #[cfg(test)]

@@ -120,6 +120,9 @@ impl PreparedCapture {
         }
         // Before the fluid install sizes a reflection target from the tier.
         apply_scene_reflection(&mut renderer, scene);
+        if let Some(mode) = scene.ghost_transparency {
+            renderer.set_ghost_transparency(mode.renderer());
+        }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);
@@ -231,6 +234,11 @@ impl PreparedCapture {
         let mut mover_collector = crate::runtime_movers::KinematicMoverRenderCollector::new();
         let mut mesh_collector = crate::scripting_systems::mesh_render::MeshRenderCollector::new();
         let mut ghost_links = crate::ghost_links::GhostLinks::install(&world, &registry);
+        // Capture loads no manifest: a scene's own style table stands in for
+        // `ghostStyles`. Without one, every link keeps the floor style.
+        if let Some(styles) = scene.ghost_styles.as_deref() {
+            ghost_links.bind_styles(&world, &super::ghosts::ghost_style_registry(styles));
+        }
         let mut ghost_collector = GhostRenderCollector::new();
         let mut mover_ghost_collector = MoverGhostRenderCollector::new();
         collect_capture_receiver_draws(
@@ -589,8 +597,9 @@ pub(super) fn capture_mesh_models(registry: &EntityRegistry) -> Result<Vec<Strin
 /// Mirror the windowed render-frame collector calls for capture's spawned
 /// receivers. A single-instant capture has no tick history or animation clock:
 /// alpha is therefore 1.0 and animation time is 0.0. Ghosts evaluate once at
-/// rest and present each link's floor style (capture loads no manifest), never
-/// through the flash clamp.
+/// rest and present each link's style from the scene's own table, or the floor
+/// style without one (capture loads no manifest), never through the flash
+/// clamp.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_capture_receiver_draws(
     registry: &EntityRegistry,

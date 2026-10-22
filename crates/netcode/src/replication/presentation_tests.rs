@@ -369,6 +369,7 @@ fn presentation_pawn_host_only_capture_keeps_player_start_and_network_slot_recor
                         state_schema_fingerprint: [0; 32],
                         state_records: Vec::new(),
                         faction_sentiment_record: None,
+                        ghost_audio: None,
                         server_script_time: f64::from(tick),
                     },
                 );
@@ -415,6 +416,7 @@ fn presentation_pawn_host_only_capture_keeps_player_start_and_network_slot_recor
                     state_schema_fingerprint: [0; 32],
                     state_records: Vec::new(),
                     faction_sentiment_record: None,
+                    ghost_audio: None,
                     server_script_time: 3.0,
                 },
             );

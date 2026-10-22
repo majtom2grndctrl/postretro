@@ -440,6 +440,17 @@ and off. Keys, room-copy layout, firing rules and scripting are in
 
 ---
 
+## Ghost Links
+
+A `ghost_link` brush over one copy of a room makes what is inside it — players,
+monsters, projectiles and tagged movers that are allowed to ghost — also draw
+as translucent ghosts at the matching spot in another copy, with their sounds
+echoing there if its style says so. It reuses `teleport_destination` points for
+the mapping. Keys, styles, ghost audio and scripting are in
+[docs/ghost-links.md](ghost-links.md).
+
+---
+
 ## SH Probe Protection Volumes
 
 Adaptive SH probe density is enabled by default. The compiler stores each

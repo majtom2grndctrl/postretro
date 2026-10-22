@@ -10,6 +10,9 @@ import {
 
 export const playerEntity = defineEntity({
   canonicalName: "player",
+  // Players can ghost: a partner in the other room copy draws as a ghost while
+  // inside an armed ghost link (maps/ghost-links.map).
+  ghost: true,
   components: {
     // The body-spanning hitbox makes the player a normal targetable presence.
     // It mirrors the 0.2 m-radius, 0.8 m-half-height movement capsule: feet at

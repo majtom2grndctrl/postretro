@@ -41,6 +41,8 @@ pub use descriptor_class::{ReplicatedDescriptorClass, is_host_replicated_descrip
 mod presentation_state;
 pub use presentation_state::validate_presentation_override;
 mod endpoint;
+mod ghost_audio_wire;
+pub use ghost_audio_wire::{ghost_audio_from_wire, ghost_audio_to_wire};
 mod ghost_link_wire;
 pub use ghost_link_wire::{ghost_color_filter_from_wire, ghost_link_state_to_wire};
 // The ordered frame stages of the replicated-state → presentation path (snapshot apply,
@@ -3491,6 +3493,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
             server_script_time: 0.0,
         }
     }
@@ -3681,6 +3684,7 @@ mod tests {
             &registry,
             &slot_table,
             &faction_sentiment,
+            &Default::default(),
             &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
@@ -3717,6 +3721,7 @@ mod tests {
             &registry,
             &slot_table,
             &faction_sentiment,
+            &Default::default(),
             &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
@@ -3770,6 +3775,7 @@ mod tests {
             &registry,
             &slot_table,
             &faction_sentiment,
+            &Default::default(),
             &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
@@ -7046,6 +7052,7 @@ mod tests {
                     state_schema_fingerprint: [0; 32],
                     state_records: Vec::new(),
                     faction_sentiment_record: None,
+                    ghost_audio: None,
                     server_script_time: 0.0,
                 },
             );
@@ -7119,6 +7126,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                ghost_audio: None,
                 server_script_time: 0.0,
             },
         );
@@ -7235,6 +7243,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                ghost_audio: None,
                 server_script_time: 0.0,
             },
         );
@@ -7247,6 +7256,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                ghost_audio: None,
                 server_script_time: 0.0,
             },
         );
@@ -7568,6 +7578,7 @@ mod tests {
                 state_schema_fingerprint: [0u8; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                ghost_audio: None,
                 server_script_time: 0.0,
             },
         );
@@ -7836,6 +7847,7 @@ mod tests {
                     state_schema_fingerprint: [0u8; 32],
                     state_records: Vec::new(),
                     faction_sentiment_record: None,
+                    ghost_audio: None,
                     server_script_time: 0.0,
                 },
             );

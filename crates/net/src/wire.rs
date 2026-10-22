@@ -32,6 +32,7 @@ use bitcode::{Decode, Encode};
 
 mod components;
 mod ghost;
+mod ghost_audio;
 mod teleport;
 pub use components::{
     COMPONENT_KIND_AGENT, COMPONENT_KIND_AMMO_RESERVE, COMPONENT_KIND_BILLBOARD_EMITTER,
@@ -52,6 +53,10 @@ pub use ghost::{
     GHOST_LINK_MEMBER_BITS, GHOST_LOOK_FIELD_BITS, GHOST_LOOK_OPACITY, GHOST_LOOK_SATURATION,
     GHOST_LOOK_TINT, GhostLinkFault, NO_WIRE_GHOST_LINK, WireGhostLinkState, WireGhostScalarRamp,
     WireGhostTintRamp,
+};
+pub use ghost_audio::{
+    GHOST_AUDIO_DRIVE, GHOST_AUDIO_FIELD_BITS, GHOST_AUDIO_HIGH_PASS, GHOST_AUDIO_LOW_PASS,
+    GHOST_AUDIO_VOLUME, GhostAudioFault, WireGhostAudioState,
 };
 pub use teleport::{
     NO_WIRE_TELEPORTER, WireTeleportState, WireTeleporterState, teleport_yaw_is_valid,
@@ -362,7 +367,9 @@ impl WeaponCuesMessage {
 /// Bumped to 21 for teleporters: player movement state gained the pawn teleport
 /// record, and entity records gained the teleporter armed-state payload.
 /// Bumped to 22 for ghost links: component payloads gained the always-on link
-/// record (armed state, member categories, script-set look ramps).
+/// record (armed state, member categories, script-set look ramps), and the
+/// envelope gained the level-scoped ghost-audio record (script-set Ghost bus
+/// ramps). Both are unreleased additions under the one bump.
 pub const SNAPSHOT_VERSION: u16 = 22;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
@@ -470,6 +477,10 @@ pub struct RawSnapshotMessage {
     /// from `state_records`: it is a dynamic set, not a static descriptor-backed
     /// slot. `None` means this snapshot carries no new faction-sentiment baseline.
     pub faction_sentiment_record: Option<crate::state_slots::RawFactionSentimentRecord>,
+    /// The host's level-scoped Ghost bus script fields. The host sends the whole
+    /// set in every snapshot; `None` means this envelope carries no record (an
+    /// envelope a harness or tracker built without one), never "no fields set".
+    pub ghost_audio: Option<WireGhostAudioState>,
     pub server_script_time: f64,
 }
 
@@ -550,6 +561,8 @@ pub struct SnapshotMessage {
     /// Raw sparse faction-sentiment overlay record. It is validated by the engine
     /// alongside the installed faction registry before the overlay is replaced.
     pub faction_sentiment_record: Option<crate::state_slots::RawFactionSentimentRecord>,
+    /// The validated level-scoped ghost-audio record, as the raw envelope carried it.
+    pub ghost_audio: Option<WireGhostAudioState>,
     pub server_script_time: f64,
 }
 
@@ -638,6 +651,10 @@ pub enum ValidationError {
     /// member or look bit, a look mask disagreeing with its ramps, or a
     /// non-finite value or duration. Binding to an installed link is engine-side.
     InvalidGhostLinkState(GhostLinkFault),
+    /// The level-scoped ghost-audio record broke the wire format: a reserved
+    /// field bit, a mask disagreeing with its ramps, or a non-finite value or
+    /// duration.
+    InvalidGhostAudioState(GhostAudioFault),
     InvalidProjectilePresentation,
     NonFinitePresentationState(u16),
     InvalidPresentationState(u16),
@@ -668,6 +685,9 @@ impl std::fmt::Display for ValidationError {
             }
             ValidationError::InvalidGhostLinkState(fault) => {
                 write!(f, "invalid ghost link state: {fault:?}")
+            }
+            ValidationError::InvalidGhostAudioState(fault) => {
+                write!(f, "invalid ghost audio state: {fault:?}")
             }
             ValidationError::VersionMismatch { expected, received } => write!(
                 f,
@@ -1006,6 +1026,11 @@ impl RawSnapshotMessage {
         if !self.server_script_time.is_finite() {
             return Err(ValidationError::NonFiniteScriptTime);
         }
+        if let Some(ghost_audio) = &self.ghost_audio {
+            ghost_audio
+                .validate()
+                .map_err(ValidationError::InvalidGhostAudioState)?;
+        }
         let records = self
             .records
             .iter()
@@ -1018,6 +1043,7 @@ impl RawSnapshotMessage {
             state_schema_fingerprint: self.state_schema_fingerprint,
             state_records: self.state_records.clone(),
             faction_sentiment_record: self.faction_sentiment_record.clone(),
+            ghost_audio: self.ghost_audio,
             server_script_time: self.server_script_time,
         })
     }
@@ -1558,6 +1584,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         }
     }
 
@@ -1664,6 +1691,7 @@ mod tests {
                     value: -0.75,
                 }],
             }),
+            ghost_audio: None,
         };
         assert!(round_trips(&raw));
         // The state fields survive a decode and reach the typed apply model.
@@ -2212,6 +2240,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         let typed = raw.validate().expect("well-formed snapshot validates");
         assert_eq!(typed.sequence, 4);
@@ -2253,6 +2282,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         let typed = raw.validate().expect("well-formed delta validates");
         assert_eq!(
@@ -2283,6 +2313,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         let typed = raw.validate().expect("tombstone-only despawn validates");
         assert_eq!(
@@ -2338,6 +2369,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         let bytes = encode(&raw);
         let truncated = &bytes[..bytes.len() - 1];
@@ -2371,6 +2403,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         // Decodes cleanly into the raw envelope...
         let bytes = encode(&raw);
@@ -2411,6 +2444,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("invalid kind still decodes");
@@ -2508,6 +2542,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         assert_eq!(
             raw.validate(),
@@ -2541,6 +2576,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         assert_eq!(raw.validate(), Err(ValidationError::UnknownRecordKind(77)));
     }
@@ -2725,6 +2761,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");
@@ -2945,6 +2982,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");
@@ -4080,6 +4118,79 @@ mod tests {
                 COMPONENT_KIND_GHOST_LINK
             ))
         );
+    }
+
+    // AC4 (audio half): the level-scoped ghost-audio record rides the
+    // snapshot envelope under the same SNAPSHOT_VERSION 22 bump, reaches the
+    // typed model intact, and a record the wire format forbids rejects the
+    // whole envelope before engine apply.
+    #[test]
+    fn ghost_audio_record_rides_the_envelope_and_a_forbidden_record_rejects_it() {
+        const { assert!(SNAPSHOT_VERSION == 22) };
+        let ramp = WireGhostScalarRamp {
+            from: 0.6,
+            to: 0.9,
+            start_time: 4.5,
+            duration_ms: 1500.0,
+        };
+        let audio = WireGhostAudioState {
+            fields: GHOST_AUDIO_VOLUME,
+            volume: Some(ramp),
+            ..WireGhostAudioState::default()
+        };
+        let mut raw = raw_snapshot(1, 2, Vec::new());
+        raw.ghost_audio = Some(audio);
+        let decoded: RawSnapshotMessage = decode(&encode(&raw)).expect("snapshot decodes");
+        assert_eq!(decoded, raw);
+        assert_eq!(decoded.validate().unwrap().ghost_audio, Some(audio));
+
+        raw.ghost_audio = None;
+        assert_eq!(raw.validate().unwrap().ghost_audio, None);
+
+        for (audio, fault) in [
+            (
+                WireGhostAudioState {
+                    fields: GHOST_AUDIO_VOLUME | 1 << 6,
+                    ..audio
+                },
+                GhostAudioFault::ReservedFieldBits,
+            ),
+            (
+                WireGhostAudioState {
+                    fields: GHOST_AUDIO_VOLUME | GHOST_AUDIO_DRIVE,
+                    ..audio
+                },
+                GhostAudioFault::FieldMismatch,
+            ),
+            (
+                WireGhostAudioState {
+                    low_pass_hz: Some(WireGhostScalarRamp {
+                        to: f32::NAN,
+                        ..ramp
+                    }),
+                    fields: GHOST_AUDIO_VOLUME | GHOST_AUDIO_LOW_PASS,
+                    ..audio
+                },
+                GhostAudioFault::NonFiniteRamp,
+            ),
+            (
+                WireGhostAudioState {
+                    volume: Some(WireGhostScalarRamp {
+                        duration_ms: -0.5,
+                        ..ramp
+                    }),
+                    ..audio
+                },
+                GhostAudioFault::InvalidDuration,
+            ),
+        ] {
+            raw.ghost_audio = Some(audio);
+            let decoded: RawSnapshotMessage = decode(&encode(&raw)).expect("snapshot decodes");
+            assert_eq!(
+                decoded.validate(),
+                Err(ValidationError::InvalidGhostAudioState(fault))
+            );
+        }
     }
 
     #[test]

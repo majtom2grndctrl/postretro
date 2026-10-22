@@ -1,9 +1,11 @@
-// Ghost bus profile on this peer: floor, then manifest `audio.ghost`, then the host's `setGhostAudio` fields.
+// Ghost bus profile on this peer: floor, then manifest `audio.ghost`, then the host's `setGhostAudio` fields, received on a client.
 // See: context/lib/audio.md §1 (Ghost bus) · context/lib/scripting.md §10.4
 
 use std::time::Duration;
 
-use postretro_foundation::{GhostAudioOverride, GhostAudioTargets, GhostAudioValues};
+use postretro_foundation::{
+    GhostAudioOverride, GhostAudioTargets, GhostAudioValues, GhostScalarRamp,
+};
 use postretro_scripting_core::runtime::ModGhostAudio;
 
 use crate::startup::audio_profile::{audio_ghost_profile, ghost_audio_values};
@@ -22,6 +24,42 @@ pub(crate) const CROSSED_PROFILE_WARNING: &str =
 /// without a step; a long hitch snaps rather than sliding across the gap.
 const MAX_PRESENT_RAMP: Duration = Duration::from_millis(100);
 
+/// Each script field's slot, in the replicated mask's bit order.
+fn slots(fields: &GhostAudioOverride) -> [Option<GhostScalarRamp>; 4] {
+    [
+        fields.volume,
+        fields.high_pass_hz,
+        fields.low_pass_hz,
+        fields.drive,
+    ]
+}
+
+fn slots_mut(fields: &mut GhostAudioOverride) -> [&mut Option<GhostScalarRamp>; 4] {
+    [
+        &mut fields.volume,
+        &mut fields.high_pass_hz,
+        &mut fields.low_pass_hz,
+        &mut fields.drive,
+    ]
+}
+
+/// `ramp` with its start moved `offset` seconds onto this client's script clock.
+fn rebase(ramp: Option<GhostScalarRamp>, offset: f64) -> Option<GhostScalarRamp> {
+    ramp.map(|ramp| GhostScalarRamp {
+        start_time: ramp.start_time + offset,
+        ..ramp
+    })
+}
+
+/// A connected client's newest received host fields, on the host's script
+/// clock as the wire carried them, and per field whether its ramp arrived
+/// before the presentation clock anchored and waits to rebase.
+#[derive(Debug, Default, Clone, Copy)]
+struct ReceivedFields {
+    host: GhostAudioOverride,
+    deferred: [bool; 4],
+}
+
 /// The Ghost bus mix this peer presents. The manifest profile is mod-wide and
 /// follows each commit; the script fields are level-scoped and the host's.
 /// Resolution is per field: the floor (`ModGhostAudio::FLOOR`, which the
@@ -30,8 +68,12 @@ const MAX_PRESENT_RAMP: Duration = Duration::from_millis(100);
 #[derive(Debug)]
 pub(crate) struct GhostBus {
     manifest: ModGhostAudio,
-    /// The fields `setGhostAudio` has set, with their ramps in host script time.
+    /// The fields `setGhostAudio` has set, with their ramps on this peer's
+    /// script clock: the host's own, or on a connected client the host's
+    /// received ramps rebased.
     fields: GhostAudioOverride,
+    /// Connected client only: the host record the script layer came from.
+    received: ReceivedFields,
     /// Calls drained since the last authoritative tick, in call order.
     pending: Vec<GhostAudioTargets>,
     /// The values last handed to the audio bus; `None` until the first
@@ -47,6 +89,7 @@ impl Default for GhostBus {
         Self {
             manifest: ModGhostAudio::FLOOR,
             fields: GhostAudioOverride::default(),
+            received: ReceivedFields::default(),
             pending: Vec::new(),
             presented: None,
             crossed: false,
@@ -62,10 +105,8 @@ impl GhostBus {
         self.presented = None;
     }
 
-    /// The fields `setGhostAudio` has set: what the level-scoped record carries.
-    // The replicated record (ghost-entities Task 13b) reads this; until it
-    // lands only tests do.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The fields `setGhostAudio` has set: what the host's level-scoped record
+    /// carries every snapshot.
     pub(crate) fn script_fields(&self) -> &GhostAudioOverride {
         &self.fields
     }
@@ -79,7 +120,70 @@ impl GhostBus {
     /// the bus returns to the manifest profile.
     pub(crate) fn drop_script_fields(&mut self) {
         self.fields = GhostAudioOverride::default();
+        self.received = ReceivedFields::default();
         self.pending.clear();
+    }
+
+    /// Connected client: take one received host record as the script layer
+    /// over this peer's own floor and manifest. A field whose host ramp
+    /// changed rebases by `offset` (this client's script clock minus the
+    /// host's) now; a repeat changes nothing, so the presented value never
+    /// moves as the RTT estimate drifts (P8). Before the presentation clock
+    /// anchors (`offset` `None`) a changed ramp waits
+    /// ([`Self::release_deferred`]) and the field keeps what it presented,
+    /// while a field the host no longer sets drops at once.
+    pub(crate) fn apply_received(&mut self, host: GhostAudioOverride, offset: Option<f64>) {
+        let previous = slots(&self.received.host);
+        let deferred = &mut self.received.deferred;
+        for (slot, (local, ramp)) in slots_mut(&mut self.fields)
+            .into_iter()
+            .zip(slots(&host))
+            .enumerate()
+        {
+            if ramp == previous[slot] {
+                continue;
+            }
+            match offset {
+                Some(offset) => {
+                    *local = rebase(ramp, offset);
+                    deferred[slot] = false;
+                }
+                None if ramp.is_none() => {
+                    *local = None;
+                    deferred[slot] = false;
+                }
+                None => deferred[slot] = true,
+            }
+        }
+        self.received.host = host;
+    }
+
+    /// Once the presentation clock anchors, rebase every deferred field and
+    /// put it in force (P10). No work while nothing waits.
+    pub(crate) fn release_deferred(&mut self, offset: Option<f64>) {
+        let Some(offset) = offset else {
+            return;
+        };
+        let host = slots(&self.received.host);
+        let deferred = &mut self.received.deferred;
+        for (slot, local) in slots_mut(&mut self.fields).into_iter().enumerate() {
+            if std::mem::take(&mut deferred[slot]) {
+                *local = rebase(host[slot], offset);
+            }
+        }
+    }
+
+    /// One frame's intake on a connected client: the newest received record,
+    /// if one landed, then any field the clock anchoring released.
+    pub(crate) fn intake_received(
+        &mut self,
+        record: Option<GhostAudioOverride>,
+        offset: Option<f64>,
+    ) {
+        if let Some(host) = record {
+            self.apply_received(host, offset);
+        }
+        self.release_deferred(offset);
     }
 
     /// Apply the queued calls at the start of an authoritative tick, in call
@@ -180,6 +284,33 @@ impl crate::App {
         {
             audio.set_ghost_bus_profile(profile, ramp);
         }
+    }
+
+    /// On a connected client, before the frame's bus presentation: take the
+    /// newest received ghost-audio record as the bus's script layer, rebased
+    /// onto this client's script clock.
+    pub(crate) fn drain_received_ghost_audio(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let local_script_time = session.scripting.script_ctx.presentation_script_time.get();
+        let Some(crate::netcode::NetEndpoint::Client {
+            replication,
+            time_sync,
+            ..
+        }) = session.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        let offset = super::replication::host_clock_offset(
+            replication,
+            local_script_time,
+            time_sync.rtt_micros(),
+        );
+        let record = replication
+            .take_ghost_audio()
+            .map(|state| crate::netcode::ghost_audio_from_wire(&state));
+        self.ghost_bus.intake_received(record, offset);
     }
 
     /// Level unload or demotion: drop the script fields and return the bus to

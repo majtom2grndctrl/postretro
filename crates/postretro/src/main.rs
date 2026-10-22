@@ -4803,6 +4803,7 @@ impl App {
                 &registry,
                 &slot_table,
                 &faction_sentiment,
+                self.ghost_bus.script_fields(),
                 &replication_identity,
                 server,
                 allocator,

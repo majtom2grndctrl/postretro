@@ -20,6 +20,7 @@ use crate::components::brain::BrainComponent;
 use crate::components::deferred_effect::DeferredEffectComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
+use crate::components::ghost_link::GhostLinkComponent;
 use crate::components::health::{HealthComponent, ImpactDispatch};
 use crate::components::hit_volume::HitVolumeComponent;
 use crate::components::immersion::ImmersionComponent;
@@ -163,6 +164,10 @@ pub enum ComponentKind {
     /// Map-authored teleporter identity and host-owned arming state; scripts
     /// address it through member handles, never raw component attachment.
     Teleporter = 24,
+    /// Map-authored ghost-link identity, host-owned arming state and shown
+    /// member categories; scripts address it through member handles, never
+    /// raw component attachment.
+    GhostLink = 25,
 }
 
 impl ComponentKind {
@@ -197,6 +202,7 @@ impl ComponentKind {
             ComponentKind::MapOrdinal,
             ComponentKind::Immersion,
             ComponentKind::Teleporter,
+            ComponentKind::GhostLink,
         ];
         VARIANTS.len()
     };
@@ -271,6 +277,7 @@ pub enum ComponentValue {
     MapOrdinal(MapOrdinal),
     Immersion(ImmersionComponent),
     Teleporter(TeleporterComponent),
+    GhostLink(GhostLinkComponent),
 }
 
 impl ComponentValue {
@@ -301,6 +308,7 @@ impl ComponentValue {
             ComponentValue::MapOrdinal(_) => ComponentKind::MapOrdinal,
             ComponentValue::Immersion(_) => ComponentKind::Immersion,
             ComponentValue::Teleporter(_) => ComponentKind::Teleporter,
+            ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
         }
     }
 }
@@ -724,6 +732,19 @@ impl Component for TeleporterComponent {
     }
     fn into_value(self) -> ComponentValue {
         ComponentValue::Teleporter(self)
+    }
+}
+
+impl Component for GhostLinkComponent {
+    const KIND: ComponentKind = ComponentKind::GhostLink;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::GhostLink(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::GhostLink(self)
     }
 }
 

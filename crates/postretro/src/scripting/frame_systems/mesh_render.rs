@@ -661,6 +661,7 @@ mod tests {
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
             teleporters: Default::default(),
+            ghost_links: Default::default(),
             environment_push_forces: Vec::new(),
             reflection_probes: None,
             fog_cell_masks: None,

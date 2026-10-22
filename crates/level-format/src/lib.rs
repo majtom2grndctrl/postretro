@@ -27,6 +27,7 @@ pub mod environment_volumes;
 pub mod fog_cell_masks;
 pub mod fog_volumes;
 pub mod geometry;
+pub mod ghost_links;
 #[cfg(feature = "gltf-resolve")]
 pub mod gltf_resolve;
 pub mod kinematic_geometry;
@@ -57,6 +58,7 @@ pub mod trigger_volumes;
 mod prm_test_fixtures;
 
 mod container;
+mod convex_leaf_codec;
 mod section_registry;
 
 pub use container::{

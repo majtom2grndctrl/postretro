@@ -2335,6 +2335,7 @@ pub(crate) mod tests {
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
             teleporters: Default::default(),
+            ghost_links: Default::default(),
             environment_push_forces: Vec::new(),
             reflection_probes: None,
             fog_cell_masks: None,
@@ -2534,9 +2535,9 @@ pub(crate) mod tests {
         armed_by_tag: BTreeMap<String, Vec<EntityId>>,
     }
 
-    struct TriggerPoolWorldInstall {
+    pub(crate) struct TriggerPoolWorldInstall {
         report: TriggerPoolInstallReport,
-        registry: postretro_entities::EntityRegistry,
+        pub(crate) registry: postretro_entities::EntityRegistry,
         upload_models: Vec<String>,
         hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore,
     }
@@ -2558,7 +2559,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn install_descriptor_world(
+    pub(crate) fn install_descriptor_world(
         world: postretro_level_loader::LevelWorld,
         policy: TriggerPoolSeedPolicy,
         active_level_tags: &[&str],

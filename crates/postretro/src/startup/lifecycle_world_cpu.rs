@@ -132,6 +132,10 @@ pub(crate) fn install_world_cpu(
         &mut script_ctx.registry.borrow_mut(),
         world,
     );
+    crate::runtime_ghost_links::spawn_loaded_ghost_links(
+        &mut script_ctx.registry.borrow_mut(),
+        world,
+    );
 
     // Kinematic movers. The caller commits the static collision world (built
     // and validated before any install mutation) ahead of this call.
@@ -177,7 +181,12 @@ pub(crate) fn install_world_cpu(
         .collect();
     let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
         .into_iter()
-        .filter(|entity| entity.classname != "trigger_teleport")
+        // Region companions carry tags and keys for installs above; they are
+        // never placements, whatever descriptor shares their classname.
+        .filter(|entity| {
+            entity.classname != "trigger_teleport"
+                && entity.classname != postretro_level_format::ghost_links::GHOST_LINK_CLASSNAME
+        })
         .partition(|e| e.classname == PLAYER_START_CLASSNAME);
     let builtin_handled = {
         let mut registry = script_ctx.registry.borrow_mut();

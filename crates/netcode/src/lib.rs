@@ -709,6 +709,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::MapOrdinal => postretro_net::wire::COMPONENT_KIND_MAP_ORDINAL,
         ComponentKind::Immersion => postretro_net::wire::COMPONENT_KIND_IMMERSION,
         ComponentKind::Teleporter => postretro_net::wire::COMPONENT_KIND_TELEPORTER,
+        ComponentKind::GhostLink => postretro_net::wire::COMPONENT_KIND_GHOST_LINK,
     }
 }
 
@@ -6881,7 +6882,8 @@ mod tests {
                 ComponentKind::HitVolume => Some(ComponentKind::MapOrdinal),
                 ComponentKind::MapOrdinal => Some(ComponentKind::Immersion),
                 ComponentKind::Immersion => Some(ComponentKind::Teleporter),
-                ComponentKind::Teleporter => None,
+                ComponentKind::Teleporter => Some(ComponentKind::GhostLink),
+                ComponentKind::GhostLink => None,
             }
         }
 

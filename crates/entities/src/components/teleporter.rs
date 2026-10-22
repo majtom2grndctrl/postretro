@@ -49,5 +49,6 @@ mod tests {
         assert_eq!(decoded.kind(), ComponentKind::Teleporter);
         assert_eq!(TeleporterComponent::from_value(&decoded), Some(stored));
         assert_eq!(ComponentKind::Teleporter as u16, 24);
+        assert_eq!(ComponentKind::GhostLink as u16, 25);
     }
 }

@@ -245,6 +245,11 @@ pub enum SectionId {
 
     /// Optional predictive teleporter regions and resolved arrival poses.
     Teleporters = 55,
+
+    /// Optional ghost-link regions, landmark → target poses, starting state and
+    /// ghosted mover tags. Presentation only: no level digest hashes it.
+    /// See `ghost_links::GhostLinksSection`.
+    GhostLinks = 56,
 }
 
 impl SectionId {
@@ -293,6 +298,7 @@ impl SectionId {
             53 => Some(Self::PushForces),
             54 => Some(Self::ReflectionProbes),
             55 => Some(Self::Teleporters),
+            56 => Some(Self::GhostLinks),
             _ => None,
         }
     }
@@ -348,6 +354,7 @@ mod tests {
             SectionId::PushForces,
             SectionId::ReflectionProbes,
             SectionId::Teleporters,
+            SectionId::GhostLinks,
         ];
 
         for section_id in registered {
@@ -355,6 +362,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(56), None);
+        assert_eq!(SectionId::from_u32(57), None);
     }
 }

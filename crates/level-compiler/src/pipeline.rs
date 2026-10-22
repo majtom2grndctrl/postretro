@@ -1969,6 +1969,7 @@ fn run_after_parsing(
         trigger_volumes: trigger_volumes_section.as_ref(),
         environment_volumes: &environment_volumes_section,
         teleporters: &map_data.teleporters,
+        ghost_links: &map_data.ghost_links,
         push_forces: push_forces_section.as_ref(),
         reflection_probes: reflection_probes_section.as_ref(),
         cell_draw_index: cell_draw_index_section.as_ref(),

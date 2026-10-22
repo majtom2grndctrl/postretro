@@ -26,6 +26,7 @@ use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
+use postretro_level_format::ghost_links::GhostLinksSection;
 use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
@@ -153,6 +154,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
     pub(super) teleporters: &'a TeleportersSection,
+    /// GhostLinks (id 56); written only when the map has a link.
+    pub(super) ghost_links: &'a GhostLinksSection,
     pub(super) push_forces: Option<&'a PushForcesSection>,
     /// ReflectionProbes (id 54), or `None` when no probe was kept.
     pub(super) reflection_probes: Option<&'a ReflectionProbesSection>,
@@ -201,6 +204,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         trigger_volumes,
         environment_volumes,
         teleporters,
+        ghost_links,
         push_forces,
         reflection_probes,
         cell_draw_index,
@@ -250,6 +254,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         trigger_volumes,
         environment_volumes,
         teleporters,
+        ghost_links,
         push_forces,
         reflection_probes,
         cell_draw_index,

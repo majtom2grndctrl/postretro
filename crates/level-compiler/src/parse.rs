@@ -31,6 +31,8 @@ mod authoring_regions;
 mod environment_volume_tests;
 #[path = "parse/environment_volumes.rs"]
 mod environment_volumes;
+#[path = "parse/ghost_links.rs"]
+mod ghost_links;
 #[path = "parse/map_source.rs"]
 mod map_source;
 #[path = "parse/reflection_capture.rs"]
@@ -868,6 +870,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut trigger_volumes = Vec::new();
     let mut environment_volumes = Vec::new();
     let mut teleporters = teleporters::TeleporterParser::default();
+    let mut ghost_links = ghost_links::GhostLinkParser::default();
     // Parallel to `environment_volumes`: each volume's authored brush ids, kept
     // until the fluid volumes' textured sides are built in one pass.
     let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
@@ -1150,6 +1153,19 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 &props,
                 scale,
                 &classname,
+                entities.len() - 1,
+                &mut map_entities,
+            )?;
+            continue;
+        }
+
+        if classname == postretro_level_format::ghost_links::GHOST_LINK_CLASSNAME {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            ghost_links.extract(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
                 entities.len() - 1,
                 &mut map_entities,
             )?;
@@ -1653,6 +1669,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Map entities (classname dispatch): {}", map_entities.len());
     log::info!("Environment volumes: {}", environment_volumes.len());
     log::info!("Reflection volumes: {}", reflection_volumes.len());
+    let ghost_links = ghost_links.finish(teleporters.destinations())?;
 
     Ok(MapData {
         brush_volumes,
@@ -1673,6 +1690,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         environment_volumes,
         reflection_volumes,
         teleporters: teleporters.finish()?,
+        ghost_links,
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,

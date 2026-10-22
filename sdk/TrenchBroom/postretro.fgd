@@ -430,6 +430,25 @@
     on_teleport(string) : "Reaction on teleport" : "" : "Authoritative reaction once per travelling player."
 ]
 
+// Ghost-link brushwork is a non-solid union over one room copy; while armed, its
+// members draw as ghosts at the landmark → target mapping in the other copy.
+@SolidClass
+    color(120 200 220)
+    = ghost_link : "Ghost link region (members seen from another room copy)"
+[
+    _tags(string) : "Space-delimited tags" : ""
+    landmark(string) : "Source landmark name" : "" : "Required teleport_destination inside this room copy. Must differ from target."
+    target(string) : "Target name" : "" : "Required teleport_destination in the other room copy, where ghosts draw."
+    enabled_on_spawn(choices) : "Armed on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    ghost_tags(string) : "Ghosted mover tags" : "" : "Space-delimited mover _tags this link ghosts. Blank ghosts no movers."
+    ghost_members(string) : "Member categories" : "" : "Space-delimited from: players entities projectiles movers. Blank shows all four."
+    ghost_style(string) : "Ghost style" : "" : "A ghost style the mod manifest declares. Blank uses the engine floor style."
+]
+
 @PointClass
     color(140 100 240)
     size(-6 -6 -6, 6 6 6)

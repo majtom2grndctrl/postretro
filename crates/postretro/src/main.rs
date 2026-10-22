@@ -83,6 +83,7 @@ pub(crate) use postretro_sim::{
 
 mod render;
 mod render_preparation;
+mod runtime_ghost_links;
 mod runtime_movers;
 mod runtime_teleporters;
 use postretro_sim::scripting;

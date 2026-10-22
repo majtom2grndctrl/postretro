@@ -1,7 +1,7 @@
 # reflection-probe-capture-exclusion — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: d6f3471c0
 
 Owner approved 2026-10-20 ("Plan approved. Start the build.").
@@ -122,3 +122,9 @@ Tasks 3 and 4 touch disjoint files (classification module vs parse/FGD/docs) and
   - Round 2, 2 lenses: one 🟡 (contact measured along the ray instead of off the hull's planes), fixed with slant-ray tests.
   - Round 3, tracer: clean. 🟢 left: a sub-centimetre grazing band at a covered kept end can read the kept brush's own edge material instead of the leak guard; no slant test for the 2 mm gap, or for a fill on the intact ceiling just outside a pillar's footprint.
 - In-engine (owner, 2026-10-20): reflection-probes-test (probes exclude 17, 10 and 8 brushes), e24 (12 probes, 0 to 18 each) and campaign-test (1 probe, 7) bake and run with no new warnings or errors.
+
+## Landing (2026-10-21)
+
+- Landed at the owner's "land the plane" with AC 48 and AC 49 still manual: the 55 m lake fixture (`content/dev/maps/reflection-lake-test.map`) is built and was viewed in-engine, but the listed judgments are not recorded and the curve anchors are not retuned; e24 probe-stage timing is not measured.
+- Owner experiments left out of this change: an SSR screen-edge fade at 6% on a smoothstep curve (saved as a patch, not applied); lowering SSR reach. Both belong to the SSR layer (`rendering_pipeline.md` §7.3a), not this brief.
+- origin/main merged at ecd91adf8 with no conflicts; post-merge fmt, workspace all-targets check, xtask (34) and level-compiler (1765) pass.

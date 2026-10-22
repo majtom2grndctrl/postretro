@@ -117,6 +117,7 @@ const UI_TREE_LUAU: &str = include_str!("../../../sdk/lib/ui/tree.luau");
 const UI_PRESENTATION_LUAU: &str = include_str!("../../../sdk/lib/ui/presentation.luau");
 const UI_STATE_LUAU: &str = include_str!("../../../sdk/lib/ui/state.luau");
 const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
+const AUDIO_LUAU: &str = include_str!("../../../sdk/lib/audio.luau");
 
 const MAX_VIRTUAL_MODULE_COPY_DEPTH: usize = 32;
 
@@ -665,6 +666,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     let ui_presentation =
         eval_lua_table(lua, UI_PRESENTATION_LUAU, "sdk/lib/ui/presentation.luau")?;
     let ui_state = eval_lua_table(lua, UI_STATE_LUAU, "sdk/lib/ui/state.luau")?;
+    let audio = eval_lua_table(lua, AUDIO_LUAU, "sdk/lib/audio.luau")?;
 
     let runtime: LuaValue = lua
         .load(RUNTIME_LUAU)
@@ -756,6 +758,9 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     copy_lua_fields(&ui, &game_state, &["getGameState"])?;
     copy_lua_fields(&ui, &ui_theme, &["defineTheme", "getDesignTokens"])?;
     let ui = copy_readonly_lua_table(lua, ui, 0)?;
+    let audio_module = lua.create_table()?;
+    copy_lua_fields(&audio_module, &audio, &["setGhostAudio"])?;
+    let audio_module = copy_readonly_lua_table(lua, audio_module, 0)?;
     // Match scripting-core's runtime resolver: relative paths are rooted at
     // the mod, checked lexically for traversal, and evaluated in this state.
     // The ordinary data-script runtime does not enable dependency tracking,
@@ -764,6 +769,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     let require = lua.create_function(move |lua, name: String| match name.as_str() {
         "postretro" => Ok(LuaValue::Table(root.clone())),
         "postretro/ui" => Ok(LuaValue::Table(ui.clone())),
+        "postretro/audio" => Ok(LuaValue::Table(audio_module.clone())),
         _ => evaluate_luau_required_module(lua, &mod_root, &name),
     })?;
     globals.set("require", require)?;
@@ -2908,7 +2914,7 @@ mod tests {
 
     // Drift guard: the build-side Luau SDK must expose exactly what the
     // runtime prelude exposes — bare data-script globals and the
-    // `postretro` / `postretro/ui` module tables — or a level script using a
+    // `postretro` / `postretro/ui` / `postretro/audio` module tables — or a level script using a
     // runtime global fails the light pass. Expectations derive from the
     // runtime source, never a second hand-written list.
     #[test]
@@ -2948,6 +2954,11 @@ mod tests {
             keys("postretro/ui"),
             runtime_prelude_list("POSTRETRO_UI_MODULE_EXPORTS"),
             "build-side require(\"postretro/ui\") drifted from the runtime"
+        );
+        assert_eq!(
+            keys("postretro/audio"),
+            runtime_prelude_list("POSTRETRO_AUDIO_MODULE_EXPORTS"),
+            "build-side require(\"postretro/audio\") drifted from the runtime"
         );
     }
 

@@ -32,7 +32,7 @@ use postretro_physics::movement::MovementInput;
 use crate::ghost_links::clocks::{ClockSource, MemberLane, PoseStamps, PresentationClocks};
 use crate::ghost_links::eligibility::CandidateView;
 use crate::ghost_links::opt_ins_test_fixtures::{data_registry, descriptor};
-use crate::ghost_links::{GhostFrame, GhostLinks, GhostMember};
+use crate::ghost_links::{GhostFrame, GhostLinks, GhostLook, GhostMember};
 use crate::netcode;
 
 /// The connected client whose view is measured.
@@ -266,6 +266,9 @@ pub(super) struct PresentedFrame {
     pub remote_clock: f64,
     /// This peer's barrier mover and where it presents it, when placed.
     pub barrier: Option<(EntityId, Vec3)>,
+    /// Each link's look at host-now on this peer, before membership and the
+    /// flash clamp.
+    pub link_looks: [GhostLook; 2],
 }
 
 impl PresentedFrame {
@@ -320,6 +323,8 @@ pub(super) struct Loopback {
     down: PacketConditioner,
     // Host.
     host: ScriptCtx,
+    /// The host's registered ghost-link member steps, as level scripts call them.
+    host_steps: postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
     host_ghosts: GhostLinks,
     collision: crate::collision::CollisionWorld,
     allocator: netcode::NetworkIdAllocator,
@@ -336,6 +341,8 @@ pub(super) struct Loopback {
     snapshot_due: bool,
     pub tick: u32,
     pub pawns: [EntityId; 2],
+    /// Motion each host pawn makes during the next tick ([`Self::displace_pawn`]).
+    pending_displacement: [Vec3; 2],
     links: Vec<EntityId>,
     teleporters: Vec<EntityId>,
     /// Each peer's barrier entity, when placed, and its mover tick state.
@@ -352,6 +359,11 @@ pub(super) struct Loopback {
     volumes: postretro_collision::EnvironmentVolumes,
     hit_zones: crate::scripting_systems::hit_zones::HitZoneStore,
     pub client_ghosts: GhostLinks,
+    /// The smoothed RTT the client's time sync reports; `None` before its
+    /// first echo, when the presentation clock cannot anchor.
+    pub client_rtt_micros: Option<f64>,
+    /// Every link record the client received, in apply order.
+    pub client_received: Vec<netcode::GhostLinkUpdate>,
     /// Every presented frame, in order.
     pub host_frames: Vec<PresentedFrame>,
     pub client_frames: Vec<PresentedFrame>,
@@ -500,10 +512,17 @@ impl Loopback {
             seed,
         };
 
+        let mut host_steps = postretro_scripting_core::sequence::SequencedPrimitiveRegistry::new();
+        postretro_sim::ghost_link_commands::register_sequenced_ghost_link_primitives(
+            &mut host_steps,
+            host.clone(),
+        );
+
         Self {
             world,
             server,
             client,
+            host_steps,
             up: PacketConditioner::new(link(0x6057)),
             down: PacketConditioner::new(link(0x6058)),
             client_collision,
@@ -524,6 +543,7 @@ impl Loopback {
             snapshot_due: false,
             tick: 0,
             pawns,
+            pending_displacement: [Vec3::ZERO; 2],
             links,
             teleporters,
             host_barrier,
@@ -537,6 +557,8 @@ impl Loopback {
             volumes: Default::default(),
             hit_zones: Default::default(),
             client_ghosts,
+            client_rtt_micros: Some(120_000.0),
+            client_received: Vec::new(),
             host_frames: Vec::new(),
             client_frames: Vec::new(),
         }
@@ -547,6 +569,66 @@ impl Loopback {
         let record = &self.world.ghost_links.links[usize::from(link)];
         let brush = &record.brushes[0];
         (Vec3::from(brush.aabb_min), Vec3::from(brush.aabb_max))
+    }
+
+    /// Name `style` on every link and bind each peer to its own style table,
+    /// as each resolves its own manifest at install.
+    pub(super) fn bind_styles(
+        &mut self,
+        style: &str,
+        host: &postretro_foundation::GhostStyleRegistry,
+        client: &postretro_foundation::GhostStyleRegistry,
+    ) {
+        for link in &mut self.world.ghost_links.links {
+            link.style = style.to_string();
+        }
+        self.host_ghosts.bind_styles(&self.world, host);
+        self.client_ghosts.bind_styles(&self.world, client);
+    }
+
+    /// A committed staged reload on one peer replaced its style table.
+    pub(super) fn reload_styles(
+        &mut self,
+        host: Option<&postretro_foundation::GhostStyleRegistry>,
+        client: Option<&postretro_foundation::GhostStyleRegistry>,
+    ) {
+        if let Some(styles) = host {
+            self.host_ghosts.rebind_styles(styles);
+        }
+        if let Some(styles) = client {
+            self.client_ghosts.rebind_styles(styles);
+        }
+    }
+
+    /// Run one ghost-link member step on link `link` through the host's
+    /// registered primitive, as a level script's reaction does. It queues and
+    /// applies at the start of the next host tick.
+    pub(super) fn host_step(&self, link: usize, primitive: &str, args: serde_json::Value) {
+        self.host_steps.get(primitive).expect("registered")(self.links[link], &args)
+            .expect("a valid step");
+    }
+
+    /// Move host pawn `index` by `delta` during the next tick, as its
+    /// movement would: every peer presents the motion toward that tick's stamp.
+    pub(super) fn displace_pawn(&mut self, index: usize, delta: Vec3) {
+        self.pending_displacement[index] += delta;
+    }
+
+    /// Run `ticks` host ticks with nothing reaching the client: a peer that
+    /// has not joined yet. Its snapshots are dropped unsent.
+    pub(super) fn run_host_only(&mut self, ticks: usize) {
+        for _ in 0..ticks {
+            self.host_tick();
+            let _ = self.server.packets_to_send(CLIENT_A);
+            self.present_host();
+        }
+    }
+
+    /// Host script time at fractional tick `alpha` past the latest completed
+    /// tick: a frame's script time, which also stamps every command the tick
+    /// at its start applied.
+    pub(super) fn host_script_time(&self, alpha: f32) -> f64 {
+        (f64::from(self.tick) + f64::from(alpha)) * f64::from(TICK_SECONDS)
     }
 
     /// Set link `index`'s armed state on the host, as a host-tick primitive
@@ -599,6 +681,12 @@ impl Loopback {
     }
 
     fn host_tick(&mut self) {
+        // The frame this tick runs in: its script time, then the queued member
+        // steps at the tick's start, before anything in the tick runs.
+        self.host
+            .presentation_script_time
+            .set(f64::from(self.tick + 1) * f64::from(TICK_SECONDS));
+        self.host_ghosts.apply_pending_commands(&self.host);
         let mut registry = self.host.registry.borrow_mut();
         netcode::host_restore_client_pawn_authoritative_poses(
             &self.seat_buffer,
@@ -607,6 +695,17 @@ impl Loopback {
             &mut registry,
         );
         registry.snapshot_transforms();
+        for (pawn, delta) in self
+            .pawns
+            .iter()
+            .zip(std::mem::take(&mut self.pending_displacement))
+        {
+            if delta != Vec3::ZERO {
+                let mut transform = *registry.get_component::<Transform>(*pawn).unwrap();
+                transform.position += delta;
+                registry.set_component(*pawn, transform).unwrap();
+            }
+        }
         // The host's fixed tick steps its movers after the transform snapshot.
         postretro_physics::kinematic_mover::run_kinematic_mover_tick(
             &mut registry,
@@ -728,12 +827,19 @@ impl Loopback {
             false,
             &mut NoBindings,
             f64::from(self.tick) * f64::from(TICK_SECONDS),
-            Some(120_000.0),
+            self.client_rtt_micros,
         );
-        // The binary's per-frame drain: every received state into link history.
-        for update in self.client_replication.drain_ghost_link_updates() {
-            self.client_ghosts.apply_received(update);
-        }
+        // The binary's per-frame drain: every received state into link history,
+        // look ramps rebased by the client's host-clock offset.
+        let offset = super::host_clock_offset(
+            &self.client_replication,
+            f64::from(self.tick) * f64::from(TICK_SECONDS),
+            self.client_rtt_micros,
+        );
+        let updates: Vec<_> = self.client_replication.drain_ghost_link_updates().collect();
+        self.client_received.extend_from_slice(&updates);
+        self.client_ghosts
+            .intake_received(updates.into_iter(), offset);
     }
 
     /// The client's entity for host pawn `index`, once replicated.
@@ -749,95 +855,117 @@ impl Loopback {
         let client_entities = [self.client_entity(0), self.client_entity(1)];
         for frame in 0..FRAMES_PER_TICK {
             let alpha = frame as f32 / FRAMES_PER_TICK as f32;
-            // Host seat: the delayed client pawn, then membership.
-            {
-                let mut registry = self.host.registry.borrow_mut();
-                netcode::host_present_client_pawns(
-                    &self.seat_buffer,
-                    &self.owners,
-                    &self.allocator,
-                    &mut registry,
-                    self.tick,
-                    alpha,
-                );
-            }
-            let registry = self.host.registry.borrow();
-            let clocks = PresentationClocks::compute(ClockSource::Host { tick: self.tick }, alpha);
-            self.host_ghosts.update(
-                &registry,
-                GhostFrame {
-                    clocks,
-                    alpha,
-                    elapsed_seconds: FRAME_SECONDS,
-                    view: CandidateView::Authoritative,
-                    stamps: PoseStamps::HostSeat {
-                        buffer: &self.seat_buffer,
-                        allocator: &self.allocator,
-                        tick: self.tick,
-                        alpha,
-                    },
-                },
-            );
-            let host_pawns = self.pawns.map(|pawn| {
-                registry
-                    .interpolated_transform(pawn, alpha)
-                    .ok()
-                    .map(|t| t.position)
-            });
-            let barrier = presented_barrier(&registry, self.host_barrier, alpha);
-            self.host_frames.push(PresentedFrame {
-                members: self.host_ghosts.members().to_vec(),
-                pawns: host_pawns,
-                entities: self.pawns.map(Some),
-                remote_clock: clocks.lane(MemberLane::Remote),
-                barrier,
-            });
-            drop(registry);
+            self.present_host_frame(alpha);
+            self.present_client_frame(alpha, client_entities);
+        }
+    }
 
-            // Client: remotes sampled at the delayed render tick, then membership.
-            let render_tick = f64::from(self.tick) - CLIENT_RENDER_DELAY_TICKS + f64::from(alpha);
-            let mut registry = self.client_ctx.registry.borrow_mut();
-            let _ = netcode::client_sample_interpolation_at(
+    /// The host seat's frames for one tick, with no client frames.
+    fn present_host(&mut self) {
+        for frame in 0..FRAMES_PER_TICK {
+            self.present_host_frame(frame as f32 / FRAMES_PER_TICK as f32);
+        }
+    }
+
+    /// Host seat: the delayed client pawn, then membership.
+    fn present_host_frame(&mut self, alpha: f32) {
+        {
+            let mut registry = self.host.registry.borrow_mut();
+            netcode::host_present_client_pawns(
+                &self.seat_buffer,
+                &self.owners,
+                &self.allocator,
                 &mut registry,
-                &mut self.client_replication,
-                render_tick,
-                0.0,
-            );
-            let clocks = PresentationClocks::compute(
-                ClockSource::Client {
-                    render_server_tick: Some(render_tick),
-                    estimated_server_tick: Some(f64::from(self.tick) + f64::from(alpha)),
-                    latest_snapshot_tick: self.client_replication.latest_server_tick(),
-                },
+                self.tick,
                 alpha,
             );
-            self.client_ghosts.update(
-                &registry,
-                GhostFrame {
-                    clocks,
-                    alpha,
-                    elapsed_seconds: FRAME_SECONDS,
-                    view: CandidateView::Client(&self.client_replication),
-                    stamps: PoseStamps::Client(&self.client_replication),
-                },
-            );
-            let client_pawns = client_entities.map(|entity| {
-                entity.and_then(|entity| {
-                    registry
-                        .interpolated_transform(entity, alpha)
-                        .ok()
-                        .map(|t| t.position)
-                })
-            });
-            let barrier = presented_barrier(&registry, self.client_barrier, alpha);
-            self.client_frames.push(PresentedFrame {
-                members: self.client_ghosts.members().to_vec(),
-                pawns: client_pawns,
-                entities: client_entities,
-                remote_clock: clocks.lane(MemberLane::Remote),
-                barrier,
-            });
         }
+        let script_time = self.host_script_time(alpha);
+        self.host.presentation_script_time.set(script_time);
+        self.host_ghosts.set_look_time(script_time);
+        let registry = self.host.registry.borrow();
+        let clocks = PresentationClocks::compute(ClockSource::Host { tick: self.tick }, alpha);
+        self.host_ghosts.update(
+            &registry,
+            GhostFrame {
+                clocks,
+                alpha,
+                elapsed_seconds: FRAME_SECONDS,
+                view: CandidateView::Authoritative,
+                stamps: PoseStamps::HostSeat {
+                    buffer: &self.seat_buffer,
+                    allocator: &self.allocator,
+                    tick: self.tick,
+                    alpha,
+                },
+            },
+        );
+        let host_pawns = self.pawns.map(|pawn| {
+            registry
+                .interpolated_transform(pawn, alpha)
+                .ok()
+                .map(|t| t.position)
+        });
+        let barrier = presented_barrier(&registry, self.host_barrier, alpha);
+        self.host_frames.push(PresentedFrame {
+            members: self.host_ghosts.members().to_vec(),
+            pawns: host_pawns,
+            entities: self.pawns.map(Some),
+            remote_clock: clocks.lane(MemberLane::Remote),
+            barrier,
+            link_looks: [0, 1].map(|link| self.host_ghosts.link_look(link)),
+        });
+    }
+
+    /// Client: remotes sampled at the delayed render tick, then membership.
+    /// Its script clock runs in step with the host's, as the harness clock does.
+    fn present_client_frame(&mut self, alpha: f32, client_entities: [Option<EntityId>; 2]) {
+        let render_tick = f64::from(self.tick) - CLIENT_RENDER_DELAY_TICKS + f64::from(alpha);
+        let script_time = self.host_script_time(alpha);
+        self.client_ctx.presentation_script_time.set(script_time);
+        self.client_ghosts.set_look_time(script_time);
+        let mut registry = self.client_ctx.registry.borrow_mut();
+        let _ = netcode::client_sample_interpolation_at(
+            &mut registry,
+            &mut self.client_replication,
+            render_tick,
+            0.0,
+        );
+        let clocks = PresentationClocks::compute(
+            ClockSource::Client {
+                render_server_tick: Some(render_tick),
+                estimated_server_tick: Some(f64::from(self.tick) + f64::from(alpha)),
+                latest_snapshot_tick: self.client_replication.latest_server_tick(),
+            },
+            alpha,
+        );
+        self.client_ghosts.update(
+            &registry,
+            GhostFrame {
+                clocks,
+                alpha,
+                elapsed_seconds: FRAME_SECONDS,
+                view: CandidateView::Client(&self.client_replication),
+                stamps: PoseStamps::Client(&self.client_replication),
+            },
+        );
+        let client_pawns = client_entities.map(|entity| {
+            entity.and_then(|entity| {
+                registry
+                    .interpolated_transform(entity, alpha)
+                    .ok()
+                    .map(|t| t.position)
+            })
+        });
+        let barrier = presented_barrier(&registry, self.client_barrier, alpha);
+        self.client_frames.push(PresentedFrame {
+            members: self.client_ghosts.members().to_vec(),
+            pawns: client_pawns,
+            entities: client_entities,
+            remote_clock: clocks.lane(MemberLane::Remote),
+            barrier,
+            link_looks: [0, 1].map(|link| self.client_ghosts.link_look(link)),
+        });
     }
 }
 

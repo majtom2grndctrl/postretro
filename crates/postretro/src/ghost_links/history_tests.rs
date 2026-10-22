@@ -3,14 +3,8 @@
 
 use super::*;
 
-const DISARMED: LinkState = LinkState {
-    armed: false,
-    members: GhostMembers::all(),
-};
-const ARMED: LinkState = LinkState {
-    armed: true,
-    members: GhostMembers::all(),
-};
+const DISARMED: LinkState = LinkState::new(false, GhostMembers::all());
+const ARMED: LinkState = LinkState::new(true, GhostMembers::all());
 
 #[test]
 fn history_reads_a_change_stamped_n_plus_1_once_presentation_passes_tick_n() {
@@ -52,10 +46,7 @@ fn history_records_only_changes_and_a_repeated_stamp_replaces_its_change() {
     history.push(6, ARMED);
     history.push(7, ARMED);
     assert_eq!(history.changes.len(), 1);
-    let narrowed = LinkState {
-        armed: true,
-        members: GhostMembers::PLAYERS,
-    };
+    let narrowed = LinkState::new(true, GhostMembers::PLAYERS);
     history.push(7, narrowed);
     history.push(7, DISARMED);
     assert_eq!(history.state_at(6.0), ARMED);
@@ -115,4 +106,28 @@ fn history_reset_to_spawn_drops_received_changes() {
     history.reset_to_spawn();
     assert_eq!(history.state_at(100.0), DISARMED);
     assert_eq!(history.latest(), DISARMED);
+}
+
+// A deferred change lands from its own stamp on: every later change keeps its
+// own fields and takes the amendment, and readers before the stamp see none.
+#[test]
+fn history_amend_from_lands_at_its_stamp_through_every_later_change() {
+    let mut history = LinkHistory::new(DISARMED);
+    history.push(10, ARMED);
+    history.push(14, DISARMED);
+    history.amend_from(12, |state| state.members = GhostMembers::PLAYERS);
+    assert_eq!(history.state_at(11.0), ARMED);
+    assert_eq!(
+        history.state_at(12.0),
+        LinkState::new(true, GhostMembers::PLAYERS)
+    );
+    assert_eq!(
+        history.state_at(20.0),
+        LinkState::new(false, GhostMembers::PLAYERS),
+        "the later disarm keeps its armed state and takes the amendment"
+    );
+    // At an existing stamp it amends that change rather than adding one.
+    history.amend_from(10, |state| state.armed = false);
+    assert_eq!(history.state_at(10.0), DISARMED);
+    assert_eq!(history.changes.len(), 3);
 }

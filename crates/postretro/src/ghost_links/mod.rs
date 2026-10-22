@@ -1,6 +1,7 @@
 // Ghost-link runtime: installed links, their state history and per-frame membership.
 // See: context/lib/entity_model.md §7d
 
+mod bus;
 #[cfg(feature = "capture")]
 mod capture;
 mod clocks;
@@ -16,6 +17,7 @@ mod opt_ins;
 #[cfg(test)]
 mod opt_ins_test_fixtures;
 mod replication;
+mod voices;
 
 use std::time::Instant;
 
@@ -26,6 +28,7 @@ use postretro_foundation::SeamlessMapping;
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS;
 
+pub(crate) use bus::GhostBus;
 use clocks::{PoseStamps, PresentationClocks};
 use eligibility::CandidateView;
 pub(crate) use eligibility::GhostCategory;
@@ -37,6 +40,7 @@ use membership::{GhostKey, MembershipTable, ramp_step};
 use movers::GhostMovers;
 use opt_ins::GhostOptIns;
 pub(crate) use opt_ins::warn_if_links_without_opt_ins;
+pub(crate) use voices::LocalSound;
 
 /// One installed link: its mapping, the entity holding its live state, and that
 /// state's history over host time.
@@ -61,6 +65,8 @@ pub(crate) struct GhostLinks {
     opt_ins: GhostOptIns,
     /// Each link's movers, by its `ghost_tags`, resolved at install.
     movers: GhostMovers,
+    /// Recent shot owners and the alpha ghost-voice admission reads at.
+    voices: voices::GhostVoices,
     /// Single player's count of completed fixed ticks: the host-tick stand-in
     /// that stamps history and clocks when no endpoint exists.
     completed_ticks: u32,
@@ -71,8 +77,10 @@ pub(crate) struct GhostLinks {
     /// The presented-frame seconds the latest update ramped by: the per-ghost
     /// flash clamp limits against the same frame time.
     last_elapsed: f32,
-    /// Each link's resolved style and current look.
+    /// Each link's resolved style and the script time looks present at.
     looks: look::LinkLooks,
+    /// A connected client's received look filters, host and rebased.
+    received: replication::ReceivedLooks,
 }
 
 /// One frame's inputs to [`GhostLinks::update`].
@@ -112,10 +120,7 @@ impl GhostLinks {
                 ),
                 entity: bound.map(|(id, _)| id),
                 history: LinkHistory::new(bound.map_or(
-                    LinkState {
-                        armed: record.enabled_on_spawn,
-                        members: record.members,
-                    },
+                    LinkState::new(record.enabled_on_spawn, record.members),
                     |(_, state)| state,
                 )),
             })
@@ -136,6 +141,7 @@ impl GhostLinks {
             log::info!("[Ghost] installed {} links", links.len());
         }
         Self {
+            received: replication::ReceivedLooks::new(links.len()),
             links,
             regions,
             movers: GhostMovers::resolve(world),
@@ -149,8 +155,8 @@ impl GhostLinks {
         self.links.get(usize::from(index)).map(|link| link.mapping)
     }
 
-    /// Link `index`'s state history. Replication pushes received states here and
-    /// resets it to spawn state on demotion.
+    /// Link `index`'s state history, for tests that drive it directly.
+    #[cfg(test)]
     pub(crate) fn history_mut(&mut self, index: u16) -> Option<&mut LinkHistory> {
         self.links
             .get_mut(usize::from(index))
@@ -177,7 +183,7 @@ impl GhostLinks {
         });
         let restarted = self.last_stamp.is_some_and(|last| stamp < last);
         self.last_stamp = Some(stamp);
-        for (index, link) in self.links.iter_mut().enumerate() {
+        for link in &mut self.links {
             let Some(component) = link.entity.and_then(|id| {
                 registry
                     .get_component::<postretro_entities::GhostLinkComponent>(id)
@@ -185,8 +191,8 @@ impl GhostLinks {
             }) else {
                 continue;
             };
-            // The host's script colour filter, as this tick left it.
-            self.looks.set_filter(index, component.filter);
+            // Armed state, categories and the host's script colour filter, as
+            // this tick left them.
             let state = LinkState::from_component(component);
             if restarted {
                 link.history.rebase(state);
@@ -225,11 +231,12 @@ impl GhostLinks {
             membership,
             opt_ins,
             movers,
+            looks,
             ..
         } = self;
+        let clocks = frame.clocks;
         membership.begin_frame();
         if !links.is_empty() {
-            let clocks = frame.clocks;
             let oldest = clocks.oldest_readable();
             for link in links.iter_mut() {
                 link.history.prune_before(oldest);
@@ -244,10 +251,9 @@ impl GhostLinks {
                         return;
                     };
                     let lane = clocks::member_lane(registry, entity, origin, category);
-                    let clock = frame
-                        .stamps
-                        .state_tick(entity, lane)
-                        .unwrap_or_else(|| clocks.lane(lane));
+                    let lane_clock = clocks.lane(lane);
+                    let clock = frame.stamps.state_tick(entity, lane).unwrap_or(lane_clock);
+                    let lag = clocks.lag(clock, lane_clock);
                     let shown = category.members_bit();
                     let point = movers.member_point(registry, entity, category, presented);
                     regions.visit_containing(point.position, |index| {
@@ -255,14 +261,27 @@ impl GhostLinks {
                             && links[index].history.state_at(clock).shows(shown)
                         {
                             let link = u16::try_from(index).expect("ghost link index fits u16");
-                            membership.mark_target(GhostKey { link, entity }, category, presented);
+                            membership.mark_target(
+                                GhostKey { link, entity },
+                                category,
+                                presented,
+                                lag,
+                            );
                         }
                     });
                 },
             );
         }
-        membership.finish_frame(ramp_step(frame.elapsed_seconds), |link| {
-            links.get(usize::from(link)).map(|link| link.mapping)
+        // Each ghost's look, read where its member presents: the link state in
+        // force at its read clock, at its look time. O(ghosts), no allocation.
+        let now = clocks.script_now();
+        membership.finish_frame(ramp_step(frame.elapsed_seconds), |index, lag| {
+            let link = links.get(usize::from(index))?;
+            let state = link.history.state_at(now - lag.state_ticks);
+            Some((
+                link.mapping,
+                looks.resolve(index, &state.filter, lag.look_seconds()),
+            ))
         });
     }
 

@@ -8,6 +8,8 @@ use super::*;
 
 const FRAME: f32 = 1.0 / 240.0;
 
+const LOOK: GhostLook = postretro_foundation::GhostStyle::FLOOR.look();
+
 fn mapping() -> SeamlessMapping {
     SeamlessMapping::new(Vec3::ZERO, 0.0, Vec3::new(100.0, 0.0, 0.0), 0.5)
 }
@@ -24,16 +26,16 @@ fn pose(x: f32) -> Transform {
 fn running_table() -> MembershipTable {
     let mut table = MembershipTable::default();
     table.begin_frame();
-    table.finish_frame(0.0, |_| Some(mapping()));
+    table.finish_frame(0.0, |_, _| Some((mapping(), LOOK)));
     table
 }
 
 fn frame(table: &mut MembershipTable, marked: &[(GhostKey, Transform)], step: f32) {
     table.begin_frame();
     for (key, source) in marked {
-        table.mark_target(*key, GhostCategory::Players, *source);
+        table.mark_target(*key, GhostCategory::Players, *source, MemberLag::default());
     }
-    table.finish_frame(step, |_| Some(mapping()));
+    table.finish_frame(step, |_, _| Some((mapping(), LOOK)));
 }
 
 fn key(entities: &mut EntityRegistry, link: u16) -> GhostKey {

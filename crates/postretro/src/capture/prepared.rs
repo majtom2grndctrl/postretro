@@ -622,7 +622,6 @@ pub(super) fn collect_capture_receiver_draws(
     ghost_collector.collect(
         registry,
         ghost_links.members(),
-        |link| ghost_links.link_look(link),
         &GhostDrawFrame {
             world,
             visible: visible_cells,
@@ -637,7 +636,6 @@ pub(super) fn collect_capture_receiver_draws(
     mover_ghost_collector.collect(
         registry,
         ghost_links.members(),
-        |link| ghost_links.link_look(link),
         &MoverGhostFrame {
             world,
             visible: visible_cells,

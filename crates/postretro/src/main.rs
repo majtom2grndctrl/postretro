@@ -263,6 +263,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 // Received link state is dropped with every other replicated
                 // state; links ramp back to local spawn state.
                 app.ghost_links.reset_received_state();
+                // So are the Ghost bus script fields: the bus returns to this
+                // peer's manifest profile.
+                app.drop_script_ghost_audio();
                 // Demotion dropped the host's tuning: until the next one
                 // installs, this client's volumes keep gravity and push but
                 // every fluid is dry.
@@ -967,6 +970,9 @@ pub(crate) struct App {
     /// The level's ghost links: link-state history and this frame's ghosts,
     /// built at level install and dropped at unload. Render collection reads it.
     ghost_links: ghost_links::GhostLinks,
+    /// The Ghost bus profile this peer presents: the manifest profile, the
+    /// host's level-scoped `setGhostAudio` fields and their queued calls.
+    ghost_bus: ghost_links::GhostBus,
     /// This frame's ghost draws and each ghost's flash-clamp channel. Cleared
     /// at unload with the links.
     ghost_render: scripting_systems::ghost_render::GhostRenderCollector,
@@ -3438,30 +3444,36 @@ impl App {
                             sound_events::listener_attached_key(&registry),
                         )
                     });
+                    let (anchor, listener_attached) = match anchor {
+                        Some((anchor, listener_attached)) => {
+                            (Some(anchor), Some(listener_attached))
+                        }
+                        None => (None, None),
+                    };
+                    // The reaction surface has no per-voice volume or looping
+                    // yet (deferred); a one-shot on the named bus is the whole
+                    // contract. Default to the SFX bus when none is named.
+                    let sound = ghost_links::LocalSound::from(postretro_audio::SoundRequest {
+                        bus: bus.unwrap_or_else(|| "sfx".to_string()),
+                        sound,
+                        looping: false,
+                        anchor,
+                    });
+                    // A sound at a ghost member echoes on the Ghost bus, judged
+                    // before it plays and started only if it is admitted.
+                    let ghost_voices = self.plan_ghost_voices_for(&sound);
                     if let Some(audio) = self
                         .session
                         .as_mut()
                         .and_then(|session| session.audio.as_mut())
                     {
-                        let anchor = match anchor {
-                            Some((anchor, listener_attached)) => {
-                                audio.set_listener_attached(listener_attached);
-                                Some(anchor)
-                            }
-                            None => None,
-                        };
-                        // The reaction surface has no per-voice volume or looping
-                        // yet (deferred); a one-shot on the named bus is the whole
-                        // contract. Default to the SFX bus when none is named.
-                        let bus = bus.unwrap_or_else(|| "sfx".to_string());
+                        if let Some(listener_attached) = listener_attached {
+                            audio.set_listener_attached(listener_attached);
+                        }
                         // `play` warns-and-drops on an unknown bus or sound, so an
                         // unregistered sound name never panics.
-                        let _ = audio.play(postretro_audio::SoundRequest {
-                            bus,
-                            sound,
-                            looping: false,
-                            anchor,
-                        });
+                        ghost_voices
+                            .play_beside(vec![sound], |request| audio.play(request).is_some());
                     }
                     // Audio init failed ⇒ silent (the game runs without sound).
                 }
@@ -3636,6 +3648,11 @@ impl App {
                             "[Scripting] setSentiment from `{from}` to `{to}` failed: {error}; skipping"
                         );
                     }
+                }
+                SystemReactionCommand::SetGhostAudio(targets) => {
+                    // Host consequence: applied at the next authoritative tick,
+                    // dropped on a connected client (the host's fields replicate).
+                    self.queue_ghost_audio(targets);
                 }
                 SystemReactionCommand::AdjustSentiment { from, to, delta } => {
                     if let Err(error) = scripting_systems::system_reactions::apply_adjust_sentiment(

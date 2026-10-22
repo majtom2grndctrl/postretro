@@ -551,6 +551,54 @@ mod tests {
         );
     }
 
+    // AC43: `setGhostAudio` resolves from `require("postretro/audio")`, a
+    // read-only engine singleton a mod file cannot shadow, and stays off the
+    // root module and the bare globals.
+    #[test]
+    fn audio_virtual_module_exposes_set_ghost_audio_only_through_its_own_id() {
+        let dir = temp_mod_root("sdk_audio_virtual_module");
+        fs::create_dir_all(dir.join("postretro")).unwrap();
+        fs::write(
+            dir.join("postretro/audio.luau"),
+            "return { setGhostAudio = function() return { shadow = true } end, shadow = true }\n",
+        )
+        .unwrap();
+
+        let tracker = LuauRequireTracker::new(&dir).unwrap();
+        let lua = build_lua_state_with_require_tracking(&[], None, Some(&dir), Some(&tracker))
+            .expect("lua state");
+
+        let (primitive, volume, same, write_ok): (String, f64, bool, bool) = lua
+            .load(
+                r#"
+                local Audio = require("postretro/audio")
+                local root = require("postretro")
+                assert(Audio.shadow == nil, "mod-root postretro/audio.luau shadowed the engine module")
+                assert(root.setGhostAudio == nil, "root module must not expose setGhostAudio")
+                assert(setGhostAudio == nil, "setGhostAudio must not be a bare global")
+                local fields = { volume = 0.9, periodMs = 1500 }
+                local body = Audio.setGhostAudio(fields)
+                fields.volume = 0.1
+                local writeOk = pcall(function()
+                  Audio.setGhostAudio = nil
+                end)
+                return body.primitive, body.args.volume, Audio == require("postretro/audio"), writeOk
+                "#,
+            )
+            .eval()
+            .expect("postretro/audio resolves");
+
+        assert_eq!(primitive, "setGhostAudio");
+        assert_eq!(volume, 0.9, "the body copies the author's fields");
+        assert!(same, "repeated audio require must return the same table");
+        assert!(!write_ok, "postretro/audio module table must reject writes");
+        assert_eq!(
+            tracker.dependency_paths(),
+            Vec::<PathBuf>::new(),
+            "virtual SDK requires must not be recorded as file dependencies"
+        );
+    }
+
     #[test]
     fn require_tracker_rejects_canonical_path_outside_mod_root() {
         let dir = temp_mod_root("require_tracker_root");

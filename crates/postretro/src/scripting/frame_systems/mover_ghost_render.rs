@@ -10,7 +10,7 @@ use postretro_render_cpu::ghost_instance::KinematicGhostInstance;
 use postretro_visibility::VisibleCells;
 
 use super::ghost_render::{GhostDrawKey, presented_look};
-use crate::ghost_links::{GhostCategory, GhostLook, GhostMember};
+use crate::ghost_links::{GhostCategory, GhostMember};
 use crate::runtime_movers::{KinematicMoverRenderCollector, transform_matrix};
 
 /// One frame's read-only inputs beside the members and their looks.
@@ -57,7 +57,6 @@ impl MoverGhostRenderCollector {
         &mut self,
         registry: &EntityRegistry,
         members: &[GhostMember],
-        look: impl Fn(u16) -> GhostLook,
         frame: &MoverGhostFrame<'_>,
     ) {
         self.instances.clear();
@@ -69,7 +68,7 @@ impl MoverGhostRenderCollector {
             let Ok(mover) = registry.get_component::<KinematicMoverComponent>(member.entity) else {
                 continue;
             };
-            let ghost_look = presented_look(&mut self.clamp, member, look(member.link));
+            let ghost_look = presented_look(&mut self.clamp, member);
             if ghost_look.opacity <= 0.0 {
                 continue;
             }

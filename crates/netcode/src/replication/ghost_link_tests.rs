@@ -88,3 +88,61 @@ fn ghost_links_register_at_install_and_replicate_their_current_state_always() {
     assert!(!set.contains(first));
     assert_eq!(tracked, HashSet::from([second]));
 }
+
+// A script's `setColorFilter` rides the next record with the ramp the host
+// component holds: only the fields it named, the unclamped from-value and the
+// host script start time. Fields no script set never reach the wire.
+#[test]
+fn ghost_link_record_carries_script_set_look_ramps_as_the_host_holds_them() {
+    use postretro_foundation::{GhostColorFilterTargets, GhostLook};
+    use postretro_net::wire::{GHOST_LOOK_OPACITY, GHOST_LOOK_SATURATION};
+
+    let mut registry = EntityRegistry::new();
+    let link = spawn_link(&mut registry, 0, true, 0b1111);
+    let mut allocator = NetworkIdAllocator::new();
+    let mut set = ReplicableSet::new();
+    host_register_loaded_ghost_links(&registry, &mut allocator, &mut set, &mut HashSet::new());
+
+    let mut component = *registry.get_component::<GhostLinkComponent>(link).unwrap();
+    // Mid-ramp, the unclamped value at the applying tick is the from-value.
+    let mid_ramp = GhostLook {
+        tint: [1.0, 1.0, 1.0],
+        opacity: 0.73,
+        saturation: 0.1,
+    };
+    component.filter.set(
+        mid_ramp,
+        &GhostColorFilterTargets {
+            tint: None,
+            opacity: Some(0.2),
+            saturation: Some(0.9),
+            period_ms: 400.0,
+        },
+        8.5,
+    );
+    registry.set_component(link, component).unwrap();
+
+    let [state] = link_payloads(&registry, &set, &mut allocator)[..] else {
+        panic!("one link, one record");
+    };
+    assert_eq!(state.validate(), Ok(()));
+    assert_eq!(
+        state.look_fields,
+        GHOST_LOOK_OPACITY | GHOST_LOOK_SATURATION
+    );
+    assert!(state.tint.is_none(), "tint stays local: no script set it");
+    let opacity = state.opacity.unwrap();
+    assert_eq!(
+        (
+            opacity.from,
+            opacity.to,
+            opacity.start_time,
+            opacity.duration_ms
+        ),
+        (0.73, 0.2, 8.5, 400.0)
+    );
+    assert_eq!(
+        crate::ghost_color_filter_from_wire(&state),
+        component.filter
+    );
+}

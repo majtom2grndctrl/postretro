@@ -41,6 +41,8 @@ pub use descriptor_class::{ReplicatedDescriptorClass, is_host_replicated_descrip
 mod presentation_state;
 pub use presentation_state::validate_presentation_override;
 mod endpoint;
+mod ghost_link_wire;
+pub use ghost_link_wire::{ghost_color_filter_from_wire, ghost_link_state_to_wire};
 // The ordered frame stages of the replicated-state → presentation path (snapshot apply,
 // then state-crossing detection). Owns the order via a witness value so `App` and the
 // headless co-op harness cannot each invent their own sequencing.

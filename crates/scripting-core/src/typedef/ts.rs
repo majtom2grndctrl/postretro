@@ -265,3 +265,11 @@ const TS_UI_SDK_MODULE_BLOCK: &str = include_str!("templates/ui_sdk_module.d.ts"
 pub fn ts_ui_sdk_module_block() -> &'static str {
     TS_UI_SDK_MODULE_BLOCK
 }
+
+const TS_AUDIO_SDK_MODULE_BLOCK: &str = include_str!("templates/audio_sdk_module.d.ts");
+
+/// `declare module "postretro/audio"`: audio subsystem builders, appended
+/// after the UI module. Source of truth: `sdk/lib/audio.ts`.
+pub fn ts_audio_sdk_module_block() -> &'static str {
+    TS_AUDIO_SDK_MODULE_BLOCK
+}

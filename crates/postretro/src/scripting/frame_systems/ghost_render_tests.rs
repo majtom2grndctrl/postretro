@@ -14,7 +14,7 @@ use postretro_render_cpu::flash_limiter::{
 use postretro_visibility::VisibleCells;
 
 use super::*;
-use crate::ghost_links::GhostCategory;
+use crate::ghost_links::{GhostCategory, GhostLook};
 
 /// Cell 0 holds the real copy (x >= 0), cell 1 the other copy (x < 0).
 const REAL_CELL: usize = 0;
@@ -95,6 +95,21 @@ fn source_pose() -> Transform {
     }
 }
 
+/// `members` each carrying the look `look` gives it, as membership hands them
+/// to the draw.
+fn with_looks(
+    members: &[GhostMember],
+    look: impl Fn(&GhostMember) -> GhostLook,
+) -> Vec<GhostMember> {
+    members
+        .iter()
+        .map(|member| GhostMember {
+            look: look(member),
+            ..*member
+        })
+        .collect()
+}
+
 fn member(entity: EntityId, membership: f32, frozen: bool) -> GhostMember {
     let mapping = mapping();
     let source = source_pose();
@@ -111,6 +126,7 @@ fn member(entity: EntityId, membership: f32, frozen: bool) -> GhostMember {
             rotation: mapping.rotation() * source.rotation,
             scale: source.scale,
         },
+        look: STYLE,
     }
 }
 
@@ -134,14 +150,14 @@ impl Fixture {
         registry: &EntityRegistry,
         members: &[GhostMember],
         visible: &VisibleCells,
-        look: impl Fn(u16) -> GhostLook,
+        look: impl Fn(&GhostMember) -> GhostLook,
         limiter: Option<LimiterFrameUniform>,
     ) {
         let socket_poses = SocketPoseResolver::empty();
+        let members = with_looks(members, look);
         self.collector.collect(
             registry,
-            members,
-            look,
+            &members,
             &GhostDrawFrame {
                 world: &self.world,
                 visible,

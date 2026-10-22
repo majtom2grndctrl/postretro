@@ -16,6 +16,7 @@ use postretro_render_cpu::ghost_instance::GHOST_LUMA;
 use postretro_visibility::VisibleCells;
 
 use super::*;
+use crate::ghost_links::GhostLook;
 
 /// Cell 0 holds the real copy (x >= 0), cell 1 the other copy (x < 0).
 const REAL_CELL: u32 = 0;
@@ -129,6 +130,7 @@ fn member(entity: EntityId, link: u16, source: Transform, frozen: bool) -> Ghost
             rotation: mapping.rotation() * source.rotation,
             scale: source.scale,
         },
+        look: STYLE,
     }
 }
 
@@ -157,14 +159,20 @@ impl Fixture {
         registry: &EntityRegistry,
         members: &[GhostMember],
         visible: &VisibleCells,
-        look: impl Fn(u16) -> GhostLook,
+        look: impl Fn(&GhostMember) -> GhostLook,
         limiter: Option<LimiterFrameUniform>,
     ) {
         self.movers.collect(registry, &self.world, visible, 1.0);
+        let members: Vec<GhostMember> = members
+            .iter()
+            .map(|member| GhostMember {
+                look: look(member),
+                ..*member
+            })
+            .collect();
         self.ghosts.collect(
             registry,
-            members,
-            look,
+            &members,
             &MoverGhostFrame {
                 world: &self.world,
                 visible,

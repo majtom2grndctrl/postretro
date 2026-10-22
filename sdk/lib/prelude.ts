@@ -144,3 +144,8 @@ export {
   backspaceText,
   clearText,
 } from "./ui/reactions";
+
+// `postretro/audio`: installed as globals for stripped imports, never part of
+// the root `postretro` module surface.
+export type { GhostAudioFields } from "./audio";
+export { setGhostAudio } from "./audio";

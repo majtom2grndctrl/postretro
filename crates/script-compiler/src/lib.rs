@@ -460,8 +460,12 @@ fn validate_bare_sdk_imports(module: &swc_ecma_ast::Module, path: &Path) -> Resu
     Ok(())
 }
 
+/// Every engine SDK module id. Imports from these resolve to prelude globals
+/// and are stripped; the generated declarations type each one.
+const BARE_SDK_SPECIFIERS: [&str; 3] = ["postretro", "postretro/ui", "postretro/audio"];
+
 fn is_bare_sdk_specifier(specifier: &str) -> bool {
-    specifier == "postretro" || specifier == "postretro/ui"
+    BARE_SDK_SPECIFIERS.contains(&specifier)
 }
 
 /// No-op `Hook`. The bundler invokes this only for `import.meta` properties,
@@ -1017,6 +1021,39 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // AC43: `setGhostAudio` resolves from `postretro/audio`; the import is an
+    // SDK module id like `postretro/ui`, stripped to the prelude global.
+    #[test]
+    fn bundle_drops_postretro_audio_bare_specifier_imports() {
+        let dir = unique_tempdir("bare-audio");
+        let entry = dir.join("entry.ts");
+
+        fs::write(
+            &entry,
+            r#"
+            import { defineReaction } from "postretro";
+            import { setGhostAudio } from "postretro/audio";
+            const swell = defineReaction("echo.swell", setGhostAudio({ volume: 0.9, periodMs: 1500 }));
+            void swell;
+            "#,
+        )
+        .unwrap();
+
+        let canonical_entry = fs::canonicalize(&entry).unwrap();
+        let js = bundle_entry(&canonical_entry).expect("bundle should succeed");
+
+        assert!(
+            !js.contains("import ") && !js.contains("\"postretro/audio\""),
+            "bundled output still references the bare `postretro/audio` specifier: {js}"
+        );
+        assert!(
+            js.contains("setGhostAudio"),
+            "bundled output dropped the audio call site: {js}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn bundle_drops_postretro_ui_bare_specifier_imports() {
         let dir = unique_tempdir("bare-ui");
@@ -1109,7 +1146,7 @@ mod tests {
 
     #[test]
     fn bundle_rejects_unsupported_bare_sdk_import_forms() {
-        for specifier in ["postretro", "postretro/ui"] {
+        for specifier in BARE_SDK_SPECIFIERS {
             for (label, source, expected) in [
                 (
                     "default",
@@ -1158,7 +1195,7 @@ mod tests {
 
     #[test]
     fn bundle_rejects_bare_sdk_re_exports_before_they_are_stripped() {
-        for specifier in ["postretro", "postretro/ui"] {
+        for specifier in BARE_SDK_SPECIFIERS {
             for (label, source) in [
                 (
                     "named",

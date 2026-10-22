@@ -391,6 +391,55 @@ fn typescript_ui_module_declaration_is_generated() {
     );
 }
 
+// AC43: `setGhostAudio` is declared by `postretro/audio` in both outputs, with
+// a literal Luau `require` overload, and never on the root module.
+#[test]
+fn set_ghost_audio_is_declared_on_postretro_audio_and_not_the_root_module() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_scripting_core::luau_prelude::POSTRETRO_AUDIO_MODULE_EXPORTS;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    let ts = generate_typescript(&r);
+    let luau = generate_luau(&r);
+
+    let audio_module = ts_module_block(&ts, "postretro/audio");
+    for export in POSTRETRO_AUDIO_MODULE_EXPORTS {
+        assert!(
+            audio_module.contains(&format!("export function {export}(")),
+            "TypeScript `postretro/audio` missing `{export}`:\n{audio_module}"
+        );
+        assert!(
+            luau.contains(&format!("  {export}: ")),
+            "PostretroAudioModule missing `{export}`"
+        );
+    }
+    assert!(audio_module.contains(
+        "export function setGhostAudio(fields: GhostAudioFields): PrimitiveReactionDescriptor;"
+    ));
+    for module in ["postretro", "postretro/ui"] {
+        assert!(
+            !ts_module_block(&ts, module).contains("setGhostAudio"),
+            "`{module}` must not declare setGhostAudio"
+        );
+    }
+    assert!(
+        luau.contains("& ((path: \"postretro/audio\") -> PostretroAudioModule)"),
+        "Luau require overload for postretro/audio missing"
+    );
+    assert!(
+        !luau.contains("declare function setGhostAudio"),
+        "setGhostAudio is never a bare Luau global"
+    );
+    let root_module = luau
+        .split_once("export type PostretroModule = {\n")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .map(|(block, _)| block)
+        .expect("PostretroModule declaration");
+    assert!(!root_module.contains("setGhostAudio"));
+}
+
 /// The runtime-value vocabulary (scripting.md §11) is a closed union: every
 /// opcode tag must be typed in both `.d.ts` and `.d.luau` so an author
 /// cannot name an op outside it. Asserts each tag appears in both outputs

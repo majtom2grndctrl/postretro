@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use postretro_foundation::GhostAudioValues;
 use postretro_scripting_core::runtime::{
     ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModGhostAudio,
 };
@@ -24,10 +25,21 @@ pub(crate) fn audio_attenuation(attenuation: ModAttenuation) -> postretro_audio:
     }
 }
 
-/// Translate the scripting-core ghost bus profile into the audio crate's own,
-/// at the same chokepoint as attenuation. The floor values live only in
-/// scripting-core (`ModGhostAudio::FLOOR`); the audio crate carries none.
-pub(crate) fn audio_ghost_profile(ghost: ModGhostAudio) -> postretro_audio::GhostBusProfile {
+/// The scripting-core manifest ghost profile as the per-field values the bus
+/// resolution composes. The floor values live only in scripting-core
+/// (`ModGhostAudio::FLOOR`); neither foundation nor the audio crate carries any.
+pub(crate) fn ghost_audio_values(ghost: ModGhostAudio) -> GhostAudioValues {
+    GhostAudioValues {
+        volume: ghost.volume,
+        high_pass_hz: ghost.high_pass_hz,
+        low_pass_hz: ghost.low_pass_hz,
+        drive: ghost.drive,
+    }
+}
+
+/// Translate a resolved ghost bus profile into the audio crate's own, at the
+/// same chokepoint as attenuation.
+pub(crate) fn audio_ghost_profile(ghost: GhostAudioValues) -> postretro_audio::GhostBusProfile {
     postretro_audio::GhostBusProfile {
         volume: ghost.volume,
         high_pass_hz: ghost.high_pass_hz,
@@ -39,9 +51,11 @@ pub(crate) fn audio_ghost_profile(ghost: ModGhostAudio) -> postretro_audio::Ghos
 impl App {
     /// Commit a mod's audio profile, at mod init and on each committed staged
     /// reload. The attenuation applies to positional sounds started from now
-    /// on; sounds already playing keep theirs. The ghost bus profile moves the
-    /// shared Ghost bus at once (the bus's own de-click ramp). A silent run (no
-    /// audio device) has nothing to configure.
+    /// on; sounds already playing keep theirs. The manifest ghost profile
+    /// re-resolves the shared Ghost bus at once (the bus's own de-click ramp):
+    /// fields a script set keep their values and ramps (P17), and cutoffs the
+    /// new profile crosses against them present the floor's (P36). A silent run
+    /// (no audio device) still resolves, so its warnings match.
     pub(crate) fn apply_mod_audio_profile(&mut self, profile: ModAudioProfile) {
         if let Some(audio) = self
             .session
@@ -49,8 +63,9 @@ impl App {
             .and_then(|session| session.audio.as_mut())
         {
             audio.set_attenuation(audio_attenuation(profile.attenuation));
-            audio.set_ghost_bus_profile(audio_ghost_profile(profile.ghost), Duration::ZERO);
         }
+        self.ghost_bus.set_manifest(profile.ghost);
+        self.present_ghost_bus(Duration::ZERO);
     }
 }
 
@@ -71,7 +86,7 @@ mod tests {
     // bus tests prove drive 0 leaves the signal untouched.
     #[test]
     fn floor_ghost_profile_reaches_the_bus_valid_and_undistorted() {
-        let floor = audio_ghost_profile(ModGhostAudio::FLOOR);
+        let floor = audio_ghost_profile(ghost_audio_values(ModGhostAudio::FLOOR));
         assert!(
             floor.is_valid(),
             "{floor:?} must be a profile the bus accepts"
@@ -102,7 +117,7 @@ mod tests {
             drive: 0.3,
         };
         assert_eq!(
-            audio_ghost_profile(authored),
+            audio_ghost_profile(ghost_audio_values(authored)),
             postretro_audio::GhostBusProfile {
                 volume: 0.7,
                 high_pass_hz: 250.0,

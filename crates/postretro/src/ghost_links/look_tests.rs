@@ -107,13 +107,16 @@ fn install_presents_declared_style_floor_for_none_and_warns_once_per_undeclared_
         GhostStyle::FLOOR,
         "no style name: the floor"
     );
-    assert_eq!(looks.look(0), look_of(GhostStyle::FLOOR));
+    assert_eq!(
+        looks.resolve(0, &Default::default(), 0.0),
+        look_of(GhostStyle::FLOOR)
+    );
     assert_eq!(
         looks.style(1),
         echo,
         "a declared style presents its values and flags"
     );
-    assert_eq!(looks.look(1), look_of(echo));
+    assert_eq!(looks.resolve(1, &Default::default(), 0.0), look_of(echo));
     assert_eq!(looks.style(2), GhostStyle::FLOOR, "undeclared: the floor");
     assert_eq!(looks.style(3), GhostStyle::FLOOR);
     logs.assert_logged_once(

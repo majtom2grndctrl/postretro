@@ -74,17 +74,8 @@ fn client_clocks_read_the_sampled_render_tick_and_the_estimated_host_tick() {
 #[test]
 fn arm_during_tick_n_presents_from_the_first_frame_blending_past_tick_n() {
     // Armed while the host ran the tick labelled 100: stamped 101.
-    let mut history = LinkHistory::new(LinkState {
-        armed: false,
-        members: GhostMembers::all(),
-    });
-    history.push(
-        101,
-        LinkState {
-            armed: true,
-            members: GhostMembers::all(),
-        },
-    );
+    let mut history = LinkHistory::new(LinkState::new(false, GhostMembers::all()));
+    history.push(101, LinkState::new(true, GhostMembers::all()));
     let armed_at = |alpha| {
         let clocks = PresentationClocks::compute(ClockSource::Host { tick: 101 }, alpha);
         history.state_at(clocks.lane(MemberLane::Simulated)).armed
@@ -147,10 +138,7 @@ fn member_lane_delays_slot_pawns_on_the_host_and_every_remote_on_a_client() {
 // the motion on that frame and not before it.
 #[test]
 fn mover_lane_reads_a_link_arm_on_the_frame_its_snapshot_applies() {
-    let spawn = LinkState {
-        armed: false,
-        members: GhostMembers::all(),
-    };
+    let spawn = LinkState::new(false, GhostMembers::all());
     let mut history = LinkHistory::new(spawn);
     let snapshot_stamp = 120;
     let frame = |latest| {

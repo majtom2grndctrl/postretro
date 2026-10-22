@@ -11,8 +11,8 @@ use self::luau::{
     LUAU_HEADER, emit_luau_game_state_refs, emit_luau_type, luau_public_sdk_lib_block,
 };
 use self::ts::{
-    TS_HEADER, emit_ts_game_state_refs, emit_ts_type, ts_public_root_sdk_lib_block,
-    ts_ui_sdk_module_block,
+    TS_HEADER, emit_ts_game_state_refs, emit_ts_type, ts_audio_sdk_module_block,
+    ts_public_root_sdk_lib_block, ts_ui_sdk_module_block,
 };
 use crate::primitives_registry::{ParamInfo, PrimitiveRegistry};
 
@@ -93,6 +93,7 @@ pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
     out.push_str(&sdk_block);
     out.push_str("}\n");
     out.push_str(ts_ui_sdk_module_block());
+    out.push_str(ts_audio_sdk_module_block());
     out
 }
 

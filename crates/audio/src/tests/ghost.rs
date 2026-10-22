@@ -419,3 +419,41 @@ fn ghost_voices_release_their_own_slot_on_finish_stop_unload_and_failed_start() 
         "the unanchored SFX sound outlives the unload",
     );
 }
+
+// AC33 (P23), the bus half: a ghost voice sits at its mapped point and plays
+// out there after its member is gone (the resolver no longer answers for any
+// entity), while the member's own entity-anchored voice freezes where it last
+// was. The ghost voice holds its slot until it finishes.
+#[test]
+fn a_ghost_point_voice_plays_out_at_its_point_after_its_member_is_gone() {
+    let listener = forward_listener();
+    let mut audio = mock_audio();
+    let member = audio
+        .play(SoundRequest {
+            anchor: Some(SoundAnchor::Entity {
+                key: 9,
+                point: [1.0, 0.0, -3.0],
+            }),
+            ..sfx_request()
+        })
+        .expect("real voice admitted");
+    let ghost = audio
+        .play(ghost_at([101.0, 0.0, -3.0]))
+        .expect("ghost voice admitted");
+    audio.update(listener, 1.0 / 60.0, |key| {
+        (key == 9).then_some([1.0, 0.0, -3.0])
+    });
+    let started = audio.spatial.probe(ghost).expect("ghost voice live");
+    assert!(!started.tracking, "a ghost voice follows no entity");
+
+    for _ in 0..3 {
+        audio.update(listener, 1.0 / 60.0, |_| None);
+    }
+    let ghost_now = audio.spatial.probe(ghost).expect("still playing out");
+    assert_eq!(ghost_now.position, [101.0, 0.0, -3.0]);
+    assert_eq!(audio.active_voices(BusId::Ghost), 1);
+    assert!(
+        audio.spatial.probe(member).is_some(),
+        "the real voice is untouched"
+    );
+}

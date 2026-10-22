@@ -17,7 +17,7 @@ pub(crate) fn entity_key(id: EntityId) -> u64 {
     u64::from(id.to_raw())
 }
 
-fn entity_from_key(key: u64) -> Option<EntityId> {
+pub(crate) fn entity_from_key(key: u64) -> Option<EntityId> {
     u32::try_from(key).ok().map(EntityId::from_raw)
 }
 

@@ -14,7 +14,7 @@ use postretro_visibility::VisibleCells;
 
 use super::ghost_render::{GhostDrawKey, presented_look};
 use super::particle_render::{ParticleRenderCollector, projectile_sprite_body};
-use crate::ghost_links::{GhostLook, GhostMember};
+use crate::ghost_links::GhostMember;
 
 /// One frame's read-only inputs beside the members and their looks.
 pub(crate) struct BillboardGhostFrame<'a> {
@@ -73,7 +73,6 @@ impl BillboardGhostRenderCollector {
         &mut self,
         registry: &EntityRegistry,
         members: &[GhostMember],
-        look: impl Fn(u16) -> GhostLook,
         particles: &mut ParticleRenderCollector,
         frame: &BillboardGhostFrame<'_>,
     ) {
@@ -91,7 +90,7 @@ impl BillboardGhostRenderCollector {
             };
             sprite.seen = true;
             let sprite = *sprite;
-            let mut ghost_look = presented_look(&mut self.clamp, member, look(member.link));
+            let mut ghost_look = presented_look(&mut self.clamp, member);
             ghost_look.opacity *= sprite.opacity;
             let position = member.mapped.position;
             if ghost_look.opacity <= 0.0 || !mesh_visible(frame.world, frame.visible, position) {

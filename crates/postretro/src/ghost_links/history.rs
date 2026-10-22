@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 
 use postretro_entities::GhostLinkComponent;
+use postretro_foundation::GhostColorFilter;
 use postretro_level_format::ghost_links::GhostMembers;
 
 /// Changes kept past the base. A link changes at most once per host tick and the
@@ -12,18 +13,35 @@ use postretro_level_format::ghost_links::GhostMembers;
 const MAX_CHANGES: usize = 64;
 
 /// What a link shows at one host time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LinkState {
     pub armed: bool,
     pub members: GhostMembers,
+    /// The look fields a script has set, with their ramps on this machine's
+    /// script clock: the host's own, or a received filter rebased on a client.
+    pub filter: GhostColorFilter,
 }
 
 impl LinkState {
+    /// Armed state and categories with no script colour filter: a link's
+    /// local spawn state.
+    pub(crate) const fn new(armed: bool, members: GhostMembers) -> Self {
+        Self {
+            armed,
+            members,
+            filter: GhostColorFilter {
+                tint: None,
+                opacity: None,
+                saturation: None,
+            },
+        }
+    }
+
     pub(crate) fn from_component(link: &GhostLinkComponent) -> Self {
         Self {
-            armed: link.armed,
             // The column holds the validated PRL bits; reserved bits never reach it.
-            members: GhostMembers::from_bits_truncate(link.members),
+            filter: link.filter,
+            ..Self::new(link.armed, GhostMembers::from_bits_truncate(link.members))
         }
     }
 
@@ -33,7 +51,8 @@ impl LinkState {
     }
 }
 
-/// A link's state over host time. Each change is stamped with the host tick
+/// A link's state over host time, look included, so a `setColorFilter` takes
+/// effect at its stamp as an arm does. Each change is stamped with the host tick
 /// whose end it describes, in snapshot-stamp units: a change applied during the
 /// fixed tick labelled `N` is stamped `N + 1`, the post-increment tick a snapshot
 /// of that state carries. A member presented at fractional tick `f` reads the
@@ -97,6 +116,32 @@ impl LinkHistory {
                     self.base = oldest;
                 }
             }
+        }
+    }
+
+    /// Apply `amend` to the state in force from host stamp `stamp` on: every
+    /// retained change at or after it, plus a new change at `stamp` when none
+    /// starts there. Replication lands a look ramp deferred before the
+    /// presentation clock anchored at the stamp of the record that carried it.
+    pub(crate) fn amend_from(&mut self, stamp: u32, amend: impl Fn(&mut LinkState)) {
+        let at = self.changes.partition_point(|(change, _)| *change < stamp);
+        if self
+            .changes
+            .get(at)
+            .is_none_or(|(change, _)| *change != stamp)
+        {
+            let covering = at
+                .checked_sub(1)
+                .map_or(self.base, |before| self.changes[before].1);
+            self.changes.insert(at, (stamp, covering));
+        }
+        for (_, state) in self.changes.range_mut(at..) {
+            amend(state);
+        }
+        if self.changes.len() > MAX_CHANGES
+            && let Some((_, oldest)) = self.changes.pop_front()
+        {
+            self.base = oldest;
         }
     }
 

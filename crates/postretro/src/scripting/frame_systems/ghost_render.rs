@@ -26,23 +26,24 @@ use super::mesh_anim::MeshClipTables;
 use super::mesh_render::{
     presentation_body_rotation, resolve_sample, should_resample, state_fingerprint,
 };
-use crate::ghost_links::{GhostLook, GhostMember};
+use crate::ghost_links::GhostMember;
 
 /// One ghost: a member entity seen through one link. Generation-checked, so a
 /// re-tenanted slot is a new ghost, and a mover in two links is two ghosts.
 pub(crate) type GhostDrawKey = (u16, EntityId);
 
-/// The look `member` presents this frame through `clamp`: its link's look at
-/// the member's presented opacity (link opacity times membership), limited by
-/// the ghost's opacity and tint-luminance channels. The one place a ghost draw
+/// The look `member` presents this frame through `clamp`: its link look as the
+/// member reads it ([`GhostMember::look`]) at the member's presented opacity
+/// (link opacity times membership), limited by the ghost's opacity and
+/// tint-luminance channels. The one place a ghost draw
 /// collector turns a link look into a drawn look; the skinned, mover and
 /// billboard ghost collectors each call it for every presented ghost, culled
 /// or not, between their clamp's `begin_frame` and `end_frame`.
 pub(crate) fn presented_look(
     clamp: &mut GhostLookClamp<GhostDrawKey>,
     member: &GhostMember,
-    link: GhostLook,
 ) -> GhostInstanceLook {
+    let link = member.look;
     clamp.present(
         (member.link, member.entity),
         GhostInstanceLook {
@@ -125,14 +126,12 @@ impl GhostRenderCollector {
     }
 
     /// Collect this frame's ghost instances. `members` is the frame's ghost
-    /// set (`GhostLinks::members`) and `look` each link's current look
-    /// (`GhostLinks::link_look`). No allocation once every ghost's group and
-    /// model handle exist.
+    /// set (`GhostLinks::members`), each carrying its own look. No allocation
+    /// once every ghost's group and model handle exist.
     pub(crate) fn collect(
         &mut self,
         registry: &EntityRegistry,
         members: &[GhostMember],
-        look: impl Fn(u16) -> GhostLook,
         frame: &GhostDrawFrame<'_>,
     ) {
         self.instances.clear();
@@ -151,7 +150,7 @@ impl GhostRenderCollector {
             group.seen = true;
             // Every presented ghost passes its clamp, culled or not: the
             // limiter judges the source's presented value, not its framing.
-            let ghost_look = presented_look(&mut self.clamp, member, look(member.link));
+            let ghost_look = presented_look(&mut self.clamp, member);
             if ghost_look.opacity <= 0.0
                 || !mesh_visible(frame.world, frame.visible, group.mapped_origin)
             {

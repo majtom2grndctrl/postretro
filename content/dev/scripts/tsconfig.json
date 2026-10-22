@@ -7,7 +7,8 @@
     "moduleResolution": "bundler",
     "paths": {
       "postretro": ["../../../sdk/types/postretro.d.ts"],
-      "postretro/ui": ["../../../sdk/types/postretro.d.ts"]
+      "postretro/ui": ["../../../sdk/types/postretro.d.ts"],
+      "postretro/audio": ["../../../sdk/types/postretro.d.ts"]
     }
   },
   "include": ["./**/*.ts"]

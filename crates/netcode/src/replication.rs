@@ -312,15 +312,9 @@ fn collect_payloads(
         payloads.push(payload);
     }
     if let Ok(link) = registry.get_component::<postretro_entities::GhostLinkComponent>(id) {
-        // Look ramps ride only once a script sets them; until then the record
-        // carries armed state and member categories.
-        let payload =
-            ComponentPayload::GhostLinkState(postretro_net::wire::WireGhostLinkState::new(
-                link.index,
-                link.source_entity,
-                link.armed,
-                link.members,
-            ));
+        // Always on: armed state, member categories, and each look field a
+        // script has set, with its unclamped ramp.
+        let payload = ComponentPayload::GhostLinkState(super::ghost_link_state_to_wire(link));
         debug_assert_eq!(
             component_kind_discriminant(ComponentKind::GhostLink),
             payload.kind(),

@@ -514,13 +514,11 @@ fn client_presents_spawn_state_until_a_received_record_and_again_after_reset() {
         "local spawn state: disarmed"
     );
     // Replication lands the host's arm, stamped 205.
-    level.ghosts.history_mut(0).unwrap().push(
-        205,
-        LinkState {
-            armed: true,
-            members: GhostMembers::all(),
-        },
-    );
+    level
+        .ghosts
+        .history_mut(0)
+        .unwrap()
+        .push(205, LinkState::new(true, GhostMembers::all()));
     client_frame(&mut level, 204.0);
     assert!(
         level.ghost(0, partner).is_none(),

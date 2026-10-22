@@ -15,7 +15,7 @@ use postretro_render_cpu::ghost_instance::{GHOST_SPRITE_INSTANCE_SIZE, GhostInst
 use postretro_visibility::VisibleCells;
 
 use super::*;
-use crate::ghost_links::GhostCategory;
+use crate::ghost_links::{GhostCategory, GhostLook};
 
 const REAL_CELL: u32 = 0;
 const MAPPED_CELL: u32 = 1;
@@ -123,6 +123,7 @@ fn member(entity: EntityId, membership: f32, frozen: bool) -> GhostMember {
             rotation: mapping.rotation() * source.rotation,
             scale: source.scale,
         },
+        look: STYLE,
     }
 }
 
@@ -182,7 +183,6 @@ impl Fixture {
         self.ghosts.collect(
             registry,
             members,
-            |_| STYLE,
             &mut self.particles,
             &BillboardGhostFrame {
                 world: &self.world,

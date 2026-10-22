@@ -8,6 +8,8 @@ use postretro_foundation::SeamlessMapping;
 use postretro_render_cpu::flash_clamp::INTENSITY_RATE_PER_SECOND;
 use postretro_render_cpu::flash_limiter::HITCH_CEILING_SECONDS;
 
+use super::GhostLook;
+use super::clocks::MemberLag;
 use super::eligibility::GhostCategory;
 
 /// One ghost: a member entity seen through one link. An entity inside two links
@@ -41,6 +43,11 @@ pub(crate) struct GhostMember {
     pub source: Transform,
     /// `source` mapped into the other copy.
     pub mapped: Transform,
+    /// The link's look as this member presents it, before membership and the
+    /// flash clamp: read at the host time the member presents at on this
+    /// machine, so a `setColorFilter` and the motion it rides with present on
+    /// one frame.
+    pub look: GhostLook,
 }
 
 /// Membership at or below this after a fade step is fully faded.
@@ -56,6 +63,9 @@ struct Entry {
     created: bool,
     /// The last presented pose evaluated inside the volume with target 1.
     source: Transform,
+    /// How far behind this machine's script clock the member last presented.
+    /// A fading ghost keeps it, so its look runs on at the same delay.
+    lag: MemberLag,
 }
 
 /// Presented membership per ghost key, ramping linearly toward each frame's
@@ -101,12 +111,13 @@ impl MembershipTable {
     }
 
     /// `key`'s member is inside the volume of an armed link showing its
-    /// category, presented at `source`.
+    /// category, presented at `source`, `lag` behind this machine's script clock.
     pub(crate) fn mark_target(
         &mut self,
         key: GhostKey,
         category: GhostCategory,
         source: Transform,
+        lag: MemberLag,
     ) {
         let settle = self.settle_at_target;
         let entry = self.entries.entry(key).or_insert(Entry {
@@ -115,18 +126,21 @@ impl MembershipTable {
             target: true,
             created: true,
             source,
+            lag,
         });
         entry.category = category;
         entry.target = true;
         entry.source = source;
+        entry.lag = lag;
     }
 
     /// Step every ramp by `step`, drop ghosts that faded out, and rebuild the
-    /// output in key order. `mapping` names each link's landmark → target map.
+    /// output in key order. `resolve` names each link's landmark → target map
+    /// and its look for a member presenting at a lag.
     pub(crate) fn finish_frame(
         &mut self,
         step: f32,
-        mapping: impl Fn(u16) -> Option<SeamlessMapping>,
+        resolve: impl Fn(u16, MemberLag) -> Option<(SeamlessMapping, GhostLook)>,
     ) {
         self.settle_at_target = false;
         self.entries.retain(|_, entry| {
@@ -144,7 +158,7 @@ impl MembershipTable {
         });
         self.members.clear();
         for (key, entry) in &self.entries {
-            let Some(mapping) = mapping(key.link) else {
+            let Some((mapping, look)) = resolve(key.link, entry.lag) else {
                 continue;
             };
             self.members.push(GhostMember {
@@ -156,6 +170,7 @@ impl MembershipTable {
                 mapping,
                 source: entry.source,
                 mapped: mapped_transform(&mapping, &entry.source),
+                look,
             });
         }
         self.members

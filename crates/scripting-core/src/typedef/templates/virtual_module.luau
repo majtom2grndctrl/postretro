@@ -2,7 +2,8 @@
 -- ---------------------------------------------------------------------------
 -- Luau SDK virtual modules. Runtime module tables contain values only; these
 -- structural aliases describe the read-only engine-owned singletons returned by
--- literal `require` calls. Root `postretro` excludes UI authoring APIs; `postretro/ui`
+-- literal `require` calls. Root `postretro` excludes UI and audio authoring APIs;
+-- `postretro/audio` holds audio subsystem builders; `postretro/ui`
 -- is typed directly from SDK function signatures instead of bare globals.
 
 --- Accessibility toggles a menu button may cycle.
@@ -126,6 +127,14 @@ export type PostretroUiModule = {
   clearText: (ref: Ref<string>) -> PrimitiveReactionDescriptor,
 }
 
+--- Ghost bus fields `setGhostAudio` may set. Volume and drive are linear 0..=1; cutoffs are 20..=20000 Hz with the high-pass below the low-pass; `periodMs` (finite, >= 0, default 0) is the ramp length.
+export type GhostAudioFields = { volume: number?, highPassHz: number?, lowPassHz: number?, drive: number?, periodMs: number? }
+
+export type PostretroAudioModule = {
+  --- Change the mod-wide Ghost bus mix during play; a primitive reaction body (no target). Applies on the host at its next tick and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; omitted fields keep their value and ramp. Out-of-range, non-finite, empty, or crossing-cutoff calls warn and drop.
+  setGhostAudio: (fields: GhostAudioFields) -> PrimitiveReactionDescriptor,
+}
+
 export type PostretroModule = {
   runtime: Runtime,
   --- Pure bounded weapon-action data builders with read-only normalized charge.
@@ -202,4 +211,5 @@ export type PostretroModule = {
 
 declare require: ((path: "postretro") -> PostretroModule)
   & ((path: "postretro/ui") -> PostretroUiModule)
+  & ((path: "postretro/audio") -> PostretroAudioModule)
   & ((path: string) -> any)

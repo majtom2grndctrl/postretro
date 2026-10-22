@@ -1968,6 +1968,7 @@ pub(crate) mod tests {
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             teleporter_bindings: Default::default(),
             ghost_links: Default::default(),
+            ghost_bus: Default::default(),
             ghost_render: Default::default(),
             mover_ghost_render: Default::default(),
             billboard_ghost_render: Default::default(),

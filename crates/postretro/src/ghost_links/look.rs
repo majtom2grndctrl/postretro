@@ -34,16 +34,16 @@ impl LinkStyle {
     }
 }
 
-/// Every installed link's style and script colour filter, in map order. Each
-/// peer resolves its own manifest's styles locally; only the filter is the
-/// host's, recorded from its link components (or, on a client, received).
+/// Every installed link's style, in map order, and the script time looks
+/// present at. Each peer resolves its own manifest's styles locally; the script
+/// colour filter is the host's, read from link history (recorded from the
+/// host's link components, or received and rebased on a client).
 #[derive(Debug, Default)]
 pub(crate) struct LinkLooks {
     links: Vec<LinkStyle>,
-    /// The fields `setColorFilter` has set on each link, with their ramps.
-    filters: Vec<GhostColorFilter>,
-    /// Script time the filters' ramps present at this frame. Script time, not
-    /// presented-frame time, so a pause freezes them.
+    /// Script time filter ramps present at this frame for a member presenting
+    /// at host-now. Script time, not presented-frame time, so a pause freezes
+    /// them.
     time: f64,
 }
 
@@ -57,7 +57,6 @@ impl LinkLooks {
                 .iter()
                 .map(|record| LinkStyle::resolve(record.style.clone(), styles, false))
                 .collect(),
-            filters: vec![GhostColorFilter::default(); records.len()],
             time: 0.0,
         }
     }
@@ -81,22 +80,35 @@ impl LinkLooks {
             .map_or(GhostStyle::FLOOR, |link| link.style)
     }
 
-    /// Link `index`'s current look, resolved per field: the floor, then the
-    /// named style (whose omitted fields the drain already filled from the
-    /// floor), then each field `setColorFilter` set, at its ramp's value now.
+    /// Link `index`'s look under `filter` for a member whose look trails this
+    /// frame's script time by `lag_seconds`, resolved per field: the floor,
+    /// then the named style (whose omitted fields the drain already filled from
+    /// the floor), then each field `setColorFilter` set, at its ramp's value.
     /// The one place a link's look is computed. No allocation.
-    pub(crate) fn look(&self, index: u16) -> GhostLook {
+    ///
+    /// `filter` is the one in force at the member's link-state read, so a ramp
+    /// in it has started as far as link history is concerned: it never presents
+    /// before its own start. A delayed member whose look time still trails the
+    /// start presents the start value, and a `periodMs` 0 change lands on the
+    /// frame its state does, with the motion of its tick.
+    pub(crate) fn resolve(
+        &self,
+        index: u16,
+        filter: &GhostColorFilter,
+        lag_seconds: f64,
+    ) -> GhostLook {
         let style = self.style(index).look();
-        self.filters
-            .get(usize::from(index))
-            .map_or(style, |filter| filter.resolve(style, self.time))
-    }
-
-    /// Record link `index`'s script colour filter, as the host's component
-    /// holds it after a tick.
-    pub(crate) fn set_filter(&mut self, index: usize, filter: GhostColorFilter) {
-        if let Some(slot) = self.filters.get_mut(index) {
-            *slot = filter;
+        let time = self.time - lag_seconds;
+        GhostLook {
+            tint: filter
+                .tint
+                .map_or(style.tint, |ramp| ramp.value_at(time.max(ramp.start_time))),
+            opacity: filter.opacity.map_or(style.opacity, |ramp| {
+                ramp.value_at(time.max(ramp.start_time))
+            }),
+            saturation: filter.saturation.map_or(style.saturation, |ramp| {
+                ramp.value_at(time.max(ramp.start_time))
+            }),
         }
     }
 
@@ -119,9 +131,17 @@ impl super::GhostLinks {
         self.looks.rebind(styles);
     }
 
-    /// Link `index`'s current look, before membership and the flash clamp.
+    /// Link `index`'s look at host-now on this machine (its newest state, at
+    /// this frame's script time), before membership and the flash clamp. Each
+    /// ghost presents its own member's read instead ([`super::GhostMember::look`]).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn link_look(&self, index: u16) -> GhostLook {
-        self.looks.look(index)
+        let filter = self
+            .links
+            .get(usize::from(index))
+            .map(|link| link.history.latest().filter)
+            .unwrap_or_default();
+        self.looks.resolve(index, &filter, 0.0)
     }
 
     /// Link `index`'s style look with no script filter: what a field no

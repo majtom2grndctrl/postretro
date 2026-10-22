@@ -771,6 +771,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // Host-only ghost-link steps queued before this tick apply now,
             // at its start, in call order.
             app.apply_pending_ghost_link_commands();
+            app.apply_pending_ghost_audio_commands();
 
             // Inventory liveness is entity lifecycle, not an input event.
             // Normalize every authoritative pawn even when a remote queue
@@ -1172,6 +1173,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Audio);
 
+    // Who fired each shot this frame, before impacts are attributed.
+    app.record_ghost_shot_owners(&pending_weapon_script_events, &pending_ai_events);
     // Descriptor sounds for this frame's events, placed at fire time.
     // They play alongside any reaction addressed to the same event.
     // The listener's pawn is named here, before any play this frame,
@@ -1186,9 +1189,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             movers: &mut app.kinematic_mover_render,
         };
         let edges = sound_events::resolve_mover_edges(&pending_mover_events, &mut scene);
-        let mut requests: Vec<postretro_audio::SoundRequest> = edges
+        let mut requests: Vec<crate::ghost_links::LocalSound> = edges
             .iter()
             .filter_map(sound_events::MoverEdge::sound_request)
+            .map(Into::into)
             .collect();
         if let Some(session) = app.session.as_ref() {
             let table = &session.scripting.descriptor_sounds;
@@ -1200,37 +1204,64 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 local: &data_registry.fluids,
             };
             for emission in &pending_movement_events {
-                requests.extend(sound_events::movement_sound(emission, fluids, &mut scene));
+                requests.extend(
+                    sound_events::movement_sound(emission, fluids, &mut scene).map(Into::into),
+                );
             }
             drop(data_registry);
             for emission in &pending_ai_events {
-                requests.extend(sound_events::ai_sounds(table, emission, &mut scene));
+                requests.extend(
+                    sound_events::ai_sounds(table, emission, &mut scene)
+                        .into_iter()
+                        .map(Into::into),
+                );
             }
-            requests.extend(pending_weapon_script_events.iter().filter_map(|emission| {
-                sound_events::weapon_emission_sound(table, emission, &mut scene)
-            }));
+            for emission in &pending_weapon_script_events {
+                if let Some(request) =
+                    sound_events::weapon_emission_sound(table, emission, &mut scene)
+                {
+                    // An impact's ghost voice needs its shot's owner, which
+                    // the contact set does not carry.
+                    let shot_owner = (emission.address == "impact")
+                        .then(|| app.ghost_links.shot_owner(emission.shot_id))
+                        .flatten();
+                    requests.push(crate::ghost_links::LocalSound {
+                        request,
+                        shot_owner,
+                    });
+                }
+            }
         }
         for cue in &app.observer_weapon_cues {
+            let shot_owner = (cue.kind == netcode::weapon_cues::WeaponCueKind::Impact)
+                .then(|| app.ghost_links.shot_owner(Some(cue.shot_id)))
+                .flatten();
             for key in [cue.sound.as_deref(), cue.additional_sound.as_deref()]
                 .into_iter()
                 .flatten()
             {
-                requests.push(sound_events::frozen_sound(key, &cue.emitter, &mut scene));
+                requests.push(crate::ghost_links::LocalSound {
+                    request: sound_events::frozen_sound(key, &cue.emitter, &mut scene),
+                    shot_owner,
+                });
             }
         }
-        requests.append(&mut client_sounds);
-        requests.append(&mut app.pending_teleport_sounds);
+        requests.extend(client_sounds.drain(..).map(Into::into));
+        requests.extend(app.pending_teleport_sounds.drain(..).map(Into::into));
         (edges, requests, listener_attached)
     };
+    // The Ghost bus follows its resolved profile (a script ramp re-targets it
+    // each frame), then this frame's ghost voices are judged before any sound
+    // plays: a ghost voice starts only beside a real voice `play` admitted.
+    app.present_ghost_bus(std::time::Duration::try_from_secs_f32(frame_dt).unwrap_or_default());
+    let ghost_voices = app.plan_ghost_voices(&descriptor_sounds, frame_result.alpha);
     if let Some(audio) = app
         .session
         .as_mut()
         .and_then(|session| session.audio.as_mut())
     {
         audio.set_listener_attached(listener_attached);
-        for request in descriptor_sounds {
-            audio.play(request);
-        }
+        ghost_voices.play_beside(descriptor_sounds, |request| audio.play(request).is_some());
     }
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::ScriptDrain);
@@ -1958,7 +1989,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 app.billboard_ghost_render.collect(
                     &registry,
                     ghost_links.members(),
-                    |link| ghost_links.link_look(link),
                     &mut session.particle_render,
                     &crate::scripting_systems::billboard_ghost_render::BillboardGhostFrame {
                         world,
@@ -2135,7 +2165,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             app.ghost_render.collect(
                 &registry,
                 ghost_links.members(),
-                |link| ghost_links.link_look(link),
                 &crate::scripting_systems::ghost_render::GhostDrawFrame {
                     world,
                     visible: &visible_cells,
@@ -2168,7 +2197,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             app.mover_ghost_render.collect(
                 &registry,
                 ghost_links.members(),
-                |link| ghost_links.link_look(link),
                 &crate::scripting_systems::mover_ghost_render::MoverGhostFrame {
                     world,
                     visible: &visible_cells,

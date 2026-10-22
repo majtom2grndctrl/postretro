@@ -34,43 +34,12 @@ impl crate::App {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let (source, view, stamps) = match session.net_endpoint.as_ref() {
-            Some(NetEndpoint::Host {
-                tick,
-                client_pawn_presentation,
-                allocator,
-                ..
-            }) => (
-                ClockSource::Host { tick: *tick },
-                CandidateView::Authoritative,
-                PoseStamps::HostSeat {
-                    buffer: client_pawn_presentation,
-                    allocator,
-                    tick: *tick,
-                    alpha,
-                },
-            ),
-            Some(NetEndpoint::Client {
-                replication,
-                time_sync,
-                ..
-            }) => (
-                ClockSource::Client {
-                    render_server_tick: self.remote_player_presentation.render_server_tick,
-                    estimated_server_tick: time_sync.estimated_server_tick(),
-                    latest_snapshot_tick: replication.latest_server_tick(),
-                },
-                CandidateView::Client(replication),
-                PoseStamps::Client(replication),
-            ),
-            None => (
-                ClockSource::SinglePlayer {
-                    completed_ticks: self.ghost_links.completed_ticks(),
-                },
-                CandidateView::Authoritative,
-                PoseStamps::None,
-            ),
-        };
+        let (source, view, stamps) = frame_sources(
+            session,
+            self.remote_player_presentation.render_server_tick,
+            self.ghost_links.completed_ticks(),
+            alpha,
+        );
         self.ghost_links
             .refresh_opt_ins(&session.scripting.script_ctx.data_registry.borrow());
         self.ghost_links
@@ -86,5 +55,52 @@ impl crate::App {
                 stamps,
             },
         );
+    }
+}
+
+/// This frame's role-dependent membership inputs: the host-time source, how
+/// this machine knows its candidates, and where delay-buffered members' pose
+/// stamps come from. Shared by the membership update and ghost-voice
+/// admission, so a voice reads its member at the clock its ghost presents at.
+pub(super) fn frame_sources<'a>(
+    session: &'a crate::session::Session,
+    render_server_tick: Option<f64>,
+    completed_ticks: u32,
+    alpha: f32,
+) -> (ClockSource, CandidateView<'a>, PoseStamps<'a>) {
+    match session.net_endpoint.as_ref() {
+        Some(NetEndpoint::Host {
+            tick,
+            client_pawn_presentation,
+            allocator,
+            ..
+        }) => (
+            ClockSource::Host { tick: *tick },
+            CandidateView::Authoritative,
+            PoseStamps::HostSeat {
+                buffer: client_pawn_presentation,
+                allocator,
+                tick: *tick,
+                alpha,
+            },
+        ),
+        Some(NetEndpoint::Client {
+            replication,
+            time_sync,
+            ..
+        }) => (
+            ClockSource::Client {
+                render_server_tick,
+                estimated_server_tick: time_sync.estimated_server_tick(),
+                latest_snapshot_tick: replication.latest_server_tick(),
+            },
+            CandidateView::Client(replication),
+            PoseStamps::Client(replication),
+        ),
+        None => (
+            ClockSource::SinglePlayer { completed_ticks },
+            CandidateView::Authoritative,
+            PoseStamps::None,
+        ),
     }
 }

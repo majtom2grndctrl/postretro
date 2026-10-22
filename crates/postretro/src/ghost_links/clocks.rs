@@ -93,6 +93,26 @@ impl PresentationClocks {
         }
     }
 
+    /// The lane clock this machine's script clock presents at this frame: the
+    /// host time a look ramp evaluated at this frame's script time shows. On
+    /// the host and in single player that is the simulated tick its frame
+    /// script time stamps commands with; on a client, the estimated host tick,
+    /// which its rebased script clock tracks.
+    pub(crate) fn script_now(&self) -> f64 {
+        self.mover
+    }
+
+    /// How far behind [`Self::script_now`] a member presents: its link-state
+    /// read at `state_clock` (its pose stamp, or its lane clock) and its look
+    /// ramps at `lane_clock`, its lane's continuous clock.
+    pub(crate) fn lag(&self, state_clock: f64, lane_clock: f64) -> MemberLag {
+        let now = self.script_now();
+        MemberLag {
+            state_ticks: now - state_clock,
+            look_ticks: (now - lane_clock).max(0.0),
+        }
+    }
+
     /// The earliest lane clock this frame.
     pub(crate) fn oldest(&self) -> f64 {
         self.simulated.min(self.remote).min(self.mover)
@@ -102,6 +122,29 @@ impl PresentationClocks {
     /// included; history older than the change covering it is unreachable.
     pub(crate) fn oldest_readable(&self) -> f64 {
         self.oldest() - POSE_STAMP_LAG_TICKS
+    }
+}
+
+/// How far behind this machine's script clock a member presents, in host ticks.
+///
+/// A member reads its link's state at `script_now - state_ticks` and evaluates
+/// the look ramps of that state at the script time `look_ticks` fixed ticks
+/// before this frame's: lanes trail host-now by whole presentation delays, and
+/// a fixed tick is the one exact conversion between host ticks and script
+/// seconds on every machine, so no host script-time history is kept. A look
+/// ramp never presents before its own start once the state carrying it is in
+/// force ([`super::look::LinkLooks::resolve`]), so a `setColorFilter` lands
+/// with the motion of its tick even where the two clocks differ by a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct MemberLag {
+    pub state_ticks: f64,
+    pub look_ticks: f64,
+}
+
+impl MemberLag {
+    /// Script seconds the member's look trails this frame's script time by.
+    pub(crate) fn look_seconds(self) -> f64 {
+        self.look_ticks * crate::frame_timing::TICK_DURATION.as_secs_f64()
     }
 }
 

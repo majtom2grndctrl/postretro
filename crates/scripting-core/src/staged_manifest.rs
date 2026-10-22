@@ -1934,10 +1934,18 @@ mod tests {
         )
         .unwrap();
         fs::write(
+            dir.join("postretro/audio.luau"),
+            r#"error("shadow postretro/audio.luau was read")"#,
+        )
+        .unwrap();
+        fs::write(
             dir.join("start-script.luau"),
             r#"
             local root = require("postretro")
             local UI = require("postretro/ui")
+            local Audio = require("postretro/audio")
+            assert(Audio.setGhostAudio({ volume = 0.5 }).primitive == "setGhostAudio", "Audio.setGhostAudio must be the SDK builder")
+            assert(root.setGhostAudio == nil, "root module must not expose setGhostAudio")
             local helper = require("./helpers/entity")
             assert(root.shadow == nil, "mod-root postretro.luau shadowed the engine module")
             assert(UI.shadow == nil, "mod-root postretro/ui.luau shadowed the engine module")
@@ -1982,7 +1990,9 @@ mod tests {
             !manifest
                 .dependency_paths
                 .iter()
-                .any(|path| path.ends_with("postretro") || path.ends_with("postretro/ui")),
+                .any(|path| path.ends_with("postretro")
+                    || path.ends_with("postretro/ui")
+                    || path.ends_with("postretro/audio")),
             "virtual module names must not be recorded as dependency paths"
         );
         assert!(
@@ -1990,6 +2000,12 @@ mod tests {
                 .dependency_paths
                 .contains(&dir.join("postretro/ui.luau").canonicalize().unwrap()),
             "shadow file for postretro/ui must not enter dependency output"
+        );
+        assert!(
+            !manifest
+                .dependency_paths
+                .contains(&dir.join("postretro/audio.luau").canonicalize().unwrap()),
+            "shadow file for postretro/audio must not enter dependency output"
         );
         assert!(
             !manifest

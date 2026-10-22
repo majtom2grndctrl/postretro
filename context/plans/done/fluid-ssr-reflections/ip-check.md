@@ -230,5 +230,6 @@ Applied to `rendering_pipeline.md` §7.3a at promotion:
 - **EA US10621774B2 / KR102811807B1 / CN110874858B:** confirm no continuation was filed in the US (none listed) and that EA has no later filing claiming SSR handoff to a non-ray-traced fallback.
 - **WO2022227553A1 (Perfect World)** and **US20210225067A1 (Tencent)**: read the claims; both were screened at abstract level only.
 - **Microsoft CN119904565A:** pending divisional; check its granted text if it grants.
+- **Size-based capture exclusion (`reflection-probe-capture-exclusion`):** compare with UE Visible in Reflection Captures / Cull Distance Volumes, Unity Reflection Probe Static / culling mask / near clip; read Perfect World WO2022227553A1. Engineering triage, not legal advice.
 
 Not accessed: EP Register and Patentscope (403 / JavaScript challenge); USPTO PPUBS PDFs and Justia (403). Google Patents rate-limited this session after the Tencent, EA and Microsoft families were read, so NetEase, Perfect World, Booming and EA US12354210B2 were read only through PatSnap Eureka pages via a summarizing fetch tool. Chinese and Korean claims are Google's machine translations. Unpublished applications (filed within the last 18 months) are invisible to any search; the UE4 4.0 shader source, the Frostbite 2014/2015 material and Wronski 2014 were not re-read.

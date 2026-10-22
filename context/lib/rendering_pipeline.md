@@ -884,7 +884,8 @@ report values, never `wgpu` types or handles.
 A ghost is an extra instance of a member drawn at its mapped pose (`entity_model.md` §7d). Game logic decides membership and hands the renderer instances with look values; the renderer owns the translucent pipelines.
 
 - **Look.** Unlit: the base color's saturation is scaled by `saturation`, multiplied by `tint`, and drawn translucent at the presented opacity. Unlit keeps ghosts legible and samples no light at the mapped position.
-- **Depth.** Depth-tested against the scene, no depth write, no shadows cast. Alpha blend or screen-door transparency is an implementation choice; the presented opacity means the same either way.
+- **Depth.** Depth-tested against the scene, no depth write, no shadows cast.
+- **Transparency.** The mod's render profile picks it for every ghost: alpha blend by default, or screen-door dither, a screen-space ordered pattern that keeps or discards each pixel at the presented opacity (`scripting.md` §Mod render profile). The presented opacity means the same either way. Projectile billboard ghosts always blend.
 - **Culling.** At the mapped position, against the viewer's visible cells, whatever the real position's visibility.
 - **Kinds.** Skinned models, kinematic-brush movers and projectile bodies, each through a translucent variant of its own pass. A mover may draw once per link it belongs to.
 - **Presented opacity** is the link's opacity times the ghost's membership. Membership ramps linearly at the limiter's rate cap (§7.8) on arm, disarm, category change, entry and exit, reversing from the presented value. It starts at 0 for a new ghost and at full for members of links armed on spawn at level install. The ramp runs on presented-frame time; script-set look ramps follow script time.

@@ -43,6 +43,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
   - Depth-tested without depth write; no shadows.
   - Culled at the mapped position against the viewer's visible cells, whatever the real position's visibility.
   - A projectile ghost gets the same treatment on its billboard or model body.
+  - Transparency is mod-wide: `ModManifest.render.ghosts` is `"blend"` (alpha blend, the default) or `"dither"` (screen-door: a screen-space ordered pattern keeps or discards each pixel at the presented opacity). It follows the render profile: a malformed value warns and uses blend without touching `bloom` or `reflections`, a successful staged mod-init replaces it, and it stays local, off the wire and out of every digest. A projectile billboard ghost blends in both modes. Owner amendment, 2026-10-21.
   - The renderer owns the pipelines; game logic decides membership.
 - **Ghosts pass the photosensitivity limiter.** E23 I2 counts a primitive that changes presented luminance without a clamp as a violation, and `setColorFilter` and arm/disarm are such primitives.
   - A ghost's presented opacity is its link's opacity times its membership. Membership ramps linearly at the limiter's rate cap on arm, disarm, a category change, entry and exit, reversing from the presented value. As with fluid tint entry, ordinary reveals are never limited and a strobe is.
@@ -106,6 +107,8 @@ export default defineMod({
   ],
   // Every field optional; a malformed field applies the whole floor profile.
   audio: { ghost: { volume: 0.7, highPassHz: 250, lowPassHz: 3000, drive: 0.3 } },
+  // Mod-wide ghost transparency, beside bloom and reflections. "blend" is the default.
+  render: { ghosts: "dither" },
 });
 ```
 ```typescript
@@ -152,6 +155,7 @@ Pins are in `research.md`.
 - [ ] A style with one malformed field drops whole with a warning naming `ghostStyles[i].<field>`, and links naming it get the floor style. A later duplicate name drops with a warning, and the first declaration stands. Both runtimes judge the same entries the same way.
 - [ ] A committed staged reload that changes a style re-resolves every link naming it, armed or not, mid-ramp or not. Fields set by `setColorFilter` keep their values and ramps (P16).
 - [ ] The floor style carries no sound, and the floor bus profile applies no distortion.
+- [ ] With `render.ghosts` absent or `"blend"`, ghosts alpha-blend; with `"dither"` they draw screen-door. A malformed `render.ghosts` warns and uses blend, leaving `bloom` and `reflections` as authored, and both runtimes judge it alike. A projectile billboard ghost blends under both.
 - [ ] Two peers whose manifests declare one style name with different values each present their own, and the session admits both. After an opacity-only `setColorFilter`, both present the host's opacity and still their own tint and saturation (P15).
 **Mapping and membership**
 - [ ] For rotated and unrotated pairs, with vertical offset, a ghost pose equals the pose a seamless teleport through the same points produces.
@@ -206,7 +210,7 @@ Pins are in `research.md`.
 - [ ] A handshake across the old and new wire versions is refused.
 **Surface fixture**
 - [ ] The dev mod's manifest and the dev map's TypeScript and Luau scripts, which contain the Scripting surface examples, load and run with zero warnings, `setGhostAudio` resolving from `postretro/audio` in both runtimes and the generated declarations. The `ghostLink` query returns both dev-map links, and their set-pieces drive the arm, look and audio changes the rows above observe (P28).
-- [ ] A headless frame capture of the dev map's tagged barrier on a link armed on spawn, at rest, shows tinted, blended pixels with the geometry behind still visible and no ghost shadow (P26, P32). The ghost's pixels are identical under two different dynamic-light setups, and the part behind a nearer wall does not draw.
+- [ ] A headless frame capture of the dev map's tagged barrier on a link armed on spawn, at rest, shows tinted, blended pixels with the geometry behind still visible and no ghost shadow (P26, P32). The ghost's pixels are identical under two different dynamic-light setups, and the part behind a nearer wall does not draw. Under `render.ghosts: "dither"`, the same capture shows unblended ghost and scene pixels interleaved, with the ghost's pixel coverage over its footprint within tolerance of the presented opacity.
 ### Manual
 - [ ] Two-peer loopback co-op on the dev map, run once as listen host and once as client, at the harness lag profile:
   - Barrier puzzle: one player presses the button in copy B, sees the ghost barrier open, and the player in copy A passes.
@@ -235,7 +239,7 @@ Pins are in `research.md`.
   - Each link listing the descriptor and weapon classes it ghosts, as `ghost_tags` lists movers: clients could resolve it, and it tells rockets from plasma per link. Rejected because whether an archetype can ghost is a fact about the archetype, true through every link, and class lists would repeat across links. Category narrowing covers per-scenario rules.
   - Projectile ghosting as a style flag: it puts an archetype fact in the presentation layer, and it cannot tell rockets from plasma.
   - Two briefs, visuals now and ghost audio later: rejected because the owner treats ghost audio, `setGhostAudio` included, as core to designing the experience.
-  - Screen-door (dithered) transparency instead of alpha blending: it avoids sorting against the fluid and billboard passes and suits the retro look. The executor weighs it in the thin slice and reports the choice; the limiter's opacity strength reads the same either way.
+  - Screen-door (dithered) transparency instead of alpha blending: kept as a mod-wide render-profile option beside blend (Decisions, Ghost draw). It needs no sorting and suits the retro look; the limiter's opacity strength reads the same either way.
 - Namespace: `postretro/ui` is the precedent for a virtual module: `luau_require.rs`, `luau_prelude.rs`, `staged_manifest.rs`, `typedef/luau.rs` and the `ui_sdk_module.d.ts` template. Dev `tsconfig.json` files map module ids to the generated declarations. The script compiler's specifier allowlist and build-side Luau `require` also need the new id (`research.md` §Client-side facts).
 - Split before extending: `crates/net/src/wire.rs`, `crates/netcode/src/replication.rs`, `crates/level-compiler/src/parse.rs`, `crates/renderer/src/render/mesh_pass.rs`.
 
@@ -277,5 +281,6 @@ Pins are in `research.md`.
 | Style declaration | style table | — | `ghostStyles: [defineGhostStyle({ name, tint: [r, g, b], opacity, saturation, audio, impactAudio })]` | same | — |
 | Look change | host-only command | per-field look ramps in link-state payload | `setColorFilter({ tint, opacity, saturation, periodMs })` | `l:setColorFilter({...})` | — |
 | Arm / disarm | host-only commands | armed in link-state payload | `arm()`, `disarm()` | `l:arm()`, `l:disarm()` | — |
+| Ghost transparency | render-profile mode | — | `render.ghosts: "blend" \| "dither"` (default `"blend"`) | same | — |
 | Ghost bus profile | resolved profile | — | `audio.ghost: { volume, highPassHz, lowPassHz, drive }` | same | — |
 | Ghost bus change | host-only reaction body | per-field level audio payload | `setGhostAudio({ volume, highPassHz, lowPassHz, drive, periodMs })` from `postretro/audio` | `require("postretro/audio").setGhostAudio({...})` | — |

@@ -89,6 +89,7 @@
 - **Water / swimming / fluid, gravity and push volumes / push `force` / environment resolution / fluid surfaces, their motion, drift, wave, depth fog and reflections / fluid screen-space reflections (SSR), the screen march and `reflection_quality` tiers / fluid baked light per vertex, install-time SH-lattice grid and its vertex cap / reflection probes and `reflection_volume` / probe capture exclusion and the `_reflection_capture` override / underwater tint and muffle** → `entity_model.md` §7 (Environment Volumes) · `movement.md` §4 (Environment resolution, Swim), §6 (Regional gravity and push, Steady drift) · authoring, face splitting, probe capture and ids 52–54: `build_pipeline.md` §Custom FGD, §Compiler pipeline, §PRL section IDs · `rendering_pipeline.md` §7.3a, §7.8 · reflection tier option: `player_options.md` §4 · probe records: `resource_management.md` §5 · `audio.md` §1 · co-op: `networking.md` §What gates, and what replicates instead
 - **Teleporters / teleport / `trigger_teleport` / `teleport_destination` / classic vs seamless teleport / arm-disarm teleporter / `teleport` event / teleport reconcile, yaw stamp and observer cut / arrival sound** → `movement.md` §6 (Teleport) · `entity_model.md` §7 (Environment Volumes) · script surface: `scripting.md` §12 · co-op: `networking.md` §Current contract, §Snapshot apply ordering (incl. Joiner gate), §Host input command queue, §Host-side remote-pawn presentation · FGD and ids 51/55: `build_pipeline.md` §Custom FGD, §PRL section IDs · `audio.md` §4
 - **Ghost links / seeing another room copy / ghost styles / descriptor `ghost` / ghost bus and `setGhostAudio` / `postretro/audio` (decided, not yet built)** → `entity_model.md` §7d · draw and limiter: `rendering_pipeline.md` §7.9, §7.8 · `audio.md` §1 (Ghost bus) · replication and future relevance: `networking.md` §Current contract · `scripting.md` §2, §7, §12 · FGD and id 56: `build_pipeline.md` §Custom FGD, §PRL section IDs
+- **Projectile traps / `projectile_trap` / trap `fire` `start` `stop` / trap timing and latched requests / no-attacker trap shots / trigger `fire` command and command-to-kind vocabulary (decided, not yet built)** → `entity_model.md` §Components (ProjectileTrap, Weapon vocabulary) · `scripting.md` §12 (Entity addressing) · FGD, trigger commands and id 44: `build_pipeline.md` §Custom FGD, §PRL section IDs · co-op: `networking.md` §Current contract
 - **Entity facing / map yaw / `angle` `angles` `mangle` / model front vs view forward / `rotation_quat` vs `model_rotation_quat`** → `entity_model.md` §4 (Facing convention) · `build_pipeline.md` §Supported Map Formats
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / perf measurement confounders / timed runs beside bakes / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
@@ -106,7 +107,7 @@
 
 **Retro-inspired FPS engine** — a hybrid of new and old. Doom/Quake boomer shooter with a cyberpunk aesthetic. Monster closets and scripted reveals are first-class set-pieces rather than engine-fighting workarounds, making for theatrical gameplay experiences. Inspired by retro look and feel but game design is a meaningful iteration beyond games of the period.
 
-**Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, dynamic direct lighting, and billboard sprite volumetrics that react to light.
+**Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (octahedral irradiance probe volumes), normal-mapped surfaces, dynamic direct lighting, and billboard sprite volumetrics that react to light.
 
 **Architectural northstar:** Lean, wgpu-driven pipeline — not a resource heavy modern engine with retro filters. Near-instant boot, tiny binary, and _some_ retro filters, but used sparingly.
 
@@ -150,7 +151,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Visibility | prl-build (portal generation — runtime traverses portal graph each frame) |
 | Cell locator | prl-build (compiler BSP-derived point-to-cell decision tree) |
 | Light entities | FGD entities parsed and translated to canonical format at compile time |
-| Indirect lighting | SH L2 irradiance volume baked from canonical lights |
+| Indirect lighting | DDGI-style octahedral irradiance probe atlas, with per-probe depth moments, baked from canonical lights |
 | Fog volumes | FGD fog entities + `FogCellMasks` over runtime cells |
 | Acoustic zones | FGD brush entities intended to resolve through runtime cells for reverb |
 | Reflection probes | prl-build: probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time into colour and distance tiles |

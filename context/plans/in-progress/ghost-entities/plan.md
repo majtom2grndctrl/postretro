@@ -1,7 +1,7 @@
 # ghost-entities — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 260f10029
 
 Brief grounded at d6f3471; 76 commits since. Every Decision and Path symbol was re-read at 86a5bd62c (four read-only sweeps: PRL/compiler/map identity, netcode/replication, rendering/limiter, audio/scripting). No Decision premise is false. Path drift is below.

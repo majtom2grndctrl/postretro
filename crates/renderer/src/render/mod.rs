@@ -21,6 +21,7 @@ mod fluid_scene_inputs;
 mod fluid_surface;
 mod fog_pass;
 mod frame_timing;
+mod ghost_depth;
 mod kinematic_brush;
 mod kinematic_ghost;
 mod lightmap_residency;
@@ -97,6 +98,8 @@ mod fluid_reflection_frame_test;
 mod fluid_reflection_frame_test_fixtures;
 #[cfg(test)]
 mod fluid_surface_frame_test;
+#[cfg(test)]
+mod ghost_depth_frame_test;
 mod geometry_install_marks;
 mod geometry_ranges;
 #[cfg(all(test, debug_assertions))]

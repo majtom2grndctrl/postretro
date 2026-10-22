@@ -1081,6 +1081,11 @@ pub(super) struct FullRenderer {
     pub(super) shadow_vs_stride: u32,
 
     pub(super) depth_view: wgpu::TextureView,
+    /// Ghost-only depth (`rendering_pipeline.md` §7.9), at the scene extent and
+    /// rebuilt with `depth_view`. Seeded from scene depth on frames with
+    /// skinned or mover ghosts; their depth pre-pass writes it and their
+    /// colour passes test it, so scene depth stays the opaque scene's.
+    pub(super) ghost_depth: ghost_depth::GhostDepthTarget,
 
     /// Post-scene compositor seam: owns the `scene_color` offscreen target every
     /// gameplay scene/UI pass renders into, plus the resolve pass that blits it

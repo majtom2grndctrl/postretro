@@ -6,6 +6,7 @@ use std::path::Path;
 
 use glam::{Mat4, Vec2, Vec3};
 use postretro_level_format::ghost_links::GhostLinksSection;
+use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::{SectionBlob, SectionId};
 
 /// Quake units per metre (`build_pipeline.md` §Supported Map Formats).
@@ -169,5 +170,81 @@ pub(super) fn with_links_disarmed(map: &Path) -> tempfile::TempPath {
         section.to_bytes()
     });
     assert_eq!(edited, 1, "the fixture carries one ghost-link section");
+    control
+}
+
+/// The doubled-mover control: the `tag` mover's geometry plus a copy of it
+/// moved by `offset` (mover-local engine metres) and retextured, everything
+/// else byte-identical. Pushed less than its own thickness along the view, the
+/// copy's front face lies inside the mover, behind the original's front face
+/// and in front of everything else, so a ghost of it has a nearer and a
+/// farther front-facing surface overlapping on screen, each its own texture.
+pub(super) fn with_mover_doubled(map: &Path, tag: &str, offset: Vec3) -> tempfile::TempPath {
+    with_mover_copy(map, ".capture-ghost-doubled-", tag, offset, true)
+}
+
+/// [`with_mover_doubled`]'s copy alone, in place of the mover's own geometry:
+/// what the farther surface looks like with nothing in front of it.
+pub(super) fn with_mover_copy_alone(map: &Path, tag: &str, offset: Vec3) -> tempfile::TempPath {
+    with_mover_copy(map, ".capture-ghost-copy-", tag, offset, false)
+}
+
+fn with_mover_copy(
+    map: &Path,
+    prefix: &str,
+    tag: &str,
+    offset: Vec3,
+    keep_original: bool,
+) -> tempfile::TempPath {
+    let mut edited = 0;
+    let control = rewrite(map, prefix, |id, data| {
+        if id != SectionId::KinematicGeometry as u32 {
+            return data;
+        }
+        let mut section =
+            KinematicGeometrySection::from_bytes(&data).expect("decode kinematic geometry");
+        let mover = section
+            .movers
+            .iter_mut()
+            .find(|mover| mover.tags.iter().any(|t| t == tag))
+            .unwrap_or_else(|| panic!("fixture contains the `{tag}` mover"));
+        let base = if keep_original {
+            mover.vertices.len() as u32
+        } else {
+            0
+        };
+        let vertices: Vec<_> = mover
+            .vertices
+            .iter()
+            .map(|vertex| {
+                let mut copy = vertex.clone();
+                copy.position = (Vec3::from_array(vertex.position) + offset).to_array();
+                copy
+            })
+            .collect();
+        let indices: Vec<u32> = mover.indices.iter().map(|index| index + base).collect();
+        // Another of the level's textures (it has several), so the two
+        // surfaces read apart.
+        let faces: Vec<_> = mover
+            .face_meta
+            .iter()
+            .map(|face| {
+                let mut copy = face.clone();
+                copy.texture_index = if face.texture_index == 0 { 1 } else { 0 };
+                copy
+            })
+            .collect();
+        if !keep_original {
+            mover.vertices.clear();
+            mover.indices.clear();
+            mover.face_meta.clear();
+        }
+        mover.vertices.extend(vertices);
+        mover.indices.extend(indices);
+        mover.face_meta.extend(faces);
+        edited += 1;
+        section.to_bytes()
+    });
+    assert_eq!(edited, 1, "the fixture carries one kinematic geometry section");
     control
 }

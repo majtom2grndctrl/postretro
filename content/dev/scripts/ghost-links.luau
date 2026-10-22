@@ -41,7 +41,9 @@ function setupLevel(_ctx)
   })
 
   -- Split: the first pad press arms both split teleporters, one over each pad,
-  -- so only whoever stands on a pad crosses, and turns the split pads off.
+  -- so only whoever stands on a pad crosses, and turns the split pads off. The
+  -- pad press stands in for a game condition (a timer, a health threshold) and
+  -- splits once: press it alone from the pad's centre.
   local splitPads = Postretro.getMapEntities("trigger", { tag = "split_pad" })
   local swapPads = Postretro.getMapEntities("trigger", { tag = "swap_pad" })
   local split = Postretro.getMapEntities("teleporter", { tag = "echo_split" })

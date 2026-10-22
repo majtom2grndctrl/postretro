@@ -400,8 +400,9 @@ Copy A has a yellow barrier in its east doorway; copy B has a red button on its
 north wall. The blue plate in either copy reveals the second link and swells
 the echo. The first press of a purple pad sends whoever stands on it alone into
 the other copy, so two players who start in the same copy can split up. Every
-later press swaps both players' copies and wakes the monsters. From the bundle
-root:
+later press swaps both players' copies and wakes the monsters. The split stands
+in for a game condition such as a timer or a health threshold, and it fires only
+once, so press it alone from the middle of the pad. From the bundle root:
 
 ```bash
 bin/prl-build content/dev/maps/ghost-links.map \

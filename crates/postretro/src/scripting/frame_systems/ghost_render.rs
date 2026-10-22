@@ -15,6 +15,7 @@ use postretro_render_cpu::flash_limiter::{
     pack_limiter_frame,
 };
 use postretro_render_cpu::ghost_instance::GhostInstanceLook;
+use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::{
     MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
 };
@@ -82,6 +83,9 @@ pub(crate) struct GhostDrawFrame<'a> {
     /// This presented frame's limiter input, or `None` for a capture, which
     /// never involves the limiter.
     pub limiter: Option<LimiterFrameUniform>,
+    /// How ghosts draw translucent (`Renderer::ghost_transparency`), so the
+    /// limiter judges a dithered ghost on the coverage it presents.
+    pub transparency: GhostTransparency,
 }
 
 /// Game-side ghost draw collection. Owns no wgpu: it hands the renderer
@@ -137,6 +141,7 @@ impl GhostRenderCollector {
     ) {
         self.instances.clear();
         self.last_state_scratch.clear();
+        self.clamp.set_transparency(frame.transparency);
         self.clamp.begin_frame(frame.limiter.as_ref());
         for member in members {
             let key = (member.link, member.entity);

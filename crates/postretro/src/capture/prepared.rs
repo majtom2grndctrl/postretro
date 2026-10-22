@@ -640,6 +640,8 @@ pub(super) fn collect_capture_receiver_draws(
             socket_poses: &SocketPoseResolver::new(&hit_zones),
             force_resample_model: &|_| false,
             limiter: None,
+            // A capture never involves the limiter.
+            transparency: Default::default(),
         },
     );
     mover_ghost_collector.collect(
@@ -650,6 +652,7 @@ pub(super) fn collect_capture_receiver_draws(
             visible: visible_cells,
             movers: mover_collector,
             limiter: None,
+            transparency: Default::default(),
         },
     );
 }

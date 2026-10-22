@@ -157,6 +157,7 @@ pub(crate) fn build_full_renderer(
         super::shadow_world_draws::ShadowWorldDraws::install(geometry.map(|g| g.bvh), index_count);
 
     let (_depth_texture, depth_view) = create_depth_texture(device, scene.width, scene.height);
+    let ghost_depth = ghost_depth::GhostDepthTarget::new(device, scene.width, scene.height);
 
     // Post-scene compositor seam: a linear HDR `scene_color` target + sRGB
     // resolve. The scene target is independent from the swapchain format.
@@ -729,6 +730,7 @@ pub(crate) fn build_full_renderer(
         shadow_depth_pipeline,
         shadow_vs_stride,
         depth_view,
+        ghost_depth,
         screen_effects,
         bloom,
         gpu_textures,

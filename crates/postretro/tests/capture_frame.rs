@@ -1468,3 +1468,138 @@ fn ghost_link_capture_draws_the_armed_barrier_tinted_unlit_unshadowed_and_depth_
         lit_by_alcove.len()
     );
 }
+
+/// How far the doubled barrier's copy sits behind the barrier, in Quake units
+/// along the camera's view (+x): half its 16-unit thickness, so the copy's
+/// front face lies inside the barrier.
+const BARRIER_COPY_PUSH: f32 = 8.0;
+
+/// `mask` shrunk by `radius` pixels, so a check inside it skips edge pixels.
+fn erode(mask: &[bool], width: u32, height: u32, radius: i32) -> Vec<bool> {
+    let outside: Vec<bool> = mask.iter().map(|inside| !inside).collect();
+    dilate(&outside, width, height, radius)
+        .into_iter()
+        .map(|near_outside| !near_outside)
+        .collect()
+}
+
+/// Pixels of `region` where `a` and `b` differ by more than the slack.
+fn differing(a: &RgbaImage, b: &RgbaImage, region: &[(u32, u32)]) -> usize {
+    region
+        .iter()
+        .filter(|&&(x, y)| {
+            channel_delta(a.get_pixel(x, y).0, b.get_pixel(x, y).0) > GHOST_PIXEL_SLACK
+        })
+        .count()
+}
+
+// Ghost self-overlap (the owner playtest's teeth through closed lips): a ghost
+// shows only its nearest surface. The barrier doubled by a retextured copy
+// pushed inside it gives its ghost a farther front face behind the nearer one;
+// where they overlap, the doubled ghost's capture matches the single
+// barrier's, blended and dithered alike, rather than the far face blending in
+// under the near one or a dithered far face drawing over it. The copy alone
+// reads differently there, so each match can fail. The capture recorder runs
+// the windowed frame's ghost depth seed, pre-pass and colour passes.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
+fn ghost_link_capture_draws_only_the_ghosts_nearest_surface_in_both_modes() {
+    let workspace = workspace_root();
+    let map_guard = compile_dev_map(&workspace, "ghost-links");
+    let map = map_guard.to_path_buf();
+    let push = capture_ghost_controls::quake_point(BARRIER_COPY_PUSH, 0.0, 0.0);
+    let doubled = capture_ghost_controls::with_mover_doubled(&map, "vault_barrier", push);
+    let copy_alone = capture_ghost_controls::with_mover_copy_alone(&map, "vault_barrier", push);
+
+    let loaded = postretro_level_loader::load_prl(&map.to_string_lossy()).expect("load fixture");
+    let link = &loaded.ghost_links.links[0];
+    assert!(
+        link.enabled_on_spawn && link.ghost_tags == ["vault_barrier"],
+        "echo_a, armed on spawn, ghosts the barrier"
+    );
+    assert_eq!(
+        link.landmark_yaw, link.target_yaw,
+        "the fixture's mapping is a pure translation"
+    );
+    let offset = glam::Vec3::from(link.target_origin) - glam::Vec3::from(link.landmark_origin);
+
+    let temp = tempfile::tempdir().expect("create isolated capture directory");
+    let camera = ghost_camera(GHOST_COPY_B_X);
+    let shot = |label: &str, map: &std::path::Path, transparency| {
+        capture_ghost_scene(
+            &workspace,
+            temp.path(),
+            label,
+            map,
+            camera,
+            echo_style(ECHO_OPACITY),
+            transparency,
+            LAMP_WARM,
+        )
+    };
+    let Some(single_blend) = shot("single-blend", &map, "blend") else {
+        return;
+    };
+    let doubled_blend = shot("doubled-blend", &doubled, "blend").unwrap();
+    let copy_blend = shot("copy-blend", &copy_alone, "blend").unwrap();
+    let single_dither = shot("single-dither", &map, "dither").unwrap();
+    let doubled_dither = shot("doubled-dither", &doubled, "dither").unwrap();
+    let copy_dither = shot("copy-dither", &copy_alone, "dither").unwrap();
+
+    // The copy's front face projects inside the barrier's: compare there, off
+    // the edges and off the part the cover wall hides.
+    let (width, height) = (GHOST_WIDTH, GHOST_HEIGHT);
+    let (copy_triangles, copy_indices) =
+        capture_ghost_controls::mover_triangles(&map, "vault_barrier", offset + push);
+    let (barrier, indices) = capture_ghost_controls::mover_triangles(&map, "vault_barrier", offset);
+    let copy_mask = erode(&camera.mask(&copy_triangles, &copy_indices), width, height, 1);
+    let barrier_mask = camera.mask(&barrier, &indices);
+    let q = |x: f32, y: f32, z: f32| capture_ghost_controls::quake_point(x, y, z);
+    let wall_x = GHOST_COPY_B_X + 112.0;
+    let (wall, wall_indices) = capture_ghost_controls::quad([
+        q(wall_x, -64.0, 0.0),
+        q(wall_x, 0.0, 0.0),
+        q(wall_x, 0.0, 48.0),
+        q(wall_x, -64.0, 48.0),
+    ]);
+    let wall_mask = camera.mask(&wall, &wall_indices);
+    let overlap: Vec<(u32, u32)> = masked(&copy_mask, width)
+        .filter(|&(x, y)| {
+            let index = (y * width + x) as usize;
+            barrier_mask[index] && !wall_mask[index]
+        })
+        .collect();
+    assert!(
+        overlap.len() > 500,
+        "the copy's front face overlaps the barrier's ({} pixels)",
+        overlap.len()
+    );
+
+    // Each check can fail: the farther surface alone reads differently from
+    // the nearer one across the overlap, in both modes.
+    for (mode, single, copy) in [
+        ("blend", &single_blend, &copy_blend),
+        ("dither", &single_dither, &copy_dither),
+    ] {
+        assert!(
+            differing(copy, single, &overlap) * 4 > overlap.len(),
+            "{mode}: the copy's face reads apart from the barrier's ({} of {} pixels)",
+            differing(copy, single, &overlap),
+            overlap.len()
+        );
+    }
+    assert_eq!(
+        differing(&doubled_blend, &single_blend, &overlap),
+        0,
+        "blend: the doubled ghost shows only its nearer face"
+    );
+    assert_eq!(
+        differing(&doubled_dither, &single_dither, &overlap),
+        0,
+        "dither: the doubled ghost shows only its nearer face"
+    );
+    eprintln!(
+        "ghost self-overlap capture: {} overlap pixels match the single barrier in both modes",
+        overlap.len()
+    );
+}

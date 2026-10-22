@@ -5,9 +5,10 @@
 // bind no lights, shadows or SH, so the layout is camera (0), the world
 // material (1) and the ghost instances (2). `sample_post_retro` is the
 // kinematic brush pass's body verbatim, so a ghost samples its mover's texels
-// as the mover does; a test pins the copies equal. Two fragment entries, one
-// per `render.ghosts` mode, each sampling before any `discard` so the
-// derivatives stay in uniform control flow; neither loops (§8 FXC).
+// as the mover does; a test pins the copies equal. Two colour fragment
+// entries, one per `render.ghosts` mode, each sampling before any `discard` so
+// the derivatives stay in uniform control flow; neither loops (§8 FXC).
+// `fs_dither_depth` is dither's depth pre-pass entry; it samples nothing.
 
 struct CameraUniforms {
     view_proj: mat4x4<f32>,
@@ -33,7 +34,11 @@ struct VertexInput {
 };
 
 struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    // `@invariant`: the ghost depth pre-pass and the colour pass run this
+    // vertex stage in separate pipelines, and the colour pass tests `Equal`
+    // against the depth the pre-pass wrote, so clip-space Z must match bit
+    // for bit (rendering_pipeline.md §7.2).
+    @invariant @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) look: vec2<u32>,
 };
@@ -75,6 +80,13 @@ fn ghost_base(uv: vec2<f32>) -> vec4<f32> {
     return sample_post_retro(base_texture, aniso_sampler, uv, dpdx(uv), dpdy(uv));
 }
 
+// True where the screen door drops this pixel: the presented opacity is at
+// or under the pixel's threshold. `fs_dither` and `fs_dither_depth` share it,
+// so the pre-pass writes depth at exactly the pixels the colour pass keeps.
+fn screen_door_drops(look: vec2<u32>, position: vec4<f32>) -> bool {
+    return ghost_opacity(look) <= screen_door_threshold(vec2<u32>(position.xy));
+}
+
 // `render.ghosts: "blend"`: SrcAlpha / OneMinusSrcAlpha at the presented opacity.
 @fragment
 fn fs_blend(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -88,8 +100,18 @@ fn fs_blend(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_dither(in: VertexOutput) -> @location(0) vec4<f32> {
     let base = ghost_base(in.uv);
     let color = ghost_shade(base.rgb, in.look);
-    if ghost_opacity(in.look) <= screen_door_threshold(vec2<u32>(in.clip_position.xy)) {
+    if screen_door_drops(in.look, in.clip_position) {
         discard;
     }
     return vec4<f32>(color, 1.0);
+}
+
+// The ghost depth pre-pass under `render.ghosts: "dither"`: depth only, where
+// `fs_dither` keeps the pixel, so a pixel a near ghost drops never hides a
+// farther ghost that keeps it. Blend's pre-pass has no fragment stage.
+@fragment
+fn fs_dither_depth(in: VertexOutput) {
+    if screen_door_drops(in.look, in.clip_position) {
+        discard;
+    }
 }

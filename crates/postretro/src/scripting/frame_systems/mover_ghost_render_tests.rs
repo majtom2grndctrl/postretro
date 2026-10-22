@@ -178,6 +178,7 @@ impl Fixture {
                 visible,
                 movers: &self.movers,
                 limiter,
+                transparency: Default::default(),
             },
         );
     }

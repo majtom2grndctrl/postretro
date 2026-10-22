@@ -655,78 +655,120 @@ impl Renderer {
         }
 
         // Ghosts: unlit, translucent, after every opaque pass so they depth-test
-        // against the whole opaque scene. Depth is read-only: a ghost hides
-        // nothing drawn after it, so the later translucent passes (fluid,
-        // billboards) cover a ghost even where they lie behind it. That is the
-        // accepted unsorted-translucency limit; drawing before fluid keeps a
-        // submerged ghost under the water's surface. Only the ghost plan draws
-        // here; it never reached shadow depth above.
-        if render_world
-            && let Some(plan) = mesh_frame_plans
-                .as_ref()
-                .map(|plans| &plans.ghost)
-                .filter(|plan| !plan.groups.is_empty())
-        {
+        // against the whole opaque scene, and before fluid so a submerged
+        // ghost stays under the water's surface. They test a ghost-only depth
+        // target, never writing scene depth: a ghost hides nothing drawn after
+        // it, so the later translucent passes (fluid, billboards) cover a ghost
+        // even where they lie behind it, the accepted unsorted-translucency
+        // limit. Only the ghost plan draws here; it never reached shadow depth.
+        //
+        // Order: seed the ghost depth from scene depth; one depth pre-pass
+        // writes every skinned and mover ghost's nearest surface into it; the
+        // colour passes then draw only fragments equal to that depth, so a
+        // ghost's inner surfaces never show through its outer ones, and a
+        // nearer ghost hides a farther one. Paid only on frames with a skinned
+        // or mover ghost.
+        let skinned_ghost_plan = mesh_frame_plans
+            .as_ref()
+            .map(|plans| &plans.ghost)
+            .filter(|plan| render_world && !plan.groups.is_empty());
+        let mover_ghosts = render_world && self.full().kinematic_ghost.has_draws();
+        if skinned_ghost_plan.is_some() || mover_ghosts {
             let _ghost_scope = cpu.scope(RenderStage::GhostMesh);
             let mode = self.ghost_transparency();
-            let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Skinned Ghost Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &scene_color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.full().depth_view,
-                    depth_ops: None,
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                ..Default::default()
-            });
-            ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
             self.full()
-                .mesh_pass
-                .record_ghost_draws(&mut ghost_pass, plan, mode);
-        }
+                .ghost_depth
+                .seed_from_scene_depth(encoder, self.full().depth_view.texture());
+            {
+                let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Ghost Depth Pre-Pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: self.full().ghost_depth.view(),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                depth_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+                if let Some(plan) = skinned_ghost_plan {
+                    self.full()
+                        .mesh_pass
+                        .record_ghost_depth_draws(&mut depth_pass, plan, mode);
+                }
+                if mover_ghosts {
+                    let full = self.full();
+                    full.kinematic_ghost.record_depth_draws(
+                        &mut depth_pass,
+                        &full.kinematic_brush,
+                        mode,
+                    );
+                }
+            }
 
-        // Mover ghosts: the same placement and depth contract as the skinned
-        // ghosts above, over the mover pass's geometry with world materials.
-        // Never part of shadow depth or the occluder bounds recorded earlier.
-        if render_world && self.full().kinematic_ghost.has_draws() {
-            let _ghost_scope = cpu.scope(RenderStage::GhostMesh);
-            let mode = self.ghost_transparency();
-            let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Kinematic Ghost Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &scene_color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.full().depth_view,
-                    depth_ops: None,
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                ..Default::default()
-            });
-            ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            let full = self.full();
-            full.kinematic_ghost.record_draws(
-                &mut ghost_pass,
-                &full.kinematic_brush,
-                &full.gpu_textures,
-                mode,
-            );
+            if let Some(plan) = skinned_ghost_plan {
+                let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Skinned Ghost Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &scene_color,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: self.full().ghost_depth.view(),
+                        depth_ops: None,
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+                self.full()
+                    .mesh_pass
+                    .record_ghost_draws(&mut ghost_pass, plan, mode);
+            }
+
+            // Mover ghosts: the same placement and depth contract as the
+            // skinned ghosts, over the mover pass's geometry with world
+            // materials. Never part of shadow depth or the occluder bounds
+            // recorded earlier.
+            if mover_ghosts {
+                let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Kinematic Ghost Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &scene_color,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: self.full().ghost_depth.view(),
+                        depth_ops: None,
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+                let full = self.full();
+                full.kinematic_ghost.record_draws(
+                    &mut ghost_pass,
+                    &full.kinematic_brush,
+                    &full.gpu_textures,
+                    mode,
+                );
+            }
         }
 
         // Fluid surfaces: translucent, after every opaque pass and before

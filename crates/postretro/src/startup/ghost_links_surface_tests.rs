@@ -387,16 +387,21 @@ impl Level {
 
     /// Put the local pawn at rest above `at`, from where it drops onto the floor.
     fn place(&self, at: Vec3, grounded: f32) {
+        self.place_pawn(self.pawn, at, grounded);
+    }
+
+    /// Put `pawn` at rest above `at`, from where it drops onto the floor.
+    fn place_pawn(&self, pawn: EntityId, at: Vec3, grounded: f32) {
         let mut registry = self.ctx.registry.borrow_mut();
-        let mut transform = *registry.get_component::<Transform>(self.pawn).unwrap();
+        let mut transform = *registry.get_component::<Transform>(pawn).unwrap();
         transform.position = Vec3::new(at.x, grounded + PAD_CLEARANCE, at.z);
-        registry.set_component(self.pawn, transform).unwrap();
+        registry.set_component(pawn, transform).unwrap();
         let mut movement = registry
-            .get_component::<PlayerMovementComponent>(self.pawn)
+            .get_component::<PlayerMovementComponent>(pawn)
             .unwrap()
             .clone();
         movement.velocity = Vec3::ZERO;
-        registry.set_component(self.pawn, movement).unwrap();
+        registry.set_component(pawn, movement).unwrap();
     }
 
     /// This frame's ghosts.
@@ -791,6 +796,8 @@ fn run_set_pieces(map: &str, mut level: Level) {
     assert_eq!(monsters.len(), 4, "{map}: two monsters per copy");
     level.settle();
     let height = level.position(level.pawn).y;
+    // Copy A's spawn: off both purple pads and the blue plate.
+    let spawn_a = level.position(level.pawn);
     let resolved = level.app.ghost_bus.resolve(level.app.script_time);
     assert_eq!(
         (
@@ -965,10 +972,13 @@ fn run_set_pieces(map: &str, mut level: Level) {
         );
     }
     level.place(level.trigger_center("split_pad", false), height);
+    // The partner joins copy A, off the pad: the split must leave it there.
+    level.place_pawn(level.partner, spawn_a, height);
     for _ in 0..SETTLE {
         assert!(level.frame().is_empty());
     }
     let before = level.position(level.pawn);
+    let partner_before = level.position(level.partner);
     assert!(
         level.frame_with(true).is_empty(),
         "{map}: the use queues the split"
@@ -976,6 +986,14 @@ fn run_set_pieces(map: &str, mut level: Level) {
     let crossed = level.frame();
     assert_eq!(crossed.len(), 1, "{map}: the presser splits");
     assert_eq!(crossed[0].0, level.pawn);
+    let partner_after = level.position(level.partner);
+    assert!(
+        (Vec3::new(partner_after.x, 0.0, partner_after.z)
+            - Vec3::new(partner_before.x, 0.0, partner_before.z))
+        .length()
+            < 1e-2,
+        "{map}: the partner off the pad stays in copy A: {partner_before} → {partner_after}"
+    );
     let after = level.position(level.pawn);
     assert!(
         (Vec3::new(after.x, 0.0, after.z) - Vec3::new(before.x, 0.0, before.z + COPY_OFFSET.z))

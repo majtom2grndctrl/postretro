@@ -27,7 +27,9 @@ export function setupLevel() {
   const open = defineReaction("barrier.open", { sequence: barrier.flatMap((door) => door.start()) });
 
   // Split: the first pad press arms both split teleporters, one over each pad,
-  // so only whoever stands on a pad crosses, and turns the split pads off.
+  // so only whoever stands on a pad crosses, and turns the split pads off. The
+  // pad press stands in for a game condition (a timer, a health threshold) and
+  // splits once: press it alone from the pad's centre.
   const splitPads = getMapEntities("trigger", { tag: "split_pad" });
   const swapPads = getMapEntities("trigger", { tag: "swap_pad" });
   const split = getMapEntities("teleporter", { tag: "echo_split" });

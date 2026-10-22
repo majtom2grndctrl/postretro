@@ -129,15 +129,34 @@ pub fn ghost_shade(base: [f32; 3], look: &GhostInstanceLook) -> [f32; 3] {
     std::array::from_fn(|i| (luma + (base[i] - luma) * s) * look.tint[i])
 }
 
+/// Pixels in one 4×4 screen-door tile: the steps of coverage it presents.
+pub const SCREEN_DOOR_PIXELS: u32 = 16;
+
 /// CPU twin of the screen-door threshold (`ghost_look.wgsl`
 /// `screen_door_threshold`): the 4×4 ordered (Bayer) index of the pixel at
 /// `(x, y)`, centered in its sixteenth. A pixel draws when the presented
-/// opacity exceeds it, so a 4×4 tile keeps `round_down(16 · opacity)` pixels.
+/// opacity exceeds it, so a tile keeps [`screen_door_coverage`] of its pixels.
 pub fn screen_door_threshold(x: u32, y: u32) -> f32 {
     let a = (x ^ y) & 3;
     let b = y & 3;
     let index = ((a & 1) << 3) | ((b & 1) << 2) | ((a >> 1) << 1) | (b >> 1);
-    (index as f32 + 0.5) / 16.0
+    threshold_of(index)
+}
+
+fn threshold_of(index: u32) -> f32 {
+    (index as f32 + 0.5) / SCREEN_DOOR_PIXELS as f32
+}
+
+/// The share of a 4×4 tile's pixels the dither draw keeps at `opacity`: the
+/// packed opacity the shader decodes against every threshold of the tile.
+/// Thresholds sit at the centre of each sixteenth, so that is the nearest
+/// sixteenth, a tie rounding down: 0.8124 keeps 13 of 16.
+pub fn screen_door_coverage(opacity: f32) -> f32 {
+    let drawn = unorm(opacity, 65535.0) as f32 / 65535.0;
+    let kept = (0..SCREEN_DOOR_PIXELS)
+        .filter(|&index| drawn > threshold_of(index))
+        .count();
+    kept as f32 / SCREEN_DOOR_PIXELS as f32
 }
 
 #[cfg(test)]
@@ -283,5 +302,29 @@ mod tests {
         }
         // The pattern tiles: the pixel four over or four down shares its threshold.
         assert_eq!(screen_door_threshold(1, 2), screen_door_threshold(5, 6));
+    }
+
+    #[test]
+    fn screen_door_coverage_is_the_share_of_a_tile_the_packed_opacity_keeps() {
+        let tile_share = |opacity: f32| {
+            let drawn = GhostInstanceLook::unpack(look(opacity, 0.0, [1.0; 3]).pack()).opacity;
+            (0..4)
+                .flat_map(|y| (0..4).map(move |x| (x, y)))
+                .filter(|&(x, y)| drawn > screen_door_threshold(x, y))
+                .count() as f32
+                / 16.0
+        };
+        for step in 0..=1000 {
+            let opacity = step as f32 / 1000.0;
+            assert_eq!(screen_door_coverage(opacity), tile_share(opacity), "{opacity}");
+        }
+        // The nearest sixteenth, not the one below: these round up.
+        assert_eq!(screen_door_coverage(0.8124), 13.0 / 16.0);
+        assert_eq!(screen_door_coverage(0.6874), 11.0 / 16.0);
+        assert_eq!(screen_door_coverage(0.7874), 13.0 / 16.0);
+        for kept in 0..=16 {
+            let share = kept as f32 / 16.0;
+            assert_eq!(screen_door_coverage(share), share);
+        }
     }
 }

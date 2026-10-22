@@ -167,6 +167,7 @@ impl Fixture {
                 socket_poses: &socket_poses,
                 force_resample_model: &|_| false,
                 limiter,
+                transparency: Default::default(),
             },
         );
     }

@@ -1,5 +1,5 @@
-// Kinematic-brush ghost pipelines (blend and screen-door), their instance upload and
-// draw recording over the mover pass's shared geometry.
+// Kinematic-brush ghost pipelines (blend and screen-door, each with its depth pre-pass),
+// their instance upload and draw recording over the mover pass's shared geometry.
 // See: context/lib/rendering_pipeline.md §7.9
 
 use postretro_render_cpu::ghost_instance::{
@@ -7,6 +7,7 @@ use postretro_render_cpu::ghost_instance::{
 };
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 
+use super::ghost_depth::ghost_depth_pipeline_state;
 use super::kinematic_brush::KinematicBrushPass;
 use super::mesh_ghost::ghost_pipeline_state;
 use super::{GpuTexture, SCENE_COLOR_FORMAT};
@@ -18,6 +19,29 @@ pub(super) const KINEMATIC_GHOST_SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/ghost_look.wgsl"),
 );
+
+/// The mover pass's world vertex stream; unlit, so only position and base UV
+/// are declared.
+static KINEMATIC_GHOST_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+    wgpu::VertexAttribute {
+        offset: 0,
+        shader_location: 0,
+        format: wgpu::VertexFormat::Float32x3,
+    },
+    wgpu::VertexAttribute {
+        offset: 12,
+        shader_location: 1,
+        format: wgpu::VertexFormat::Float32x2,
+    },
+];
+
+fn kinematic_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: postretro_render_data::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &KINEMATIC_GHOST_VERTEX_ATTRIBUTES,
+    }
+}
 
 /// One packed ghost instance's draw: which mover's geometry, at which slot of
 /// the ghost instance buffer.
@@ -34,6 +58,8 @@ struct GhostDraw {
 pub(crate) struct KinematicGhostPass {
     blend: wgpu::RenderPipeline,
     dither: wgpu::RenderPipeline,
+    depth_blend: wgpu::RenderPipeline,
+    depth_dither: wgpu::RenderPipeline,
     instance_bind_group_layout: wgpu::BindGroupLayout,
     instance_buffer: wgpu::Buffer,
     /// Instances the buffer holds.
@@ -45,9 +71,10 @@ pub(crate) struct KinematicGhostPass {
 }
 
 impl KinematicGhostPass {
-    /// Layout: group 0 camera, group 1 the world material, group 2 the ghost
-    /// instances. No light, shadow or SH group, so mover ghosts add nothing to
-    /// any fragment binding budget.
+    /// Colour layout: group 0 camera, group 1 the world material, group 2 the
+    /// ghost instances; the depth pre-pass layout drops the material. No
+    /// light, shadow or SH group, so mover ghosts add nothing to any fragment
+    /// binding budget.
     pub(crate) fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
@@ -81,6 +108,11 @@ impl KinematicGhostPass {
             ],
             immediate_size: 0,
         });
+        let depth_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Kinematic Ghost Depth Pipeline Layout"),
+            bind_group_layouts: &[Some(camera_bgl), None, Some(&instance_bind_group_layout)],
+            immediate_size: 0,
+        });
         let build = |mode: GhostTransparency, label: &str| {
             let state = ghost_pipeline_state(mode, depth_format);
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -89,25 +121,7 @@ impl KinematicGhostPass {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
-                    // The mover pass's world vertex stream; unlit, so only
-                    // position and base UV are declared.
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
-                            as wgpu::BufferAddress,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                offset: 0,
-                                shader_location: 0,
-                                format: wgpu::VertexFormat::Float32x3,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 12,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                        ],
-                    })],
+                    buffers: &[Some(kinematic_ghost_vertex_layout())],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 primitive: wgpu::PrimitiveState {
@@ -132,12 +146,49 @@ impl KinematicGhostPass {
                 cache: None,
             })
         };
+        let build_depth = |mode: GhostTransparency, label: &str| {
+            let state = ghost_depth_pipeline_state(mode, depth_format);
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&depth_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Some(kinematic_ghost_vertex_layout())],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: state.cull_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(state.depth),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: state.fragment_entry.map(|entry| wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    targets: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let instance_buffer = create_instance_buffer(device, 1);
         let instance_bind_group =
             create_instance_bind_group(device, &instance_bind_group_layout, &instance_buffer);
         Self {
             blend: build(GhostTransparency::Blend, "Kinematic Ghost Blend Pipeline"),
             dither: build(GhostTransparency::Dither, "Kinematic Ghost Dither Pipeline"),
+            depth_blend: build_depth(
+                GhostTransparency::Blend,
+                "Kinematic Ghost Blend Depth Pipeline",
+            ),
+            depth_dither: build_depth(
+                GhostTransparency::Dither,
+                "Kinematic Ghost Dither Depth Pipeline",
+            ),
             instance_bind_group_layout,
             instance_buffer,
             instance_capacity: 1,
@@ -232,6 +283,39 @@ impl KinematicGhostPass {
                     .or_else(|| materials.first())
                     .expect("renderer always keeps a placeholder material bind group");
                 pass.set_bind_group(1, &material.bind_group, &[]);
+                pass.draw_indexed(indices, 0, instances.clone());
+            }
+        }
+    }
+
+    /// Record every mover ghost's depth pre-pass through `mode`'s depth
+    /// pipeline: the same draws as [`Self::record_draws`], with no material.
+    /// Group 0 (camera) must be set by the caller.
+    pub(crate) fn record_depth_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        brush: &KinematicBrushPass,
+        mode: GhostTransparency,
+    ) {
+        if self.draws.is_empty() {
+            return;
+        }
+        pass.set_pipeline(match mode {
+            GhostTransparency::Blend => &self.depth_blend,
+            GhostTransparency::Dither => &self.depth_dither,
+        });
+        pass.set_bind_group(2, &self.instance_bind_group, &[]);
+        pass.set_vertex_buffer(0, brush.shared_vertex_buffer().slice(..));
+        pass.set_index_buffer(
+            brush.shared_index_buffer().slice(..),
+            wgpu::IndexFormat::Uint32,
+        );
+        for draw in &self.draws {
+            let Some(spans) = brush.material_spans(draw.mover_id) else {
+                continue;
+            };
+            let instances = draw.instance_index..draw.instance_index + 1;
+            for (_, indices) in spans {
                 pass.draw_indexed(indices, 0, instances.clone());
             }
         }

@@ -2186,6 +2186,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         hit_zones.has_precise_zones(handle) || hit_zones.has_pose_modifiers(handle)
                     },
                     limiter: Some(ghost_limiter),
+                    transparency: renderer.ghost_transparency(),
                 },
             );
             renderer.set_ghost_mesh_draws(app.ghost_render.instances());
@@ -2210,6 +2211,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     visible: &visible_cells,
                     movers: &app.kinematic_mover_render,
                     limiter: Some(ghost_limiter),
+                    transparency: renderer.ghost_transparency(),
                 },
             );
             renderer.set_kinematic_ghost_draws(app.mover_ghost_render.instances());

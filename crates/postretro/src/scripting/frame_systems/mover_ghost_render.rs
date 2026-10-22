@@ -7,6 +7,7 @@ use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::flash_clamp::GhostLookClamp;
 use postretro_render_cpu::flash_limiter::LimiterFrameUniform;
 use postretro_render_cpu::ghost_instance::KinematicGhostInstance;
+use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_visibility::VisibleCells;
 
 use super::ghost_render::{GhostDrawKey, presented_look};
@@ -22,6 +23,8 @@ pub(crate) struct MoverGhostFrame<'a> {
     pub movers: &'a KinematicMoverRenderCollector,
     /// This presented frame's limiter input, or `None` for a capture.
     pub limiter: Option<LimiterFrameUniform>,
+    /// How ghosts draw translucent (`Renderer::ghost_transparency`).
+    pub transparency: GhostTransparency,
 }
 
 /// Game-side mover ghost collection. Owns no wgpu: it hands the renderer
@@ -60,6 +63,7 @@ impl MoverGhostRenderCollector {
         frame: &MoverGhostFrame<'_>,
     ) {
         self.instances.clear();
+        self.clamp.set_transparency(frame.transparency);
         self.clamp.begin_frame(frame.limiter.as_ref());
         for member in members {
             if member.category != GhostCategory::Movers {

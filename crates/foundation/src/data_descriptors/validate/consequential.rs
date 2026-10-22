@@ -24,6 +24,10 @@ pub fn validate_consequential_args(
     primitive: &str,
     args: &serde_json::Value,
 ) -> Result<(), String> {
+    if primitive == "startTrap" {
+        return validate_start_trap_args(args)
+            .map_err(|detail| format!("reaction `{reaction}` {site}: {detail}"));
+    }
     if !is_consequential_primitive(primitive) {
         return Ok(());
     }
@@ -54,6 +58,44 @@ pub fn validate_consequential_args(
             DescriptorError::InvalidShape { reason } => fail(reason),
             other => fail(other.to_string()),
         })?;
+    }
+    Ok(())
+}
+
+/// A trap `start`'s per-run options: absent, or an object whose optional
+/// `intervalMs` is finite and positive and whose optional `phaseMs` is finite
+/// and non-negative. A literal outside that rejects the reaction at install, as
+/// the same value on the map KVP leaves the trap inert.
+fn validate_start_trap_args(args: &serde_json::Value) -> Result<(), String> {
+    let object = match args {
+        serde_json::Value::Null => return Ok(()),
+        serde_json::Value::Object(object) => object,
+        _ => return Err("`startTrap` `args` must be an object".to_string()),
+    };
+    for (key, positive) in [("intervalMs", true), ("phaseMs", false)] {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        finite_f32(Some(value)).map_err(|detail| format!("`startTrap` `args.{key}` {detail}"))?;
+        let number = value.as_f64().expect("finite_f32 admitted a number");
+        if positive && number <= 0.0 {
+            return Err(format!(
+                "`startTrap` `args.{key}` must be positive, got {number}"
+            ));
+        }
+        if !positive && number < 0.0 {
+            return Err(format!(
+                "`startTrap` `args.{key}` must not be negative, got {number}"
+            ));
+        }
+    }
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "intervalMs" | "phaseMs"))
+    {
+        return Err(format!(
+            "`startTrap` `args.{unknown}` is not a trap start option"
+        ));
     }
     Ok(())
 }

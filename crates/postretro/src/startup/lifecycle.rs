@@ -1631,9 +1631,9 @@ pub(crate) mod tests {
     use crate::{input, options, scripting_systems, view_feel};
     use postretro_entities::SystemReactionCommand;
     use postretro_entities::{
-        CrossingCondition, CrossingDescriptor, EntityId, EntityTypeDescriptor, MoverCommand,
-        NamedReaction, PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor,
-        TriggerActivation, TriggerEventDescriptor, TriggerFireMode, TriggerPoolArm,
+        CrossingCondition, CrossingDescriptor, EntityId, EntityTypeDescriptor, NamedReaction,
+        PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, TriggerActivation,
+        TriggerCommand, TriggerEventDescriptor, TriggerFireMode, TriggerPoolArm,
         TriggerPoolDescriptor, TriggerVolumeComponent,
     };
     use postretro_entities::{
@@ -4442,7 +4442,7 @@ pub(crate) mod tests {
                         String::new(),
                         "plate_pressed".to_string(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,
@@ -4573,7 +4573,7 @@ pub(crate) mod tests {
                         String::new(),
                         String::new(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,

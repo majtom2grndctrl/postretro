@@ -441,7 +441,7 @@ fn a_consequence_and_two_presentations_run_each_on_its_own_path_in_listed_order(
 #[test]
 fn a_reaction_using_on_player_is_not_bound_for_a_trigger() {
     use postretro_entities::{
-        MoverCommand, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+        TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
     };
     let mut world = World::new();
     let trigger = {
@@ -455,7 +455,7 @@ fn a_reaction_using_on_player_is_not_bound_for_a_trigger() {
                     String::new(),
                     "scald".to_string(),
                     String::new(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     TriggerFireMode::Multiple,
                     0.0,
                     true,
@@ -914,7 +914,7 @@ fn trigger_audiences_reject_player_tokens_in_primitives_and_raw_sequence_args() 
     use crate::trigger_bindings::TriggerBindingTable;
     use crate::trigger_system::TriggerEventEdge;
     use postretro_entities::{
-        MoverCommand, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+        TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
     };
 
     for (audience, raw_sequence, should_bind) in [
@@ -936,7 +936,7 @@ fn trigger_audiences_reject_player_tokens_in_primitives_and_raw_sequence_args() 
                         String::new(),
                         "cue".to_string(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,

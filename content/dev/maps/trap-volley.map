@@ -1,0 +1,213 @@
+// Game: Postretro
+// Format: Standard
+// E18 projectile-trap volley fixture: trigger wiring with no data script.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/trap-volley.map -o content/dev/maps/trap-volley.prl
+// The centre plate fires every `volley` trap on Enter (re-arming after 1.5 s);
+// the north plate starts them repeating and the south plate stops them. The
+// east-wall traps author their facing as `angle`, `angles` and `mangle`. The
+// `sentry` trap starts on spawn and sweeps across the room every two seconds;
+// the `updown` plate fires one trap straight up and one straight down.
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// floor
+{
+( 464 -16 -16 ) ( 464 400 0 ) ( 464 400 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 400 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 464 400 -16 ) ( -16 400 0 ) ( -16 400 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 464 -16 0 ) ( 464 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 400 0 ) ( 464 -16 0 ) ( -16 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 464 400 -16 ) ( -16 400 -16 ) debug_ceiling_grey 0 0 0 1 1
+}
+// ceiling
+{
+( 464 -16 160 ) ( 464 400 176 ) ( 464 400 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 400 160 ) ( -16 -16 176 ) ( -16 -16 160 ) debug_ceiling_grey 0 0 0 1 1
+( 464 400 160 ) ( -16 400 176 ) ( -16 400 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 160 ) ( 464 -16 176 ) ( 464 -16 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 400 176 ) ( 464 -16 176 ) ( -16 -16 176 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 160 ) ( 464 400 160 ) ( -16 400 160 ) debug_ceiling_grey 0 0 0 1 1
+}
+// west wall
+{
+( 0 0 0 ) ( 0 384 160 ) ( 0 384 0 ) concrete_stone_033 0 0 0 1 1
+( -16 384 0 ) ( -16 0 160 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 384 0 ) ( -16 384 160 ) ( -16 384 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( 0 0 160 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 384 160 ) ( 0 0 160 ) ( -16 0 160 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( 0 384 0 ) ( -16 384 0 ) concrete_stone_033 0 0 0 1 1
+}
+// east wall
+{
+( 464 0 0 ) ( 464 384 160 ) ( 464 384 0 ) concrete_stone_033 0 0 0 1 1
+( 448 384 0 ) ( 448 0 160 ) ( 448 0 0 ) concrete_stone_033 0 0 0 1 1
+( 464 384 0 ) ( 448 384 160 ) ( 448 384 0 ) concrete_stone_033 0 0 0 1 1
+( 448 0 0 ) ( 464 0 160 ) ( 464 0 0 ) concrete_stone_033 0 0 0 1 1
+( 448 384 160 ) ( 464 0 160 ) ( 448 0 160 ) concrete_stone_033 0 0 0 1 1
+( 448 0 0 ) ( 464 384 0 ) ( 448 384 0 ) concrete_stone_033 0 0 0 1 1
+}
+// south wall
+{
+( 464 -16 0 ) ( 464 0 160 ) ( 464 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( -16 -16 160 ) ( -16 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 464 0 0 ) ( -16 0 160 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 464 -16 160 ) ( 464 -16 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 160 ) ( 464 -16 160 ) ( -16 -16 160 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 464 0 0 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
+}
+// north wall
+{
+( 464 384 0 ) ( 464 400 160 ) ( 464 400 0 ) concrete_stone_033 0 0 0 1 1
+( -16 400 0 ) ( -16 384 160 ) ( -16 384 0 ) concrete_stone_033 0 0 0 1 1
+( 464 400 0 ) ( -16 400 160 ) ( -16 400 0 ) concrete_stone_033 0 0 0 1 1
+( -16 384 0 ) ( 464 384 160 ) ( 464 384 0 ) concrete_stone_033 0 0 0 1 1
+( -16 400 160 ) ( 464 384 160 ) ( -16 384 160 ) concrete_stone_033 0 0 0 1 1
+( -16 384 0 ) ( 464 400 0 ) ( -16 400 0 ) concrete_stone_033 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "40 192 24"
+"angles" "0 0 0"
+}
+{
+"classname" "light"
+"origin" "224 192 140"
+"light" "300"
+"_color" "255 240 220"
+"_falloff_range" "600"
+"_light_size" "0"
+"_shadow_type" "static_light_map"
+}
+// Centre plate: one volley per Enter.
+{
+"classname" "trigger_volume"
+"name" "volley_plate"
+"activation" "touch"
+"target_tag" "volley"
+"command" "fire"
+"fire_mode" "multiple"
+"rearm_ms" "1500"
+{
+( 160 160 0 ) ( 160 224 16 ) ( 160 224 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 224 0 ) ( 96 160 16 ) ( 96 160 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 224 0 ) ( 96 224 16 ) ( 96 224 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 160 0 ) ( 160 160 16 ) ( 160 160 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 224 16 ) ( 160 160 16 ) ( 96 160 16 ) debug_ceiling_grey 0 0 0 1 1
+( 96 160 0 ) ( 160 224 0 ) ( 96 224 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// North plate: start the volley repeating at each trap's authored interval.
+{
+"classname" "trigger_volume"
+"name" "volley_start"
+"activation" "touch"
+"target_tag" "volley"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+{
+( 160 288 0 ) ( 160 352 16 ) ( 160 352 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 352 0 ) ( 96 288 16 ) ( 96 288 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 352 0 ) ( 96 352 16 ) ( 96 352 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 288 0 ) ( 160 288 16 ) ( 160 288 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 352 16 ) ( 160 288 16 ) ( 96 288 16 ) debug_ceiling_grey 0 0 0 1 1
+( 96 288 0 ) ( 160 352 0 ) ( 96 352 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// South plate: stop the volley.
+{
+"classname" "trigger_volume"
+"name" "volley_stop"
+"activation" "touch"
+"target_tag" "volley"
+"command" "stop"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+{
+( 160 32 0 ) ( 160 96 16 ) ( 160 96 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 96 0 ) ( 96 32 16 ) ( 96 32 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 96 0 ) ( 96 96 16 ) ( 96 96 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 32 0 ) ( 160 32 16 ) ( 160 32 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 96 16 ) ( 160 32 16 ) ( 96 32 16 ) debug_ceiling_grey 0 0 0 1 1
+( 96 32 0 ) ( 160 96 0 ) ( 96 96 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// East-wall volley traps, all facing west toward the plates.
+{
+"classname" "projectile_trap"
+"origin" "424 96 48"
+"angle" "180"
+"weapon" "enemy_rifle"
+"interval_ms" "1000"
+"_tags" "volley"
+}
+{
+"classname" "projectile_trap"
+"origin" "424 160 48"
+"angles" "0 180 0"
+"weapon" "enemy_rifle"
+"interval_ms" "1000"
+"_tags" "volley"
+}
+{
+"classname" "projectile_trap"
+"origin" "424 224 48"
+"mangle" "0 180 0"
+"weapon" "enemy_rifle"
+"interval_ms" "1000"
+"_tags" "volley"
+}
+{
+"classname" "projectile_trap"
+"origin" "424 288 48"
+"angle" "180"
+"weapon" "enemy_rifle"
+"interval_ms" "1000"
+"_tags" "volley"
+}
+// The sentry: starts on spawn, fires north across the room.
+{
+"classname" "projectile_trap"
+"origin" "320 24 48"
+"angle" "90"
+"weapon" "enemy_rifle"
+"interval_ms" "2000"
+"phase_ms" "500"
+"start_on_spawn" "1"
+"_tags" "sentry"
+}
+// Up and down: the legacy `angle` sentinels.
+{
+"classname" "trigger_volume"
+"name" "updown_plate"
+"activation" "touch"
+"target_tag" "updown"
+"command" "fire"
+"fire_mode" "multiple"
+"rearm_ms" "1000"
+{
+( 288 300 0 ) ( 288 364 16 ) ( 288 364 0 ) debug_ceiling_grey 0 0 0 1 1
+( 224 364 0 ) ( 224 300 16 ) ( 224 300 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 364 0 ) ( 224 364 16 ) ( 224 364 0 ) debug_ceiling_grey 0 0 0 1 1
+( 224 300 0 ) ( 288 300 16 ) ( 288 300 0 ) debug_ceiling_grey 0 0 0 1 1
+( 224 364 16 ) ( 288 300 16 ) ( 224 300 16 ) debug_ceiling_grey 0 0 0 1 1
+( 224 300 0 ) ( 288 364 0 ) ( 224 364 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "projectile_trap"
+"origin" "352 336 16"
+"angle" "-1"
+"weapon" "enemy_rifle"
+"_tags" "updown"
+}
+{
+"classname" "projectile_trap"
+"origin" "384 336 144"
+"angle" "-2"
+"weapon" "enemy_rifle"
+"_tags" "updown"
+}

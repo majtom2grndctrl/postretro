@@ -6,11 +6,11 @@ use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::{
     CrossingCondition, CrossingDescriptor, EntityId, EntityRegistry, FireOrigin, FireSubject,
-    KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand, NamedReaction,
-    NumericRange, PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, ScriptCtx,
-    SequenceStep, SequenceTarget, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
-    TeleportEventDescriptor, TeleporterComponent, Transform, TriggerActivation, TriggerFireMode,
-    TriggerVolumeComponent,
+    KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, NamedReaction, NumericRange,
+    PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, ScriptCtx, SequenceStep,
+    SequenceTarget, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+    TeleportEventDescriptor, TeleporterComponent, Transform, TriggerActivation, TriggerCommand,
+    TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{PlayerMovementComponent, Seat};
 use postretro_level_format::environment_volumes::{EnvironmentBrush, EnvironmentPlane};
@@ -306,7 +306,7 @@ impl Rig {
                         String::new(),
                         "edge".into(),
                         "edge".into(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,
@@ -825,6 +825,7 @@ fn teleport_liveness_and_body_kinds_bar_dead_and_non_players_but_not_later_kills
                     credit_source: "test.projectile".into(),
                     owner_pawn,
                     owner_weapon,
+                    attackerless: false,
                     spawned: false,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,

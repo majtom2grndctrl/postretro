@@ -5,8 +5,8 @@ use crate::coop_fixture_tests::initialize_dev_mod;
 use crate::scripting_systems::presentation_bindings::PresentationBindings;
 use crate::startup::lifecycle::tests::{install_capture_world, script_ctx, test_app};
 use postretro_entities::{
-    ComponentKind, MoverCommand, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, Transform,
-    TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+    ComponentKind, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, Transform,
+    TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_net::replication::ServerReplication;
 use postretro_net::transport::{NetClient, NetServer, connection_config};
@@ -171,7 +171,7 @@ fn presentation_budget_fresh_stress_map_cpu_install_and_host_capture_measurement
                     String::new(),
                     "budget.capture".into(),
                     String::new(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     TriggerFireMode::Once,
                     0.0,
                     true,

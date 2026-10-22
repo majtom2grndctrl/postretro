@@ -908,6 +908,7 @@ mod tests {
                     credit_source: "enemy.rifle".to_string(),
                     owner_pawn: owner,
                     owner_weapon: owner,
+                    attackerless: false,
                     spawned: true,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,
@@ -1380,6 +1381,7 @@ mod tests {
                     // Enemy projectiles preserve the enemy id for common impact
                     // damage provenance; it must never choose the visual class.
                     owner_weapon: enemy,
+                    attackerless: false,
                     spawned: true,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,
@@ -2608,6 +2610,7 @@ mod tests {
                 credit_source: "weapon.test.local".to_string(),
                 owner_pawn,
                 owner_weapon: weapon,
+                attackerless: false,
                 spawned: false,
                 predicted_shot_id: None,
                 elapsed_flight_age: 0.0,
@@ -2752,6 +2755,7 @@ mod tests {
                     credit_source: "weapon.test.local".to_string(),
                     owner_pawn,
                     owner_weapon: weapon,
+                    attackerless: false,
                     spawned: false,
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,

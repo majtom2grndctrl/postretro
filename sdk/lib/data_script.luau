@@ -257,6 +257,24 @@ export type SpawnFromSpawnerStep = {
   primitive: "spawnFromSpawner",
 }
 
+--- Member steps on one projectile trap (`t:fire()`, `t:start(options)`,
+--- `t:stop()`). Every trap step is host-only.
+export type FireTrapStep = {
+  id: number,
+  primitive: "fireTrap",
+}
+
+export type StartTrapStep = {
+  id: number,
+  primitive: "startTrap",
+  args: { intervalMs: number?, phaseMs: number? }?,
+}
+
+export type StopTrapStep = {
+  id: number,
+  primitive: "stopTrap",
+}
+
 export type WaitArgs = { durationMs: number, interruptible: boolean }
 export type FireArgs = { event: string }
 
@@ -281,7 +299,7 @@ export type FireStep = {
 --- Ordered member, group, subject-token and control steps. Steps begin in
 --- array order; `fire` queues a named dispatch, while `wait` stops the current
 --- drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read

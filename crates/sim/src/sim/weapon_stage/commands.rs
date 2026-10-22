@@ -110,10 +110,12 @@ fn normalize_aim_direction(direction: Vec3) -> Option<Vec3> {
 /// Where a projectile came from, recorded at spawn for its contact
 /// presentation: the weapon descriptor it was fired from, and the first
 /// projectile of its shot (`None` for the first, or a lone projectile).
+/// `attackerless` marks a shot no shooter is credited for (a trap's).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectileSource {
     pub weapon: Option<String>,
     pub activation: Option<EntityId>,
+    pub attackerless: bool,
 }
 
 pub fn spawn_projectile(
@@ -158,6 +160,7 @@ pub fn spawn_projectile(
         credit_source: launch.credit_source,
         owner_pawn,
         owner_weapon,
+        attackerless: source.attackerless,
         spawned: true,
         predicted_shot_id,
         elapsed_flight_age: 0.0,

@@ -61,9 +61,9 @@ use crate::trigger_bindings::TriggerBindingTable;
 use crate::trigger_system::TriggerSystem;
 use crate::weapon::FireButtonState;
 use postretro_entities::{
-    EntityId, FogVolumeComponent, MoverCommand, NamedReaction, PrimitiveDescriptor,
-    ReactionDescriptor, ReplicationScope, ScriptCtx, SequenceStep, SequenceTarget, SlotOwnership,
-    SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation,
+    EntityId, FogVolumeComponent, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+    ReplicationScope, ScriptCtx, SequenceStep, SequenceTarget, SlotOwnership, SlotRecord,
+    SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation, TriggerCommand,
     TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_scripting_core::StoreIdentityLedger;
@@ -374,7 +374,7 @@ impl TimedAlarmHarness {
                         String::new(),
                         TRIGGER_EVENT.to_string(),
                         String::new(),
-                        MoverCommand::Start,
+                        TriggerCommand::Start,
                         TriggerFireMode::Multiple,
                         0.0,
                         true,

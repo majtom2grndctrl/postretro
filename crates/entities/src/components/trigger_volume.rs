@@ -17,6 +17,32 @@ pub enum TriggerFireMode {
     Multiple,
 }
 
+/// The closed command a trigger's `command` KVP applies on Enter to every
+/// brainless member carrying its `target_tag` whose kind accepts it. The
+/// acceptance table lives with the trigger tick (`postretro-sim`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerCommand {
+    Start,
+    Stop,
+    Reverse,
+    GoToPathNode(String),
+    Fire,
+}
+
+impl TriggerCommand {
+    /// This command as a mover command, when it has one.
+    pub fn mover_command(&self) -> Option<MoverCommand> {
+        match self {
+            Self::Start => Some(MoverCommand::Start),
+            Self::Stop => Some(MoverCommand::Stop),
+            Self::Reverse => Some(MoverCommand::Reverse),
+            Self::GoToPathNode(node) => Some(MoverCommand::GoToPathNode(node.clone())),
+            Self::Fire => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TriggerVolumeComponent {
     pub activation: TriggerActivation,
@@ -25,7 +51,7 @@ pub struct TriggerVolumeComponent {
     pub on_fire: String,
     #[serde(default)]
     pub on_exit: String,
-    pub command: MoverCommand,
+    pub command: TriggerCommand,
     pub fire_mode: TriggerFireMode,
     pub rearm_ms: f32,
     pub enabled_on_spawn: bool,
@@ -45,7 +71,7 @@ impl TriggerVolumeComponent {
         target_tag: String,
         on_fire: String,
         on_exit: String,
-        command: MoverCommand,
+        command: TriggerCommand,
         fire_mode: TriggerFireMode,
         rearm_ms: f32,
         enabled_on_spawn: bool,
@@ -78,7 +104,7 @@ mod tests {
             "door".into(),
             "open_door".into(),
             "close_door".into(),
-            MoverCommand::Reverse,
+            TriggerCommand::Reverse,
             TriggerFireMode::Multiple,
             150.0,
             true,
@@ -102,7 +128,7 @@ mod tests {
             "lift".into(),
             "open_lift".into(),
             "close_lift".into(),
-            MoverCommand::Start,
+            TriggerCommand::Start,
             TriggerFireMode::Once,
             0.0,
             true,

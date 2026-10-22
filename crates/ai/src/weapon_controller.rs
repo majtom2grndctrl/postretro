@@ -293,6 +293,7 @@ impl AiWeaponControllers {
                 let source = ProjectileSource {
                     weapon: Some(canonical.clone()),
                     activation: None,
+                    attackerless: false,
                 };
                 if let Some(projectile) =
                     host.spawn_projectile(registry, actor, actor, launch, source)

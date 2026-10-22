@@ -583,8 +583,8 @@ pub(crate) fn warn_hosted_trigger_machine_local(
 mod tests {
     use super::*;
     use postretro_entities::{
-        MoverCommand, NamedReaction, PrimitiveDescriptor, SlotOwnership, SlotRecord, SlotSchema,
-        SlotType, SlotValue, Transform, TriggerActivation, TriggerEventDescriptor,
+        NamedReaction, PrimitiveDescriptor, SlotOwnership, SlotRecord, SlotSchema, SlotType,
+        SlotValue, Transform, TriggerActivation, TriggerCommand, TriggerEventDescriptor,
         TriggerVolumeComponent, VolumeTriggerEventDescriptor,
     };
     use postretro_scripting_core::reaction_dispatch::{
@@ -775,7 +775,7 @@ mod tests {
                     String::new(),
                     on_fire.to_string(),
                     on_exit.to_string(),
-                    MoverCommand::Start,
+                    TriggerCommand::Start,
                     fire_mode,
                     0.0,
                     true,

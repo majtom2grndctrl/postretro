@@ -66,9 +66,9 @@ read at: 473185e8
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin slice: `ProjectileTrap` component + `projectile_trap` builtin + install resolution + trap stage (fire, schedule, no-resource weapon) + attackerless projectiles + presentation spawns/emissions; `start_on_spawn` fixture through the compiled-level harness | integrating executor | — | |
-| 2 | Trigger command: `TriggerCommand`, section 44 value 4, compiler, bridge, loader counts, Enter dispatch over brainless kinds, install warning | integrating executor | 1 | |
-| 3 | Script surface: `fireTrap`/`startTrap`/`stopTrap` member steps, bound commands, partition lists, literal validation, SDK TS/Luau handle, typedefs, drift and parity fixtures, light-membership kind lists | integrating executor | 1 | |
+| 1 | Thin slice: `ProjectileTrap` component + `projectile_trap` builtin + install resolution + trap stage (fire, schedule, no-resource weapon) + attackerless projectiles + presentation spawns/emissions; `start_on_spawn` fixture through the compiled-level harness | integrating executor | — | done: `traps::tests` (22), `traps_surface_tests` volley (3) |
+| 2 | Trigger command: `TriggerCommand`, section 44 value 4, compiler, bridge, loader counts, Enter dispatch over brainless kinds, install warning | integrating executor | 1 | done: `trigger_direct_commands::tests` (8), format/compiler/bridge tests |
+| 3 | (in progress) Script surface: `fireTrap`/`startTrap`/`stopTrap` member steps, bound commands, partition lists, literal validation, SDK TS/Luau handle, typedefs, drift and parity fixtures, light-membership kind lists | integrating executor | 1 | |
 | 4 | Co-op: host mirror wiring in the frame loop, client gating, wire/snapshot diff gate | integrating executor | 1 | |
 | 5 | Fixtures (`trap-volley`, `trap-wave`, `trap-wave-luau`), FGD, surface tests | integrating executor | 2, 3 | |
 | 6 | Preflight, review loop, context docs | integrating executor | 1–5 | |

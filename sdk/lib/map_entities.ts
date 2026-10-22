@@ -10,6 +10,7 @@ import type {
   LightEntity,
   MoverEntity,
   SpawnerEntity,
+  TrapEntity,
   TriggerVolumeEntity,
 } from "postretro";
 import { wrapTeleporterEntity } from "./entities/teleporters";
@@ -24,6 +25,8 @@ import { wrapTriggerVolumeEntity } from "./entities/triggers";
 import type { TriggerVolumeHandle } from "./entities/triggers";
 import { wrapSpawnerEntity } from "./entities/spawners";
 import type { SpawnerEntityHandle } from "./entities/spawners";
+import { wrapTrapEntity } from "./entities/traps";
+import type { TrapEntityHandle } from "./entities/traps";
 
 // The raw engine query stays out of the author-facing typedefs: its kindless
 // component spelling is what `getMapEntities` replaces. The runtime installs
@@ -31,7 +34,7 @@ import type { SpawnerEntityHandle } from "./entities/spawners";
 declare function worldQuery(filter: { component: string; tag: string | null }): ReadonlyArray<unknown>;
 
 /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner";
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner" | "trap";
 
 /** The member handle each map kind yields. */
 export type MapEntityForKind<K extends MapEntityKind> =
@@ -42,6 +45,7 @@ export type MapEntityForKind<K extends MapEntityKind> =
   K extends "fog" ? FogVolumeHandle :
   K extends "emitter" ? EmitterEntity :
   K extends "spawner" ? SpawnerEntityHandle :
+  K extends "trap" ? TrapEntityHandle :
   never;
 
 /** Narrows a member query to instances carrying `tag`. */
@@ -56,6 +60,7 @@ const MAP_KIND_COMPONENTS: Readonly<Record<MapEntityKind, string>> = Object.free
   fog: "fog_volume",
   emitter: "emitter",
   spawner: "spawner",
+  trap: "projectile_trap",
 });
 
 function projectEmitter(snapshot: EmitterEntity): EmitterEntity {
@@ -101,6 +106,8 @@ export function getMapEntities<K extends MapEntityKind>(
         return (raw as ReadonlyArray<EmitterEntity>).map(projectEmitter);
       case "spawner":
         return (raw as ReadonlyArray<SpawnerEntity>).map(wrapSpawnerEntity);
+      case "trap":
+        return (raw as ReadonlyArray<TrapEntity>).map(wrapTrapEntity);
     }
   })();
   return members as MapEntityForKind<K>[];

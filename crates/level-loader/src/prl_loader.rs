@@ -2588,8 +2588,12 @@ pub(crate) fn load_prl_from_container(
         .iter()
         .filter(|trigger| trigger.command == 3)
         .count();
+    let fire_command_count = trigger_volumes
+        .iter()
+        .filter(|trigger| trigger.command == 4)
+        .count();
     log::info!(
-        "[PRL] TriggerVolumes: {} trigger(s): {touch_trigger_count} touch, {use_trigger_count} use; commands: {start_command_count} start, {stop_command_count} stop, {reverse_command_count} reverse, {go_to_path_node_command_count} go_to_path_node",
+        "[PRL] TriggerVolumes: {} trigger(s): {touch_trigger_count} touch, {use_trigger_count} use; commands: {start_command_count} start, {stop_command_count} stop, {reverse_command_count} reverse, {go_to_path_node_command_count} go_to_path_node, {fire_command_count} fire",
         trigger_volumes.len(),
     );
 

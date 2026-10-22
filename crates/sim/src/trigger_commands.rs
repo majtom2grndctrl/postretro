@@ -1,6 +1,7 @@
 //! Bound trigger commands and their fixed-tick execution.
 //! Governing context: `context/lib/development_guide.md` §4.3; `context/lib/scripting.md` §12.
 
+use postretro_entities::components::projectile_trap::TrapRequest;
 use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, GroupTarget, MoverCommand, ScriptCtx, SlotTable,
     SlotValue,
@@ -69,6 +70,11 @@ pub(crate) enum BoundTriggerCommand {
     },
     Spawn {
         target: BoundTarget,
+    },
+    /// A trap member step: host-only, acting at this tick's trap stage.
+    Trap {
+        target: BoundTarget,
+        request: TrapRequest,
     },
 }
 
@@ -142,6 +148,7 @@ pub(crate) enum BoundTriggerCommandKind {
     AnimationState,
     UpdateNpcState,
     Spawn,
+    Trap,
 }
 
 impl BoundTriggerCommand {
@@ -211,6 +218,9 @@ impl BoundTriggerCommand {
             return;
         }
         match self {
+            Self::Trap { .. } if !group_commands_apply_here(script_ctx) => {
+                // Every trap step is host-only; a client latches nothing.
+            }
             Self::TeleporterArmed { target, armed } => {
                 let targets = target.resolve(registry, fire_context);
                 crate::teleporter_commands::enqueue_teleporter_mutations(
@@ -427,6 +437,14 @@ impl BoundTriggerCommand {
                     );
                 }
             },
+            Self::Trap { target, request } => match target {
+                BoundTarget::Entity(_) => {
+                    if let Some(&id) = target.resolve(registry, fire_context).as_slice().first() {
+                        crate::traps::issue_trap_request(registry, id, *request);
+                    }
+                }
+                _ => log::warn!("[Trigger] a trap step requires a trap member target; skipping"),
+            },
             Self::TeleporterArmed { .. } => {
                 log::warn!("[Teleport] bound command requires a live ScriptCtx queue; skipped")
             }
@@ -449,7 +467,8 @@ impl BoundTriggerCommand {
             | Self::AddOwnerSlot { target, .. }
             | Self::AnimationState { target, .. }
             | Self::UpdateNpcState { target, .. }
-            | Self::Spawn { target } => target,
+            | Self::Spawn { target }
+            | Self::Trap { target, .. } => target,
             Self::StoreSlot { .. } => return None,
         };
         match target {
@@ -473,6 +492,7 @@ impl BoundTriggerCommand {
             Self::AnimationState { .. } => BoundTriggerCommandKind::AnimationState,
             Self::UpdateNpcState { .. } => BoundTriggerCommandKind::UpdateNpcState,
             Self::Spawn { .. } => BoundTriggerCommandKind::Spawn,
+            Self::Trap { .. } => BoundTriggerCommandKind::Trap,
         }
     }
 }

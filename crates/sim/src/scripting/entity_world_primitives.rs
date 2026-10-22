@@ -76,6 +76,9 @@ enum QueryFilter {
     Teleporter {
         tag: Option<String>,
     },
+    ProjectileTrap {
+        tag: Option<String>,
+    },
     /// Always returns an empty array. Sprite visuals are engine-managed.
     AlwaysEmpty,
 }
@@ -92,11 +95,12 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "trigger_volume" => Ok(QueryFilter::TriggerVolume { tag }),
         "teleporter" => Ok(QueryFilter::Teleporter { tag }),
         "spawner" => Ok(QueryFilter::Spawner { tag }),
+        "projectile_trap" => Ok(QueryFilter::ProjectileTrap { tag }),
         "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"spawner\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"spawner\" | \"projectile_trap\" | \"sprite_visual\""
             ),
         }),
     }
@@ -104,7 +108,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
 
 const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Raises outside a level's data script (module evaluation or `setupLevel`). \
      Returns map-placed instances only; an entity a runtime spawn carries never appears. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"spawner\" | \"sprite_visual\", tag?: string }. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"spawner\" | \"projectile_trap\" | \"sprite_visual\", tag?: string }. \
      `\"sprite_visual\"` always returns `[]` (engine-managed). \
      Unknown component values raise InvalidArgument. \
      The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
@@ -253,8 +257,8 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
 
 /// Collect identity-only member snapshots (`id`, `position`, `tags`) for a map
 /// kind whose runtime phase stays engine-owned: kinematic movers (deterministic
-/// phase), trigger volumes (arming and activation phase) and spawners (fire-time
-/// materialization). Position reads the entity's Transform. A spawner snapshot
+/// phase), trigger volumes (arming and activation phase), spawners (fire-time
+/// materialization) and projectile traps (host-only schedules). Position reads the entity's Transform. A spawner snapshot
 /// also carries `spawnedTags`, the tags each NPC it spawns carries.
 fn collect_identity_snapshots_json(
     ctx: &ScriptCtx,
@@ -394,6 +398,13 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                         ComponentKind::Spawner,
                         tag.as_deref(),
                     ))),
+                    QueryFilter::ProjectileTrap { tag } => {
+                        Ok(JsonValue(collect_identity_snapshots_json(
+                            &ctx,
+                            ComponentKind::ProjectileTrap,
+                            tag.as_deref(),
+                        )))
+                    }
                     QueryFilter::AlwaysEmpty => Ok(JsonValue(serde_json::Value::Array(Vec::new()))),
                 }
             }
@@ -439,8 +450,8 @@ mod tests {
     use glam::Vec3;
     use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
     use postretro_entities::{
-        KinematicMoverComponent, KinematicMoverMode, MoverCommand, NamedReaction,
-        PrimitiveDescriptor, ReactionDescriptor, SequenceStep, TriggerActivation, TriggerFireMode,
+        KinematicMoverComponent, KinematicMoverMode, NamedReaction, PrimitiveDescriptor,
+        ReactionDescriptor, SequenceStep, TriggerActivation, TriggerCommand, TriggerFireMode,
         TriggerVolumeComponent, VolumeTriggerEventDescriptor,
     };
     use postretro_level_format::data_script::DataScriptSection;
@@ -534,7 +545,7 @@ mod tests {
                 "lift".to_string(),
                 "open_lift".to_string(),
                 "close_lift".to_string(),
-                MoverCommand::Start,
+                TriggerCommand::Start,
                 TriggerFireMode::Multiple,
                 0.0,
                 false,

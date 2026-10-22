@@ -183,6 +183,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::MapOrdinal => "map_ordinal",
         ComponentKind::Immersion => "immersion",
         ComponentKind::Teleporter => "teleporter",
+        ComponentKind::ProjectileTrap => "projectile_trap",
     }
 }
 
@@ -266,6 +267,10 @@ impl<'js> FromJs<'js> for ComponentValue {
             "teleporter" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "Teleporter component is engine-managed and not exposed to scripts",
+            )),
+            "projectile_trap" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "ProjectileTrap component is engine-managed and not exposed to scripts",
             )),
             "fog_volume" => fog_from_js(ctx, &o),
             other => Err(rquickjs::Exception::throw_type(
@@ -400,6 +405,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Teleporter component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::ProjectileTrap(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "ProjectileTrap component is engine-managed and not exposed to scripts",
+            )),
             ComponentValue::HitVolume(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "HitVolume component is engine-managed and not exposed to scripts",
@@ -478,6 +487,10 @@ impl FromLua for ComponentValue {
             )),
             "teleporter" => Err(mlua::Error::RuntimeError(
                 "Teleporter component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            "projectile_trap" => Err(mlua::Error::RuntimeError(
+                "ProjectileTrap component is engine-managed and not exposed to scripts"
+                    .to_string(),
             )),
             "fog_volume" => fog_from_lua(t),
             other => Err(mlua::Error::RuntimeError(format!(
@@ -581,6 +594,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Teleporter(_) => Err(mlua::Error::RuntimeError(
                 "Teleporter component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::ProjectileTrap(_) => Err(mlua::Error::RuntimeError(
+                "ProjectileTrap component is engine-managed and not exposed to scripts".to_string(),
             )),
             ComponentValue::HitVolume(_) => Err(mlua::Error::RuntimeError(
                 "HitVolume component is engine-managed and not exposed to scripts".to_string(),

@@ -574,7 +574,8 @@ fn run_after_parsing(
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Geometry);
-    let mut geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
+    let (mut geo_result, mut face_brushes) =
+        geometry::extract_geometry_with_brushes(&result.faces, &result.tree, &exterior_leaves);
     let carried_lights_by_mover = kinematic_geometry::member_lights_by_mover(
         &map_data.kinematic_movers,
         &map_data.carried_light_links,
@@ -1499,6 +1500,7 @@ fn run_after_parsing(
             control: &atlas_control,
         },
         &mut geo_result,
+        &mut face_brushes,
         &mut vis_result.leaves_section,
         &bvh_section,
     )?;
@@ -1881,6 +1883,9 @@ fn run_after_parsing(
             geometry: &geo_result,
             environment_volumes: &environment_volumes_section,
             reflection_volumes: &map_data.reflection_volumes,
+            brush_volumes: &map_data.brush_volumes,
+            face_brushes: &face_brushes,
+            capture_override: &map_data.brush_capture_override,
             tree: &result.tree,
             exterior_leaves: &exterior_leaves,
             lightmap: &lightmap_section,

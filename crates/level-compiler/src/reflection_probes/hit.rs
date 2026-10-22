@@ -12,7 +12,7 @@ use crate::geometry::GeometryResult;
 use crate::ray_traversal::BoundedRay;
 
 /// Hits nearer than this are the ray's own origin surface, as in the SH bake.
-const RAY_EPSILON: f32 = 1.0e-3;
+pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
 
 /// The static world as the capture sees it: the compiler BVH over every
 /// static face. Movers and environment volumes are not in it; `switch`
@@ -57,6 +57,52 @@ pub(crate) struct SurfacePoint {
     pub texel_density: f32,
 }
 
+/// The faces one probe's primary rays skip, as the index offsets of their
+/// BVH primitives, sorted: a primitive is one face's index range.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FaceMask {
+    offsets: Vec<u32>,
+}
+
+impl FaceMask {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.offsets.is_empty()
+    }
+}
+
+/// A masked trace: the nearest kept front face, and the nearest skipped one
+/// in front of it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MaskedHit {
+    pub hit: Option<SurfaceHit>,
+    pub skipped: Option<SurfaceHit>,
+}
+
+/// Whether a trace skips a BVH primitive, by its index offset.
+trait PrimitiveMask {
+    fn skips(&self, index_offset: u32) -> bool;
+}
+
+/// The whole world: shadow rays, the box fit and an unfiltered capture.
+struct Unmasked;
+
+impl PrimitiveMask for Unmasked {
+    #[inline(always)]
+    fn skips(&self, _: u32) -> bool {
+        false
+    }
+}
+
+impl PrimitiveMask for FaceMask {
+    #[inline]
+    fn skips(&self, index_offset: u32) -> bool {
+        self.offsets.binary_search(&index_offset).is_ok()
+    }
+}
+
+/// `(t, first index of the triangle, barycentrics, primitive index offset)`.
+type Candidate = (f32, usize, [f32; 3], u32);
+
 impl<'a> SceneTracer<'a> {
     pub(crate) fn new(
         bvh: &'a Bvh<f32, 3>,
@@ -88,14 +134,68 @@ impl<'a> SceneTracer<'a> {
         direction: Vec3,
         max_distance: f32,
     ) -> Option<SurfaceHit> {
+        let (best, _) = self.nearest(origin, direction, RAY_EPSILON, max_distance, &Unmasked);
+        best.and_then(|candidate| self.surface_hit(candidate))
+    }
+
+    /// [`Self::closest_hit`] past `min_distance` with `mask`'s faces skipped,
+    /// and beside it the nearest skipped front face in front of that hit (or
+    /// anywhere within `max_distance` on a miss). A re-trace from an
+    /// excluded hull's exit passes the exit's distance as `min_distance`, so
+    /// a kept face just past the exit is never stepped over.
+    pub(crate) fn closest_hit_masked(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        min_distance: f32,
+        max_distance: f32,
+        mask: &FaceMask,
+    ) -> MaskedHit {
+        let (best, skipped) = self.nearest(origin, direction, min_distance, max_distance, mask);
+        MaskedHit {
+            hit: best.and_then(|candidate| self.surface_hit(candidate)),
+            skipped: skipped.and_then(|candidate| self.surface_hit(candidate)),
+        }
+    }
+
+    /// The faces' mask: the BVH primitives of `faces`, by index offset.
+    /// Faces with no triangles own no primitive.
+    pub(crate) fn face_mask(&self, faces: impl IntoIterator<Item = u32>) -> FaceMask {
+        let ranges = &self.geometry.face_index_ranges;
+        let mut offsets: Vec<u32> = faces
+            .into_iter()
+            .filter_map(|face| ranges.get(face as usize))
+            .filter(|range| range.index_count > 0)
+            .map(|range| range.index_offset)
+            .collect();
+        offsets.sort_unstable();
+        offsets.dedup();
+        FaceMask { offsets }
+    }
+
+    /// The nearest unmasked front-face hit in `(min_distance, max_distance)`,
+    /// and the nearest masked one in front of it. A masked primitive's
+    /// triangles never shrink the query, so the traversal still reaches
+    /// every unmasked face behind them. Monomorphized over [`Unmasked`], the
+    /// skipped branch folds away and the unmasked trace costs what it did.
+    fn nearest<M: PrimitiveMask>(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        min_distance: f32,
+        max_distance: f32,
+        mask: &M,
+    ) -> (Option<Candidate>, Option<Candidate>) {
         let ray = Ray::new(
             Point3::new(origin.x, origin.y, origin.z),
             Vector3::new(direction.x, direction.y, direction.z),
         );
         let query = BoundedRay::new(&ray, max_distance);
         let geom = &self.geometry.geometry;
-        let mut best: Option<(f32, usize, [f32; 3], u32)> = None;
+        let mut best: Option<Candidate> = None;
+        let mut skipped: Option<Candidate> = None;
         for prim in self.bvh.traverse_iterator(&query, self.primitives) {
+            let masked = mask.skips(prim.index_offset);
             let start = prim.index_offset as usize;
             let end = start + prim.index_count as usize;
             let mut tri = start;
@@ -107,17 +207,31 @@ impl<'a> SceneTracer<'a> {
                 ];
                 let [p0, p1, p2] = corners.map(|i| Vec3::from(geom.vertices[i as usize].position));
                 if let Some((t, u, v)) = front_face_hit(origin, direction, p0, p1, p2)
-                    && t > RAY_EPSILON
+                    && t > min_distance
                     && t < max_distance
                     && best.is_none_or(|(d, ..)| t < d)
                 {
-                    best = Some((t, tri, [1.0 - u - v, u, v], prim.index_offset));
-                    query.shrink_to(t);
+                    let candidate = (t, tri, [1.0 - u - v, u, v], prim.index_offset);
+                    if !masked {
+                        best = Some(candidate);
+                        query.shrink_to(t);
+                    } else if skipped.is_none_or(|(d, ..)| t < d) {
+                        skipped = Some(candidate);
+                    }
                 }
                 tri += 3;
             }
         }
-        let (distance, tri, barycentric, index_offset) = best?;
+        // A masked face found before a nearer kept one lies behind it.
+        let skipped = skipped.filter(|&(s, ..)| best.is_none_or(|(d, ..)| s < d));
+        (best, skipped)
+    }
+
+    fn surface_hit(
+        &self,
+        (distance, tri, barycentric, index_offset): Candidate,
+    ) -> Option<SurfaceHit> {
+        let geom = &self.geometry.geometry;
         let face = self.face_for_offset(index_offset)?;
         Some(SurfaceHit {
             distance,
@@ -147,6 +261,32 @@ impl<'a> SceneTracer<'a> {
     /// Interpolated attributes at `hit` along a ray of unit `direction` from
     /// `origin`.
     pub(crate) fn surface(&self, hit: &SurfaceHit, origin: Vec3, direction: Vec3) -> SurfacePoint {
+        self.surface_at(hit, origin + direction * hit.distance, direction)
+    }
+
+    /// The point on `hit`'s triangle its barycentrics name.
+    pub(crate) fn position_on(&self, hit: &SurfaceHit) -> Vec3 {
+        let geom = &self.geometry.geometry;
+        hit.triangle
+            .iter()
+            .zip(hit.barycentric)
+            .map(|(&i, w)| Vec3::from(geom.vertices[i as usize].position) * w)
+            .sum()
+    }
+
+    /// The static geometry the tracer reads.
+    pub(crate) fn geometry(&self) -> &GeometryResult {
+        self.geometry
+    }
+
+    /// [`Self::surface`] with the point's position given: `hit`'s triangle
+    /// and barycentrics still interpolate every vertex attribute.
+    pub(crate) fn surface_at(
+        &self,
+        hit: &SurfaceHit,
+        position: Vec3,
+        direction: Vec3,
+    ) -> SurfacePoint {
         let geom = &self.geometry.geometry;
         let [v0, v1, v2] = hit.triangle.map(|i| &geom.vertices[i as usize]);
         let [w0, w1, w2] = hit.barycentric;
@@ -168,7 +308,7 @@ impl<'a> SceneTracer<'a> {
             normal = -normal;
         }
         SurfacePoint {
-            position: origin + direction * hit.distance,
+            position,
             normal,
             texture_index: geom.faces[hit.face as usize].texture_index,
             uv: lerp2(v0.uv, v1.uv, v2.uv),
@@ -271,6 +411,39 @@ mod tests {
             surface.uv
         );
         assert!((surface.texel_density - 32.0).abs() < 1e-2);
+    }
+
+    // A masked face is skipped and reported; a min distance accepts a face
+    // just past it, so a re-trace from a hull exit never steps over one.
+    #[test]
+    fn closest_hit_masked_skips_masked_faces_and_reports_the_nearest_one() {
+        let room = box_room([-2.0, 0.0, -2.0], [2.0, 3.0, 2.0]);
+        let (bvh, primitives, _) = build_bvh(&room).unwrap();
+        let tracer = SceneTracer::new(&bvh, &primitives, &room);
+        let floor = RoomFace::Floor as u32;
+        let mask = tracer.face_mask([floor]);
+        let origin = Vec3::new(0.5, 1.0, -0.25);
+
+        let down = tracer.closest_hit_masked(origin, Vec3::NEG_Y, RAY_EPSILON, 100.0, &mask);
+        assert_eq!(down.hit, None, "nothing faces the ray past the floor");
+        assert_eq!(down.skipped, tracer.closest_hit(origin, Vec3::NEG_Y, 100.0));
+        // A masked face behind the kept hit is hidden, not reported.
+        let up = tracer.closest_hit_masked(origin, Vec3::Y, RAY_EPSILON, 100.0, &mask);
+        assert_eq!(up.hit.map(|h| h.face), Some(RoomFace::Ceiling as u32));
+        assert_eq!(up.skipped, None);
+
+        let none = FaceMask::default();
+        let past = |min| {
+            tracer
+                .closest_hit_masked(origin, Vec3::NEG_Y, min, 100.0, &none)
+                .hit
+        };
+        assert_eq!(
+            past(0.9995).map(|h| h.face),
+            Some(floor),
+            "half a millimetre short"
+        );
+        assert_eq!(past(1.0005), None);
     }
 
     #[test]

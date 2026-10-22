@@ -60,7 +60,8 @@ pub struct Face {
     pub tex_projection: TextureProjection,
     /// Index of the source brush in `MapData::brush_volumes`. Used by the
     /// coplanar dedup rule: when two brushes share the same oriented plane
-    /// in the same leaf, the lower index wins.
+    /// in the same leaf, the lower index wins. Also feeds the reflection-probe
+    /// face-to-brush table (`geometry::extract_geometry_with_brushes`).
     pub brush_index: usize,
 }
 
@@ -101,6 +102,20 @@ pub struct BrushSide {
     pub distance: f64,
     pub texture: String,
     pub tex_projection: TextureProjection,
+}
+
+/// A brush's resolved reflection-probe capture override, in canonical terms.
+/// The input adapter translates its own vocabulary into this; the probe stage
+/// reads it per brush (`resource_management.md` §5.2, Exclusion).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ReflectionCapture {
+    /// Follow the per-probe size, thinness and underside rule.
+    #[default]
+    Auto,
+    /// Keep in every probe's capture.
+    Always,
+    /// Exclude from every probe's capture.
+    Never,
 }
 
 #[derive(Debug, Clone)]
@@ -638,6 +653,13 @@ pub struct MapData {
     /// assembly which supplied the brush, or is `None` for ungrouped geometry.
     #[allow(dead_code)]
     pub(crate) brush_assembly: Vec<Option<usize>>,
+    /// One entry per retained [`Self::brush_volumes`] item: the brush's
+    /// resolved reflection-probe capture override. `Auto` unless its source
+    /// entity authored one.
+    // Read by the `prl-build` target only; the library target compiles
+    // `map_data` without the pipeline.
+    #[allow(dead_code)]
+    pub(crate) brush_capture_override: Vec<ReflectionCapture>,
     /// Brush count per non-worldspawn entity. Diagnostic only; editor-group
     /// brushes are flattened into static brush volumes, while semantic brush
     /// entities are resolved by their owning subsystems.

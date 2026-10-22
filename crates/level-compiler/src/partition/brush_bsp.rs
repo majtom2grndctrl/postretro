@@ -19,8 +19,13 @@ const PLANE_EPSILON: f64 = 0.1;
 /// exact child regions keep their owning brush.
 const CANDIDATE_ROUTING_EPSILON: f64 = 1e-6;
 
-/// Classification tolerance for exact region-polytope queries.
-const REGION_CLASSIFICATION_EPSILON: f64 = 1e-3;
+/// Classification tolerance for exact region-polytope queries. A region
+/// within it of a brush's planes is inside the brush, so brush-side
+/// projection treats brushes this close as touching and cuts both facing
+/// faces; reflection-probe capture exclusion derives its contact tests from it.
+/// A change here changes capture output, so it needs a bump of the
+/// reflection_probes `STAGE_VERSION`.
+pub(crate) const REGION_CLASSIFICATION_EPSILON: f64 = 1e-3;
 
 /// Slack added on every axis when deriving the world AABB from brush bounds.
 /// Keeps the splitter from producing degenerate sub-regions at the world boundary

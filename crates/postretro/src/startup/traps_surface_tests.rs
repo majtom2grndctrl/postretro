@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use glam::Vec3;
 use postretro_entities::components::projectile::ProjectileComponent;
-use postretro_entities::components::projectile_trap::ProjectileTrapComponent;
+use postretro_entities::components::projectile_trap::{ProjectileTrapComponent, TrapRequest};
 use postretro_entities::{ComponentKind, Emitter, EntityId, ScriptCtx, ScriptError, Transform};
 use postretro_level_loader::LevelWorld;
 use postretro_physics::movement::MovementInput;
@@ -60,6 +60,7 @@ struct Level {
     /// The raw value `setupLevel` returned, as canonical JSON, for a level that
     /// carries a data script.
     wire: Option<String>,
+    captured: Rc<RefCell<Option<Value>>>,
     /// Authoritative ticks run so far; the first frame runs tick 0.
     tick: u32,
     anim_time: f64,
@@ -73,6 +74,39 @@ impl Level {
         let mut app = test_app();
         let ctx = script_ctx(&app);
         let captured: Rc<RefCell<Option<Value>>> = Rc::new(RefCell::new(None));
+        Self::prepare(&mut app, &ctx, &captured);
+        let wire = Self::load(&mut app, &ctx, &captured, world);
+        let pawn = Self::boot_pawn(&ctx);
+        Self {
+            app,
+            ctx,
+            pawn,
+            wire,
+            captured,
+            tick: 0,
+            anim_time: 0.0,
+            shots: Vec::new(),
+            fire_cues: Vec::new(),
+        }
+    }
+
+    /// Unload this level the way a level change does, then install `world`
+    /// into the same session.
+    fn reinstall(&mut self, world: LevelWorld) {
+        self.app.unload_level();
+        self.wire = Self::load(&mut self.app, &self.ctx, &self.captured, world);
+        self.pawn = Self::boot_pawn(&self.ctx);
+    }
+
+    fn boot_pawn(ctx: &ScriptCtx) -> EntityId {
+        ctx.registry
+            .borrow()
+            .local_player_pawn()
+            .expect("the boot pawn spawned at player_spawn")
+    }
+
+    /// The production dev mod and the session registrars, once per app.
+    fn prepare(app: &mut crate::App, ctx: &ScriptCtx, captured: &Rc<RefCell<Option<Value>>>) {
         let mut primitives = PrimitiveRegistry::new();
         crate::scripting::primitives::register_all(&mut primitives, ctx.clone());
         primitives
@@ -87,9 +121,22 @@ impl Level {
             .doc("test capture of the raw setupLevel return")
             .param("value", "unknown")
             .finish();
-        initialize_dev_mod(&mut app, &primitives);
-        register_teleporter_and_trigger_primitives(&mut app, &ctx);
+        initialize_dev_mod(app, &primitives);
+        register_teleporter_and_trigger_primitives(app, ctx);
+        // `test_app` builds empty registries; `Session::build` adds this one.
+        postretro_sim::traps::commands::register_sequenced_trap_primitives(
+            &mut app.session.as_mut().unwrap().scripting.sequence_registry,
+            ctx.clone(),
+        );
+    }
 
+    /// Install `world` as level load does; returns the captured `setupLevel` wire.
+    fn load(
+        app: &mut crate::App,
+        ctx: &ScriptCtx,
+        captured: &Rc<RefCell<Option<Value>>>,
+        world: LevelWorld,
+    ) -> Option<String> {
         let mut world = world;
         if let Some(script) = world.data_script.as_mut() {
             let luau = script.source_path.ends_with(".luau");
@@ -99,7 +146,7 @@ impl Level {
         }
 
         let content_root = super::teleporters_surface_tests::workspace().join("content/dev");
-        let nav_graph = crate::startup::lifecycle::install_world_gravity_and_nav(&world, &ctx);
+        let nav_graph = crate::startup::lifecycle::install_world_gravity_and_nav(&world, ctx);
         let products = {
             let session = app.session.as_mut().unwrap();
             session.light_bridge.populate_from_level(
@@ -109,7 +156,7 @@ impl Level {
             );
             let handles = WorldInstallHandles {
                 world: &world,
-                script_ctx: &ctx,
+                script_ctx: ctx,
                 command_diagnostics: session.scripting.command_diagnostics.clone(),
                 mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
                 spawn_context: session.scripting.spawn_context.clone(),
@@ -157,25 +204,10 @@ impl Level {
         app.teleporter_bindings = products.teleporter_bindings;
         app.rebuild_player_events(false);
 
-        let wire = captured
+        captured
             .borrow_mut()
             .take()
-            .map(|raw| serde_json::to_string(&canonical(raw)).unwrap());
-        let pawn = ctx
-            .registry
-            .borrow()
-            .local_player_pawn()
-            .expect("the boot pawn spawned at player_spawn");
-        Self {
-            app,
-            ctx,
-            pawn,
-            wire,
-            tick: 0,
-            anim_time: 0.0,
-            shots: Vec::new(),
-            fire_cues: Vec::new(),
-        }
+            .map(|raw| serde_json::to_string(&canonical(raw)).unwrap())
     }
 
     fn traps(&self, tag: &str) -> Vec<EntityId> {
@@ -507,7 +539,7 @@ fn volley_traps_fire_along_their_authored_facing() {
         postretro_sim::traps::issue_trap_request(
             &mut level.ctx.registry.borrow_mut(),
             trap,
-            postretro_entities::components::projectile_trap::TrapRequest::Fire,
+            TrapRequest::Fire,
         );
     }
     let shots = level.frame();
@@ -586,4 +618,247 @@ fn volley_plates_fire_their_tagged_traps_on_the_enter_tick() {
             assert_eq!(level.shot_ticks(trap), vec![enter_tick]);
         }
     }
+}
+
+const STEP_MS: f32 = 250.0;
+const GAP_MS: f32 = 1500.0;
+const PASSES: usize = 3;
+
+impl Level {
+    /// The `wave` traps in the scripts' sweep order: ascending engine x.
+    fn wave(&self) -> Vec<EntityId> {
+        let mut traps = self.traps("wave");
+        let registry = self.ctx.registry.borrow();
+        traps.sort_by(|a, b| {
+            let x = |id: &EntityId| registry.get_component::<Transform>(*id).unwrap().position.x;
+            x(a).total_cmp(&x(b))
+        });
+        traps
+    }
+
+    /// Settle, then step onto `plate` and run frames until its Enter fires.
+    /// Returns the Enter tick.
+    fn enter(&mut self, plate: &str) -> u32 {
+        self.run(SETTLE);
+        let height = self.position().y;
+        let (trigger, min, max) = self.trigger(plate);
+        self.place((min + max) * 0.5, height);
+        for _ in 0..SETTLE {
+            self.frame();
+            if self.entered(trigger) {
+                return self.tick - 1;
+            }
+        }
+        panic!("the pawn never entered `{plate}`");
+    }
+}
+
+/// The sweep's shot ticks per trap under the timing rule (P14): the first step
+/// acts on the Enter tick; every later step one tick after its summed waits.
+fn expected_sweep(enter: u32, traps: usize) -> Vec<Vec<u32>> {
+    let (step, gap) = (ms_ticks(STEP_MS), ms_ticks(GAP_MS));
+    let mut per_trap = vec![Vec::new(); traps];
+    let mut waited = 0;
+    for pass in 0..PASSES {
+        for (index, ticks) in per_trap.iter_mut().enumerate() {
+            if pass > 0 && index == 0 {
+                waited += gap;
+            } else if index > 0 {
+                waited += step;
+            }
+            ticks.push(if waited == 0 {
+                enter
+            } else {
+                enter + waited + 1
+            });
+        }
+    }
+    per_trap
+}
+
+fn sweep_shots(map: &'static str) -> (Vec<Vec<u32>>, u32, String) {
+    let out = tempfile::tempdir().unwrap();
+    let mut level = Level::install(compile(map, out.path()));
+    let wave = level.wave();
+    assert_eq!(wave.len(), 5, "five `wave` traps");
+    let enter = level.enter("sweep_plate");
+    level.run(600);
+    let shots = wave.iter().map(|&trap| level.shot_ticks(trap)).collect();
+    (
+        shots,
+        enter,
+        level.wire.clone().expect("the wave level has a script"),
+    )
+}
+
+// AC: the `trap-wave` twins fire their traps in sweep order on the shot ticks
+// their constants imply, and the two runtimes record the same ticks and wire.
+#[test]
+fn wave_sweep_fires_in_order_on_its_constant_ticks_in_both_runtimes() {
+    let (ts, ts_enter, ts_wire) = sweep_shots("trap-wave");
+    let (luau, luau_enter, luau_wire) = sweep_shots("trap-wave-luau");
+    assert_eq!(ts_wire, luau_wire, "TS and Luau setupLevel wire diverged");
+    assert_eq!(ts, expected_sweep(ts_enter, 5), "TypeScript sweep ticks");
+    assert_eq!(
+        luau.iter()
+            .map(|ticks| ticks
+                .iter()
+                .map(|tick| tick - luau_enter)
+                .collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        ts.iter()
+            .map(|ticks| ticks.iter().map(|tick| tick - ts_enter).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        "the runtimes record the same shot ticks"
+    );
+}
+
+fn loop_shots(map: &'static str) {
+    let out = tempfile::tempdir().unwrap();
+    let mut level = Level::install(compile(map, out.path()));
+    let wave = level.wave();
+    let enter = level.enter("loop_zone");
+    let period = ms_ticks(wave.len() as f32 * STEP_MS + GAP_MS);
+    let phase = |index: usize| {
+        if index == 0 {
+            0
+        } else {
+            ms_ticks(index as f32 * STEP_MS)
+        }
+    };
+    // Leave on the tick trap 0's third repeat is due.
+    let exit = enter + 2 * period;
+    level.run((exit - level.tick) as usize);
+    level.place(Vec3::new(1000.0, level.position().y, 1000.0), 0.0);
+    level.run(2 * period as usize);
+    for (index, &trap) in wave.iter().enumerate() {
+        let expected: Vec<u32> = (0..3)
+            .map(|repeat| enter + phase(index) + repeat * period)
+            .filter(|&tick| tick < exit)
+            .collect();
+        assert_eq!(level.shot_ticks(trap), expected, "{map}: wave trap {index}");
+    }
+    for &trap in &wave {
+        let component = level.component(trap);
+        assert!(
+            component.runtime.unwrap().schedule.is_none(),
+            "leaving the zone stopped every trap"
+        );
+    }
+}
+
+// AC and P22: entering `loop_zone` fires trap i at its rounded phase, then once
+// per rounded period; leaving on a due tick fires nothing on that tick or after.
+#[test]
+fn wave_loop_zone_staggers_repeats_and_stops_on_exit_in_both_runtimes() {
+    loop_shots("trap-wave");
+    loop_shots("trap-wave-luau");
+}
+
+// P10: a level reinstall drops every trap request, schedule and parked step
+// from the old install.
+#[test]
+fn reinstall_drops_old_trap_work() {
+    let out = tempfile::tempdir().unwrap();
+    let mut level = Level::install(compile("trap-wave", out.path()));
+    let wave = level.wave();
+    level.enter("sweep_plate");
+    assert_eq!(level.shots.len(), 1, "the sweep's first step fired");
+    // A latched request and a started schedule, both still owed.
+    for &trap in &wave {
+        postretro_sim::traps::issue_trap_request(
+            &mut level.ctx.registry.borrow_mut(),
+            trap,
+            TrapRequest::Start {
+                interval_ms: Some(100.0),
+                phase_ms: Some(400.0),
+            },
+        );
+    }
+    level.reinstall(compile("trap-wave", out.path()));
+    let before = level.shots.len();
+    level.run(600);
+    assert_eq!(
+        level.shots.len(),
+        before,
+        "no old trap work fires in the new install"
+    );
+}
+
+// P9: a mod hot reload keeps started traps and latched requests, with their
+// install-time weapon, and drops the sweep's parked tail. The replaced
+// descriptor reaches traps at the next install.
+#[test]
+fn mod_hot_reload_keeps_started_traps_and_latched_requests() {
+    let out = tempfile::tempdir().unwrap();
+    let mut level = Level::install(compile("trap-wave", out.path()));
+    let wave = level.wave();
+    let enter = level.enter("sweep_plate");
+    // Start the last trap on a short schedule, then latch a fire on the
+    // second, as a frame-end drain would.
+    let started = wave[4];
+    for (trap, request) in [
+        (
+            started,
+            TrapRequest::Start {
+                interval_ms: Some(1000.0),
+                phase_ms: Some(0.0),
+            },
+        ),
+        (wave[1], TrapRequest::Fire),
+    ] {
+        postretro_sim::traps::issue_trap_request(
+            &mut level.ctx.registry.borrow_mut(),
+            trap,
+            request,
+        );
+    }
+    // The mod reloads with a replaced weapon descriptor.
+    {
+        let mut data = level.ctx.data_registry.borrow_mut();
+        let mut entities = data.entities.clone();
+        for descriptor in &mut entities {
+            if descriptor.canonical_name.as_deref() == Some(VOLLEY_WEAPON) {
+                descriptor.weapon.as_mut().unwrap().damage = 99.0;
+            }
+        }
+        data.replace_entity_types(entities);
+    }
+    level.app.rebuild_reactions_after_staged_commit();
+    let reloaded_at = level.tick;
+    level.run(200);
+    assert_eq!(
+        level.shot_ticks(wave[1]),
+        vec![reloaded_at],
+        "the latched fire survives and acts on the next tick; the parked sweep does not"
+    );
+    for &trap in &wave[2..4] {
+        assert!(
+            level.shot_ticks(trap).is_empty(),
+            "the sweep's tail was dropped"
+        );
+    }
+    let repeats = level.shot_ticks(started);
+    assert_eq!(
+        repeats[0], reloaded_at,
+        "the started trap keeps its schedule"
+    );
+    assert!(repeats.len() >= 3);
+    for shot in level.shots.iter().filter(|shot| shot.tick >= reloaded_at) {
+        assert_eq!(shot.launched.damage, 10.0, "the install-time weapon fires");
+    }
+    let _ = enter;
+    level.reinstall(compile("trap-wave", out.path()));
+    let wave = level.wave();
+    postretro_sim::traps::issue_trap_request(
+        &mut level.ctx.registry.borrow_mut(),
+        wave[0],
+        TrapRequest::Fire,
+    );
+    let shots = level.frame();
+    assert_eq!(shots.len(), 1);
+    assert_eq!(
+        shots[0].launched.damage, 99.0,
+        "the next install resolves the replacement"
+    );
 }

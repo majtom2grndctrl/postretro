@@ -1,0 +1,152 @@
+// Game: Postretro
+// Format: Standard
+// E18 projectile-trap wave fixture: the Scripting surface example (TypeScript; Luau twin trap-wave-luau.map).
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/trap-wave.map -o content/dev/maps/trap-wave.prl
+// Step on the sweep plate (centre) and the five east-wall `wave` traps fire in
+// order, three passes. Stand in the loop zone (north) and they repeat on one
+// period, phase-staggered so the wave rolls; step out and they stop.
+{
+"classname" "worldspawn"
+"wad" ""
+"data_script" "../scripts/trap-wave.ts"
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// floor
+{
+( 464 -16 -16 ) ( 464 464 0 ) ( 464 464 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 464 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 464 464 -16 ) ( -16 464 0 ) ( -16 464 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 464 -16 0 ) ( 464 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 464 0 ) ( 464 -16 0 ) ( -16 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 464 464 -16 ) ( -16 464 -16 ) debug_ceiling_grey 0 0 0 1 1
+}
+// ceiling
+{
+( 464 -16 160 ) ( 464 464 176 ) ( 464 464 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 464 160 ) ( -16 -16 176 ) ( -16 -16 160 ) debug_ceiling_grey 0 0 0 1 1
+( 464 464 160 ) ( -16 464 176 ) ( -16 464 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 160 ) ( 464 -16 176 ) ( 464 -16 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 464 176 ) ( 464 -16 176 ) ( -16 -16 176 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 160 ) ( 464 464 160 ) ( -16 464 160 ) debug_ceiling_grey 0 0 0 1 1
+}
+// west wall
+{
+( 0 0 0 ) ( 0 448 160 ) ( 0 448 0 ) concrete_stone_033 0 0 0 1 1
+( -16 448 0 ) ( -16 0 160 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 448 0 ) ( -16 448 160 ) ( -16 448 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( 0 0 160 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 448 160 ) ( 0 0 160 ) ( -16 0 160 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( 0 448 0 ) ( -16 448 0 ) concrete_stone_033 0 0 0 1 1
+}
+// east wall
+{
+( 464 0 0 ) ( 464 448 160 ) ( 464 448 0 ) concrete_stone_033 0 0 0 1 1
+( 448 448 0 ) ( 448 0 160 ) ( 448 0 0 ) concrete_stone_033 0 0 0 1 1
+( 464 448 0 ) ( 448 448 160 ) ( 448 448 0 ) concrete_stone_033 0 0 0 1 1
+( 448 0 0 ) ( 464 0 160 ) ( 464 0 0 ) concrete_stone_033 0 0 0 1 1
+( 448 448 160 ) ( 464 0 160 ) ( 448 0 160 ) concrete_stone_033 0 0 0 1 1
+( 448 0 0 ) ( 464 448 0 ) ( 448 448 0 ) concrete_stone_033 0 0 0 1 1
+}
+// south wall
+{
+( 464 -16 0 ) ( 464 0 160 ) ( 464 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( -16 -16 160 ) ( -16 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 464 0 0 ) ( -16 0 160 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 464 -16 160 ) ( 464 -16 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 160 ) ( 464 -16 160 ) ( -16 -16 160 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 464 0 0 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
+}
+// north wall
+{
+( 464 448 0 ) ( 464 464 160 ) ( 464 464 0 ) concrete_stone_033 0 0 0 1 1
+( -16 464 0 ) ( -16 448 160 ) ( -16 448 0 ) concrete_stone_033 0 0 0 1 1
+( 464 464 0 ) ( -16 464 160 ) ( -16 464 0 ) concrete_stone_033 0 0 0 1 1
+( -16 448 0 ) ( 464 448 160 ) ( 464 448 0 ) concrete_stone_033 0 0 0 1 1
+( -16 464 160 ) ( 464 448 160 ) ( -16 448 160 ) concrete_stone_033 0 0 0 1 1
+( -16 448 0 ) ( 464 464 0 ) ( -16 464 0 ) concrete_stone_033 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "40 224 24"
+"angles" "0 0 0"
+}
+{
+"classname" "light"
+"origin" "224 224 140"
+"light" "300"
+"_color" "255 240 220"
+"_falloff_range" "600"
+"_light_size" "0"
+"_shadow_type" "static_light_map"
+}
+// Sweep plate: one sweep per Enter, by any player (zero re-arm).
+{
+"classname" "trigger_volume"
+"name" "sweep_plate"
+"activation" "touch"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"_tags" "sweep_plate"
+{
+( 160 192 0 ) ( 160 256 16 ) ( 160 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 256 0 ) ( 96 192 16 ) ( 96 192 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 256 0 ) ( 96 256 16 ) ( 96 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 192 0 ) ( 160 192 16 ) ( 160 192 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 256 16 ) ( 160 192 16 ) ( 96 192 16 ) debug_ceiling_grey 0 0 0 1 1
+( 96 192 0 ) ( 160 256 0 ) ( 96 256 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// Loop zone: the looping wave runs while a player stands here.
+{
+"classname" "trigger_volume"
+"name" "loop_zone"
+"activation" "touch"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"_tags" "loop_zone"
+{
+( 192 320 0 ) ( 192 416 16 ) ( 192 416 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 416 0 ) ( 96 320 16 ) ( 96 320 0 ) debug_ceiling_grey 0 0 0 1 1
+( 192 416 0 ) ( 96 416 16 ) ( 96 416 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 320 0 ) ( 192 320 16 ) ( 192 320 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 416 16 ) ( 192 320 16 ) ( 96 320 16 ) debug_ceiling_grey 0 0 0 1 1
+( 96 320 0 ) ( 192 416 0 ) ( 96 416 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// East-wall wave traps, facing west.
+{
+"classname" "projectile_trap"
+"origin" "424 64 48"
+"angle" "180"
+"weapon" "enemy_rifle"
+"_tags" "wave"
+}
+{
+"classname" "projectile_trap"
+"origin" "424 144 48"
+"angle" "180"
+"weapon" "enemy_rifle"
+"_tags" "wave"
+}
+{
+"classname" "projectile_trap"
+"origin" "424 224 48"
+"angle" "180"
+"weapon" "enemy_rifle"
+"_tags" "wave"
+}
+{
+"classname" "projectile_trap"
+"origin" "424 304 48"
+"angle" "180"
+"weapon" "enemy_rifle"
+"_tags" "wave"
+}
+{
+"classname" "projectile_trap"
+"origin" "424 384 48"
+"angle" "180"
+"weapon" "enemy_rifle"
+"_tags" "wave"
+}

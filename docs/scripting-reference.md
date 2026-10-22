@@ -1901,7 +1901,7 @@ A map names its data script with the `data_script` key on `worldspawn`, a path r
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, lights, fog volumes, emitters, spawners. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, lights, fog volumes, emitters, spawners, projectile traps. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
 - **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
 
@@ -1915,6 +1915,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
+| trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
 | player group | `players()` | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
@@ -1944,6 +1945,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |
 | `"spawner"` | `SpawnerEntityHandle` | `id`, `position`, `tags`, `spawnedTags` |
+| `"trap"` | `TrapEntityHandle` | `id`, `position`, `tags` |
 
 - Fields are a snapshot taken when the query runs. Member methods build reaction steps; they never change the entity during setup.
 - Only map-placed entities appear. A light or emitter carried by a spawned NPC, or by a player, never does.
@@ -1999,6 +2001,37 @@ const sequence = [...closets.flatMap((s) => s.fire()), npcs({ tag: "closet" }).u
 The NPC step reaches the NPCs those spawners just released.
 
 A `progress` reaction counts kills among the map-placed entities carrying its tag when the level loads, including NPCs placed on the map. NPCs a spawner releases later with that tag neither raise its total nor count toward it. Each `progress` fires at most once per level for its tag and `fire` event: two thresholds naming the same event on the same tag fire it once. An entity despawned without being killed drops out of the total, so despawning the last unkilled member can itself fire the `progress`. A `progress` whose tag no map-placed entity carries logs a warning, since it can never fire.
+
+### Projectile trap members
+
+A `projectile_trap` names a projectile weapon, a repeat interval and a phase in TrenchBroom (see [level_design.md](level_design.md#projectile-traps)). Its member has three verbs, each returning steps:
+
+- `fire()` runs one shot pattern of the trap's weapon. It is ignored while the weapon is firing or recovering, so two `fire()` steps with no `wait` between them fire once.
+- `start(options?)` repeats on a fixed rhythm: the first pattern `phaseMs` after the start, then one every `intervalMs`. Options apply to this run only; an omitted one takes the trap's authored value. `start` on a running trap does nothing. `intervalMs` must be positive and `phaseMs` not negative, or the reaction is rejected when the level loads.
+- `stop()` ends the repeats; a pattern already under way finishes.
+
+Every trap step acts on the host only. A step that runs during a trigger's or teleporter's own tick acts that tick; every other step — after a `wait`, from a named or `levelLoad` reaction, or from a player event — acts on the next tick.
+
+```typescript
+const traps = getMapEntities("trap", { tag: "wave" }).sort((a, b) => a.position.x - b.position.x);
+const sweep = defineReaction("wave.sweep", {
+  sequence: traps.flatMap((t, i) => [...(i ? wait(250) : []), ...t.fire()]),
+});
+const loopOn = defineReaction("wave.loopOn", {
+  sequence: traps.flatMap((t, i) => t.start({ intervalMs: 2750, phaseMs: i * 250 })),
+});
+```
+
+```lua
+local traps = Postretro.getMapEntities("trap", { tag = "wave" })
+local steps = {}
+for i, t in traps do
+  for _, step in t:start({ intervalMs = 2750, phaseMs = (i - 1) * 250 }) do
+    table.insert(steps, step)
+  end
+end
+local loopOn = Postretro.defineReaction("wave.loopOn", { sequence = steps })
+```
 
 ### LightEntityHandle
 

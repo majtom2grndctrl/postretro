@@ -1108,6 +1108,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &mut app.pending_teleport_sounds,
             );
             app.host_advance_fixed_sim_tick(&mut host_snapshot_due);
+            // Stamp link state with the post-increment tick, as snapshots do.
+            app.record_ghost_link_history();
             // Unconditional per-tick registration sweeps, not gated on "did a spawn
             // happen this tick": they catch runtime enemies and component-driven
             // world-item acquisition/drop changes before post-loop serialization.
@@ -1495,6 +1497,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // authoritative tick plus the render sub-tick `alpha`, so the presented
     // pose varies smoothly per render frame instead of stepping at 60 Hz.
     app.host_present_client_pawns(frame_result.alpha, frame_anim_time);
+    // Every presented pose is written: ghost membership reads them, ahead of the
+    // render collectors.
+    app.update_ghost_links(frame_result.alpha, now);
 
     // Advance each reload-endpoint consumer only after it sampled
     // this frame. Catch-up endpoints remain queued in tick order.

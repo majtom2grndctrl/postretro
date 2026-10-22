@@ -125,6 +125,7 @@ impl App {
         self.fluid_surface_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.teleporter_bindings = Default::default();
+        self.ghost_links = Default::default();
         self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();

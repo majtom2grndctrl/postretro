@@ -267,6 +267,19 @@ pub(crate) fn presentation_target_tick(current_tick: u32, alpha: f32, delay_tick
     f64::from(current_tick) - 1.0 - f64::from(delay_ticks) + f64::from(alpha)
 }
 
+/// The host time a connected-client pawn presents at on the host seat this frame,
+/// in snapshot-stamp units: the post-increment tick a snapshot of an end-of-tick
+/// state carries. [`present_client_pawns`] samples at [`presentation_target_tick`],
+/// but [`record_client_pawn_poses`] labels each end-of-tick pose with the tick's
+/// pre-increment number, so the same instant is one tick later in stamp units.
+/// Presentation state stamped by host time (ghost-link history) reads at this value
+/// so it presents with the pose it describes (`networking.md` §Host-side remote-pawn
+/// presentation).
+#[must_use]
+pub fn presented_client_pawn_host_tick(current_tick: u32, alpha: f32) -> f64 {
+    presentation_target_tick(current_tick, alpha, PRESENTATION_DELAY_TICKS) + 1.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,6 +613,49 @@ mod tests {
             .interpolated_transform(pawn, 0.0)
             .expect("pawn has a transform");
         assert!((blended.position.x - presented.position.x).abs() < POS_EPS);
+    }
+
+    // Ghost-link history stamps a tick's end state with the post-increment tick, as
+    // snapshots do; the host-seat buffer labels the same pose pre-increment. The
+    // reported host tick must name the stamp of the pose actually presented.
+    #[test]
+    fn presented_client_pawn_host_tick_names_the_snapshot_stamp_of_the_presented_pose() {
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut buffer = RemoteInterpolationBuffer::new();
+        let (pawn, _) = spawn_owned_pawn(
+            &mut registry,
+            &mut owners,
+            &mut allocator,
+            7,
+            pose_at(0.0, 0.0),
+        );
+        let mut tick = 100u32;
+        let mut snapshot_due = false;
+        for _ in 0..5 {
+            // The pose at the end of this tick, encoded as the stamp a snapshot of
+            // it carries once the tick completes.
+            let stamp = tick + 1;
+            registry
+                .set_component(pawn, pose_at(stamp as f32, 0.0))
+                .unwrap();
+            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            crate::host::complete_host_fixed_tick(&mut tick, &mut snapshot_due);
+        }
+        for alpha in [0.0, 0.25, 0.5, 0.9] {
+            present_client_pawns(&buffer, &owners, &allocator, &mut registry, tick, alpha);
+            let presented = registry
+                .get_component::<Transform>(pawn)
+                .unwrap()
+                .position
+                .x;
+            let stamp = presented_client_pawn_host_tick(tick, alpha);
+            assert!(
+                (f64::from(presented) - stamp).abs() < 1e-3,
+                "alpha {alpha}: presented stamp {presented}, reported {stamp}"
+            );
+        }
     }
 
     #[test]

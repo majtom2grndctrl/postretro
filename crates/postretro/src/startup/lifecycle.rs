@@ -924,6 +924,12 @@ impl App {
             &mut self.collision_world.teleporters,
             &script_ctx.registry.borrow(),
         );
+        self.ghost_links = crate::ghost_links::GhostLinks::install(
+            self.level
+                .as_ref()
+                .expect("level installed before ghost links bind"),
+            &script_ctx.registry.borrow(),
+        );
         // The level's trees joined the tree set.
         session.check_accessibility_entry();
 
@@ -1949,6 +1955,7 @@ pub(crate) mod tests {
             fluid_eye: Default::default(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             teleporter_bindings: Default::default(),
+            ghost_links: Default::default(),
             player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),

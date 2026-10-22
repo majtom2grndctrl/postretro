@@ -62,7 +62,8 @@ fn region(classname: &str, keys: &str) -> String {
     )
 }
 
-/// The three variants: no region, a ghost link last, a teleporter last.
+/// The variants: no region, a ghost link last (disarmed, or armed on spawn), a
+/// teleporter last.
 fn variant_map(variant: &str) -> String {
     match variant {
         "base" => room_map(None),
@@ -71,6 +72,10 @@ fn variant_map(variant: &str) -> String {
             "\"landmark\" \"copy_a\"\n\"target\" \"copy_b\"\n\"enabled_on_spawn\" \"0\"\n\
              \"ghost_members\" \"players movers\"\n\"ghost_tags\" \"barrier\"\n\
              \"ghost_style\" \"echo\"\n\"_tags\" \"vault_echo\"",
+        ))),
+        "armed_link" => room_map(Some(region(
+            "ghost_link",
+            "\"landmark\" \"copy_a\"\n\"target\" \"copy_b\"\n\"ghost_members\" \"players\"",
         ))),
         "teleporter" => room_map(Some(region(
             "trigger_teleport",
@@ -226,4 +231,83 @@ fn ghost_link_install_spawns_its_entity_and_never_dispatches_its_companion() {
         1,
         "install spawns the link entity once"
     );
+}
+
+// A link armed on spawn, through the real compile, load and install: a partner
+// pawn inside it ghosts at full membership on the first evaluated frame (P26),
+// at the pose the authored landmark → target mapping gives.
+#[test]
+fn ghost_link_armed_on_spawn_presents_its_member_in_full_on_the_first_frame() {
+    use postretro_entities::provenance::DescriptorSpawnPath;
+
+    let out = tempfile::tempdir().unwrap();
+    let world = compiled("armed_link", out.path());
+    let record = &world.ghost_links.links[0];
+    assert!(record.enabled_on_spawn);
+    let inside = (glam::Vec3::from(record.brushes[0].aabb_min)
+        + glam::Vec3::from(record.brushes[0].aabb_max))
+        * 0.5;
+
+    let mut registry = postretro_entities::EntityRegistry::new();
+    spawn_loaded_ghost_links(&mut registry, &world);
+    let pawn = |registry: &mut postretro_entities::EntityRegistry, at, spawn_path| {
+        let id = registry.spawn(Transform {
+            position: at,
+            ..Default::default()
+        });
+        registry
+            .set_component(
+                id,
+                postretro_foundation::PlayerMovementComponent::from_descriptor(
+                    &crate::mod_digest::tests::movement_descriptor(),
+                ),
+            )
+            .unwrap();
+        registry
+            .set_component(
+                id,
+                DescriptorProvenance {
+                    canonical_name: "player".into(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path,
+                },
+            )
+            .unwrap();
+        id
+    };
+    let viewer = pawn(
+        &mut registry,
+        glam::Vec3::splat(-1000.0),
+        DescriptorSpawnPath::PlayerSpawn,
+    );
+    registry.mark_local_player_pawn(viewer).unwrap();
+    let partner = pawn(&mut registry, inside, DescriptorSpawnPath::NetworkSlot);
+
+    let mut ghosts = crate::ghost_links::GhostLinks::install(&world, &registry);
+    ghosts.update(
+        &registry,
+        crate::ghost_links::GhostFrame {
+            clocks: crate::ghost_links::PresentationClocks::compute(
+                crate::ghost_links::clocks::ClockSource::Host { tick: 1 },
+                0.0,
+            ),
+            alpha: 0.0,
+            elapsed_seconds: 1.0 / 60.0,
+            view: crate::ghost_links::CandidateView::Authoritative,
+        },
+    );
+    let [ghost] = ghosts.members() else {
+        panic!("one ghost: the partner, never the viewer");
+    };
+    assert_eq!(ghost.entity, partner);
+    assert_eq!(ghost.membership, 1.0);
+    let expected = postretro_foundation::SeamlessMapping::new(
+        record.landmark_origin.into(),
+        record.landmark_yaw,
+        record.target_origin.into(),
+        record.target_yaw,
+    )
+    .point(inside);
+    assert!((ghost.mapped.position - expected).length() < 1e-4);
 }

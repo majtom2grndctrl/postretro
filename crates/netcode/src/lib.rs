@@ -37,7 +37,7 @@ mod client;
 mod client_switch;
 mod command_queue;
 mod descriptor_class;
-pub use descriptor_class::is_host_replicated_descriptor_entity;
+pub use descriptor_class::{ReplicatedDescriptorClass, is_host_replicated_descriptor_entity};
 mod presentation_state;
 pub use presentation_state::validate_presentation_override;
 mod endpoint;
@@ -196,6 +196,7 @@ pub(crate) use host_input::host_handle_client_message_inner;
 pub use host_input::{host_handle_client_messages, send_shot_verdict};
 pub use host_presentation::{
     present_client_pawns as host_present_client_pawns,
+    presented_client_pawn_host_tick as host_presented_client_pawn_tick,
     probe_presented_client_pawn_feet as host_probe_presented_client_pawn_feet,
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
@@ -1585,7 +1586,10 @@ pub fn client_sample_interpolation(
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
     }
-    replication.presented_player_inputs().clone()
+    ClientPresentationInputs {
+        render_server_tick: Some(render_server_tick),
+        ..replication.presented_player_inputs().clone()
+    }
 }
 
 /// Resolve the host-authoritative prediction values for one spawned slot pawn.
@@ -6976,6 +6980,79 @@ mod tests {
         assert!(
             time_sync.estimated_server_tick().is_some(),
             "the estimator initializes after a recorded probe's echo is folded in"
+        );
+    }
+
+    // Ghost links read link state at the exact tick remotes present at, so the
+    // reported render tick must be the one the interpolation sampled with.
+    #[test]
+    fn client_sample_interpolation_reports_the_render_tick_remotes_were_sampled_at() {
+        let record = |baseline_id, x: f32| EntityRecord::FullBaseline {
+            network_id: 7,
+            baseline_id,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: None,
+            active_weapon_archetype: None,
+            projectile_presentation: None,
+            presentation_binding: None,
+            components: vec![ComponentPayload::Transform(WireTransform {
+                position: [x, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+            })],
+        };
+        let mut registry = EntityRegistry::new();
+        let mut replication = ClientReplication::new();
+        // Each sample's x is its own server tick, so the presented x names the
+        // tick the buffer was sampled at.
+        for (sequence, tick) in [(0u32, 500u32), (1, 700)] {
+            replication.apply_snapshot(
+                &mut registry,
+                &SnapshotMessage {
+                    sequence,
+                    server_tick: tick,
+                    records: vec![record(sequence + 1, tick as f32)],
+                    state_schema_fingerprint: [0; 32],
+                    state_records: Vec::new(),
+                    faction_sentiment_record: None,
+                    server_script_time: 0.0,
+                },
+            );
+        }
+        let pre_sync = client_sample_interpolation(
+            &mut registry,
+            &mut replication,
+            &ClientTimeSync::new(),
+            &mut InterpolationDelayState::new(),
+            1.0 / 60.0,
+            1.0,
+        );
+        assert_eq!(
+            pre_sync.render_server_tick, None,
+            "no clock before time sync"
+        );
+
+        let mut time_sync = ClientTimeSync::new();
+        let request = time_sync.maybe_send_probe(0).expect("first probe fires");
+        assert!(time_sync.estimator.ingest_echo(&request.echo(600, 0), 0));
+        let inputs = client_sample_interpolation(
+            &mut registry,
+            &mut replication,
+            &time_sync,
+            &mut InterpolationDelayState::new(),
+            1.0 / 60.0,
+            1.0,
+        );
+        let render_tick = inputs
+            .render_server_tick
+            .expect("synced clock names a tick");
+        assert!(render_tick > 500.0 && render_tick < 700.0, "{render_tick}");
+        let id = replication.entity_for_network_id(NetworkId(7)).unwrap();
+        let presented = registry.interpolated_transform(id, 1.0).unwrap().position.x;
+        assert!(
+            (f64::from(presented) - render_tick).abs() < 1e-2,
+            "sampled at {presented}, reported {render_tick}"
         );
     }
 

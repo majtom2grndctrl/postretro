@@ -132,10 +132,7 @@ pub(crate) fn install_world_cpu(
         &mut script_ctx.registry.borrow_mut(),
         world,
     );
-    crate::runtime_ghost_links::spawn_loaded_ghost_links(
-        &mut script_ctx.registry.borrow_mut(),
-        world,
-    );
+    crate::ghost_links::spawn_loaded_ghost_links(&mut script_ctx.registry.borrow_mut(), world);
 
     // Kinematic movers. The caller commits the static collision world (built
     // and validated before any install mutation) ahead of this call.

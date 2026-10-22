@@ -343,6 +343,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         fluid_eye: Default::default(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         teleporter_bindings: Default::default(),
+        ghost_links: Default::default(),
         player_events: Default::default(),
         trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),
         client_fire_resolutions: Vec::new(),

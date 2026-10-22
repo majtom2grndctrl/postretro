@@ -12,15 +12,17 @@ const DESCRIPTOR_CLASS_PREFIX: &str = "descriptor:";
 const PAWN_CLASS_PREFIX: &str = "pawn:";
 const PROJECTILE_CLASS_PREFIX: &str = "projectile:";
 
+/// How a replicated entity was materialized: the class tag on its snapshot record,
+/// with the descriptor's canonical name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ReplicatedDescriptorClass<'a> {
+pub enum ReplicatedDescriptorClass<'a> {
     Descriptor(&'a str),
     Pawn(&'a str),
     Projectile(&'a str),
 }
 
 impl<'a> ReplicatedDescriptorClass<'a> {
-    pub(super) fn canonical_name(self) -> &'a str {
+    pub fn canonical_name(self) -> &'a str {
         match self {
             Self::Descriptor(name) | Self::Pawn(name) | Self::Projectile(name) => name,
         }

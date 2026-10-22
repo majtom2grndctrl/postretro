@@ -311,6 +311,10 @@ impl RemotePlayerLocomotionReference {
 pub struct ClientPresentationInputs {
     pub aim_pitches: HashMap<NetworkId, f32>,
     pub heading_yaws: HashMap<NetworkId, f32>,
+    /// The server tick every remote entity was sampled at this frame, exactly as the
+    /// interpolation used it. `None` before time sync names a render tick, while
+    /// remotes hold their newest applied pose.
+    pub render_server_tick: Option<f64>,
 }
 
 const MIN_PRESENTED_HORIZONTAL_SPEED_SQ: f32 = 1.0e-8;
@@ -383,7 +387,8 @@ pub struct ClientReplication {
     /// is presentation state only: it detects shared-visible equip changes without
     /// deriving a weapon from owner-private data or mutating gameplay components.
     active_weapon_archetypes: HashMap<NetworkId, Option<String>>,
-    /// Descriptor class retained for each remote presentation entity. Overlay
+    /// Replicated class retained for each remote presentation entity, as the
+    /// snapshot tagged it (`descriptor:` / `pawn:` / `projectile:`). Overlay
     /// anchoring uses the local descriptor's authored hitbox when a model socket
     /// or derived skeletal bound is unavailable; no combat component is created.
     remote_entity_classes: HashMap<NetworkId, String>,
@@ -909,9 +914,31 @@ impl ClientReplication {
 
     /// Descriptor class for a mapped remote presentation entity.
     pub(crate) fn remote_entity_class(&self, network_id: NetworkId) -> Option<&str> {
+        self.remote_entity_classes.get(&network_id).map(|class| {
+            super::descriptor_class::decode_replicated_descriptor_class(class).canonical_name()
+        })
+    }
+
+    /// Every mapped remote presentation entity with the replicated class it was
+    /// materialized from. Display copies carry no provenance, so this is how
+    /// client-side presentation tells a remote pawn from a descriptor entity or a
+    /// projectile mirror. Allocation-free; unordered.
+    pub fn remote_entities_by_class(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            EntityId,
+            super::descriptor_class::ReplicatedDescriptorClass<'_>,
+        ),
+    > + '_ {
         self.remote_entity_classes
-            .get(&network_id)
-            .map(String::as_str)
+            .iter()
+            .filter_map(|(network_id, class)| {
+                Some((
+                    self.entity_for_network_id(*network_id)?,
+                    super::descriptor_class::decode_replicated_descriptor_class(class),
+                ))
+            })
     }
 
     /// Entity ids that should be drawn as remote debug markers. The local predicted
@@ -2512,12 +2539,10 @@ impl ClientReplication {
     }
 
     /// Retain the descriptor identity already carried by the snapshot while
-    /// descriptor-aware presentation materialization has it in scope. The cache stores
-    /// the canonical descriptor name because overlay lookup consumes it directly.
+    /// descriptor-aware presentation materialization has it in scope. The cache keeps
+    /// the class tag; readers decode it, so the representation (pawn, projectile or
+    /// descriptor entity) stays available beside the canonical name.
     pub(crate) fn cache_remote_entity_class(&mut self, network_id: NetworkId, entity_class: &str) {
-        let entity_class =
-            super::descriptor_class::decode_replicated_descriptor_class(entity_class)
-                .canonical_name();
         self.remote_entity_classes
             .insert(network_id, entity_class.to_string());
     }
@@ -4508,6 +4533,40 @@ mod tests {
     }
 
     // --- Despawn: idempotent, drops mapping, acks tombstone; unknown despawn no-ops. ---
+    // Display copies carry no provenance: client-side ghost eligibility tells a
+    // remote pawn from a descriptor entity by the class tag its record carried.
+    #[test]
+    fn remote_entities_by_class_keeps_the_replicated_representation() {
+        use super::super::descriptor_class::ReplicatedDescriptorClass;
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![
+                    full_baseline(7, 1, vec![transform_payload_at([0.0; 3], 0.0)]),
+                    full_baseline(8, 1, vec![transform_payload_at([1.0, 0.0, 0.0], 0.0)]),
+                ],
+            ),
+        );
+        client.cache_remote_entity_class(NetworkId(7), "pawn:player");
+        client.cache_remote_entity_class(NetworkId(8), "descriptor:imp");
+        let pawn = client.entity_for_network_id(NetworkId(7)).unwrap();
+        let imp = client.entity_for_network_id(NetworkId(8)).unwrap();
+        let mut classes: Vec<_> = client.remote_entities_by_class().collect();
+        classes.sort_by_key(|(id, _)| *id);
+        let mut expected = vec![
+            (pawn, ReplicatedDescriptorClass::Pawn("player")),
+            (imp, ReplicatedDescriptorClass::Descriptor("imp")),
+        ];
+        expected.sort_by_key(|(id, _)| *id);
+        assert_eq!(classes, expected);
+        assert_eq!(client.remote_entity_class(NetworkId(7)), Some("player"));
+        assert_eq!(client.remote_entity_class(NetworkId(8)), Some("imp"));
+    }
+
     #[test]
     fn despawn_drops_mapping_and_is_idempotent() {
         let mut registry = EntityRegistry::new();

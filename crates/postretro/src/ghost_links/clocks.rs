@@ -1,0 +1,136 @@
+// Per-frame presentation clocks: the host time each kind of member presents at.
+// See: context/lib/entity_model.md §7d · context/lib/networking.md §Current contract
+
+use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+use postretro_entities::{EntityId, EntityRegistry};
+
+use super::eligibility::{CandidateOrigin, GhostCategory};
+
+/// What this machine knows about host time this frame, by role.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ClockSource {
+    /// No endpoint: the binary's own count of completed fixed ticks.
+    SinglePlayer { completed_ticks: u32 },
+    /// Listen host: the endpoint's post-increment authoritative tick.
+    Host { tick: u32 },
+    /// Connected client: the tick remotes were sampled at this frame, the
+    /// estimated host tick movers re-simulate to, and the newest snapshot as the
+    /// fallback before time sync names either.
+    Client {
+        render_server_tick: Option<f64>,
+        estimated_server_tick: Option<f64>,
+        latest_snapshot_tick: Option<u32>,
+    },
+}
+
+/// Which presentation path draws a member on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemberLane {
+    /// Presented from this machine's own simulation at the sub-tick alpha.
+    Simulated,
+    /// Presented through a delay buffer: client pawns on the host seat, every
+    /// replicated remote on a client.
+    Remote,
+    /// Kinematic movers.
+    Mover,
+}
+
+/// Fractional host ticks, in snapshot-stamp units, that each lane presents at
+/// this frame. Link-state history is read at these values, so a link change and
+/// the motion it reveals present on the same frame on every machine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PresentationClocks {
+    simulated: f64,
+    remote: f64,
+    mover: f64,
+}
+
+impl PresentationClocks {
+    pub(crate) fn compute(source: ClockSource, alpha: f32) -> Self {
+        match source {
+            ClockSource::SinglePlayer { completed_ticks } => {
+                let now = sub_tick(completed_ticks, alpha);
+                Self {
+                    simulated: now,
+                    remote: now,
+                    mover: now,
+                }
+            }
+            ClockSource::Host { tick } => {
+                // The registry blends end-of-tick (tick - 1) toward end-of-tick
+                // (tick) states by alpha; client pawns trail by the host-seat delay.
+                let now = sub_tick(tick, alpha);
+                Self {
+                    simulated: now,
+                    remote: crate::netcode::host_presented_client_pawn_tick(tick, alpha),
+                    mover: now,
+                }
+            }
+            ClockSource::Client {
+                render_server_tick,
+                estimated_server_tick,
+                latest_snapshot_tick,
+            } => {
+                // Before time sync, remotes hold their newest applied snapshot.
+                let held = latest_snapshot_tick.map_or(0.0, f64::from);
+                let mover = estimated_server_tick.unwrap_or(held);
+                Self {
+                    // A client simulates nothing that ghosts: its own pawn and
+                    // shots never ghost for it. Host-now is the defined fallback.
+                    simulated: mover,
+                    remote: render_server_tick.unwrap_or(held),
+                    mover,
+                }
+            }
+        }
+    }
+
+    pub(crate) fn lane(&self, lane: MemberLane) -> f64 {
+        match lane {
+            MemberLane::Simulated => self.simulated,
+            MemberLane::Remote => self.remote,
+            MemberLane::Mover => self.mover,
+        }
+    }
+
+    /// The earliest host time any member reads this frame; history older than
+    /// the change covering it is unreachable.
+    pub(crate) fn oldest(&self) -> f64 {
+        self.simulated.min(self.remote).min(self.mover)
+    }
+}
+
+fn sub_tick(post_increment_tick: u32, alpha: f32) -> f64 {
+    f64::from(post_increment_tick) - 1.0 + f64::from(alpha)
+}
+
+/// The lane a candidate presents through. On the host a slot pawn the host
+/// simulates for a client presents delayed; every replicated copy on a client
+/// presents at the remote render tick.
+pub(crate) fn member_lane(
+    registry: &EntityRegistry,
+    entity: EntityId,
+    origin: CandidateOrigin<'_>,
+    category: GhostCategory,
+) -> MemberLane {
+    if category == GhostCategory::Movers {
+        return MemberLane::Mover;
+    }
+    match origin {
+        CandidateOrigin::Replicated(_) => MemberLane::Remote,
+        CandidateOrigin::Local => {
+            let slot_pawn = registry
+                .get_component::<DescriptorProvenance>(entity)
+                .is_ok_and(|provenance| provenance.spawn_path == DescriptorSpawnPath::NetworkSlot);
+            if slot_pawn {
+                MemberLane::Remote
+            } else {
+                MemberLane::Simulated
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "clocks_tests.rs"]
+mod tests;

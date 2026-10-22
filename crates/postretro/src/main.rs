@@ -81,9 +81,9 @@ pub(crate) use postretro_sim::{
     presentation_pool, resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities,
 };
 
+mod ghost_links;
 mod render;
 mod render_preparation;
-mod runtime_ghost_links;
 mod runtime_movers;
 mod runtime_teleporters;
 use postretro_sim::scripting;
@@ -961,6 +961,9 @@ pub(crate) struct App {
     /// the composed reaction set. The authoritative fixed tick dispatches each
     /// teleport's reactions through it, and the frame-end residual drain reads it.
     teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
+    /// The level's ghost links: link-state history and this frame's ghosts,
+    /// built at level install and dropped at unload. Render collection reads it.
+    ghost_links: ghost_links::GhostLinks,
     /// Host-only player events bound from the composed active set, with their
     /// per-player edge memory. Rebuilt with the trigger bindings.
     player_events: postretro_sim::player_events::PlayerEventTable,

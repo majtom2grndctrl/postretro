@@ -79,4 +79,5 @@ fn ghost_link_companion(
 }
 
 #[cfg(test)]
+#[path = "install_tests.rs"]
 mod tests;

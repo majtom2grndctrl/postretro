@@ -1,8 +1,8 @@
 // Installed teleporter geometry, authored poses and stable local entity bindings.
 // See: context/lib/movement.md §6 · context/lib/entity_model.md §7
 
-use glam::Vec3;
-use postretro_collision::{ConvexLeaf, LeafPlane, TeleporterRegions};
+use crate::environment_volumes::convex_leaf;
+use postretro_collision::TeleporterRegions;
 use postretro_entities::EntityId;
 use postretro_level_format::teleporters::{TeleporterRecord, TeleportersSection};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,24 +36,7 @@ impl Teleporters {
         let regions = section
             .teleporters
             .iter()
-            .map(|record| {
-                record
-                    .brushes
-                    .iter()
-                    .map(|brush| ConvexLeaf {
-                        aabb_min: Vec3::from(brush.aabb_min),
-                        aabb_max: Vec3::from(brush.aabb_max),
-                        planes: brush
-                            .planes
-                            .iter()
-                            .map(|plane| LeafPlane {
-                                normal: Vec3::from(plane.normal),
-                                distance: plane.distance,
-                            })
-                            .collect(),
-                    })
-                    .collect()
-            })
+            .map(|record| record.brushes.iter().map(convex_leaf).collect())
             .collect();
         Self {
             regions: TeleporterRegions::build(regions),

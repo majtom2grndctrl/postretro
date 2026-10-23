@@ -190,9 +190,9 @@ landed is rerun. (O20)
   `narrow_frustum`, `camera_on_polygon_plane` (`APEX_ON_PORTAL_PLANE_EPSILON`),
   `MAX_PORTAL_WALK_STEPS`, `VisibilityPath::PortalStepLimitFallback`. Walk counters
   leave through `cpu_stages::record_walk`; the title bar reads `VisibilityStats`.
-- Second caller: `planar-water-reflections` adds a seeded mirror walk
-  (`portal_traverse_seeded`, `determine_mirror_visible_cells`) that floods from
-  seed cells with no apex cell. Whichever lands second carries it.
+- Later caller: `planar-water-reflections` lands after this brief and floods a
+  mirror view from seed cells with no apex cell (spike: `portal_traverse_seeded`,
+  `determine_mirror_visible_cells`). A seeded entry here saves it a second walk.
 - `crates/visibility/src/portal_vis.rs` is past the split threshold, mostly tests.
   Split it first, behavior-preserving, in its own commit.
 - Reference implementation: `prototype/src/alt_vis.rs`, the `rect256` variant. Read

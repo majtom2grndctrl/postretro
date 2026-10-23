@@ -33,6 +33,11 @@ pub(super) const EDGE_THRESHOLD: f32 = FLASH_LUMINANCE_THRESHOLD - HALF_STEP - D
 /// draws along a step that is monotone there, never a visible change.
 const ONWARD_ROUNDING: f32 = 1.0e-6;
 
+/// The `last_sign` of an edge tracker whose history is unknown and that has
+/// not moved since ([`EdgeTrackers::unknown_history`]). Its `dir` is 0, as for
+/// any tracker that has not moved; its first move sets a sign of its own.
+const UNKNOWN_HISTORY: i8 = i8::MIN;
+
 /// The (albedo, background) of edge point `edge`.
 pub(super) fn edge_point(edge: usize) -> (f32, f32) {
     let step = |k: usize| k as f32 / EDGE_SAMPLES as f32;
@@ -138,7 +143,9 @@ pub(super) struct EdgeTrackers {
 }
 
 impl EdgeTrackers {
-    /// Trackers starting fresh at what `drawn` draws.
+    /// Trackers starting fresh at what `drawn` draws: a swing counts once it
+    /// reaches [`EDGE_THRESHOLD`] from here. For trackers whose history starts
+    /// with the limiter, so nothing before was presented under it.
     pub(super) fn fresh(drawn: Drawn) -> Self {
         let mut edges = Self {
             trackers: [Tracker::default(); EDGE_POINTS],
@@ -149,6 +156,24 @@ impl EdgeTrackers {
             let (albedo, background) = edge_point(edge);
             edges.trackers[edge].restart(drawn.at(albedo, background));
             edges.set_reference(edge, drawn);
+        }
+        edges
+    }
+
+    /// Trackers at what `drawn` draws whose history is unknown: the screen
+    /// showed earlier states the clamp cannot see, so each point may be part
+    /// way into a swing that any move completes. Each tracker counts its
+    /// first move, of any size and either way, as a transition that way, and
+    /// from then on runs as [`Self::step`] describes. A tracker that has not
+    /// moved counts nothing.
+    ///
+    /// The rule for any ghost whose earlier presentation the clamp can't see:
+    /// one dropped at rest and appearing again today; a re-tenanted key, a
+    /// reload or a join in the middle of a strobe later.
+    pub(super) fn unknown_history(drawn: Drawn) -> Self {
+        let mut edges = Self::fresh(drawn);
+        for tracker in &mut edges.trackers {
+            tracker.last_sign = UNKNOWN_HISTORY;
         }
         edges
     }
@@ -186,6 +211,9 @@ impl EdgeTrackers {
     ///
     /// At each edge point, in order:
     ///
+    /// - a point whose history is unknown ([`Self::unknown_history`]) counts
+    ///   its first move, of any size, as a transition its way, and runs the
+    ///   rules below from the next frame on;
     /// - a swing of at least [`EDGE_THRESHOLD`] from the last extremum, the
     ///   other way from the one last counted, counts a transition;
     /// - a counted swing reaching past its peak carries its count on
@@ -224,6 +252,21 @@ impl EdgeTrackers {
         for edge in 0..EDGE_POINTS {
             let tracker = self.trackers[edge];
             let value = next[edge];
+            if tracker.last_sign == UNKNOWN_HISTORY {
+                // Not in any slot of its own yet, so no onward rule binds it.
+                if moved[edge] == 0.0 {
+                    continue;
+                }
+                let mut stepped = tracker;
+                stepped.present(value, EDGE_THRESHOLD);
+                stepped.last_sign = if moved[edge] > 0.0 { 1 } else { -1 };
+                self.trackers[edge] = stepped;
+                self.set_reference(edge, drawn);
+                if !window.count_edge(edge, class, opens) {
+                    return false;
+                }
+                continue;
+            }
             if onward & (1u64 << edge) != 0
                 && moved[edge] * f32::from(tracker.last_sign) < -ONWARD_ROUNDING
             {

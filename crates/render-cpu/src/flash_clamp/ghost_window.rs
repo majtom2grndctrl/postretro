@@ -66,7 +66,10 @@ pub(super) enum Budget {
 ///   transition of the step joins it. Over budget only an exempt step opens
 ///   one, and from six edge slots the budget is exempt-only: the exempt ray
 ///   at the held luminance is monotone at every edge point, so a tracker
-///   counts on it at most once and joins its latest slot.
+///   counts on it at most once and joins its latest slot. A tracker whose
+///   history is unknown and that has not moved yet draws at the presented
+///   look what it drew with nothing drawn, so it draws that at every lower
+///   opacity of the held luminance too, and the ray never moves it.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct GhostWindow {
     // Slot fields side by side, not as an array of slots, so the window packs

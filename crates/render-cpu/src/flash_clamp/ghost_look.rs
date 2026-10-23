@@ -123,9 +123,9 @@ struct FrameAsk {
 ///
 /// # Six transitions over any background
 ///
-/// From the frame its history starts, no (a, B) in [0, 1]² draws more than
-/// six transitions (a 0.1 swing whose darker side is under 0.8) of what
-/// presents in any second:
+/// From the frame its history starts, and across a drop at rest, no (a, B)
+/// in [0, 1]² draws more than six transitions (a 0.1 swing whose darker side
+/// is under 0.8) of what presents in any second:
 ///
 /// 1. (a, B) is m·x for x on the outer edges, m = max(a, B), so it counts
 ///    what x would under the threshold T = 0.1/m ≥ 0.1 and dark limit 0.8/m.
@@ -150,10 +150,32 @@ struct FrameAsk {
 ///    second each hold a distinct slot, restarted on that transition's frame
 ///    and alive at the last one.
 /// 5. The window never holds more than six edge slots.
+/// 6. Across a drop. A ghost is dropped only at rest, nothing drawn and no
+///    slot held, so x's last transition before it is more than a second old
+///    and shares no second with one after. The clamp comes back with
+///    unknown history ([`Self::appearing`]): each edge point counts its first
+///    move after the drop as a transition its way, whatever its size. The
+///    one transition the drop hides, x completing the swing it was in, falls
+///    on a frame x reaches further its way than on any frame since it
+///    rested. There y or z has moved and counted, and that count runs as in
+///    step 3: carried on while it reaches further, counted again back near
+///    where it rested. From then on steps 2 to 5 run as from a history
+///    start. For the window the first moves change nothing: an appearance is
+///    one step, so its first moves share one exempt slot; a point still since
+///    the drop draws at the presented look what it drew with nothing drawn,
+///    so the exempt ray, a lower opacity at that luminance, never moves it,
+///    and from six edge slots a tracker still counts at most once on the
+///    ray. The exempt ray still always fits, so a fade or vanish presents.
 ///
 /// The thresholds leave room for the unorm16 opacity the draw packs and f32
-/// rounding. Not covered: a ghost whose history was dropped at rest starts
-/// fresh, so an excursion older than its window is forgotten.
+/// rounding. Not covered across a drop: a sample whose first move is under
+/// the edge threshold, once it has counted its swing back near where it
+/// rested, counts nothing moving on that way short of the threshold, so a
+/// hidden swing completing there restarts no slot on its frame; and a point
+/// whose nearer sample has not moved since the drop (a white tint keeps the
+/// corner (1, 1) still) leans on the farther one, whose slot the nearer
+/// one's first count may later join. Targeted searches over both find no
+/// seventh transition.
 #[derive(Clone, Copy, Debug)]
 struct LookValueClamp {
     window: GhostWindow,
@@ -169,6 +191,39 @@ struct LookValueClamp {
 }
 
 impl LookValueClamp {
+    /// A clamp presenting `asked` with an empty window, its edge trackers
+    /// started by `edges` at what `asked` draws.
+    fn starting(asked: AskedLook, edges: fn(Drawn) -> EdgeTrackers) -> Self {
+        let AskedLook { look, transparency } = asked;
+        let opacity = unit_strength(look.opacity);
+        let drawn = drawn_opacity(transparency)(opacity);
+        let luminance = drawn_luminance(look.tint);
+        Self {
+            window: GhostWindow::default(),
+            edges: edges(Drawn::of(drawn, luminance)),
+            red: GhostRedness::fresh(drawn, look.tint),
+            opacity,
+            tint: look.tint,
+            luminance,
+            hue: look.tint,
+        }
+    }
+
+    /// A clamp presenting `asked` whose earlier presentation it can't see:
+    /// the screen showed states it never judged, so any point may be part way
+    /// into a swing. Its edge trackers start with unknown history
+    /// ([`EdgeTrackers::unknown_history`]), each counting its first move as a
+    /// transition. The rule for any ghost the clamp lost sight of: one dropped
+    /// at rest and appearing again today; a re-tenanted key, a reload or a
+    /// join in the middle of a strobe later.
+    ///
+    /// Redness needs no such start while a ghost is dropped only at rest: its
+    /// presented redness is then zero, the floor, so no swing it forgot can
+    /// complete. A later caller presenting redness has to weigh that.
+    fn with_unknown_history(asked: AskedLook) -> Self {
+        Self::starting(asked, EdgeTrackers::unknown_history)
+    }
+
     /// The asked `opacity` and drawn `luminance` under the straight-line rate
     /// cap from the presented look.
     fn capped(&self, opacity: f32, luminance: f32, cap: f32) -> (f32, f32) {
@@ -286,54 +341,49 @@ impl KeyClamp for LookValueClamp {
 
     /// A ghost already presenting as its history starts (the limiter turning
     /// on, or the clamp's first frame) starts against its look, counting
-    /// nothing, as a screen channel does.
+    /// nothing, as a screen channel does, so enabling never dips it. Nothing
+    /// was presented under the limiter before, so there is no earlier swing
+    /// to complete. A ghost the clamp dropped differs: the screen did show
+    /// its earlier states, and the clamp forgot them ([`Self::appearing`]).
     fn fresh(asked: AskedLook) -> Self {
-        let AskedLook { look, transparency } = asked;
-        let opacity = unit_strength(look.opacity);
-        let drawn = drawn_opacity(transparency)(opacity);
-        let luminance = drawn_luminance(look.tint);
-        Self {
-            window: GhostWindow::default(),
-            edges: EdgeTrackers::fresh(Drawn::of(drawn, luminance)),
-            red: GhostRedness::fresh(drawn, look.tint),
-            opacity,
-            tint: look.tint,
-            luminance,
-            hue: look.tint,
-        }
+        Self::starting(asked, EdgeTrackers::fresh)
     }
 
     /// Appearing presents the asked look and counts it: a ghost that was not
     /// drawn changes what draws over every background as it appears, so its
-    /// first second keeps only the budget the appearance leaves. It counts as
-    /// exempt, which an empty window always admits.
+    /// first second keeps only the budget the appearance leaves.
+    ///
+    /// A key appearing after history started may be one dropped at rest,
+    /// which the container cannot tell from a new one, so it starts from
+    /// nothing drawn with unknown history ([`Self::with_unknown_history`]).
+    /// The appearance is every moving edge point's first move, however
+    /// faint, so each counts it, all in one exempt slot, which an empty
+    /// window always admits. A point the appearance leaves still counts its
+    /// first move later, in whatever slot that step counts in.
     fn appearing(asked: AskedLook) -> Self {
         let AskedLook { look, transparency } = asked;
+        let unseen = AskedLook {
+            look: GhostInstanceLook {
+                opacity: 0.0,
+                ..look
+            },
+            transparency,
+        };
+        let mut clamp = Self::with_unknown_history(unseen);
         let opacity = unit_strength(look.opacity);
         let drawn = drawn_opacity(transparency)(opacity);
-        let luminance = drawn_luminance(look.tint);
-        let mut window = GhostWindow::default();
-        let mut red = GhostRedness::fresh(0.0, look.tint);
         // An empty window has room for a red onset, so the tint is unchanged.
-        red.limit(&mut window, drawn, look.tint);
-        let mut edges = EdgeTrackers::fresh(Drawn::of(0.0, luminance));
-        let counted = edges.step(
-            Drawn::of(drawn, luminance),
+        clamp.red.limit(&mut clamp.window, drawn, look.tint);
+        let counted = clamp.edges.step(
+            Drawn::of(drawn, clamp.luminance),
             SlotClass::Exempt,
             true,
             0,
-            &mut window,
+            &mut clamp.window,
         );
         debug_assert!(counted, "an empty window admits an exempt slot");
-        Self {
-            window,
-            edges,
-            red,
-            opacity,
-            tint: look.tint,
-            luminance,
-            hue: look.tint,
-        }
+        clamp.opacity = opacity;
+        clamp
     }
 
     fn limit(&mut self, asked: AskedLook, frame: &LimiterFrameUniform) -> AskedLook {
@@ -405,7 +455,8 @@ impl KeyClamp for LookValueClamp {
 /// any background, and over budget it rests at a held look. A ghost not
 /// presented on a frame vanished: its opacity falls to nothing, which always
 /// presents and counts once. A ghost appearing presents as asked and counts
-/// its appearance the same way; one already presenting when the limiter
+/// its appearance the same way, however faint, since it may be one whose
+/// history was dropped at rest; one already presenting when the limiter
 /// turns on starts against its look and counts nothing.
 #[derive(Clone, Debug)]
 pub struct GhostLookClamp<K> {

@@ -20,8 +20,10 @@ pub(super) trait KeyClamp: Clone {
 
     /// A clamp for a key appearing with `value` on a frame after history
     /// started. Its first limit of `value` presents it unchanged too; a clamp
-    /// may count the appearance against its budget. The same as
-    /// [`Self::fresh`] unless the clamp says otherwise.
+    /// may count the appearance against its budget. The key may be one the
+    /// container dropped at rest, whose earlier presentation is forgotten, so
+    /// a clamp bounding what a key draws across a drop starts it with unknown
+    /// history. The same as [`Self::fresh`] unless the clamp says otherwise.
     fn appearing(value: Self::Value) -> Self {
         Self::fresh(value)
     }

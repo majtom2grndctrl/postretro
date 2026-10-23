@@ -1,5 +1,6 @@
 // Ghost look clamp: three flashes a second over any background, regressions,
-// targeted attacks, strobes, ordinary looks, red, dither, appearing, and off.
+// targeted attacks, strobes, ordinary looks, red, dither, appearing, drops at
+// rest, and off.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter), §7.9
 
 use super::super::flash_clamp_test_fixtures::{
@@ -1624,5 +1625,404 @@ fn a_ghost_presenting_as_the_limiter_turns_on_spends_no_slot() {
         assert_eq!(appeared, look(1.0, WHITE));
         let appearing = clamp.looks.clamp(&other).expect("limited");
         assert!(!appearing.window.is_empty(), "{starts:?}: appearing counts");
+    }
+}
+
+/// What `asked` presents through one ghost at `fps` drawn with
+/// `transparency`, a `None` frame presenting nothing (the ghost vanished):
+/// each frame's presented look, if any, and whether the ghost had no clamp as
+/// the frame began, never seen or dropped at rest.
+fn present_tracking_drops(
+    asked: &[Option<GhostInstanceLook>],
+    fps: f32,
+    transparency: GhostTransparency,
+) -> Vec<(Option<GhostInstanceLook>, bool)> {
+    let step = frame(1.0 / fps, true);
+    let mut clamp = GhostLookClamp::default();
+    clamp.set_transparency(transparency);
+    asked
+        .iter()
+        .map(|asked| {
+            let unseen = clamp.looks.clamp(&GHOST).is_none();
+            clamp.begin_frame(Some(&step));
+            let shown = asked.map(|asked| clamp.present(GHOST, asked));
+            clamp.end_frame();
+            (shown, unseen)
+        })
+        .collect()
+}
+
+/// The most transitions over any background of the grid of what `asked`
+/// presents through one ghost at `fps`, drawn with `transparency`, a frame
+/// presenting nothing drawing no ghost; and whether the ghost was dropped at
+/// rest on the way.
+fn presented_worst_with_drops(
+    asked: &[Option<GhostInstanceLook>],
+    fps: f32,
+    transparency: GhostTransparency,
+) -> (usize, bool) {
+    let presented = present_tracking_drops(asked, fps, transparency);
+    let dropped = presented.iter().skip(1).any(|&(_, unseen)| unseen);
+    let drawn: Vec<GhostInstanceLook> = presented
+        .iter()
+        .map(|&(shown, _)| shown.unwrap_or(look(0.0, BLACK)))
+        .collect();
+    (over_any(&drawn, 1.0 / fps, transparency), dropped)
+}
+
+/// Assert `asked`, which drops its ghost at rest on the way, presents at most
+/// three flashes a second over every background, blended and dithered.
+fn assert_limited_across_a_drop(name: &str, asked: &[Option<GhostInstanceLook>], fps: f32) {
+    for transparency in GhostTransparency::ALL {
+        let (worst, dropped) = presented_worst_with_drops(asked, fps, transparency);
+        assert!(
+            dropped,
+            "{name} {transparency:?}: the ghost rests and is dropped"
+        );
+        assert!(worst <= 6, "{name} {transparency:?}: {worst} transitions");
+    }
+}
+
+// Regression: a ghost dropped at rest came back fresh, so it forgot the swing
+// it was in. Drawing 0.099 over a background before it vanished (no
+// transition), dropped after resting 1.5 s, it reappeared so faintly that no
+// edge point counted, which completed the old swing there, and the opacity
+// strobe after it had the whole budget: a seventh transition in the second.
+// Back with unknown history, every edge point counts its first move.
+#[test]
+fn a_ghost_dropped_at_rest_counts_the_swing_its_reappearance_completes() {
+    for fps in [30.0f32, 60.0, 144.0] {
+        let frames = |seconds: f32| ((seconds * fps).round() as usize).max(1);
+        let mut asked = vec![Some(look(0.198, WHITE)); frames(1.0)];
+        asked.extend(vec![None; frames(1.5)]);
+        asked.extend(vec![Some(look(0.004, BLACK)); frames(0.05)]);
+        for i in 0..6 {
+            let opacity = if i % 2 == 0 { 0.5 } else { 0.004 };
+            asked.extend(vec![Some(look(opacity, WHITE)); frames(1.0 / 12.0)]);
+        }
+        asked.extend(vec![Some(look(0.004, WHITE)); frames(0.5)]);
+        assert_limited_across_a_drop("reappearing faintly", &asked, fps);
+    }
+
+    // However faint, an appearance counts.
+    let faint = LookValueClamp::appearing(AskedLook {
+        look: look(0.004, BLACK),
+        transparency: GhostTransparency::Blend,
+    });
+    assert!(!faint.window.is_empty(), "a faint appearance counts");
+}
+
+// Ordinary looks after a drop are never held either. A ghost back after its
+// clamp was dropped at rest presents its first frame as asked, as any
+// appearance does, then the asked look under the rate cap from what presented
+// last, though its appearance and each edge point's first move count: arming
+// and disarming, re-entering twice in a second, the echo steps, fades, a white
+// or black arm then a tint change, a faint start, arming twice, and re-arming
+// after a second rest, blended and dithered.
+#[test]
+fn ordinary_looks_after_a_drop_present_as_asked_within_the_rate_cap() {
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t.min(1.0);
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| -> [f32; 3] {
+        std::array::from_fn(|i| lerp(a[i], b[i], t))
+    };
+    for fps in RATES {
+        let dt = 1.0 / fps;
+        let frames = |seconds: f32| (seconds * fps).round() as usize;
+        let steady = |opacity: f32, tint: [f32; 3], seconds: f32| {
+            vec![Some(look(opacity, tint)); frames(seconds)]
+        };
+        let ramp = |from: f32, to: f32, tint: [f32; 3]| -> Vec<Option<GhostInstanceLook>> {
+            (0..frames(0.5))
+                .map(|n| Some(look(lerp(from, to, n as f32 * dt / 0.25), tint)))
+                .collect()
+        };
+        let fade = |from: (f32, [f32; 3]), to: (f32, [f32; 3])| -> Vec<Option<GhostInstanceLook>> {
+            let mut looks = steady(from.0, from.1, 0.2);
+            looks.extend((0..frames(1.5)).map(|n| {
+                let t = n as f32 * dt / 1.5;
+                Some(look(lerp(from.0, to.0, t), mix(from.1, to.1, t)))
+            }));
+            looks.extend(steady(to.0, to.1, 0.5));
+            looks
+        };
+        let after_drop = |parts: &[Vec<Option<GhostInstanceLook>>]| {
+            let mut looks = steady(0.6, ECHO, 0.3);
+            looks.extend(vec![None; frames(1.5)]);
+            for part in parts {
+                looks.extend(part.iter().copied());
+            }
+            looks
+        };
+        let arm = [ramp(0.0, 0.6, ECHO), ramp(0.6, 0.0, ECHO)].concat();
+        let mut re_entry = steady(0.6, ECHO, 0.3);
+        for _ in 0..2 {
+            re_entry.extend([None; 3]);
+            re_entry.extend(steady(0.6, ECHO, 0.3));
+        }
+        let mut steps = Vec::new();
+        for opacity in [0.45, 0.6, 0.45, 0.6] {
+            steps.extend(steady(opacity, ECHO, 0.3));
+        }
+        let rest = vec![None; frames(1.5)];
+        let cases = [
+            ("arm and disarm", after_drop(&[arm.clone()])),
+            ("re-entry twice", after_drop(&[re_entry])),
+            ("echo steps", after_drop(&[steps.clone()])),
+            (
+                "fade 0.45 → 1, echo → ember",
+                after_drop(&[fade((0.45, ECHO), (1.0, EMBER))]),
+            ),
+            (
+                "fade 1 → 0.2, white → black",
+                after_drop(&[fade((1.0, WHITE), (0.2, BLACK))]),
+            ),
+            (
+                "white arm, then ember",
+                after_drop(&[
+                    ramp(0.0, 0.8, WHITE),
+                    steady(0.8, WHITE, 0.3),
+                    steady(0.8, EMBER, 0.3),
+                ]),
+            ),
+            (
+                "black arm, then echo",
+                after_drop(&[
+                    ramp(0.0, 0.8, BLACK),
+                    steady(0.8, BLACK, 0.3),
+                    steady(0.8, ECHO, 0.3),
+                ]),
+            ),
+            (
+                "faint, then steps",
+                after_drop(&[
+                    steady(0.03, ECHO, 0.3),
+                    steady(0.6, ECHO, 0.6),
+                    steady(0.45, ECHO, 0.3),
+                ]),
+            ),
+            ("arm twice", after_drop(&[arm.clone(), arm.clone()])),
+            (
+                "re-armed after a second rest",
+                after_drop(&[arm.clone(), rest, arm, steps]),
+            ),
+        ];
+        for transparency in GhostTransparency::ALL {
+            for (name, asked) in &cases {
+                let presented = present_tracking_drops(asked, fps, transparency);
+                let mut last = None;
+                for (n, (asked, &(shown, unseen))) in asked.iter().zip(&presented).enumerate() {
+                    let what = format!("{name}, {transparency:?} at {fps} fps, frame {n}");
+                    let (Some(asked), Some(shown)) = (asked, shown) else {
+                        last = last.map(|(_, level)| (0.0, level));
+                        continue;
+                    };
+                    let asked_drawn = (asked.opacity, drawn_luminance(asked.tint));
+                    // A ghost with no clamp appears as asked.
+                    let from = if unseen {
+                        asked_drawn
+                    } else {
+                        last.unwrap_or(asked_drawn)
+                    };
+                    let (expected, capped) =
+                        rate_capped(from, asked_drawn, INTENSITY_RATE_PER_SECOND * dt);
+                    if capped {
+                        assert!(
+                            (shown.opacity - expected.0).abs() < 1e-5,
+                            "{what}: {shown:?}"
+                        );
+                        let level = drawn_luminance(shown.tint);
+                        assert!(
+                            (level - expected.1).abs() <= 1.0 / 255.0,
+                            "{what}: {shown:?}"
+                        );
+                    } else {
+                        assert_eq!(shown, *asked, "{what}");
+                    }
+                    last = Some((shown.opacity, drawn_luminance(shown.tint)));
+                }
+            }
+        }
+    }
+}
+
+/// The turn-back attack across a drop at the edge point (1, 0.5). Before the
+/// drop a faint white ghost draws `swing` above the background there, so
+/// vanishing leaves a fall short of a flash. Back with tint `grey`, a faint
+/// first move, a frame back near the rest held `gap` seconds, then a faint
+/// black frame completing the old fall 3e-4 past the flash threshold, on
+/// which no edge point moves as far as the edge threshold. Then four
+/// transitions of opacity `high`, `hold` frames each, a rest until a second
+/// after the return, and two more.
+fn turn_back_after_a_drop(
+    fps: f32,
+    swing: f32,
+    grey: f32,
+    gap: f32,
+    high: f32,
+    hold: usize,
+) -> Vec<Option<GhostInstanceLook>> {
+    let background = 0.5;
+    let second = fps as usize;
+    let mut asked = vec![Some(look(swing / (1.0 - background), WHITE)); second];
+    asked.extend(vec![None; (1.5 * fps) as usize]);
+    asked.push(Some(look(0.004, [grey; 3])));
+    let returned = asked.len();
+    asked.extend(vec![
+        Some(look(0.0005, [grey; 3]));
+        1 + (gap * fps) as usize
+    ]);
+    asked.push(Some(look((0.1 - swing + 3e-4) / background, BLACK)));
+    let strobe = |asked: &mut Vec<Option<GhostInstanceLook>>, transitions: usize| {
+        for i in 0..transitions {
+            let opacity = if i % 2 == 0 { high } else { 0.0 };
+            asked.extend(vec![Some(look(opacity, WHITE)); hold]);
+        }
+    };
+    strobe(&mut asked, 4);
+    let until = returned + second + 1;
+    if asked.len() < until {
+        asked.resize(until, Some(look(0.0, WHITE)));
+    }
+    strobe(&mut asked, 2);
+    asked.extend(vec![Some(look(0.0, WHITE)); second]);
+    asked
+}
+
+/// The still-sample attack across a drop: a black tint keeps the edge point
+/// (1, 0) still while (1, 1/16) moves. Before the drop a faint white ghost
+/// draws 0.0995 above the background 0.025, nearer the still sample. Back
+/// black and faint, it falls a little there, rises back for `gap` seconds,
+/// then falls on to complete the old fall; then an opacity strobe at `hz` up
+/// to `high`.
+fn still_sample_after_a_drop(
+    fps: f32,
+    gap: f32,
+    hz: f32,
+    high: f32,
+) -> Vec<Option<GhostInstanceLook>> {
+    let background = 0.025;
+    let dt = 1.0 / fps;
+    let start = (0.1245 - background) / (1.0 - background);
+    let mut asked = vec![Some(look(start, WHITE)); fps as usize];
+    asked.extend(vec![None; (1.5 * fps) as usize]);
+    asked.push(Some(look(0.01, BLACK)));
+    asked.extend(vec![
+        Some(look(0.005, BLACK));
+        ((gap * fps) as usize).max(1)
+    ]);
+    asked.extend(vec![Some(look(0.03, BLACK)); 2]);
+    asked.extend(
+        (0..(1.5 * fps) as usize)
+            .map(|n| Some(look(alternate(hz, n as f32 * dt, high, 0.0), WHITE))),
+    );
+    asked
+}
+
+// Targeted attacks across a drop, which random looks cannot find, on the two
+// cases the argument across a drop leaves to search. Turn-back: a sample's
+// faint first move, its swing back near the rest, and an old swing completing
+// further on, at several sizes, tints, rests and strobes. Still sample: an old
+// swing completing beside a sample the tint keeps still. Every one presents at
+// most three flashes over any background, blended and dithered.
+#[test]
+fn targeted_attacks_across_a_drop_present_at_most_three_flashes_over_any_background() {
+    let mut built = 0;
+    for fps in [30.0, 60.0, 144.0] {
+        for swing in [0.07, 0.09] {
+            for grey in [0.0, 0.9] {
+                for gap in [0.15, 0.3] {
+                    for (high, hold) in [(0.3, 2), (1.0, 1)] {
+                        let asked = turn_back_after_a_drop(fps, swing, grey, gap, high, hold);
+                        let name = format!("turn-back {swing} {grey} {gap} {high}, {fps} fps");
+                        assert_limited_across_a_drop(&name, &asked, fps);
+                        built += 1;
+                    }
+                }
+            }
+        }
+    }
+    for fps in [30.0, 60.0] {
+        for gap in [0.2, 0.5] {
+            for hz in [6.0, 10.0] {
+                for high in [0.3, 1.0] {
+                    let asked = still_sample_after_a_drop(fps, gap, hz, high);
+                    let name = format!("still sample {gap} {hz} Hz {high}, {fps} fps");
+                    assert_limited_across_a_drop(&name, &asked, fps);
+                    built += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(built, 64);
+}
+
+// Random looks across drops: as in the random test above, with the ghost now
+// and then gone long enough to rest and be dropped, back on whatever it asks,
+// sometimes faint. Every run drops its ghost, and presents at most three
+// flashes in any second over any background.
+#[test]
+fn random_looks_across_drops_present_at_most_three_flashes_over_any_background() {
+    let mut state = 0xD1B5_4A32_D192_ED03u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 40) as f32 / (1u64 << 24) as f32
+    };
+    let tints = [WHITE, BLACK, [1.0, 0.0, 0.0], grey(0.81), ECHO, EMBER];
+    for (fps, transparency) in [30.0f32, 60.0, 144.0, 240.0]
+        .into_iter()
+        .flat_map(|fps| GhostTransparency::ALL.map(|transparency| (fps, transparency)))
+    {
+        let mut clamp = GhostLookClamp::<Key>::default();
+        clamp.set_transparency(transparency);
+        let mut asked = look(0.0, WHITE);
+        let (mut opacity, mut level, mut times) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut now, mut away, mut dropped) = (0.0f32, 0usize, 0);
+        for _ in 0..(10.0 * fps) as usize {
+            if next() < 0.3 {
+                let levels = [0.0, 0.004, 0.03, 0.2, 0.5, 1.0, next()];
+                asked.opacity = levels[(next() * 7.0) as usize % 7];
+            }
+            if next() < 0.3 {
+                asked.tint = if next() < 0.2 {
+                    [next(), next(), next()]
+                } else {
+                    tints[(next() * 6.0) as usize % 6]
+                };
+            }
+            if away == 0 && next() < 0.02 {
+                away = ((1.1 + next()) * fps) as usize;
+            }
+            let gone = away > 0;
+            away = away.saturating_sub(1);
+            let dt = if next() < 0.02 { 0.2 } else { 1.0 / fps };
+            now += dt;
+            clamp.begin_frame(Some(&frame(dt, true)));
+            let held = clamp.looks.clamp(&GHOST).is_some();
+            let shown = (!gone).then(|| clamp.present(GHOST, asked));
+            clamp.end_frame();
+            if held && clamp.looks.clamp(&GHOST).is_none() {
+                dropped += 1;
+            }
+            let drawn = shown.map_or((0.0, 0.0), |shown| {
+                (
+                    drawn_opacity(transparency)(shown.opacity),
+                    drawn_luminance(shown.tint),
+                )
+            });
+            opacity.push(drawn.0);
+            level.push(drawn.1);
+            times.push(now);
+        }
+        assert!(
+            dropped > 0,
+            "{fps} fps {transparency:?}: the ghost is never dropped"
+        );
+        let worst = worst_transitions_over_any_background_at(&opacity, &level, &times);
+        assert!(
+            worst <= 6,
+            "{fps} fps {transparency:?}: {worst} transitions"
+        );
     }
 }

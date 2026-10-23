@@ -1,5 +1,6 @@
 // Ghost edge trackers: edge points, threshold slack, counting with no dark
-// test, carrying a count on, points between samples, the onward guard, the cap.
+// test, carrying a count on, points between samples, the onward guard,
+// unknown history, the cap.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter)
 
 use super::*;
@@ -267,4 +268,76 @@ fn a_small_turn_back_returning_near_its_extremum_counts_the_old_swing_again() {
         assert_eq!(window.len(), slots, "{what}");
     }
     assert_eq!(edges.trackers[0].last_sign, -1, "counted as a fall");
+}
+
+// With unknown history an edge point counts its first move as a transition
+// that way, however small, where a fresh one counts nothing; a point that has
+// not moved counts nothing yet. From then on it runs as usual: carrying on its
+// way restarts its slot, and holding still counts nothing.
+#[test]
+fn an_unknown_history_tracker_counts_its_first_move_of_any_size_then_runs_as_usual() {
+    // A white ghost appearing faintly: over black it rises, at an albedo
+    // under 1 over white it falls, and at the corner (1, 1) it draws 1 at
+    // every opacity, so the corner never moves.
+    let (corner, albedo_under_one) = (EDGE_SAMPLES, EDGE_POINTS - 1);
+    let faint = Drawn::of(1e-4, 1.0);
+    let mut fresh_window = GhostWindow::default();
+    let mut fresh = EdgeTrackers::fresh(Drawn::of(0.0, 1.0));
+    assert!(fresh.step(faint, SlotClass::Budgeted, true, 0, &mut fresh_window));
+    assert!(
+        fresh_window.is_empty(),
+        "a fresh tracker counts no faint move"
+    );
+
+    let mut window = GhostWindow::default();
+    let mut edges = EdgeTrackers::unknown_history(Drawn::of(0.0, 1.0));
+    assert!(edges.step(faint, SlotClass::Budgeted, true, 0, &mut window));
+    assert_eq!(window.len(), 1, "every first move counts, in one slot");
+    assert_eq!(edges.trackers[0].last_sign, 1, "a rise over black");
+    assert_eq!(edges.trackers[albedo_under_one].last_sign, -1, "a fall");
+    assert_eq!(
+        edges.trackers[corner].last_sign, UNKNOWN_HISTORY,
+        "a point that has not moved counts nothing yet"
+    );
+
+    // Carrying on its way restarts the slot, a second from the carry-on.
+    window.age(0.9);
+    assert!(edges.step(
+        Drawn::of(2e-4, 1.0),
+        SlotClass::Budgeted,
+        true,
+        0,
+        &mut window
+    ));
+    window.age(0.5);
+    assert_eq!(window.len(), 1, "carrying on keeps the count");
+    // Holding still counts nothing, so the slot ages out.
+    window.age(0.5);
+    assert!(edges.step(
+        Drawn::of(2e-4, 1.0),
+        SlotClass::Budgeted,
+        true,
+        0,
+        &mut window
+    ));
+    assert!(window.is_empty(), "holding still counts nothing");
+
+    // Either way: a faint fall from a presented look counts too.
+    let mut window = GhostWindow::default();
+    let mut edges = EdgeTrackers::unknown_history(Drawn::of(0.5, 1.0));
+    assert!(edges.step(
+        Drawn::of(0.4999, 1.0),
+        SlotClass::Budgeted,
+        true,
+        0,
+        &mut window
+    ));
+    assert_eq!(window.len(), 1, "a faint fall counts");
+    assert_eq!(edges.trackers[0].last_sign, -1, "a fall over black");
+
+    // A first move is a transition like any other: with no slot to join and
+    // none to open, it does not fit.
+    let mut window = GhostWindow::default();
+    let mut edges = EdgeTrackers::unknown_history(Drawn::of(0.0, 1.0));
+    assert!(!edges.step(faint, SlotClass::Budgeted, false, 0, &mut window));
 }

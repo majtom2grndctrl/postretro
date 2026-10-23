@@ -5,6 +5,7 @@
 //! Governing context: `context/lib/build_pipeline.md` §Build Cache and §Progress reporting, controls, and logging.
 
 use super::*;
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use std::sync::mpsc;
 use std::sync::{Condvar, Mutex};
 use std::thread;
@@ -476,6 +477,7 @@ fn cull_bake_matches_unculled(
                 &geometry,
                 layer,
                 args.soft_shadow_samples,
+                PENUMBRA_FLOOR_DEFAULT,
                 &BakeControl::unrestricted(),
             );
             lit_texels[index] += unculled.texels.len();

@@ -13,11 +13,12 @@ use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{chart_interior_dims, chart_texel_seed, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
-    CutParent, SoftProbes, light_contribution_and_direction,
-    light_texel_contribution_and_visibility_with, segment_clear_remembering,
+    CutParent, light_contribution_and_direction, light_texel_contribution_and_visibility_with,
+    segment_clear_remembering,
 };
 use crate::lightmap_layer::SharedAtlas;
 use crate::map_data::{LightType, MapLight};
+use crate::texel_footprint::{TexelFrame, TexelSampler, TexelSite};
 
 use super::eligibility::EligibleLight;
 use super::fill::quantize_visibility;
@@ -28,10 +29,11 @@ use super::ownership::{Candidate, FaceChannels, LIT_TEXEL_FLOOR};
 /// rarely falls between samples.
 pub(crate) const ESTIMATE_STRIDE: u32 = LIT_TEXEL_FLOOR.isqrt();
 
-/// Each sample runs the walk's own area-sampled visibility, seed and sample
-/// count, so a sample reads exactly what the walk bakes at that texel. A thin
-/// own segment with no lattice coordinate is sampled at its centre; the tag
-/// names that placement so a build without it never shares a memo entry.
+/// Each sample runs the walk's own visibility sampler (receiver footprint,
+/// seed and sample count), so a sample reads exactly what the walk bakes at
+/// that texel. A thin own segment with no lattice coordinate is sampled at its
+/// centre; the tag names that placement so a build without it never shares a
+/// memo entry.
 const ESTIMATE_MODE: &[u8] = b"walk-area-samples;thin-segment-centres";
 
 /// The estimate's inputs that can change id 42 while every partition stays
@@ -151,6 +153,7 @@ pub(super) fn estimate_cut_owners(
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     area_sample_count: u32,
+    penumbra_floor: bool,
     control: &BakeControl,
 ) -> CutEstimate {
     let samples: Vec<Vec<(usize, i32, i32)>> = cut_parents
@@ -175,27 +178,49 @@ pub(super) fn estimate_cut_owners(
         .map(|&(c, l)| {
             let _permit = control.governor().enter();
             let light = eligible[l].light;
-            let probes = SoftProbes::new(light, area_sample_count);
+            let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor);
             let last_occluder = Cell::new(None);
+            let clip_occluder = Cell::new(None);
             let (mut lit, mut contribution, mut traces) = (0u32, 0f64, 0usize);
             for &(face, tx, ty) in &samples[c] {
                 let chart = &shared.charts[face];
                 let world_p = chart_texel_world_position(chart, tx, ty);
-                let seed = chart_texel_seed(chart, tx, ty);
+                // A sub-chart's frame is its parent grid's, so every sample of
+                // one cut face draws the walk's own footprint offsets.
+                let site = TexelSite {
+                    world_p,
+                    normal: chart.normal,
+                    seed: chart_texel_seed(chart, tx, ty),
+                    frame: TexelFrame::for_chart(chart),
+                };
                 let (_, _, visibility) = light_texel_contribution_and_visibility_with(
                     light,
                     world_p,
                     chart.normal,
-                    seed,
-                    || probes,
-                    |from, to| {
-                        segment_clear_remembering(
-                            bvh,
-                            primitives,
-                            geometry,
-                            from,
-                            to,
-                            &last_occluder,
+                    || {
+                        sampler.visibility(
+                            light,
+                            &site,
+                            |from, to| {
+                                segment_clear_remembering(
+                                    bvh,
+                                    primitives,
+                                    geometry,
+                                    from,
+                                    to,
+                                    &last_occluder,
+                                )
+                            },
+                            |from, to| {
+                                segment_clear_remembering(
+                                    bvh,
+                                    primitives,
+                                    geometry,
+                                    from,
+                                    to,
+                                    &clip_occluder,
+                                )
+                            },
                         )
                     },
                 );

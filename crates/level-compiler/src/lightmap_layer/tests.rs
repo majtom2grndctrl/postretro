@@ -11,6 +11,7 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{FalloffModel, ShadowType};
 use crate::reporter::StageProgress;
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use glam::DVec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -124,6 +125,7 @@ fn bake_layer_for_test(
         geometry,
         0,
         area_sample_count,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     )
 }
@@ -235,6 +237,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         &primitives,
         &geometry,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &BakeControl::unrestricted(),
     );
     let mut analytic = Vec::new();
@@ -293,6 +296,7 @@ fn incremental_layer_fold_matches_monolithic_section_bytes() {
         mono_prepared.atlas_height,
         mono_prepared.layer_count,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &mono_control,
     );
     assert_eq!(mono_progress.completed(), mono_prepared.placements.len());
@@ -369,6 +373,7 @@ fn layer_bake_preserves_chart_order_and_bytes_across_thread_counts() {
             &geo,
             0,
             AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
             &single_control,
         )
     });
@@ -388,6 +393,7 @@ fn layer_bake_preserves_chart_order_and_bytes_across_thread_counts() {
             &geo,
             0,
             AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
             &multi_control,
         )
     });
@@ -462,6 +468,7 @@ fn layer_bake_degenerate_chart_advances_progress_and_keeps_ordered_empty_slot() 
             &geo,
             0,
             AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
             &control,
         )
     });
@@ -528,6 +535,7 @@ fn layer_bake_paused_before_permit_release_starts_no_chart() {
                     &geo,
                     0,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &control,
                 )
             });
@@ -621,6 +629,17 @@ fn sparse_codec_preserves_zero_and_nan_visibility_bits() {
     assert_eq!(decoded.texels[1].raw_visibility.to_bits(), nan.to_bits());
 }
 
+/// A floor texel at `world_p` on a unit-pitch frame, for the single-texel
+/// sparse-writer tests, whose mock traces stand for every footprint ray.
+fn floor_site(world_p: Vec3) -> TexelSite {
+    TexelSite {
+        world_p,
+        normal: Vec3::Y,
+        seed: 0,
+        frame: TexelFrame::new(Vec3::X, Vec3::Z),
+    }
+}
+
 #[test]
 fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
     let light = point_light([0.5, 1.0, 0.5], 5.0);
@@ -629,10 +648,9 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
     let unreached = bake_sparse_layer_texel(
         3,
         &light,
-        Vec3::new(20.0, 0.0, 20.0),
-        Vec3::Y,
-        0,
-        &SoftProbes::new(&light, 1),
+        &floor_site(Vec3::new(20.0, 0.0, 20.0)),
+        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+        |_, _| true,
         |_, _| true,
     );
     assert!(
@@ -643,10 +661,9 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
     let occluded = bake_sparse_layer_texel(
         3,
         &light,
-        world_p,
-        Vec3::Y,
-        0,
-        &SoftProbes::new(&light, 1),
+        &floor_site(world_p),
+        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+        |_, _| false,
         |_, _| false,
     )
     .expect("analytic coverage survives full occlusion");
@@ -707,10 +724,9 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
         bake_sparse_layer_texel(
             0,
             &light,
-            Vec3::ZERO,
-            Vec3::Y,
-            0,
-            &SoftProbes::new(&light, 1),
+            &floor_site(Vec3::ZERO),
+            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+            |_, _| true,
             |_, _| true
         )
         .is_none()
@@ -720,10 +736,9 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
         bake_sparse_layer_texel(
             0,
             &light,
-            Vec3::ZERO,
-            Vec3::Y,
-            0,
-            &SoftProbes::new(&light, 1),
+            &floor_site(Vec3::ZERO),
+            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+            |_, _| true,
             |_, _| true
         )
         .is_some()
@@ -774,6 +789,7 @@ fn empty_sparse_partition_roundtrips_and_has_no_fold_effect() {
         &geo,
         0,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &BakeControl::unrestricted(),
     );
     assert!(partition.texels.is_empty());
@@ -820,6 +836,7 @@ fn sparse_multilayer_payload_is_below_one_tenth_dense_bytes() {
         &prims,
         &geo,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &BakeControl::unrestricted(),
     );
     assert_eq!(partitions.len(), 2, "named fixture must remain multi-layer");
@@ -964,6 +981,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
         &geo,
         0,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     );
     let second = bake_light_layer_controlled(
@@ -974,6 +992,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
         &geo,
         1,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     );
 
@@ -1032,6 +1051,7 @@ fn validate_layer_partition_accepts_sparse_and_rejects_invalid_records() {
         &geo,
         0,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &BakeControl::unrestricted(),
     );
     assert!(original.texels.len() > 1, "fixture needs multiple texels");
@@ -1502,6 +1522,7 @@ fn malformed_partition_cache_hits_soft_miss_before_warm_fold() {
         &geo,
         0,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     );
     assert!(expected.texels.len() > 1, "fixture needs multiple texels");
@@ -1544,6 +1565,7 @@ fn malformed_partition_cache_hits_soft_miss_before_warm_fold() {
                     &geo,
                     0,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &control,
                 )
             });
@@ -1643,6 +1665,7 @@ fn lightmap_composite_equals_monolithic_on_fixtures() {
             mono_prepared.atlas_height,
             mono_prepared.layer_count,
             AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
         );
 
         let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, density, &[]).unwrap();
@@ -1664,6 +1687,7 @@ fn lightmap_composite_equals_monolithic_on_fixtures() {
                     &layer_prims,
                     &layer_geo,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &BakeControl::unrestricted(),
                 )
             })
@@ -1873,6 +1897,7 @@ fn compose_section_with_format(
                     geo,
                     target_layer,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &control,
                 );
                 accumulator.fold_partition(light, &partition, shared);

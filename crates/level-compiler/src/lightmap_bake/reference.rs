@@ -15,6 +15,7 @@ use crate::chart_raster::{
 };
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
+use crate::texel_footprint::{TexelFrame, TexelSampler, TexelSite};
 
 use super::{
     Chart, CompositedAtlas, light_texel_contribution, scatter_chart_into_atlas,
@@ -36,6 +37,7 @@ pub(crate) fn bake_monolithic_atlas(
     atlas_h: u32,
     layer_count: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
 ) -> CompositedAtlas {
     bake_monolithic_atlas_controlled(
         bvh,
@@ -48,6 +50,7 @@ pub(crate) fn bake_monolithic_atlas(
         atlas_h,
         layer_count,
         area_sample_count,
+        penumbra_floor,
         &BakeControl::unrestricted(),
     )
 }
@@ -64,6 +67,7 @@ pub(crate) fn bake_monolithic_atlas_controlled(
     atlas_h: u32,
     layer_count: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     control: &BakeControl,
 ) -> CompositedAtlas {
     let atlas = Mutex::new(CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count));
@@ -81,6 +85,7 @@ pub(crate) fn bake_monolithic_atlas_controlled(
                 static_lights,
                 chart,
                 area_sample_count,
+                penumbra_floor,
             );
 
             if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
@@ -106,6 +111,7 @@ pub(super) fn bake_face_chart(
     static_lights: &[&MapLight],
     chart: &Chart,
     area_sample_count: u32,
+    penumbra_floor: bool,
 ) -> CompositedAtlas {
     let mut chart_atlas = CompositedAtlas::zeroed(chart.width_texels, chart.height_texels, 1);
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
@@ -115,28 +121,43 @@ pub(super) fn bake_face_chart(
     let (interior_w, interior_h) = crate::chart_raster::chart_interior_dims(chart);
     // One occluder cache per light, walked in texel order: each light sees the
     // ray sequence its `(light, chart)` layer bake traces, so the cache answers
-    // match and the composite stays bit-for-bit.
+    // match and the composite stays bit-for-bit. The footprint's wall-clip
+    // segments keep their own per-light cache for the same reason.
     let last_occluders: Vec<Cell<Option<usize>>> =
         static_lights.iter().map(|_| Cell::new(None)).collect();
+    let clip_occluders: Vec<Cell<Option<usize>>> =
+        static_lights.iter().map(|_| Cell::new(None)).collect();
+    let samplers: Vec<TexelSampler> = static_lights
+        .iter()
+        .map(|light| TexelSampler::new(light, area_sample_count, penumbra_floor))
+        .collect();
+    let frame = TexelFrame::for_chart(chart);
 
     for ty in 0..interior_h {
         for tx in 0..interior_w {
             let local_x = padding + tx;
             let local_y = padding + ty;
             let idx = (local_y as u32 * chart.width_texels + local_x as u32) as usize;
-            let world_p = chart_texel_world_position(chart, tx, ty);
             let surface_normal = chart.normal;
-            let seed = chart_texel_seed(chart, tx, ty);
+            let site = TexelSite {
+                world_p: chart_texel_world_position(chart, tx, ty),
+                normal: surface_normal,
+                seed: chart_texel_seed(chart, tx, ty),
+                frame,
+            };
 
             let mut irr = Vec3::ZERO;
             let mut weighted_dir = Vec3::ZERO;
-            for (light, last_occluder) in static_lights.iter().zip(&last_occluders) {
+            for (((light, sampler), last_occluder), clip_occluder) in static_lights
+                .iter()
+                .zip(&samplers)
+                .zip(&last_occluders)
+                .zip(&clip_occluders)
+            {
                 let (irr_contrib, dir_contrib) = light_texel_contribution(
                     light,
-                    world_p,
-                    surface_normal,
-                    seed,
-                    area_sample_count,
+                    &site,
+                    sampler,
                     |from, to| {
                         segment_clear_remembering(
                             bvh,
@@ -145,6 +166,16 @@ pub(super) fn bake_face_chart(
                             from,
                             to,
                             last_occluder,
+                        )
+                    },
+                    |from, to| {
+                        segment_clear_remembering(
+                            bvh,
+                            primitives,
+                            geometry,
+                            from,
+                            to,
+                            clip_occluder,
                         )
                     },
                 );

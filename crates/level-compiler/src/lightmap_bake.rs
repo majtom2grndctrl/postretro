@@ -58,6 +58,7 @@ use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
 use crate::map_data::{FalloffModel, LightType, MapLight, MapLightmapScaleRegion};
 use crate::ray_traversal::BoundedRay;
+use crate::texel_footprint::{TexelSampler, TexelSite};
 
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
@@ -185,6 +186,11 @@ pub struct LightmapConfig {
     /// are normalized before encoding so no zero-sized direction atlas can be
     /// emitted.
     pub direction_texel_scale: u32,
+    /// Receiver footprint floor (`texel_footprint`): each texel's per-light
+    /// visibility is filtered over a one-texel cone footprint so no baked edge
+    /// steps between texels. Off bakes today's centre-point visibility.
+    /// Default [`crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT`].
+    pub penumbra_floor: bool,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -388,6 +394,7 @@ pub fn bake_prepared_lightmap_controlled(
         atlas_h,
         layer_count,
         area_sample_count,
+        config.penumbra_floor,
         config.uncompressed_irradiance,
         control,
     );
@@ -424,6 +431,7 @@ fn bake_layered_section_controlled(
     atlas_h: u32,
     layer_count: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     uncompressed_irradiance: bool,
     control: &BakeControl,
 ) -> LightmapSection {
@@ -445,6 +453,7 @@ fn bake_layered_section_controlled(
             atlas_h,
             layer,
             area_sample_count,
+            penumbra_floor,
             control,
         );
         builder.push_layer(layer, &atlas);
@@ -469,6 +478,7 @@ fn bake_atlas_layer_controlled(
     atlas_h: u32,
     target_layer: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     control: &BakeControl,
 ) -> CompositedAtlas {
     // Collect serially from the chart/leaf order emitted by the planner. The
@@ -500,6 +510,7 @@ fn bake_atlas_layer_controlled(
             static_lights,
             chart,
             area_sample_count,
+            penumbra_floor,
         );
 
         // This lock only protects finite row-wise memcpy operations. It never
@@ -661,36 +672,29 @@ pub(crate) fn light_texel_is_covered(
 /// paths producing the same float terms in the same order.
 ///
 /// `trace(from, to)` is the segment-clear closure the caller wraps around its
-/// own `segment_clear`; it returns `(Vec3::ZERO, Vec3::ZERO)` when the light
-/// contributes nothing (below the irradiance floor or fully occluded), so an
-/// out-of-range light adds exactly `0.0` — the property that makes per-light
-/// layers sum back to the monolithic result.
+/// own `segment_clear`, and `reach` the footprint's wall-clip test (see
+/// [`TexelSampler::visibility`]); it returns `(Vec3::ZERO, Vec3::ZERO)` when
+/// the light contributes nothing (below the irradiance floor or fully
+/// occluded), so an out-of-range light adds exactly `0.0` — the property that
+/// makes per-light layers sum back to the monolithic result.
 pub(crate) fn light_texel_contribution(
     light: &MapLight,
-    world_p: Vec3,
-    surface_normal: Vec3,
-    seed: u64,
-    area_sample_count: u32,
+    site: &TexelSite,
+    sampler: &TexelSampler,
     trace: impl Fn(Vec3, Vec3) -> bool,
+    reach: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3) {
-    let (irr, weighted_dir, _) = light_texel_contribution_and_visibility(
-        light,
-        world_p,
-        surface_normal,
-        seed,
-        area_sample_count,
-        trace,
-    );
+    let (irr, weighted_dir, _) =
+        light_texel_contribution_and_visibility_with(light, site.world_p, site.normal, || {
+            sampler.visibility(light, site, trace, reach)
+        });
     (irr, weighted_dir)
 }
 
-/// Single-light texel bake plus the raw soft visibility used by ShadowmaskAtlas.
-///
-/// The returned visibility is `None` when the light has no direct term at this
-/// texel (out of range, backfacing, outside spot cone, etc.). Otherwise it is
-/// exactly the raw `soft_visibility` value that the irradiance path multiplies
-/// into the unshadowed direct term, including `Some(0.0)` for fully occluded
-/// but otherwise contributing texels.
+/// [`light_texel_contribution_and_visibility_with`] fed today's centre-point
+/// `soft_visibility`: the floor-disabled texel path at one texel, without a
+/// chart frame.
+#[cfg(test)]
 pub(crate) fn light_texel_contribution_and_visibility(
     light: &MapLight,
     world_p: Vec3,
@@ -699,38 +703,43 @@ pub(crate) fn light_texel_contribution_and_visibility(
     area_sample_count: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3, Option<f32>) {
-    light_texel_contribution_and_visibility_with(
-        light,
-        world_p,
-        surface_normal,
-        seed,
-        || SoftProbes::new(light, area_sample_count),
-        trace,
-    )
+    light_texel_contribution_and_visibility_with(light, world_p, surface_normal, || {
+        soft_visibility(
+            world_p,
+            surface_normal,
+            light,
+            seed,
+            area_sample_count,
+            trace,
+        )
+    })
 }
 
-/// [`light_texel_contribution_and_visibility`] with the light's probe set
-/// supplied by the caller, so a chart walk computes it once rather than per
-/// texel. `probes` runs only for a soft (non-zero-radius) emitter.
+/// Single-light texel bake plus the raw visibility used by ShadowmaskAtlas.
+///
+/// The returned visibility is `None` when the light has no direct term at this
+/// texel (out of range, backfacing, outside spot cone, etc.). Otherwise it is
+/// exactly the raw value `visibility` returns, which the irradiance path
+/// multiplies into the unshadowed direct term, including `Some(0.0)` for fully
+/// occluded but otherwise contributing texels. `visibility` runs only for a
+/// covered texel, so an unreached texel traces nothing.
 pub(crate) fn light_texel_contribution_and_visibility_with(
     light: &MapLight,
     world_p: Vec3,
     surface_normal: Vec3,
-    seed: u64,
-    probes: impl FnOnce() -> SoftProbes,
-    trace: impl Fn(Vec3, Vec3) -> bool,
+    visibility: impl FnOnce() -> f32,
 ) -> (Vec3, Vec3, Option<f32>) {
     let (contribution, to_light) = light_contribution_and_direction(light, world_p, surface_normal);
     if !contribution_covers_shadowmask(contribution.length_squared()) {
         return (Vec3::ZERO, Vec3::ZERO, None);
     }
     // Lightmaps always bake shadowed: an occluded texel goes dark so a
-    // `static_light_map` light's static shadow lives in the atlas.
-    // `soft_visibility` returns the `[0,1]` unoccluded fraction over an area
-    // sample of the emitter — a multi-texel penumbra instead of a hard 1-texel
-    // step. `sdf` lights are filtered out of the static set upstream (their
-    // direct shadow resolves at runtime), so no double-shadow.
-    let v = soft_visibility_with(world_p, surface_normal, light, seed, probes, trace);
+    // `static_light_map` light's static shadow lives in the atlas. The
+    // visibility is the `[0,1]` unoccluded fraction over the texel's receiver
+    // footprint and an area sample of the emitter. `sdf` lights are filtered
+    // out of the static set upstream (their direct shadow resolves at
+    // runtime), so no double-shadow.
+    let v = visibility();
     if v <= 0.0 {
         return (Vec3::ZERO, Vec3::ZERO, Some(0.0));
     }
@@ -954,11 +963,12 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
 }
 
 /// Un-rotated (seed == 0) sample direction for index `i` of `count`, using the
-/// emitter's per-light-type lattice mapping. Used only to pick the probe subset
-/// (`probe_indices`); the live sampling re-derives targets through
-/// `area_sample_target` with the real seed. The Point/Spot arm must stay
-/// light-independent: `SoftProbes::new` memoizes its snap keyed by count alone.
-fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
+/// emitter's per-light-type lattice mapping. Used only to pick probe subsets
+/// (`probe_indices`, and the texel footprint's probes); the live sampling
+/// re-derives targets through `area_sample_target` with the real seed. The
+/// Point/Spot arm must stay light-independent: `SoftProbes::new` and the
+/// footprint memo key their snaps by count alone.
+pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),
         LightType::Directional => {
@@ -1128,7 +1138,7 @@ pub(crate) fn soft_visibility_with(
 /// Single hard-ray target for the `radius <= 0` hard edge (see the note in
 /// `soft_visibility` on the removed `shadow_visible`): the light origin for
 /// Point/Spot, or a far point along `-cone_direction` for Directional.
-fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
+pub(crate) fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => Vec3::new(
             light.origin.x as f32,
@@ -1150,7 +1160,7 @@ fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
 /// half-angle `angular_diameter/2` about `-cone_direction`, at the shared far
 /// distance (`DIRECTIONAL_LIGHT_RAY_LENGTH_METERS`, same for every directional
 /// sample). The lattice is rotated by `seed` so adjacent texels decorrelate.
-fn area_sample_target(
+pub(crate) fn area_sample_target(
     surface_point: Vec3,
     light: &MapLight,
     seed: u64,

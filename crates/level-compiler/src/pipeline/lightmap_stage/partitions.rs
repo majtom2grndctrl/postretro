@@ -166,6 +166,8 @@ pub(super) struct LayerPartitions<'a> {
     layer_lights: &'a [&'a StaticBakedEntry<'a>],
     layer_prefixes: &'a [blake3::Hasher],
     items: LayerItems<'a>,
+    /// The bake's receiver-footprint switch (`LightmapConfig::penumbra_floor`).
+    penumbra_floor: bool,
     /// Each bake layer's charts in placement order, built once.
     pub(super) layer_charts: Vec<Vec<usize>>,
     /// Padded world bounds of each chart's texels; `None` for a chart with no
@@ -188,6 +190,7 @@ impl<'a> LayerPartitions<'a> {
         layer_lights: &'a [&'a StaticBakedEntry<'a>],
         layer_prefixes: &'a [blake3::Hasher],
         items: LayerItems<'a>,
+        penumbra_floor: bool,
         #[cfg_attr(not(test), allow(unused_variables))] window: &PartitionWindow,
     ) -> Self {
         let mut layer_charts = vec![Vec::new(); lightmap_layer::atlas_layer_count(shared) as usize];
@@ -206,6 +209,7 @@ impl<'a> LayerPartitions<'a> {
             layer_lights,
             layer_prefixes,
             items,
+            penumbra_floor,
             layer_charts,
             chart_bounds,
             #[cfg(test)]
@@ -291,6 +295,7 @@ impl PartitionSource for LayerPartitions<'_> {
             self.primitives,
             self.geometry,
             self.args.soft_shadow_samples,
+            self.penumbra_floor,
             self.control,
         )
     }

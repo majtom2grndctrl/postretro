@@ -737,6 +737,7 @@ fn run_after_parsing(
         area_sample_count: args.soft_shadow_samples,
         uncompressed_irradiance: args.uncompressed_irradiance,
         direction_texel_scale: args.direction_texel_scale,
+        penumbra_floor: crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT,
     };
     let sh_config = sh_bake::ShConfig {
         probe_spacing: args.probe_spacing,

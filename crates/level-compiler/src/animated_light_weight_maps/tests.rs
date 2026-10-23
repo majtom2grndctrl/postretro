@@ -6,6 +6,7 @@ use crate::bvh_build::build_bvh;
 use crate::geometry::FaceIndexRange;
 use crate::lightmap_bake::{BlockLayout, pack_layers};
 use crate::map_data::{FalloffModel, LightAnimation, LightType};
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use glam::DVec3;
 use log::Level;
 use postretro_level_format::animated_light_chunks::{
@@ -325,6 +326,7 @@ where
             lightmap_density: 0.25,
             area_sample_count: crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )

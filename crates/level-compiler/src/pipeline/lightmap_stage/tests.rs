@@ -1,5 +1,6 @@
 use super::*;
 use crate::map_data::{LightType, MapLight};
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use glam::DVec3;
 use glam::Vec3;
 use log::Level;
@@ -161,6 +162,7 @@ fn config(uncompressed_irradiance: bool) -> LightmapConfig {
         area_sample_count: 4,
         uncompressed_irradiance,
         direction_texel_scale: lightmap_bake::DIRECTION_TEXEL_SCALE,
+        penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
     }
 }
 

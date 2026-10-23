@@ -199,6 +199,8 @@ pub(crate) struct EstimateScene<'a> {
     pub(crate) primitives: &'a [BvhPrimitive],
     pub(crate) geometry: &'a GeometryResult,
     pub(crate) area_sample_count: u32,
+    /// The walk's receiver-footprint switch (`LightmapConfig::penumbra_floor`).
+    pub(crate) penumbra_floor: bool,
 }
 
 /// Probe the whole shadowmask memo and, on a miss, set up the owner fill the
@@ -300,6 +302,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         scene.primitives,
         scene.geometry,
         scene.area_sample_count,
+        scene.penumbra_floor,
         control,
     );
     let estimate_stats = EstimateStats {

@@ -5,6 +5,7 @@
 //! cache identity, CSR locality, and post-bake policy ordering are checked at
 //! the compiler seam where regressions otherwise cross module boundaries.
 
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -886,6 +887,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         area_sample_count: 4,
         uncompressed_irradiance: true,
         direction_texel_scale: lightmap_bake::DIRECTION_TEXEL_SCALE,
+        penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
     };
     let output = lightmap_stage::bake_fused_prepared(
         &args,

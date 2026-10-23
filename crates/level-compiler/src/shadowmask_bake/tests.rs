@@ -214,6 +214,7 @@ impl NoCutScene {
             primitives: &[],
             geometry: &self.geometry,
             area_sample_count: 4,
+            penumbra_floor: crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT,
         }
     }
 }

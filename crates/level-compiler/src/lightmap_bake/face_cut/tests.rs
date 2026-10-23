@@ -1,6 +1,7 @@
 // Face-cut tests: cut placement, sub-face order and coverage, shared cut vertices.
 // See: context/lib/build_pipeline.md §Compiler pipeline (atlas preparation)
 
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use glam::Vec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -631,6 +632,7 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
                 &light_refs,
                 chart,
                 DEFAULT_AREA_SAMPLE_COUNT,
+                PENUMBRA_FLOOR_DEFAULT,
             )
         })
         .collect();
@@ -691,6 +693,7 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
             &geometry,
             layer,
             DEFAULT_AREA_SAMPLE_COUNT,
+            PENUMBRA_FLOOR_DEFAULT,
             &BakeControl::unrestricted(),
         );
         for texel in &partition.texels {
@@ -813,6 +816,11 @@ fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
             lightmap_density: 0.1,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            // Centre-point visibility: the bound compares BC6H's step at a
+            // cut with its error on this bake's other texels, measured on the
+            // centre-point penumbra. The floor smooths that penumbra, so the
+            // baseline it sets drops to the step's size (0.088 vs 0.090).
+            penumbra_floor: false,
             uncompressed_irradiance: false,
         },
         prepared,
@@ -869,6 +877,7 @@ fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
             &light_refs,
             chart,
             DEFAULT_AREA_SAMPLE_COUNT,
+            false,
         );
         for y in 0..chart.height_texels - PADDING {
             for x in 0..chart.width_texels - PADDING {

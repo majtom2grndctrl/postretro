@@ -17,12 +17,13 @@ use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
 use crate::lightmap_bake::{
-    BlockLayout, Chart, CompositedAtlas, SoftProbes, light_contribution_and_direction,
+    BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction,
     light_texel_contribution_and_visibility_with, segment_clear_remembering,
 };
 #[cfg(test)]
 use crate::map_data::LightType;
 use crate::map_data::MapLight;
+use crate::texel_footprint::{TexelFrame, TexelSampler, TexelSite};
 use glam::DVec3;
 
 mod cache_keys;
@@ -94,20 +95,15 @@ fn sparse_layer_texel(idx: u32, raw_visibility: Option<f32>) -> Option<LayerTexe
 fn bake_sparse_layer_texel(
     idx: u32,
     light: &MapLight,
-    world_p: Vec3,
-    surface_normal: Vec3,
-    seed: u64,
-    probes: &SoftProbes,
+    site: &TexelSite,
+    sampler: &TexelSampler,
     trace: impl Fn(Vec3, Vec3) -> bool,
+    reach: impl Fn(Vec3, Vec3) -> bool,
 ) -> Option<LayerTexel> {
-    let (_, _, raw_visibility) = light_texel_contribution_and_visibility_with(
-        light,
-        world_p,
-        surface_normal,
-        seed,
-        || *probes,
-        trace,
-    );
+    let (_, _, raw_visibility) =
+        light_texel_contribution_and_visibility_with(light, site.world_p, site.normal, || {
+            sampler.visibility(light, site, trace, reach)
+        });
     sparse_layer_texel(idx, raw_visibility)
 }
 
@@ -354,14 +350,15 @@ pub fn layer_influence_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DV
 ///
 /// Mirrors `bake_face_chart`'s per-texel structure exactly but for a single
 /// light: same chart interior walk, same `chart_texel_seed`, same Lambert +
-/// soft-visibility math (`light_texel_contribution_and_visibility_with`, fed a
-/// `SoftProbes` built once per chart rather than per texel). Directional lights are
+/// visibility math (`light_texel_contribution_and_visibility_with`, fed a
+/// `TexelSampler` built once per chart rather than per texel). Directional lights are
 /// evaluated across every chart texel, but sparse records are emitted only for
 /// analytically reached, contributing samples.
 ///
 /// The sparse set is the subset of chart interiors reached by this light before
 /// visibility. The compositor derives atlas coverage and fallback normals from
 /// the shared chart walk rather than from each light's records.
+#[allow(clippy::too_many_arguments)]
 pub fn bake_light_layer(
     light: &MapLight,
     atlas: &SharedAtlas<'_>,
@@ -369,6 +366,7 @@ pub fn bake_light_layer(
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     area_sample_count: u32,
+    penumbra_floor: bool,
     control: &BakeControl,
 ) -> Vec<LightmapLayer> {
     (0..atlas_layer_count(atlas))
@@ -381,6 +379,7 @@ pub fn bake_light_layer(
                 geometry,
                 target_layer,
                 area_sample_count,
+                penumbra_floor,
                 control,
             )
         })
@@ -401,6 +400,7 @@ pub fn bake_light_layer_controlled(
     geometry: &GeometryResult,
     target_layer: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     control: &BakeControl,
 ) -> LightmapLayer {
     let face_indices: Vec<usize> = atlas
@@ -418,6 +418,7 @@ pub fn bake_light_layer_controlled(
         &face_indices,
         target_layer,
         area_sample_count,
+        penumbra_floor,
         control,
     )
 }
@@ -432,6 +433,7 @@ fn bake_light_layer_for_faces(
     face_indices: &[usize],
     target_layer: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     control: &BakeControl,
 ) -> LightmapLayer {
     let layer_count = atlas_layer_count(atlas);
@@ -450,6 +452,7 @@ fn bake_light_layer_for_faces(
                 primitives,
                 geometry,
                 area_sample_count,
+                penumbra_floor,
                 control,
             )
         })
@@ -489,6 +492,7 @@ pub(crate) fn bake_light_layer_chart_controlled(
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     area_sample_count: u32,
+    penumbra_floor: bool,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
     let chart = &atlas.charts[face_idx];
@@ -499,20 +503,31 @@ pub(crate) fn bake_light_layer_chart_controlled(
         0
     };
     let mut texels = Vec::with_capacity(capacity);
-    let probes = SoftProbes::new(light, area_sample_count);
+    let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor);
+    let frame = TexelFrame::for_chart(chart);
     // One chart's texels are walked in order on one thread, so the occluder
-    // cache stays local to this `(light, chart)` unit.
+    // caches stay local to this `(light, chart)` unit. Wall-clip segments keep
+    // their own: they run between the light's rays and would otherwise evict
+    // the triangle that shadows the next texel.
     let last_occluder = Cell::new(None);
+    let clip_occluder = Cell::new(None);
     for_each_light_layer_chart_texel_controlled(atlas, face_idx, control, |sample| {
+        let site = TexelSite {
+            world_p: sample.world_p,
+            normal: sample.surface_normal,
+            seed: sample.seed,
+            frame,
+        };
         if let Some(texel) = bake_sparse_layer_texel(
             sample.idx,
             light,
-            sample.world_p,
-            sample.surface_normal,
-            sample.seed,
-            &probes,
+            &site,
+            &sampler,
             |from, to| {
                 segment_clear_remembering(bvh, primitives, geometry, from, to, &last_occluder)
+            },
+            |from, to| {
+                segment_clear_remembering(bvh, primitives, geometry, from, to, &clip_occluder)
             },
         ) {
             texels.push(texel);

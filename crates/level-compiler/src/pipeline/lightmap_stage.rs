@@ -229,6 +229,7 @@ pub(crate) fn bake_fused_windowed(
             primitives,
             geometry,
             area_sample_count: args.soft_shadow_samples,
+            penumbra_floor: config.penumbra_floor,
         },
         stage_cache,
         shadowmask_control,
@@ -360,6 +361,7 @@ pub(crate) fn bake_fused_windowed(
                 &layer_lights,
                 &layer_prefixes,
                 items,
+                config.penumbra_floor,
                 window,
             );
             let mut open: Option<(u32, lightmap_layer::IncrementalLayerAccumulator)> = None;
@@ -443,6 +445,7 @@ pub(crate) fn bake_fused_windowed(
             &layer_lights,
             &layer_prefixes,
             items,
+            config.penumbra_floor,
             window,
         );
         let completed_work = prepared.placements.len().saturating_mul(selected.len());

@@ -1,4 +1,4 @@
-// Ghost draw order: one unit per ghost, farthest first, across skinned and mover ghosts.
+// Ghost draw order: one unit per ghost, farthest first, across both kinds.
 // See: context/lib/rendering_pipeline.md §7.9
 
 use super::*;
@@ -60,6 +60,11 @@ fn at_depth(z: f32) -> Vec3 {
     Vec3::new(0.0, 0.0, z)
 }
 
+/// A mover ghost whose bounds collapse to one point at depth `z`.
+fn mover_at(z: f32) -> [Vec3; 8] {
+    [at_depth(z); 8]
+}
+
 fn span(group: u32, start: u32, end: u32) -> SkinnedGhostSpan {
     SkinnedGhostSpan { group, start, end }
 }
@@ -78,7 +83,7 @@ fn ghost_order_draws_skinned_and_mover_ghosts_farthest_first() {
     let mut order = GhostDrawOrder::default();
     order.build(
         Some(&skinned),
-        [at_depth(0.2), at_depth(0.8)],
+        [mover_at(0.2), mover_at(0.8)],
         Mat4::IDENTITY,
     );
     let units: Vec<GhostUnit> = order.units().collect();
@@ -159,7 +164,7 @@ fn ghost_order_draws_a_ghost_centred_behind_the_eye_last() {
     // Right-handed view: forward is -z, so +z lies behind the eye.
     order.build(
         None,
-        [at_depth(2.0), at_depth(-10.0), at_depth(-2.0)],
+        [mover_at(2.0), mover_at(-10.0), mover_at(-2.0)],
         view_proj,
     );
     let units: Vec<GhostUnit> = order.units().collect();
@@ -173,11 +178,84 @@ fn ghost_order_draws_a_ghost_centred_behind_the_eye_last() {
     );
 }
 
+// A long platform whose bounds centre is nearer than the pawn standing on its
+// far half still draws first: a mover keys on its farthest bounds corner, so
+// the pawn then blends over it instead of cutting a pawn-shaped hole in it.
+#[test]
+fn ghost_order_draws_a_long_mover_before_a_pawn_standing_on_its_far_half() {
+    let pawn = plan(
+        0,
+        vec![(
+            "enemy",
+            vec![instance(ghost_key(0, 3, None), at_depth(0.7))],
+        )],
+    );
+    // Local depth −0.4..0.4 moved to 0.5: centre 0.5, farthest corner 0.9.
+    let platform = mover_ghost_corners(
+        Mat4::from_translation(at_depth(0.5)),
+        Aabb {
+            min: Vec3::new(-1.0, -0.1, -0.4),
+            max: Vec3::new(1.0, 0.0, 0.4),
+        },
+    );
+    let mut order = GhostDrawOrder::default();
+    order.build(Some(&pawn), [platform], Mat4::IDENTITY);
+    let units: Vec<GhostUnit> = order.units().collect();
+    assert_eq!(
+        units,
+        [
+            GhostUnit::Mover { draw: 0 },
+            GhostUnit::Skinned { first: 0, count: 1 },
+        ]
+    );
+}
+
+// A mover reaching from behind the eye to far ahead keys on its farthest
+// corner ahead, skipping the corners behind, so it still draws before a pawn
+// nearer than that corner. A mover wholly behind the eye draws last.
+#[test]
+fn ghost_order_keys_a_mover_reaching_behind_the_eye_on_its_farthest_corner_ahead() {
+    let view_proj = glam::camera::rh::proj::directx::perspective(1.2, 1.0, 0.1, 100.0);
+    let pawn = plan(
+        0,
+        vec![(
+            "enemy",
+            vec![instance(ghost_key(0, 3, None), at_depth(-8.0))],
+        )],
+    );
+    // Right-handed view: forward is -z, so +z lies behind the eye.
+    let reaching = mover_ghost_corners(
+        Mat4::IDENTITY,
+        Aabb {
+            min: Vec3::new(-1.0, -1.0, -20.0),
+            max: Vec3::new(1.0, 0.0, 3.0),
+        },
+    );
+    let behind = mover_ghost_corners(
+        Mat4::IDENTITY,
+        Aabb {
+            min: Vec3::new(-1.0, -1.0, 2.0),
+            max: Vec3::new(1.0, 0.0, 4.0),
+        },
+    );
+    let mut order = GhostDrawOrder::default();
+    order.build(Some(&pawn), [behind, reaching], view_proj);
+    let units: Vec<GhostUnit> = order.units().collect();
+    assert_eq!(
+        units,
+        [
+            GhostUnit::Mover { draw: 1 },
+            GhostUnit::Skinned { first: 0, count: 1 },
+            GhostUnit::Mover { draw: 0 },
+        ]
+    );
+}
+
 // Equal depths keep build order, so the frame is deterministic.
 #[test]
 fn ghost_order_keeps_build_order_between_ghosts_at_one_depth() {
     let mut order = GhostDrawOrder::default();
-    order.build(None, [at_depth(0.5); 3], Mat4::IDENTITY);
+    order.build(None, [mover_at(0.5); 3], Mat4::IDENTITY);
     let units: Vec<GhostUnit> = order.units().collect();
     assert_eq!(
         units,
@@ -207,13 +285,13 @@ fn ghost_order_rebuild_replaces_the_frame_without_growing_its_scratch() {
         ],
     );
     let mut order = GhostDrawOrder::default();
-    order.build(Some(&skinned), [at_depth(0.6)], Mat4::IDENTITY);
+    order.build(Some(&skinned), [mover_at(0.6)], Mat4::IDENTITY);
     let capacities = (
         order.units.capacity(),
         order.spans.capacity(),
         order.members.capacity(),
     );
-    order.build(Some(&skinned), [at_depth(0.6)], Mat4::IDENTITY);
+    order.build(Some(&skinned), [mover_at(0.6)], Mat4::IDENTITY);
     assert_eq!(order.units().count(), 2);
     assert_eq!(
         (

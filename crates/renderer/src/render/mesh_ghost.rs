@@ -1,11 +1,11 @@
-// Skinned ghost pipelines (blend and screen-door, each with its depth-only draw) and
-// their draw recording.
+// Ghost pipeline sets (a colour and a depth-only draw per mode), the skinned
+// ghost's set, and skinned ghost draw recording.
 // See: context/lib/rendering_pipeline.md §7.9
 
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::MeshFramePlan;
 
-use super::ghost_depth::ghost_depth_pipeline_state;
+use super::ghost_depth::{GhostPipelineState, ghost_depth_pipeline_state};
 use super::ghost_order::{GhostDrawStep, SkinnedGhostSpan};
 use super::mesh_pass::MeshPass;
 
@@ -18,18 +18,6 @@ pub(super) const SKINNED_GHOST_SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/ghost_look.wgsl"),
 );
-
-/// The fixed-function state one ghost pipeline draws with: a mode's colour
-/// draw here, its depth-only draw in [`ghost_depth_pipeline_state`]. Pure
-/// data, so the mode → state mapping is testable without a device.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct GhostPipelineState {
-    pub(super) fragment_entry: &'static str,
-    pub(super) blend: Option<wgpu::BlendState>,
-    pub(super) write_mask: wgpu::ColorWrites,
-    pub(super) depth: wgpu::DepthStencilState,
-    pub(super) cull_mode: Option<wgpu::Face>,
-}
 
 /// Blend: straight alpha over the scene, the fluid surface's blend.
 /// Dither: blend off; the fragment discards pixels the screen-door pattern
@@ -111,8 +99,9 @@ fn skinned_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// A colour and a depth-only pipeline per transparency mode, built once; a
-/// frame draws every ghost through the mode the mod's render profile picks.
+/// One ghost kind's colour and depth-only pipeline per transparency mode,
+/// built once; a frame draws every ghost through the mode the mod's render
+/// profile picks. Skinned and mover ghosts each hold one.
 pub(super) struct GhostPipelines {
     blend: wgpu::RenderPipeline,
     dither: wgpu::RenderPipeline,
@@ -121,13 +110,58 @@ pub(super) struct GhostPipelines {
 }
 
 impl GhostPipelines {
-    /// Colour layout: group 0 camera, group 1 material, group 3 the skinned
-    /// pass's palette + instance data (the same bind group, at the same
-    /// index); group 2 stays empty. The depth-only layout drops the material.
-    /// No light, shadow or SH group, so ghosts add nothing to any fragment
-    /// binding budget. Every pipeline targets the scene colour, so both draws
-    /// of a ghost share one pass; the depth-only one writes no colour.
-    pub(super) fn new(
+    /// All four pipelines of one ghost `kind` (its label prefix): `create`
+    /// builds one from its draw step, fixed-function state and label.
+    pub(super) fn build(
+        kind: &str,
+        depth_format: wgpu::TextureFormat,
+        mut create: impl FnMut(GhostDrawStep, GhostPipelineState, &str) -> wgpu::RenderPipeline,
+    ) -> Self {
+        let mut pipeline = |step: GhostDrawStep, mode: GhostTransparency| {
+            let (state, step_label) = match step {
+                GhostDrawStep::Depth => (ghost_depth_pipeline_state(mode, depth_format), " Depth"),
+                GhostDrawStep::Colour => (ghost_pipeline_state(mode, depth_format), ""),
+            };
+            let mode_label = match mode {
+                GhostTransparency::Blend => "Blend",
+                GhostTransparency::Dither => "Dither",
+            };
+            create(
+                step,
+                state,
+                &format!("{kind} Ghost {mode_label}{step_label} Pipeline"),
+            )
+        };
+        Self {
+            blend: pipeline(GhostDrawStep::Colour, GhostTransparency::Blend),
+            dither: pipeline(GhostDrawStep::Colour, GhostTransparency::Dither),
+            depth_blend: pipeline(GhostDrawStep::Depth, GhostTransparency::Blend),
+            depth_dither: pipeline(GhostDrawStep::Depth, GhostTransparency::Dither),
+        }
+    }
+
+    /// The pipeline that records `step` of a ghost's draw pair under `mode`.
+    pub(super) fn for_step(
+        &self,
+        mode: GhostTransparency,
+        step: GhostDrawStep,
+    ) -> &wgpu::RenderPipeline {
+        match (step, mode) {
+            (GhostDrawStep::Depth, GhostTransparency::Blend) => &self.depth_blend,
+            (GhostDrawStep::Depth, GhostTransparency::Dither) => &self.depth_dither,
+            (GhostDrawStep::Colour, GhostTransparency::Blend) => &self.blend,
+            (GhostDrawStep::Colour, GhostTransparency::Dither) => &self.dither,
+        }
+    }
+
+    /// The skinned ghost set. Colour layout: group 0 camera, group 1
+    /// material, group 3 the skinned pass's palette + instance data (the same
+    /// bind group, at the same index); group 2 stays empty. The depth-only
+    /// layout drops the material. No light, shadow or SH group, so ghosts add
+    /// nothing to any fragment binding budget. Every pipeline targets the
+    /// scene colour, so both draws of a ghost share one pass; the depth-only
+    /// one writes no colour.
+    pub(super) fn skinned(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
@@ -153,10 +187,14 @@ impl GhostPipelines {
             bind_group_layouts: &[Some(camera_bgl), None, None, Some(instance_bgl)],
             immediate_size: 0,
         });
-        let build = |layout: &wgpu::PipelineLayout, state: GhostPipelineState, label: &str| {
+        Self::build("Skinned", depth_format, |step, state, label| {
+            let pipeline_layout = match step {
+                GhostDrawStep::Depth => &depth_layout,
+                GhostDrawStep::Colour => &layout,
+            };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(layout),
+                layout: Some(pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
@@ -184,40 +222,7 @@ impl GhostPipelines {
                 multiview_mask: None,
                 cache: None,
             })
-        };
-        let colour = |mode| ghost_pipeline_state(mode, depth_format);
-        let depth = |mode| ghost_depth_pipeline_state(mode, depth_format);
-        Self {
-            blend: build(
-                &layout,
-                colour(GhostTransparency::Blend),
-                "Skinned Ghost Blend Pipeline",
-            ),
-            dither: build(
-                &layout,
-                colour(GhostTransparency::Dither),
-                "Skinned Ghost Dither Pipeline",
-            ),
-            depth_blend: build(
-                &depth_layout,
-                depth(GhostTransparency::Blend),
-                "Skinned Ghost Blend Depth Pipeline",
-            ),
-            depth_dither: build(
-                &depth_layout,
-                depth(GhostTransparency::Dither),
-                "Skinned Ghost Dither Depth Pipeline",
-            ),
-        }
-    }
-
-    fn for_step(&self, mode: GhostTransparency, step: GhostDrawStep) -> &wgpu::RenderPipeline {
-        match (step, mode) {
-            (GhostDrawStep::Depth, GhostTransparency::Blend) => &self.depth_blend,
-            (GhostDrawStep::Depth, GhostTransparency::Dither) => &self.depth_dither,
-            (GhostDrawStep::Colour, GhostTransparency::Blend) => &self.blend,
-            (GhostDrawStep::Colour, GhostTransparency::Dither) => &self.dither,
-        }
+        })
     }
 }
 

@@ -92,14 +92,10 @@ struct FrameAsk {
 /// One ghost's look through the limiter, judged over every background it may
 /// cover. Over background luminance B a ghost of albedo a draws a·p + B·q at
 /// p = o·L and q = 1 − o, for presented opacity o (dithered, the screen
-/// door's coverage) and drawn tint luminance L. Any albedo and background in
-/// [0, 1]² is a scale of a point on the square's outer edges, so the clamp
-/// tracks what draws at 33 edge points, (1, k/16) and (k/16, 1), counting a
-/// swing of the flash threshold less half a sample step (a point between
-/// samples draws within half a step of the nearer one) with no dark test. Each
-/// edge point's transitions sit in slots of their own on one window, which
-/// never holds more than six such slots, so no albedo over any background sees
-/// more than three flashes in any second. The tint's redness, weighted by
+/// door's coverage) and drawn tint luminance L. The clamp tracks what draws
+/// at 33 points on the outer edges of the (a, B) square, (1, k/16) and
+/// (k/16, 1), with no dark test, and counts their transitions on one window
+/// ([`EdgeTrackers::step`], [`GhostWindow`]). The tint's redness, weighted by
 /// opacity, spends the same window under the screen channels' red rule.
 ///
 /// Each frame:
@@ -116,13 +112,48 @@ struct FrameAsk {
 /// - over budget only the exempt ray moves, except that the change which
 ///   opened the latest slot may carry on the way it was going while every
 ///   transition joins a slot, so a strobe's last admitted change completes and
-///   then rests.
+///   then rests;
+/// - only the look that presents is judged.
 ///
 /// The tint presents as asked, or at the judged luminance keeping its hue
 /// angle, placed on the 8-bit grid the draw decodes; the luminance judged is
 /// that grid tint's. Saturation passes through unlimited: it changes what
 /// draws only where a coloured tint meets a coloured texture, which the clamp
 /// cannot see.
+///
+/// # Six transitions over any background
+///
+/// From the frame its history starts, no (a, B) in [0, 1]² draws more than
+/// six transitions (a 0.1 swing whose darker side is under 0.8) of what
+/// presents in any second:
+///
+/// 1. (a, B) is m·x for x on the outer edges, m = max(a, B), so it counts
+///    what x would under the threshold T = 0.1/m ≥ 0.1 and dark limit 0.8/m.
+///    x lies between neighbouring edge points y and z, nearer y: x = y +
+///    λ(z − y), λ ≤ 1/2, where z − y moves by at most a sample step, so x's
+///    swings are within half a step of y's.
+/// 2. x counts on the first frame its swing reaches T while dark; the dark
+///    test only admits values further on, so x passes every value of its
+///    excursion there, moving its way, and so does y or z.
+/// 3. No earlier frame of y's tracker excursion drew x as far: one before
+///    x's excursion that did is followed by x going more than T back to its
+///    excursion's start, and y, following within half a step, by a swing of
+///    the edge threshold, which turns y's tracker. So on x's frame y passes
+///    its peak; or stops short of it by at most half the spread's move, its
+///    way, since y's reference frame (which drew y's peak); or sits inside a
+///    smaller swing back that x never saw, within half a step of where that
+///    swing started. The edge rules fire in each case, restarting the age of
+///    the latest slot holding y or counting y anew, and leave y's last count
+///    running x's way.
+/// 4. So y counts between any two of x's transitions, and one tracker's
+///    transitions sit in slots of their own: x's transitions inside one
+///    second each hold a distinct slot, restarted on that transition's frame
+///    and alive at the last one.
+/// 5. The window never holds more than six edge slots.
+///
+/// The thresholds leave room for the unorm16 opacity the draw packs and f32
+/// rounding. Not covered: a ghost whose history was dropped at rest starts
+/// fresh, so an excursion older than its window is forgotten.
 #[derive(Clone, Copy, Debug)]
 struct LookValueClamp {
     window: GhostWindow,
@@ -175,29 +206,29 @@ impl LookValueClamp {
     }
 
     /// This clamp moved to the look `tau` along this frame's segment, and
-    /// whether every transition it counts found a slot. At `tau` 0 it is the
-    /// exempt ray alone, which always does. A look that does not fit is partly
-    /// moved, for the caller to discard.
+    /// whether every transition it counts found a slot. Only that look is
+    /// judged, since only it draws: at `tau` 0 the exempt ray's end, which
+    /// always fits, else the look `tau` along, budgeted. A look that does not
+    /// fit is partly moved, for the caller to discard.
     fn advance(&self, ask: &FrameAsk, tau: f32) -> (Self, bool) {
         let mut next = *self;
-        let (exempt_opacity, held) = ask.segment.exempt;
-        let exempt_drawn = (ask.drawn_opacity)(exempt_opacity);
-        // The exempt ray: the opacity's fall at the held luminance, exactly,
-        // so it is monotone at every edge point.
-        let opens = tau == 0.0 || ask.budget == Budget::Open;
-        let exempt = Drawn::of(exempt_drawn, held);
-        if !next
-            .edges
-            .step(exempt, SlotClass::Exempt, opens, 0, &mut next.window)
-        {
-            return (next, false);
-        }
         if tau == 0.0 {
-            // The held tint presents unchanged; its redness falls with the
-            // opacity, which the red rule counts as it would any fall.
-            next.red.limit(&mut next.window, exempt_drawn, self.tint);
+            // The exempt ray: the opacity's fall at the held luminance,
+            // exactly, so it is monotone at every edge point. The held tint
+            // presents unchanged; its redness falls with the opacity, which
+            // the red rule counts as it would any fall.
+            let (exempt_opacity, held) = ask.segment.exempt;
+            let drawn = (ask.drawn_opacity)(exempt_opacity);
+            let fits = next.edges.step(
+                Drawn::of(drawn, held),
+                SlotClass::Exempt,
+                true,
+                0,
+                &mut next.window,
+            );
+            next.red.limit(&mut next.window, drawn, self.tint);
             next.opacity = exempt_opacity;
-            return (next, true);
+            return (next, fits);
         }
         let (opacity, aimed) = ask.segment.at(tau);
         let drawn = (ask.drawn_opacity)(opacity);
@@ -253,11 +284,30 @@ impl LookValueClamp {
 impl KeyClamp for LookValueClamp {
     type Value = AskedLook;
 
+    /// A ghost already presenting as its history starts (the limiter turning
+    /// on, or the clamp's first frame) starts against its look, counting
+    /// nothing, as a screen channel does.
+    fn fresh(asked: AskedLook) -> Self {
+        let AskedLook { look, transparency } = asked;
+        let opacity = unit_strength(look.opacity);
+        let drawn = drawn_opacity(transparency)(opacity);
+        let luminance = drawn_luminance(look.tint);
+        Self {
+            window: GhostWindow::default(),
+            edges: EdgeTrackers::fresh(Drawn::of(drawn, luminance)),
+            red: GhostRedness::fresh(drawn, look.tint),
+            opacity,
+            tint: look.tint,
+            luminance,
+            hue: look.tint,
+        }
+    }
+
     /// Appearing presents the asked look and counts it: a ghost that was not
     /// drawn changes what draws over every background as it appears, so its
     /// first second keeps only the budget the appearance leaves. It counts as
     /// exempt, which an empty window always admits.
-    fn fresh(asked: AskedLook) -> Self {
+    fn appearing(asked: AskedLook) -> Self {
         let AskedLook { look, transparency } = asked;
         let opacity = unit_strength(look.opacity);
         let drawn = drawn_opacity(transparency)(opacity);
@@ -355,7 +405,8 @@ impl KeyClamp for LookValueClamp {
 /// any background, and over budget it rests at a held look. A ghost not
 /// presented on a frame vanished: its opacity falls to nothing, which always
 /// presents and counts once. A ghost appearing presents as asked and counts
-/// its appearance the same way.
+/// its appearance the same way; one already presenting when the limiter
+/// turns on starts against its look and counts nothing.
 #[derive(Clone, Debug)]
 pub struct GhostLookClamp<K> {
     /// Every ghost's look clamp.

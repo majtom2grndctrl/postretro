@@ -188,10 +188,15 @@ render: { ghosts: "dither" },
 
 - `"blend"` (the default) blends the ghost over what is behind it.
 - `"dither"` draws a fine fixed screen pattern instead: each pixel is either
-  the ghost or the scene, with about the opacity's share of pixels going to
-  the ghost. It suits a retro look and never needs sorting.
+  the ghost or the scene. Opacity rounds to the nearest sixteenth of a 4×4
+  pattern, and the limiter judges that coverage. It suits a retro look.
 
-Ghosts of projectiles drawn as sprites blend either way. An unknown value warns
+In both modes a ghost draws only its nearest surface, so its inner surfaces,
+such as teeth behind closed lips, never show through. Ghosts draw farthest
+first, so a nearer ghost blends over a farther one.
+
+Ghosts of projectiles drawn as sprites blend either way, and sit outside that
+ordering, like any sprite. An unknown value warns
 and uses `"blend"`, leaving the rest of the render profile as written.
 
 ### Flashing and the photosensitivity limiter
@@ -203,9 +208,11 @@ Ghosts can never strobe past the player's photosensitivity limiter
   member stepping in or out of the region all fade the ghost at a fixed rate,
   reaching full opacity within a quarter of a second. Members of a link that is
   on when the level starts appear at full strength on the first frame.
-- With the limiter on, a ghost that would flash more than three times a second
-  — a link toggled rapidly, a member jittering across the boundary, a colour
-  filter flicked between bright and dark or into red — holds instead.
+- With the limiter on, a ghost presents at most three flashes in any second,
+  judged as it would draw over any background and any texture from black to
+  white: a link toggled rapidly, a member jittering across the boundary, a
+  colour filter flicked between bright and dark or into red. Past that it holds
+  its look until the second clears, though a fade-out always goes through.
   Ordinary reveals and slow fades are never held.
 
 Design reveals as fades; a strobing set-piece simply will not strobe for a

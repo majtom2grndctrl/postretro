@@ -13,9 +13,18 @@ pub(super) trait KeyClamp: Clone {
     /// What a key asks to present on a frame, and what it presents.
     type Value: Copy;
 
-    /// A clamp starting fresh against `value`: nothing to rate-cap from and
-    /// room in its window, so its first limit of `value` presents it unchanged.
+    /// A clamp starting fresh against `value`, for a key already presenting
+    /// it as history starts: nothing to rate-cap from and room in its window,
+    /// so its first limit of `value` presents it unchanged.
     fn fresh(value: Self::Value) -> Self;
+
+    /// A clamp for a key appearing with `value` on a frame after history
+    /// started. Its first limit of `value` presents it unchanged too; a clamp
+    /// may count the appearance against its budget. The same as
+    /// [`Self::fresh`] unless the clamp says otherwise.
+    fn appearing(value: Self::Value) -> Self {
+        Self::fresh(value)
+    }
 
     /// Limit `value` for one presented frame. Returns what presents.
     fn limit(&mut self, value: Self::Value, frame: &LimiterFrameUniform) -> Self::Value;
@@ -44,9 +53,10 @@ struct Entry<C> {
 ///
 /// - Off, values pass through and no history is kept.
 /// - The frame that turns the limiter on, and a new container's first frame,
-///   start every key fresh against its own value, so enabling never dips one.
-/// - A key limited for the first time starts fresh against its value, so its
-///   first frame packs unchanged.
+///   start every key fresh against its own value ([`KeyClamp::fresh`]), so
+///   enabling never dips one and counts nothing.
+/// - A key first limited on a later frame appeared ([`KeyClamp::appearing`]);
+///   its first frame packs unchanged.
 /// - A key not limited on a frame presented nothing ([`KeyClamp::absent`]).
 ///   Its history is kept until its clamp is at rest, so a source strobing by
 ///   appearing and vanishing is limited like any other strobe; then it is
@@ -57,6 +67,9 @@ pub(super) struct KeyedClamp<K, C> {
     frame: LimiterFrameUniform,
     /// Whether the previous frame ran with the limiter on.
     history_live: bool,
+    /// Whether this frame started history fresh, so every key limited on it
+    /// was already presenting.
+    history_starts: bool,
 }
 
 /// Keys a container holds room for from construction. A table that never
@@ -72,6 +85,7 @@ impl<K, C> Default for KeyedClamp<K, C> {
             // `begin_frame` says otherwise.
             frame: pack_limiter_frame(LimiterFrameInput::default(), true, true),
             history_live: false,
+            history_starts: false,
         }
     }
 }
@@ -82,6 +96,7 @@ impl<K: Clone, C: Clone> Clone for KeyedClamp<K, C> {
             entries: self.entries.clone(),
             frame: self.frame,
             history_live: self.history_live,
+            history_starts: self.history_starts,
         }
     }
 
@@ -91,6 +106,7 @@ impl<K: Clone, C: Clone> Clone for KeyedClamp<K, C> {
         self.entries.clone_from(&source.entries);
         self.frame = source.frame;
         self.history_live = source.history_live;
+        self.history_starts = source.history_starts;
     }
 }
 
@@ -102,6 +118,7 @@ impl<K: Copy + Eq + Hash, C: KeyClamp> KeyedClamp<K, C> {
     pub(super) fn begin_frame(&mut self, frame: &LimiterFrameUniform) {
         let fresh = frame.enabled && (frame.init || !self.history_live);
         self.history_live = frame.enabled;
+        self.history_starts = fresh;
         self.frame = *frame;
         if !frame.enabled || fresh {
             // Off keeps nothing; a fresh start counts nothing from before it.
@@ -115,8 +132,13 @@ impl<K: Copy + Eq + Hash, C: KeyClamp> KeyedClamp<K, C> {
         if !self.frame.enabled {
             return value;
         }
+        let history_starts = self.history_starts;
         let entry = self.entries.entry(key).or_insert_with(|| Entry {
-            clamp: C::fresh(value),
+            clamp: if history_starts {
+                C::fresh(value)
+            } else {
+                C::appearing(value)
+            },
             limited: false,
         });
         debug_assert!(
@@ -131,6 +153,12 @@ impl<K: Copy + Eq + Hash, C: KeyClamp> KeyedClamp<K, C> {
     #[cfg(test)]
     pub(super) fn capacity(&self) -> usize {
         self.entries.capacity()
+    }
+
+    /// `key`'s clamp, if the container holds one.
+    #[cfg(test)]
+    pub(super) fn clamp(&self, key: &K) -> Option<&C> {
+        self.entries.get(key).map(|entry| &entry.clamp)
     }
 
     /// End the frame: every key not limited presented nothing this frame. A

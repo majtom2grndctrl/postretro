@@ -1,5 +1,5 @@
 // Ghost look clamp: three flashes a second over any background, regressions,
-// strobes, ordinary looks, red, dither, vanishing, appearing, and off.
+// targeted attacks, strobes, ordinary looks, red, dither, appearing, and off.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter), §7.9
 
 use super::super::flash_clamp_test_fixtures::{
@@ -188,7 +188,7 @@ fn rate_capped_path(keys: &[(f32, f32)], fps: f32, seconds: f32) -> Vec<GhostIns
 /// Keys of a drift in (p, p + q): the drawn value at λ of the way from a
 /// white ghost over black to one over white swings by `swing` every step,
 /// while over black it dips and over white it rises by only `sub` (< 0.1),
-/// so neither corner sees a flash.
+/// so neither over black nor over white sees a flash.
 fn drift_keys(swing: f32, lambda: f32, sub: f32) -> Vec<(f32, f32)> {
     let up = (swing - lambda * sub) / (1.0 - lambda);
     let down = (swing - (1.0 - lambda) * sub) / lambda;
@@ -230,10 +230,11 @@ fn assert_limited_over_any_background(name: &str, asked: impl Fn(f32) -> Vec<Gho
     }
 }
 
-// Regression: each corner the clamp judged saw a slow drift while the mix of
-// two corners swung, so a mid-grey background drew 10–31 transitions a second
-// that presented unchanged. Opacity climbs while the tint alternates bright and
-// dim; the worst is tuned between two edge samples (λ = 17/32).
+// Regression: judged only over black, over white and for a white ghost over
+// white, each saw a slow drift while a mix of two swung, so a mid-grey
+// background drew 10–31 transitions a second that presented unchanged.
+// Opacity climbs while the tint alternates bright and dim; the worst is tuned
+// between two edge samples (λ = 17/32).
 #[test]
 fn a_mid_grey_drift_presents_at_most_three_flashes_over_any_background() {
     for (swing, lambda) in [(0.12, 0.5), (0.105, 17.0 / 32.0), (0.15, 0.5)] {
@@ -1068,7 +1069,12 @@ fn frames_that_never_present_keep_both_tables_allocated() {
     }
 }
 
-// A ghost's state is fixed-size and cheap to snapshot each frame.
+// A ghost's state is fixed-size and cheap to snapshot each frame. Each frame
+// copies every ghost's clamp into the unsettled frame's snapshot, and a frame
+// whose look does not fit copies it up to fourteen more times while bisecting,
+// so this size is the per-ghost cost of every frame. A kilobyte is the budget
+// the clamp is designed to; a field that would pass it needs that cost
+// weighed, not the bound raised.
 #[test]
 fn a_ghosts_look_clamp_holds_about_a_kilobyte() {
     let size = std::mem::size_of::<LookValueClamp>();
@@ -1214,7 +1220,7 @@ fn a_ghost_appearing_counts_its_appearance() {
     // Appearing visibly counts; appearing at nothing draws no change, so it
     // counts nothing.
     let appearing = |opacity| {
-        LookValueClamp::fresh(AskedLook {
+        LookValueClamp::appearing(AskedLook {
             look: look(opacity, WHITE),
             transparency: GhostTransparency::Blend,
         })
@@ -1258,5 +1264,365 @@ fn a_creep_completing_an_old_swing_counts_against_the_budget() {
         assert!(at_point <= 6, "{fps} fps: {at_point} transitions");
         let worst = over_any(&shown, dt, GhostTransparency::Blend);
         assert!(worst <= 6, "{fps} fps: {worst} transitions");
+    }
+}
+
+/// An 8-bit grey.
+fn grey_byte(byte: u8) -> [f32; 3] {
+    [f32::from(byte) / 255.0; 3]
+}
+
+fn rgb_bytes(rgb: [u8; 3]) -> [f32; 3] {
+    rgb.map(|channel| f32::from(channel) / 255.0)
+}
+
+/// Ask `asked` for `seconds` at `fps`, at least one frame.
+fn hold(looks: &mut Vec<GhostInstanceLook>, asked: GhostInstanceLook, seconds: f32, fps: f32) {
+    let frames = ((seconds * fps).round() as usize).max(1);
+    looks.extend(std::iter::repeat_n(asked, frames));
+}
+
+/// What each round-5 attack asks after its crossing look: four tint swings
+/// to `bright` and back, the crossing look held until a second after frame
+/// `first` (when the slot its first change refreshed last ages out), one
+/// more swing, then the exempt fall to nothing. Had the crossing gone
+/// uncounted, the point it crossed at draws a seventh transition in the
+/// second.
+fn strobe_after_crossing(
+    looks: &mut Vec<GhostInstanceLook>,
+    crossing: GhostInstanceLook,
+    bright: [f32; 3],
+    first: usize,
+    fps: f32,
+) {
+    let swing = look(crossing.opacity, bright);
+    for i in 0..4 {
+        hold(looks, if i % 2 == 0 { swing } else { crossing }, 0.1, fps);
+    }
+    let until = first + fps as usize + 1;
+    if looks.len() < until {
+        looks.extend(std::iter::repeat_n(crossing, until - looks.len()));
+    }
+    hold(looks, swing, 0.06, fps);
+    hold(looks, look(0.0, bright), 0.5, fps);
+}
+
+/// The opacity step of the undrawn-corner attack's judged frame: just under
+/// one frame's rate cap at `fps`, and at most 0.06.
+fn rate_step(fps: f32) -> f32 {
+    let cap = INTENSITY_RATE_PER_SECOND * (1.0 / fps).min(HITCH_CEILING_SECONDS);
+    0.06f32.min(0.95 * cap)
+}
+
+/// The undrawn-corner attack from opacity `from` at grey `start`: a darker
+/// grey `low` just short of a flash at a white ghost over black, then one
+/// frame asking the opacity a rate step down while the tint rises to `up`,
+/// which keeps what draws there from falling. The corner of that frame's
+/// segment at the lower opacity and the held grey is never drawn; asking it
+/// next crosses the flash threshold over black.
+fn corner_attack_with(fps: f32, from: f32, start: u8, low: u8, up: u8) -> Vec<GhostInstanceLook> {
+    let lowered = from - rate_step(fps);
+    let mut looks = Vec::new();
+    hold(&mut looks, look(from, grey_byte(start)), 2.0, fps);
+    hold(&mut looks, look(from, grey_byte(low)), 0.1, fps);
+    let first = looks.len();
+    hold(&mut looks, look(lowered, grey_byte(up)), 0.3, fps);
+    let crossing = look(lowered, grey_byte(low));
+    hold(&mut looks, crossing, 0.1, fps);
+    strobe_after_crossing(&mut looks, crossing, grey_byte(230), first, fps);
+    looks
+}
+
+/// [`corner_attack_with`] with its greys found from `start`: the lightest
+/// grey short of a flash over black at `from` that is one past it a rate
+/// step lower, and the grey keeping that lower opacity from falling.
+fn corner_attack(fps: f32, from: f32, start: u8) -> Option<Vec<GhostInstanceLook>> {
+    let level = |byte: u8| drawn_luminance(grey_byte(byte));
+    let lowered = from - rate_step(fps);
+    let lit = from * level(start);
+    let low = (0..start).rev().find(|&byte| {
+        lit - from * level(byte) < 0.1 && lit - lowered * level(byte) >= 0.1 + 1e-4
+    })?;
+    let up = (low..=255).find(|&byte| lowered * level(byte) >= from * level(low))?;
+    Some(corner_attack_with(fps, from, start, low, up))
+}
+
+/// The 8-bit tint near grey whose drawn luminance is nearest `level`.
+fn tint_near(level: f32) -> [f32; 3] {
+    let centre = (level * 255.0).round() as i32;
+    let mut best = (f32::MAX, [0.0; 3]);
+    for g in centre - 3..=centre + 3 {
+        for r in g - 12..=g + 12 {
+            for b in g - 12..=g + 12 {
+                if [r, g, b].iter().any(|channel| !(0..=255).contains(channel)) {
+                    continue;
+                }
+                let tint = [r, g, b].map(|channel| channel as f32 / 255.0);
+                let error = (drawn_luminance(tint) - level).abs();
+                if error < best.0 {
+                    best = (error, tint);
+                }
+            }
+        }
+    }
+    best.1
+}
+
+/// The between-samples attack on a white ghost over background B = (k +
+/// `lambda`) / 16, between edge samples k/16 and (k + 1)/16, k = `segment`.
+/// Two looks each take one sample to its low, 2e-5 under where the crossing
+/// look draws it, at greys `dim_by` either side of the crossing's, so their
+/// opacities straddle it; the point between draws each above the crossing.
+/// The ghost starts 0.1 above the crossing there and under 0.1 above both
+/// lows, so the crossing look completes the flash while neither sample
+/// passes its low.
+fn between_attack(
+    fps: f32,
+    segment: usize,
+    lambda: f32,
+    dim_by: u8,
+) -> Option<Vec<GhostInstanceLook>> {
+    const UNDER: f32 = 2e-5;
+    let (opacity, grey) = (0.6f32, 100u8);
+    let (below, above) = (segment as f32 / 16.0, (segment + 1) as f32 / 16.0);
+    let level = |byte: u8| drawn_luminance(grey_byte(byte));
+    // What a white ghost draws over `background`, and the opacity drawing
+    // `target` there.
+    let draws =
+        |opacity: f32, tint: f32, background: f32| background + opacity * (tint - background);
+    let opacity_for = |target: f32, tint: f32, background: f32| {
+        let reach = tint - background;
+        (reach.abs() >= 1e-6).then(|| (target - background) / reach)
+    };
+    let crossing_level = level(grey);
+    let (lighter, darker) = (level(grey + dim_by), level(grey - dim_by));
+    let low_below = opacity_for(
+        draws(opacity, crossing_level, below) - UNDER,
+        lighter,
+        below,
+    )?;
+    let low_above = opacity_for(draws(opacity, crossing_level, above) - UNDER, darker, above)?;
+    if !(0.0..1.0).contains(&low_below) || !(0.0..1.0).contains(&low_above) {
+        return None;
+    }
+    let between = |opacity: f32, tint: f32| {
+        (1.0 - lambda) * draws(opacity, tint, below) + lambda * draws(opacity, tint, above)
+    };
+    let crossed = between(opacity, crossing_level);
+    let lows = between(low_below, lighter).min(between(low_above, darker));
+    if lows <= crossed {
+        return None;
+    }
+    let start = 0.1 + crossed + 0.3 * (lows - crossed);
+    let background = below + lambda / 16.0;
+    let start_level = (start - background * (1.0 - low_above)) / low_above;
+    if !(0.0..1.0).contains(&start_level) {
+        return None;
+    }
+    let mut looks = Vec::new();
+    hold(
+        &mut looks,
+        look(low_above, tint_near(start_level)),
+        2.0,
+        fps,
+    );
+    hold(
+        &mut looks,
+        look(low_above, grey_byte(grey - dim_by)),
+        0.05,
+        fps,
+    );
+    let first = looks.len();
+    hold(
+        &mut looks,
+        look(low_below, grey_byte(grey + dim_by)),
+        0.3,
+        fps,
+    );
+    let crossing = look(opacity, grey_byte(grey));
+    hold(&mut looks, crossing, 0.1, fps);
+    strobe_after_crossing(&mut looks, crossing, grey_byte(190), first, fps);
+    Some(looks)
+}
+
+/// The most transitions over any background of the grid of what `asked`
+/// presents through one ghost at `fps`, drawn with `transparency`.
+fn presented_worst(
+    asked: &[GhostInstanceLook],
+    fps: f32,
+    transparency: GhostTransparency,
+) -> usize {
+    let shown = present_looks_drawn(asked.len(), fps, transparency, |n| asked[n]);
+    over_any(&shown, 1.0 / fps, transparency)
+}
+
+// Regression: on a frame asking opacity down and tint up, the clamp judged
+// the corner of its segment at the lower opacity and the held tint, which
+// never drew, so the trackers' peaks sat where nothing presented. Asking that
+// corner later completed a flash over black that reached no tracker's peak,
+// so the slot it belonged to aged out early and the strobe after it drew a
+// seventh transition in the second. Only the look that presents is judged.
+#[test]
+fn a_flash_completed_at_the_corner_a_frame_judged_but_never_drew_is_counted() {
+    for (fps, low, up) in [(30.0, 103, 112), (60.0, 103, 112), (240.0, 97, 99)] {
+        let asked = corner_attack_with(fps, 0.79, 128, low, up);
+        for transparency in GhostTransparency::ALL {
+            let worst = presented_worst(&asked, fps, transparency);
+            assert!(
+                worst <= 6,
+                "{fps} fps {transparency:?}: {worst} transitions"
+            );
+        }
+    }
+}
+
+// Regression: over the background 0.025, between the edge samples 0 and
+// 1/16, one look took the sample at 1/16 to its low, the next the sample at 0,
+// and the crossing look drew the point between 0.1 under where the ghost
+// started while each sample sat 2e-5 short of its low. No tracker passed its
+// peak there, so the crossing was never counted again and the strobe after it
+// drew a seventh transition in the second at (1, 0.025).
+#[test]
+fn a_flash_completed_between_edge_samples_is_counted() {
+    let (opacity, low_below, low_above) = (0.6, 0.576874, 0.62991285);
+    for fps in [30.0, 60.0, 144.0] {
+        let mut asked = Vec::new();
+        hold(
+            &mut asked,
+            look(low_above, rgb_bytes([126, 138, 148])),
+            2.0,
+            fps,
+        );
+        hold(&mut asked, look(low_above, grey_byte(96)), 0.05, fps);
+        let first = asked.len();
+        hold(&mut asked, look(low_below, grey_byte(104)), 0.3, fps);
+        let crossing = look(opacity, grey_byte(100));
+        hold(&mut asked, crossing, 0.1, fps);
+        strobe_after_crossing(&mut asked, crossing, grey_byte(190), first, fps);
+        let worst = presented_worst(&asked, fps, GhostTransparency::Blend);
+        assert!(worst <= 6, "{fps} fps: {worst} transitions");
+    }
+}
+
+// The sample nearer a background between samples may turn back by just over
+// the edge threshold, a swing the point between never sees, and then return
+// near the low it turned from while the point between reaches a new low and
+// completes a flash. Over the background 0.025 here the sample at 0 falls,
+// rises 0.069, and sits 3e-4 above its low as the point between crosses; the
+// sample at 1/16 sits above an earlier, lower look. Counted as a transition
+// of the old swing, the strobe after it stays within six.
+#[test]
+fn a_flash_completed_past_a_samples_small_turn_back_is_counted() {
+    let start = look(0.61, rgb_bytes([160, 169, 177]));
+    let low = look(0.56, rgb_bytes([146, 135, 125]));
+    let lower_above = look(0.61, rgb_bytes([116, 128, 134]));
+    let turned = look(0.61, rgb_bytes([160, 153, 149]));
+    let crossing = look(0.58, rgb_bytes([122, 134, 142]));
+    for fps in [30.0, 60.0, 144.0] {
+        let mut asked = Vec::new();
+        hold(&mut asked, start, 2.0, fps);
+        hold(&mut asked, low, 0.05, fps);
+        let first = asked.len();
+        for step in [lower_above, turned, crossing] {
+            hold(&mut asked, step, 0.1, fps);
+        }
+        strobe_after_crossing(&mut asked, crossing, grey_byte(200), first, fps);
+        let worst = presented_worst(&asked, fps, GhostTransparency::Blend);
+        assert!(worst <= 6, "{fps} fps: {worst} transitions");
+    }
+}
+
+// A targeted search over the round-5 attack families, which random looks
+// cannot find: flashes tuned to complete 2e-5 past the threshold between
+// edge samples, over each of the first four background segments at every
+// grid background inside it, and at the corner a frame judges but never
+// draws, from several opacities and greys, at several rates, blended and
+// dithered. Every one presents at most three flashes over any background.
+#[test]
+fn targeted_attacks_on_the_edge_samples_present_at_most_three_flashes_over_any_background() {
+    let mut built = 0;
+    for fps in [30.0, 60.0, 144.0] {
+        for segment in 0..4 {
+            let (below, above) = (segment as f32 / 16.0, (segment + 1) as f32 / 16.0);
+            let inside = (1..40)
+                .map(|step| step as f32 / 40.0)
+                .filter(|&background| below < background && background < above);
+            for background in inside {
+                let lambda = (background - below) * 16.0;
+                for dim_by in [2, 4] {
+                    let Some(asked) = between_attack(fps, segment, lambda, dim_by) else {
+                        continue;
+                    };
+                    built += 1;
+                    let worst = presented_worst(&asked, fps, GhostTransparency::Blend);
+                    assert!(
+                        worst <= 6,
+                        "between samples over {background}, {dim_by} greys, {fps} fps: {worst}"
+                    );
+                }
+            }
+        }
+    }
+    for fps in [30.0, 60.0, 240.0] {
+        for from in [0.6, 0.79] {
+            for start in [100, 128, 170] {
+                let Some(asked) = corner_attack(fps, from, start) else {
+                    continue;
+                };
+                built += 1;
+                for transparency in GhostTransparency::ALL {
+                    let worst = presented_worst(&asked, fps, transparency);
+                    assert!(
+                        worst <= 6,
+                        "corner from {from} at grey {start}, {fps} fps {transparency:?}: {worst}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(built >= 40, "the search built {built} attacks");
+}
+
+// A ghost already presenting when the limiter turns on, or on a frame that
+// starts history afresh, starts against its look and spends no slot; one
+// appearing on a later frame counts its appearance. Both present as asked.
+#[test]
+fn a_ghost_presenting_as_the_limiter_turns_on_spends_no_slot() {
+    let dt = 1.0 / 60.0;
+    let other: Key = (1, 7);
+    let restart = pack_limiter_frame(
+        LimiterFrameInput {
+            elapsed_seconds: dt,
+        },
+        true,
+        true,
+    );
+    // The limiter off, then on; or on, then a frame that starts history.
+    for (before, starts) in [
+        (frame(dt, false), frame(dt, true)),
+        (frame(dt, true), restart),
+    ] {
+        let mut clamp = GhostLookClamp::default();
+        for _ in 0..30 {
+            clamp.begin_frame(Some(&before));
+            clamp.present(GHOST, look(1.0, WHITE));
+            clamp.end_frame();
+            clamp.finish_presentation(true);
+        }
+        clamp.begin_frame(Some(&starts));
+        let shown = clamp.present(GHOST, look(1.0, WHITE));
+        clamp.end_frame();
+        clamp.finish_presentation(true);
+        assert_eq!(shown, look(1.0, WHITE));
+        let presenting = clamp.looks.clamp(&GHOST).expect("limited");
+        assert!(presenting.window.is_empty(), "{starts:?}: spends no slot");
+
+        clamp.begin_frame(Some(&frame(dt, true)));
+        clamp.present(GHOST, look(1.0, WHITE));
+        let appeared = clamp.present(other, look(1.0, WHITE));
+        clamp.end_frame();
+        assert_eq!(appeared, look(1.0, WHITE));
+        let appearing = clamp.looks.clamp(&other).expect("limited");
+        assert!(!appearing.window.is_empty(), "{starts:?}: appearing counts");
     }
 }

@@ -1232,7 +1232,7 @@ impl MeshPass {
             &instance_bind_group_layout,
             shadow_depth_format,
         );
-        let ghost_pipelines = super::mesh_ghost::GhostPipelines::new(
+        let ghost_pipelines = super::mesh_ghost::GhostPipelines::skinned(
             device,
             depth_format,
             camera_bgl,

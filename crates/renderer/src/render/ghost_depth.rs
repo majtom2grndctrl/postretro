@@ -1,12 +1,23 @@
-// Ghost-only depth target and the depth-only draw state that resolves ghost self-overlap:
-// seeded from scene depth, then each skinned or mover ghost writes its nearest surface
-// and tests its colour draw `Equal` against it. Scene depth is never written.
+// Ghost-only depth target seeded from scene depth, and the ghost draw state,
+// with the depth-only draw that keeps each ghost's nearest surface.
 // See: context/lib/rendering_pipeline.md §7.9
 
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 
-use super::mesh_ghost::GhostPipelineState;
 use super::pipeline_layout::prepass_attachment_extent;
+
+/// The fixed-function state one ghost pipeline draws with: a mode's colour
+/// draw in `mesh_ghost::ghost_pipeline_state`, its depth-only draw in
+/// [`ghost_depth_pipeline_state`]. Pure data, so the mode → state mapping is
+/// testable without a device.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GhostPipelineState {
+    pub(super) fragment_entry: &'static str,
+    pub(super) blend: Option<wgpu::BlendState>,
+    pub(super) write_mask: wgpu::ColorWrites,
+    pub(super) depth: wgpu::DepthStencilState,
+    pub(super) cull_mode: Option<wgpu::Face>,
+}
 
 /// The ghost-only depth attachment, at the scene extent. Recreated with the
 /// other scene targets, never per frame.

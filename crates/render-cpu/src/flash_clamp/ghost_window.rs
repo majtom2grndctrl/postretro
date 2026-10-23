@@ -25,16 +25,6 @@ pub(super) enum SlotClass {
     Exempt,
 }
 
-/// One counted change: the edge trackers (or red) it counts for, whether it
-/// spends the budget, and the presented time since something last joined it
-/// or a member's swing last reached further.
-#[derive(Clone, Copy, Debug, Default)]
-struct Slot {
-    members: u64,
-    class: SlotClass,
-    age: f32,
-}
-
 /// What a ghost's look may do this frame, from what its window holds as the
 /// frame starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,51 +41,69 @@ pub(super) enum Budget {
 }
 
 /// The transitions one ghost's look counted in the last second, aged by
-/// presented-frame time, in the order they were counted.
+/// presented-frame time, in the order they were counted. Each slot holds its
+/// members (the edge trackers it counts a transition of, or red), its class,
+/// and the presented time since something last joined it or a member last
+/// carried its count on.
 ///
 /// A transition of an edge tracker joins the latest slot of its class that
 /// holds no red if the tracker is not in it and neither the tracker nor any
 /// member of that slot has counted in a later slot: one change of what draws,
 /// crossing the threshold at different edge points on different frames,
-/// counts once. A join restarts the slot's age, so everything it holds stays
-/// counted a full second, and so does a member's swing reaching further: a
-/// point between edge samples may cross the flash threshold only on that
-/// later frame. A red transition always spends a slot of its own.
+/// counts once. A join restarts the slot's age, and so does a member carrying
+/// its count on ([`Self::extend`]). A red transition always spends a slot of
+/// its own.
 ///
-/// A tracker's transitions therefore sit in slots of their own, so no edge
-/// point counts more transitions in a second than the window holds slots
-/// without red. The budget keeps that at six: a budgeted slot opens only with
-/// room for it and one more, and over budget only the exempt ray (monotone at
-/// every edge point) or a change joining existing slots moves the look. The
-/// slot that one monotone run opens is the one every later transition of that
-/// run joins. A swing reaching further after its slot aged out counts like a
-/// transition; over budget that is the exempt ray's, and it joins the latest
-/// edge slot, which is then exempt.
+/// Two properties bound what any point sees (the argument is on the ghost's
+/// look clamp):
+///
+/// - **One tracker's transitions sit in slots of their own**, in the order it
+///   counted them: it joins only a slot it is not in, and only one after every
+///   slot it is in.
+/// - **The window never holds more than six edge slots.** A budgeted slot
+///   opens only with room for it and one more, so budgeted opens stop at five
+///   slots, red included. A step opens at most one slot, since every later
+///   transition of the step joins it. Over budget only an exempt step opens
+///   one, and from six edge slots the budget is exempt-only: the exempt ray
+///   at the held luminance is monotone at every edge point, so a tracker
+///   counts on it at most once and joins its latest slot.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct GhostWindow {
-    slots: [Slot; GHOST_WINDOW_SLOTS],
-    count: usize,
+    // Slot fields side by side, not as an array of slots, so the window packs
+    // without padding into the per-ghost budget.
+    members: [u64; GHOST_WINDOW_SLOTS],
+    classes: [SlotClass; GHOST_WINDOW_SLOTS],
+    ages: [f32; GHOST_WINDOW_SLOTS],
+    count: u8,
 }
 
 impl GhostWindow {
     /// Age the window by a frame's presented time.
     pub(super) fn age(&mut self, dt: f32) {
         let mut kept = 0;
-        for i in 0..self.count {
-            let age = self.slots[i].age + dt;
+        for i in 0..self.len() {
+            let age = self.ages[i] + dt;
             if age < FLASH_WINDOW_SECONDS {
-                self.slots[kept] = Slot {
-                    age,
-                    ..self.slots[i]
-                };
+                self.members[kept] = self.members[i];
+                self.classes[kept] = self.classes[i];
+                self.ages[kept] = age;
                 kept += 1;
             }
         }
-        self.count = kept;
+        self.set_len(kept);
     }
 
     pub(super) fn is_empty(&self) -> bool {
         self.count == 0
+    }
+
+    /// Slots held.
+    pub(super) fn len(&self) -> usize {
+        usize::from(self.count)
+    }
+
+    fn set_len(&mut self, len: usize) {
+        self.count = len as u8;
     }
 
     /// What this frame's look may do. Read once a frame, after aging.
@@ -113,12 +121,11 @@ impl GhostWindow {
     /// edge trackers whose last transition is the change [`Budget::Continue`]
     /// carries on. Empty otherwise.
     pub(super) fn continuing(&self) -> u64 {
-        self.slots[..self.count]
-            .iter()
+        (0..self.len())
             .rev()
-            .find(|slot| slot.members & RED == 0)
-            .filter(|slot| slot.class == SlotClass::Budgeted)
-            .map_or(0, |slot| slot.members)
+            .find(|&slot| self.members[slot] & RED == 0)
+            .filter(|&slot| self.classes[slot] == SlotClass::Budgeted)
+            .map_or(0, |slot| self.members[slot])
     }
 
     /// Count edge tracker `edge`'s transition as `class`: it joins a slot (see
@@ -128,34 +135,32 @@ impl GhostWindow {
     pub(super) fn count_edge(&mut self, edge: usize, class: SlotClass, opens: bool) -> bool {
         let bit = 1u64 << edge;
         if let Some(slot) = self.joinable(bit, class) {
-            self.slots[slot].members |= bit;
-            self.slots[slot].age = 0.0;
+            self.members[slot] |= bit;
+            self.ages[slot] = 0.0;
             return true;
         }
         if !opens || (class == SlotClass::Budgeted && !self.has_room()) {
             return false;
         }
-        self.push(Slot {
-            members: bit,
-            class,
-            age: 0.0,
-        });
+        self.push(bit, class);
         true
     }
 
-    /// Carry edge tracker `edge`'s counted swing on to a further extreme: the
-    /// latest slot holding the tracker restarts its age, so the transition
-    /// stays counted a full second from the last frame it reached further.
-    /// With no slot holding it any more, it counts again as `class`, as
-    /// [`Self::count_edge`] does. Returns whether it stayed counted.
+    /// Carry edge tracker `edge`'s counted swing on: the latest slot holding
+    /// the tracker restarts its age, so the transition stays counted a full
+    /// second from this frame. With no slot holding it any more, it counts
+    /// again as `class`, as [`Self::count_edge`] does. Returns whether it
+    /// stayed counted.
+    ///
+    /// A long ramp that keeps reaching further keeps its slot for as long as
+    /// it runs, and a second after: that only ever limits more, never less.
     pub(super) fn extend(&mut self, edge: usize, class: SlotClass, opens: bool) -> bool {
         let bit = 1u64 << edge;
-        if let Some(slot) = self.slots[..self.count]
-            .iter_mut()
+        if let Some(slot) = (0..self.len())
             .rev()
-            .find(|slot| slot.members & bit != 0)
+            .find(|&slot| self.members[slot] & bit != 0)
         {
-            slot.age = 0.0;
+            self.ages[slot] = 0.0;
             return true;
         }
         self.count_edge(edge, class, opens)
@@ -165,47 +170,46 @@ impl GhostWindow {
     /// latest slot of that class holding no red, while the tracker is not in
     /// it and neither it nor that slot's members have counted since.
     fn joinable(&self, bit: u64, class: SlotClass) -> Option<usize> {
-        let slot = (0..self.count).rev().find(|&slot| {
-            let candidate = self.slots[slot];
-            candidate.class == class && candidate.members & RED == 0
-        })?;
-        let members = self.slots[slot].members;
+        let slot = (0..self.len())
+            .rev()
+            .find(|&slot| self.classes[slot] == class && self.members[slot] & RED == 0)?;
+        let members = self.members[slot];
         let joined = members | bit;
         let open = members & bit == 0
-            && self.slots[slot + 1..self.count]
+            && self.members[slot + 1..self.len()]
                 .iter()
-                .all(|later| later.members & joined == 0);
+                .all(|&later| later & joined == 0);
         open.then_some(slot)
     }
 
     /// A red onset is admitted only while the window holds it, its own
-    /// return, and the returns earlier red onsets still owe.
+    /// return, and the returns earlier red onsets still owe. The screen
+    /// channels' `FlashWindow::onset_fits` (`value.rs`) is the same rule over
+    /// their own window; a change to one belongs in both.
     pub(super) fn red_onset_fits(&self) -> bool {
-        self.count + self.red_owed() + 2 <= FLASH_MAX_TRANSITIONS
+        self.len() + self.red_owed() + 2 <= FLASH_MAX_TRANSITIONS
     }
 
     /// Count a red onset or its return, each in a slot of its own.
     pub(super) fn count_red(&mut self, onset: bool) {
-        self.push(Slot {
-            members: RED,
-            class: if onset {
-                SlotClass::Budgeted
-            } else {
-                SlotClass::Exempt
-            },
-            age: 0.0,
-        });
+        let class = if onset {
+            SlotClass::Budgeted
+        } else {
+            SlotClass::Exempt
+        };
+        self.push(RED, class);
     }
 
     /// Red onsets in the window whose return it does not hold yet. A return
-    /// with no onset before it owes nothing.
+    /// with no onset before it owes nothing, as the screen channels'
+    /// `FlashWindow::owed_returns` counts.
     fn red_owed(&self) -> usize {
         let mut owed = 0usize;
-        for slot in &self.slots[..self.count] {
-            if slot.members & RED == 0 {
+        for slot in 0..self.len() {
+            if self.members[slot] & RED == 0 {
                 continue;
             }
-            match slot.class {
+            match self.classes[slot] {
                 SlotClass::Budgeted => owed += 1,
                 SlotClass::Exempt => owed = owed.saturating_sub(1),
             }
@@ -215,30 +219,28 @@ impl GhostWindow {
 
     /// A new budgeted slot leaves room for one more.
     fn has_room(&self) -> bool {
-        self.count + 2 <= FLASH_MAX_TRANSITIONS
+        self.len() + 2 <= FLASH_MAX_TRANSITIONS
     }
 
     /// Slots holding edge transitions.
     pub(super) fn edge_slots(&self) -> usize {
-        self.slots[..self.count]
+        self.members[..self.len()]
             .iter()
-            .filter(|slot| slot.members & RED == 0)
+            .filter(|&&members| members & RED == 0)
             .count()
     }
 
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.count
-    }
-
-    fn push(&mut self, slot: Slot) {
+    fn push(&mut self, members: u64, class: SlotClass) {
+        let count = self.len();
         debug_assert!(
-            self.count < GHOST_WINDOW_SLOTS,
+            count < GHOST_WINDOW_SLOTS,
             "a ghost's flash window never holds more than {GHOST_WINDOW_SLOTS} slots"
         );
-        if self.count < GHOST_WINDOW_SLOTS {
-            self.slots[self.count] = slot;
-            self.count += 1;
+        if count < GHOST_WINDOW_SLOTS {
+            self.members[count] = members;
+            self.classes[count] = class;
+            self.ages[count] = 0.0;
+            self.set_len(count + 1);
         }
         debug_assert!(
             self.edge_slots() <= FLASH_MAX_TRANSITIONS,

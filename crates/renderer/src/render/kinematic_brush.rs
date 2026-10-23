@@ -83,9 +83,9 @@ pub(crate) struct KinematicBrushPass {
     /// Camera-visible subset of `active_draws` for the beauty pass.
     beauty_draws: Vec<ActiveMoverDraw>,
     mover_index_ranges: Vec<MoverIndexRange>,
-    /// Each uploaded mover's geometry-bounds centre, parallel to `movers`:
-    /// where a ghost of it sorts among the frame's ghosts.
-    mover_centers: Vec<glam::Vec3>,
+    /// Each uploaded mover's local geometry bounds, parallel to `movers`: a
+    /// ghost of it sorts among the frame's ghosts by their farthest corner.
+    mover_bounds: Vec<postretro_render_data::cone_frustum::Aabb>,
     instance_bytes: Vec<u8>,
 }
 
@@ -489,7 +489,7 @@ impl KinematicBrushPass {
             active_draw_lookup: HashMap::new(),
             beauty_draws: Vec::new(),
             mover_index_ranges: Vec::new(),
-            mover_centers: Vec::new(),
+            mover_bounds: Vec::new(),
             instance_bytes: Vec::new(),
         }
     }
@@ -506,7 +506,7 @@ impl KinematicBrushPass {
         self.active_draw_lookup.clear();
         self.beauty_draws.clear();
         self.mover_index_ranges.clear();
-        self.mover_centers.clear();
+        self.mover_bounds.clear();
 
         let Some(geometry) = geometry else {
             self.install_empty_geometry(device);
@@ -558,7 +558,8 @@ impl KinematicBrushPass {
                     (min.min(position), max.max(position))
                 },
             );
-            self.mover_centers.push((min + max) * 0.5);
+            self.mover_bounds
+                .push(postretro_render_data::cone_frustum::Aabb { min, max });
         }
 
         if vertices.is_empty() || indices.is_empty() {
@@ -625,10 +626,13 @@ impl KinematicBrushPass {
         &self.active_draws
     }
 
-    /// One uploaded mover's geometry-bounds centre, in the space its model
-    /// matrix maps from. `None` for a mover id this level did not upload.
-    pub(super) fn mover_center(&self, mover_id: u32) -> Option<glam::Vec3> {
-        Some(self.mover_centers[*self.mover_lookup.get(&mover_id)?])
+    /// One uploaded mover's geometry bounds, in the space its model matrix
+    /// maps from. `None` for a mover id this level did not upload.
+    pub(super) fn mover_bounds(
+        &self,
+        mover_id: u32,
+    ) -> Option<postretro_render_data::cone_frustum::Aabb> {
+        Some(self.mover_bounds[*self.mover_lookup.get(&mover_id)?])
     }
 
     /// One full index span per uploaded mover, keyed by `mover_draw_index`.

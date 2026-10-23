@@ -341,6 +341,64 @@ fn turning_the_limiter_on_while_values_present_dips_none() {
     }
 }
 
+/// A clamp that presents only whether its key appeared or started fresh.
+#[derive(Clone, Debug)]
+struct Started {
+    appeared: bool,
+}
+
+impl KeyClamp for Started {
+    type Value = bool;
+
+    fn fresh(_: bool) -> Self {
+        Self { appeared: false }
+    }
+
+    fn appearing(_: bool) -> Self {
+        Self { appeared: true }
+    }
+
+    fn limit(&mut self, _: bool, _: &LimiterFrameUniform) -> bool {
+        self.appeared
+    }
+
+    fn absent(&mut self, _: &LimiterFrameUniform) {}
+
+    fn is_at_rest(&self) -> bool {
+        false
+    }
+}
+
+// The frame that turns the limiter on, and a frame that starts history, start
+// every key presenting on it fresh; a key first presented on a later frame
+// appeared, so a clamp may count its appearance.
+#[test]
+fn keys_presenting_as_history_starts_start_fresh_and_later_keys_appear() {
+    let dt = 1.0 / 60.0;
+    let starts = pack_limiter_frame(
+        LimiterFrameInput {
+            elapsed_seconds: dt,
+        },
+        true,
+        true,
+    );
+    let mut clamp = KeyedClamp::<Key, Started>::default();
+    clamp.begin_frame(&frame(dt, false));
+    assert!(!clamp.limit(GHOST, false), "off passes through");
+    clamp.end_frame();
+    clamp.begin_frame(&frame(dt, true));
+    assert!(!clamp.limit(GHOST, false), "turned on");
+    clamp.end_frame();
+    clamp.begin_frame(&frame(dt, true));
+    assert!(!clamp.limit(GHOST, false), "its history goes on");
+    assert!(clamp.limit((8, 1), false), "a key appearing later");
+    clamp.end_frame();
+    clamp.begin_frame(&starts);
+    assert!(!clamp.limit(GHOST, false), "history starts again");
+    assert!(!clamp.limit((8, 1), false), "for every key");
+    clamp.end_frame();
+}
+
 // AC 26: off, a 10 Hz strobe passes unclamped and nothing is kept, so turning
 // on mid-strobe starts fresh.
 #[test]

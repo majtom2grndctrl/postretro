@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §7.9, §8
 
 use super::*;
+use crate::render::mesh_ghost::ghost_pipeline_state;
 use postretro_render_cpu::ghost_instance::KINEMATIC_GHOST_INSTANCE_SIZE;
 
 /// `fn <name>` through its closing brace, by brace depth.

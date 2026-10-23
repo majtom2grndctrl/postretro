@@ -15,6 +15,10 @@ use super::value::{
 /// the returns earlier red onsets owe; over budget the tint desaturates toward
 /// its own luminance, solved exactly, so it presents the held redness at
 /// unchanged luminance. Returns always pass.
+///
+/// This is the screen channels' rule (`decide` in `value.rs`) on the ghost's
+/// window, where a red transition never shares a slot; a change to one
+/// belongs in both.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct GhostRedness {
     tracker: Tracker,

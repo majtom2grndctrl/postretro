@@ -48,8 +48,9 @@ pub enum RenderStage {
     KinematicBrush,
     SkinnedMesh,
     /// Unlit translucent ghost draws (`rendering_pipeline.md` §7.9): the
-    /// ghost depth seed and pre-pass, then the skinned, mover and billboard
-    /// ghost passes.
+    /// ghost depth seed, then one sorted ghost pass (skinned and mover
+    /// ghosts, each a depth-only draw then its colour draw), then the
+    /// billboard ghost pass.
     GhostMesh,
     FluidSurface,
     Smoke,

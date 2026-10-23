@@ -1,10 +1,11 @@
-// Back-to-front order of a frame's skinned and mover ghosts, and its recording: each
-// ghost writes its own nearest surface into the ghost depth target, then draws its colour there.
+// Back-to-front order of a frame's skinned and mover ghosts, and its recording:
+// each ghost writes its nearest surface to the ghost depth, then its colour.
 // See: context/lib/rendering_pipeline.md §7.9
 
 use glam::{Mat4, Vec3};
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::{MeshFramePlan, MeshPaletteCacheKey, PlannedInstance};
+use postretro_render_data::cone_frustum::Aabb;
 
 use super::GpuTexture;
 use super::kinematic_brush::KinematicBrushPass;
@@ -64,6 +65,11 @@ struct SkinnedMember {
 
 /// The frame's ghosts, farthest first. Every list is retained scratch, so a
 /// warm frame builds the order without allocating.
+///
+/// Ghosts are sorted, not resolved per pixel. Where the order is wrong for a
+/// pair (two ghosts interpenetrating, or keys that disagree with the depths
+/// at some pixel), the ghost nearer at a pixel hides the one drawn after it
+/// there, as if it were opaque, instead of blending over it.
 #[derive(Default)]
 pub(super) struct GhostDrawOrder {
     units: Vec<OrderedUnit>,
@@ -83,13 +89,21 @@ pub(super) struct GhostDrawSources<'a> {
 impl GhostDrawOrder {
     /// Rebuild this frame's order. Skinned instances group into one ghost by
     /// their palette key's holder group (a holder and its attachments through
-    /// one link); each mover ghost is its own. A ghost sorts by the depth of
-    /// its bounds centre under `view_proj` (the holder's, for a skinned
-    /// ghost). A centre at or behind the eye sorts nearest, so it draws last.
+    /// one link); each mover ghost is its own, given as its world-space bounds
+    /// corners ([`mover_ghost_corners`]) in draw-slot order. Depth is taken
+    /// under `view_proj`:
+    /// - a skinned ghost keys on its holder's bounds centre;
+    /// - a mover ghost keys on its farthest bounds corner, so a platform,
+    ///   bridge or lift draws before the actors standing on it. Corners at or
+    ///   behind the eye are skipped: a mover reaching past the camera keys on
+    ///   its farthest corner ahead, and one wholly behind it has no key point.
+    ///
+    /// A key point at or behind the eye, or none, sorts nearest, so that ghost
+    /// draws last: a skinned ghost wrapping the camera stays on top.
     pub(super) fn build(
         &mut self,
         skinned: Option<&MeshFramePlan>,
-        mover_centers: impl IntoIterator<Item = Vec3>,
+        mover_corners: impl IntoIterator<Item = [Vec3; 8]>,
         view_proj: Mat4,
     ) {
         self.units.clear();
@@ -153,10 +167,10 @@ impl GhostDrawOrder {
             }
         }
 
-        for (draw, center) in mover_centers.into_iter().enumerate() {
+        for (draw, corners) in mover_corners.into_iter().enumerate() {
             let order = self.units.len() as u32;
             self.units.push(OrderedUnit {
-                depth: view_depth(view_proj, center),
+                depth: farthest_depth(view_proj, &corners),
                 order,
                 unit: GhostUnit::Mover { draw: draw as u32 },
             });
@@ -192,6 +206,8 @@ impl GhostDrawOrder {
     /// outer ones, and a nearer ghost blends over a farther one, whose colour
     /// is already down. Where two ghosts interpenetrate, the later one draws
     /// only where it is nearer. Group 0 (camera) must be set by the caller.
+    /// Cost, in both modes: two pipeline switches per ghost, and one draw per
+    /// submesh per ghost span (per material span for a mover ghost).
     pub(super) fn record(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -249,6 +265,28 @@ fn instance_center(instance: &PlannedInstance) -> Vec3 {
     } else {
         instance.transform.w_axis.truncate()
     }
+}
+
+/// The eight corners of a mover's local geometry `bounds` under a ghost's
+/// model `transform`: the points its ghost sorts by.
+pub(super) fn mover_ghost_corners(transform: Mat4, bounds: Aabb) -> [Vec3; 8] {
+    std::array::from_fn(|corner| {
+        let pick = |bit: usize, min: f32, max: f32| if corner & bit == 0 { min } else { max };
+        transform.transform_point3(Vec3::new(
+            pick(1, bounds.min.x, bounds.max.x),
+            pick(2, bounds.min.y, bounds.max.y),
+            pick(4, bounds.min.z, bounds.max.z),
+        ))
+    })
+}
+
+/// Depth of the farthest of `corners` in front of the eye; nearest of all
+/// when none is.
+fn farthest_depth(view_proj: Mat4, corners: &[Vec3; 8]) -> f32 {
+    corners
+        .iter()
+        .map(|&corner| view_depth(view_proj, corner))
+        .fold(f32::NEG_INFINITY, f32::max)
 }
 
 /// Depth of `point` under `view_proj`, larger farther. At or behind the eye

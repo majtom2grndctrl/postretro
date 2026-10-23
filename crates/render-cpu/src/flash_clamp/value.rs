@@ -198,6 +198,10 @@ impl FlashWindow {
 /// Decide one tracked part's next presented level. Onsets (rises) are admitted
 /// only while the window holds them, their return, and the returns earlier
 /// onsets still owe; over budget the part holds. Returns always pass.
+///
+/// A ghost's redness runs the same rule on its own window
+/// (`GhostRedness::limit`, `GhostWindow::red_onset_fits`); a change to one
+/// belongs in both.
 fn decide(
     tracker: &mut Tracker,
     window: &mut FlashWindow,

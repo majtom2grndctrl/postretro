@@ -1,9 +1,9 @@
 //! Adapter-backed proof of the ghost pass through the production capture
 //! recorder: under both `render.ghosts` modes a ghost shows only its own
 //! nearest surface, skinned and mover alike, and loses none of its pixels to
-//! the `Equal` test; a nearer ghost blends over a farther one; and a fluid
-//! surface behind a ghost still draws over it, so the ghost pass leaves scene
-//! depth to the opaque scene.
+//! the `Equal` test; a nearer ghost blends over a farther one, a ghost
+//! platform included; and a fluid surface behind a ghost still draws over it,
+//! so the ghost pass leaves scene depth to the opaque scene.
 //! See: context/lib/rendering_pipeline.md §7.9
 
 use glam::{Mat4, Vec3};
@@ -18,7 +18,7 @@ use postretro_render_cpu::ghost_instance::{
 };
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::{
-    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
+    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation, plan_mesh_frame_plans,
 };
 
 use super::Renderer;
@@ -34,12 +34,17 @@ const FAR_ONLY: u32 = 3;
 /// Two distinct ghosts' movers, each an outer quad in front of an inner one.
 const NEAR_GHOST: u32 = 4;
 const FAR_GHOST: u32 = 5;
+/// A long platform receding to the right, for a pawn to stand on.
+const PLATFORM: u32 = 6;
 
-/// Skinned twins of the self-overlap movers, and of the near distinct ghost.
+/// Skinned twins of the self-overlap movers and of both distinct ghosts, and
+/// the pawn standing on the platform.
 const SKINNED_NEAR_AND_FAR: &str = "ghost-depth/near-and-far";
 const SKINNED_NEAR_ONLY: &str = "ghost-depth/near-only";
 const SKINNED_FAR_ONLY: &str = "ghost-depth/far-only";
 const SKINNED_NEAR_GHOST: &str = "ghost-depth/near-ghost";
+const SKINNED_FAR_GHOST: &str = "ghost-depth/far-ghost";
+const SKINNED_PAWN: &str = "ghost-depth/pawn";
 
 /// Clip depths under the identity view-projection; the fluid quad sits at 0.5.
 const NEAR_DEPTH: f32 = 0.3;
@@ -50,6 +55,13 @@ const NEAR_GHOST_OUTER: f32 = 0.2;
 const NEAR_GHOST_INNER: f32 = 0.25;
 const FAR_GHOST_OUTER: f32 = 0.6;
 const FAR_GHOST_INNER: f32 = 0.65;
+/// The platform's depth at its near (left) and far (right) edges, so its
+/// bounds centre sits at 0.5 and its farthest corner at 0.875; the pawn's
+/// depth, nearer than the platform across the pawn's columns but behind the
+/// platform's centre.
+const PLATFORM_NEAR_EDGE: f32 = 0.125;
+const PLATFORM_FAR_EDGE: f32 = 0.875;
+const PAWN_DEPTH: f32 = 0.6;
 
 /// Texel centres of the 64-texel placeholder checkerboard (8-texel squares,
 /// magenta at the origin): one magenta square, one black.
@@ -69,6 +81,10 @@ const FAR_ONLY_COLUMNS: std::ops::Range<u32> = 10..14;
 const NEAR_COLUMNS: std::ops::Range<u32> = 2..10;
 const FAR_COLUMNS: std::ops::Range<u32> = 6..14;
 const ROWS: std::ops::Range<u32> = 3..13;
+/// Columns the platform (clip x −0.75..0.75) covers, and the pawn on its far
+/// half (0.25..0.75).
+const PLATFORM_COLUMNS: std::ops::Range<u32> = 2..14;
+const PAWN_COLUMNS: std::ops::Range<u32> = 10..14;
 
 /// How far a region's kept-pixel count may sit from the screen door's share of
 /// its area: the region's edges cut 4×4 tiles, whose partial rows and columns
@@ -92,9 +108,10 @@ const FAR_LOOK: GhostInstanceLook = GhostInstanceLook {
 };
 
 /// A quad facing the identity camera (counter-clockwise in clip space) over
-/// clip x `x0..x1`, y −0.75..0.75, at clip depth `z`, with one flat UV.
-fn quad(x0: f32, x1: f32, z: f32, uv: [f32; 2]) -> [Vertex; 4] {
-    let vertex = |x: f32, y: f32| {
+/// clip x `x0..x1`, y −0.75..0.75, at clip depth `z0` along its `x0` edge and
+/// `z1` along its `x1` edge, with one flat UV.
+fn sloped_quad(x0: f32, x1: f32, z0: f32, z1: f32, uv: [f32; 2]) -> [Vertex; 4] {
+    let vertex = |x: f32, y: f32, z: f32| {
         Vertex::new(
             [x, y, z],
             uv,
@@ -106,11 +123,16 @@ fn quad(x0: f32, x1: f32, z: f32, uv: [f32; 2]) -> [Vertex; 4] {
         )
     };
     [
-        vertex(x0, -0.75),
-        vertex(x1, -0.75),
-        vertex(x1, 0.75),
-        vertex(x0, 0.75),
+        vertex(x0, -0.75, z0),
+        vertex(x1, -0.75, z1),
+        vertex(x1, 0.75, z1),
+        vertex(x0, 0.75, z0),
     ]
+}
+
+/// A [`sloped_quad`] at one clip depth `z`.
+fn quad(x0: f32, x1: f32, z: f32, uv: [f32; 2]) -> [Vertex; 4] {
+    sloped_quad(x0, x1, z, z, uv)
 }
 
 fn near_quad() -> [Vertex; 4] {
@@ -136,6 +158,22 @@ fn far_ghost_quads() -> [[Vertex; 4]; 2] {
         quad(-0.25, 0.75, FAR_GHOST_INNER, MAGENTA_UV),
         quad(-0.25, 0.75, FAR_GHOST_OUTER, BLACK_UV),
     ]
+}
+
+/// The platform: magenta, receding from the camera left to right.
+fn platform_quad() -> [Vertex; 4] {
+    sloped_quad(
+        -0.75,
+        0.75,
+        PLATFORM_NEAR_EDGE,
+        PLATFORM_FAR_EDGE,
+        MAGENTA_UV,
+    )
+}
+
+/// The pawn: black, upright in front of the platform's far half.
+fn pawn_quad() -> [Vertex; 4] {
+    quad(0.25, 0.75, PAWN_DEPTH, BLACK_UV)
 }
 
 /// A mover whose geometry is `quads` in draw order, at the origin.
@@ -192,6 +230,7 @@ fn install_movers(renderer: &mut Renderer) {
             mover(FAR_ONLY, &[far_quad()]),
             mover(NEAR_GHOST, &near_ghost_quads()),
             mover(FAR_GHOST, &far_ghost_quads()),
+            mover(PLATFORM, &[platform_quad()]),
         ],
         waypoints: Vec::new(),
     };
@@ -251,6 +290,8 @@ fn install_skinned_models(renderer: &mut Renderer) {
     install_skinned_model(renderer, SKINNED_NEAR_ONLY, &[near_quad()]);
     install_skinned_model(renderer, SKINNED_FAR_ONLY, &[far_quad()]);
     install_skinned_model(renderer, SKINNED_NEAR_GHOST, &near_ghost_quads());
+    install_skinned_model(renderer, SKINNED_FAR_GHOST, &far_ghost_quads());
+    install_skinned_model(renderer, SKINNED_PAWN, &[pawn_quad()]);
 }
 
 fn mover_ghost(mover_id: u32, look: GhostInstanceLook) -> KinematicGhostInstance {
@@ -281,6 +322,26 @@ fn skinned_ghost(handle: &str, holder: u32, look: GhostInstanceLook) -> MeshInst
         forward_visible: true,
         dynamic_shadow_visible: false,
         presentation: MeshPresentation::Ghost(look),
+    }
+}
+
+/// A real skinned mesh far off screen. It plans ahead of the ghost plan, so
+/// every skinned ghost instance sits at a nonzero instance offset, and it
+/// draws no pixel.
+fn off_screen_world_mesh() -> MeshInstanceInput {
+    MeshInstanceInput {
+        model: postretro_model::ModelHandle::from(SKINNED_NEAR_ONLY),
+        transform: Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)),
+        shadow_bias_scale: 1.0,
+        phase_seed: 0,
+        palette_cache_key: MeshPaletteCacheKey::Entity(99),
+        sample: MeshSampleParams::rigid(),
+        pose_inputs: None,
+        capture: None,
+        resample: true,
+        forward_visible: true,
+        dynamic_shadow_visible: false,
+        presentation: MeshPresentation::World,
     }
 }
 
@@ -501,8 +562,10 @@ fn two_ghosts_expected(mode: GhostTransparency, column: u32, row: u32) -> Vec3 {
 // Two distinct ghosts overlapping on screen, the nearer listed first: the
 // farther draws first and shows through the nearer at the expected blend
 // (or, dithered, where the nearer drops a pixel), and each still hides its
-// own inner surface. Run with the near ghost as a mover and as a skinned
-// model, so mover and skinned ghosts sort together.
+// own inner surface. Run as two movers and with either ghost skinned, so
+// mover and skinned ghosts sort together and each kind's pipelines follow
+// the other's in one pass. A real mesh ahead of the ghost plan puts every
+// skinned ghost at a nonzero instance offset.
 #[test]
 fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface() {
     let Some(mut renderer) = renderer() else {
@@ -510,6 +573,21 @@ fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface
     };
     install_movers(&mut renderer);
     install_skinned_models(&mut renderer);
+    let world = off_screen_world_mesh();
+    let planned = plan_mesh_frame_plans(
+        std::slice::from_ref(&world),
+        &[skinned_ghost(SKINNED_FAR_GHOST, 1, FAR_LOOK)],
+        &renderer.full().mesh_pass,
+    );
+    assert!(
+        planned
+            .ghost
+            .groups
+            .first()
+            .is_some_and(|group| group.instance_offset > 0),
+        "the world mesh plans ahead of the ghosts"
+    );
+    renderer.set_mesh_draws(std::slice::from_ref(&world));
     let far = mover_ghost(FAR_GHOST, FAR_LOOK);
     for mode in GhostTransparency::ALL {
         renderer.set_ghost_transparency(mode);
@@ -530,6 +608,14 @@ fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface
                     &[far],
                 ),
             ),
+            (
+                "mover over skinned",
+                frame_with(
+                    &mut renderer,
+                    &[skinned_ghost(SKINNED_FAR_GHOST, 1, FAR_LOOK)],
+                    &[mover_ghost(NEAR_GHOST, NEAR_LOOK)],
+                ),
+            ),
         ] {
             for row in ROWS {
                 for column in 0..SIDE {
@@ -544,6 +630,58 @@ fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface
         }
     }
     eprintln!("[GhostDepthProof] two-ghost GPU case ran in both modes, mover and skinned");
+}
+
+/// The linear colour the platform and the pawn on it leave at pixel
+/// (`column`, `row`) over the white clear: the pawn over the platform where
+/// they overlap.
+fn platform_and_pawn_expected(mode: GhostTransparency, column: u32, row: u32) -> Vec3 {
+    let behind = if PLATFORM_COLUMNS.contains(&column) {
+        over(mode, FAR_LOOK, MAGENTA, WHITE, column, row)
+    } else {
+        WHITE
+    };
+    if PAWN_COLUMNS.contains(&column) {
+        over(mode, NEAR_LOOK, BLACK, behind, column, row)
+    } else {
+        behind
+    }
+}
+
+// A ghost pawn standing in front of the far half of a long ghost platform,
+// its bounds centre behind the platform's. The platform keys on its farthest
+// bounds corner, so it draws first and shows through the pawn's silhouette
+// at the expected blend. Keyed by its centre it would draw after the pawn
+// and lose the pawn's whole silhouette, a pawn-shaped hole. Blend only:
+// dither keeps the nearest pixel in either order.
+#[test]
+fn a_ghost_platform_shows_through_the_ghost_pawn_on_its_far_half() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    install_movers(&mut renderer);
+    install_skinned_models(&mut renderer);
+    // The pawn keys on its bounds centre, behind the platform's (0.5).
+    let pawn_bounds = renderer.skinned_model_local_bounds(SKINNED_PAWN);
+    assert!(((pawn_bounds.min.z + pawn_bounds.max.z) * 0.5 - PAWN_DEPTH).abs() < 1e-6);
+    let mode = GhostTransparency::Blend;
+    renderer.set_ghost_transparency(mode);
+    let frame = frame_with(
+        &mut renderer,
+        &[skinned_ghost(SKINNED_PAWN, 1, NEAR_LOOK)],
+        &[mover_ghost(PLATFORM, FAR_LOOK)],
+    );
+    for row in ROWS {
+        for column in 0..SIDE {
+            let want = capture_encode(platform_and_pawn_expected(mode, column, row));
+            let got = pixel(&frame, column, row);
+            assert!(
+                (0..3).all(|channel| got[channel].abs_diff(want[channel]) <= 1),
+                "({column}, {row}): got {got:?}, want {want:?}"
+            );
+        }
+    }
+    eprintln!("[GhostDepthProof] ghost platform GPU case ran in blend");
 }
 
 // The ghost pass never writes scene depth: an opaque fluid surface behind a

@@ -127,21 +127,6 @@ fn ghost_depth_entries_bind_nothing_share_the_discard_and_keep_position_invarian
     }
 }
 
-// Both ghost pipeline sets build their depth-only draws from the one shared
-// depth state.
-#[test]
-fn ghost_pipelines_build_their_depth_draws_from_the_shared_depth_state() {
-    for (name, source) in [
-        ("mesh_ghost.rs", include_str!("mesh_ghost.rs")),
-        ("kinematic_ghost.rs", include_str!("kinematic_ghost.rs")),
-    ] {
-        assert!(
-            code_only(source).contains("ghost_depth_pipeline_state("),
-            "{name} builds its depth pipelines from ghost_depth_pipeline_state"
-        );
-    }
-}
-
 /// The index just past the brace block opening at `open`, by brace depth.
 fn block_end(code: &str, open: usize) -> usize {
     let mut depth = 0usize;

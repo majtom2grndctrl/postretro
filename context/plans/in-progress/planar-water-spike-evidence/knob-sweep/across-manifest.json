@@ -1,0 +1,9 @@
+{
+  "binary_sha256": "fa8050af7303e5e1ea1a8bfc06108aef615a1ee39bbf75a0499ab2d65e8025ac",
+  "map_sha256": "3aef08f2fa2020f488ea2405572f3267c2eca3c314d70301aed617b78bdfc2fc",
+  "git_head": "b3c190c752f0045c3fae2d53d498e3aa85b471da",
+  "warmup_frames": 60,
+  "sample_frames": 120,
+  "repeats": 2,
+  "note": "Dirty tree possible; settings explicit in each scene; dev binary, indirect validation default on; synchronized captures."
+}

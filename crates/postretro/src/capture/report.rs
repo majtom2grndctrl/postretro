@@ -740,6 +740,7 @@ mod tests {
             reflection_quality: None,
             reflection_style: None,
             reflection_march: None,
+            planar_reflection: None,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),
                 warmup_frames: 2,

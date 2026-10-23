@@ -37,7 +37,7 @@ $env:POSTRETRO_PLANAR_REFLECTION = '0'
 & ./target/debug/postretro.exe --capture context/plans/in-progress/planar-water-spike-evidence/windows/ssr-medium-scene.json
 ```
 
-Capture scenes have portable repository-relative paths, 960×540, 120 warmup and 240 sample frames. They establish the default half-scale/unlimited-D/R baseline. D/R/scale are not capture JSON fields; use the dev panel for the full sweep or add an explicitly reviewed measurement-only control. Confirm the log selects the intended plane before accepting any result.
+Capture scenes have portable repository-relative paths, 960×540, 120 warmup and 240 sample frames. They establish the default half-scale/unlimited-D/R baseline. D/R/scale and fade widths are now explicit `planar_reflection` capture JSON fields. Use the portable matrix runner below; committed Mac scenes preserve Mac output paths and should not be replayed verbatim on Windows. Confirm the log selects the intended plane before accepting any result.
 
 For live profiling, build the required authoring helpers first per AGENTS.md, then use the contract's authoring launch with dev-tools. Remove `POSTRETRO_SH_STREAMING=sync-proof` for ordinary streaming/live performance and label that difference. Do not compare capture wait-after-submit timing to live frame pacing. Close the engine/launcher after each run; no bakes or builds alongside measurements.
 
@@ -46,3 +46,15 @@ For live profiling, build the required authoring helpers first per AGENTS.md, th
 The committed lake source includes the local TrenchBroom edits used for later profiling (raised ceiling and additional light/geometry). Early short lake captures predate that fixture change; do not compare their times directly to later traces. The Mac compiled PRL hash is in `metal-2026-10-22/manifest.json`; record the Windows bake hash and compiler settings rather than claiming byte equality across platforms.
 
 All small evidence, summaries, images and logs are versioned. Raw Mac Instruments bundles/XML stay local under `target/planar-spike-measurements/`; they are not required to run Windows measurements. Store new reports/scenes and findings in the evidence directory, with adapter/driver, commit, map hash, profile, validation state, pose, resolution, settings and repetition order. Add findings to the existing note; keep `context/lib/` unchanged until the owner decides to ship.
+
+## Automated knob sweep now available
+
+After the build above, run from the workspace root with Python 3 (no third-party dependencies):
+
+```powershell
+python context/plans/in-progress/planar-water-spike-evidence/knob-sweep/run_sweep.py --binary target/debug/postretro.exe --output target/windows-planar-knob-sweep
+```
+
+The runner defaults to 120 warmup/240 measured frames to give GPU timestamp readbacks enough frames to produce windows (the Mac knob dataset used 60/120). It generates 60 matched captures: 15 configurations, across-water and over-water downward poses, two reverse-order repeats. It forces indirect validation on and refuses nonempty output folders. `--pose across` or `--pose down` narrows the run, and `--repeats` changes repeat count. See `planar-water-spike-evidence/knob-sweep/README.md` for Mac numbers, screenshots, outliers and selected Metal traces.
+
+Prioritize confirming the D savings and whole-frame cost on Windows; quarter resolution saves GPU work on Mac but not completion time. Do not accept the fastest D15/R15 combination solely on speed: distant planar reflections visibly give way to probe fallback. Live CPU walk/submit, mover/skinned scenes and moving-camera quality remain essential.

@@ -120,3 +120,7 @@ A source-scan test enforces rows 3 and 4 on the new shaders: no `fresnel`, no `f
 - Whether the seeded walk in the lake's open hall trips the step limit. Expected yes; the frustum fallback is accepted.
 - Oblique-projection depth precision at grazing angles. If it z-fights, record it; `Features::CLIP_DISTANCES` is the larger fallback and is not in the spike's scope.
 - Vertex and draw cost on Metal, where each indirect slot is a driver draw. A forward variant with Less+write and no prepass is a later lever, not in scope.
+
+## Measurement automation extension (2026-10-22)
+
+Owner authorized automated knob sweeps. Capture scenes accept optional `planar_reflection` controls (on, scale, D/R, fade widths), applied before mirror preparation and overriding the dev environment seed. This is measurement-only; player settings and pinned water shaders remain unchanged. See knob-sweep evidence and Windows handoff for bounds, defaults, replay and results.

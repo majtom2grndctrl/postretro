@@ -26,7 +26,7 @@ The determinant assertion checks positive combined handedness correction and the
 
 ## Measurements
 
-Mac SSR High/Medium baselines collected at one lake pose below. Still pending: Windows baselines and planar scale ¼, ½, 1; D and R unlimited, 30, 15, 8 metres. Capture across-water and downward poses in `reflection-lake-test`, `e24`, and `reflection-probes-test`.
+Mac baselines and a two-pose knob sweep are collected below and in `planar-water-spike-evidence/knob-sweep/README.md`. Windows baselines and knob sweeps remain pending. Capture across-water and downward poses in `reflection-lake-test`, `e24`, and `reflection-probes-test`.
 
 Record GPU spans, frame deltas, mirror walk time/path, visible cells/leaves, mirror-only cells, mask coverage, draws, and Mac submit delta. Record adapter and pose with each result.
 
@@ -83,8 +83,18 @@ Owner checks pending: planar against SSR High, grazing depth precision, waterlin
 
 ## Recommendation
 
-Keep the planar path as a dev-only experiment for the hardware/pose sweep. CPU, binding and pixel-level checks plus integrated lake output support proceeding to measurements. Do not replace SSR in shipping quality tiers yet: Metal traces show cheaper reflection work than High, but both traced and untraced completion runs are slower, and the D/R/scale sweep is still absent. Next investigate per-frame Metal submission/validation and the water-composite cost, then measure bounded D/R and lower scales before choosing a default. Owner visual acceptance and Windows profiling plus broader Mac measurements remain required for a shipping decision.
+Keep the planar path as a dev-only experiment for the hardware/pose sweep. CPU, binding and pixel-level checks plus integrated lake output support proceeding to measurements. Do not replace SSR in shipping quality tiers yet: Metal traces show cheaper reflection work than High, but both traced and untraced completion runs are slower, and the later D/R/scale sweep shows a substantial visual cost for the faster bounds. Next investigate per-frame Metal submission/validation and the water-composite cost, then measure bounded D/R and lower scales before choosing a default. Owner visual acceptance and Windows profiling plus broader Mac measurements remain required for a shipping decision.
 
 ## Remaining evidence
 
 Investigate native reveal if needed for interactive profiling. Run the scale/D/R/pose sweep and owner visual read. Use Windows for FXC and GTX measurements; extend the recorded Metal System Trace baseline for this Mac. Add mask-coverage and draw-count evidence if current diagnostics do not expose them. Preserve protected fluid files and keep this spike out of `context/lib/`. Existing untracked `context/plans/drafts/fluid-ssr-reflections/` predates this work. No shipping PR created. See `planar-water-spike-windows-handoff.md` for Windows commands and outstanding measurements.
+
+## Knob sweep follow-up
+
+See [full knob results](planar-water-spike-evidence/knob-sweep/README.md): 60 primary captures, 30 separate shore-control captures, five new Metal traces, portable Windows runner and run-1 screenshots. New capture controls cover scale, D, R and both fade widths; scene values override the environment seed and invalid controls fail before GPU creation.
+
+At 960×540 on this Mac, across-water half planar takes 17.306/17.161 ms synchronized completion. D=15 lowers that to 15.914/15.836 ms; quarter/D15/R15 reaches 15.749/15.183 ms, versus SSR High 17.046/17.180 and Medium 13.394/15.139. That combination loses clear distant reflections. Over-water downward, it still trails High (18.098/18.064 versus 17.911/17.549).
+
+Selected new reflection GPU means: half unlimited 1.049 ms, quarter unlimited 0.643, D=15 at half 0.500, R=8 at half 0.514; SSR High 2.259 ms from 113 isolated events (seven coalesced events excluded). These are fresh matched 60-warmup/120-sample traces, not directly interchangeable with the earlier 120/240 results. Quarter's GPU saving does not translate into a clear completion benefit. D limits reduce both draw cells and walk steps; no shipping preset is selected.
+
+Verification: two new capture-control tests and 24 existing scene parsing tests passed; formatting and both dev-tools+capture and capture-only Clippy passed. Read-only review found two runner reproducibility issues (output-directory reuse and inherited validation state), both fixed in the shipped runner. Effective validation-on state was checked in all 60 primary logs; all report zero visible nonresident lightmap misses and failed reads/installs. Full workspace tests remain outside this spike’s focused-only execution rule.

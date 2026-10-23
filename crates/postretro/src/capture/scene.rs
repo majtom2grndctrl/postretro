@@ -28,6 +28,8 @@ const MAX_REFLECTION_MARCH_STEPS: u32 = 4096;
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) struct CaptureScene {
+    /// Explicit spike controls override the dev environment seed when present.
+    pub(super) planar_reflection: Option<super::planar::CapturePlanarReflection>,
     pub(crate) map: String,
     pub(crate) camera: CameraPose,
     pub(crate) resolution: [u32; 2],
@@ -187,6 +189,8 @@ const fn default_fov_deg() -> f32 {
 
 #[derive(Debug, Error)]
 pub(crate) enum SceneError {
+    #[error("invalid capture scene: planar_reflection {0}")]
+    InvalidPlanarReflection(&'static str),
     #[error("invalid capture scene: {0}")]
     Parse(#[from] serde_json::Error),
     #[error("invalid capture scene: map must not be empty")]
@@ -288,6 +292,11 @@ fn validate_reflection_march(march: &CaptureReflectionMarch) -> Result<(), Scene
 }
 
 fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
+    if let Some(planar) = scene.planar_reflection {
+        planar
+            .validate()
+            .map_err(SceneError::InvalidPlanarReflection)?;
+    }
     if scene.map.trim().is_empty() {
         return Err(SceneError::EmptyMap);
     }
@@ -854,6 +863,7 @@ mod tests {
             reflection_quality: None,
             reflection_style: None,
             reflection_march: None,
+            planar_reflection: None,
         };
         assert!(matches!(
             validate_scene(&scene),

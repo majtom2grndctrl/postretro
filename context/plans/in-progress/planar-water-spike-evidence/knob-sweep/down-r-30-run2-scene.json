@@ -1,0 +1,31 @@
+{
+  "map": "content/dev/maps/reflection-lake-test.prl",
+  "camera": {
+    "position": [
+      -28.8656,
+      1.7,
+      -48.768
+    ],
+    "yaw_deg": 90.0,
+    "pitch_deg": -55.0
+  },
+  "resolution": [
+    960,
+    540
+  ],
+  "reflection_quality": "high",
+  "planar_reflection": {
+    "on": true,
+    "scale": 0.5,
+    "d": null,
+    "r": 30,
+    "band_d": 4.0,
+    "band_r": 4.0
+  },
+  "output": "/Users/dhiester/Projects/Personal/postretro/target/planar-water-sweep-down/down-r-30-run2.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/target/planar-water-sweep-down/down-r-30-run2.json",
+    "warmup_frames": 60,
+    "sample_frames": 120
+  }
+}

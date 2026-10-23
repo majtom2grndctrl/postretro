@@ -118,6 +118,10 @@ impl PreparedCapture {
         }
         // Before the fluid install sizes a reflection target from the tier.
         apply_scene_reflection(&mut renderer, scene);
+        if let Some(planar) = scene.planar_reflection {
+            renderer.set_planar_reflection_settings(planar.settings());
+            log::info!("[Capture] Planar settings: {:?}", planar.settings());
+        }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);

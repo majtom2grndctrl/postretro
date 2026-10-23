@@ -4,6 +4,7 @@
 mod cpu_windows;
 mod driver;
 mod lightmap;
+mod planar;
 mod prepared;
 mod report;
 mod scene;

@@ -1,8 +1,22 @@
 # lightmap-penumbra-floor — plan of record
 
 mode: compact
-status: active
+status: blocked
 read at: 52d726196 (no `crates/`, `docs/` or `sdk/` change since the brief's a0a2c0239)
+
+## Block (AC 25 wall-time gate)
+
+Cold `--no-cache` bakes, dev profile, default 5 workers, Windows 1660 Super machine (SATA SSD + Defender), one bake at a time. Baseline `prl-build` built from c587d8e74 (pre-change); floored from f0ed5c08c. Detector not yet wired, so its share is unmeasured.
+
+| Map | Lightmap Bake base → floor | Ratio | Total compile base → floor |
+|---|---|---|---|
+| `shadowmask-groups-capture` (hard lights) | 0.93 s → 3.40 s | 3.66× | 2.27 s → 4.38 s |
+| `stress-warren-hallway-inspection-mini` | 178.9 s → 555.9 s | 3.11× | 448 s → 823 s (1.84×) |
+
+The cheap path now traces nine footprint probes plus eight clip segments per (light, texel), against four shadow rays (soft) or one (hard) before. Levers for the owner:
+- A. Pure optimisation, no contract change: clip results depend only on the texel, so compute them once per chart and share across lights, and skip clip segments for texels with no non-coplanar geometry within one pitch. Removes most of the eight clip segments; light rays stay at nine.
+- B. Five probes (centre plus quarter-turn ring at radius ≥ 0.72): light rays 4 → 5 (soft), 1 → 5 (hard). Keeps P3's centre-blocked clause and P16, but the model shows lit gaps on 0.3–0.45-texel lines (0.1–4% of centreline points), so AC 5's "no lit gaps" would need restating.
+- C. Accept the cost: raise the gate.
 
 ## Corrections
 
@@ -50,7 +64,7 @@ read at: 52d726196 (no `crates/`, `docs/` or `sdk/` change since the brief's a0a
 | 22 default floored; `--help` lists switch; not in `docs/` | CLI test + grep | achievable as stated |
 | 23 sub-texel warning gone; no "0 = hard" text | grep gate | achievable as stated |
 | 24 nothing under `crates/level-format/` or `crates/renderer/src/shaders/` | diff gate | achievable as stated |
-| 25 lightmap stage cold wall time ≤ 1.5×, detector ≤ 5% | timed bakes, hallway-mini + groups-capture | measured, stops for owner |
+| 25 lightmap stage cold wall time ≤ 1.5×, detector ≤ 5% | timed bakes, hallway-mini + groups-capture | **tripped: 3.11× and 3.66× (see Block)** |
 | 26 capture 2560×1440, floor off vs on, vs `_lightmap_density 0.01` | owner, in-engine | manual |
 | 27 shadowmask specular, no step / no banding rise | owner, in-engine | manual |
 | 28 hallway-mini full compile logs no texel-step warnings | compile + log grep (executor runs it) | achievable as stated |
@@ -59,7 +73,7 @@ read at: 52d726196 (no `crates/`, `docs/` or `sdk/` change since the brief's a0a
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Footprint module (layout, nine-probe early-out, clip test), wired into the static layer bake behind `LightmapConfig` switch; pure detector over a per-light grid; AC 1–8, 10 tests; early wall-time read on groups-capture and hallway-mini | delegated (Opus), integrator reviews | — | code done: `texel_footprint` (+ `tests.rs`, `test_fixtures.rs`), `texel_step_detector`; AC 1–8, 10 and switch-off pass (`cargo test --bin prl-build`: 1787 passed); wall-time read pending |
+| 1 | Footprint module (layout, nine-probe early-out, clip test), wired into the static layer bake behind `LightmapConfig` switch; pure detector over a per-light grid; AC 1–8, 10 tests; early wall-time read on groups-capture and hallway-mini | delegated (Opus), integrator reviews | — | code done: `texel_footprint` (+ `tests.rs`, `test_fixtures.rs`), `texel_step_detector`; AC 1–8, 10 and switch-off pass (`cargo test --bin prl-build`: 1787 passed); wall-time read: over gate (Block) |
 | 2 | Cache and keys: `LAYER_FORMAT_VERSION` bump, switch into `light_prefix` and CLI, footprint padding (P10), reference bake parity (P7), determinism (P9), scale region (P14), face cuts + estimate (P5) | delegated | 1 | |
 | 3 | Detector in the production lightmap stage: report to caller, store/replay with `lightmap_section`, shadowmask path, key folds threshold; delete `warn_sub_texel_penumbra_lights` (P1, P2, P8, P11, P12, P15, P17) | delegated | 2 | |
 | 4 | Animated weight maps: footprint in the weight-map bake, grid + detector, warnings in the `animated_lm_weight_maps` entry, stage version bump; AC 12 | delegated | 2 | |

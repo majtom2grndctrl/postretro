@@ -4,9 +4,8 @@
 use super::*;
 
 impl Renderer {
-    /// The UI-owned mask. Changes are captured by the next
+    /// The pending diagnostic mask. Changes are captured by the next
     /// `update_per_frame_uniforms` call, never consumed mid-frame.
-    #[cfg(feature = "dev-tools")]
     pub fn light_term_mask(&self) -> LightTermMask {
         self.full().light_term_mask
     }

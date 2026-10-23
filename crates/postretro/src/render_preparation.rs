@@ -7,6 +7,9 @@ use postretro_visibility::{
     CameraCullVisibility, VisibilityPath, VisibilityStats, VisibleCells, determine_visible_cells,
 };
 
+mod planar;
+pub(crate) use planar::PlanarRenderPreparation;
+
 /// Plain render inputs derived from one visibility walk. The app and static
 /// capture share this seam so a future SH-storage choice reaches the renderer
 /// after visibility has been determined, without changing the frame order.
@@ -75,6 +78,17 @@ impl VisibleRenderPreparation {
         CameraCullVisibility {
             cells: &self.visible_cells,
             path: self.stats.path,
+        }
+    }
+
+    pub(crate) fn include_mirror_lighting(
+        &mut self,
+        world: &LevelWorld,
+        mirror: &PlanarRenderPreparation,
+    ) {
+        if mirror.camera().is_some() {
+            (self.light_reachable_cell_mask, self.reachable_cell_aabbs) =
+                light_reachability_inputs(world, mirror.fog_cells(&self.fog_reachable));
         }
     }
 }

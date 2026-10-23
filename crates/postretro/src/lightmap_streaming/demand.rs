@@ -113,6 +113,7 @@ pub(crate) struct BlockDemand {
     /// Whether the latest drawn set is `held` (a non-portal frame) rather
     /// than `drawn`.
     drawn_set_is_held: bool,
+    fallback_reads_baked: bool,
     /// Blocks whose demand may have changed since the controller last looked.
     dirty: Vec<u32>,
     /// Camera cell and lead the baked part was computed for.
@@ -143,6 +144,7 @@ impl BlockDemand {
             held: Vec::new(),
             held_scratch: Vec::new(),
             drawn_set_is_held: false,
+            fallback_reads_baked: true,
             dirty: Vec::new(),
             key: None,
             epoch: 0,
@@ -160,15 +162,15 @@ impl BlockDemand {
     /// A non-portal frame demands only the camera cell's baked set. Its drawn
     /// blocks are held instead: the controller raises a held block to at
     /// least visible while its pair is resident or on its way, so the
-    /// renderer never frees a block the frame draws, and never reads one for
-    /// it.
+    /// renderer never frees a block the frame draws. Explicit alternate views
+    /// add requested blocks on every path.
     ///
     /// A change of L takes effect once the camera is in a cell with a baked
     /// set; a solid or exterior cell keeps the previous split.
     pub(crate) fn update(&mut self, map: &LevelBlockMap, frame: DemandFrame<'_>) -> bool {
         let camera_cell = frame.camera_cell;
         let lead = frame.lead;
-        match frame.path_demand() {
+        let may_request = match frame.path_demand() {
             PathDemand::Hold => false,
             PathDemand::CameraSetOrHold => {
                 if self.key != Some((camera_cell, lead)) {
@@ -177,6 +179,12 @@ impl BlockDemand {
                         // Current demand stands. Holds follow what this frame
                         // draws, and its visible misses are counted.
                         self.mark_held(map, frame.visible_cells);
+                        if let Some(cells) = frame.additional_cells {
+                            self.mark_drawn(map, cells);
+                            self.drawn_set_is_held = true;
+                            self.fallback_reads_baked = false;
+                            return true;
+                        }
                         return false;
                     }
                     self.recompute(map, camera_cell, lead, entries);
@@ -197,7 +205,18 @@ impl BlockDemand {
                 self.mark_drawn(map, frame.visible_cells);
                 true
             }
+        };
+        self.fallback_reads_baked = may_request;
+        if !frame.is_portal_walk()
+            && let Some(cells) = frame.additional_cells
+        {
+            self.mark_drawn(map, cells);
+            // Holds include the union of all drawn views, so miss accounting
+            // still covers the main fallback while only the mirror adds reads.
+            self.drawn_set_is_held = true;
+            return true;
         }
+        may_request
     }
 
     /// The camera cell's baked set, plus every drawn cell's blocks as visible
@@ -221,6 +240,7 @@ impl BlockDemand {
         residency_set: &CellResidencySetSection,
         camera_cell: u32,
     ) {
+        self.fallback_reads_baked = true;
         self.recompute_if_changed(map, residency_set, camera_cell, lead);
         self.clear_drawn();
         self.clear_held();
@@ -303,9 +323,11 @@ impl BlockDemand {
     }
 
     /// Whether the camera cell's baked set (lead L, the band) or the pins
-    /// name `block`: all a non-portal frame may read.
-    pub(crate) fn in_camera_set(&self, map: &LevelBlockMap, block: u32) -> bool {
-        map.facts(block).pinned || self.slots[block as usize].baked != Baked::None
+    /// name `block`, or an alternate view explicitly draws it.
+    pub(crate) fn may_read_on_fallback(&self, map: &LevelBlockMap, block: u32) -> bool {
+        self.slots[block as usize].drawn
+            || (self.fallback_reads_baked
+                && (map.facts(block).pinned || self.slots[block as usize].baked != Baked::None))
     }
 
     pub(crate) fn counters(&self) -> DemandCounters {

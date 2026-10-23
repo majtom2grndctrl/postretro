@@ -1,0 +1,57 @@
+[2026-10-23T04:20:57Z INFO  postretro] [Engine] Postretro starting
+[2026-10-23T04:20:57Z WARN  postretro_level_loader::prl_loader] [Material] Unknown prefix 'debug' in texture 'DebugTextures/debug_ceiling_grey' — using default material
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] Geometry: 1844 vertices, 2766 indices, 461 faces, 12 textures referenced
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] BVH: 921 nodes, 461 leaves, root=0
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] Cells: 215 cells, 930 portal refs loaded
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] CellVisibility: 215 cells, 2645 coupled pair(s)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] CellResidencySet: 215 camera cells, 16378 entries, max lead 32768
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] CellLocator: 214 node(s) loaded
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] AlphaLights: 4 lights loaded
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] LightInfluence: 4 records loaded
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] Resolved 0 map-light → animated-slot mapping(s)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::lightmap_stream::storage] [PRL] Lightmap residency: stream, 144 cell block(s) (residency set, usable portals and cell blocks present)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::lightmap_stream::load] [PRL] Lightmap: 144 cell block(s), index only (5204 B read)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::lightmap_stream::load] [PRL] ShadowmaskAtlas: 144 cell block(s), 461 face owner entr(y/ies), index only (7732 B read)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] SdfAtlas section missing — runtime SDF shadow pass disabled (legacy PRL or no SDF bake)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] ChunkLightList: 14×9×14 grid, 641 indices
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] EntityShadowLights: 2 selected static light(s)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] MapEntity: 1 entities
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] KinematicGeometry: 0 movers, 0 waypoints, 0 vertices, 0 indices
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] TriggerVolumes: 0 trigger(s): 0 touch, 0 use; commands: 0 start, 0 stop, 0 reverse, 0 go_to_path_node
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_environment] [PRL] EnvironmentVolumes: 1 volume(s), 1 brush(es), level_gravity=-20.32
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_environment] [PRL] ReflectionProbes: 1 probe(s), 128² tiles, 33 bound face(s)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] FogVolumes: 0 volumes, pixel_scale=0
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] NavMesh: 391×391 grid, cell_size=0.2500m, 167 region(s), 208 portal(s)
+[2026-10-23T04:20:57Z INFO  postretro_level_loader::prl_loader] [PRL] CellDrawIndex: 215 cells, 374 spans (candidate-cull index loaded)
+[2026-10-23T04:20:58Z INFO  postretro_level_loader::prl_loader] [PRL] Loaded: 1844 vertices, 2766 indices (922 triangles), 461 faces, 215 cells, bvh=[921 nodes, 461 leaves], portals=465, textures=12
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_init] [Renderer] wgpu backend selection: Backends(VULKAN | METAL | DX12 | BROWSER_WEBGPU)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (build default)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_init] [Renderer] GPU adapter: AMD Radeon Pro 5300M (backend=Metal, type=DiscreteGpu, vendor=0x0000, device=0x0000, driver= )
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_init] [Renderer] Indirect execution supported (multi_draw_indexed_indirect)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_init] [Renderer] Cube-array textures supported (dynamic point shadows enabled)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_init_resources] [Renderer] ChunkLightList absent — SDF selection scans the full spec buffer; billboard static specular is off
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::sh_volume] [Renderer] SH base atlas physical allocation: Rgba16Float 1x1 texels, 1 layer(s) (8 B); serialized compact payload: 0 B; 0/0 valid probes
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::sdf_atlas] [SdfAtlas] no atlas — shadow pass disabled (section absent or empty-geometry bake)
+[2026-10-23T04:20:58Z INFO  postretro_render_cpu::sh_compose] [Renderer] SH compose @group(1) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (12 B), affinity_offsets 0.00 MiB (8 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (4 B) - total 0.00 MiB (32 B)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::sh_compose] [Renderer] SH compose: base grid 1×1×1, 0 animated delta light(s)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_full_init] [Renderer] Spot shadow pool initialized (96 × 1024×1024 Depth32Float = 384 MiB VRAM)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_full_init] [Renderer] Pipeline ready (no geometry loaded)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::fluid_surface] [Renderer] Reflection quality: Medium
+[2026-10-23T04:20:58Z INFO  postretro::capture::prepared] [Capture] Fluid reflections: Medium, Pixel style, target fraction Some(0.5), 48 steps, divisor 180, thickness 1 m
+[2026-10-23T04:20:58Z WARN  postretro::capture::setup] [Material] Unknown prefix 'debug' in texture 'DebugTextures/debug_ceiling_grey' — using default material
+[2026-10-23T04:20:58Z WARN  postretro::capture::setup] [Material] Unknown prefix 'water' in texture 'fluids/water_64' — using default material
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_models] [Renderer] Textures installed: 12
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_models] [Renderer] Texture install timing: total=116.5ms, read=9.7ms, parse=20.9ms, create_write=81.9ms, bind_groups=1.0ms, other=3.0ms (12 sidecar read(s), 48.4 MiB)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::sh_volume] [Renderer] SH base atlas physical allocation: Rgba16Float 1x1 texels, 1 layer(s) (8 B); serialized compact payload: 0 B; 0/0 valid probes
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::sh_streaming::gpu::setup] [Renderer] streamed SH initial dense pool: bytes=202728960 tiles_per_layer=175980 layers=1 slots=175980
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::sdf_atlas] [SdfAtlas] no atlas — shadow pass disabled (section absent or empty-geometry bake)
+[2026-10-23T04:20:58Z INFO  postretro_render_cpu::sh_compose] [Renderer] SH compose @group(1) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (12 B), affinity_offsets 0.00 MiB (8 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (4 B) - total 0.00 MiB (32 B)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::sh_compose] [Renderer] SH compose: base grid 1×1×1, 0 animated delta light(s)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::lighting::lightmap::stream] [Renderer] Lightmap pool (streamed): 144 cell block(s), first generation 15 layer(s) of 2048² plus a spare, shadowmask resident
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_resources] [Renderer] Lightmap residency: static_irradiance 67108864 B, static_direction 33554432 B, shadowmask 134217728 B, animated_irradiance 8 B, animated_direction 4 B; total 234881036 B (224.00 MiB)
+[2026-10-23T04:20:58Z INFO  postretro_renderer::compute_cull] [Renderer] BVH cull pipeline ready: 921 nodes, 461 leaves, 11 buckets, multi_draw=true
+[2026-10-23T04:20:58Z INFO  postretro_renderer::candidate_cull] [Renderer] Candidate cull pipeline ready: total_leaves=461
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::geometry_install_marks] [Renderer] Geometry install timing: has_geometry=true, total=107.3ms, buffers_and_sh_streaming=99.0ms, sdf_atlas_and_compose=5.5ms, lightmap_and_sdf_shadow=0.7ms, bvh_and_cull=2.0ms, other=0.2ms
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::renderer_resources] [Renderer] Geometry installed: 2766 indices, bvh_leaves=461
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::fluid_reflection_probes] [Renderer] Fluid reflection probes installed: 1 probes, BC6H 128² tiles (16384 B), R16Float distance tiles (32768 B), 33 bound faces, share table 61456 B
+[2026-10-23T04:20:58Z INFO  postretro_renderer::render::fluid_surface] [Renderer] Fluid surfaces installed: 1 volumes, 26938 triangles, 14932 vertices on a [0.500, 0.500, 0.500] m grid

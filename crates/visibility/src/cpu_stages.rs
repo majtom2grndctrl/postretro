@@ -8,14 +8,16 @@ use crate::portal_vis::PortalTraversalStats;
 /// Stages visibility reports per frame. The binary places the roots under its
 /// own visibility stage.
 ///
-/// A walk frame (the portal path, including one that trips the step limit)
+/// A main-camera walk frame (including one that trips the step limit)
 /// records `portal_walk` and every counter, zeros included. A frame on any
 /// other path records only `portal_fallback`, so walk averages never mix in
-/// fallback frames.
+/// fallback frames. Mirror results record their flood under `mirror_walk`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisibilityStage {
     /// Time inside the portal flood only.
     PortalWalk,
+    /// Seeded water-reflection flood, separate from the main camera walk.
+    MirrorWalk,
     Considered,
     Accepted,
     RejectedBlocked,
@@ -35,6 +37,7 @@ pub enum VisibilityStage {
 impl StageSet for VisibilityStage {
     const ALL: &'static [Self] = &[
         Self::PortalWalk,
+        Self::MirrorWalk,
         Self::Considered,
         Self::Accepted,
         Self::RejectedBlocked,
@@ -55,6 +58,7 @@ impl StageSet for VisibilityStage {
     fn label(self) -> &'static str {
         match self {
             Self::PortalWalk => "portal_walk",
+            Self::MirrorWalk => "mirror_walk",
             Self::Considered => "walk_considered",
             Self::Accepted => "walk_accepted",
             Self::RejectedBlocked => "walk_rejected_blocked",
@@ -71,14 +75,14 @@ impl StageSet for VisibilityStage {
 
     fn parent(self) -> Option<Self> {
         match self {
-            Self::PortalWalk | Self::StepLimit | Self::PortalFallback => None,
+            Self::PortalWalk | Self::MirrorWalk | Self::StepLimit | Self::PortalFallback => None,
             _ => Some(Self::PortalWalk),
         }
     }
 
     fn kind(self) -> StageKind {
         match self {
-            Self::PortalWalk => StageKind::Time,
+            Self::PortalWalk | Self::MirrorWalk => StageKind::Time,
             Self::StepLimit | Self::PortalFallback => StageKind::Marker,
             _ => StageKind::Count,
         }

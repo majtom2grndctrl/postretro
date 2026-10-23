@@ -1,0 +1,38 @@
+{
+  "ssr-medium": [
+    {
+      "report": "repeat-1-ssr-medium.json",
+      "median_ms": 13.467429,
+      "p95_ms": 17.41338795
+    },
+    {
+      "report": "repeat-6-ssr-medium.json",
+      "median_ms": 14.51998,
+      "p95_ms": 17.745981599999997
+    }
+  ],
+  "ssr-high": [
+    {
+      "report": "repeat-2-ssr-high.json",
+      "median_ms": 15.372398500000001,
+      "p95_ms": 18.726201149999998
+    },
+    {
+      "report": "repeat-5-ssr-high.json",
+      "median_ms": 15.017298499999999,
+      "p95_ms": 18.48995335
+    }
+  ],
+  "planar": [
+    {
+      "report": "repeat-3-planar.json",
+      "median_ms": 16.8752685,
+      "p95_ms": 19.267233099999995
+    },
+    {
+      "report": "repeat-4-planar.json",
+      "median_ms": 16.9480735,
+      "p95_ms": 19.252983649999997
+    }
+  ]
+}

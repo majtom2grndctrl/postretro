@@ -423,6 +423,7 @@ mod tests {
                 &mut session.sh_streaming,
                 None,
                 StreamingFrame {
+                    additional_cells: None,
                     visible_cells: &visible,
                     camera_cell: Some(0),
                     path: VisibilityPath::PrlPortal { walk_reach: 0 },

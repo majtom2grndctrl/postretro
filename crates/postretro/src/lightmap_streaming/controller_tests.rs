@@ -263,6 +263,57 @@ fn no_portals_path_demands_only_the_camera_cells_baked_set() {
     camera_set_only(VisibilityPath::NoPortalsFallback);
 }
 
+#[test]
+fn planar_mirror_cells_request_lightmaps_on_main_visibility_fallbacks() {
+    for (camera, path) in [
+        (0, VisibilityPath::NoPortalsFallback),
+        (
+            0,
+            VisibilityPath::PortalStepLimitFallback {
+                considered: 10,
+                accepted: 3,
+            },
+        ),
+        (7, VisibilityPath::SolidCellFallback),
+    ] {
+        let mut rig = Rig::corridor(None);
+        if camera == 7 {
+            let prior = VisibleCells::Culled(Vec::new());
+            rig.controller
+                .update(rig.stage.frame(&rig.set, 0, PORTAL, &prior));
+        }
+        let all_views = VisibleCells::Culled(vec![0, 5, 6]);
+        let mirror = VisibleCells::Culled(vec![5]);
+        let mut frame = rig.stage.frame(&rig.set, camera, path, &all_views);
+        frame.additional_cells = Some(&mirror);
+        rig.controller.update(frame);
+        rig.controller
+            .take_requests(&mut |request| {
+                rig.requests.push(request);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(rig.controller.target(5), visible(5), "{path:?}");
+        assert_eq!(
+            rig.controller.target(6),
+            None,
+            "main fallback alone adds no demand"
+        );
+        assert!(
+            rig.requested_blocks().contains(&5),
+            "mirror block must be read on {path:?}"
+        );
+        assert!(!rig.requested_blocks().contains(&6));
+        if camera == 7 {
+            assert_eq!(
+                rig.requested_blocks(),
+                vec![5],
+                "a held main view adds no old baked reads"
+            );
+        }
+    }
+}
+
 /// A solid or exterior camera cell with no baked entries keeps current
 /// demand and requests nothing new, even with requestable work pending.
 fn empty_camera_cell_holds(path: VisibilityPath) {

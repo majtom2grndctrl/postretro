@@ -28,7 +28,7 @@ impl LightmapResidencyController {
     /// allow, in request order: visible, pinned, mandatory by lead (nearest
     /// first), then band (priority, then lead). A frame whose path holds
     /// demand submits no new read, and a non-portal frame reads only the
-    /// camera cell's baked set and the pins.
+    /// camera cell's baked set, the pins, and explicit alternate-view cells.
     ///
     /// Band reads stop at their half of the permits and bytes, and at the
     /// pool's band headroom from the last outcome less the slots of every
@@ -56,7 +56,7 @@ impl LightmapResidencyController {
                 continue;
             };
             if slot.phase != BlockPhase::Absent
-                || (self.camera_set_only && !self.demand.in_camera_set(&self.map, block))
+                || (self.camera_set_only && !self.demand.may_read_on_fallback(&self.map, block))
             {
                 continue;
             }

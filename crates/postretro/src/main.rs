@@ -951,6 +951,7 @@ pub(crate) struct App {
     kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
     /// Render-stage CPU collector for the level's visible fluid surfaces.
     fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector,
+    planar_render: render_preparation::PlanarRenderPreparation,
     /// The camera eye's fluid presentation: view tint and world muffle.
     fluid_eye: fluid_presentation::FluidEye,
     /// Per-level trigger event bindings resolved from the final composed

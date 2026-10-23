@@ -187,6 +187,20 @@ impl FluidSceneInputs {
         &self.layout
     }
 
+    pub fn with_reflection_target(
+        &self,
+        device: &wgpu::Device,
+        target: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        create_bind_group(
+            device,
+            &self.layout,
+            &self.scene_depth,
+            &self.uniform_buffer,
+            target,
+        )
+    }
+
     pub fn bind_group(&self) -> &wgpu::BindGroup {
         &self.bind_group
     }

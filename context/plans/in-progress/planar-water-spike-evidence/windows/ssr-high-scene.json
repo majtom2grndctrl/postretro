@@ -1,0 +1,23 @@
+{
+  "map": "content/dev/maps/reflection-lake-test.prl",
+  "camera": {
+    "position": [
+      -16.8656,
+      1.7,
+      -48.768
+    ],
+    "yaw_deg": 90.0,
+    "pitch_deg": -10.0
+  },
+  "resolution": [
+    960,
+    540
+  ],
+  "output": "target/planar-water-measurements/ssr-high.png",
+  "reflection_quality": "high",
+  "measurement": {
+    "report": "target/planar-water-measurements/ssr-high.json",
+    "warmup_frames": 120,
+    "sample_frames": 240
+  }
+}

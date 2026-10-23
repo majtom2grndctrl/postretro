@@ -1,0 +1,48 @@
+# Windows measurement handoff
+
+Branch: `claude/planar-water-spike`. Read `context/lib/index.md`, the spike contract and findings first. Implementation and Mac evidence are included on this branch. No shipping decision yet.
+
+## What to establish
+
+1. Run the renderer planar GPU tests and existing fluid pins with actual adapter execution, then the Windows FXC full-init pipeline test. A skipped adapter or zero matching tests is not proof.
+2. Measure planar versus SSR High and Medium on GTX 1660 Super. Record GPU spans `planar_reflection`, `planar_forward`, `fluid_reflection`, whole-frame time and CPU `mirror_walk` / `render_submit`. Confirm planar records no SSR and logs no mirror SolidCellFallback or validation error.
+3. Sweep planar scale ¼, ½, 1; D and R unlimited, 30, 15, 8 m, starting with independent one-variable sweeps. Settings are live dev-panel controls, not player options. Keep resolution/pose/validation/profile fixed and alternate comparison order.
+4. Test across-water and downward poses on lake, e24 and reflection-probes-test. Include mirror-only cells, movers/skinned meshes, grazing precision, seams and fade visibility. Record mask coverage and draw count where available; report missing instrumentation explicitly.
+
+Mac answer so far: reflection GPU work is cheaper than High but costlier than Medium at one lake pose, while synchronized completion is slower. The central unanswered question is whether D/R/scale produce an acceptable image and a whole-frame win on target hardware. Capture does mirror preparation once for a static pose, so its CPU reports do not replace a live mirror-walk or submit measurement.
+
+## Build and smoke (PowerShell, workspace root)
+
+```powershell
+git fetch origin
+git switch claude/planar-water-spike
+git pull --ff-only
+cargo test -p postretro-render-cpu planar_reflection
+cargo test -p postretro-visibility mirror
+cargo test -p postretro-renderer --features dev-tools planar
+cargo test -p postretro-renderer --features dev-tools fluid_
+cargo test -p postretro-renderer dx12_fxc_compiles_every_full_init_pipeline
+cargo test -p postretro --features dev-tools,capture planar
+cargo run -p postretro-level-compiler -- content/dev/maps/reflection-lake-test.map -o content/dev/maps/reflection-lake-test.prl --no-tui
+cargo build -p postretro --features dev-tools,capture
+New-Item -ItemType Directory -Force target/planar-water-measurements
+$env:RUST_LOG = 'info'
+$env:POSTRETRO_GPU_TIMING = '1'
+$env:POSTRETRO_CPU_TIMING = '1'
+$env:POSTRETRO_SH_STREAMING = 'sync-proof'
+$env:POSTRETRO_PLANAR_REFLECTION = '1'
+& ./target/debug/postretro.exe --capture context/plans/in-progress/planar-water-spike-evidence/windows/planar-scene.json
+$env:POSTRETRO_PLANAR_REFLECTION = '0'
+& ./target/debug/postretro.exe --capture context/plans/in-progress/planar-water-spike-evidence/windows/ssr-high-scene.json
+& ./target/debug/postretro.exe --capture context/plans/in-progress/planar-water-spike-evidence/windows/ssr-medium-scene.json
+```
+
+Capture scenes have portable repository-relative paths, 960×540, 120 warmup and 240 sample frames. They establish the default half-scale/unlimited-D/R baseline. D/R/scale are not capture JSON fields; use the dev panel for the full sweep or add an explicitly reviewed measurement-only control. Confirm the log selects the intended plane before accepting any result.
+
+For live profiling, build the required authoring helpers first per AGENTS.md, then use the contract's authoring launch with dev-tools. Remove `POSTRETRO_SH_STREAMING=sync-proof` for ordinary streaming/live performance and label that difference. Do not compare capture wait-after-submit timing to live frame pacing. Close the engine/launcher after each run; no bakes or builds alongside measurements.
+
+## Provenance and records
+
+The committed lake source includes the local TrenchBroom edits used for later profiling (raised ceiling and additional light/geometry). Early short lake captures predate that fixture change; do not compare their times directly to later traces. The Mac compiled PRL hash is in `metal-2026-10-22/manifest.json`; record the Windows bake hash and compiler settings rather than claiming byte equality across platforms.
+
+All small evidence, summaries, images and logs are versioned. Raw Mac Instruments bundles/XML stay local under `target/planar-spike-measurements/`; they are not required to run Windows measurements. Store new reports/scenes and findings in the evidence directory, with adapter/driver, commit, map hash, profile, validation state, pose, resolution, settings and repetition order. Add findings to the existing note; keep `context/lib/` unchanged until the owner decides to ship.

@@ -85,6 +85,7 @@ pub(super) fn preload_capture_lightmap(
     world: &LevelWorld,
     renderer: &mut Renderer,
     visible_render: &VisibleRenderPreparation,
+    all_view_cells: &postretro_visibility::VisibleCells,
     scene: &CaptureScene,
     hints: Option<&ClusterHints>,
 ) -> Result<CaptureLightmapResidency> {
@@ -123,7 +124,7 @@ pub(super) fn preload_capture_lightmap(
             view.residency_set,
             visible_render.stats.camera_cell,
             visible_render.stats.path,
-            &visible_render.visible_cells,
+            all_view_cells,
         ),
     );
     let summary = session

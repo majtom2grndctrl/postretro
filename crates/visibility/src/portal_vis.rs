@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use glam::Vec3;
 
-use crate::visibility::{Frustum, FrustumPlane};
+use crate::visibility::{Frustum, FrustumPlane, is_aabb_outside_frustum};
 use postretro_level_loader::LevelWorld;
 use postretro_stage_timing::TimingGate;
 
@@ -130,6 +130,64 @@ pub(crate) fn portal_traverse_with_step_limit(
         log::info!(target: "postretro::portal_trace", "[portal_trace]\n{}", buf);
     }
     visible
+}
+
+/// Mirror entry point. Seeds share one budget and never resolve the apex cell.
+/// The caller supplies the water near plane and retained distance far plane.
+pub(crate) fn portal_traverse_seeded(
+    camera_position: Vec3,
+    seeds: &[u32],
+    frustum: &Frustum,
+    world: &LevelWorld,
+    blocked_portals: &[bool],
+    step_limit: u32,
+    timing: TimingGate,
+) -> PortalTraversalResult {
+    let mut state = DfsState {
+        world,
+        blocked_portals,
+        camera_position,
+        trace: None,
+        visible: vec![false; world.cell_count()],
+        cell_count: world.cell_count(),
+        stats: PortalTraversalStats::default(),
+        step_limit,
+        depth_limit_warned: false,
+        camera_cell: seeds.first().copied().unwrap_or(0) as usize,
+    };
+    let mut path = Vec::new();
+    let mut clip_a = Vec::new();
+    let mut clip_b = Vec::new();
+    let start = timing.is_enabled().then(std::time::Instant::now);
+    for &seed in seeds {
+        let seed = seed as usize;
+        let Some(cell) = world.cells.get(seed) else {
+            continue;
+        };
+        if cell.is_solid
+            || cell.is_exterior
+            || is_aabb_outside_frustum(cell.bounds_min, cell.bounds_max, frustum)
+        {
+            continue;
+        }
+        flood(
+            &mut state,
+            seed,
+            frustum,
+            &mut path,
+            &mut clip_a,
+            &mut clip_b,
+        );
+        if state.stats.step_limit_hit {
+            break;
+        }
+    }
+    state.stats.walk_nanos =
+        start.map(|start| u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX));
+    PortalTraversalResult {
+        visible: state.visible,
+        stats: state.stats,
+    }
 }
 
 // Split from `portal_traverse` so tests can inspect the formatted trace string

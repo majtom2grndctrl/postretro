@@ -660,12 +660,20 @@ impl Renderer {
             // frame; all upload here lazily, only when changed, before the
             // reflection pass, so both passes draw this frame's style; the
             // batched write copies ahead of this frame's submission.
+            self.prepare_planar_reflection_targets();
             {
                 let Self { queue, full, .. } = self;
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
                 full.fluid_surface.upload_scene_inputs(queue);
+            }
+            if self
+                .full()
+                .fluid_surface
+                .has_planar_reflecting_draws(frame_light_term_mask)
+            {
+                self.record_planar_reflection_pass(encoder, world_mesh_frame_plan);
             }
             // The screen-space reflection layer, resolved into its own target
             // before the fluid pass samples it: the frame's reflecting draws,
@@ -1050,6 +1058,7 @@ impl Renderer {
             if let Some(candidate) = full.candidate_cull.as_mut() {
                 candidate.post_submit(device);
             }
+            full.planar_reflection.post_submit(device);
         }
     }
 }

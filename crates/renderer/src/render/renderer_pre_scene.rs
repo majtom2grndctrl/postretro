@@ -554,7 +554,7 @@ impl Renderer {
                 queue,
                 encoder,
                 &full.uniform_bind_group,
-                visible,
+                full.planar_reflection.compose_visible_cells(visible),
                 animated_ts,
             );
         }

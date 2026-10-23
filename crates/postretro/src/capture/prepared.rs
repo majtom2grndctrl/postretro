@@ -13,7 +13,7 @@ use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor,
     LightmapResidencyReport, Renderer, ShResidencyReport, ShSampleRegion,
 };
-use crate::render_preparation::VisibleRenderPreparation;
+use crate::render_preparation::{PlanarRenderPreparation, VisibleRenderPreparation};
 use crate::runtime_movers::{
     ENGINE_AUTO_CLOSE_MS, KinematicMoverRenderCollector, spawn_loaded_kinematic_movers,
 };
@@ -35,7 +35,7 @@ use super::lightmap::{
 };
 use super::scene::CaptureScene;
 use super::setup::{
-    capture_level_geometry, capture_static_lights_and_shadow_selection, capture_view_projection,
+    capture_camera, capture_level_geometry, capture_static_lights_and_shadow_selection,
     derive_texture_materials, install_capture_animated_promotion_bridge,
     install_forced_active_animation_descriptors,
     resolve_forced_animated_promotion_rows_from_metadata,
@@ -79,6 +79,7 @@ pub(super) struct PreparedCapture {
     renderer: Renderer,
     sh_streaming: Option<ShStreamingSession>,
     visible_render: VisibleRenderPreparation,
+    planar_render: PlanarRenderPreparation,
     view_proj: Mat4,
     eye: Vec3,
     forced_promotion_weights: Vec<(usize, f32)>,
@@ -168,10 +169,11 @@ impl PreparedCapture {
             scene.force_promotion.as_deref(),
         )?;
 
-        let eye = Vec3::from_array(scene.camera.position);
-        let view_proj = capture_view_projection(&scene.camera, width, height);
+        let camera = capture_camera(&scene.camera, width, height);
+        let eye = camera.eye_position;
+        let view_proj = camera.view_projection;
         let mut scratch = Vec::new();
-        let visible_render = VisibleRenderPreparation::for_level(
+        let mut visible_render = VisibleRenderPreparation::for_level(
             &world,
             eye,
             view_proj,
@@ -180,6 +182,42 @@ impl PreparedCapture {
             &mut scratch,
             postretro_visibility::TimingGate::OFF,
         );
+        let mut planar_render = PlanarRenderPreparation::default();
+        let reflecting_volumes = world
+            .environment_volumes
+            .volumes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, volume)| {
+                (!volume.fluid.is_empty()
+                    && postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face(
+                        world.reflection_probes.as_ref(),
+                        index,
+                    ))
+                .then_some(index as u32)
+            })
+            .collect::<Vec<_>>();
+        planar_render.install(&world, &reflecting_volumes);
+        let mut settings = renderer.planar_reflection_settings();
+        settings.on &= renderer.reflection_quality()
+            != postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality::Off
+            && renderer.light_term_mask() == crate::render::LightTermMask::ALL;
+        planar_render.prepare(
+            &world,
+            camera,
+            &visible_render,
+            settings,
+            &[],
+            postretro_visibility::TimingGate::OFF,
+        );
+        visible_render.include_mirror_lighting(&world, &planar_render);
+        // Capture's first frame updates uniforms internally. Install the mirror
+        // first, including during synchronous residency and compose warmup.
+        renderer.set_planar_reflection_view(
+            planar_render.camera(),
+            planar_render.plane(),
+            planar_render.visible(),
+        );
         // The level's id 49, decoded once for SH and lightmaps.
         let hints = decode_level_hints(world.cluster_directory())
             .context("[Capture] id-49 cluster hints")?;
@@ -187,6 +225,7 @@ impl PreparedCapture {
             &world,
             &mut renderer,
             &visible_render,
+            planar_render.collected_cells(&visible_render.visible_cells),
             scene,
             hints.as_deref(),
         )?;
@@ -230,7 +269,7 @@ impl PreparedCapture {
         collect_capture_receiver_draws(
             &registry,
             &world,
-            &visible_render.visible_cells,
+            planar_render.collected_cells(&visible_render.visible_cells),
             eye,
             &mut mover_collector,
             &mut mesh_collector,
@@ -268,6 +307,7 @@ impl PreparedCapture {
             renderer,
             sh_streaming,
             visible_render,
+            planar_render,
             view_proj,
             eye,
             forced_promotion_weights,
@@ -298,12 +338,18 @@ impl PreparedCapture {
                 set,
                 self.visible_render.stats.camera_cell,
                 self.visible_render.stats.path,
-                &self.visible_render.visible_cells,
+                self.planar_render
+                    .collected_cells(&self.visible_render.visible_cells),
             )
         });
         // Like Settling, the preload presents nothing: it counts no miss.
         streaming.suspend_visible_misses(true);
-        streaming.update_targets(&self.visible_render.visible_cells, reach, 0.0)?;
+        streaming.update_targets(
+            self.planar_render
+                .collected_cells(&self.visible_render.visible_cells),
+            reach,
+            0.0,
+        )?;
         for _ in 0..max_frames {
             if self
                 .sh_streaming
@@ -359,8 +405,12 @@ impl PreparedCapture {
             &self.visible_render.reachable_cell_aabbs,
             &self.visible_render.fog_reachable,
             postretro_renderer::ShSampleRegionSets {
-                visible_cells: &self.visible_render.visible_cells,
-                fog_cells: &self.visible_render.fog_reachable,
+                visible_cells: self
+                    .planar_render
+                    .collected_cells(&self.visible_render.visible_cells),
+                fog_cells: self
+                    .planar_render
+                    .fog_cells(&self.visible_render.fog_reachable),
                 movers: &self.mover_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),
@@ -418,8 +468,12 @@ impl PreparedCapture {
             &self.visible_render.reachable_cell_aabbs,
             &self.visible_render.fog_reachable,
             postretro_renderer::ShSampleRegionSets {
-                visible_cells: &self.visible_render.visible_cells,
-                fog_cells: &self.visible_render.fog_reachable,
+                visible_cells: self
+                    .planar_render
+                    .collected_cells(&self.visible_render.visible_cells),
+                fog_cells: self
+                    .planar_render
+                    .fog_cells(&self.visible_render.fog_reachable),
                 movers: &self.mover_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),

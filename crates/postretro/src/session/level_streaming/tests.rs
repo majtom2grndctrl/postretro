@@ -69,6 +69,7 @@ fn frame<'a>(
     cpu: &'a StageFrame<StreamingStage>,
 ) -> StreamingFrame<'a> {
     StreamingFrame {
+        additional_cells: None,
         visible_cells,
         camera_cell: Some(camera_cell),
         path: PORTAL,
@@ -84,6 +85,7 @@ fn settling_frame<'a>(
     cpu: &'a StageFrame<StreamingStage>,
 ) -> StreamingFrame<'a> {
     StreamingFrame {
+        additional_cells: None,
         settling: true,
         ..frame(visible_cells, camera_cell, cpu)
     }
@@ -202,6 +204,7 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
         lightmap
             .begin_drain(
                 DemandFrame {
+                    additional_cells: None,
                     lead: crate::streaming::cell_demand::DEFAULT_LEAD,
                     residency_set: &set,
                     camera_cell: 1,

@@ -434,6 +434,10 @@ impl ComputeCullPipeline {
         &self.leaf_buffer
     }
 
+    pub(crate) fn bucket_ranges(&self) -> &[BucketRange] {
+        &self.bucket_ranges
+    }
+
     pub(crate) fn total_leaves(&self) -> u32 {
         self.total_leaves
     }

@@ -209,13 +209,15 @@ pub(crate) struct FluidReflectionPass {
     /// The player's tier: whether a target may exist. Kept here, with its
     /// preset's fraction, so every target creation, the scene-target
     /// rebuild's included, sizes by the current tier.
-    quality: FluidReflectionQuality,
+    pub(super) quality: FluidReflectionQuality,
     /// The uniform as last written.
     uploaded: FluidReflectionUniform,
     /// 1×1, zero-initialised: c = 0 wherever group 5 binds it.
     _placeholder: wgpu::Texture,
     placeholder_view: wgpu::TextureView,
     target: Option<FluidReflectionTarget>,
+    pub(super) planar_on: bool,
+    pub(super) planar_override: Option<(wgpu::TextureView, (u32, u32))>,
     /// Target creations so far; tests read it.
     #[cfg(test)]
     target_builds: u32,
@@ -378,6 +380,8 @@ impl FluidReflectionPass {
             _placeholder: placeholder,
             placeholder_view,
             target: None,
+            planar_on: false,
+            planar_override: None,
             #[cfg(test)]
             target_builds: 0,
             #[cfg(test)]
@@ -454,8 +458,18 @@ impl FluidReflectionPass {
         }
     }
 
+    pub(super) fn placeholder_view(&self) -> &wgpu::TextureView {
+        &self.placeholder_view
+    }
+
     /// What group 5 binds: the target, or the placeholder without one.
     pub(super) fn bound_view(&self) -> &wgpu::TextureView {
+        if self.planar_on {
+            return self
+                .planar_override
+                .as_ref()
+                .map_or(&self.placeholder_view, |(view, _)| view);
+        }
         self.target
             .as_ref()
             .map_or(&self.placeholder_view, |target| &target.view)
@@ -463,6 +477,17 @@ impl FluidReflectionPass {
 
     /// The target's extent over the scene's per axis; 0 without a target.
     fn target_scale(&self) -> [f32; 2] {
+        if self.planar_on {
+            return self
+                .planar_override
+                .as_ref()
+                .map_or([0.0; 2], |(_, extent)| {
+                    [
+                        extent.0 as f32 / self.scene_extent.0.max(1) as f32,
+                        extent.1 as f32 / self.scene_extent.1.max(1) as f32,
+                    ]
+                });
+        }
         self.target.as_ref().map_or([0.0; 2], |target| {
             [
                 target.extent.0 as f32 / self.scene_extent.0.max(1) as f32,
@@ -553,6 +578,9 @@ impl FluidSurfacePass {
     /// `FLUID_REFLECTION_NO_PROBE`, so the gate shuts, and the placeholder
     /// reads c = 0.
     pub(super) fn wanted_reflection_target(&self) -> Option<(u32, u32)> {
+        if self.reflection.planar_on {
+            return None;
+        }
         let probe_bound = self
             .installed
             .as_ref()
@@ -631,7 +659,7 @@ impl FluidSurfacePass {
 
     /// Rebuild group 5 over the scene depth it holds and the current target
     /// or placeholder, with the matching scale.
-    fn rebind_reflection_target(&mut self, device: &wgpu::Device) {
+    pub(super) fn rebind_reflection_target(&mut self, device: &wgpu::Device) {
         let scene_depth = self.scene_inputs.bound_scene_depth().clone();
         self.scene_inputs
             .rebuild(device, &scene_depth, self.reflection.bound_view());
@@ -852,6 +880,9 @@ impl Renderer {
     ) {
         let full = self.full();
         let fluid = &full.fluid_surface;
+        if fluid.reflection.planar_on {
+            return;
+        }
         let Some((target, depth)) = fluid.reflection_attachments() else {
             return;
         };

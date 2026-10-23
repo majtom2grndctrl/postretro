@@ -156,6 +156,7 @@ impl Renderer {
             .expect("renderer full-init must complete before full-ready paths run");
         let mut install_marks = super::geometry_install_marks::GeometryInstallMarks::start();
 
+        full.planar_reflection.clear_level();
         // Drop the prior generation at the level boundary. Construction waits
         // until the fresh shared SH resources below exist, because streamed
         // group-3 bind groups retain those always-resident animation and

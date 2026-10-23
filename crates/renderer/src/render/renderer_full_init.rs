@@ -510,6 +510,8 @@ pub(crate) fn build_full_renderer(
     // layouts; their scene inputs (group 5) and the reflection pass's
     // pipeline and inputs are built here over the scene depth and colour,
     // level or not. See: context/lib/rendering_pipeline.md §7.3a, §10
+    let planar_reflection =
+        planar_reflection::PlanarReflectionPass::new(device, &uniform_bind_group_layout);
     let fluid_surface = fluid_surface::FluidSurfacePass::new(
         device,
         DEPTH_FORMAT,
@@ -674,6 +676,7 @@ pub(crate) fn build_full_renderer(
         cube_shadow_pool,
         kinematic_brush,
         fluid_surface,
+        planar_reflection,
         rigid_occluder_depth,
         promoted_static_states: vec![
             PromotedBakedLightState::default();

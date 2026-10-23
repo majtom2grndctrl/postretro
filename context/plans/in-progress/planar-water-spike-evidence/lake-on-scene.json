@@ -1,0 +1,23 @@
+{
+  "map": "content/dev/maps/reflection-lake-test.prl",
+  "camera": {
+    "position": [
+      -16.8656,
+      1.7,
+      -48.768
+    ],
+    "yaw_deg": 90.0,
+    "pitch_deg": -10.0
+  },
+  "resolution": [
+    960,
+    540
+  ],
+  "output": "context/plans/in-progress/planar-water-spike-evidence/lake-on.png",
+  "reflection_quality": "high",
+  "measurement": {
+    "report": "context/plans/in-progress/planar-water-spike-evidence/lake-on.json",
+    "warmup_frames": 8,
+    "sample_frames": 16
+  }
+}

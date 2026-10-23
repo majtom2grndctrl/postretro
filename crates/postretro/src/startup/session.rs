@@ -341,6 +341,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(
         ),
         fluid_eye: Default::default(),
+        planar_render: Default::default(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         teleporter_bindings: Default::default(),
         player_events: Default::default(),

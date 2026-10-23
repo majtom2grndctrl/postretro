@@ -33,6 +33,8 @@ use super::*;
 
 // The reflection pass reaches the installed level's buffers, so it lives
 // beneath this module.
+pub(in crate::render) mod planar_mask;
+mod planar_override;
 mod reflection_pass;
 pub(crate) use reflection_pass::FluidReflectionMarchTuning;
 #[cfg(test)]
@@ -234,6 +236,7 @@ fn fluid_vertex_buffer_layouts() -> [Option<wgpu::VertexBufferLayout<'static>>; 
 
 /// One installed level's fluid geometry and per-volume parameter buffer.
 struct InstalledFluidSurfaces {
+    planar_ranges: HashMap<u32, Vec<planar_override::PlanarIndexRange>>,
     vertex_buffer: wgpu::Buffer,
     /// Zeroed at install: a level draws still until drift resolves, and
     /// capture, which resolves none, always draws still.
@@ -277,6 +280,7 @@ impl InstalledFluidSurfaces {
 }
 
 pub(crate) struct FluidSurfacePass {
+    planar_bindings: planar_override::PlanarFluidBindings,
     /// One pipeline per `FluidShaderVariant`, in `FluidShaderVariant::ALL`
     /// order, over one layout: the reflection-free variant and the
     /// reflecting one. Each draw takes its row's variant.
@@ -346,6 +350,7 @@ impl FluidSurfacePass {
             create_fluid_pipeline(device, &pipeline_layout, &shader, depth_format, variant)
         });
         Self {
+            planar_bindings: Default::default(),
             pipelines,
             params_bind_group_layout,
             scene_inputs,
@@ -490,7 +495,9 @@ impl FluidSurfacePass {
                 mesh.vertices.len(),
             ),
         }
+        let planar_ranges = planar_override::split_planar_ranges(&mesh);
         self.installed = Some(InstalledFluidSurfaces {
+            planar_ranges,
             vertex_buffer,
             drift_buffer,
             drift_rates: vec![[0.0; 2]; mesh.vertices.len()],
@@ -677,6 +684,9 @@ impl FluidSurfacePass {
                         .expect("renderer always keeps a placeholder material bind group");
                     pass.set_bind_group(1, &material.bind_group, &[]);
                     bound_material = Some(range.material_index);
+                }
+                if self.record_planar_material_range(pass, range, element) {
+                    continue;
                 }
                 pass.draw_indexed(
                     range.index_start..range.index_start + range.index_count,

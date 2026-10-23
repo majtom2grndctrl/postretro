@@ -431,6 +431,7 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
                     &mut no_sh,
                     Some(view.residency_set),
                     StreamingFrame {
+                        additional_cells: None,
                         visible_cells: &visibility.visible_cells,
                         camera_cell: Some(camera_cell as usize),
                         path: visibility.stats.path,

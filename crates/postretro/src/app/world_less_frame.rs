@@ -96,6 +96,7 @@ impl App {
             Some(world),
             renderer,
             crate::session::level_streaming::StreamingFrame {
+                additional_cells: None,
                 visible_cells: &visible_render.visible_cells,
                 camera_cell: Some(visible_render.stats.camera_cell as usize),
                 path: visible_render.stats.path,

@@ -4863,6 +4863,7 @@ dependencies = [
  "postretro-level-loader",
  "postretro-render-data",
  "postretro-stage-timing",
+ "postretro-test-log-capture",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use glam::Vec3;
 use postretro_foundation::resolve_weapon_placement;
+use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_scripting_core::reaction_dispatch::dispatch_deferred_named_events_with_sequences;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 use winit::event_loop::ActiveEventLoop;
@@ -1656,7 +1657,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // Portal DFS → cell IDs → renderer inputs. This stays after
     // game and audio work; the shared preparation seam also feeds
     // VM-free capture without changing frame order.
-    let visible_render = match app.level.as_ref() {
+    let mut visible_render = match app.level.as_ref() {
         Some(world) => render_preparation::VisibleRenderPreparation::for_level(
             world,
             render_eye_position,
@@ -1668,6 +1669,32 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         ),
         None => render_preparation::VisibleRenderPreparation::empty_world(),
     };
+    if let Some(world) = app.level.as_ref() {
+        let mut settings = app
+            .renderer
+            .as_ref()
+            .map(|r| r.planar_reflection_settings())
+            .unwrap_or_default();
+        settings.on &= app.renderer.as_ref().is_some_and(|r| {
+            r.reflection_quality() != FluidReflectionQuality::Off
+                && r.light_term_mask() == render::LightTermMask::ALL
+        });
+        let mirror_cpu = app.planar_render.prepare(
+            world,
+            render_camera,
+            &visible_render,
+            settings,
+            &app.blocked_portals,
+            app.cpu_timer.gate(),
+        );
+        app.cpu_timer.nested_mut().extend_from(
+            &mirror_cpu,
+            Some(postretro_stage_timing::StageSet::label(
+                cpu_timing::FrameStage::Visibility,
+            )),
+        );
+        visible_render.include_mirror_lighting(world, &app.planar_render);
+    }
     let render_preparation::VisibleRenderPreparation {
         visible_cells,
         fog_reachable,
@@ -1675,6 +1702,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         reachable_cell_aabbs,
         stats,
     } = visible_render;
+    let collected_cells = app.planar_render.collected_cells(&visible_cells);
+    let sh_fog_cells = app.planar_render.fog_cells(&fog_reachable);
     // Walk time and counters (or the fallback marker) sit under the
     // binary's visibility stage; staged until the frame commits.
     app.cpu_timer.nested_mut().extend_from(
@@ -1905,6 +1934,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let point_bytes = session.fog_volume_bridge.update_points(&all_lights);
         renderer.upload_fog_points(point_bytes);
 
+        renderer.set_planar_reflection_view(
+            app.planar_render.camera(),
+            app.planar_render.plane(),
+            app.planar_render.visible(),
+        );
         renderer.update_per_frame_uniforms(view_proj, render_eye_position, app.script_time as f32);
         renderer.update_viewmodel_view_projection(app.camera.aspect(), render_camera.view_matrix);
 
@@ -1963,7 +1997,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             app.level.as_ref(),
             renderer,
             crate::session::level_streaming::StreamingFrame {
-                visible_cells: &visible_cells,
+                additional_cells: app.planar_render.additional_cells(),
+                visible_cells: collected_cells,
                 camera_cell: app.level.as_ref().map(|_| stats.camera_cell as usize),
                 path: stats.path,
                 monotonic_seconds: app.script_time,
@@ -2017,7 +2052,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             session.mesh_render.collect_with_hit_zones(
                 &registry,
                 world,
-                &visible_cells,
+                collected_cells,
                 frame_result.alpha,
                 app.anim_time,
                 &session.mesh_clip_tables,
@@ -2092,7 +2127,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             app.kinematic_mover_render.collect(
                 &registry,
                 world,
-                &visible_cells,
+                collected_cells,
                 frame_result.alpha,
             );
             renderer.set_kinematic_mover_draws(
@@ -2461,8 +2496,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             &reachable_cell_aabbs,
             &fog_reachable,
             render::ShSampleRegionSets {
-                visible_cells: &visible_cells,
-                fog_cells: &fog_reachable,
+                visible_cells: collected_cells,
+                fog_cells: sh_fog_cells,
                 movers: app.kinematic_mover_render.sh_sample_regions(),
             },
             Some(stats.camera_cell),

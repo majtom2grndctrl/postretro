@@ -128,6 +128,7 @@ impl Renderer {
             &full.depth_view,
             full.screen_effects.scene_color_view(),
         );
+        full.planar_reflection.invalidate_targets();
         // The SDF shadow target is half the scene; the depth view also changed,
         // so its pass bind group is rebuilt.
         full.sdf_shadow_pass

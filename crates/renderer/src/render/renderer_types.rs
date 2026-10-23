@@ -1021,6 +1021,7 @@ pub(super) struct FullRenderer {
     pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
     /// Translucent fluid surfaces; idle until a level with fluid faces installs.
     pub(super) fluid_surface: fluid_surface::FluidSurfacePass,
+    pub(super) planar_reflection: planar_reflection::PlanarReflectionPass,
     pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
     pub(super) promoted_static_states: Vec<PromotedBakedLightState>,
     /// Promotion ramp state keyed by `AnimatedBakedLights` index. Keeping this

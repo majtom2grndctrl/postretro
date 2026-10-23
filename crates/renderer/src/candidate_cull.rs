@@ -260,6 +260,7 @@ impl SubmittedCounterReadback {
 /// indirect, and status buffers (passed per dispatch) so it writes the SAME
 /// global per-leaf slots as the tree walk.
 pub struct CandidateCullPipeline {
+    pass_label: &'static str,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 
@@ -388,6 +389,7 @@ impl CandidateCullPipeline {
         );
 
         Self {
+            pass_label: "Candidate Cull Pass",
             pipeline,
             bind_group_layout,
             uniform_buffer,
@@ -403,6 +405,10 @@ impl CandidateCullPipeline {
             #[cfg(test)]
             dispatches: 0,
         }
+    }
+
+    pub(crate) fn set_pass_label(&mut self, label: &'static str) {
+        self.pass_label = label;
     }
 
     /// Run the pure candidate gather into this pipeline's reused scratch,
@@ -541,7 +547,7 @@ impl CandidateCullPipeline {
         let workgroups = candidate_count.div_ceil(CANDIDATE_CULL_WORKGROUP_SIZE);
 
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Candidate Cull Pass"),
+            label: Some(self.pass_label),
             timestamp_writes,
         });
         compute_pass.set_pipeline(&self.pipeline);

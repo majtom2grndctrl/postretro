@@ -462,7 +462,8 @@ impl LightmapResidencyController {
     /// camera cell or lead changed, updates visible demand on a portal walk,
     /// and retargets every changed block. A non-portal frame keeps a drawn
     /// block whose pair is resident or on its way, as visible or, when demand
-    /// names it so, mandatory, and reads only the camera cell's baked set.
+    /// names it so, mandatory. It reads the camera cell's baked set and any
+    /// explicitly supplied alternate-view cells.
     /// The frame's drawn blocks are counted for visible misses by
     /// [`Self::count_visible_misses`], after the frame's drain.
     pub(crate) fn update(&mut self, frame: DemandFrame<'_>) {

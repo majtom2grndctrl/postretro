@@ -32,6 +32,7 @@ use crate::streaming::shared_drain::SharedDrain;
 /// One frame's visibility, as every streamed resource reads it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StreamingFrame<'a> {
+    pub(crate) additional_cells: Option<&'a VisibleCells>,
     pub(crate) visible_cells: &'a VisibleCells,
     /// The locator's camera cell; `None` without a level.
     pub(crate) camera_cell: Option<usize>,
@@ -177,12 +178,14 @@ impl LevelStreaming {
             .zip(self.cell_demand.as_ref())
             .zip(frame.camera_cell)
             .map(|((residency_set, stage), camera_cell)| {
-                stage.frame(
+                let mut demand = stage.frame(
                     residency_set,
                     camera_cell as u32,
                     frame.path,
                     frame.visible_cells,
-                )
+                );
+                demand.additional_cells = frame.additional_cells;
+                demand
             });
         let sh_pending = match sh.as_mut() {
             Some(streaming) => Some(streaming.begin_drain(

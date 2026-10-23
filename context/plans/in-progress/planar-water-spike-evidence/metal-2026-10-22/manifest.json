@@ -1,0 +1,15 @@
+{
+  "date_local": "2026-10-22",
+  "binary_sha256": "7144c873cde257610025a093455174403035a6a497775f6bb26a8c139becbcec",
+  "map_sha256": "3aef08f2fa2020f488ea2405572f3267c2eca3c314d70301aed617b78bdfc2fc",
+  "git_head": "a44e073c092c65817351e68b1e35d45be2532acd",
+  "dirty_worktree": true,
+  "raw_artifacts": "/Users/dhiester/Projects/Personal/postretro/target/planar-spike-measurements",
+  "features": [
+    "dev-tools",
+    "capture"
+  ],
+  "profile": "dev",
+  "indirect_validation": "on (default)",
+  "source_changes_this_measurement": "none"
+}

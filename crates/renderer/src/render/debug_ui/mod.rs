@@ -25,6 +25,7 @@ use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 mod cpu_timing_block;
 mod network_tab;
 mod pending_textures;
+mod planar_reflection;
 mod streaming_tab;
 
 pub use cpu_timing_block::CpuTimingPanel;
@@ -400,6 +401,7 @@ fn draw_tab_selector(ui: &mut egui::Ui, state: &mut DiagnosticsState) {
 }
 
 fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &mut Renderer) {
+    planar_reflection::draw(ui, renderer);
     egui::CollapsingHeader::new("Lighting systems")
         .default_open(true)
         .show(ui, |ui| {

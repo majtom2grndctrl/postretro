@@ -75,6 +75,7 @@ impl CellDemand {
         visible_cells: &'a VisibleCells,
     ) -> DemandFrame<'a> {
         DemandFrame {
+            additional_cells: None,
             residency_set,
             camera_cell,
             path,
@@ -124,6 +125,8 @@ impl PathDemand {
 /// resource maps these cells to its own units.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DemandFrame<'a> {
+    /// Alternate views request these cells even when the main view falls back.
+    pub(crate) additional_cells: Option<&'a VisibleCells>,
     /// The level's id-51 set; the same level every resource was built for.
     pub(crate) residency_set: &'a CellResidencySetSection,
     pub(crate) camera_cell: u32,

@@ -75,7 +75,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 - Disk: hallway 131–397 MiB at 128², 33–99 MiB at 64². Resident tiles 4–38 MiB; diffuse data ≈10 MiB whole-map. Replaces the SH grid (hallway: 193.8 MiB across 3,385 clusters, worst mandatory set 49–125 MiB).
 - Bake: ≈45 ms per probe captured → 94–279 s at 128². Removes the SH bake only if world indirect gets another source (piece 3 or a baked bounce lightmap).
 - Runtime GPU: entities ±20% of today (4 irradiance + 4 moment taps vs 8 + 8). Fog +0–30% (needs a coarse 3D probe index). Glossy world surfaces 0.5–1.2 ms per screen-megapixel on the 1660, 1.5–2.5× on the 5300M; needs a per-material pipeline variant. SH compose passes removed.
-- **Binding:** the forward pass has a fixed 16-texture floor; dropping SH atlases (−2) and adding radiance, distance and radiosity (+3) is net +1, so something must consolidate.
+- **Binding:** the forward pass has a fixed 16-texture floor; dropping SH atlases (−2) and adding radiance, distance and radiosity (+3) is net +1, or net 0 once SDF shadows leave and free group 5 binding 3.
 - **Scope gap:** tiles carry no emitters. Direct light from baked lights onto entities and billboards (ids 35/41/45/47/48) needs a carrier, e.g. per-pixel direct for entities.
 
 **Levers.** Tile resolution, probes per large cell, moment filter width, irradiance mip size, index voxel size; player tiers for glossy on/off per material class, mip bias, search taps.
@@ -92,7 +92,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 | ARM US10672177 | Final-gather rays distributed by directional irradiance | Cosine-distributed link rays | Appears absent if rays never follow a prior solution |
 | Portal- or door-gated transport | None found | Sealed-portal links zeroed | Prior art: Drettakis & Sillion 1997; Doom 3 2004 |
 
-**Verdict: needs counsel** (Tencent '451).
+**Verdict: needs counsel** (Tencent '451). The risk is not redesign-only: if '451 reads on scalar intensity × a baked per-light transfer, it arguably reads on the shipped animated SH deltas (id 27) and on graft 3's door channel too. Ask counsel about the shipped path first.
 
 **Free design-arounds.** Never project lights onto SH or any basis; no low-rank link compression; cosine link rays.
 

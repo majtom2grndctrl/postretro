@@ -115,7 +115,7 @@ fn read_planar(renderer: &Renderer) -> Vec<Vec4> {
     let mut pixels = Vec::new();
     for y in 0..size.height {
         let start = (y * padded) as usize;
-        for texel in mapped[start..start + row as usize].chunks_exact(8) {
+        for texel in mapped[start..start + row as usize].as_chunks::<8>().0 {
             let f = |i| f16_bits_to_f32(u16::from_le_bytes([texel[i], texel[i + 1]]));
             pixels.push(Vec4::new(f(0), f(2), f(4), f(6)));
         }

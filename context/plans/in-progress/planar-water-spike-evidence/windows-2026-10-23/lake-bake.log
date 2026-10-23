@@ -1,0 +1,231 @@
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+   Compiling postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-data)
+   Compiling postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+   Compiling postretro-level-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-compiler)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 12s
+     Running `target\debug\prl-build.exe content/dev/maps/reflection-lake-test.map -o content/dev/maps/reflection-lake-test.prl --no-tui`
+ 14.44s  Parsing map...
+ 14.45s  Texture color-space validation...
+ 14.57s  BSP partitioning...
+ 14.58s  Data script compilation...
+  DataScript: skipped
+ 14.58s  Visibility computation...
+ 14.58s  Geometry extraction...
+ 14.58s  BVH build...
+ 14.58s  Cell visibility bake...
+  Cell Visibility: 100%  ETA 0.0s
+ 14.59s  NavMesh bake...
+ 15.77s  SH volume bake...
+[WARN prl_build::pipeline] [prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). This is a dev/iteration build — run a `--release` bake (or `--no-cache`) before shipping a final map.
+  SH Bake:   0%  ETA 59.0s
+  SH Bake:   1%  ETA 66.7s
+  SH Bake:   1%  ETA 93.2s
+  SH Bake:   2%  ETA 90.3s
+  SH Bake:   3%  ETA 81.8s
+  SH Bake:   3%  ETA 77.4s
+  SH Bake:   4%  ETA 72.8s
+  SH Bake:   5%  ETA 70.6s
+  SH Bake:   6%  ETA 67.6s
+  SH Bake:   7%  ETA 65.4s
+  SH Bake:   7%  ETA 70.3s
+  SH Bake:   8%  ETA 66.9s
+  SH Bake:   9%  ETA 64.5s
+  SH Bake:  10%  ETA 62.5s
+  SH Bake:  11%  ETA 60.2s
+  SH Bake:  11%  ETA 62.0s
+  SH Bake:  12%  ETA 59.2s
+  SH Bake:  13%  ETA 57.8s
+  SH Bake:  15%  ETA 55.5s
+  SH Bake:  16%  ETA 54.0s
+  SH Bake:  17%  ETA 52.5s
+  SH Bake:  17%  ETA 52.7s
+  SH Bake:  18%  ETA 52.7s
+  SH Bake:  19%  ETA 52.9s
+  SH Bake:  19%  ETA 53.0s
+  SH Bake:  20%  ETA 53.4s
+  SH Bake:  20%  ETA 53.2s
+  SH Bake:  21%  ETA 52.1s
+  SH Bake:  22%  ETA 51.8s
+  SH Bake:  23%  ETA 51.5s
+  SH Bake:  24%  ETA 51.0s
+  SH Bake:  24%  ETA 50.6s
+  SH Bake:  25%  ETA 49.9s
+  SH Bake:  26%  ETA 49.6s
+  SH Bake:  27%  ETA 48.9s
+  SH Bake:  28%  ETA 48.2s
+  SH Bake:  29%  ETA 47.2s
+  SH Bake:  30%  ETA 46.1s
+  SH Bake:  31%  ETA 45.0s
+  SH Bake:  31%  ETA 45.8s
+  SH Bake:  31%  ETA 45.6s
+  SH Bake:  32%  ETA 45.2s
+  SH Bake:  33%  ETA 44.6s
+  SH Bake:  34%  ETA 43.5s
+  SH Bake:  35%  ETA 42.6s
+  SH Bake:  36%  ETA 41.9s
+  SH Bake:  37%  ETA 40.9s
+  SH Bake:  38%  ETA 40.8s
+  SH Bake:  38%  ETA 40.2s
+  SH Bake:  39%  ETA 39.6s
+  SH Bake:  40%  ETA 39.1s
+  SH Bake:  41%  ETA 38.5s
+  SH Bake:  42%  ETA 37.9s
+  SH Bake:  43%  ETA 37.2s
+  SH Bake:  43%  ETA 36.6s
+  SH Bake:  44%  ETA 35.9s
+  SH Bake:  45%  ETA 35.1s
+  SH Bake:  46%  ETA 34.6s
+  SH Bake:  47%  ETA 33.9s
+  SH Bake:  48%  ETA 33.3s
+  SH Bake:  49%  ETA 32.8s
+  SH Bake:  49%  ETA 32.4s
+  SH Bake:  50%  ETA 31.6s
+  SH Bake:  51%  ETA 31.1s
+  SH Bake:  52%  ETA 30.7s
+  SH Bake:  53%  ETA 30.4s
+  SH Bake:  53%  ETA 29.9s
+  SH Bake:  54%  ETA 29.3s
+  SH Bake:  55%  ETA 28.8s
+  SH Bake:  56%  ETA 28.2s
+  SH Bake:  57%  ETA 27.7s
+  SH Bake:  58%  ETA 27.0s
+  SH Bake:  59%  ETA 26.4s
+  SH Bake:  60%  ETA 25.6s
+  SH Bake:  61%  ETA 24.8s
+  SH Bake:  62%  ETA 24.2s
+  SH Bake:  63%  ETA 23.6s
+  SH Bake:  63%  ETA 23.0s
+  SH Bake:  64%  ETA 22.4s
+  SH Bake:  65%  ETA 21.8s
+  SH Bake:  66%  ETA 21.0s
+  SH Bake:  67%  ETA 20.4s
+  SH Bake:  68%  ETA 19.8s
+  SH Bake:  69%  ETA 19.1s
+  SH Bake:  70%  ETA 18.6s
+  SH Bake:  71%  ETA 18.0s
+  SH Bake:  72%  ETA 17.4s
+  SH Bake:  73%  ETA 16.9s
+  SH Bake:  73%  ETA 16.4s
+  SH Bake:  74%  ETA 15.9s
+  SH Bake:  75%  ETA 15.5s
+  SH Bake:  76%  ETA 15.1s
+  SH Bake:  76%  ETA 14.6s
+  SH Bake:  77%  ETA 14.1s
+  SH Bake:  78%  ETA 13.6s
+  SH Bake:  79%  ETA 13.0s
+  SH Bake:  80%  ETA 12.5s
+  SH Bake:  80%  ETA 12.0s
+  SH Bake:  81%  ETA 11.5s
+  SH Bake:  82%  ETA 11.0s
+  SH Bake:  83%  ETA 10.4s
+  SH Bake:  84%  ETA 9.9s
+  SH Bake:  85%  ETA 9.3s
+  SH Bake:  86%  ETA 8.6s
+  SH Bake:  87%  ETA 8.0s
+  SH Bake:  88%  ETA 7.5s
+  SH Bake:  88%  ETA 7.0s
+  SH Bake:  89%  ETA 6.8s
+  SH Bake:  90%  ETA 6.2s
+  SH Bake:  91%  ETA 5.7s
+  SH Bake:  91%  ETA 5.2s
+  SH Bake:  92%  ETA 4.7s
+  SH Bake:  93%  ETA 4.2s
+  SH Bake:  94%  ETA 3.6s
+  SH Bake:  95%  ETA 3.0s
+  SH Bake:  95%  ETA 2.6s
+  SH Bake:  97%  ETA 1.9s
+  SH Bake:  98%  ETA 1.2s
+  SH Bake:  98%  ETA 0.7s
+  SH Bake:  99%  ETA 0.1s
+  SH Bake: 100%  ETA 0.0s
+ 79.79s  Delta SH volume bake...
+  Delta SH Bake: skipped
+ 79.84s  Direct SH volume bake...
+  Direct SH Bake:  86%  ETA 0.1s
+  Direct SH Bake: 100%  ETA 0.0s
+ 94.19s  Animated direct SH delta bake...
+  Animated Direct SH Bake: skipped
+ 94.26s  Entity shadow light selection...
+ 94.26s  Direct SH delta volume bake...
+  Direct SH Delta Bake:   0%  ETA --
+  Direct SH Delta Bake:   1%  ETA 80.2s
+  Direct SH Delta Bake: 100%  ETA 0.0s
+109.76s  Billboard direct scatter bake...
+110.88s  Chunk light list bake...
+110.93s  Atlas preparation...
+111.02s  Cell residency set bake...
+  Cell Residency Set:   0%  ETA --
+  Cell Residency Set:   7%  ETA 9.3s
+  Cell Residency Set:  15%  ETA 6.9s
+  Cell Residency Set:  24%  ETA 5.7s
+  Cell Residency Set:  31%  ETA 5.2s
+  Cell Residency Set:  42%  ETA 3.9s
+  Cell Residency Set:  57%  ETA 2.5s
+  Cell Residency Set:  71%  ETA 1.5s
+  Cell Residency Set:  80%  ETA 1.1s
+  Cell Residency Set:  96%  ETA 0.2s
+  Cell Residency Set: 100%  ETA 0.0s
+118.22s  Lightmap bake...
+118.22s  Shadowmask atlas bake...
+  ShadowmaskAtlas:   0%  ETA --
+  Lightmap Bake:   0%  ETA --
+  Lightmap Bake:  51%  ETA 1.9s
+  Lightmap Bake:  54%  ETA 2.6s
+  Lightmap Bake:  54%  ETA 3.0s
+  ShadowmaskAtlas:  22%  ETA 14.2s
+  Lightmap Bake:  84%  ETA 0.8s
+  Lightmap Bake:  86%  ETA 0.7s
+  Lightmap Bake:  90%  ETA 0.5s
+  Lightmap Bake:  92%  ETA 0.4s
+  ShadowmaskAtlas:  33%  ETA 17.3s
+  Lightmap Bake:  94%  ETA 0.5s
+  ShadowmaskAtlas:  44%  ETA 11.4s
+  Lightmap Bake:  95%  ETA 0.4s
+  ShadowmaskAtlas:  66%  ETA 4.8s
+  Lightmap Bake:  99%  ETA 0.0s
+  Lightmap Bake: 100%  ETA 0.0s
+  ShadowmaskAtlas:  88%  ETA 1.3s
+  ShadowmaskAtlas: 100%  ETA 0.0s
+131.16s  Animated light chunks...
+  AnimLightChunks: skipped
+131.16s  Animated light weight maps...
+  AnimWeightMaps: skipped
+133.46s  Texture mip bake...
+142.98s  Reflection probe capture...
+  Reflection Probes: 100%  ETA 0.0s
+143.25s  SH cluster directory...
+143.30s  Packing and writing...
+
+Build Summary:
+  Parsing           0.01s
+  TexValidation     0.12s
+  Partitioning      0.00s
+  DataScript        0.00s
+  Visibility        0.00s
+  Geometry          0.00s
+  BVH Build         0.00s
+  Cell Visibility   0.01s
+  NavMesh           1.18s
+  SH Bake          64.01s
+  Delta SH Bake     0.04s
+  Direct SH Bake   14.36s
+  Animated Direct SH Bake   0.07s
+  EntityShadowLights   0.00s
+  Direct SH Delta Bake   1.39s
+  Billboard Direct Scatter Bake   1.12s
+  ChunkLightList    0.04s
+  Atlas Preparation   0.09s
+  Cell Residency Set   6.17s
+  Lightmap Bake    11.92s
+  ShadowmaskAtlas   0.47s
+  AnimLightChunks   0.00s
+  AnimWeightMaps    0.00s
+  TextureMips       9.53s
+  Reflection Probes   0.27s
+  ClusterDirectory   0.05s
+  Packing           6.16s
+  Total           149.48s
+
+Warnings: 1
+  [WARN prl_build::pipeline] [prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). This is a dev/iteration build — run a `--release` bake (or `--no-cache`) before shipping a final map.

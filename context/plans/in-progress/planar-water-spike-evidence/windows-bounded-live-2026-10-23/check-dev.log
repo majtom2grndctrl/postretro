@@ -1,0 +1,137 @@
+   Compiling num-traits v0.2.19
+    Checking bytemuck v1.25.2
+    Checking bitflags v2.13.2
+    Checking smallvec v1.16.2
+   Compiling serde v1.0.229
+   Compiling ahash v0.8.12
+    Checking parking_lot_core v0.9.12
+   Compiling triomphe v0.1.16
+   Compiling bytes-str v0.2.9
+   Compiling hashbrown v0.14.5
+   Compiling num-bigint v0.4.8
+    Checking parking_lot v0.12.5
+   Compiling generic-array v0.14.7
+    Checking png v0.18.1
+   Compiling hstr v4.0.2
+    Checking windows-core v0.62.2
+    Checking moxcms v0.8.1
+   Compiling swc_atoms v10.0.0
+    Checking glam v0.33.12
+    Checking font-types v0.12.6
+   Compiling swc_common v26.0.0
+    Checking indexmap v2.14.2
+    Checking read-fonts v0.41.0
+    Checking naga-types v30.0.1
+    Checking gltf-json v1.4.1
+    Checking image v0.25.10
+   Compiling swc_ecma_ast v29.0.2
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+    Checking euclid v0.22.14
+    Checking gltf v1.4.1
+    Checking blake3 v1.8.7
+    Checking windows-future v0.3.2
+   Compiling digest v0.10.7
+    Checking windows-numerics v0.3.1
+    Checking windows-collections v0.3.2
+    Checking half v2.7.1
+    Checking ordered-float v2.10.1
+    Checking spirv v0.4.0+sdk-1.4.341.0
+    Checking polycool v0.4.0
+    Checking wgpu-types v30.0.1
+    Checking kurbo v0.13.1
+   Compiling swc_ecma_visit v29.0.0
+   Compiling swc_ecma_parser v45.1.6
+    Checking skrifa v0.44.0
+    Checking naga v30.0.1
+   Compiling sha1 v0.10.7
+   Compiling swc_allocator v5.0.0
+   Compiling swc_config v6.0.1
+    Checking windows v0.62.2
+   Compiling swc_ecma_utils v35.0.2
+   Compiling swc_ecma_transforms_base v49.0.1
+   Compiling swc_ecma_hooks v1.0.0
+    Checking rquickjs-core v0.14.0
+    Checking serde-value v0.7.0
+    Checking postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+   Compiling dashmap v6.2.1
+    Checking windows-sys v0.60.2
+    Checking bstr v1.13.1
+    Checking color v0.3.3
+    Checking windows-sys v0.61.2
+    Checking gpu-allocator v0.28.0
+    Checking winapi-util v0.1.11
+   Compiling swc_ecma_loader v27.0.0
+   Compiling swc_ecma_transforms_react v55.0.1
+   Compiling swc_ecma_codegen v32.0.3
+    Checking peniko v0.6.1
+    Checking mlua v0.12.2
+   Compiling swc_ecma_transforms_optimization v52.0.2
+    Checking rquickjs v0.14.0
+    Checking wgpu-naga-bridge v30.0.1
+    Checking guillotiere v0.7.0
+    Checking ordered-float v5.5.0
+    Checking font-types v0.11.3
+    Checking fearless_simd v0.4.1
+    Checking wgpu-hal v30.0.1
+    Checking vello_common v0.1.0
+   Compiling swc_bundler v56.0.1
+    Checking icu_normalizer v2.3.0
+    Checking read-fonts v0.37.0
+    Checking postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\foundation)
+   Compiling swc_ecma_transforms_typescript v55.0.4
+    Checking same-file v1.0.6
+    Checking postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-data)
+    Checking emath v0.36.2
+    Checking ecolor v0.36.2
+    Checking walkdir v2.5.0
+    Checking idna_adapter v1.2.2
+   Compiling postretro-script-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\script-compiler)
+    Checking unicode-general-category v1.1.0
+    Checking wgpu-core-deps-windows-linux-android v30.0.1
+    Checking vello_cpu v0.1.0
+    Checking harfrust v0.12.0
+    Checking notify-types v2.1.0
+    Checking nohash-hasher v0.2.0
+    Checking uuid v1.27.0
+    Checking epaint_default_fonts v0.36.2
+    Checking tracing-core v0.1.36
+    Checking swash v0.2.10
+    Checking epaint v0.36.2
+    Checking tracing v0.1.44
+    Checking accesskit v0.24.1
+    Checking notify v8.2.0
+    Checking wgpu-core v30.0.1
+    Checking idna v1.1.0
+    Checking postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+    Checking skrifa v0.40.0
+    Checking harfrust v0.5.2
+    Checking postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\entities)
+    Checking file-id v0.2.3
+    Checking itertools v0.15.0
+    Checking error-code v3.4.0
+    Checking winit v0.30.13
+    Checking clipboard-win v5.4.1
+    Checking url v2.5.8
+    Checking cosmic-text v0.19.0
+    Checking wgpu v30.0.1
+   Compiling postretro-scripting-core v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\scripting-core)
+    Checking egui v0.36.2
+    Checking notify-debouncer-full v0.7.0
+    Checking web-time v1.1.0
+    Checking postretro-stage-timing v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\stage-timing)
+    Checking postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+    Checking webbrowser v1.2.4
+    Checking arboard v3.6.1
+    Checking postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\model)
+    Checking taffy v0.14.0
+    Checking etagere v0.3.0
+    Checking type-map v0.5.1
+    Checking postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+    Checking postretro-lighting v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\lighting)
+    Checking glyphon v0.12.0
+    Checking egui-wgpu v0.36.2
+    Checking egui-winit v0.36.2
+    Checking postretro-ui v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\ui)
+    Checking postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 3m 28s

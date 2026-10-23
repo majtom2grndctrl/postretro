@@ -1,0 +1,2 @@
+timestamp, pstate, clocks.current.graphics [MHz], temperature.gpu, utilization.gpu [%]
+2026/10/23 07:42:58.187, P3, 1095 MHz, 44.30, 28 %

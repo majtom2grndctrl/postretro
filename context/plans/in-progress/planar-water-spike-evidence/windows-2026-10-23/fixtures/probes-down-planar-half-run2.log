@@ -1,0 +1,96 @@
+[2026-10-23T14:31:58Z INFO  postretro] [Engine] Postretro starting
+[2026-10-23T14:31:58Z WARN  postretro_level_loader::prl_loader] [Material] Unknown prefix 'debug' in texture 'DebugTextures/debug_ceiling_green' — using default material
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] Geometry: 1252 vertices, 1878 indices, 313 faces, 15 textures referenced
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] BVH: 625 nodes, 313 leaves, root=0
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] Cells: 187 cells, 674 portal refs loaded
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] CellVisibility: 187 cells, 1626 coupled pair(s)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] CellResidencySet: 187 camera cells, 7225 entries, max lead 32768
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] CellLocator: 186 node(s) loaded
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] AlphaLights: 7 lights loaded
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] LightTags: 2 tagged lights
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] LightInfluence: 7 records loaded
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] Resolved 3 map-light → animated-slot mapping(s)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::lightmap_stream::storage] [PRL] Lightmap residency: stream, 85 cell block(s) (residency set, usable portals and cell blocks present)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::lightmap_stream::load] [PRL] Lightmap: 85 cell block(s), index only (3080 B read)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::lightmap_stream::load] [PRL] ShadowmaskAtlas: 85 cell block(s), 313 face owner entr(y/ies), index only (4896 B read)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] SdfAtlas: grid=4×4×10, voxel_size=0.5000m, brick=8 voxels, 131 surface bricks
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] ChunkLightList: 3×3×6 grid, 130 indices
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_lightmap] [PRL] AnimatedLightChunks: 262 chunks, 358 flat indices
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_lightmap] [PRL] AnimatedLightWeightMaps: 262 chunks, 262 blocks on 2 pages of 1024², 1190139 covered texels, 1189208 weight entries
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] EntityShadowLights: 3 selected static light(s)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] DataScript: 1109 bytes from `\\?\C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\content\dev\scripts\reflection-probes-test.ts`
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] MapEntity: 1 entities
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] KinematicGeometry: 0 movers, 0 waypoints, 0 vertices, 0 indices
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] TriggerVolumes: 4 trigger(s): 0 touch, 4 use; commands: 4 start, 0 stop, 0 reverse, 0 go_to_path_node
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_environment] [PRL] EnvironmentVolumes: 2 volume(s), 5 brush(es), level_gravity=-20.32
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_environment] [PRL] ReflectionProbes: 3 probe(s), 128² tiles, 8 bound face(s)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] FogVolumes: 0 volumes, pixel_scale=0
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] NavMesh: 53×147 grid, cell_size=0.2500m, 73 region(s), 70 portal(s)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] CellDrawIndex: 187 cells, 221 spans (candidate-cull index loaded)
+[2026-10-23T14:31:58Z INFO  postretro_level_loader::prl_loader] [PRL] Loaded: 1252 vertices, 1878 indices (626 triangles), 313 faces, 187 cells, bvh=[625 nodes, 313 leaves], portals=337, textures=15
+[2026-10-23T14:31:58Z INFO  postretro_renderer::render::renderer_init] [Renderer] wgpu backend selection: Backends(VULKAN)
+[2026-10-23T14:31:58Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (WGPU_VALIDATION_INDIRECT_CALL override)
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer name GalaxyOverlayVkLayer does not conform to naming standard (Policy #LLP_LAYER_3)
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x268953b4df0, name: ?)
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer name GalaxyOverlayVkLayer_VERBOSE does not conform to naming standard (Policy #LLP_LAYER_3)
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x268953b4df0, name: ?)
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer name GalaxyOverlayVkLayer_DEBUG does not conform to naming standard (Policy #LLP_LAYER_3)
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x268953b4df0, name: ?)
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer VK_LAYER_OW_OVERLAY uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x268953b4df0, name: ?)
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer VK_LAYER_OW_OBS_HOOK uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+[2026-10-23T14:31:58Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x268953b4df0, name: ?)
+[2026-10-23T14:31:58Z ERROR wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	loader_create_instance_chain: Failed to find 'vkGetInstanceProcAddr' in layer "C:\Program Files (x86)\Overwolf\0.311.1.1\.\ow-graphics-vulkan.dll"
+[2026-10-23T14:31:58Z ERROR wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x268953b4df0, name: ?)
+[2026-10-23T14:31:58Z ERROR wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Failed to open dynamic library "C:\ProgramData\ReShade\.\ReShade64.dll" with error 1114
+[2026-10-23T14:31:58Z ERROR wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x268953b4df0, name: ?)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_init] [Renderer] GPU adapter: NVIDIA GeForce GTX 1660 SUPER (backend=Vulkan, type=DiscreteGpu, vendor=0x10de, device=0x21c4, driver=NVIDIA 621.01)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_init] [Renderer] Indirect execution supported (multi_draw_indexed_indirect)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_init] [Renderer] Cube-array textures supported (dynamic point shadows enabled)
+[2026-10-23T14:31:59Z ERROR wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	loader_create_device_chain: Failed to find 'vkGetInstanceProcAddr' in layer "C:\Program Files (x86)\Overwolf\0.311.1.1\.\ow-graphics-vulkan.dll".  Skipping layer.
+[2026-10-23T14:31:59Z ERROR wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x268953b4df0, name: ?)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_init_resources] [Renderer] ChunkLightList absent — SDF selection scans the full spec buffer; billboard static specular is off
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::sh_volume] [Renderer] SH base atlas physical allocation: Rgba16Float 1x1 texels, 1 layer(s) (8 B); serialized compact payload: 0 B; 0/0 valid probes
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::sdf_atlas] [SdfAtlas] no atlas — shadow pass disabled (section absent or empty-geometry bake)
+[2026-10-23T14:31:59Z INFO  postretro_render_cpu::sh_compose] [Renderer] SH compose @group(1) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (12 B), affinity_offsets 0.00 MiB (8 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (4 B) - total 0.00 MiB (32 B)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::sh_compose] [Renderer] SH compose: base grid 1×1×1, 0 animated delta light(s)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_full_init] [Renderer] Spot shadow pool initialized (96 × 1024×1024 Depth32Float = 384 MiB VRAM)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_init_resources] [Renderer] GPU timing enabled (POSTRETRO_GPU_TIMING=1)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_full_init] [Renderer] Pipeline ready (no geometry loaded)
+[2026-10-23T14:31:59Z INFO  postretro::capture::prepared] [Capture] Fluid reflections: High, Pixel style, target fraction Some(1.0), 90 steps, divisor 180, thickness 1 m
+[2026-10-23T14:31:59Z INFO  postretro::capture::prepared] [Capture] Planar settings: PlanarReflectionSettings { on: true, scale: 0.5, d: None, band_d: 4.0, r: None, band_r: 4.0 }
+[2026-10-23T14:31:59Z WARN  postretro::capture::setup] [Material] Unknown prefix 'debug' in texture 'DebugTextures/debug_ceiling_green' — using default material
+[2026-10-23T14:31:59Z WARN  postretro::capture::setup] [Material] Unknown prefix 'water' in texture 'fluids/water_64' — using default material
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_models] [Renderer] Textures installed: 15
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_models] [Renderer] Texture install timing: total=46.1ms, read=20.2ms, parse=10.8ms, create_write=9.3ms, bind_groups=0.3ms, other=5.4ms (15 sidecar read(s), 48.6 MiB)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::sh_volume] [Renderer] SH base atlas physical allocation: Rgba16Float 1x1 texels, 1 layer(s) (8 B); serialized compact payload: 0 B; 0/0 valid probes
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::sh_streaming::gpu::setup] [Renderer] streamed SH initial dense pool: bytes=6396416 tiles_per_layer=3844 layers=1 slots=3844
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::sdf_atlas] [SdfAtlas] uploaded 4×4×10 brick grid (voxel=0.5000m, brick=8 voxels, 131 surface bricks)
+[2026-10-23T14:31:59Z INFO  postretro_render_cpu::sh_compose] [Renderer] SH compose @group(1) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (12 B), affinity_offsets 0.00 MiB (8 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (4 B) - total 0.00 MiB (32 B)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::sh_compose] [Renderer] SH compose: base grid 1×1×1, 0 animated delta light(s)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::animated_lightmap] [Renderer] Animated lightmap atlases 1024x1024x2 pages, ~24 MiB VRAM (Rgba16Float irradiance + Rgba8Unorm direction)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::animated_lightmap] [Renderer] Animated lightmap: 262 chunks, 1190139 covered texels, 1189208 weight entries, 20167 dispatch tiles
+[2026-10-23T14:31:59Z INFO  postretro_renderer::lighting::lightmap::stream] [Renderer] Lightmap pool (streamed): 85 cell block(s), first generation 2 layer(s) of 2048² plus a spare, shadowmask resident
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_resources] [Renderer] Lightmap residency: static_irradiance 12582912 B, static_direction 6291456 B, shadowmask 25165824 B, animated_irradiance 16777216 B, animated_direction 8388608 B; total 69206016 B (66.00 MiB)
+[2026-10-23T14:31:59Z INFO  postretro_renderer::compute_cull] [Renderer] BVH cull pipeline ready: 625 nodes, 313 leaves, 14 buckets, multi_draw=true
+[2026-10-23T14:31:59Z INFO  postretro_renderer::candidate_cull] [Renderer] Candidate cull pipeline ready: total_leaves=313
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::geometry_install_marks] [Renderer] Geometry install timing: has_geometry=true, total=128.3ms, buffers_and_sh_streaming=41.1ms, sdf_atlas_and_compose=84.3ms, lightmap_and_sdf_shadow=0.3ms, bvh_and_cull=2.6ms, other=0.1ms
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::renderer_resources] [Renderer] Geometry installed: 1878 indices, bvh_leaves=313
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::fluid_reflection_probes] [Renderer] Fluid reflection probes installed: 3 probes, BC6H 128² tiles (49152 B), R16Float distance tiles (98304 B), 8 bound faces, share table 61456 B
+[2026-10-23T14:31:59Z INFO  postretro_renderer::render::fluid_surface] [Renderer] Fluid surfaces installed: 2 volumes, 1516 triangles, 953 vertices on a [0.500, 0.500, 0.500] m grid
+[2026-10-23T14:31:59Z INFO  postretro::render_preparation::planar] [Planar reflection] plane=0.000 seeds=2 visible=18 reachable=18 mirror-only=16 path=Seeded considered=2302 accepted=254
+[2026-10-23T14:31:59Z INFO  postretro_renderer::candidate_cull] [Renderer] Candidate cull pipeline ready: total_leaves=313
+[2026-10-23T14:32:00Z INFO  postretro_renderer::render::dynamic_depth_cache] [Renderer] Dynamic depth cache (avg over 120 rendered frames): cached spots 0.00, cached cubes 0.00, world-pass skips 0.00, reach walks 0.00
+[2026-10-23T14:32:00Z INFO  postretro_renderer::render::frame_timing] [gpu-timing] cull 0.00ms | animated_lm_compose 0.07ms | depth_prepass 0.00ms | sdf_shadow 0.04ms | forward 0.55ms | sh_compose 0.08ms | direct_sh_compose n/a (0/120) | promoted_depth_cache_upper n/a (0/120) | smoke n/a (0/120) | animated_direct_sh_compose 0.08ms | bloom 0.13ms | billboard_direct_scatter_compose 0.01ms | dynamic_spot_depth_upper n/a (0/120) | dynamic_cube_depth_upper n/a (0/120) | resolve n/a (0/120) | fluid_surface 0.43ms | fluid_reflection n/a (0/120) | planar_reflection 0.23ms | planar_forward 0.16ms (avg over 120 readbacks)
+[2026-10-23T14:32:00Z INFO  postretro_renderer::render::dynamic_depth_cache] [Renderer] Dynamic depth cache (avg over 120 rendered frames): cached spots 0.00, cached cubes 0.00, world-pass skips 0.00, reach walks 0.00
+[2026-10-23T14:32:00Z INFO  postretro_renderer::render::frame_timing] [gpu-timing] cull 0.00ms | animated_lm_compose 0.06ms | depth_prepass 0.00ms | sdf_shadow 0.04ms | forward 0.47ms | sh_compose 0.07ms | direct_sh_compose n/a (0/120) | promoted_depth_cache_upper n/a (0/120) | smoke n/a (0/120) | animated_direct_sh_compose 0.07ms | bloom 0.11ms | billboard_direct_scatter_compose 0.01ms | dynamic_spot_depth_upper n/a (0/120) | dynamic_cube_depth_upper n/a (0/120) | resolve n/a (0/120) | fluid_surface 0.36ms | fluid_reflection n/a (0/120) | planar_reflection 0.21ms | planar_forward 0.14ms (avg over 120 readbacks)
+[2026-10-23T14:32:00Z INFO  postretro_renderer::render::dynamic_depth_cache] [Renderer] Dynamic depth cache (avg over 120 rendered frames): cached spots 0.00, cached cubes 0.00, world-pass skips 0.00, reach walks 0.00
+[2026-10-23T14:32:00Z INFO  postretro_renderer::render::frame_timing] [gpu-timing] cull 0.00ms | animated_lm_compose 0.06ms | depth_prepass 0.00ms | sdf_shadow 0.04ms | forward 0.46ms | sh_compose 0.07ms | direct_sh_compose n/a (0/120) | promoted_depth_cache_upper n/a (0/120) | smoke n/a (0/120) | animated_direct_sh_compose 0.07ms | bloom 0.11ms | billboard_direct_scatter_compose 0.01ms | dynamic_spot_depth_upper n/a (0/120) | dynamic_cube_depth_upper n/a (0/120) | resolve n/a (0/120) | fluid_surface 0.35ms | fluid_reflection n/a (0/120) | planar_reflection 0.21ms | planar_forward 0.14ms (avg over 120 readbacks)

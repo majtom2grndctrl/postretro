@@ -1,0 +1,59 @@
+   Compiling icu_normalizer_data v2.3.0
+   Compiling icu_properties_data v2.3.0
+    Checking log v0.4.34
+    Checking smallvec v1.16.2
+    Checking image v0.25.10
+    Checking either v1.18.0
+   Compiling icu_normalizer v2.3.0
+    Checking parking_lot_core v0.9.12
+    Checking wgpu-types v30.0.1
+    Checking naga v30.0.1
+    Checking parking_lot v0.12.5
+    Checking mlua v0.12.2
+    Checking gltf v1.4.1
+    Checking gpu-allocator v0.28.0
+    Checking read-fonts v0.41.0
+    Checking fontdb v0.23.0
+    Checking postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+    Checking notify v8.2.0
+    Checking harfrust v0.5.2
+   Compiling icu_properties v2.3.0
+    Checking postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\foundation)
+   Compiling idna_adapter v1.2.2
+    Checking postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+    Checking notify-debouncer-full v0.7.0
+   Compiling idna v1.1.0
+    Checking taffy v0.14.0
+   Compiling url v2.5.8
+    Checking postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\entities)
+   Compiling swc_common v26.0.0
+    Checking wgpu-naga-bridge v30.0.1
+    Checking wgpu-hal v30.0.1
+    Checking skrifa v0.44.0
+   Compiling swc_ecma_ast v29.0.2
+   Compiling swc_ecma_loader v27.0.0
+    Checking postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+    Checking postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\model)
+    Checking postretro-lighting v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\lighting)
+    Checking swash v0.2.10
+    Checking postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+    Checking wgpu-core-deps-windows-linux-android v30.0.1
+    Checking wgpu-core v30.0.1
+   Compiling swc_ecma_visit v29.0.0
+   Compiling swc_ecma_parser v45.1.6
+    Checking cosmic-text v0.19.0
+   Compiling swc_ecma_utils v35.0.2
+   Compiling swc_ecma_hooks v1.0.0
+    Checking wgpu v30.0.1
+   Compiling swc_ecma_transforms_base v49.0.1
+   Compiling swc_ecma_codegen v32.0.3
+   Compiling swc_ecma_transforms_react v55.0.1
+   Compiling swc_ecma_transforms_optimization v52.0.2
+   Compiling swc_ecma_transforms_typescript v55.0.4
+   Compiling swc_bundler v56.0.1
+   Compiling postretro-script-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\script-compiler)
+    Checking glyphon v0.12.0
+   Compiling postretro-scripting-core v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\scripting-core)
+    Checking postretro-ui v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\ui)
+    Checking postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2m 12s

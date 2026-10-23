@@ -1,0 +1,26 @@
+Diff in \\?\C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer\src\render\planar_reflection\launch_settings.rs:91:
+             ("POSTRETRO_PLANAR_BAND_R", "inf"),
+         ] {
+             let settings = seeded(&[("POSTRETRO_PLANAR_REFLECTION", "1"), (key, value)]);
+-            assert_eq!(settings, PlanarReflectionSettings { on: true, ..Default::default() });
++            assert_eq!(
++                settings,
++                PlanarReflectionSettings {
++                    on: true,
++                    ..Default::default()
++                }
++            );
+             logs.assert_logged_once(log::Level::Warn, &format!("invalid {key}="));
+         }
+     }
+Diff in \\?\C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer\src\render\renderer_init.rs:333:
+             }
+             None | Some("0" | "1") => {}
+             Some(value) => {
+-                log::warn!("[Renderer] invalid POSTRETRO_UNCAPPED={value:?}; keeping vsync default");
++                log::warn!(
++                    "[Renderer] invalid POSTRETRO_UNCAPPED={value:?}; keeping vsync default"
++                );
+             }
+         }
+         self.log_render_extents();

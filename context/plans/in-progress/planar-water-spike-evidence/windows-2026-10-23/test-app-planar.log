@@ -1,0 +1,35 @@
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+   Compiling postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\foundation)
+   Compiling postretro-net v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\net)
+   Compiling postretro-audio v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\audio)
+   Compiling postretro-script-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\script-compiler)
+   Compiling postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\entities)
+   Compiling postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+   Compiling postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\model)
+   Compiling postretro-scripting-core v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\scripting-core)
+   Compiling postretro-combat-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\combat-model)
+   Compiling postretro-physics v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\physics)
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+   Compiling postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+   Compiling postretro v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\postretro)
+   Compiling postretro-lighting v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\lighting)
+   Compiling postretro-ui v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\ui)
+   Compiling postretro-sim v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\sim)
+   Compiling postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+   Compiling postretro-level-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-compiler)
+   Compiling postretro-netcode v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\netcode)
+   Compiling postretro-ai v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\ai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 26s
+     Running unittests src\main.rs (target\debug\deps\postretro-cbef0e993f2e5e38.exe)
+
+running 7 tests
+test capture::planar::tests::planar_capture_defaults_and_explicit_knobs_reach_settings ... ok
+test render_preparation::planar::tests::planar_preparation_preserves_unisolated_fog_sentinel_on_main_fallback ... ok
+test render_preparation::planar::tests::planar_preparation_unions_empty_mirror_cells_for_entities_residency_and_sh ... ok
+test render_preparation::planar::tests::planar_preparation_off_restores_main_inputs_and_reinstall_drops_selection ... ok
+test capture::planar::tests::planar_capture_rejects_invalid_knobs_before_gpu_initialization ... ok
+test lightmap_streaming::controller::tests::planar_mirror_cells_request_lightmaps_on_main_visibility_fallbacks ... ok
+test startup::lifecycle::lifecycle_environment_install_tests::planar_candidates_follow_installed_local_fluid_reflectivity_and_probe_binding ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1954 filtered out; finished in 0.57s
+

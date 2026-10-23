@@ -1,0 +1,50 @@
+[
+  {
+    "reflection_quality": "saved player setting; verify log",
+    "exited_early": false,
+    "planar": "0",
+    "seconds": 20,
+    "started_utc": "2026-10-23T14:40:34.4892102Z",
+    "key": "ssr-run1",
+    "backend": "vulkan",
+    "pid": 8392,
+    "indirect_validation": "on",
+    "start_pose": "pawn origin, not capture eye",
+    "sh_streaming": "normal",
+    "arguments": [
+      "--mod",
+      "dev",
+      "maps/reflection-lake-test.prl",
+      "--core-root",
+      "core",
+      "--windowed",
+      "--start-pose=-16.8656,0,-48.768,90,-10",
+      "--pool-seed",
+      "1"
+    ]
+  },
+  {
+    "reflection_quality": "saved player setting; verify log",
+    "exited_early": false,
+    "planar": "1",
+    "seconds": 20,
+    "started_utc": "2026-10-23T14:40:54.5919601Z",
+    "key": "planar-run2",
+    "backend": "vulkan",
+    "pid": 22564,
+    "indirect_validation": "on",
+    "start_pose": "pawn origin, not capture eye",
+    "sh_streaming": "normal",
+    "arguments": [
+      "--mod",
+      "dev",
+      "maps/reflection-lake-test.prl",
+      "--core-root",
+      "core",
+      "--windowed",
+      "--start-pose=-16.8656,0,-48.768,90,-10",
+      "--pool-seed",
+      "1"
+    ]
+  }
+]

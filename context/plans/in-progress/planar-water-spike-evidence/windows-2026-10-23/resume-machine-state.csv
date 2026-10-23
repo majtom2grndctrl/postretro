@@ -1,0 +1,2 @@
+timestamp, name, driver_version, pstate, memory.used [MiB], utilization.gpu [%], temperature.gpu, clocks.current.graphics [MHz]
+2026/10/23 07:23:22.359, NVIDIA GeForce GTX 1660 SUPER, 621.01, P8, 1083 MiB, 8 %, 44.60, 300 MHz

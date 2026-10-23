@@ -1,0 +1,67 @@
+[
+  {
+    "key": "half-d15-run1",
+    "configuration": "half-d15",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:42:47.344614+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 15,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 15.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.122,
+      "work": 4.995,
+      "wait": 0.1268,
+      "visibility": 3.0918,
+      "portal_walk": 3.0032,
+      "mirror_walk": 0.0608,
+      "render_prep": 0.20879999999999999,
+      "render_record": 0.5238,
+      "render_submit": 0.8478
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.09,
+      "planar_forward": 0.03,
+      "forward": 1.71,
+      "fluid_surface": 0.47333333333333333,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "11",
+        "11",
+        "0",
+        "Seeded",
+        "354",
+        "33"
+      ]
+    ]
+  }
+]

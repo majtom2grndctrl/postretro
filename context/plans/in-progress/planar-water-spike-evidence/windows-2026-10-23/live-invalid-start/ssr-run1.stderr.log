@@ -1,0 +1,334 @@
+[2026-10-23T14:40:34Z INFO  postretro] [Engine] Postretro starting
+[2026-10-23T14:40:34Z INFO  postretro::startup::session] [Engine] Content root: content\dev
+[2026-10-23T14:40:34Z INFO  postretro::startup::session] [Engine] Core root: core
+[2026-10-23T14:40:34Z INFO  postretro::startup::session] [Engine] Player data: config C:\Users\danhi\AppData\Roaming\postretro\config, data C:\Users\danhi\AppData\Roaming\postretro\data
+[2026-10-23T14:40:34Z INFO  postretro_renderer::render::renderer_init] [Renderer] wgpu backend selection: Backends(VULKAN)
+[2026-10-23T14:40:34Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (WGPU_VALIDATION_INDIRECT_CALL override)
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer name GalaxyOverlayVkLayer does not conform to naming standard (Policy #LLP_LAYER_3)
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x200cce876d0, name: ?)
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer name GalaxyOverlayVkLayer_VERBOSE does not conform to naming standard (Policy #LLP_LAYER_3)
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x200cce876d0, name: ?)
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer name GalaxyOverlayVkLayer_DEBUG does not conform to naming standard (Policy #LLP_LAYER_3)
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x200cce876d0, name: ?)
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer VK_LAYER_OW_OVERLAY uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x200cce876d0, name: ?)
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Layer VK_LAYER_OW_OBS_HOOK uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+[2026-10-23T14:40:34Z WARN  wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x200cce876d0, name: ?)
+[2026-10-23T14:40:34Z ERROR wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	loader_create_instance_chain: Failed to find 'vkGetInstanceProcAddr' in layer "C:\Program Files (x86)\Overwolf\0.311.1.1\.\ow-graphics-vulkan.dll"
+[2026-10-23T14:40:34Z ERROR wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x200cce876d0, name: ?)
+[2026-10-23T14:40:35Z ERROR wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	Failed to open dynamic library "C:\ProgramData\ReShade\.\ReShade64.dll" with error 1114
+[2026-10-23T14:40:35Z ERROR wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x200cce876d0, name: ?)
+[2026-10-23T14:40:35Z INFO  postretro_renderer::render::renderer_init] [Renderer] GPU adapter: NVIDIA GeForce GTX 1660 SUPER (backend=Vulkan, type=DiscreteGpu, vendor=0x10de, device=0x21c4, driver=NVIDIA 621.01)
+[2026-10-23T14:40:35Z INFO  postretro_renderer::render::renderer_init] [Renderer] Indirect execution supported (multi_draw_indexed_indirect)
+[2026-10-23T14:40:35Z INFO  postretro_renderer::render::renderer_init] [Renderer] Cube-array textures supported (dynamic point shadows enabled)
+[2026-10-23T14:40:35Z ERROR wgpu_hal::vulkan::instance] GENERAL [Loader Message (0x0)]
+    	loader_create_device_chain: Failed to find 'vkGetInstanceProcAddr' in layer "C:\Program Files (x86)\Overwolf\0.311.1.1\.\ow-graphics-vulkan.dll".  Skipping layer.
+[2026-10-23T14:40:35Z ERROR wgpu_hal::vulkan::instance] 	objects: (type: INSTANCE, hndl: 0x200cce876d0, name: ?)
+[2026-10-23T14:40:35Z INFO  postretro_renderer::render::renderer_init] [Renderer] vsync on
+[2026-10-23T14:40:35Z INFO  postretro] [Engine] Window ready
+[2026-10-23T14:40:35Z INFO  postretro::startup::splash_lifecycle] [Engine] Splash loaded: 2028×582
+[2026-10-23T14:40:35Z INFO  postretro::startup::splash_lifecycle] [Startup] args_parsed=7.9ms, event_loop_created=2.0ms, window_created=47.5ms, wgpu_init=894.6ms, first_black_frame=2.3ms, splash_decoded=6.6ms, splash_uploaded=1.7ms, first_splash_frame=1.3ms
+[2026-10-23T14:40:35Z INFO  postretro::session] [Audio] Initialized
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `number` (from `number`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `LocomotionDescriptor` (from `LocomotionDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `InventoryDescriptor` (from `InventoryDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `TouchableDescriptor` (from `TouchableDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `WeaponEntityDescriptor` (from `WeaponEntityDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ProjectileImpactLight` (from `ProjectileImpactLight`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ReloadStyle` (from `ReloadStyle`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `OverheatBehavior` (from `OverheatBehavior`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `AmmoResource` (from `AmmoResource`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `HeatResource` (from `HeatResource`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `CellResource` (from `CellResource`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PlacementOffset` (from `PlacementOffset`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PlacementRotation` (from `PlacementRotation`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `SplashDescriptor` (from `SplashDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `WeaponSounds` (from `WeaponSounds`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `WeaponPlacementDescriptor` (from `WeaponPlacementDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `WeaponResource` (from `WeaponResource`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `TouchMode` (from `TouchMode`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `BehaviorLayers` (from `BehaviorLayers`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `RetaliationDescriptor` (from `RetaliationDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `MovementSounds` (from `MovementSounds`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpulseParams` (from `ImpulseParams`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpulseChannels` (from `ImpulseChannels`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpulseStates` (from `ImpulseStates`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpulseStateParams` (from `ImpulseStateParams`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `BloomResolution` (from `BloomResolution`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ReflectionStyle` (from `ReflectionStyle`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `BloomRenderProfile` (from `BloomRenderProfile`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ReflectionRenderProfile` (from `ReflectionRenderProfile`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `AttenuationCurve` (from `AttenuationCurve`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `AudioAttenuation` (from `AudioAttenuation`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `InputActivator` (from `InputActivator`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ModInputBinding` (from `ModInputBinding`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ModInputCommands` (from `ModInputCommands`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ModInputGlyphs` (from `ModInputGlyphs`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `RenderProfile` (from `RenderProfile`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `MoverDefaults` (from `MoverDefaults`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `AudioProfile` (from `AudioProfile`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ModInput` (from `ModInput`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `SwitchingDescriptor` (from `SwitchingDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `FactionDescriptor` (from `FactionDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `FactionSentimentDescriptor` (from `FactionSentimentDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PresentationTemplate` (from `PresentationTemplate`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PresentationOverlay` (from `PresentationOverlay`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `NamedReactionDescriptor` (from `NamedReactionDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpactEvent` (from `ImpactEvent`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `CrossingDescriptor` (from `CrossingDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `TriggerEventDescriptor` (from `TriggerEventDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PlayerEventDescriptor` (from `PlayerEventDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `TriggerPoolDescriptor` (from `TriggerPoolDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `StoreDeclaration` (from `StoreDeclaration`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `LightAnimation | null` (from `LightAnimation | null`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `number` (from `number`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `LocomotionDescriptor` (from `LocomotionDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `InventoryDescriptor` (from `InventoryDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `TouchableDescriptor` (from `TouchableDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `WeaponEntityDescriptor` (from `WeaponEntityDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ProjectileImpactLight` (from `ProjectileImpactLight`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ReloadStyle` (from `ReloadStyle`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `OverheatBehavior` (from `OverheatBehavior`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `AmmoResource` (from `AmmoResource`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `HeatResource` (from `HeatResource`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `CellResource` (from `CellResource`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PlacementOffset` (from `PlacementOffset`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PlacementRotation` (from `PlacementRotation`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `SplashDescriptor` (from `SplashDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `WeaponSounds` (from `WeaponSounds`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `WeaponPlacementDescriptor` (from `WeaponPlacementDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `WeaponResource` (from `WeaponResource`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `TouchMode` (from `TouchMode`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `BehaviorLayers` (from `BehaviorLayers`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `RetaliationDescriptor` (from `RetaliationDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `MovementSounds` (from `MovementSounds`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpulseParams` (from `ImpulseParams`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpulseChannels` (from `ImpulseChannels`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpulseStates` (from `ImpulseStates`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpulseStateParams` (from `ImpulseStateParams`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `BloomResolution` (from `BloomResolution`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ReflectionStyle` (from `ReflectionStyle`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `BloomRenderProfile` (from `BloomRenderProfile`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ReflectionRenderProfile` (from `ReflectionRenderProfile`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `AttenuationCurve` (from `AttenuationCurve`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `AudioAttenuation` (from `AudioAttenuation`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `InputActivator` (from `InputActivator`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ModInputBinding` (from `ModInputBinding`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ModInputCommands` (from `ModInputCommands`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ModInputGlyphs` (from `ModInputGlyphs`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `RenderProfile` (from `RenderProfile`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `MoverDefaults` (from `MoverDefaults`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `AudioProfile` (from `AudioProfile`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ModInput` (from `ModInput`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `SwitchingDescriptor` (from `SwitchingDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `FactionDescriptor` (from `FactionDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `FactionSentimentDescriptor` (from `FactionSentimentDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PresentationTemplate` (from `PresentationTemplate`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PresentationOverlay` (from `PresentationOverlay`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `NamedReactionDescriptor` (from `NamedReactionDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `ImpactEvent` (from `ImpactEvent`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `CrossingDescriptor` (from `CrossingDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `TriggerEventDescriptor` (from `TriggerEventDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `PlayerEventDescriptor` (from `PlayerEventDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `TriggerPoolDescriptor` (from `TriggerPoolDescriptor`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `StoreDeclaration` (from `StoreDeclaration`) — emitted as-is
+[2026-10-23T14:40:35Z WARN  postretro_scripting_core::typedef::common] typedef generator: unknown type `LightAnimation | null` (from `LightAnimation | null`) — emitted as-is
+[2026-10-23T14:40:36Z WARN  fontdb] Failed to load a font face 0 from 'C:\WINDOWS\Fonts\mstmc.ttf' cause malformed font.
+[2026-10-23T14:40:37Z WARN  postretro::input::cursor] [Input] Failed to grab cursor: os error at C:\Users\danhi\scoop\persist\rustup\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\window.rs:445: Access is denied. (os error 5)
+[2026-10-23T14:40:37Z INFO  postretro_renderer::render::renderer_init_resources] [Renderer] ChunkLightList absent — SDF selection scans the full spec buffer; billboard static specular is off
+[2026-10-23T14:40:37Z INFO  postretro_renderer::render::sh_volume] [Renderer] SH base atlas physical allocation: Rgba16Float 1x1 texels, 1 layer(s) (8 B); serialized compact payload: 0 B; 0/0 valid probes
+[2026-10-23T14:40:37Z INFO  postretro_renderer::render::sdf_atlas] [SdfAtlas] no atlas — shadow pass disabled (section absent or empty-geometry bake)
+[2026-10-23T14:40:37Z INFO  postretro_render_cpu::sh_compose] [Renderer] SH compose @group(1) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (12 B), affinity_offsets 0.00 MiB (8 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (4 B) - total 0.00 MiB (32 B)
+[2026-10-23T14:40:37Z INFO  postretro_renderer::render::sh_compose] [Renderer] SH compose: base grid 1×1×1, 0 animated delta light(s)
+[2026-10-23T14:40:38Z INFO  postretro_renderer::render::renderer_full_init] [Renderer] Spot shadow pool initialized (96 × 1024×1024 Depth32Float = 384 MiB VRAM)
+[2026-10-23T14:40:38Z INFO  postretro_renderer::render::renderer_init_resources] [Renderer] GPU timing enabled (POSTRETRO_GPU_TIMING=1)
+[2026-10-23T14:40:42Z INFO  postretro_renderer::render::renderer_full_init] [Renderer] Pipeline ready (no geometry loaded)
+[2026-10-23T14:40:42Z INFO  postretro_renderer::render::renderer_extent] [Renderer] render extents: surface=1600x900 scene=1600x900 divisor=1
+[2026-10-23T14:40:42Z INFO  postretro_renderer::render::renderer_init] [Renderer] Full renderer initialization complete
+[2026-10-23T14:40:43Z INFO  postretro_scripting_core::runtime::compile] [Scripting] startup TS scan: 2 recompiled, 0 failed
+[2026-10-23T14:40:43Z WARN  postretro_foundation::data_descriptors::types::behavior::recursive] components.behavior: activities [startle] are unreachable at `components.behavior`
+[2026-10-23T14:40:43Z WARN  postretro_foundation::data_descriptors::types::behavior::recursive] components.behavior: activities [startle] are unreachable at `components.behavior`
+[2026-10-23T14:40:43Z INFO  postretro_scripting_core::runtime::mod_init] [Mod-init] mod `dev` initialized
+[2026-10-23T14:40:43Z WARN  postretro_ui::modal_stack::registry] [UI] mod tree 'hud' shadows the engine built-in of the same name (reskin path)
+[2026-10-23T14:40:43Z WARN  postretro_ui::modal_stack::registry] [UI] mod tree 'pauseMenu' shadows the engine built-in of the same name (reskin path)
+[2026-10-23T14:40:43Z INFO  postretro::startup::splash_lifecycle] [State] restored persistent slots from C:\Users\danhi\AppData\Roaming\postretro\data\postretro.dev\state.json
+[2026-10-23T14:40:43Z WARN  postretro_foundation::data_descriptors::types::behavior::recursive] components.behavior: activities [startle] are unreachable at `components.behavior`
+[2026-10-23T14:40:43Z WARN  postretro_foundation::data_descriptors::types::behavior::recursive] components.behavior: activities [startle] are unreachable at `components.behavior`
+[2026-10-23T14:40:43Z INFO  postretro_scripting_core::watcher] [Scripting] TS compiler = scripts-build (from current_exe dir: C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\target\debug\scripts-build.exe)
+[2026-10-23T14:40:44Z INFO  postretro::app::ui_images] [UI] loaded 0 of 0 eager mod UI image(s); deferred 5 loading-only image(s) until a loading screen shows them
+[2026-10-23T14:40:44Z INFO  postretro::app::glyph_art] [UI] loaded 149 glyph image(s) from 4 directories
+[2026-10-23T14:40:44Z INFO  postretro::startup::splash_lifecycle] [Startup] mod_init=9404.0ms
+[2026-10-23T14:40:44Z INFO  postretro::startup::splash_lifecycle] [Startup] args_parsed=7.9ms, event_loop_created=2.0ms, window_created=47.5ms, wgpu_init=894.6ms, first_black_frame=2.3ms, splash_decoded=6.6ms, splash_uploaded=1.7ms, first_splash_frame=1.3ms, audio_init_complete=123.5ms, script_runtime_ctor=94.1ms, net_endpoint_complete=77.0ms, os_reader_started=2.5ms, session_init_complete=1685.1ms, renderer_full_init_complete=5345.9ms, boot_worker_dispatch=2076.6ms
+[2026-10-23T14:40:45Z WARN  postretro_level_loader::prl_loader] [Material] Unknown prefix 'debug' in texture 'DebugTextures/debug_ceiling_grey' — using default material
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] Geometry: 1744 vertices, 2616 indices, 436 faces, 12 textures referenced
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] BVH: 871 nodes, 436 leaves, root=0
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] Cells: 215 cells, 930 portal refs loaded
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] CellVisibility: 215 cells, 2645 coupled pair(s)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] CellResidencySet: 215 camera cells, 16378 entries, max lead 32768
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] CellLocator: 214 node(s) loaded
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] AlphaLights: 4 lights loaded
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] LightInfluence: 4 records loaded
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] Resolved 0 map-light → animated-slot mapping(s)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::lightmap_stream::storage] [PRL] Lightmap residency: stream, 128 cell block(s) (residency set, usable portals and cell blocks present)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::lightmap_stream::load] [PRL] Lightmap: 128 cell block(s), index only (4628 B read)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::lightmap_stream::load] [PRL] ShadowmaskAtlas: 128 cell block(s), 436 face owner entr(y/ies), index only (7084 B read)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] SdfAtlas section missing — runtime SDF shadow pass disabled (legacy PRL or no SDF bake)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] ChunkLightList: 14×9×14 grid, 641 indices
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] EntityShadowLights: 2 selected static light(s)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] MapEntity: 1 entities
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] KinematicGeometry: 0 movers, 0 waypoints, 0 vertices, 0 indices
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] TriggerVolumes: 0 trigger(s): 0 touch, 0 use; commands: 0 start, 0 stop, 0 reverse, 0 go_to_path_node
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_environment] [PRL] EnvironmentVolumes: 1 volume(s), 1 brush(es), level_gravity=-20.32
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_environment] [PRL] ReflectionProbes: 1 probe(s), 128² tiles, 33 bound face(s)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] FogVolumes: 0 volumes, pixel_scale=0
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] NavMesh: 391×391 grid, cell_size=0.2500m, 167 region(s), 208 portal(s)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] CellDrawIndex: 215 cells, 374 spans (candidate-cull index loaded)
+[2026-10-23T14:40:45Z INFO  postretro_level_loader::prl_loader] [PRL] Loaded: 1744 vertices, 2616 indices (872 triangles), 436 faces, 215 cells, bvh=[871 nodes, 436 leaves], portals=465, textures=12
+[2026-10-23T14:40:45Z INFO  postretro::startup::worker] [Loader] PRL loaded successfully from content\dev\maps/reflection-lake-test.prl
+[2026-10-23T14:40:45Z INFO  postretro::startup::environment_install] [Loader] environment volumes: 1 volumes, 1 leaves, built in 0.046 ms
+[2026-10-23T14:40:45Z WARN  postretro::startup::lifecycle] [Material] Unknown prefix 'debug' in texture 'DebugTextures/debug_ceiling_grey' — using default material
+[2026-10-23T14:40:45Z WARN  postretro::startup::lifecycle] [Material] Unknown prefix 'water' in texture 'fluids/water_64' — using default material
+[2026-10-23T14:40:45Z INFO  postretro_renderer::render::renderer_models] [Renderer] Textures installed: 12
+[2026-10-23T14:40:45Z INFO  postretro_renderer::render::renderer_models] [Renderer] Texture install timing: total=65.6ms, read=24.0ms, parse=15.0ms, create_write=21.3ms, bind_groups=0.4ms, other=5.0ms (12 sidecar read(s), 48.4 MiB)
+[2026-10-23T14:40:45Z INFO  postretro_renderer::render::sh_volume] [Renderer] SH base atlas physical allocation: Rgba16Float 1x1 texels, 1 layer(s) (8 B); serialized compact payload: 0 B; 0/0 valid probes
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::sh_streaming::gpu::setup] [Renderer] streamed SH initial dense pool: bytes=202728960 tiles_per_layer=175980 layers=1 slots=175980
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::sdf_atlas] [SdfAtlas] no atlas — shadow pass disabled (section absent or empty-geometry bake)
+[2026-10-23T14:40:46Z INFO  postretro_render_cpu::sh_compose] [Renderer] SH compose @group(1) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (12 B), affinity_offsets 0.00 MiB (8 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (4 B) - total 0.00 MiB (32 B)
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::sh_compose] [Renderer] SH compose: base grid 1×1×1, 0 animated delta light(s)
+[2026-10-23T14:40:46Z INFO  postretro_renderer::lighting::lightmap::stream] [Renderer] Lightmap pool (streamed): 128 cell block(s), first generation 3 layer(s) of 2048² plus a spare, shadowmask resident
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_resources] [Renderer] Lightmap residency: static_irradiance 16777216 B, static_direction 8388608 B, shadowmask 33554432 B, animated_irradiance 8 B, animated_direction 4 B; total 58720268 B (56.00 MiB)
+[2026-10-23T14:40:46Z INFO  postretro_renderer::compute_cull] [Renderer] BVH cull pipeline ready: 871 nodes, 436 leaves, 11 buckets, multi_draw=true
+[2026-10-23T14:40:46Z INFO  postretro_renderer::candidate_cull] [Renderer] Candidate cull pipeline ready: total_leaves=436
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::geometry_install_marks] [Renderer] Geometry install timing: has_geometry=true, total=608.7ms, buffers_and_sh_streaming=553.9ms, sdf_atlas_and_compose=11.5ms, lightmap_and_sdf_shadow=0.5ms, bvh_and_cull=42.8ms, other=0.1ms
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_resources] [Renderer] Geometry installed: 2616 indices, bvh_leaves=436
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::fluid_reflection_probes] [Renderer] Fluid reflection probes installed: 1 probes, BC6H 128² tiles (16384 B), R16Float distance tiles (32768 B), 33 bound faces, share table 61456 B
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::fluid_surface] [Renderer] Fluid surfaces installed: 1 volumes, 26938 triangles, 14932 vertices on a [0.500, 0.500, 0.500] m grid
+[2026-10-23T14:40:46Z WARN  postretro_sim::trigger_bindings::manifest_events] [Trigger] trigger-event tag `faction_sentiment_story` matched no trigger volumes; descriptor is inert
+[2026-10-23T14:40:46Z INFO  postretro_sim::scripting::builtins::data_archetype] [Loader] spawned 1 player(s) from 1 player_spawn entries
+[2026-10-23T14:40:46Z INFO  postretro_sim::trigger_pools] [TriggerPools] seed=1
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture 'af1a9bfa67fc7ce532138733001c15751a5793e47cc0a22bcd4b2ebdf396f720': cannot read baked\materials\af1a9bfa67fc7ce532138733001c15751a5793e47cc0a22bcd4b2ebdf396f720.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture 'bbc98741d5709878ef10f7d97fb0b1839b29eb82341102f37458d1a936553d23': cannot read baked\materials\bbc98741d5709878ef10f7d97fb0b1839b29eb82341102f37458d1a936553d23.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture 'd2b5c14e98a2c6081822204b08da55a7bf0f1ce8cd4f9a1a03b57fac5049efb2': cannot read baked\materials\d2b5c14e98a2c6081822204b08da55a7bf0f1ce8cd4f9a1a03b57fac5049efb2.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model animation: 50 clip(s) ['crouching_turn_90_left' (1.30s), 'crouching_turn_90_right' (1.27s), 'death_crouching_headshot_front' (1.93s), 'death_from_back_headshot' (3.73s), 'death_from_front_headshot' (2.87s), 'death_from_right' (3.33s), 'death_from_the_back' (3.00s), 'death_from_the_front' (3.47s), 'exo_red' (0.07s), 'idle' (2.13s), 'idle_aiming' (2.13s), 'idle_crouching' (2.13s), 'idle_crouching_aiming' (2.03s), 'jump_down' (0.70s), 'jump_loop' (0.97s), 'jump_up' (0.57s), 'run_backward' (0.53s), 'run_backward_left' (0.53s), 'run_backward_right' (0.53s), 'run_forward' (0.53s), 'run_forward_left' (0.53s), 'run_forward_right' (0.53s), 'run_left' (0.53s), 'run_right' (0.53s), 'sprint_backward' (0.53s), 'sprint_backward_left' (0.53s), 'sprint_backward_right' (0.53s), 'sprint_forward' (0.53s), 'sprint_forward_left' (0.53s), 'sprint_forward_right' (0.53s), 'sprint_left' (0.53s), 'sprint_right' (0.53s), 'turn_90_left' (1.03s), 'turn_90_right' (1.03s), 'walk_backward' (1.03s), 'walk_backward_left' (1.03s), 'walk_backward_right' (1.03s), 'walk_crouching_backward' (1.03s), 'walk_crouching_backward_left' (1.03s), 'walk_crouching_backward_right' (1.03s), 'walk_crouching_forward' (1.03s), 'walk_crouching_forward_left' (1.03s), 'walk_crouching_forward_right' (1.03s), 'walk_crouching_left' (1.03s), 'walk_crouching_right' (1.03s), 'walk_forward' (1.03s), 'walk_forward_left' (1.03s), 'walk_forward_right' (1.03s), 'walk_left' (1.03s), 'walk_right' (1.03s)], 66 joints
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 50 clip(s) parsed, 0 tag(s)
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture '4cfeb927d54cef4480cd1a24f73a18b282a027142718247fbec3afdac0cb8ecd': cannot read baked\materials\4cfeb927d54cef4480cd1a24f73a18b282a027142718247fbec3afdac0cb8ecd.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture 'e0a1a9031b3ba5bac1d0582780b1389ee3c63ac3c398a290b5e68d075683c88b': cannot read baked\materials\e0a1a9031b3ba5bac1d0582780b1389ee3c63ac3c398a290b5e68d075683c88b.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture '9b579b7fccca86b684074e2ba6a5624a99721a5e3af16ea08a58f39f5eaf99c3': cannot read baked\materials\9b579b7fccca86b684074e2ba6a5624a99721a5e3af16ea08a58f39f5eaf99c3.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture '52d8b54374a6aeb257b6da831ebfe38a987d7d8493fc519ff25c8e9076fe3aac': cannot read baked\materials\52d8b54374a6aeb257b6da831ebfe38a987d7d8493fc519ff25c8e9076fe3aac.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture 'a5a1549b1e7bb9dd5ae5364a3e0e1d49f83f2fa047b258b1d81f0b0889b47069': cannot read baked\materials\a5a1549b1e7bb9dd5ae5364a3e0e1d49f83f2fa047b258b1d81f0b0889b47069.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::loaded_texture] [Loader] model texture 'f856ccf1f27beee91a413c35b9d6c9d4d55cc6f4b55b8797a874762f46ffc3ac': cannot read baked\materials\f856ccf1f27beee91a413c35b9d6c9d4d55cc6f4b55b8797a874762f46ffc3ac.prm : The system cannot find the file specified. (os error 2) — using placeholders
+[2026-10-23T14:40:46Z INFO  postretro_renderer::render::renderer_models] [Model] skinned model uploaded: 0 clip(s) parsed, 0 tag(s)
+[2026-10-23T14:40:46Z INFO  postretro::startup::lifecycle] [Model] uploaded 7 distinct mesh model(s) for this level
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'reference_enemy' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'reference_enemy' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'limitator' declares health.zoneMultipliers tag 'head' absent from model 'models/limitator/model.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'limitator' declares health.zoneMultipliers tag 'leg' absent from model 'models/limitator/model.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'crossfire_raider' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'crossfire_raider' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'crossfire_sentinel' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'crossfire_sentinel' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'faction_sentiment_cabal' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'faction_sentiment_cabal' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'faction_sentiment_resistance' declares health.zoneMultipliers tag 'head' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'faction_sentiment_resistance' declares health.zoneMultipliers tag 'leg' absent from model 'models/reference_enemy_kaykit_knight/scene.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z WARN  postretro] [HitZones] archetype 'pose_fixture_enemy' declares health.zoneMultipliers tag 'head' absent from model 'models/pose-modifier-fixture/joint_zones.gltf' — that multiplier never applies
+[2026-10-23T14:40:46Z INFO  postretro::startup::lifecycle] [Startup] start pose Vec3(-16.8656, 0.0, -48.768) yaw 90.0° pitch -10.0° (local pawn)
+[2026-10-23T14:40:46Z WARN  postretro_render_cpu::fx::smoke] [Smoke] Collection directory 'content\dev\textures\impact' not found — no frames loaded
+[2026-10-23T14:40:46Z WARN  postretro_renderer::render::smoke] [Smoke][invalid-sprite-array] Collection 'impact' has invalid sprite frame data or an extent unsupported by this device; falling back to a 1x1 white array layer
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x561bb450
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x561923ca
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x561c7945
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x562fb532
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x5618a07c
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x75e64971
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x32ef
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x35a6
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x4554
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x45fe
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x561aef5b
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734d8e91
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734d4cea
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734e5386
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734d0b43
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734cc99c
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734e952d
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x735918ec
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x734e11df
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x735b2624
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x735beb19
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x73595a93
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] starting new physical stream
+[2026-10-23T14:40:46Z INFO  symphonia_format_ogg::demuxer] selected vorbis mapper for stream with serial=0x735ba972
+[2026-10-23T14:40:46Z INFO  postretro_audio::assets] [Audio] loaded 24 sound(s) from content\dev\sounds
+[2026-10-23T14:40:47Z INFO  postretro::frame_loop] [Startup] worker_dispatch=0.1ms, worker_delivered=463.8ms (incl. prl_parse=457.5ms), install_deferral=18.7ms, static_collision=0.4ms, texture_upload=66.5ms, uv_normalize=0.0ms, geometry_upload=609.1ms, bridges_populated=10.0ms, classname_dispatch=0.0ms, data_script=0.8ms, archetype_sweep=0.8ms, model_parse=255.7ms, model_upload=8.7ms, hit_zone_build=0.1ms, model_bindings=1.9ms, level_load_event=0.1ms, host_registration=0.5ms, camera_pose=0.2ms, fog_masks=0.0ms, sprite_collections=56.0ms, audio_load=223.7ms, streaming_sessions=43.5ms, settle_hold=456.9ms, first_level_frame=15.6ms
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 53
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 214
+[2026-10-23T14:40:47Z WARN  postretro_visibility::visibility] [Visibility] path=SolidCellFallback camera in solid cell 214
+[2026-10-23T14:40:49Z INFO  postretro_renderer::render::dynamic_depth_cache] [Renderer] Dynamic depth cache (avg over 120 rendered frames): cached spots 0.00, cached cubes 0.00, world-pass skips 0.00, reach walks 0.00
+[2026-10-23T14:40:49Z INFO  postretro::cpu_timing::frame_timer] [CpuTiming] frames=120 total=16.648/32.739ms work=3.486/7.113ms wait=13.162/29.672ms wait_acquire=12.980/29.522ms wait_present=0.182/0.394ms unattributed=0.008/0.014ms housekeeping=0.009/0.018ms input=0.025/0.057ms snapshot_apply=0.008/0.012ms fixed_step=0.114/0.568ms sim_tick=0.097/0.518ms(119/120) sim_movers=0.002/0.014ms(119/120) sim_movement=0.029/0.266ms(119/120) sim_triggers=0.014/0.062ms(119/120) sim_projectiles=0.002/0.010ms(119/120) sim_ai=0.004/0.030ms(119/120) sim_steering=0.035/0.084ms(119/120) sim_steer_agents=0.001/0.007ms(119/120) sim_steer_pose=0.030/0.079ms(119/120) sim_steer_movers=0.003/0.015ms(119/120) sim_weapons=0.009/0.036ms(119/120) sim_environment=0.001/0.006ms(119/120) sim_overlap_check=0.002/0.006ms(119/120) sim_player_events=0.003/0.011ms(119/120) presentation=0.001/0.002ms audio=0.004/0.008ms script_drain=0.022/0.045ms frame_end_removal=0.001/0.002ms host_send=0.002/0.004ms eye=0.004/0.008ms visibility=0.441/3.408ms portal_walk=3.221/3.386ms(14/120) walk_considered=20000.0/20000(14/120) walk_accepted=2403.2/2428(14/120) walk_rejected_blocked=0.0/0(14/120) walk_rejected_solid=0.0/0(14/120) walk_rejected_clipped=15192.6/15451(14/120) walk_rejected_narrow=0.3/1(14/120) walk_rejected_invalid=0.0/0(14/120) walk_rejected_cycle=2403.9/2422(14/120) walk_rejected_depth=0.0/0(14/120) walk_step_limit=14 portal_fallback=106 render_prep=0.219/0.466ms particle_emit=0.003/0.011ms particle_sim=0.000/0.001ms particle_collect=0.003/0.005ms particle_live=0.0/0 lightmap_residency=0.006/0.009ms lightmap_drain=0.005/0.006ms render=2.623/3.729ms render_sh_drain=0.007/0.011ms render_record=0.757/1.441ms rec_mesh_plan=0.019/0.050ms rec_light_slots=0.026/0.092ms rec_pre_scene=0.293/0.706ms rec_sh_compose_prep=0.135/0.532ms rec_cull=0.156/0.570ms rec_cull_diagnostics=0.080/0.266ms rec_sh_compose=0.001/0.001ms rec_direct_sh=0.001/0.002ms rec_mesh_upload=0.028/0.150ms mesh_pose_sampling=0.022/0.143ms mesh_pose_samples=1.0/1 rec_shadow_depth=0.005/0.313ms rec_depth_sdf=0.014/0.116ms rec_forward=0.010/0.120ms rec_skinned_mesh=0.005/0.109ms rec_fluid_surface=0.010/0.045ms(104/120) rec_fog=0.001/0.001ms rec_bloom=0.032/0.243ms rec_overlay=0.001/0.024ms rec_viewmodel=0.003/0.013ms rec_ui=0.298/0.905ms rec_resolve=0.009/0.076ms render_submit=1.069/1.591ms frame_tail=0.006/0.115ms ticks=1.0/2
+[2026-10-23T14:40:50Z INFO  postretro_renderer::render::frame_timing] [gpu-timing] cull 0.22ms (100/120) | animated_lm_compose n/a (0/120) | depth_prepass 0.01ms (100/120) | sdf_shadow n/a (0/120) | forward 0.48ms | sh_compose 1.27ms (5/120) | direct_sh_compose 1.39ms (5/120) | promoted_depth_cache_upper n/a (0/120) | smoke n/a (0/120) | animated_direct_sh_compose n/a (0/120) | bloom 0.43ms | billboard_direct_scatter_compose n/a (0/120) | dynamic_spot_depth_upper n/a (0/120) | dynamic_cube_depth_upper n/a (0/120) | resolve 0.17ms | fluid_surface 0.42ms (53/120) | fluid_reflection 0.14ms (53/120) | planar_reflection n/a (0/120) | planar_forward n/a (0/120) (avg over 120 readbacks)
+[2026-10-23T14:40:51Z INFO  postretro_renderer::render::dynamic_depth_cache] [Renderer] Dynamic depth cache (avg over 120 rendered frames): cached spots 0.00, cached cubes 0.00, world-pass skips 0.00, reach walks 0.00
+[2026-10-23T14:40:51Z INFO  postretro::cpu_timing::frame_timer] [CpuTiming] frames=120 total=16.537/17.367ms work=2.484/3.272ms wait=14.052/14.774ms wait_acquire=13.879/14.623ms wait_present=0.173/0.554ms unattributed=0.007/0.008ms housekeeping=0.008/0.017ms input=0.024/0.069ms snapshot_apply=0.008/0.015ms fixed_step=0.103/0.290ms sim_tick=0.087/0.273ms sim_movers=0.002/0.004ms sim_movement=0.023/0.209ms sim_triggers=0.013/0.023ms sim_projectiles=0.001/0.002ms sim_ai=0.003/0.004ms sim_steering=0.032/0.048ms sim_steer_agents=0.001/0.002ms sim_steer_pose=0.028/0.033ms sim_steer_movers=0.003/0.018ms sim_weapons=0.008/0.009ms sim_environment=0.001/0.004ms sim_overlap_check=0.002/0.011ms sim_player_events=0.003/0.004ms presentation=0.001/0.001ms audio=0.004/0.006ms script_drain=0.021/0.084ms frame_end_removal=0.001/0.002ms host_send=0.002/0.004ms eye=0.004/0.006ms visibility=0.005/0.006ms portal_fallback=120 render_prep=0.133/0.213ms particle_emit=0.002/0.004ms particle_sim=0.000/0.001ms particle_collect=0.001/0.002ms particle_live=0.0/0 lightmap_residency=0.004/0.015ms lightmap_drain=0.004/0.005ms render=2.157/2.903ms render_sh_drain=0.007/0.017ms render_record=0.561/1.123ms rec_mesh_plan=0.017/0.121ms rec_light_slots=0.021/0.051ms rec_pre_scene=0.178/0.267ms rec_sh_compose_prep=0.116/0.145ms rec_cull=0.060/0.122ms rec_cull_diagnostics=0.013/0.027ms rec_sh_compose=0.001/0.001ms rec_direct_sh=0.001/0.002ms rec_mesh_upload=0.021/0.045ms mesh_pose_sampling=0.016/0.038ms mesh_pose_samples=1.0/1 rec_shadow_depth=0.007/0.556ms rec_depth_sdf=0.010/0.300ms rec_forward=0.005/0.009ms rec_skinned_mesh=0.003/0.006ms rec_fog=0.001/0.002ms rec_bloom=0.028/0.035ms rec_overlay=0.000/0.001ms rec_viewmodel=0.003/0.004ms rec_ui=0.258/0.393ms rec_resolve=0.007/0.010ms render_submit=0.832/1.260ms frame_tail=0.006/0.186ms ticks=1.0/1
+[2026-10-23T14:40:52Z INFO  postretro::session::lightmap_streaming_diagnostics] [Lightmap streaming] last 5.0 s: 128 pairs requested (8 reads, id 22 5.7 MiB, id 42 7.6 MiB), 128 installs, 0 evictions, 0 refusals, 0 deferrals, 0 failed installs, 0 failed reads, 0 repacks, 0 growths, visible misses (may overlap) 0 outside baked set, 0 not resident | now: lead 16.0 of 32.0 m, resident 128 of 128 blocks 13.3 MiB (id 22 5.7 MiB, id 42 7.6 MiB), mandatory 128 blocks 13.3 MiB (id 22 5.7 MiB, id 42 7.6 MiB), pool 3 layers (peak 3, cap 15) 56.0 MiB + 0 B retiring, growth peak 0 B, install last 3.58 ms / max 5.08 ms
+[2026-10-23T14:40:52Z INFO  postretro::session::sh_streaming_diagnostics] [SH streaming] last 5.0 s: 7 reads (0 coalesced) 43.1 MiB incl. 0 B gap, 7 installs 43.1 MiB, 0 misses (reach 0, pressure 0, in flight 0, budget 0, compose 0, failed 0, device limit 0), 0 re-reads, 0 evictions, 0 retries, 0 cancelled, 0 discarded (0 B), 0 budget-limited drains, 0 pool growths (+0 B), install CPU 161.19 ms (growth 0.00 ms) | compose frame: indirect 0 rows/0 dispatches (0 lagged, 0 remain), static-direct 0/0 (0 lagged, 0 remain), animated-direct 0/0 (0 lagged, 0 remain), planning 0.117 ms | now: 7 targets (7 lead), 7 sampleable, 0 queued, 0 ready, 0/8 permits, pool 23.1 MiB of 195.0 MiB, read latency p50 5.0 / p95 19.2 / max 19.2 ms, decode max 4.4 ms, largest drain 11.2 MiB, slowest install 81.51 ms (steady 81.51 ms)
+[2026-10-23T14:40:53Z INFO  postretro_renderer::render::dynamic_depth_cache] [Renderer] Dynamic depth cache (avg over 120 rendered frames): cached spots 0.00, cached cubes 0.00, world-pass skips 0.00, reach walks 0.00
+[2026-10-23T14:40:53Z INFO  postretro::cpu_timing::frame_timer] [CpuTiming] frames=120 total=16.537/17.667ms work=2.544/3.425ms wait=13.993/15.273ms wait_acquire=13.825/15.110ms wait_present=0.168/0.390ms unattributed=0.007/0.009ms housekeeping=0.008/0.030ms input=0.023/0.036ms snapshot_apply=0.008/0.013ms fixed_step=0.103/0.148ms sim_tick=0.086/0.123ms sim_movers=0.002/0.003ms sim_movement=0.022/0.048ms sim_triggers=0.013/0.018ms sim_projectiles=0.001/0.002ms sim_ai=0.003/0.005ms sim_steering=0.032/0.062ms sim_steer_agents=0.001/0.003ms sim_steer_pose=0.028/0.053ms sim_steer_movers=0.003/0.008ms sim_weapons=0.008/0.016ms sim_environment=0.001/0.003ms sim_overlap_check=0.002/0.002ms sim_player_events=0.003/0.007ms presentation=0.001/0.002ms audio=0.004/0.012ms script_drain=0.021/0.042ms frame_end_removal=0.001/0.003ms host_send=0.002/0.005ms eye=0.004/0.015ms visibility=0.005/0.010ms portal_fallback=120 render_prep=0.139/0.531ms particle_emit=0.002/0.006ms particle_sim=0.000/0.002ms particle_collect=0.001/0.002ms particle_live=0.0/0 lightmap_residency=0.008/0.382ms lightmap_drain=0.005/0.040ms render=2.210/3.045ms render_sh_drain=0.007/0.010ms render_record=0.606/1.322ms rec_mesh_plan=0.016/0.048ms rec_light_slots=0.023/0.046ms rec_pre_scene=0.184/0.367ms rec_sh_compose_prep=0.118/0.285ms rec_cull=0.064/0.218ms rec_cull_diagnostics=0.013/0.018ms rec_sh_compose=0.000/0.001ms rec_direct_sh=0.001/0.001ms rec_mesh_upload=0.028/0.685ms mesh_pose_sampling=0.023/0.679ms mesh_pose_samples=1.0/1 rec_shadow_depth=0.006/0.417ms rec_depth_sdf=0.009/0.087ms rec_forward=0.008/0.319ms rec_skinned_mesh=0.003/0.009ms rec_fog=0.001/0.001ms rec_bloom=0.034/0.326ms rec_overlay=0.000/0.001ms rec_viewmodel=0.003/0.019ms rec_ui=0.282/0.735ms rec_resolve=0.007/0.045ms render_submit=0.835/1.576ms frame_tail=0.006/0.115ms ticks=1.0/1

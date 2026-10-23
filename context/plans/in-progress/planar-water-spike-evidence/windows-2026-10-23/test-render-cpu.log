@@ -1,0 +1,45 @@
+   Compiling syn v3.0.6
+   Compiling serde_core v1.0.229
+   Compiling num-traits v0.2.19
+   Compiling syn v2.0.119
+   Compiling windows-sys v0.61.2
+   Compiling postretro-test-log-capture v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\test-log-capture)
+   Compiling tempfile v3.27.0
+   Compiling rusty-fork v0.3.1
+   Compiling serde_json v1.0.151
+   Compiling gltf-derive v1.4.1
+   Compiling bytemuck_derive v1.12.1
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+   Compiling moxcms v0.8.1
+   Compiling proptest v1.11.0
+   Compiling bytemuck v1.25.2
+   Compiling thiserror v2.0.21
+   Compiling serde v1.0.229
+   Compiling glam v0.33.12
+   Compiling gltf-json v1.4.1
+   Compiling image v0.25.10
+   Compiling gltf v1.4.1
+   Compiling postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-data)
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+   Compiling postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\foundation)
+   Compiling postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+   Compiling postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\entities)
+   Compiling postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\model)
+   Compiling postretro-lighting v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\lighting)
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+   Compiling postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 09s
+     Running unittests src\lib.rs (target\debug\deps\postretro_render_cpu-7c4be716afc866d8.exe)
+
+running 7 tests
+test planar_reflection::tests::planar_reflection_fade_and_settings_use_absolute_metres ... ok
+test planar_reflection::tests::planar_reflection_oblique_depth_clips_beneath_biased_water_plane ... ok
+test planar_reflection::tests::planar_reflection_plane_points_keep_screen_xy_after_resolve_flip ... ok
+test planar_reflection::tests::planar_reflection_groups_only_horizontal_reflecting_up_faces ... ok
+test planar_reflection::tests::planar_reflection_selection_hysteresis_and_eye_band ... ok
+test planar_reflection::tests::planar_reflection_seed_cells_intersect_water_and_receiver_sphere ... ok
+test planar_reflection::tests::planar_reflection_two_flips_preserve_pipeline_winding ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 0.00s
+

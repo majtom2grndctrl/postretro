@@ -1,0 +1,1020 @@
+[
+  {
+    "key": "ssr-high-run1",
+    "configuration": "ssr-high",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:43:16.640732+00:00",
+    "settings": {
+      "on": false,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": false,
+      "scale": 0.5,
+      "d": null,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 4.8744000000000005,
+      "work": 4.7504,
+      "wait": 0.1236,
+      "visibility": 2.994,
+      "portal_walk": 2.9808,
+      "mirror_walk": null,
+      "render_prep": 0.2028,
+      "render_record": 0.5292,
+      "render_submit": 0.7106
+    },
+    "gpu_ms": {
+      "fluid_reflection": 0.9433333333333332,
+      "planar_reflection": null,
+      "planar_forward": null,
+      "forward": 1.72,
+      "fluid_surface": 0.48,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": []
+  },
+  {
+    "key": "half-unlimited-run1",
+    "configuration": "half-unlimited",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:43:36.874593+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 7.8546000000000005,
+      "work": 7.7314,
+      "wait": 0.1234,
+      "visibility": 5.8166,
+      "portal_walk": 3.0296,
+      "mirror_walk": 2.7538,
+      "render_prep": 0.2118,
+      "render_record": 0.538,
+      "render_submit": 0.8351999999999999
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.21,
+      "planar_forward": 0.14,
+      "forward": 1.7233333333333334,
+      "fluid_surface": 0.48333333333333334,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "126",
+        "126",
+        "0",
+        "StepLimitFallback",
+        "20000",
+        "2084"
+      ]
+    ]
+  },
+  {
+    "key": "half-d30-run1",
+    "configuration": "half-d30",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:43:57.083419+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 30,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 30.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.8326,
+      "work": 5.7084,
+      "wait": 0.12419999999999999,
+      "visibility": 3.8256,
+      "portal_walk": 3.023,
+      "mirror_walk": 0.7746000000000001,
+      "render_prep": 0.2052,
+      "render_record": 0.5204,
+      "render_submit": 0.8388
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.12,
+      "planar_forward": 0.06,
+      "forward": 1.72,
+      "fluid_surface": 0.4766666666666666,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "30",
+        "30",
+        "0",
+        "Seeded",
+        "5106",
+        "582"
+      ]
+    ]
+  },
+  {
+    "key": "half-d15-run1",
+    "configuration": "half-d15",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:44:17.276765+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 15,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 15.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.0708,
+      "work": 4.951,
+      "wait": 0.1196,
+      "visibility": 3.1136,
+      "portal_walk": 3.0268,
+      "mirror_walk": 0.060399999999999995,
+      "render_prep": 0.199,
+      "render_record": 0.5142,
+      "render_submit": 0.8106
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.09,
+      "planar_forward": 0.03,
+      "forward": 1.72,
+      "fluid_surface": 0.47333333333333333,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "11",
+        "11",
+        "0",
+        "Seeded",
+        "354",
+        "33"
+      ]
+    ]
+  },
+  {
+    "key": "quarter-d30-run1",
+    "configuration": "quarter-d30",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:44:37.473124+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.25,
+      "d": 30,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.25,
+      "d": 30.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.8068,
+      "work": 5.683,
+      "wait": 0.12380000000000001,
+      "visibility": 3.7883999999999998,
+      "portal_walk": 2.9854,
+      "mirror_walk": 0.7742,
+      "render_prep": 0.2068,
+      "render_record": 0.5302,
+      "render_submit": 0.8382
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.08,
+      "planar_forward": 0.04,
+      "forward": 1.7233333333333334,
+      "fluid_surface": 0.47333333333333333,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "30",
+        "30",
+        "0",
+        "Seeded",
+        "5106",
+        "582"
+      ]
+    ]
+  },
+  {
+    "key": "quarter-d15-run1",
+    "configuration": "quarter-d15",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:44:57.677359+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.25,
+      "d": 15,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.25,
+      "d": 15.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.0178,
+      "work": 4.8972,
+      "wait": 0.1202,
+      "visibility": 3.0744,
+      "portal_walk": 2.9878,
+      "mirror_walk": 0.060399999999999995,
+      "render_prep": 0.2016,
+      "render_record": 0.5144,
+      "render_submit": 0.8056
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.07,
+      "planar_forward": 0.03,
+      "forward": 1.7233333333333334,
+      "fluid_surface": 0.48,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "11",
+        "11",
+        "0",
+        "Seeded",
+        "354",
+        "33"
+      ]
+    ]
+  },
+  {
+    "key": "half-d30-r15-run1",
+    "configuration": "half-d30-r15",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:45:17.891949+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 30,
+      "r": 15,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 30.0,
+      "band_d": 4.0,
+      "r": 15.0,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.6642,
+      "work": 5.542,
+      "wait": 0.1222,
+      "visibility": 3.6724,
+      "portal_walk": 3.034,
+      "mirror_walk": 0.611,
+      "render_prep": 0.2048,
+      "render_record": 0.521,
+      "render_submit": 0.8271999999999999
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.09,
+      "planar_forward": 0.03,
+      "forward": 1.72,
+      "fluid_surface": 0.4766666666666666,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "6",
+        "30",
+        "30",
+        "0",
+        "Seeded",
+        "3915",
+        "453"
+      ]
+    ]
+  },
+  {
+    "key": "half-r8-run1",
+    "configuration": "half-r8",
+    "repeat": 1,
+    "started_utc": "2026-10-23T15:45:38.091290+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": 8,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "band_d": 4.0,
+      "r": 8.0,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 7.8038,
+      "work": 7.6812,
+      "wait": 0.12279999999999999,
+      "visibility": 5.7844,
+      "portal_walk": 2.9794,
+      "mirror_walk": 2.7736,
+      "render_prep": 0.2092,
+      "render_record": 0.5286000000000001,
+      "render_submit": 0.8331999999999999
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.06,
+      "planar_forward": 0.0,
+      "forward": 1.72,
+      "fluid_surface": 0.4766666666666666,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "2",
+        "83",
+        "83",
+        "0",
+        "Seeded",
+        "17950",
+        "2116"
+      ]
+    ]
+  },
+  {
+    "key": "half-r8-run2",
+    "configuration": "half-r8",
+    "repeat": 2,
+    "started_utc": "2026-10-23T15:45:58.460228+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": 8,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "band_d": 4.0,
+      "r": 8.0,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 7.805,
+      "work": 7.6818,
+      "wait": 0.12279999999999999,
+      "visibility": 5.7825999999999995,
+      "portal_walk": 2.9792,
+      "mirror_walk": 2.7732,
+      "render_prep": 0.20579999999999998,
+      "render_record": 0.5314,
+      "render_submit": 0.832
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.06,
+      "planar_forward": 0.0,
+      "forward": 1.72,
+      "fluid_surface": 0.48,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "2",
+        "83",
+        "83",
+        "0",
+        "Seeded",
+        "17931",
+        "2114"
+      ]
+    ]
+  },
+  {
+    "key": "half-d30-r15-run2",
+    "configuration": "half-d30-r15",
+    "repeat": 2,
+    "started_utc": "2026-10-23T15:46:18.683583+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 30,
+      "r": 15,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 30.0,
+      "band_d": 4.0,
+      "r": 15.0,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.5408,
+      "work": 5.4216,
+      "wait": 0.1192,
+      "visibility": 3.5852,
+      "portal_walk": 2.956,
+      "mirror_walk": 0.6023999999999999,
+      "render_prep": 0.20020000000000002,
+      "render_record": 0.5094,
+      "render_submit": 0.8172
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.09,
+      "planar_forward": 0.03,
+      "forward": 1.7233333333333334,
+      "fluid_surface": 0.4766666666666666,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "6",
+        "30",
+        "30",
+        "0",
+        "Seeded",
+        "3915",
+        "453"
+      ]
+    ]
+  },
+  {
+    "key": "quarter-d15-run2",
+    "configuration": "quarter-d15",
+    "repeat": 2,
+    "started_utc": "2026-10-23T15:46:38.877558+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.25,
+      "d": 15,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.25,
+      "d": 15.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.037,
+      "work": 4.9172,
+      "wait": 0.1192,
+      "visibility": 3.0786000000000002,
+      "portal_walk": 2.9924,
+      "mirror_walk": 0.0606,
+      "render_prep": 0.2004,
+      "render_record": 0.5152,
+      "render_submit": 0.8136
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.07,
+      "planar_forward": 0.03,
+      "forward": 1.7233333333333334,
+      "fluid_surface": 0.48,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "11",
+        "11",
+        "0",
+        "Seeded",
+        "354",
+        "33"
+      ]
+    ]
+  },
+  {
+    "key": "quarter-d30-run2",
+    "configuration": "quarter-d30",
+    "repeat": 2,
+    "started_utc": "2026-10-23T15:46:59.075597+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.25,
+      "d": 30,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.25,
+      "d": 30.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.8102,
+      "work": 5.6894,
+      "wait": 0.121,
+      "visibility": 3.8234,
+      "portal_walk": 3.0246,
+      "mirror_walk": 0.7714,
+      "render_prep": 0.2026,
+      "render_record": 0.5188,
+      "render_submit": 0.8301999999999999
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.08,
+      "planar_forward": 0.04,
+      "forward": 1.7233333333333334,
+      "fluid_surface": 0.4766666666666666,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "30",
+        "30",
+        "0",
+        "Seeded",
+        "5106",
+        "582"
+      ]
+    ]
+  },
+  {
+    "key": "half-d15-run2",
+    "configuration": "half-d15",
+    "repeat": 2,
+    "started_utc": "2026-10-23T15:47:19.286431+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 15,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 15.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.0682,
+      "work": 4.9504,
+      "wait": 0.11800000000000001,
+      "visibility": 3.1194,
+      "portal_walk": 3.0326,
+      "mirror_walk": 0.0606,
+      "render_prep": 0.20220000000000002,
+      "render_record": 0.5108,
+      "render_submit": 0.811
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.09,
+      "planar_forward": 0.03,
+      "forward": 1.7233333333333334,
+      "fluid_surface": 0.48,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "11",
+        "11",
+        "0",
+        "Seeded",
+        "354",
+        "33"
+      ]
+    ]
+  },
+  {
+    "key": "half-d30-run2",
+    "configuration": "half-d30",
+    "repeat": 2,
+    "started_utc": "2026-10-23T15:47:39.495044+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 30,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 30.0,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.8006,
+      "work": 5.681,
+      "wait": 0.1192,
+      "visibility": 3.8247999999999998,
+      "portal_walk": 3.023,
+      "mirror_walk": 0.775,
+      "render_prep": 0.2024,
+      "render_record": 0.5164,
+      "render_submit": 0.8218
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.12,
+      "planar_forward": 0.06,
+      "forward": 1.72,
+      "fluid_surface": 0.47333333333333333,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "30",
+        "30",
+        "0",
+        "Seeded",
+        "5106",
+        "582"
+      ]
+    ]
+  },
+  {
+    "key": "half-unlimited-run2",
+    "configuration": "half-unlimited",
+    "repeat": 2,
+    "started_utc": "2026-10-23T15:47:59.720838+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 7.8044,
+      "work": 7.6814,
+      "wait": 0.123,
+      "visibility": 5.7866,
+      "portal_walk": 3.0103999999999997,
+      "mirror_walk": 2.7442,
+      "render_prep": 0.20959999999999998,
+      "render_record": 0.534,
+      "render_submit": 0.8283999999999999
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.21,
+      "planar_forward": 0.14,
+      "forward": 1.7233333333333334,
+      "fluid_surface": 0.49,
+      "bloom": 0.2,
+      "resolve": 0.08
+    },
+    "mirror": [
+      [
+        "-1.219",
+        "41",
+        "126",
+        "126",
+        "0",
+        "StepLimitFallback",
+        "20000",
+        "2084"
+      ]
+    ]
+  },
+  {
+    "key": "ssr-high-run2",
+    "configuration": "ssr-high",
+    "repeat": 2,
+    "started_utc": "2026-10-23T15:48:20.040003+00:00",
+    "settings": {
+      "on": false,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4
+    },
+    "effective_settings": {
+      "on": false,
+      "scale": 0.5,
+      "d": null,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 4.7814,
+      "work": 4.6646,
+      "wait": 0.1168,
+      "visibility": 2.9566,
+      "portal_walk": 2.9442,
+      "mirror_walk": null,
+      "render_prep": 0.1928,
+      "render_record": 0.5144,
+      "render_submit": 0.6968
+    },
+    "gpu_ms": {
+      "fluid_reflection": 0.95,
+      "planar_reflection": null,
+      "planar_forward": null,
+      "forward": 1.7433333333333334,
+      "fluid_surface": 0.48666666666666664,
+      "bloom": 0.21,
+      "resolve": 0.08
+    },
+    "mirror": []
+  }
+]

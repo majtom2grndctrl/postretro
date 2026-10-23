@@ -1,0 +1,19 @@
+   Compiling serde_core v1.0.229
+   Compiling bytemuck v1.25.2
+   Compiling glam v0.33.12
+   Compiling postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+   Compiling postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-data)
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+    Finished `test` profile [optimized + debuginfo] target(s) in 18.75s
+     Running unittests src\lib.rs (target\debug\deps\postretro_visibility-18cc6da5c3f940b0.exe)
+
+running 5 tests
+test mirror_visibility::tests::mirror_empty_or_invalid_seeds_never_widen_to_every_cell ... ok
+test mirror_visibility::tests::mirror_distance_far_plane_and_water_halfspace_bound_step_limit_fallback ... ok
+test mirror_visibility::tests::mirror_solid_apex_floods_from_water_seeds_without_solid_fallback_log ... ok
+test mirror_visibility::tests::mirror_multiple_seeds_share_a_step_budget_and_no_portals_fallback_stays_bounded ... ok
+test mirror_visibility::tests::mirror_seeded_walk_honors_blocked_portals_and_keeps_empty_lighting_cells ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 54 filtered out; finished in 0.00s
+

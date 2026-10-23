@@ -1,0 +1,94 @@
+[
+  {
+    "key": "ssr-run1",
+    "cpu_windows": 3,
+    "cpu_frames": 360,
+    "gpu_windows": 1,
+    "gpu_readbacks": 120,
+    "cpu_ms": {
+      "total": 16.52733333333333,
+      "work": 6.193333333333333,
+      "visibility": 3.212666666666667,
+      "portal_walk": 3.1923333333333335,
+      "mirror_walk": null,
+      "render_record": 0.7516666666666667,
+      "render_submit": 1.0066666666666666
+    },
+    "gpu_ms": {
+      "fluid_reflection": 1.41,
+      "planar_reflection": null,
+      "planar_forward": null,
+      "forward": 2.61,
+      "fluid_surface": 0.72
+    }
+  },
+  {
+    "key": "planar-run2",
+    "cpu_windows": 3,
+    "cpu_frames": 360,
+    "gpu_windows": 1,
+    "gpu_readbacks": 120,
+    "cpu_ms": {
+      "total": 16.529666666666667,
+      "work": 9.254666666666667,
+      "visibility": 6.159666666666667,
+      "portal_walk": 3.1416666666666666,
+      "mirror_walk": 2.9763333333333333,
+      "render_record": 0.7166666666666667,
+      "render_submit": 1.2156666666666667
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.38,
+      "planar_forward": 0.25,
+      "forward": 3.14,
+      "fluid_surface": 0.86
+    }
+  },
+  {
+    "key": "planar-run3",
+    "cpu_windows": 3,
+    "cpu_frames": 360,
+    "gpu_windows": 1,
+    "gpu_readbacks": 120,
+    "cpu_ms": {
+      "total": 16.528000000000002,
+      "work": 9.204333333333333,
+      "visibility": 6.125333333333334,
+      "portal_walk": 3.1686666666666667,
+      "mirror_walk": 2.915,
+      "render_record": 0.715,
+      "render_submit": 1.2023333333333333
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.37,
+      "planar_forward": 0.25,
+      "forward": 3.12,
+      "fluid_surface": 0.85
+    }
+  },
+  {
+    "key": "ssr-run4",
+    "cpu_windows": 3,
+    "cpu_frames": 360,
+    "gpu_windows": 1,
+    "gpu_readbacks": 120,
+    "cpu_ms": {
+      "total": 16.527,
+      "work": 5.995666666666667,
+      "visibility": 3.177,
+      "portal_walk": 3.1613333333333333,
+      "mirror_walk": null,
+      "render_record": 0.681,
+      "render_submit": 0.9893333333333333
+    },
+    "gpu_ms": {
+      "fluid_reflection": 1.35,
+      "planar_reflection": null,
+      "planar_forward": null,
+      "forward": 2.52,
+      "fluid_surface": 0.69
+    }
+  }
+]

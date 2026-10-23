@@ -1,0 +1,10 @@
+{
+  "binary_sha256": "eefd2d2d6c256acae9fadfbeee8c435acb71cc2aca9704bf7578f3b0529b42cd",
+  "map_sha256": "7cce7c5f69397b20f2cab3740deecd97b5114d5f8985b737244752315b5f15f4",
+  "git_head": "1ff80ed97e60aa8cdeeb1f8463aaef352094662f",
+  "warmup_frames": 120,
+  "sample_frames": 240,
+  "repeats": 2,
+  "WGPU_VALIDATION_INDIRECT_CALL": "1",
+  "note": "Dirty tree possible; settings explicit in each scene; binary supplied by caller, indirect validation forced on; synchronized captures."
+}

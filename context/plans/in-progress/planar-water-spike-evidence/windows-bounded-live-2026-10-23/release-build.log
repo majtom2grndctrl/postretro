@@ -1,0 +1,592 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling autocfg v1.5.1
+   Compiling serde_core v1.0.229
+   Compiling version_check v0.9.5
+   Compiling libm v0.2.16
+   Compiling cfg-if v1.0.5
+   Compiling num-traits v0.2.19
+   Compiling serde v1.0.229
+   Compiling smallvec v1.16.2
+   Compiling bitflags v2.13.2
+   Compiling windows-link v0.2.1
+   Compiling log v0.4.34
+   Compiling allocator-api2 v0.2.21
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling getrandom v0.4.3
+   Compiling find-msvc-tools v0.1.14
+   Compiling equivalent v1.0.2
+   Compiling shlex v2.0.1
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling jobserver v0.1.35
+   Compiling foldhash v0.2.0
+   Compiling thiserror v2.0.21
+   Compiling cc v1.6.0
+   Compiling anyhow v1.0.104
+   Compiling once_cell v1.21.4
+   Compiling hashbrown v0.17.1
+   Compiling parking_lot_core v0.9.12
+   Compiling zmij v1.0.23
+   Compiling generic-array v0.14.7
+   Compiling stable_deref_trait v1.2.1
+   Compiling rand_core v0.6.4
+   Compiling synstructure v0.14.0
+   Compiling siphasher v1.0.4
+   Compiling rand v0.8.8
+   Compiling phf_shared v0.11.3
+   Compiling swc_macros_common v1.0.1
+   Compiling serde_json v1.0.151
+   Compiling phf_generator v0.11.3
+   Compiling libc v0.2.190
+   Compiling rustc-hash v2.1.3
+   Compiling heck v0.5.0
+   Compiling bytemuck_derive v1.12.1
+   Compiling serde_derive v1.0.229
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling bytemuck v1.25.2
+   Compiling tracing-attributes v0.1.31
+   Compiling thiserror-impl v2.0.21
+   Compiling from_variant v3.0.0
+   Compiling ast_node v7.0.0
+   Compiling swc_eq_ignore_macros v1.0.1
+   Compiling zerofrom v0.1.8
+   Compiling phf_macros v0.11.3
+   Compiling yoke v0.8.3
+   Compiling is-macro v0.3.8
+   Compiling string_enum v1.0.2
+   Compiling zerocopy v0.8.59
+   Compiling zerovec v0.11.8
+   Compiling zerocopy-derive v0.8.59
+   Compiling either v1.18.0
+   Compiling rustversion v1.0.23
+   Compiling memchr v2.8.3
+   Compiling arrayvec v0.7.8
+   Compiling tinystr v0.8.4
+   Compiling ahash v0.8.12
+   Compiling dragonbox_ecma v0.1.12
+   Compiling percent-encoding v2.3.2
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling icu_locale_core v2.3.0
+   Compiling potential_utf v0.1.6
+   Compiling zerotrie v0.2.5
+   Compiling utf8_iter v1.0.4
+   Compiling icu_collections v2.3.0
+   Compiling itoa v1.0.18
+   Compiling icu_provider v2.3.1
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling rquickjs-sys v0.14.0
+   Compiling typeid v1.0.3
+   Compiling triomphe v0.1.16
+   Compiling tracing-core v0.1.36
+   Compiling hashbrown v0.14.5
+   Compiling idna_adapter v1.2.2
+   Compiling luau0-src v0.22.0+luau740
+   Compiling bytes v1.12.1
+   Compiling crossbeam-utils v0.8.23
+   Compiling pkg-config v0.3.34
+   Compiling pin-project-lite v0.2.17
+   Compiling new_debug_unreachable v1.0.6
+   Compiling tracing v0.1.44
+   Compiling hstr v4.0.2
+   Compiling bytes-str v0.2.9
+   Compiling mlua-sys v0.13.0
+   Compiling form_urlencoded v1.2.2
+   Compiling idna v1.1.0
+   Compiling num-integer v0.1.47
+   Compiling approx v0.5.1
+   Compiling scoped-tls v1.0.1
+   Compiling seq-macro v0.3.6
+   Compiling erased-serde v0.4.10
+   Compiling lazy_static v1.5.1
+   Compiling better_scoped_tls v1.0.1
+   Compiling num-bigint v0.4.8
+   Compiling url v2.5.8
+   Compiling swc_atoms v10.0.0
+   Compiling swc_visit v2.0.2
+   Compiling parking_lot v0.12.5
+   Compiling blake3 v1.8.7
+   Compiling unicode-width v0.2.2
+   Compiling siphasher v0.3.11
+   Compiling mint v0.5.9
+   Compiling swc_common v26.0.0
+   Compiling glam v0.33.12
+   Compiling static_assertions v1.1.0
+   Compiling simd-adler32 v0.3.10
+   Compiling phf v0.11.3
+   Compiling indexmap v2.14.2
+   Compiling typenum v1.20.1
+   Compiling unicode-id-start v1.5.0
+   Compiling crc32fast v1.5.2
+   Compiling adler2 v2.0.1
+   Compiling swc_ecma_ast v29.0.2
+   Compiling miniz_oxide v0.9.1
+   Compiling getrandom v0.2.17
+   Compiling cfg_aliases v0.2.2
+   Compiling swc_ecma_visit v29.0.0
+   Compiling flate2 v1.1.10
+   Compiling miniz_oxide v0.8.9
+   Compiling fdeflate v0.3.7
+   Compiling castaway v0.2.4
+   Compiling swc_config_macro v1.0.1
+   Compiling byteorder v1.5.0
+   Compiling pxfm v0.1.30
+   Compiling zune-core v0.5.3
+   Compiling ryu v1.0.23
+   Compiling zune-jpeg v0.5.15
+   Compiling compact_str v0.7.1
+   Compiling png v0.18.1
+   Compiling crypto-common v0.1.7
+   Compiling par-core v2.0.0
+   Compiling windows-interface v0.59.3
+   Compiling windows-implement v0.60.2
+   Compiling windows-strings v0.5.1
+   Compiling windows-result v0.4.1
+   Compiling num_cpus v1.17.0
+   Compiling byteorder-lite v0.1.0
+   Compiling windows-core v0.62.2
+   Compiling swc_ecma_utils v35.0.2
+   Compiling swc_ecma_codegen_macros v2.0.2
+   Compiling auto_impl v1.4.0
+   Compiling windows-sys v0.61.2
+   Compiling swc_bundler v56.0.1
+   Compiling inflections v1.1.1
+   Compiling gltf-derive v1.4.1
+   Compiling swc_ecma_parser v45.1.6
+   Compiling moxcms v0.8.1
+   Compiling num-complex v0.4.6
+   Compiling ordered-float v2.10.1
+   Compiling serde-value v0.7.0
+   Compiling image v0.25.10
+   Compiling swc_ecma_transforms_base v49.0.1
+   Compiling gltf-json v1.4.1
+   Compiling block-buffer v0.10.4
+   Compiling aho-corasick v1.1.5
+   Compiling rquickjs-core v0.14.0
+   Compiling bstr v1.13.1
+   Compiling windows-threading v0.2.1
+   Compiling regex-syntax v0.8.11
+   Compiling base64 v0.13.1
+   Compiling cpufeatures v0.3.1
+   Compiling constant_time_eq v0.4.2
+   Compiling fixedbitset v0.5.7
+   Compiling windows_x86_64_msvc v0.52.6
+   Compiling windows_x86_64_msvc v0.53.1
+   Compiling urlencoding v2.1.3
+   Compiling gltf v1.4.1
+   Compiling regex-automata v0.4.18
+   Compiling petgraph v0.7.1
+   Compiling windows-future v0.3.2
+   Compiling rquickjs v0.14.0
+   Compiling digest v0.10.7
+   Compiling windows-collections v0.3.2
+   Compiling windows-numerics v0.3.1
+   Compiling bumpalo v3.20.3
+   Compiling cpufeatures v0.2.17
+   Compiling sha1 v0.10.7
+   Compiling swc_allocator v5.0.0
+   Compiling windows v0.62.2
+   Compiling regex v1.13.1
+   Compiling dashmap v6.2.1
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+   Compiling swc_config v6.0.1
+   Compiling swc_ecma_hooks v1.0.0
+   Compiling hashbrown v0.16.1
+   Compiling crc-catalog v1.1.1
+   Compiling ascii v1.1.0
+   Compiling base64 v0.22.1
+   Compiling pathdiff v0.2.3
+   Compiling swc_ecma_loader v27.0.0
+   Compiling swc_ecma_transforms_react v55.0.1
+   Compiling swc_ecma_codegen v32.0.3
+   Compiling crc v2.1.0
+   Compiling windows-targets v0.53.5
+   Compiling swc_ecma_transforms_optimization v52.0.2
+   Compiling swc_graph_analyzer v14.0.2
+   Compiling relative-path v1.9.3
+   Compiling khronos_api v3.1.0
+   Compiling radix_fmt v1.0.0
+   Compiling windows-sys v0.60.2
+   Compiling swc_ecma_transforms_typescript v55.0.4
+   Compiling postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\foundation)
+   Compiling font-types v0.12.6
+   Compiling ordered-float v5.5.0
+   Compiling read-fonts v0.41.0
+   Compiling winapi-util v0.1.11
+   Compiling raw-window-handle v0.6.2
+   Compiling xml-rs v0.8.29
+   Compiling rustc-hash v1.1.0
+   Compiling linebender_resource_handle v0.1.1
+   Compiling gl_generator v0.14.0
+   Compiling naga-types v30.0.1
+   Compiling same-file v1.0.6
+   Compiling naga v30.0.1
+   Compiling postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-data)
+   Compiling inout v0.1.4
+   Compiling euclid v0.22.14
+   Compiling libloading v0.8.9
+   Compiling bit-vec v0.9.1
+   Compiling profiling v1.0.18
+   Compiling subtle v2.6.1
+   Compiling ash v0.38.0+1.3.281
+   Compiling zeroize v1.9.0
+   Compiling universal-hash v0.5.1
+   Compiling cipher v0.4.4
+   Compiling bit-set v0.10.0
+   Compiling walkdir v2.5.0
+   Compiling glutin_wgl_sys v0.6.1
+   Compiling skrifa v0.44.0
+   Compiling symphonia-core v0.6.1
+   Compiling codespan-reporting v0.13.1
+   Compiling half v2.7.1
+   Compiling polycool v0.4.0
+   Compiling core_maths v0.1.1
+   Compiling notify-types v2.1.0
+   Compiling spirv v0.4.0+sdk-1.4.341.0
+   Compiling khronos-egl v6.0.0
+   Compiling unicode-segmentation v1.13.3
+   Compiling opaque-debug v0.3.1
+   Compiling poly1305 v0.8.0
+   Compiling notify v8.2.0
+error: failed to run custom build command for `mlua-sys v0.13.0`
+
+Caused by:
+  process didn't exit successfully: `C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\target\release\build\mlua-sys-99e8185ac5f4fa06\build-script-main` (exit code: 1)
+  --- stdout
+  cargo:rerun-if-changed=build
+  cargo:rerun-if-env-changed=LUAU_CXXFLAGS
+  cargo:rerun-if-env-changed=LUAU_INCLUDE_DIRS
+  Allocator.cpp
+  exit code: 0
+  Ast.cpp
+  exit code: 0
+  Confusables.cpp
+  exit code: 0
+  Cst.cpp
+  exit code: 0
+  Lexer.cpp
+  exit code: 0
+  Location.cpp
+  exit code: 0
+  Parser.cpp
+  exit code: 0
+  PrettyPrinter.cpp
+  exit code: 0
+  BytecodeWire.cpp
+  exit code: 0
+  StringUtils.cpp
+  exit code: 0
+  TimeTrace.cpp
+  exit code: 0
+  BytecodeBuilder.cpp
+  exit code: 0
+  BytecodeDump.cpp
+  exit code: 0
+  BytecodeGraph.cpp
+  exit code: 0
+  Sccp.cpp
+  exit code: 0
+  JitInliner.cpp
+  exit code: 0
+  TValueVmConstImpl.cpp
+  exit code: 0
+  luajitinliner.cpp
+  exit code: 0
+  BuiltinFolding.cpp
+  exit code: 0
+  Builtins.cpp
+  exit code: 0
+  Compiler.cpp
+  exit code: 0
+  ConstantFolding.cpp
+  exit code: 0
+  CostModel.cpp
+  exit code: 0
+  TableShape.cpp
+  exit code: 0
+  Types.cpp
+  exit code: 0
+  ValueTracking.cpp
+  exit code: 0
+  lcode.cpp
+  exit code: 0
+  Config.cpp
+  exit code: 0
+  LinterConfig.cpp
+  exit code: 0
+  LuauConfig.cpp
+  exit code: 0
+  lextra.cpp
+  exit code: 0
+  lflags.cpp
+  exit code: 0
+  AliasCycleTracker.cpp
+  exit code: 0
+  Navigation.cpp
+  exit code: 0
+  PathUtilities.cpp
+  exit code: 0
+  Require.cpp
+  exit code: 0
+  RequireImpl.cpp
+  exit code: 0
+  RequireNavigator.cpp
+  exit code: 0
+  lapi.cpp
+  exit code: 0
+  laux.cpp
+  exit code: 0
+  lbaselib.cpp
+  exit code: 0
+  lbitlib.cpp
+  exit code: 0
+  lbuffer.cpp
+  exit code: 0
+  lbuflib.cpp
+  exit code: 0
+  lbuiltins.cpp
+  exit code: 0
+  lclass.cpp
+  exit code: 0
+  lclasslib.cpp
+  exit code: 0
+  lcorolib.cpp
+  exit code: 0
+  ldblib.cpp
+  exit code: 0
+  ldebug.cpp
+  exit code: 0
+  ldo.cpp
+  exit code: 0
+  lfunc.cpp
+  exit code: 0
+  lgc.cpp
+  exit code: 0
+  lgcdebug.cpp
+  exit code: 0
+  linit.cpp
+  exit code: 0
+  lintlib.cpp
+  exit code: 0
+  lmathlib.cpp
+  exit code: 0
+  lmem.cpp
+  exit code: 0
+  lnumprint.cpp
+  exit code: 0
+  lobject.cpp
+  exit code: 0
+  loslib.cpp
+  exit code: 0
+  lperf.cpp
+  exit code: 0
+  lstate.cpp
+  exit code: 0
+  lstring.cpp
+  exit code: 0
+  lstrlib.cpp
+  exit code: 0
+  ltable.cpp
+  exit code: 0
+  ltablib.cpp
+  exit code: 0
+  ltm.cpp
+  exit code: 0
+  ludata.cpp
+  exit code: 0
+  lutf8lib.cpp
+  exit code: 0
+  lveclib.cpp
+  exit code: 0
+  lvector.cpp
+  exit code: 0
+  lvmexecute.cpp
+  exit code: 0
+  lvmload.cpp
+  exit code: 0
+  lvmutils.cpp
+  exit code: 0
+  LINK : fatal error LNK1114: cannot overwrite the original file 'C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\target\release\build\mlua-sys-647cd5bfceeaedd6\out\luau-build\libluauvm.a'; error code 5
+
+  --- stderr
+
+
+  error occurred in cc-rs: command did not execute successfully (status code exit code: 1114): "C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\bin\\HostX64\\x64\\lib.exe" "-out:C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\libluauvm.a" "-nologo" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\libluauvm.a" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-loslib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lperf.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lstate.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lstring.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lstrlib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-ltable.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-ltablib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-ltm.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-ludata.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lutf8lib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lveclib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lvector.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lvmexecute.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lvmload.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-647cd5bfceeaedd6\\out\\luau-build\\6b01b7f03163a9e6-lvmutils.o"
+
+
+warning: build failed, waiting for other jobs to finish...
+error: failed to run custom build command for `mlua-sys v0.13.0`
+
+Caused by:
+  process didn't exit successfully: `C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\target\release\build\mlua-sys-99e8185ac5f4fa06\build-script-main` (exit code: 1)
+  --- stdout
+  cargo:rerun-if-changed=build
+  cargo:rerun-if-env-changed=LUAU_CXXFLAGS
+  cargo:rerun-if-env-changed=LUAU_INCLUDE_DIRS
+  Allocator.cpp
+  exit code: 0
+  Ast.cpp
+  exit code: 0
+  Confusables.cpp
+  exit code: 0
+  Cst.cpp
+  exit code: 0
+  Lexer.cpp
+  exit code: 0
+  Location.cpp
+  exit code: 0
+  Parser.cpp
+  exit code: 0
+  PrettyPrinter.cpp
+  exit code: 0
+  BytecodeWire.cpp
+  exit code: 0
+  StringUtils.cpp
+  exit code: 0
+  TimeTrace.cpp
+  exit code: 0
+  BytecodeBuilder.cpp
+  exit code: 0
+  BytecodeDump.cpp
+  exit code: 0
+  BytecodeGraph.cpp
+  exit code: 0
+  Sccp.cpp
+  exit code: 0
+  JitInliner.cpp
+  exit code: 0
+  TValueVmConstImpl.cpp
+  exit code: 0
+  luajitinliner.cpp
+  exit code: 0
+  BuiltinFolding.cpp
+  exit code: 0
+  Builtins.cpp
+  exit code: 0
+  Compiler.cpp
+  exit code: 0
+  ConstantFolding.cpp
+  exit code: 0
+  CostModel.cpp
+  exit code: 0
+  TableShape.cpp
+  exit code: 0
+  Types.cpp
+  exit code: 0
+  ValueTracking.cpp
+  exit code: 0
+  lcode.cpp
+  exit code: 0
+  Config.cpp
+  exit code: 0
+  LinterConfig.cpp
+  exit code: 0
+  LuauConfig.cpp
+  exit code: 0
+  lextra.cpp
+  exit code: 0
+  lflags.cpp
+  exit code: 0
+  AliasCycleTracker.cpp
+  exit code: 0
+  Navigation.cpp
+  exit code: 0
+  PathUtilities.cpp
+  exit code: 0
+  Require.cpp
+  exit code: 0
+  RequireImpl.cpp
+  exit code: 0
+  RequireNavigator.cpp
+  exit code: 0
+  lapi.cpp
+  exit code: 0
+  laux.cpp
+  exit code: 0
+  lbaselib.cpp
+  exit code: 0
+  lbitlib.cpp
+  exit code: 0
+  lbuffer.cpp
+  exit code: 0
+  lbuflib.cpp
+  exit code: 0
+  lbuiltins.cpp
+  exit code: 0
+  lclass.cpp
+  exit code: 0
+  lclasslib.cpp
+  exit code: 0
+  lcorolib.cpp
+  exit code: 0
+  ldblib.cpp
+  exit code: 0
+  ldebug.cpp
+  exit code: 0
+  ldo.cpp
+  exit code: 0
+  lfunc.cpp
+  exit code: 0
+  lgc.cpp
+  exit code: 0
+  lgcdebug.cpp
+  exit code: 0
+  linit.cpp
+  exit code: 0
+  lintlib.cpp
+  exit code: 0
+  lmathlib.cpp
+  exit code: 0
+  lmem.cpp
+  exit code: 0
+  lnumprint.cpp
+  exit code: 0
+  lobject.cpp
+  exit code: 0
+  loslib.cpp
+  exit code: 0
+  lperf.cpp
+  exit code: 0
+  lstate.cpp
+  exit code: 0
+  lstring.cpp
+  exit code: 0
+  lstrlib.cpp
+  exit code: 0
+  ltable.cpp
+  exit code: 0
+  ltablib.cpp
+  exit code: 0
+  ltm.cpp
+  exit code: 0
+  ludata.cpp
+  exit code: 0
+  lutf8lib.cpp
+  exit code: 0
+  lveclib.cpp
+  exit code: 0
+  lvector.cpp
+  exit code: 0
+  lvmexecute.cpp
+  lvmload.cpp
+  lvmutils.cpp
+  exit code: 0
+  exit code: 0
+  exit code: 0
+  LINK : fatal error LNK1114: cannot overwrite the original file 'C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\target\release\build\mlua-sys-26bc396a2e05f4cc\out\luau-build\libluauvm.a'; error code 5
+
+  --- stderr
+
+
+  error occurred in cc-rs: command did not execute successfully (status code exit code: 1114): "C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\bin\\HostX64\\x64\\lib.exe" "-out:C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\libluauvm.a" "-nologo" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\libluauvm.a" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-loslib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lperf.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lstate.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lstring.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lstrlib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-ltable.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-ltablib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-ltm.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-ludata.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lutf8lib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lveclib.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lvector.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lvmexecute.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lvmload.o" "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\release\\build\\mlua-sys-26bc396a2e05f4cc\\out\\luau-build\\6b01b7f03163a9e6-lvmutils.o"
+
+

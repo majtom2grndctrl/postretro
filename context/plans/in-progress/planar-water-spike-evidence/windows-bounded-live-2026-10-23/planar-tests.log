@@ -1,0 +1,18 @@
+   Compiling postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+    Finished `test` profile [optimized + debuginfo] target(s) in 53.87s
+     Running unittests src\lib.rs (target\debug\deps\postretro_renderer-3e34ce177f6ef7f3.exe)
+
+running 10 tests
+test render::planar_reflection::launch_settings::tests::planar_launch_bad_fields_warn_without_overriding_other_fields ... ok
+test render::planar_reflection::launch_settings::tests::planar_launch_seeds_the_same_controls_as_the_panel ... ok
+test render::planar_reflection::tests::planar_gpu_asymmetric_world_lands_on_mirrored_pixel_and_ssr_records_zero ... ok
+test render::planar_reflection::tests::planar_gpu_changed_faces_with_same_plane_bounds_refresh_the_water_mask ... ok
+test render::planar_reflection::tests::planar_gpu_d_distance_fades_and_disabling_restores_ssr_bytes ... ok
+test render::planar_reflection::tests::planar_gpu_mask_rejects_dry_occluded_and_beyond_r_pixels ... ok
+test render::planar_reflection::tests::planar_gpu_no_selected_plane_clears_previous_confidence ... ok
+test render::planar_reflection::tests::planar_gpu_other_water_plane_remains_probe_only ... ok
+test render::planar_reflection::tests::planar_shaders_preserve_ip_boundaries ... ok
+test render::planar_reflection::tests::planar_shaders_validate_without_an_adapter ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 14.29s
+

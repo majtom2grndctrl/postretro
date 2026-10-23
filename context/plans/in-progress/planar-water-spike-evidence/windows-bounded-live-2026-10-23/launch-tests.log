@@ -1,0 +1,10 @@
+   Compiling postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 27s
+     Running unittests src\lib.rs (target\debug\deps\postretro_renderer-3e34ce177f6ef7f3.exe)
+
+running 2 tests
+test render::planar_reflection::launch_settings::tests::planar_launch_bad_fields_warn_without_overriding_other_fields ... ok
+test render::planar_reflection::launch_settings::tests::planar_launch_seeds_the_same_controls_as_the_panel ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1073 filtered out; finished in 0.00s
+

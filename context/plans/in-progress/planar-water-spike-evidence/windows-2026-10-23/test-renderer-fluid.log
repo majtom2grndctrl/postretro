@@ -1,0 +1,192 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.33s
+     Running unittests src\lib.rs (target\debug\deps\postretro_renderer-3e34ce177f6ef7f3.exe)
+
+running 100 tests
+[FluidBakedProof] variant parity above: unbound face worst 0 at (0, 0), bound face worst 28, reflection-free red across row 2 217..=232
+[FluidBakedProof] variant parity below: unbound face worst 0 at (0, 0), bound face worst 0, reflection-free red across row 2 217..=232
+test render::fluid_baked_frame_test::reflecting_and_reflection_free_variants_match_wherever_the_reflecting_gate_is_shut ... ok
+[FluidBakedProof] level change level 1: grid Some(FluidGridPlanes { origin: DVec3(-1.2000000476837158, -1.600000023841858, -1.100000023841858), spacing: DVec3(0.375, 0.5, 0.625), coarsening: 0 }), expected [225, 188, 207], worst 0 at (0, 0)
+[FluidBakedProof] level change level 2 (no SH): grid None, expected [225, 188, 225], worst 0 at (0, 0)
+[FluidBakedProof] level change level 2b (zero-dimension SH): grid None, expected [225, 188, 225], worst 0 at (0, 0)
+[FluidBakedProof] level change zero cell size: grid None, expected [225, 188, 225], worst 0 at (0, 0)
+[FluidBakedProof] level change NaN origin: grid None, expected [225, 188, 225], worst 0 at (0, 0)
+[FluidBakedProof] level change level 3: grid Some(FluidGridPlanes { origin: DVec3(-1.0, -1.25, -0.75), spacing: DVec3(0.5, 0.4000000059604645, 0.75), coarsening: 0 }), expected [207, 188, 225], worst 0 at (0, 0)
+test render::fluid_baked_frame_test::the_fluid_grid_takes_each_levels_sh_lattice_and_a_level_without_one_draws_ambient_only ... ok
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x17f lighting [0.54, 0.54, 0.7075] expected [227, 188, 238] centre [227, 188, 238] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x17f centre [158, 131, 164] expected [158, 131, 164] worst 1 at (6, 1)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x17e lighting [0.54, 0.54, 0.7075] expected [227, 188, 238] centre [227, 188, 238] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x17e centre [158, 131, 164] expected [158, 131, 164] worst 1 at (6, 1)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x17d lighting [0.375, 0.375, 0.625] expected [216, 188, 233] centre [216, 188, 233] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x17d centre [146, 126, 159] expected [146, 126, 159] worst 1 at (2, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x17b lighting [0.54, 0.54, 0.7075] expected [227, 188, 238] centre [227, 188, 238] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x17b centre [158, 131, 164] expected [158, 131, 164] worst 1 at (6, 1)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x179 lighting [0.375, 0.375, 0.625] expected [216, 188, 233] centre [216, 188, 233] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x179 centre [146, 126, 159] expected [146, 126, 159] worst 1 at (2, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x177 lighting [0.41500002, 0.41500002, 0.20750001] expected [219, 188, 204] centre [219, 188, 204] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x177 centre [149, 127, 131] expected [149, 127, 131] worst 1 at (1, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x15f lighting [0.29000002, 0.29000002, 0.5825] expected [210, 188, 230] centre [210, 188, 230] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.0, indirect_scale: 0.33, direct_scale: 1.0 } mask 0x15f centre [140, 123, 156] expected [140, 123, 156] worst 1 at (1, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x17f lighting [0.8125, 0.8125, 0.6875] expected [244, 188, 237] centre [244, 188, 237] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x17f centre [175, 139, 163] expected [175, 138, 163] worst 1 at (2, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x17e lighting [0.6875, 0.6875, 0.5625] expected [237, 188, 229] centre [237, 188, 229] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x17e centre [168, 135, 155] expected [167, 135, 155] worst 1 at (1, 1)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x17d lighting [0.4375, 0.4375, 0.5] expected [220, 188, 225] centre [220, 188, 225] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x17d centre [151, 128, 151] expected [151, 128, 151] worst 1 at (1, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x17b lighting [0.8125, 0.8125, 0.6875] expected [244, 188, 237] centre [244, 188, 237] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x17b centre [175, 139, 163] expected [175, 138, 163] worst 1 at (2, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x179 lighting [0.4375, 0.4375, 0.5] expected [220, 188, 225] centre [220, 188, 225] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x179 centre [151, 128, 151] expected [151, 128, 151] worst 1 at (1, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x177 lighting [0.75, 0.75, 0.4375] expected [240, 188, 220] centre [241, 188, 220] worst 1 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x177 centre [171, 137, 147] expected [171, 137, 147] worst 1 at (0, 0)
+[FluidBakedProof] uniform field: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x15f lighting [0.5625, 0.5625, 0.5625] expected [229, 188, 229] centre [229, 188, 229] worst 0 at (0, 0)
+[FluidBakedProof] uniform field fog: scales FrameScales { ambient_floor: 0.125, indirect_scale: 0.75, direct_scale: 0.5 } mask 0x15f centre [159, 132, 155] expected [159, 131, 155] worst 1 at (0, 0)
+test render::fluid_baked_frame_test::water_on_a_uniform_baked_field_reads_todays_formula_for_every_term_and_scale ... ok
+[FluidBakedProof] viewer side: ReflectionFree above at [0, 3, -0.5]: centre [241, 188, 198], above-side [240, 188, 198], below-side [198, 188, 240], worst 1 at (0, 0)
+[FluidBakedProof] viewer side: ReflectionFree below at [0, 3, 1.5]: centre [198, 188, 241], above-side [240, 188, 198], below-side [198, 188, 240], worst 1 at (0, 0)
+[FluidBakedProof] viewer side: ReflectionFree just above at [0, 3, 0.46]: centre [241, 188, 198], above-side [240, 188, 198], below-side [198, 188, 240], worst 1 at (0, 0)
+[FluidBakedProof] viewer side: ReflectionFree crossing at [0, 3, 0.54]: centre [198, 188, 241], above-side [240, 188, 198], below-side [198, 188, 240], worst 1 at (0, 0)
+[FluidBakedProof] viewer side: Reflecting above at [0, 3, -0.5]: centre [221, 188, 182], above-side [240, 188, 198], below-side [198, 188, 240], worst 1 at (3, 0)
+[FluidBakedProof] viewer side: Reflecting below at [0, 3, 1.5]: centre [198, 188, 241], above-side [240, 188, 198], below-side [198, 188, 240], worst 1 at (0, 0)
+[FluidBakedProof] viewer side: Reflecting just above at [0, 3, 0.46]: centre [181, 188, 149], above-side [240, 188, 198], below-side [198, 188, 240], worst 1 at (3, 1)
+[FluidBakedProof] viewer side: Reflecting crossing at [0, 3, 0.54]: centre [198, 188, 241], above-side [240, 188, 198], below-side [198, 188, 240], worst 1 at (0, 0)
+test render::fluid_baked_frame_test::water_takes_its_viewer_sides_baked_term_above_below_and_on_the_crossing_frame ... ok
+[FluidSurfaceProof] fluid-ssr-reflections row 18 bilinear-straddle GPU case ran: 21 edge fragments straddle written and unwritten texels, worst 1 at [10, 36] against the CPU mix, 0 outside the probe-to-SSR range
+test render::fluid_reflection_frame_test::a_footprint_straddling_written_and_unwritten_texels_reads_between_probe_and_ssr ... ok
+[FluidSurfaceProof] fluid-ssr-reflections row 14 standing-quad SSR GPU case ran: CPU march on read-back depth hits the quad at 376 water pixels (0 in a fade band), high worst 0 at [49, 51], 0 within 16/255 of Off; every water pixel worst 1 at [58, 30] (194 with 0 < c < 1); medium worst 1 at [13, 45], 272 with a whole-quad footprint
+[FluidSurfaceProof] fluid-ssr-reflections row 14 refused-face GPU case ran: below and isolating frames byte-equal, 1117 unbound-face pixels byte-equal (332 would reflect the quad if bound), 436 bound-face pixels reflect
+test render::fluid_reflection_frame_test::a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflection_free ... ok
+[FluidSurfaceProof] fluid-ssr-reflections row 22 style-switch GPU case ran: 975 pixel and 1044 smooth target texels hit; pixel → smooth first frame equals steady: true, fresh: true; smooth → pixel first frame equals steady: true
+test render::fluid_reflection_frame_test::a_style_switch_draws_the_new_style_whole_on_its_first_frame ... ok
+[FluidSurfaceProof] fluid-ssr-reflections row 18 unwritten-texel GPU case ran (Pixel): 18 edge texels held hits, then lay off the water and read c = 0; equals a fresh renderer: true
+[FluidSurfaceProof] fluid-ssr-reflections row 18 unwritten-texel GPU case ran (Smooth): 31 edge texels held hits, then lay off the water and read c = 0; equals a fresh renderer: true
+test render::fluid_reflection_frame_test::a_texel_no_reflecting_draw_wrote_this_frame_reads_no_earlier_hit ... ok
+[FluidSurfaceProof] fluid-ssr-reflections row 16 overlapping-surfaces GPU case ran: visible-first worst 1 at [58, 30] (376 quad hits), 815 pixels where the hidden pool's SSR reads apart, orders byte-equal: true
+test render::fluid_reflection_frame_test::overlapping_reflecting_surfaces_each_read_their_own_reflection_in_either_draw_order ... ok
+[FluidSurfaceProof] fluid-ssr-reflections row 15 pixel-cell GPU case ran at Medium: 29 cells, worst spread 0 in (0, 0), 13 hit cells differ from Off
+[FluidSurfaceProof] fluid-ssr-reflections row 15 pixel-cell GPU case ran at VeryHigh: 29 cells, worst spread 0 in (0, 0), 13 hit cells differ from Off
+[FluidSurfaceProof] fluid-ssr-reflections row 15 pixel-cell GPU case ran at Ultra: 29 cells, worst spread 0 in (0, 0), 13 hit cells differ from Off
+[FluidSurfaceProof] fluid-ssr-reflections row 15 pixel-cell GPU case ran at High: 29 cells, worst spread 0 in (0, 0), 13 hit cells differ from Off
+[FluidSurfaceProof] fluid-ssr-reflections row 15 pixel-centre GPU case ran: 28 cells against the CPU, worst 0 in (0, 0); 2 hidden-centre cells (2 hitting), 8 off-screen-centre cells, 2 past-edge cells (1 whose own fragments wrote hits)
+test render::fluid_reflection_frame_test::pixel_style_reads_one_reflection_per_cell_and_hidden_or_lost_centres_read_their_own ... ok
+[FluidSurfaceProof] fluid-ssr-reflections row 17 live-reflectivity GPU case ran: raised frame worst 1 at [58, 30] (376 quad hits), lowered frame byte-equal: true, target builds 2 → 2, group 5 builds 4 → 4
+test render::fluid_reflection_frame_test::raising_reflectivity_from_zero_shows_ssr_next_frame_without_a_rebuild ... ok
+[FluidSurfaceProof] dev-tuning GPU case ran: one-step frame worst 0 at [0, 0] against its CPU composite, restored frame byte-equal: true, 4 uniform writes
+test render::fluid_reflection_frame_test::reflection_march_tuning_writes_only_the_reflection_uniform ... ok
+[FluidSurfaceProof] same-fraction tier GPU case ran: [(VeryHigh, 1, 380), (Ultra, 1, 380)] (tier, worst, quad hits), high restored byte-equal: true, 2 target and 4 group 5 builds unchanged
+test render::fluid_reflection_frame_test::switching_between_same_fraction_tiers_changes_only_the_reflection_uniform ... ok
+[FluidSurfaceProof] fluid-ssr-reflections row 23 below-plane GPU case ran (Pixel): 256 target texels hit from 1 mm above, that frame differs from Off: true; 1 mm below equals Off: true
+[FluidSurfaceProof] fluid-ssr-reflections row 23 below-plane GPU case ran (Smooth): 116 target texels hit from 1 mm above, that frame differs from Off: true; 1 mm below equals Off: true
+test render::fluid_reflection_frame_test::the_camera_a_millimetre_below_the_plane_draws_the_off_frame ... ok
+[FluidSurfaceProof] fluid-ssr-reflections low-tier GPU case ran: 1594 water pixels, probe-only worst 0 at [0, 0], 1594 differ from Off, 376 of 376 quad hits differ from high
+test render::fluid_reflection_frame_test::the_low_tier_draws_the_probe_only_composite_and_drops_the_ssr_layer ... ok
+test render::fluid_surface::tests::both_fluid_entry_points_return_the_shared_shading_where_the_gate_is_shut ... ok
+test render::fluid_surface::tests::fluid_baked_light_is_per_vertex_and_runtime_lights_per_fragment ... ok
+test render::fluid_surface::tests::fluid_drift_rides_a_second_vertex_buffer_at_location_three ... ok
+test render::fluid_surface::tests::fluid_drift_scroll_wgsl_matches_the_cpu_mirror ... ok
+test render::fluid_surface::tests::fluid_drift_writes_directly_so_every_re_resolve_point_stays_unbatched ... ok
+test render::fluid_surface::tests::fluid_fog_shader_constants_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_fog_wgsl_bodies_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_motion_cpu_reference_bodies_are_pinned ... ok
+test render::fluid_surface::tests::fluid_motion_shader_constants_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_motion_wgsl_bodies_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_pass_declares_no_history_or_precomputed_intersection_binding ... ok
+test render::fluid_surface::tests::fluid_pass_opens_depth_read_only ... ok
+test render::fluid_surface::tests::fluid_pass_picks_variants_by_the_frames_group_0_mask ... ok
+test render::fluid_surface::tests::fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate ... ok
+test render::fluid_surface::tests::fluid_pipeline_blends_over_the_scene_two_sided_without_writing_depth ... ok
+test render::fluid_surface::tests::fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave ... ok
+test render::fluid_surface::tests::fluid_post_retro_sampling_matches_the_mover_shader ... ok
+test render::fluid_surface::tests::fluid_probe_index_rides_a_third_vertex_buffer_at_location_four_read_flat ... ok
+test render::fluid_surface::tests::fluid_probe_layer_derives_from_the_face_binding_alone ... ok
+test render::fluid_surface::tests::fluid_reflection_light_evaluation_reads_no_promotion_weight_or_debug_override ... ok
+test render::fluid_surface::tests::fluid_reflection_light_value_ports_the_sh_compose_light_scale ... ok
+test render::fluid_surface::tests::fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_reflection_pass_binds_no_probe_array_and_no_fluid_group_5 ... ok
+test render::fluid_surface::tests::fluid_reflection_pass_clears_its_target_and_orders_fluid_by_its_own_depth ... ok
+test render::fluid_surface::tests::fluid_reflection_pass_marches_from_the_probe_terms_point_and_writes_premultiplied ... ok
+test render::fluid_surface::tests::fluid_reflection_pass_structs_match_the_fluid_shader_and_the_cpu ... ok
+test render::fluid_surface::tests::fluid_reflection_reads_descriptors_from_the_shared_group_3_binding_11 ... ok
+test render::fluid_surface::tests::fluid_reflection_search_wgsl_bodies_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_reflection_shader_constants_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_reflection_style_shader_constants_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_reflection_style_wgsl_bodies_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_reflection_term_takes_no_sh_read ... ok
+test render::fluid_surface::tests::fluid_reflection_wgsl_bodies_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets ... ok
+test render::fluid_surface::tests::fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform ... ok
+test render::fluid_surface::tests::fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the_composite ... ok
+test render::fluid_surface::tests::fluid_shade_samples_albedo_and_emissive_at_the_warped_uv ... ok
+test render::fluid_surface::tests::fluid_shader_bindings_are_present_in_the_pipeline_layout ... ok
+test render::fluid_surface::tests::fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows ... ok
+test render::fluid_surface::tests::fluid_shader_passes_naga_validation ... ok
+test render::fluid_surface::tests::fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid ... ok
+test render::fluid_surface::tests::fluid_warp_reads_no_reduce_motion_accessibility_or_render_profile_input ... ok
+test render::fluid_surface::tests::fluid_wave_cpu_twin_bodies_are_pinned ... ok
+test render::fluid_surface::tests::fluid_wave_wgsl_bodies_match_the_cpu_twin ... ok
+test render::fluid_surface::tests::only_the_vertex_entry_samples_the_sh_volume ... ok
+test render::fluid_surface::tests::raising_the_reflection_tier_compiles_nothing ... ok
+test render::fluid_surface::tests::screen_march_shader_constants_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::screen_march_wgsl_bodies_match_the_cpu_reference ... ok
+test render::fluid_surface::tests::the_fluid_grid_takes_the_lattice_the_sh_sampler_reads ... ok
+test render::fluid_surface::tests::the_fluid_screen_layer_samples_smooth_bilinear_and_pixel_at_its_cell_centre ... ok
+test render::fluid_surface::tests::the_frames_one_descriptor_flush_precedes_the_fluid_pass ... ok
+test render::fluid_surface::tests::the_install_filter_and_the_bound_face_predicate_agree ... ok
+test render::fluid_surface::tests::the_ip_rules_are_commented_beside_the_march_the_composite_and_the_probe_lookup ... ok
+test render::fluid_surface::tests::the_march_and_its_confidence_read_no_direction ... ok
+test render::fluid_surface::tests::the_reflection_free_entry_declares_none_of_the_reflection_globals ... ok
+test render::fluid_surface::tests::the_reflection_free_variant_compiles_no_reflection_into_its_executable_path ... ok
+test render::fluid_surface::tests::the_reflection_pass_ray_starts_at_the_probe_terms_point_and_mirror ... ok
+test render::fluid_surface::tests::the_reflection_target_sizes_by_the_render_cpu_tier_rule_alone ... ok
+test render::fluid_surface::tests::the_target_holds_colour_and_confidence_and_no_probe_lookup_reaches_it ... ok
+[FluidSurfaceProof] two-pipeline GPU case ran: variants [ReflectionFree, Reflecting, ReflectionFree], reflecting [171, 228, 171] worst 1 at (0, 0), reflection-free [188, 188, 188] [188, 188, 188] off the no-section frame by 0 at (0, 0)
+[FluidSurfaceProof] two-pipeline GPU case ran: mask 0x13f, variants [ReflectionFree, ReflectionFree, ReflectionFree], frame equal to the no-section frame: true
+test render::fluid_surface_frame_test::a_draw_set_mixing_reflecting_and_reflection_free_volumes_draws_each_right ... ok
+[FluidSurfaceProof] P11 level-change GPU case ran: A [188, 0, 0] worst 0, B [188, 188, 188], A2 (shadowing distances) [188, 188, 188] worst 0, B2 [0, 0, 188] worst 0
+test render::fluid_surface_frame_test::a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none ... ok
+[FluidSurfaceProof] row A6 near-wall GPU case ran: CPU search hits 194/256 pixels, worst deviation 1 at (4, 0) (box projection frame: 1 at (6, 0)), 114 pixels read texels apart from box projection's, 114 of them moved on the GPU
+test render::fluid_surface_frame_test::a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up ... ok
+[FluidSurfaceProof] live-lighting GPU case ran: no lights [172.41406, 201.11719, 172.41406], light on [172.41406, 201.11719, 172.41406], light off [172.41406, 187.97656, 172.41406], half capture [172.41406, 188.0, 172.41406]
+test render::fluid_surface_frame_test::a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off ... ok
+[FluidSurfaceProof] row 33 GPU case ran: reflectivity 1, worst deviation 1 at (4, 1), centre [247, 180, 188], top-left [223, 184, 188], bottom-left [255, 163, 175]
+[FluidSurfaceProof] row 33 GPU case ran: reflectivity 0, worst deviation 0 at (0, 0), centre [188, 188, 188], top-left [188, 188, 188], bottom-left [188, 188, 188]
+test render::fluid_surface_frame_test::a_uniform_capture_reads_its_fresnel_composite_in_the_capture_encoding ... ok
+test render::fluid_surface_frame_test::capture_encode_mirrors_the_soft_knee_tonemap_and_srgb_target ... ok
+[FluidSurfaceProof] tier-fraction and one-tick P1/P2 GPU case ran: medium, high, very high and ultra at 42x26 → 21x13, 42x26, 42x26, 42x26; off and low placeholder; medium at half of 64x48 → 16x12; captured at 32x24
+test render::fluid_surface_frame_test::each_tier_resolves_at_its_fraction_and_one_tick_tier_and_resolution_bind_one_target ... ok
+[FluidSurfaceProof] depth fog GPU case ran: weight 1=51.75 0.5=190.375 0=254
+[FluidSurfaceProof] depth fog seen from inside: 254
+test render::fluid_surface_frame_test::fluid_depth_fog_draws_from_outside_and_scales_with_the_eye_weight ... ok
+[FluidSurfaceProof] re-resolve: before=188 after=188 later=188
+test render::fluid_surface_frame_test::fluid_drift_re_resolve_keeps_draws_and_uploads_no_parameter_rows ... ok
+[FluidSurfaceProof] P4 scene-inputs GPU case ran: group 5 at 64x48 after 12 builds (full init, two scene-target rebuilds and capture's, install, five tier changes, a fraction override, unload), mean red 51.695313
+test render::fluid_surface_frame_test::fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_level ... ok
+[FluidSurfaceProof] row 35 GPU case ran: clear=254 half red 188..=188 opaque=0
+[FluidSurfaceProof] row 35 lit GPU case ran: expected [254, 187, 254], worst deviation 0 at (0, 0)
+test render::fluid_surface_frame_test::fluid_surface_blends_over_the_scene_at_its_surface_opacity ... ok
+[FluidSurfaceProof] P1 two-window GPU case ran: slot 1359 (window 0) left=0, slot 1360 (window 1, offset 65280) right=188 (one-window reference 188)
+test render::fluid_surface_frame_test::fluid_surface_draws_across_two_params_windows_read_their_own_rows ... ok
+[FluidSurfaceProof] per-volume opacity: left=0 right=188
+test render::fluid_surface_frame_test::fluid_surface_draws_read_each_volumes_own_opacity_slot ... ok
+[FluidSurfaceProof] resume-with-Off GPU case ran: placeholder at the first install, target Some((16, 16)) once raised
+test render::fluid_surface_frame_test::full_init_with_off_stored_allocates_only_the_placeholder_at_the_first_fluid_install ... ok
+[FluidSurfaceProof] reflection style GPU case ran: pixel cell spreads [0, 0, 0, 0], smooth [28, 28, 27, 27]
+test render::fluid_surface_frame_test::pixel_style_reflects_once_per_water_texel_cell_and_smooth_per_pixel ... ok
+[FluidSurfaceProof] row 34 GPU case ran: probe 0 [171, 228, 171] worst 1 at (0, 0), probe 1 [226, 172, 188] worst 1 at (5, 6), unbound [188, 188, 188] worst 0 at (0, 0) (vs the no-section frame 0)
+test render::fluid_surface_frame_test::probe_bound_faces_read_their_own_probes_and_an_unbound_face_in_the_draw_reads_today ... ok
+[FluidSurfaceProof] P3/P4 reflection tier GPU case ran: no target before the fluid install, A and C each own a medium target, 4 group 5 builds
+test render::fluid_surface_frame_test::raising_the_tier_with_no_fluid_level_allocates_nothing_until_one_installs ... ok
+[FluidSurfaceProof] low-tier lifecycle GPU case ran: high → low placeholder, low ↔ Off nothing built, low → medium Some((8, 8)), install at low placeholder, 5 group 5 builds
+test render::fluid_surface_frame_test::the_low_tier_draws_the_reflecting_variant_over_the_placeholder_and_records_no_pass ... ok
+[FluidSurfaceProof] reflection pass-count GPU case ran: 5 passes over 13 frames
+test render::fluid_surface_frame_test::the_reflection_pass_records_once_per_reflecting_frame_and_never_at_off ... ok
+[FluidSurfaceProof] reflection target lifecycle GPU case ran: placeholder at every tier on three levels, Off → medium Some((8, 8)), medium → Off placeholder, 3 group 5 builds
+test render::fluid_surface_frame_test::the_reflection_target_exists_only_on_a_probe_bound_level_above_off ... ok
+test render::screen_effects::tests::screen_effects_fluid_tint_composes_after_the_mod_tint_and_before_the_ui ... ok
+test render::sh_streaming::gpu::fluid_lattice_tests::a_streamed_level_cuts_its_fluid_on_the_manifest_base_lattice ... ok
+test render::tests::pipeline_budget_tests::fluid_pipeline_fragment_storage_request_matches_bgl_definitions ... ok
+test render::tests::pipeline_budget_tests::fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits ... ok
+test render::tests::pipeline_budget_tests::fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits ... ok
+test render::tests::pipeline_budget_tests::fluid_reflection_pipeline_fragment_bindings_stay_within_limits ... ok
+
+test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 973 filtered out; finished in 36.91s
+

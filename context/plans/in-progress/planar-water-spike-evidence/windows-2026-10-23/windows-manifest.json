@@ -1,0 +1,52 @@
+{
+  "git_head": "1ff80ed97e60aa8cdeeb1f8463aaef352094662f",
+  "driver": "NVIDIA 621.01",
+  "adapter": "GTX 1660 SUPER",
+  "features": [
+    "dev-tools",
+    "capture"
+  ],
+  "profile": "dev",
+  "cargo_incremental": "0",
+  "primary_backend": "vulkan",
+  "indirect_validation": "on",
+  "sh_streaming": "sync-proof",
+  "capture_resolution": "explicit scene resolution; no surface",
+  "bake_settings": "default warm development bake; approximate bounded-reach indirect SH",
+  "cpu": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "inherited_diagnostics": [],
+  "files": [
+    {
+      "Path": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\debug\\postretro.exe",
+      "Hash": "EEFD2D2D6C256ACAE9FADFBEEE8C435ACB71CC2ACA9704BF7578F3B0529B42CD"
+    },
+    {
+      "Path": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\target\\debug\\prl-build.exe",
+      "Hash": "9E20461C7A8FD6B7BAC67D245FF30A4CEFD4D89C31B2899909A320C7D5A0F249"
+    },
+    {
+      "Path": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\content\\dev\\maps\\reflection-lake-test.prl",
+      "Hash": "7CCE7C5F69397B20F2CAB3740DEECD97B5114D5F8985B737244752315B5F15F4"
+    },
+    {
+      "Path": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\content\\dev\\maps\\e24-environment-test.prl",
+      "Hash": "6F3A6B4EC53E661262824DE01D27195A430BE23AF40BC3511DDC7D9D4C1E93FD"
+    },
+    {
+      "Path": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\content\\dev\\maps\\reflection-probes-test.prl",
+      "Hash": "5440BC0CFF8CBF1BF5A8F455E5B288D24A090A25AAAD59DA765B25D7D8F3161C"
+    },
+    {
+      "Path": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\content\\dev\\maps\\reflection-lake-test.map",
+      "Hash": "E87A559D8E499AD4A61CF37853FB753FF95049FFBEDFDA69667B0856072575F2"
+    },
+    {
+      "Path": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\content\\dev\\maps\\e24-environment-test.map",
+      "Hash": "9AADA1E09AF9E0B9EF5A7567E4CD61FE159F9314D061BB48D515280070C1C7A6"
+    },
+    {
+      "Path": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\content\\dev\\maps\\reflection-probes-test.map",
+      "Hash": "45AF075EB61FFF20C14D0EDD02D69631DA4FDBFA056593ACD9472F7855D3134B"
+    }
+  ]
+}

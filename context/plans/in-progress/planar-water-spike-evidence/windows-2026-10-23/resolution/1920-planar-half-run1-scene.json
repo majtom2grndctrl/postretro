@@ -1,0 +1,31 @@
+{
+  "map": "content/dev/maps/reflection-lake-test.prl",
+  "camera": {
+    "position": [
+      -16.8656,
+      1.7,
+      -48.768
+    ],
+    "yaw_deg": 90,
+    "pitch_deg": -10
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "reflection_quality": "high",
+  "planar_reflection": {
+    "on": true,
+    "scale": 0.5,
+    "d": null,
+    "r": null,
+    "band_d": 4,
+    "band_r": 4
+  },
+  "output": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\context\\plans\\in-progress\\planar-water-spike-evidence\\windows-2026-10-23\\resolution\\1920-planar-half-run1.png",
+  "measurement": {
+    "report": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\fluid-ssr-reflections-0b3212\\context\\plans\\in-progress\\planar-water-spike-evidence\\windows-2026-10-23\\resolution\\1920-planar-half-run1.json",
+    "warmup_frames": 120,
+    "sample_frames": 240
+  }
+}

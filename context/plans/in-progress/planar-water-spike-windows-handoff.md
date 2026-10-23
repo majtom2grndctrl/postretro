@@ -1,6 +1,8 @@
 # Windows measurement handoff
 
-Branch: `claude/planar-water-spike`. Read `context/lib/index.md`, the spike contract and findings first. Implementation and Mac evidence are included on this branch. No shipping decision yet.
+Branch: `claude/planar-water-spike`. Read `context/lib/index.md`, the spike contract and findings first. Implementation and Mac evidence are included on this branch. Product drafting starts at [the current drafting handoff](planar-water-spike-drafting-handoff.md); exact shipping presets remain open.
+
+**Windows measurements collected 2026-10-23:** [initial findings](planar-water-spike-evidence/windows-2026-10-23/findings.md), [all initial tables](planar-water-spike-evidence/windows-2026-10-23/tables.md), and [bounded live release follow-up](planar-water-spike-evidence/windows-bounded-live-2026-10-23/findings.md). Initial 128 focused checks, 144 captures and four valid live probes are complete; follow-up adds 110 focused renderer tests, 16 uncapped release runs and eight accepted stills. Windows bounded live timing is complete. Remaining gaps include moving-camera/entity quality, near-water scale behavior, bounded Mac native performance, owner acceptance, mask coverage and draw counts. The checklist below is historical replay context; do not repeat completed sweeps without a new question.
 
 ## What to establish
 
@@ -21,7 +23,7 @@ cargo test -p postretro-render-cpu planar_reflection
 cargo test -p postretro-visibility mirror
 cargo test -p postretro-renderer --features dev-tools planar
 cargo test -p postretro-renderer --features dev-tools fluid_
-cargo test -p postretro-renderer dx12_fxc_compiles_every_full_init_pipeline
+cargo test -p postretro-renderer --features dev-tools --lib dx12_fxc_compiles_every_full_init_pipeline -- --ignored --nocapture
 cargo test -p postretro --features dev-tools,capture planar
 cargo run -p postretro-level-compiler -- content/dev/maps/reflection-lake-test.map -o content/dev/maps/reflection-lake-test.prl --no-tui
 cargo build -p postretro --features dev-tools,capture
@@ -45,7 +47,7 @@ For live profiling, build the required authoring helpers first per AGENTS.md, th
 
 The committed lake source includes the local TrenchBroom edits used for later profiling (raised ceiling and additional light/geometry). Early short lake captures predate that fixture change; do not compare their times directly to later traces. The Mac compiled PRL hash is in `metal-2026-10-22/manifest.json`; record the Windows bake hash and compiler settings rather than claiming byte equality across platforms.
 
-All small evidence, summaries, images and logs are versioned. Raw Mac Instruments bundles/XML stay local under `target/planar-spike-measurements/`; they are not required to run Windows measurements. Store new reports/scenes and findings in the evidence directory, with adapter/driver, commit, map hash, profile, validation state, pose, resolution, settings and repetition order. Add findings to the existing note; keep `context/lib/` unchanged until the owner decides to ship.
+Mac evidence is versioned; latest Windows evidence and measurement source changes currently include uncommitted/untracked files in the existing spike checkout. Preserve them before changing or archiving checkouts. Raw Mac Instruments bundles/XML stay on the Mac at their recorded locations; they are not required to draft or run Windows measurements. Store new reports/scenes and findings in the evidence directory, with adapter/driver, commit, map hash, profile, validation state, pose, resolution, settings and repetition order. Add findings to the existing note; keep `context/lib/` unchanged during drafting.
 
 ## Automated knob sweep now available
 

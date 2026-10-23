@@ -1,0 +1,98 @@
+[
+  {
+    "indirect_validation": "on",
+    "seconds": 20,
+    "pid": 11252,
+    "sh_streaming": "normal",
+    "start_pose": "pawn origin, not capture eye",
+    "arguments": [
+      "--mod",
+      "dev",
+      "maps/reflection-lake-test.prl",
+      "--core-root",
+      "core",
+      "--windowed",
+      "--start-pose=-16.8656,1.2,-48.768,90,-10",
+      "--pool-seed",
+      "1"
+    ],
+    "key": "ssr-run1",
+    "exited_early": false,
+    "started_utc": "2026-10-23T14:42:13.4000739Z",
+    "planar": "0",
+    "backend": "vulkan",
+    "reflection_quality": "saved player setting; verify log"
+  },
+  {
+    "indirect_validation": "on",
+    "seconds": 20,
+    "pid": 22760,
+    "sh_streaming": "normal",
+    "start_pose": "pawn origin, not capture eye",
+    "arguments": [
+      "--mod",
+      "dev",
+      "maps/reflection-lake-test.prl",
+      "--core-root",
+      "core",
+      "--windowed",
+      "--start-pose=-16.8656,1.2,-48.768,90,-10",
+      "--pool-seed",
+      "1"
+    ],
+    "key": "planar-run2",
+    "exited_early": false,
+    "started_utc": "2026-10-23T14:42:33.4766222Z",
+    "planar": "1",
+    "backend": "vulkan",
+    "reflection_quality": "saved player setting; verify log"
+  },
+  {
+    "indirect_validation": "on",
+    "seconds": 20,
+    "pid": 10644,
+    "sh_streaming": "normal",
+    "start_pose": "pawn origin, not capture eye",
+    "arguments": [
+      "--mod",
+      "dev",
+      "maps/reflection-lake-test.prl",
+      "--core-root",
+      "core",
+      "--windowed",
+      "--start-pose=-16.8656,1.2,-48.768,90,-10",
+      "--pool-seed",
+      "1"
+    ],
+    "key": "planar-run3",
+    "exited_early": false,
+    "started_utc": "2026-10-23T14:42:53.5256172Z",
+    "planar": "1",
+    "backend": "vulkan",
+    "reflection_quality": "saved player setting; verify log"
+  },
+  {
+    "indirect_validation": "on",
+    "seconds": 20,
+    "pid": 14684,
+    "sh_streaming": "normal",
+    "start_pose": "pawn origin, not capture eye",
+    "arguments": [
+      "--mod",
+      "dev",
+      "maps/reflection-lake-test.prl",
+      "--core-root",
+      "core",
+      "--windowed",
+      "--start-pose=-16.8656,1.2,-48.768,90,-10",
+      "--pool-seed",
+      "1"
+    ],
+    "key": "ssr-run4",
+    "exited_early": false,
+    "started_utc": "2026-10-23T14:43:13.5586321Z",
+    "planar": "0",
+    "backend": "vulkan",
+    "reflection_quality": "saved player setting; verify log"
+  }
+]

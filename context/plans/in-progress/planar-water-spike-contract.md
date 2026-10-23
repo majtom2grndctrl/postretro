@@ -25,6 +25,7 @@ Replace screen-space reflections (SSR) on large flat water with a planar reflect
 | 11 | Mirror-visible cells are unioned into: mesh and mover collection, `ShSampleRegionSets`, lightmap residency demand, and the animated-lightmap compose input (§7.1 step 4). | Without the unions, reflections of cells the main camera can't see read stale or missing lighting. A spike with corrupt data teaches nothing. |
 | 12 | Ripple-normal distortion of the planar lookup is **deferred**. | It would edit the pinned `fs_main_reflecting` and the screen layer. Pixel style already reads per-cell blocks. |
 | 13 | Planar only reaches probe-bound faces, because the reflecting gate needs a probe. That's accepted for the spike; the lake fixture has one. | Water without a probe takes no reflecting variant today. |
+| 14 | Owner clarification (2026-10-23): the intended image is planar plus probes. D/R deliberately hand distant reflection to probes; losing distant planar detail is acceptable. Judge near-field usefulness and the transition in motion, rather than fidelity to unlimited planar. | Large water should retain reflection when content leaves the main screen; the probe substrate is part of the design, not an error state. |
 
 ## IP constraints (hard; engineering triage, not legal advice)
 
@@ -124,3 +125,13 @@ A source-scan test enforces rows 3 and 4 on the new shaders: no `fresnel`, no `f
 ## Measurement automation extension (2026-10-22)
 
 Owner authorized automated knob sweeps. Capture scenes accept optional `planar_reflection` controls (on, scale, D/R, fade widths), applied before mirror preparation and overriding the dev environment seed. This is measurement-only; player settings and pinned water shaders remain unchanged. See knob-sweep evidence and Windows handoff for bounds, defaults, replay and results.
+
+Windows measurement checkpoint (2026-10-23): 128 focused checks passed, including adapter-backed planar proofs and explicitly executed FXC initialization. 144 matched captures plus four accepted live probes are recorded in `planar-water-spike-evidence/windows-2026-10-23/`. Large-water Vulkan GPU savings coexist with about 3 ms extra live CPU mirror-walk cost at unlimited D. Keep the shipping decision open; see findings for remaining evidence.
+
+## Bounded live experiment (2026-10-23)
+
+Owner authorized the next experiment after clarifying the hybrid image goal. Test live CPU/GPU/frame cost of bounded planar plus probe against unlimited planar plus probe and SSR High plus probe. Start with half-scale D15/D30, quarter-scale equivalents, and receiving-distance controls. Repeat in reverse order with the same binary, pose, extents and scene content. Use release optimization, ordinary streaming, and the release indirect-validation policy; keep previous dev/vsynced measurements separate.
+
+Dev-tools launch seeds make the existing panel reproducible: `POSTRETRO_PLANAR_SCALE` accepts 0.25/0.5/1; `POSTRETRO_PLANAR_D` and `_R` accept 1–100 m or `off`; `POSTRETRO_PLANAR_BAND_D` and `_BAND_R` accept 0.1–16 m. They preserve defaults on malformed input, warn, and are ignored without dev-tools. Existing `POSTRETRO_PLANAR_REFLECTION=1` still enables the experiment. Effective settings log at initialization; capture scene settings retain precedence. `POSTRETRO_UNCAPPED=1` seeds the existing vsync diagnostic off on a windowed dev-tools renderer, and is ignored by offscreen/plain builds. No player setting, composite shader, GPU binding or visibility algorithm changes.
+
+Completed: 16 uncapped release runs and eight accepted stills in `planar-water-spike-evidence/windows-bounded-live-2026-10-23/`. Half D15 cuts mirror CPU 2.749→0.061 ms and frame mean 7.830→5.070 ms; High is 4.828 ms at 1600×900. Half D15 is the motion-test candidate under the hybrid goal. Quarter D15 equals probes-only in this static pose; near-water scale behavior and moving-camera/entity acceptance remain open. See findings for complete provenance and limitations.

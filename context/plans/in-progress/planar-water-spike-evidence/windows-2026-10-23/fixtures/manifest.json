@@ -1,0 +1,20 @@
+{
+  "binary_sha256": "eefd2d2d6c256acae9fadfbeee8c435acb71cc2aca9704bf7578f3b0529b42cd",
+  "git_head": "1ff80ed97e60aa8cdeeb1f8463aaef352094662f",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "suite": "fixtures",
+  "repeats": 2,
+  "warmup_frames": 120,
+  "sample_frames": 240,
+  "backend": "vulkan",
+  "indirect_validation": "on",
+  "profile": "dev",
+  "features": [
+    "dev-tools",
+    "capture"
+  ],
+  "maps": {
+    "content/dev/maps/e24-environment-test.prl": "6f3a6b4ec53e661262824de01d27195a430be23af40bc3511ddc7d9d4c1e93fd",
+    "content/dev/maps/reflection-probes-test.prl": "5440bc0cff8cbf1bf5a8f455e5b288d24a090a25aaad59da765b25d7d8f3161c"
+  }
+}

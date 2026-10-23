@@ -1,0 +1,27 @@
+{
+  "binary_sha256": "a397bdb2a4ca457254ca34227036313c3b33b09f8f487e5b0ed4b6e7f2aee908",
+  "map_sha256": "7cce7c5f69397b20f2cab3740deecd97b5114d5f8985b737244752315b5f15f4",
+  "git_head": "1ff80ed97e60aa8cdeeb1f8463aaef352094662f",
+  "profile": "release",
+  "features": [
+    "dev-tools",
+    "capture"
+  ],
+  "backend": "Vulkan",
+  "indirect_validation": "release default off",
+  "streaming": "ordinary",
+  "seconds": 20,
+  "repeats": 2,
+  "engine_arguments": [
+    "--mod",
+    "dev",
+    "maps/reflection-lake-test.prl",
+    "--core-root",
+    "core",
+    "--windowed",
+    "--start-pose=-16.8656,1.2,-48.768,90,-10",
+    "--pool-seed",
+    "1"
+  ],
+  "note": "Fixed standing camera; probes remain the distant layer. Tail CPU/GPU windows are asynchronous; live GPU logs round to 0.01 ms."
+}

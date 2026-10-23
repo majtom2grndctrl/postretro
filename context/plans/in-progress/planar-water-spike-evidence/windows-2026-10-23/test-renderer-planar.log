@@ -1,0 +1,73 @@
+   Compiling glam v0.33.12
+   Compiling windows-sys v0.61.2
+   Compiling windows-core v0.62.2
+   Compiling regex-automata v0.4.18
+   Compiling num-complex v0.4.6
+   Compiling uuid v1.27.0
+   Compiling simba v0.10.2
+   Compiling windows-numerics v0.3.1
+   Compiling winapi-util v0.1.11
+   Compiling windows-future v0.3.2
+   Compiling windows-collections v0.3.2
+   Compiling same-file v1.0.6
+   Compiling windows v0.62.2
+   Compiling walkdir v2.5.0
+   Compiling notify v8.2.0
+   Compiling notify-debouncer-full v0.7.0
+   Compiling regex v1.13.1
+   Compiling anstyle-wincon v3.0.11
+   Compiling swc_ecma_codegen v32.0.3
+   Compiling anstyle-query v1.1.5
+   Compiling accesskit v0.24.1
+   Compiling anstream v1.0.0
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+   Compiling postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\foundation)
+   Compiling swc_bundler v56.0.1
+   Compiling postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-data)
+   Compiling glamx v0.3.1
+   Compiling parry3d v0.31.1
+   Compiling postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\entities)
+   Compiling gpu-allocator v0.28.0
+   Compiling postretro-script-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\script-compiler)
+   Compiling postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+   Compiling postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\model)
+   Compiling egui v0.36.2
+   Compiling postretro-collision v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\collision)
+   Compiling postretro-scripting-core v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\scripting-core)
+   Compiling tempfile v3.27.0
+   Compiling wgpu-hal v30.0.1
+   Compiling env_filter v2.0.0
+   Compiling postretro-net v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\net)
+   Compiling rusty-fork v0.3.1
+   Compiling env_logger v0.11.11
+   Compiling postretro-combat-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\combat-model)
+   Compiling postretro-physics v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\physics)
+   Compiling wgpu-core-deps-windows-linux-android v30.0.1
+   Compiling wgpu-core v30.0.1
+   Compiling postretro-lighting v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\lighting)
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+   Compiling postretro-test-log-capture v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\test-log-capture)
+   Compiling proptest v1.11.0
+   Compiling postretro-sim v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\sim)
+   Compiling wgpu v30.0.1
+   Compiling egui-wgpu v0.36.2
+   Compiling glyphon v0.12.0
+   Compiling postretro-ui v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\ui)
+   Compiling postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+   Compiling egui-winit v0.36.2
+   Compiling postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 31s
+     Running unittests src\lib.rs (target\debug\deps\postretro_renderer-3e34ce177f6ef7f3.exe)
+
+running 8 tests
+test render::planar_reflection::tests::planar_gpu_asymmetric_world_lands_on_mirrored_pixel_and_ssr_records_zero ... ok
+test render::planar_reflection::tests::planar_gpu_changed_faces_with_same_plane_bounds_refresh_the_water_mask ... ok
+test render::planar_reflection::tests::planar_gpu_d_distance_fades_and_disabling_restores_ssr_bytes ... ok
+test render::planar_reflection::tests::planar_gpu_mask_rejects_dry_occluded_and_beyond_r_pixels ... ok
+test render::planar_reflection::tests::planar_gpu_no_selected_plane_clears_previous_confidence ... ok
+test render::planar_reflection::tests::planar_gpu_other_water_plane_remains_probe_only ... ok
+test render::planar_reflection::tests::planar_shaders_preserve_ip_boundaries ... ok
+test render::planar_reflection::tests::planar_shaders_validate_without_an_adapter ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 9.93s
+

@@ -1,13 +1,19 @@
 # Planar water reflection spike findings
 
-Status: implementation and local verification complete; hardware sweeps and owner visual checks outstanding. T1–T3 implemented and landing review complete. Implementation, fixture snapshot and small evidence are included in the Windows handoff commit. Initial Mac evidence: planar reduces reflection-pass GPU work against SSR High, but synchronized completion is slower at the measured pose.
+Status: implementation, local verification, Mac sweeps and Windows measurements collected. T1–T3 implemented and landing review complete. Windows release live tests show half D15 plus probes reduces mirror-walk cost from 2.749 to 0.061 ms, averaging 5.070 ms/frame versus SSR High 4.828 ms at 1600×900. Distant probe handoff fits the owner's image goal. Moving-camera/entity checks and near-water scale behavior remain before a shipping decision; quarter D15 contributes no visible planar image in the latest static pose. Mac completion behavior remains separate.
 Contract: `planar-water-spike-contract.md`.
+
+Product drafting and artifact retention: [current handoff](planar-water-spike-drafting-handoff.md). Recommendation: proceed with bounded planar + probes as an optional large-flat-water mode, retaining SSR/probes-only alternatives; exact presets and shipping acceptance remain open.
 
 ## Environment
 
-Execution host: macOS. GTX 1660 Super Windows measurements remain outstanding. Metal System Trace measurements were collected locally on 2026-10-22 (below). Unmeasured entries are not zero-cost results. Host adapter is AMD Radeon Pro 5300M through Metal. It lacks the timestamp-query features required by the engine GPU timing logger; no timing windows are available. Native launch reached Window ready but did not reach a world frame in the bounded run; process group was closed. Headless capture uses the shared app planar preparation path for further verification.
+Windows (2026-10-23): GTX 1660 SUPER / driver 621.01. Dev capture build, fresh lake/e24/probe bakes, 128 focused checks, 144 matched captures and four accepted live CPU probes completed. [Windows findings and evidence](planar-water-spike-evidence/windows-2026-10-23/findings.md) include hashes, settings, GPU readback counts, repeats, images, exclusions and replay scripts. No engine or shader changes during the measurements.
 
-## Automated evidence
+Follow-up: [bounded live release findings](planar-water-spike-evidence/windows-bounded-live-2026-10-23/findings.md), 16 accepted uncapped runs across eight settings, plus eight stills and a separate accepted pilot. Minimal dev-tools launch controls enabled repeatable settings; 110 focused renderer tests and check/lint/format gates passed. No composite shader, visibility algorithm or player-setting changes.
+
+Mac baseline host: AMD Radeon Pro 5300M through Metal. Metal System Trace measurements were collected locally on 2026-10-22 (below). Unmeasured entries are not zero-cost results. This adapter lacks the timestamp-query features required by the engine GPU timing logger; no engine timing windows are available. The Mac native launch reached Window ready but did not reach a world frame in the bounded run; process group was closed. Headless capture uses the shared app planar preparation path for further verification.
+
+## Mac automated evidence
 
 - `cargo test -p postretro-render-cpu planar_reflection`: 7 passed.
 - `cargo test -p postretro-visibility mirror`: 5 passed.
@@ -17,7 +23,7 @@ Execution host: macOS. GTX 1660 Super Windows measurements remain outstanding. M
 - Existing lightmap controller checks: 37 passed.
 - Landing review: one P2 fixed (mask geometry cache could become stale on fluid reload); new host-Metal GPU regression passed 1/1. No remaining correctness findings from source review, including capture extension.
 - Dev-tools engine build and `cargo fmt --check`: passed.
-- FXC command matched zero tests on macOS; Windows check remains unverified.
+- FXC command matched zero tests on macOS; Windows subsequently passed the explicitly executed ignored test plus six DX12 lake captures (Windows evidence below).
 - Final checks: formatting passed; Clippy with warnings denied passed for the default build and app/renderer with dev-tools+capture, and app with capture alone. Focused capture projection tests: 2 passed; final app planar tests with dev-tools+capture: 5 passed. Full workspace tests were not run, following the spike’s focused-only execution rule.
 - Default lint caught a feature-gated diagnostic-mask getter used by app/capture; getter is now available wherever the existing mask state/setter are available. Both build configurations pass after the fix.
 - Capture-feature planar gate: 5 passed. Headless lake captures completed in both modes and produced images and reports (see evidence below).
@@ -26,7 +32,7 @@ The determinant assertion checks positive combined handedness correction and the
 
 ## Measurements
 
-Mac baselines and a two-pose knob sweep are collected below and in `planar-water-spike-evidence/knob-sweep/README.md`. Windows baselines and knob sweeps remain pending. Capture across-water and downward poses in `reflection-lake-test`, `e24`, and `reflection-probes-test`.
+Mac baselines and a two-pose knob sweep are collected below and in `planar-water-spike-evidence/knob-sweep/README.md`. Windows covers across/down lake, e24 and probe-room poses, scales, distance/fade controls, 1080p/4K, tier gates, DX12 and live CPU/submission. Full values: [Windows tables](planar-water-spike-evidence/windows-2026-10-23/tables.md).
 
 Record GPU spans, frame deltas, mirror walk time/path, visible cells/leaves, mirror-only cells, mask coverage, draws, and Mac submit delta. Record adapter and pose with each result.
 
@@ -83,11 +89,11 @@ Owner checks pending: planar against SSR High, grazing depth precision, waterlin
 
 ## Recommendation
 
-Keep the planar path as a dev-only experiment for the hardware/pose sweep. CPU, binding and pixel-level checks plus integrated lake output support proceeding to measurements. Do not replace SSR in shipping quality tiers yet: Metal traces show cheaper reflection work than High, but both traced and untraced completion runs are slower, and the later D/R/scale sweep shows a substantial visual cost for the faster bounds. Next investigate per-frame Metal submission/validation and the water-composite cost, then measure bounded D/R and lower scales before choosing a default. Owner visual acceptance and Windows profiling plus broader Mac measurements remain required for a shipping decision.
+Keep planar dev-only. Windows quarter/half scale has promising large-water GPU cost, but its unlimited live mirror walk adds about 3 ms CPU work per frame. Bound or improve the walk, then measure live again. Metal traces show cheaper reflection work than High while traced and untraced completion remain slower. Tight D/R bounds have a substantial visual cost; full scale gives up much of the gain at high coverage. Keep SSR Medium as a serious alternative. Owner visual acceptance, bounded live profiling, moving/entity-heavy scenes and broader Mac measurements remain required for a shipping decision.
 
 ## Remaining evidence
 
-Investigate native reveal if needed for interactive profiling. Run the scale/D/R/pose sweep and owner visual read. Use Windows for FXC and GTX measurements; extend the recorded Metal System Trace baseline for this Mac. Add mask-coverage and draw-count evidence if current diagnostics do not expose them. Preserve protected fluid files and keep this spike out of `context/lib/`. Existing untracked `context/plans/drafts/fluid-ssr-reflections/` predates this work. No shipping PR created. See `planar-water-spike-windows-handoff.md` for Windows commands and outstanding measurements.
+Measure bounded live mirror-walk cost and moving-camera/entity quality; extend the Mac hardware/pose evidence and resolve its native reveal issue if needed. Mask coverage and draw-call counts are not exposed by the current measurement reports. Preserve protected fluid files and keep this spike out of `context/lib/`. Existing untracked `context/plans/drafts/fluid-ssr-reflections/` predates this work. No shipping PR created. See the Windows findings for completed measurements and the handoff for build/replay commands.
 
 ## Knob sweep follow-up
 
@@ -98,3 +104,44 @@ At 960×540 on this Mac, across-water half planar takes 17.306/17.161 ms synchro
 Selected new reflection GPU means: half unlimited 1.049 ms, quarter unlimited 0.643, D=15 at half 0.500, R=8 at half 0.514; SSR High 2.259 ms from 113 isolated events (seven coalesced events excluded). These are fresh matched 60-warmup/120-sample traces, not directly interchangeable with the earlier 120/240 results. Quarter's GPU saving does not translate into a clear completion benefit. D limits reduce both draw cells and walk steps; no shipping preset is selected.
 
 Verification: two new capture-control tests and 24 existing scene parsing tests passed; formatting and both dev-tools+capture and capture-only Clippy passed. Read-only review found two runner reproducibility issues (output-directory reuse and inherited validation state), both fixed in the shipped runner. Effective validation-on state was checked in all 60 primary logs; all report zero visible nonresident lightmap misses and failed reads/installs. Full workspace tests remain outside this spike’s focused-only execution rule.
+
+## Windows measurements — 2026-10-23
+
+Full [Windows findings](planar-water-spike-evidence/windows-2026-10-23/findings.md), [tables](planar-water-spike-evidence/windows-2026-10-23/tables.md) and [evidence index](planar-water-spike-evidence/windows-2026-10-23/README.md). GTX 1660 SUPER, driver 621.01, dev-tools+capture, indirect validation on. 144 captures / 34,560 measured frames, with reverse-order repeats; 128 focused checks passed, including actual FXC and adapter-backed GPU execution. No engine or shader edits.
+
+Across-water lake at 4K, Vulkan, unlimited D/R:
+
+| Mode | Synchronized completion medians, ms | Reflection GPU mean, ms |
+|---|---:|---:|
+| SSR High | 18.318 / 18.300 | 5.339 |
+| SSR Medium | 14.020 / 14.000 | 1.130 |
+| Planar half | 13.846 / 13.700 | 0.734 |
+| Planar quarter | 13.248 / 13.212 | 0.295 |
+| Planar full | 15.643 / 15.416 | 2.278 |
+
+Half improves synchronized completion about 25% against High here. At 4K downward/high coverage, quarter takes 16.552/16.517 ms, half 18.064/18.260, full 23.796/23.927, High 24.474/24.673 and Medium 17.035/17.231. Full scale is an expensive default; Medium remains competitive. Small e24/probe views show much less benefit, and DX12 at 960 shows essentially no High-to-half completion gain. See tables for all D/R/fade/tier values.
+
+Four earlier valid live launches at 1600×900 with ordinary streaming and vsync expose the missing CPU cost: unlimited planar mirror walk takes 2.976/2.915 ms per frame, hitting the 20,000-step fallback; work CPU rises from High 6.193/5.996 to planar 9.255/9.204 ms. Submit rises about 0.2 ms. All modes remain near 16.53 ms/frame with vsync, so this is not a live FPS win. The bounded release follow-up below measures D15 live; the distant probe handoff is intentional under the owner's clarified goal. D100 restores much of the unlimited image and also restores the full walk/GPU cost.
+
+Mirror-only cells are exercised in e24/probe views (4–18 additional cells), with zero visible lightmap misses or read/install failures. No accepted capture has a malformed GPU readback, renderer validation error or mirror SolidCellFallback; planar records zero SSR. Known failed Vulkan overlay-loader startup messages and invalid initial live-start attempts are retained and distinguished from accepted evidence. Mask coverage/draw counts and moving-camera/entity acceptance remain open. All launched processes are closed.
+
+## Bounded live release follow-up — 2026-10-23
+
+Owner intent: probes deliberately supply distant reflection, while planar should provide useful local detail without SSR's main-screen coverage dependency. Losing distant planar detail is acceptable. Judge the handoff and local image, not parity with unlimited planar.
+
+Eight configurations, two forward/reverse repeats, release opt-level 3 + thin LTO, Vulkan, ordinary streaming, indirect validation release default off and VSync off. Actual surface/scene 1600×900. Five tail 120-frame CPU windows and three tail 120-readback GPU windows per run: 9,600 CPU frames / 5,760 GPU readbacks. These window means are separate from earlier synchronized capture medians and dev/VSync results.
+
+| Mode | Frame means, ms | Mirror CPU mean, ms | Reflection GPU mean, ms |
+|---|---:|---:|---:|
+| SSR High | 4.874 / 4.781 | absent | 0.947 |
+| Half unlimited | 7.855 / 7.804 | 2.749 | 0.210 |
+| Half D30 | 5.833 / 5.801 | 0.775 | 0.120 |
+| Half D15 | 5.071 / 5.068 | 0.061 | 0.090 |
+| Quarter D15 | 5.018 / 5.037 | 0.060 | 0.070 |
+| Half R8 | 7.804 / 7.805 | 2.773 | 0.060 |
+
+D15 removes about 98% of the unlimited mirror-walk cost and lowers frame time about 35%; it remains about 5% slower than High here. R8 alone retains almost all CPU walk cost. Quarter adds under 1% frame saving over half D15. D30 + R15 and quarter D30 are included in the [full results](planar-water-spike-evidence/windows-bounded-live-2026-10-23/tables.md).
+
+Eight accepted static illustrations have complete GPU windows and clean counters. Half/quarter D15 repeat byte-identically; quarter D15 is also byte-identical to probes-only at this pose. Half D15 has a substantial near-water contribution absent from quarter; this reproducible scale difference needs visual/correctness investigation, rather than being assumed to be an acceptable resolution tradeoff. Capture omits game VM/manifest fluid tuning and does not establish motion quality.
+
+Recommendation: **half D15, R unlimited, 4 m fade as the first motion-test candidate**, with D30 as the reach comparison. This supports the owner's hybrid strategy and largely resolves traversal cost without a visibility rewrite; it does not select a shipping preset or establish a live FPS win. Full provenance, source review, 110 focused renderer checks, exclusions, stills, replay and limitations: [bounded live findings](planar-water-spike-evidence/windows-bounded-live-2026-10-23/findings.md).

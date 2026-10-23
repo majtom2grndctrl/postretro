@@ -1,5 +1,7 @@
 // One extra view for the planar-water spike. GPU state never aliases the main camera.
 mod api;
+#[cfg(feature = "dev-tools")]
+mod launch_settings;
 mod record;
 mod targets;
 #[cfg(test)]
@@ -65,13 +67,9 @@ impl PlanarReflectionPass {
         let (mask_layout, mask_pipeline) = targets::mask_pipeline(device);
         let (resolve_layout, resolve_pipeline) = targets::resolve_pipeline(device);
         #[cfg(feature = "dev-tools")]
-        let on = std::env::var("POSTRETRO_PLANAR_REFLECTION").is_ok_and(|v| v == "1");
+        let settings = launch_settings::from_environment();
         #[cfg(not(feature = "dev-tools"))]
-        let on = false;
-        let settings = PlanarReflectionSettings {
-            on,
-            ..Default::default()
-        };
+        let settings = PlanarReflectionSettings::default();
         Self {
             settings,
             camera: None,

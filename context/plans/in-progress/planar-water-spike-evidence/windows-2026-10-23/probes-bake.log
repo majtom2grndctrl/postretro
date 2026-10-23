@@ -1,0 +1,152 @@
+[INFO prl_build] [prl-build] cache directory: .build-caches\prl-cache
+  0.13s  Parsing map...
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::parse] Total brushes: 63
+[INFO prl_build::parse] World brushes: 57
+[INFO prl_build::parse] Entity brushes: 6
+[INFO prl_build::parse] Brush sides: 342
+[INFO prl_build::parse] Total vertices: 1368
+[INFO prl_build::parse] Entity classnames: worldspawn, player_spawn, fluid_volume, reflection_volume, light, switch
+[INFO prl_build::parse] Lights: 7
+[INFO prl_build::parse] Map entities (classname dispatch): 1
+[INFO prl_build::parse] Environment volumes: 2
+[INFO prl_build::parse] Reflection volumes: 1
+  0.18s  Texture color-space validation...
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_036_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_036_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_037_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_037_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_038_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_038_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_039_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_039_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_040_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_040_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_041_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_041_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_042_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_042_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_043_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_043_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_044_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_044_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_045_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_045_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_021_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_021_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_022b_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_022b_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_022_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_022_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_023_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_023_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_024_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_024_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_025_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_025_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_026_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_026_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_027_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_027_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_028_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_028_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_029_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_029_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_030_h.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_030_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_030_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_031_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_031_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_032_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_032_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_033_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_033_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_034_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_034_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_035_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_035_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_011_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_011_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_012_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_012_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_013_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_013_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_014_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_014_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_015_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_015_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_016_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_016_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_017_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_017_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_018_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_018_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_019_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_019_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_020_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_020_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_001_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_001_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_002_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_002_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_003_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_003_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_004b_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_004b_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_004_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_004_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_005_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_005_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_006b_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_006b_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_006_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_006_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_007_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_007_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_008_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_008_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_009_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_009_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_010_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_010_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_046_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_046_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_047_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_047_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_048_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_048_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_049_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_049_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_050_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_050_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\fluids\lava_64_e.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\Level Eleven Games Sci-Fi Texture Pack v1\CorrugatedMetalPanel-01V_64_h.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\Level Eleven Games Sci-Fi Texture Pack v1\Vent-001_Base-001_h.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\metal\metal_brushed_012_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\metal\metal_brushed_012_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\metal\metal_rough_046a_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\metal\metal_rough_046a_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\neon\neon_dim_panel_e.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\neon\neon_glow_panel_e.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\test\002_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\test\concrete_dark_speckled_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\test\concrete_grimey_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] color-space validation passed for 119 surface-map sibling(s) under content/dev\textures
+  0.21s  BSP partitioning...
+  0.21s  Data script compilation...
+[INFO prl_build] [prl-build] compiling data_script content/dev/maps\../scripts/reflection-probes-test.ts -> C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out with light-membership sidecar via C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\target\debug\scripts-build.exe
+
+[ERROR prl_build] [prl-build] scripts-build stderr:
+scripts-build: failed to write output `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out`: failed to rename `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out.tmp.176` -> `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out`: Access is denied. (os error 5)
+
+Error: [prl-build] scripts-build failed for data_script content/dev/maps\../scripts/reflection-probes-test.ts: exit status exit code: 1; stderr: scripts-build: failed to write output `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out`: failed to rename `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out.tmp.176` -> `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out`: Access is denied. (os error 5)
+
+Warnings: 1
+  [ERROR prl_build] [prl-build] scripts-build stderr:
+scripts-build: failed to write output `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out`: failed to rename `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out.tmp.176` -> `C:\Users\danhi\AppData\Local\Packages\sandbox.{116eaec0-cc09-460e-89ad-977f5a092754}\AC\Temp\postretro-prl-build-7056-0\data-script.out`: Access is denied. (os error 5)
+

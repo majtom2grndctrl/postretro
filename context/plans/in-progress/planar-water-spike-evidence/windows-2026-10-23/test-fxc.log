@@ -1,0 +1,9 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.43s
+     Running unittests src\lib.rs (target\debug\deps\postretro_renderer-3e34ce177f6ef7f3.exe)
+
+running 1 test
+DX12 FXC test ran: every full-init pipeline compiled
+test render::dx12_fxc_test::dx12_fxc_compiles_every_full_init_pipeline ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1072 filtered out; finished in 38.44s
+

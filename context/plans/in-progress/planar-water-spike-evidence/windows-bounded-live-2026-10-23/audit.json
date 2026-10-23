@@ -1,0 +1,24 @@
+{
+  "live_runs": 16,
+  "cpu_frames": 9600,
+  "gpu_readbacks": 5760,
+  "static_captures": 8,
+  "static_measured_frames": 960,
+  "images_sha256": {
+    "handoff-images/half-d15.png": "f8091de97d442efe99df3326649b9a7e13f695683ed732a6cc45235fad55357c",
+    "handoff-images/half-d30.png": "e569776634d692236f3a296a35ab4159cc85710d9cd0f31ca65f6b06e3b9f921",
+    "handoff-images/half-unlimited.png": "195236756b8d09728a9cc08c7386fcf84ddee8b86860421747f1da0fa23088fa",
+    "handoff-images/probes-only.png": "0d77d49483348e872203e8a38a012927c17163943805fef43d02444d69f6b0c3",
+    "handoff-images/quarter-d15.png": "0d77d49483348e872203e8a38a012927c17163943805fef43d02444d69f6b0c3",
+    "handoff-images/ssr-high.png": "ecf30da88092a081486a2c930e9ddf612b55a4e29f41a5b3bfd98d8d59c6f0d7",
+    "handoff-repeat/half-d15.png": "f8091de97d442efe99df3326649b9a7e13f695683ed732a6cc45235fad55357c",
+    "handoff-repeat/quarter-d15.png": "0d77d49483348e872203e8a38a012927c17163943805fef43d02444d69f6b0c3"
+  },
+  "source_sha256": {
+    "crates/renderer/src/render/planar_reflection/launch_settings.rs": "0047f1a4d07c6b4c9d1723bef5f8eb289869f70af48ae10ed507a7165bee742c",
+    "crates/renderer/src/render/planar_reflection/mod.rs": "d5daf3f2573730721ec77a1a319e2972caecab13225e41f36f9b8c94ad116c06",
+    "crates/renderer/src/render/planar_reflection/tests.rs": "e23b00635435e2d4f7f39828ea2207055a502823c078951f31b9f8476c4a5088",
+    "crates/renderer/src/render/renderer_init.rs": "79247de0e9b795c4f2bcf53db788e24f8d2d16954acbb9df4eba01544479d713"
+  },
+  "note": "Quarter D15 is byte-identical to probes-only in this static pose; both D15 scales repeat byte-identically. No image quality acceptance inferred from performance."
+}

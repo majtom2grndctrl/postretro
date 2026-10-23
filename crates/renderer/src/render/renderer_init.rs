@@ -325,6 +325,19 @@ impl Renderer {
             .fluid_surface
             .set_reflection_quality(device, quality);
         self.queue.enable();
+        #[cfg(feature = "dev-tools")]
+        match std::env::var("POSTRETRO_UNCAPPED").ok().as_deref() {
+            Some("1") if self.surface.is_some() => {
+                self.toggle_vsync();
+                log::info!("[Renderer] vsync off (POSTRETRO_UNCAPPED launch seed)");
+            }
+            None | Some("0" | "1") => {}
+            Some(value) => {
+                log::warn!(
+                    "[Renderer] invalid POSTRETRO_UNCAPPED={value:?}; keeping vsync default"
+                );
+            }
+        }
         self.log_render_extents();
         log::info!("[Renderer] Full renderer initialization complete");
         Ok(())

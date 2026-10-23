@@ -58,7 +58,7 @@ Measurement state for the walk-budget runs: engine window visible and unoccluded
 
 ## IP map
 
-Engineering triage, not legal advice. Sources: `plans/done/fluid-ssr-reflections/ip-check.md`, `research/gi-rtx-lite/index.md`, spike contract IP rows.
+Engineering triage, not legal advice. The pixel tilt has its own chart, paths and design rules in sibling `ip-check.md`. Sources: `plans/done/fluid-ssr-reflections/ip-check.md`, `research/gi-rtx-lite/index.md`, spike contract IP rows.
 
 | Reference | Fence | How the brief honours it |
 |---|---|---|

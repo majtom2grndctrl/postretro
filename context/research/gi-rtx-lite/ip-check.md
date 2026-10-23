@@ -23,7 +23,7 @@
 | Document | Owner | Priority | Status (unverified) | Source | Pieces |
 |---|---|---|---|---|---|
 | US20210012562A1 "Probe-based dynamic GI" | NVIDIA | 2019-07-11 | Reported abandoned 2023-08-23 (not re-confirmed); published 2021-01-14, citable art | Summary | 1, 2 |
-| WO2026113651A1 / CN122115679A | Tencent | 2024-11-28 | Pending; US national phase ≈2027-05, EP ≈2027-06 | Machine translation (earlier check) | 2, 4, 6 |
+| WO2026113651A1 / CN122115679A | Tencent | 2024-11-28 | Pending; US national phase ≈2027-05, EP ≈2027-06 | Machine translation (earlier check) | 2, 4 |
 | US10137372B2 "Light probe culling based upon visibility" | Square Enix (Eidos Montréal) | filed 2016-12-14 | Granted 2018-11-27; ≈2036-12 + PTA | Abstract verbatim; claims snippet | 2, 4, 7 |
 | US12293451B2 "Illumination rendering method…" | Tencent | CN 2021-04-02 | Granted 2025-05-06; ≈2042 + PTA | Snippet, claims 1–3 | 3, 4, 5, 7 |
 | US8558837B2 "Modular radiance transfer" | Disney | 2010-01-18 | PTA 835 days → ≈2032-06-30 if fees paid | Full PDF | 3 |
@@ -34,14 +34,14 @@
 | US20250037360A1 | Sony Interactive Entertainment | ≈2023 | Pending | Nothing found | 2 |
 | US8451270B2 "Real-time radiosity system in a video game" | Microsoft | 2008-06-25 | PTA 905 days → ≈2030-12 unless fees lapsed; fee status not checked | Full PDF | 3, 4, 6 |
 | US7408550 | Bunnell (no assignee on face) | filed 2007-07-23 | ≤ 2027-07-23; fee status not checked | Full PDF | 3 |
-| US20140327673A1 | Crytek | ≈2013 | Unknown; if granted, live concern | Full PDF claims | 3, 4, 6 |
+| US20140327673A1 | Crytek | published 2014 | Unknown; if granted, live concern | Full PDF claims | 3, 4, 6 |
 | US11534688B2 / US12263404B2 | Take-Two | 2018-04-02 | '404 adjusted expiry 2039-09-04 (Google) | Description snippet; claims unread | 7 |
 
 **NVIDIA as prior art.** US20210012562A1 published 2021-01-14, before Tencent US12293451B2's 2021-04-02 priority. Its probes update by ray tracing, not transfer × coefficient, so its overlap with '451 is weak; it is better art for piece 1.
 
 Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-derived probes; Epic (Lumen surface or radiance cache); EA, Activision or Unity probe placement; portal-gated light transport. Door-driven baked lighting: only Take-Two's description ("a new baked ambient… placed over the area of the door as it opens"). Filings published in the last 18 months are invisible to search.
 
-**Prior art relied on:** Quake lightstyles 1996 (per-style lightmaps × runtime curve); Goral et al. 1984; Heckbert 1990; Ward 1988, 1992; Cohen & Greenberg 1985; George, Sillion & Greenberg 1990; Dorsey, Sillion & Greenberg 1991; Hanrahan et al. 1991; Drettakis & Sillion 1997; qrad 1997; Source/vrad 2004 (per-leaf ambient samples); Doom 3 2004 (area portals gate light); Martin & Einarsson SIGGRAPH 2010 (Enlighten in Frostbite 2, probes from the solution); Sloan et al. 2002; McGuire et al. 2017; Wang et al. I3D 2019; Majercik et al. 2019, 2021; Unity Adaptive Probe Volumes "Virtual Offset"; Bunnell, GPU Gems 2 2005; Green (Valve) 2007 distance-field magnification; q3map2 surface lights; Suntracker US20170345208A1 (2017); Microsoft PRT patents US7262770 / US7061489; Crytek US20140327673A1 (2014).
+**Prior art relied on:** Goral et al. 1984; Cohen & Greenberg 1985; Ward 1988, 1992; Heckbert 1990; George, Sillion & Greenberg 1990; Dorsey, Sillion & Greenberg 1991; Hanrahan et al. 1991; Quake lightstyles 1996 (per-style lightmaps × runtime curve); Drettakis & Sillion 1997; qrad 1997; Sloan et al. 2002 and Microsoft's PRT patents US7262770 / US7061489; Source/vrad 2004 (per-leaf ambient samples); Doom 3 2004 (area portals gate light); Bunnell, GPU Gems 2 2005; Green (Valve) 2007 distance-field magnification; q3map2 surface lights; Martin & Einarsson SIGGRAPH 2010 (Enlighten in Frostbite 2, probes from the solution); Crytek US20140327673A1 (2014); McGuire et al. 2017; Suntracker US20170345208A1 (2017); Wang et al. I3D 2019; Majercik et al. 2019, 2021; Unity Adaptive Probe Volumes "Virtual Offset".
 
 ## Piece 1: probe classification and relocation
 
@@ -93,13 +93,13 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 |---|---|---|---|
 | Tencent US12293451B2 cl. 1 | (a) on a light change, determine "light source change information"; (b) a "current light source projection coefficient" for the changed light; (c) indirect at a "target pixel point" from its "radiance transfer parameter" × the coefficient; (d) direct under the changed light; (e) render from both. "Basis functions" appears in the description, not confirmed in cl. 1 | E = Σ scalar intensity × baked unit per-light patch irradiance; Jacobi over links | **Near a live claim** on (b) and (c); a scalar is arguably not a projection coefficient. Counsel |
 | '451 cl. 2, 3 | Cl. 2: coefficient = "illumination transform matrix" × initial coefficient. Cl. 3: transfer for static-object pixels from a matching lightmap | Baked-tier lights never move; per-light bounce not stored per texel | Cl. 2 absent; cl. 3 absent while bounce stays summed |
-| Disney US8558837B2 | Per-shape spectral decomposition of one-bounce transport | Explicit top-K links | Appears absent; keep links uncompressed |
+| Disney US8558837B2 (full text) | Cl. 1, 9: a "palette of shapes", each with sampled direct lighting states, a "lighting prior" and an SVD-"factorized transport operator"; "extension operators" between adjacent shapes, "interfaces" between non-adjacent ones. Cl. 20: scene chunks mapped to palette shapes. Dependents: each shape "a cube with zero or more faces removed" | Explicit top-K links; no shape palette | Appears absent; keep links uncompressed |
 | Suntracker '148/'479 | Per-channel "canonical radiosity solutions" in GPU texture memory, read per vertex in a vertex shader × channel intensity; dependents: channel texel-array index, global dimmer or sky multiplier, inverse gamma | CPU solve | Appears absent; keep any per-light layer sum out of a vertex shader |
 | ARM US10672177 | Final-gather rays distributed by directional irradiance | Cosine-distributed link rays | Appears absent if rays never follow a prior solution |
 | Microsoft US8451270 (full text) | Cl. 1: transfer-patch partition with curvature limits and UV packing. Cl. 7: per texel, a Z-buffered cube map of visible patch ids sorted by flux, top contributors stored in a texture + indirection texture. Cl. 11: real-time GPU radiosity in UV space, one pass per bounce | CPU links, no UV bundles | Appears absent; never ship per-texel flux-sorted lists |
 | Crytek US20140327673A1 (full text) | Cl. 1: samples each holding "an indication of intersections of sample rays with other samples", a lighting contribution per sample, GI from those. Cl. 6: index array of hit samples. Cl. 9: per-sample light lists | Top-K links between patches | **Concern if granted**; status unknown |
 | Bunnell US7408550 (full text) | Deformable geometry, control mesh, iteration seeded from the prior frame, a specific form-factor formula | Static geometry | Appears absent beyond warm-starting |
-| Portal- or door-gated transport | None found | Sealed-portal links zeroed | Prior art: Drettakis & Sillion 1997; Doom 3 2004 |
+| Portal- or door-gated transport | None found for portal gating; Take-Two describes door-driven baked ambient (piece 7) | Sealed-portal links zeroed | Prior art: Drettakis & Sillion 1997; Doom 3 2004 |
 
 **Verdict: needs counsel** (Tencent '451; Crytek '673 if granted). The '451 risk is not redesign-only: see piece 5.
 

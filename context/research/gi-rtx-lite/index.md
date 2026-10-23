@@ -118,8 +118,8 @@ Patent risk sits in runtime update triggers and runtime data layouts, not in bak
 
 | Artefact | Built | Derives |
 |---|---|---|
-| Surface radiance cache: fixed-size patches (face + grid coordinate, stable ids), direct radiance + emissive × `.prm` albedo, optional iteration for multi-bounce; per-light unit caches for animated lights | Before atlas preparation, so stages stay independent of lightmap density; ~24–100 MB bake RAM (*est.*) | SH base and deltas; bounce layer; emissive bounce; specular occlusion cones; leak counts |
-| High-res visibility pass | Today's lightmap bake | Texel-step report; distance-to-edge masks; per-face density hints; light → cell reach |
+| Surface radiance cache: fixed-size patches (face + grid coordinate, stable ids), outgoing radiance (`.prm` albedo × direct irradiance, plus opt-in emissive), optional iteration for multi-bounce; per-light unit caches for animated lights | Before atlas preparation, so stages stay independent of lightmap density; ~24–100 MB bake RAM (*est.*) | SH base and deltas; bounce layer; emissive bounce; specular occlusion cones; leak counts |
+| Visibility pass | Today's lightmap visibility samples, supersampled where needed | Texel-step report; distance-to-edge masks; per-face density hints; light → cell reach |
 
 | Output | Verdict | What it does | IP |
 |---|---|---|---|
@@ -128,15 +128,15 @@ Patent risk sits in runtime update triggers and runtime data layouts, not in bak
 | Light → cell reach | Keep | Bits for the cells whose texels each light lit, ~110 KB for 157 lights × 5,700 cells (*est.*). Filtered by blocked portals at runtime, it replaces sphere-vs-reachable-cell tests for graft 2, the ranker pre-cull and fog | Low (Doom 3) |
 | Leak counts | Keep | Backface hits among the radiance rays, plus texel samples inside solids → relocation, validity, mapper report | NVIDIA app, Unity Virtual Offset prior art |
 | Navmesh-guided coarsening | Keep | Protects probes near navmesh and walkable air from coarsening. Never culls: fog, projectiles and jump arcs need air probes | — |
-| Texel-step detector | Keep | Supersamples sampled texels against the shipped lightmap; warns and suggests `_lightmap_scale`. Makes "edges never show their storage lattice" a compile check | — |
+| Texel-step detector | Keep | Supersamples a sample of texels against the shipped lightmap; warns and suggests `_lightmap_scale`. Makes "edges never show their storage lattice" a compile check | — |
 | Shadowmask-mode owners | Improve; later | Each face's ≤ 4 owner lights leave the irradiance bake. Runtime evaluates their diffuse × visibility rebuilt from a distance-to-edge mask (Green 2007) at scene-pixel resolution, one BC5-friendly channel per light, penumbra width per (face, light). Restores per-pixel N·L. Two edges in one texel (railings, cables) fall back to raw visibility | Valve 2007 prior art |
-| Edge-driven density | Only if owners fall short | Automates `_lightmap_scale` per face; grows post-atlas cache keys and the mandatory set | Heckbert 1990, q3map2 |
+| Edge-driven density | Only if shadowmask-mode owners fall short | Automates `_lightmap_scale` per face; grows post-atlas cache keys and the mandatory set | Heckbert 1990, q3map2 |
 | Bounce-layer direction | Improve | Rg8 dominant direction + directionality byte at bounce resolution, as the direct atlas does | — |
 | Specular occlusion cones | Optional | Bent normal + aperture from gather rays darken owner specular and probe reflections in crevices; ~2 B/texel coarse | — |
 | Emissive bounce | Owner ruling | Opt-in per material. Reverses the recorded rule that emissive surfaces light nothing | q3map2 surface lights |
 | Mover rest-pose channel | Later | Door channel for every mover terminus (docked lifts, platforms) | Contact-AO variant needs counsel (Take-Two) |
 
-Killed: link-based probe culling (distance-to-surface and navmesh say the same, and air probes are needed); runtime irradiance gradients (bilinear already reconstructs; as a bake cache only on a fixed grid, to keep cold bakes byte-identical); light trees for entity direct (no per-receiver static occlusion, so they leak through walls; the falloff early-out already took the many-light win); patch links (ray gathers from the cache do the same job).
+Killed: link-based probe culling (distance-to-surface and navmesh say the same, and air probes are needed); runtime irradiance gradients (bilinear already reconstructs; as a bake cache only on a fixed grid, to keep cold bakes byte-identical); light trees for entity direct (no per-receiver static occlusion, so they leak through walls; the falloff early-out already took the many-light win); bake-time patch links (ray gathers from the cache do the same job).
 
 ### Door classification
 
@@ -207,7 +207,7 @@ Animation gains are new kinds of change and lower cost, not more expressive per-
 | Change | Today | Redesign |
 |---|---|---|
 | Baked-position light pulses or recolours | Per-light grid deltas (id 27), GPU compose per frame; the costly path | Per-light bounce on patches × curve; same flexibility, no GPU compose; patch count at or above today's valid probes (*est.*) |
-| Door opens or closes | Promoted and dynamic lights shadowed; unpromoted baked light and bounce pass through (graft 3 closes both) | Sealed-portal links zero; bounce re-solves over a frame or two |
+| Door opens or closes | Promoted and dynamic lights shadowed; unpromoted baked light and bounce pass through (graft 3 closes the first; door bounce is optional) | Sealed-portal links zero; bounce re-solves over a frame or two |
 | Mover blocks light | Direct only, through fixed pool slots | Direct via slab shadows for every nearby light; bounce still ignores movers |
 | Light in reflection probes | Share ratio: top 4 lights × 5 lobes | Unchanged; runtime re-shading of tiles reads on Tencent WO2026113651A1 claims 11–13 |
 | Probe diffuse | Composed from grid deltas | Follows the patch solution through probe links, doors included |
@@ -218,7 +218,7 @@ Animation gains are new kinds of change and lower cost, not more expressive per-
 | System | Today scales with | Redesign scales with |
 |---|---|---|
 | Entity and fog indirect | Volume ÷ spacing³ × animated reach | Cells (1–3 probes each; BSP leaves, not rooms); hallway ~960k valid SH probes → 2.1k–6.2k (*est.*) |
-| Indirect bake | Rays × grid probes (11.15 h hallway; may be stale) | Probe captures + patch links, minutes (*est.*) |
+| Indirect bake | Grid probes × rays × lights in range (11.15 h hallway; may be stale) | Probe captures + patch links, minutes (*est.*) |
 | Mover shadows | Fixed promotion slots (rationed) | Lights near movers × movers, analytic |
 | Water probes | Fluid face groups (`stress-env-volumes` overflows the 256 cap) | Cells with water |
 | Links | — | Surface area; 144–512 MB on the hallway (*est.*), needs per-cell streaming |

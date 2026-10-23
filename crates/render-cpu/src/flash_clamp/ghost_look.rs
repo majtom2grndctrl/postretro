@@ -1,45 +1,38 @@
-// Per-ghost look clamp: each ghost's opacity, tint redness, drawn brightness and
-// darkening on one flash window per ghost, judged at the worst background.
+// Per-ghost look clamp: what each ghost draws, judged over every background at
+// the edge points on one flash window per ghost, and the look that presents.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter), §7.9
 
 use std::hash::Hash;
 
-use super::ghost_tint::{INVISIBLE_OPACITY, drawn_luminance, presented_tint};
+use super::ghost_red::GhostRedness;
+use super::ghost_tint::{drawn_luminance, on_grid_at_luminance};
+use super::ghost_trackers::{Drawn, EdgeTrackers, rate_cap_scale};
+use super::ghost_window::{Budget, GhostWindow, SlotClass};
 use super::keyed::{KeyClamp, KeyedClamp};
-use super::value::{DarkState, Decided, Judging, Redness, Strength, as_is, vanishing};
-use super::window::{FlashWindow, Part};
+use super::value::{INTENSITY_RATE_PER_SECOND, unit_strength};
 use crate::flash_limiter::{LimiterFrameInput, LimiterFrameUniform, pack_limiter_frame};
-use crate::ghost_instance::{GhostInstanceLook, SCREEN_DOOR_PIXELS, screen_door_coverage};
+use crate::ghost_instance::{GhostInstanceLook, screen_door_coverage};
 use crate::ghost_transparency::GhostTransparency;
 
-/// How far a part's decision may sit from the look that presents it and still
-/// be that look: the f32 rounding of an opacity split into brightness and
-/// darkening.
-const RESOLVE_EPSILON: f32 = 1.0e-6;
+/// Halvings of a refused frame's segment while searching for the furthest
+/// look that needs no new slot.
+const BISECTION_STEPS: usize = 12;
 
-/// The opacity a ghost presents as under `transparency`: itself when blended,
-/// the share of pixels the screen door keeps when dithered.
-fn presents(transparency: GhostTransparency) -> fn(f32) -> f32 {
-    match transparency {
-        GhostTransparency::Blend => as_is,
-        GhostTransparency::Dither => screen_door_coverage,
-    }
+/// At or below this opacity a look draws no luminance to divide out of its
+/// drawn state, so it keeps the luminance asked.
+const NO_OPACITY: f32 = 1.0e-6;
+
+/// A blended ghost's opacity draws as itself.
+fn blended(opacity: f32) -> f32 {
+    opacity
 }
 
-/// `opacity` moved toward `from` onto a value `transparency` presents exactly:
-/// itself when blended, a whole sixteenth when dithered.
-fn presentable(opacity: f32, from: f32, transparency: GhostTransparency) -> f32 {
+/// The opacity a ghost draws at under `transparency`: itself when blended,
+/// the share of pixels the screen door keeps when dithered.
+fn drawn_opacity(transparency: GhostTransparency) -> fn(f32) -> f32 {
     match transparency {
-        GhostTransparency::Blend => opacity,
-        GhostTransparency::Dither => {
-            let steps = opacity * SCREEN_DOOR_PIXELS as f32;
-            let kept = if from < opacity {
-                steps.floor()
-            } else {
-                steps.ceil()
-            };
-            kept / SCREEN_DOOR_PIXELS as f32
-        }
+        GhostTransparency::Blend => blended,
+        GhostTransparency::Dither => screen_door_coverage,
     }
 }
 
@@ -50,327 +43,297 @@ struct AskedLook {
     transparency: GhostTransparency,
 }
 
-/// One frame's decisions for a ghost's look, before it presents.
+/// One frame's choices, as opacity and drawn tint luminance: from the exempt
+/// ray's end (the asked opacity's fall at the held luminance) to the asked
+/// look under the rate cap. A point between them draws on the straight line
+/// between what the two draw.
 #[derive(Clone, Copy, Debug)]
-struct Decisions {
-    opacity: Decided,
-    red: f32,
-    /// The tint, red-limited.
-    tint: [f32; 3],
-    /// That tint's luminance as drawn.
-    luminance: f32,
-    brightness: Decided,
-    darkening: Decided,
+struct Segment {
+    exempt: (f32, f32),
+    capped: (f32, f32),
 }
 
-impl Decisions {
-    /// Whether every luminance part decided what `opacity` and `brightness`
-    /// present.
-    fn presents(&self, opacity: f32, brightness: f32) -> bool {
-        let near = |decided: f32, presented: f32| (decided - presented).abs() <= RESOLVE_EPSILON;
-        near(self.opacity.level, opacity)
-            && near(self.brightness.level, brightness)
-            && near(self.darkening.level, opacity - brightness)
+impl Segment {
+    /// The look `tau` of the way from the exempt end to the capped one.
+    fn at(&self, tau: f32) -> (f32, f32) {
+        if tau == 0.0 {
+            return self.exempt;
+        }
+        if tau == 1.0 {
+            return self.capped;
+        }
+        let ((exempt_opacity, held), (capped_opacity, capped_luminance)) =
+            (self.exempt, self.capped);
+        let opacity = exempt_opacity + (capped_opacity - exempt_opacity) * tau;
+        if held == capped_luminance {
+            return (opacity, held);
+        }
+        let lit = exempt_opacity * held;
+        let lit = lit + (capped_opacity * capped_luminance - lit) * tau;
+        let luminance = if opacity > NO_OPACITY {
+            (lit / opacity).clamp(0.0, 1.0)
+        } else {
+            capped_luminance
+        };
+        (opacity, luminance)
     }
 }
 
-/// One ghost's look through the limiter, judged at the worst background. Over
-/// a background of luminance B a ghost of albedo a draws B(1 − o) + a·o·L at
-/// presented opacity o and drawn tint luminance L. That is bilinear in a and
-/// B, so the largest change sits at a corner, and the clamp judges all three
-/// that change:
+/// What one frame of a ghost asks, as the clamp weighs it.
+#[derive(Clone, Copy, Debug)]
+struct FrameAsk {
+    /// The asked tint, before the red rule.
+    tint: [f32; 3],
+    drawn_opacity: fn(f32) -> f32,
+    segment: Segment,
+    budget: Budget,
+}
+
+/// One ghost's look through the limiter, judged over every background it may
+/// cover. Over background luminance B a ghost of albedo a draws a·p + B·q at
+/// p = o·L and q = 1 − o, for presented opacity o (dithered, the screen
+/// door's coverage) and drawn tint luminance L. Any albedo and background in
+/// [0, 1]² is a scale of a point on the square's outer edges, so the clamp
+/// tracks what draws at 33 edge points, (1, k/16) and (k/16, 1), counting a
+/// swing of the flash threshold less half a sample step (a point between
+/// samples draws within half a step of the nearer one) with no dark test. Each
+/// edge point's transitions sit in slots of their own on one window, which
+/// never holds more than six such slots, so no albedo over any background sees
+/// more than three flashes in any second. The tint's redness, weighted by
+/// opacity, spends the same window under the screen channels' red rule.
 ///
-/// - brightness, o·L: a white ghost over black;
-/// - opacity, o: a black ghost over white, which draws 1 − o, so a swing's
-///   darker state is on either side;
-/// - darkening, o·(1 − L): a white ghost over white, which draws one minus it.
+/// Each frame:
 ///
-/// Those three and the tint's redness (weighted by opacity) share one merging
-/// flash window: at most three flashes a second across all of them, and one
-/// change in what draws counts once though its parts cross the threshold on
-/// different frames. Dithered, opacity is judged as the screen door's coverage.
-/// Each part keeps its own rate cap.
+/// - the asked look is rate-capped on the straight line in (p, q), so no
+///   point draws faster than a screen channel ramps;
+/// - the exempt ray, the asked opacity's fall at the held tint, always
+///   presents: a ghost can always fade out or vanish, and its transitions share
+///   one slot;
+/// - under budget, the capped look presents if every transition it counts
+///   joins a slot or opens one with room for one more; otherwise the furthest
+///   look toward it that needs no new slot presents, its tint at that look's
+///   luminance;
+/// - over budget only the exempt ray moves, except that the change which
+///   opened the latest slot may carry on the way it was going while every
+///   transition joins a slot, so a strobe's last admitted change completes and
+///   then rests.
 ///
-/// Brightness and darkening sum to opacity, so the three can't move freely:
-/// over budget the clamp presents the look closest to the asked one that keeps
-/// every part no further than it decided. Opacity yields only when brightness
-/// and darkening together can't follow it, and the tint then presents the
-/// brightness closest to its asked luminance. Failing that, the look holds.
+/// The tint presents as asked, or at the judged luminance keeping its hue
+/// angle, placed on the 8-bit grid the draw decodes; the luminance judged is
+/// that grid tint's. Saturation passes through unlimited: it changes what
+/// draws only where a coloured tint meets a coloured texture, which the clamp
+/// cannot see.
 #[derive(Clone, Copy, Debug)]
 struct LookValueClamp {
-    window: FlashWindow,
-    opacity: Strength,
-    red: Redness,
-    brightness: Strength,
-    darkening: Strength,
+    window: GhostWindow,
+    edges: EdgeTrackers,
+    red: GhostRedness,
+    /// The presented opacity. Dithered, the screen door draws its coverage.
+    opacity: f32,
+    /// The presented tint and the luminance it draws at.
+    tint: [f32; 3],
+    luminance: f32,
+    /// The red-limited asked tint whose hue the presented tint keeps.
+    hue: [f32; 3],
 }
 
 impl LookValueClamp {
-    /// Decide every part for asking `opacity` and `tint`, with `brightness`
-    /// asked at the decided opacity in place of the tint's when given. Nothing
-    /// presents.
-    fn decide(
-        &mut self,
-        opacity: f32,
-        brightness: Option<f32>,
-        tint: [f32; 3],
-        transparency: GhostTransparency,
-        frame: &LimiterFrameUniform,
-    ) -> Decisions {
-        let presents = presents(transparency);
-        let (opacity_from, ramp_from) = (self.opacity.presented(), self.opacity.ramp());
-        let brightness_from = self.brightness.presented();
-        let darkening_from = self.darkening.presented();
-        // Which way each luminance part moves, so a transition never joins a
-        // slot whose parts are moving back.
-        let trying = presents(self.opacity.capped(opacity, 0.0, frame));
-        let trying_brightness = brightness.unwrap_or(trying * drawn_luminance(tint));
-        self.window.moving(Part::Level, trying - opacity_from);
-        self.window
-            .moving(Part::Brightness, trying_brightness - brightness_from);
-        self.window
-            .moving(Part::Darkening, trying - trying_brightness - darkening_from);
-
-        let level = self.opacity.decide(
-            &mut self.window,
-            Part::Level,
-            opacity,
-            Judging {
-                dark: DarkState::Either,
-                presents,
-                shift: 0.0,
-            },
-            frame,
-        );
-        let (red, tint) = self.red.decide(&mut self.window, level.level, tint);
-        let luminance = drawn_luminance(tint);
-        let asked_brightness = brightness.unwrap_or(level.level * luminance);
-        let asked_darkening = level.level - asked_brightness;
-        self.window.moving(Part::Level, level.level - opacity_from);
-        self.window
-            .moving(Part::Brightness, asked_brightness - brightness_from);
-        self.window
-            .moving(Part::Darkening, asked_darkening - darkening_from);
-        // A screen-door step carries brightness and darkening with it at the
-        // tint's last luminance, past what the opacity's own rate cap moved.
-        let stepped = (level.level - opacity_from) - (level.ramp - ramp_from);
-        let last_luminance = if opacity_from > INVISIBLE_OPACITY {
-            (brightness_from / opacity_from).clamp(0.0, 1.0)
+    /// The asked `opacity` and drawn `luminance` under the straight-line rate
+    /// cap from the presented look.
+    fn capped(&self, opacity: f32, luminance: f32, cap: f32) -> (f32, f32) {
+        let from = Drawn::of(self.opacity, self.luminance);
+        let Some(scale) = rate_cap_scale(from, Drawn::of(opacity, luminance), cap) else {
+            return (opacity, luminance);
+        };
+        if scale == 0.0 {
+            return (self.opacity, self.luminance);
+        }
+        let capped_opacity = self.opacity + (opacity - self.opacity) * scale;
+        let capped_luminance = if luminance == self.luminance {
+            luminance
+        } else if capped_opacity > NO_OPACITY {
+            let lit = from.white_over_black + (opacity * luminance - from.white_over_black) * scale;
+            (lit / capped_opacity).clamp(0.0, 1.0)
         } else {
             luminance
         };
-        let brightness = self.brightness.decide(
-            &mut self.window,
-            Part::Brightness,
-            asked_brightness,
-            Judging {
-                shift: last_luminance * stepped,
-                ..Judging::OVER_DARK
-            },
-            frame,
-        );
-        let darkening = self.darkening.decide(
-            &mut self.window,
-            Part::Darkening,
-            asked_darkening,
-            Judging {
-                dark: DarkState::Stronger,
-                presents: as_is,
-                shift: (1.0 - last_luminance) * stepped,
-            },
-            frame,
-        );
-        Decisions {
-            opacity: level,
-            red,
-            tint,
-            luminance,
-            brightness,
-            darkening,
-        }
+        (capped_opacity, capped_luminance)
     }
 
-    /// The opacity and brightness that present every part no further from
-    /// where it last presented than it decided: the decided opacity, unless
-    /// brightness and darkening together can't reach it (then the nearest
-    /// opacity they can, on a value the transparency presents exactly), and
-    /// within that the brightness closest to the tint's at that opacity.
-    fn resolve(&self, decided: &Decisions, transparency: GhostTransparency) -> (f32, f32) {
-        let span = |from: f32, to: f32| (from.min(to), from.max(to));
-        let opacity_from = self.opacity.presented();
-        let (opacity_low, opacity_high) = span(opacity_from, decided.opacity.level);
-        let (brightness_low, brightness_high) =
-            span(self.brightness.presented(), decided.brightness.level);
-        let (darkening_low, darkening_high) =
-            span(self.darkening.presented(), decided.darkening.level);
-        let reachable = decided
-            .opacity
-            .level
-            .max(brightness_low + darkening_low)
-            .min(brightness_high + darkening_high);
-        let opacity = if (reachable - decided.opacity.level).abs() <= RESOLVE_EPSILON {
-            decided.opacity.level
+    /// The tint that draws luminance `aimed` at the hue of `hue`, and the
+    /// luminance it draws at: `hue` itself when it already draws at `aimed`,
+    /// the presented tint while neither changed (so a held tint never drifts
+    /// on the grid), else `hue` re-aimed and placed on the 8-bit grid.
+    fn realize(&self, hue: [f32; 3], aimed: f32) -> ([f32; 3], f32) {
+        if drawn_luminance(hue) == aimed {
+            return (hue, aimed);
+        }
+        if hue == self.hue && aimed == self.luminance {
+            return (self.tint, aimed);
+        }
+        on_grid_at_luminance(hue, aimed)
+    }
+
+    /// This clamp moved to the look `tau` along this frame's segment, and
+    /// whether every transition it counts found a slot. At `tau` 0 it is the
+    /// exempt ray alone, which always does. A look that does not fit is partly
+    /// moved, for the caller to discard.
+    fn advance(&self, ask: &FrameAsk, tau: f32) -> (Self, bool) {
+        let mut next = *self;
+        let (exempt_opacity, held) = ask.segment.exempt;
+        let exempt_drawn = (ask.drawn_opacity)(exempt_opacity);
+        // The exempt ray: the opacity's fall at the held luminance, exactly,
+        // so it is monotone at every edge point.
+        let opens = tau == 0.0 || ask.budget == Budget::Open;
+        let exempt = Drawn::of(exempt_drawn, held);
+        if !next
+            .edges
+            .step(exempt, SlotClass::Exempt, opens, 0, &mut next.window)
+        {
+            return (next, false);
+        }
+        if tau == 0.0 {
+            // The held tint presents unchanged; its redness falls with the
+            // opacity, which the red rule counts as it would any fall.
+            next.red.limit(&mut next.window, exempt_drawn, self.tint);
+            next.opacity = exempt_opacity;
+            return (next, true);
+        }
+        let (opacity, aimed) = ask.segment.at(tau);
+        let drawn = (ask.drawn_opacity)(opacity);
+        let hue = next.red.limit(&mut next.window, drawn, ask.tint);
+        let (tint, luminance) = self.realize(hue, aimed);
+        let onward = if ask.budget == Budget::Continue {
+            next.window.continuing()
         } else {
-            presentable(reachable, opacity_from, transparency)
-                .max(opacity_low)
-                .min(opacity_high)
+            0
         };
-        let brightness = (opacity * decided.luminance)
-            .max(brightness_low.max(opacity - darkening_high))
-            .min(brightness_high.min(opacity - darkening_low));
-        (opacity, brightness)
-    }
-
-    /// Hold opacity, brightness and darkening where they last presented,
-    /// limiting redness at that opacity.
-    fn hold(&mut self, tint: [f32; 3]) -> Decisions {
-        let held = |part: &Strength| Decided {
-            level: part.presented(),
-            ramp: part.ramp(),
-        };
-        let opacity = held(&self.opacity);
-        let (red, tint) = self.red.decide(&mut self.window, opacity.level, tint);
-        Decisions {
-            opacity,
-            red,
-            tint,
-            luminance: drawn_luminance(tint),
-            brightness: held(&self.brightness),
-            darkening: held(&self.darkening),
+        if !next.edges.step(
+            Drawn::of(drawn, luminance),
+            SlotClass::Budgeted,
+            ask.budget == Budget::Open,
+            onward,
+            &mut next.window,
+        ) {
+            return (next, false);
         }
+        next.opacity = opacity;
+        next.tint = tint;
+        next.luminance = luminance;
+        next.hue = hue;
+        (next, true)
     }
 
-    /// Whether each part holds its onsets: opacity, redness, brightness,
-    /// darkening.
-    fn suppressing(&self) -> [bool; 4] {
-        [
-            self.opacity.suppressing(),
-            self.red.suppressing(),
-            self.brightness.suppressing(),
-            self.darkening.suppressing(),
-        ]
-    }
-
-    /// Hold the onsets of each part `suppressing` names.
-    fn keep_suppressing(&mut self, suppressing: [bool; 4]) {
-        let [opacity, red, brightness, darkening] = suppressing;
-        self.opacity.keep_suppressing(opacity);
-        self.red.keep_suppressing(red);
-        self.brightness.keep_suppressing(brightness);
-        self.darkening.keep_suppressing(darkening);
-    }
-
-    fn present(&mut self, decided: &Decisions) {
-        self.opacity.present(decided.opacity);
-        self.red.present(decided.red);
-        self.brightness.present(decided.brightness);
-        self.darkening.present(decided.darkening);
+    /// The furthest look along this frame's segment that fits: the capped
+    /// look if it does, else a bisection between it and the exempt ray.
+    fn furthest(&self, ask: &FrameAsk) -> Self {
+        if ask.budget == Budget::ExemptOnly {
+            return self.advance(ask, 0.0).0;
+        }
+        let (whole, fits) = self.advance(ask, 1.0);
+        if fits {
+            return whole;
+        }
+        let mut best = self.advance(ask, 0.0).0;
+        let (mut low, mut high) = (0.0f32, 1.0f32);
+        for _ in 0..BISECTION_STEPS {
+            let mid = 0.5 * (low + high);
+            let (next, fits) = self.advance(ask, mid);
+            if fits {
+                low = mid;
+                best = next;
+            } else {
+                high = mid;
+            }
+        }
+        best
     }
 }
 
 impl KeyClamp for LookValueClamp {
     type Value = AskedLook;
 
+    /// Appearing presents the asked look and counts it: a ghost that was not
+    /// drawn changes what draws over every background as it appears, so its
+    /// first second keeps only the budget the appearance leaves. It counts as
+    /// exempt, which an empty window always admits.
     fn fresh(asked: AskedLook) -> Self {
         let AskedLook { look, transparency } = asked;
-        let mut opacity = Strength::default();
-        opacity.restart_presenting(look.opacity, presents(transparency));
-        let level = opacity.presented();
-        let mut red = Redness::default();
-        red.restart(level, look.tint);
-        let lit = level * drawn_luminance(look.tint);
-        let mut brightness = Strength::default();
-        brightness.restart(lit);
-        let mut darkening = Strength::default();
-        darkening.restart(level - lit);
+        let opacity = unit_strength(look.opacity);
+        let drawn = drawn_opacity(transparency)(opacity);
+        let luminance = drawn_luminance(look.tint);
+        let mut window = GhostWindow::default();
+        let mut red = GhostRedness::fresh(0.0, look.tint);
+        // An empty window has room for a red onset, so the tint is unchanged.
+        red.limit(&mut window, drawn, look.tint);
+        let mut edges = EdgeTrackers::fresh(Drawn::of(0.0, luminance));
+        let counted = edges.step(
+            Drawn::of(drawn, luminance),
+            SlotClass::Exempt,
+            true,
+            0,
+            &mut window,
+        );
+        debug_assert!(counted, "an empty window admits an exempt slot");
         Self {
-            window: FlashWindow::merging(),
-            opacity,
+            window,
+            edges,
             red,
-            brightness,
-            darkening,
+            opacity,
+            tint: look.tint,
+            luminance,
+            hue: look.tint,
         }
     }
 
-    /// Every part is decided on the window first: opacity, then redness at the
-    /// decided opacity (over budget a red tint desaturates at unchanged
-    /// luminance), then brightness and darkening at that opacity. When those
-    /// decisions can't all present at once, the look that can is decided
-    /// again as itself, so the window counts the transitions that present
-    /// and no others, and the onsets the first decisions refused stay
-    /// refused; failing that, the look holds. Saturation passes through
-    /// unlimited: it changes what draws only where a coloured tint meets a
-    /// coloured texture, which the clamp cannot see.
     fn limit(&mut self, asked: AskedLook, frame: &LimiterFrameUniform) -> AskedLook {
         self.window.age(frame.dt_window);
         let AskedLook { look, transparency } = asked;
-        let start = *self;
-        let mut decided = self.decide(look.opacity, None, look.tint, transparency, frame);
-        let (opacity, brightness) = start.resolve(&decided, transparency);
-        if !decided.presents(opacity, brightness) {
-            // An onset refused against the asked look stays refused: the look
-            // that presents holds it.
-            let refused = self.suppressing();
-            *self = start;
-            let asked_opacity = if opacity == decided.opacity.level {
-                look.opacity
-            } else {
-                opacity
-            };
-            decided = self.decide(
-                asked_opacity,
-                Some(brightness),
-                look.tint,
-                transparency,
-                frame,
-            );
-            if !decided.presents(opacity, brightness) {
-                *self = start;
-                decided = self.hold(look.tint);
-            }
-            self.keep_suppressing(refused);
-        }
-        self.present(&decided);
-        let opacity = decided.opacity.level;
+        let cap = INTENSITY_RATE_PER_SECOND * frame.dt_rate;
+        let capped = self.capped(unit_strength(look.opacity), drawn_luminance(look.tint), cap);
+        let ask = FrameAsk {
+            tint: look.tint,
+            drawn_opacity: drawn_opacity(transparency),
+            segment: Segment {
+                exempt: (self.opacity.min(capped.0), self.luminance),
+                capped,
+            },
+            budget: self.window.budget(),
+        };
+        *self = self.furthest(&ask);
         AskedLook {
             look: GhostInstanceLook {
-                opacity,
+                opacity: self.opacity,
                 saturation: look.saturation,
-                tint: presented_tint(
-                    decided.tint,
-                    opacity,
-                    decided.luminance,
-                    decided.brightness.level,
-                ),
+                tint: self.tint,
             },
             transparency,
         }
     }
 
-    /// A vanished ghost's opacity falls to nothing and that fall counts. Its
-    /// brightness and darkening fall with it on the same frame, the same
-    /// change, so they count once. Nothing presents in either transparency.
+    /// A vanished ghost's opacity falls to nothing at once at its held tint:
+    /// the exempt ray, so the fall always presents, and it counts like any
+    /// fall. Nothing draws in either transparency.
     fn absent(&mut self, frame: &LimiterFrameUniform) {
-        let gone = GhostInstanceLook {
-            opacity: 0.0,
-            saturation: 0.0,
-            tint: [0.0; 3],
-        };
-        self.limit(
-            AskedLook {
-                look: gone,
-                transparency: GhostTransparency::Blend,
+        let gone = AskedLook {
+            look: GhostInstanceLook {
+                opacity: 0.0,
+                saturation: 0.0,
+                tint: self.tint,
             },
-            &vanishing(frame),
-        );
+            transparency: GhostTransparency::Blend,
+        };
+        // A rate allowance of a full blend: the clamp cannot hold back what
+        // already vanished.
+        let vanishing = LimiterFrameUniform {
+            dt_rate: 1.0 / INTENSITY_RATE_PER_SECOND,
+            ..*frame
+        };
+        self.limit(gone, &vanishing);
     }
 
     fn is_at_rest(&self) -> bool {
-        self.window.is_empty()
-            && self.opacity.presented() == 0.0
-            && self.red.presented() == 0.0
-            && self.brightness.presented() == 0.0
-            && self.darkening.presented() == 0.0
+        self.window.is_empty() && self.opacity == 0.0 && self.red.presented() == 0.0
     }
 }
 
@@ -387,10 +350,12 @@ impl KeyClamp for LookValueClamp {
 /// untouched. [`Self::set_transparency`] says how the ghosts draw, so a
 /// dithered ghost is judged on the coverage its screen door presents.
 ///
-/// Each ghost's opacity, tint redness, drawn brightness and darkening share
+/// What each ghost draws over any background, and its tint's redness, share
 /// one flash window, so one ghost presents at most 3 flashes in any 1 s over
-/// any background. A ghost not presented on a frame vanished: everything it
-/// drew falls to nothing together, and that fall counts once.
+/// any background, and over budget it rests at a held look. A ghost not
+/// presented on a frame vanished: its opacity falls to nothing, which always
+/// presents and counts once. A ghost appearing presents as asked and counts
+/// its appearance the same way.
 #[derive(Clone, Debug)]
 pub struct GhostLookClamp<K> {
     /// Every ghost's look clamp.
@@ -458,14 +423,10 @@ impl<K: Copy + Eq + Hash> GhostLookClamp<K> {
     }
 
     /// The look ghost `key` presents this frame, from its unclamped look
-    /// (`opacity` already the link's opacity times membership).
-    ///
-    /// Opacity, the tint's redness, the drawn brightness and the darkening
-    /// are limited on one window. Over budget a red tint desaturates at
-    /// unchanged luminance and the tint presents the held brightness at the
-    /// presented opacity, keeping its hue. Saturation passes through
-    /// unlimited: it changes what draws only where a coloured tint meets a
-    /// coloured texture, which the clamp cannot see.
+    /// (`opacity` already the link's opacity times membership): judged over
+    /// every background as [`GhostLookClamp`] describes, its tint at the
+    /// presented luminance keeping its hue, and over budget a red tint
+    /// desaturated at unchanged luminance. Saturation passes through.
     pub fn present(&mut self, key: K, look: GhostInstanceLook) -> GhostInstanceLook {
         if !self.limiting {
             return look;
@@ -477,9 +438,9 @@ impl<K: Copy + Eq + Hash> GhostLookClamp<K> {
         self.looks.limit(key, asked).look
     }
 
-    /// End the frame: a ghost not presented this frame vanished. Everything
-    /// it drew falls to nothing, counted once, and its history is kept until
-    /// its clamp is at rest.
+    /// End the frame: a ghost not presented this frame vanished. Its opacity
+    /// falls to nothing, counted once, and its history is kept until its clamp
+    /// is at rest.
     pub fn end_frame(&mut self) {
         if !self.limiting {
             return;

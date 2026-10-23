@@ -22,6 +22,7 @@ mod fluid_surface;
 mod fog_pass;
 mod frame_timing;
 mod ghost_depth;
+mod ghost_order;
 mod kinematic_brush;
 mod kinematic_ghost;
 mod lightmap_residency;

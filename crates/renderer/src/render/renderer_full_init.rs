@@ -731,6 +731,7 @@ pub(crate) fn build_full_renderer(
         shadow_vs_stride,
         depth_view,
         ghost_depth,
+        ghost_order: ghost_order::GhostDrawOrder::default(),
         screen_effects,
         bloom,
         gpu_textures,

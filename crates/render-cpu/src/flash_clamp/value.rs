@@ -1,21 +1,23 @@
-// Per-value flash clamp: the limiter's rules for one presented value (a strength
-// and its color's redness), and the tracked parts a ghost's look clamp judges.
+// Per-value flash clamp: the photosensitivity limiter's rules applied to one
+// presented value (a strength and the redness of its color).
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter)
 
-use super::window::{FlashWindow, Part, decide};
 use crate::flash_limiter::LimiterFrameUniform;
 
-// The limiter's rules (WCAG 2.3.1 thresholds, rate cap), applied to one value.
+// The limiter's rules (WCAG 2.3.1 thresholds, flash window, rate cap), applied
+// to one value.
 pub(super) const FLASH_LUMINANCE_THRESHOLD: f32 = 0.1;
-/// A swing's darker state counts as dark below this luminance.
-pub(super) const FLASH_DARK_LIMIT: f32 = 0.8;
+const FLASH_DARK_LIMIT: f32 = 0.8;
+pub(super) const FLASH_MAX_TRANSITIONS: usize = 6;
+pub(super) const FLASH_WINDOW_SECONDS: f32 = 1.0;
 /// The limiter's intensity rate cap in blend strength per second: none to full
 /// takes 250 ms. A ramp that moves no faster than this never reads as limited.
 pub const INTENSITY_RATE_PER_SECOND: f32 = 4.0;
 pub(super) const SUPPRESSION_DEADBAND: f32 = 0.02;
 pub(super) const RED_SATURATED: f32 = 0.7;
-const RED_TRANSITION_THRESHOLD: f32 = 0.2;
-const RED_SUPPRESSION_DEADBAND: f32 = 0.05;
+pub(super) const RED_TRANSITION_THRESHOLD: f32 = 0.2;
+pub(super) const RED_SUPPRESSION_DEADBAND: f32 = 0.05;
+const WINDOW_SLOTS: usize = 8;
 
 const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
@@ -37,7 +39,7 @@ pub(super) fn redness(rgb: [f32; 3]) -> f32 {
 /// `held`. Mixing by d moves the red share R/(R+G+B) along
 /// (r + d(L − r)) / (T + d(3L − T)), which is not linear in d, so this solves
 /// for d exactly. Luminance is unchanged by the mix.
-fn desaturation_to_redness(rgb: [f32; 3], held: f32) -> f32 {
+pub(super) fn desaturation_to_redness(rgb: [f32; 3], held: f32) -> f32 {
     let total = rgb[0] + rgb[1] + rgb[2];
     let lum = luminance(rgb);
     // The red share whose redness is `held` (inverse of `redness`).
@@ -60,19 +62,14 @@ pub(super) fn unit_strength(strength: f32) -> f32 {
     }
 }
 
-/// A level judged as it is, as every strength but a dithered opacity presents.
-pub(super) fn as_is(level: f32) -> f32 {
-    level
-}
-
 /// One tracked value: what was presented, its last extremum, its direction
 /// and the furthest value reached in that direction since the extremum.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Tracker {
     pub(super) out: f32,
     ext: f32,
-    dir: f32,
-    peak: f32,
+    pub(super) dir: f32,
+    pub(super) peak: f32,
     pub(super) last_sign: i8,
     pub(super) suppressing: bool,
 }
@@ -85,7 +82,7 @@ struct Step {
 }
 
 impl Tracker {
-    fn restart(&mut self, level: f32) {
+    pub(super) fn restart(&mut self, level: f32) {
         *self = Self {
             out: level,
             ext: level,
@@ -128,7 +125,7 @@ impl Tracker {
         (next - ext, ext)
     }
 
-    fn present(&mut self, next: f32, reversal: f32) {
+    pub(super) fn present(&mut self, next: f32, reversal: f32) {
         let step = self.step(next, reversal);
         self.ext = step.ext;
         self.dir = step.dir;
@@ -137,294 +134,100 @@ impl Tracker {
     }
 }
 
-/// Which side of a swing is its darker state, as drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DarkState {
-    /// The weaker level: a strength that brightens a dark background.
-    Weaker,
-    /// The stronger level: a value that darkens a white background, which
-    /// draws one minus it.
-    Stronger,
-    /// Either side that qualifies: a ghost's opacity, which brightens a dark
-    /// background and darkens a white one.
-    Either,
+/// Which tracked part of a value a window slot's transition belongs to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Part {
+    #[default]
+    Level,
+    Red,
 }
 
-impl DarkState {
-    /// Whether a swing between `level` and `ext` has a darker state dark
-    /// enough to count.
-    fn counts(self, level: f32, ext: f32) -> bool {
-        let weaker = || level.min(ext) < FLASH_DARK_LIMIT;
-        let stronger = || 1.0 - level.max(ext) < FLASH_DARK_LIMIT;
-        match self {
-            DarkState::Weaker => weaker(),
-            DarkState::Stronger => stronger(),
-            DarkState::Either => weaker() || stronger(),
-        }
-    }
-}
-
-/// How a [`Strength`] judges its level.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Judging {
-    /// Which side of a swing is its darker state.
-    pub(super) dark: DarkState,
-    /// The level a rate-capped strength presents as, which is what counts:
-    /// itself, or the share of pixels a ghost's screen door keeps.
-    pub(super) presents: fn(f32) -> f32,
-    /// How far this frame's rate cap starts from the last presented level: a
-    /// step something already judged carries it through (a screen-door step).
-    pub(super) shift: f32,
-}
-
-impl Judging {
-    /// A strength over a dark background, presented as it is.
-    pub(super) const OVER_DARK: Self = Self {
-        dark: DarkState::Weaker,
-        presents: as_is,
-        shift: 0.0,
-    };
-}
-
-/// One frame's decision for a [`Strength`], before it presents.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Decided {
-    /// The level it presents as, the one judged.
-    pub(super) level: f32,
-    /// The rate-capped strength behind it, where the next rate cap starts.
-    pub(super) ramp: f32,
-}
-
-/// One strength-like level (a blend strength, a ghost's opacity, drawn
-/// brightness or darkening) limited on a flash window its owner holds and ages
-/// once a frame. The rate cap moves the strength itself; the window judges the
-/// level it presents as.
+/// Transitions counted in the last second, aged by presented-frame time,
+/// oldest first. Each slot records its part and whether it was an onset.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Strength {
-    tracker: Tracker,
-    /// The rate-capped strength last presented. Equal to the presented level
-    /// unless that level is quantized.
-    ramp: f32,
+struct FlashWindow {
+    ages: [f32; WINDOW_SLOTS],
+    kinds: [(Part, bool); WINDOW_SLOTS],
+    count: usize,
 }
 
-impl Strength {
-    /// Start fresh at `strength`: nothing to rate-cap from.
-    pub(super) fn restart(&mut self, strength: f32) {
-        self.restart_presenting(strength, as_is);
+impl FlashWindow {
+    fn age(&mut self, dt: f32) {
+        let mut kept = 0;
+        for i in 0..self.count {
+            let age = self.ages[i] + dt;
+            if age < FLASH_WINDOW_SECONDS {
+                self.ages[kept] = age;
+                self.kinds[kept] = self.kinds[i];
+                kept += 1;
+            }
+        }
+        self.count = kept;
     }
 
-    /// Start fresh at `strength`, presented as `presents` says.
-    pub(super) fn restart_presenting(&mut self, strength: f32, presents: fn(f32) -> f32) {
-        let strength = unit_strength(strength);
-        self.tracker.restart(presents(strength));
-        self.ramp = strength;
-    }
-
-    /// The level last presented.
-    pub(super) fn presented(&self) -> f32 {
-        self.tracker.out
-    }
-
-    /// The rate-capped strength last presented.
-    pub(super) fn ramp(&self) -> f32 {
-        self.ramp
-    }
-
-    /// Whether it holds its onsets until the window has room.
-    pub(super) fn suppressing(&self) -> bool {
-        self.tracker.suppressing
-    }
-
-    /// Hold its onsets until the window has room if `suppressing`.
-    pub(super) fn keep_suppressing(&mut self, suppressing: bool) {
-        self.tracker.suppressing |= suppressing;
-    }
-
-    /// `strength`, no further than [`INTENSITY_RATE_PER_SECOND`] × `dt_rate`
-    /// from the last presented strength moved by `shift`.
-    pub(super) fn capped(&self, strength: f32, shift: f32, frame: &LimiterFrameUniform) -> f32 {
-        // Full-screen rate cap, hitch-clamped.
-        let cap = INTENSITY_RATE_PER_SECOND * frame.dt_rate;
-        let from = self.ramp + shift;
-        unit_strength(strength).clamp(from - cap, from + cap)
-    }
-
-    /// This frame's decision for `strength`, its transitions counted on
-    /// `window` as `part`: rate-capped, judged on the level it presents as,
-    /// and an over-budget onset held at the last presented level. Nothing
-    /// presents until [`Self::present`].
-    pub(super) fn decide(
-        &mut self,
-        window: &mut FlashWindow,
-        part: Part,
-        strength: f32,
-        judging: Judging,
-        frame: &LimiterFrameUniform,
-    ) -> Decided {
-        let capped = self.capped(strength, judging.shift, frame);
-        let judged = (judging.presents)(capped);
-        let (_, ext) = self.tracker.excursion(judged, FLASH_LUMINANCE_THRESHOLD);
-        let counts = judging.dark.counts(judged, ext);
-        let level = decide(
-            &mut self.tracker,
-            window,
-            part,
-            judged,
-            FLASH_LUMINANCE_THRESHOLD,
-            SUPPRESSION_DEADBAND,
-            counts,
-        );
-        Decided {
-            level,
-            // A held level keeps the strength it was presented at.
-            ramp: if level == judged { capped } else { self.ramp },
+    fn push(&mut self, part: Part, onset: bool) {
+        if self.count < WINDOW_SLOTS {
+            self.ages[self.count] = 0.0;
+            self.kinds[self.count] = (part, onset);
+            self.count += 1;
         }
     }
 
-    /// Present a decided level.
-    pub(super) fn present(&mut self, decided: Decided) {
-        self.tracker
-            .present(decided.level, FLASH_LUMINANCE_THRESHOLD);
-        self.ramp = decided.ramp;
+    /// Returns the window still owes: onsets in it whose return it does not
+    /// hold yet. A return with no onset before it owes nothing.
+    fn owed_returns(&self) -> usize {
+        let mut open = [0usize; 2];
+        for &(part, onset) in &self.kinds[..self.count] {
+            let owed = &mut open[part as usize];
+            if onset {
+                *owed += 1;
+            } else {
+                *owed = owed.saturating_sub(1);
+            }
+        }
+        open[0] + open[1]
     }
 
-    /// The level presented this frame for `strength` over a dark background,
-    /// its transitions counted on `window` as `part`.
-    fn limit(
-        &mut self,
-        window: &mut FlashWindow,
-        part: Part,
-        strength: f32,
-        frame: &LimiterFrameUniform,
-    ) -> f32 {
-        let decided = self.decide(window, part, strength, Judging::OVER_DARK, frame);
-        self.present(decided);
-        decided.level
+    /// An onset is admitted only while the window holds it, the returns
+    /// earlier onsets still owe, and its own return.
+    fn onset_fits(&self) -> bool {
+        self.count + self.owed_returns() + 2 <= FLASH_MAX_TRANSITIONS
     }
 }
 
-/// The redness of a color weighted by the strength it presents at, limited on
-/// a flash window its owner holds and ages once a frame.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Redness {
-    tracker: Tracker,
-    /// Whether the last presented color was saturated red, so a move away from
-    /// it counts as the return of a red transition.
-    was_saturated_red: bool,
-}
-
-impl Redness {
-    /// This frame's presented redness and color for `rgb` at presented
-    /// strength `level`, counted on `window`. Over budget a red onset
-    /// desaturates the color toward its own luminance, solved exactly, so its
-    /// luminance is unchanged and it presents exactly the held redness.
-    /// Nothing presents until [`Self::present`].
-    pub(super) fn decide(
-        &mut self,
-        window: &mut FlashWindow,
-        level: f32,
-        rgb: [f32; 3],
-    ) -> (f32, [f32; 3]) {
-        let color_red = redness(rgb);
-        let red_target = level * color_red;
-        let saturated = color_red >= RED_SATURATED || self.was_saturated_red;
-        self.was_saturated_red = color_red >= RED_SATURATED;
-        let red = decide(
-            &mut self.tracker,
-            window,
-            Part::Red,
-            red_target,
-            RED_TRANSITION_THRESHOLD,
-            RED_SUPPRESSION_DEADBAND,
-            saturated,
-        );
-        let rgb = if red < red_target && red_target > 0.0 {
-            // Hold the presented redness (strength × tint redness) by
-            // desaturating the tint toward its own luminance; `red_target > 0`
-            // means `level > 0`.
-            let held = (red / level).clamp(0.0, 1.0);
-            let d = desaturation_to_redness(rgb, held);
-            let gray = luminance(rgb);
-            rgb.map(|channel| channel + (gray - channel) * d)
+/// Decide one tracked part's next presented level. Onsets (rises) are admitted
+/// only while the window holds them, their return, and the returns earlier
+/// onsets still owe; over budget the part holds. Returns always pass.
+fn decide(
+    tracker: &mut Tracker,
+    window: &mut FlashWindow,
+    part: Part,
+    target: f32,
+    threshold: f32,
+    deadband: f32,
+    counts: bool,
+) -> f32 {
+    let fits = window.onset_fits();
+    if fits {
+        tracker.suppressing = false;
+    }
+    let (excursion, _) = tracker.excursion(target, threshold);
+    let sign: i8 = if excursion > 0.0 { 1 } else { -1 };
+    let onset = sign > 0;
+    if counts && sign != tracker.last_sign && excursion.abs() >= threshold {
+        if !onset || fits {
+            window.push(part, onset);
+            tracker.last_sign = sign;
         } else {
-            rgb
-        };
-        (red, rgb)
+            tracker.suppressing = true;
+        }
+    } else if counts && onset && !fits && sign != tracker.last_sign && excursion >= deadband {
+        tracker.suppressing = true;
     }
-
-    /// Present a decided redness.
-    pub(super) fn present(&mut self, red: f32) {
-        self.tracker.present(red, RED_TRANSITION_THRESHOLD);
-    }
-
-    /// Start fresh against `rgb` presented at strength `level`.
-    pub(super) fn restart(&mut self, level: f32, rgb: [f32; 3]) {
-        self.tracker.restart(level * redness(rgb));
-        self.was_saturated_red = redness(rgb) >= RED_SATURATED;
-    }
-
-    /// The redness last presented.
-    pub(super) fn presented(&self) -> f32 {
-        self.tracker.out
-    }
-
-    /// Whether it holds its onsets until the window has room.
-    pub(super) fn suppressing(&self) -> bool {
-        self.tracker.suppressing
-    }
-
-    /// Hold its onsets until the window has room if `suppressing`.
-    pub(super) fn keep_suppressing(&mut self, suppressing: bool) {
-        self.tracker.suppressing |= suppressing;
-    }
-}
-
-/// A blend strength and the redness of its color, weighted by that strength,
-/// limited on a flash window its owner holds and ages once a frame: a screen
-/// channel's whole value.
-#[derive(Clone, Copy, Debug, Default)]
-struct StrengthAndRed {
-    level: Strength,
-    red: Redness,
-}
-
-impl StrengthAndRed {
-    /// The strength and color presented this frame, their transitions counted
-    /// on `window`. See [`ValueClamp`] for the rules.
-    fn limit(
-        &mut self,
-        window: &mut FlashWindow,
-        strength: f32,
-        rgb: [f32; 3],
-        frame: &LimiterFrameUniform,
-    ) -> (f32, [f32; 3]) {
-        let level = self.level.limit(window, Part::Level, strength, frame);
-        // Red: the overlay's redness, weighted by how strongly it blends.
-        let (red, rgb) = self.red.decide(window, level, rgb);
-        self.red.present(red);
-        (level, rgb)
-    }
-
-    /// Start fresh against this value: nothing to rate-cap from.
-    fn restart(&mut self, strength: f32, rgb: [f32; 3]) {
-        let strength = unit_strength(strength);
-        self.level.restart(strength);
-        self.red.restart(strength, rgb);
-    }
-
-    /// Whether it presents nothing: no strength and no redness.
-    fn presents_nothing(&self) -> bool {
-        self.level.presented() == 0.0 && self.red.presented() == 0.0
-    }
-}
-
-/// The frame a vanished value presents nothing on: a rate allowance of a full
-/// blend lets its strength reach zero at once, since the clamp cannot hold
-/// back what already vanished.
-pub(super) fn vanishing(frame: &LimiterFrameUniform) -> LimiterFrameUniform {
-    LimiterFrameUniform {
-        dt_rate: 1.0 / INTENSITY_RATE_PER_SECOND,
-        ..*frame
+    if tracker.suppressing && target > tracker.out {
+        tracker.out
+    } else {
+        target
     }
 }
 
@@ -450,7 +253,11 @@ pub(super) fn vanishing(frame: &LimiterFrameUniform) -> LimiterFrameUniform {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ValueClamp {
     window: FlashWindow,
-    value: StrengthAndRed,
+    level: Tracker,
+    red: Tracker,
+    /// Whether the last presented color was saturated red, so a move away from
+    /// it counts as the return of a red transition.
+    was_saturated_red: bool,
 }
 
 impl ValueClamp {
@@ -470,7 +277,52 @@ impl ValueClamp {
         frame: &LimiterFrameUniform,
     ) -> (f32, [f32; 3]) {
         self.window.age(frame.dt_window);
-        self.value.limit(&mut self.window, strength, rgb, frame)
+        let strength = unit_strength(strength);
+
+        // Full-screen rate cap, hitch-clamped.
+        let cap = INTENSITY_RATE_PER_SECOND * frame.dt_rate;
+        let capped = strength.clamp(self.level.out - cap, self.level.out + cap);
+        // The overlay's darker state is its weaker blend.
+        let dark_ok = capped.min(self.level.excursion(capped, FLASH_LUMINANCE_THRESHOLD).1)
+            < FLASH_DARK_LIMIT;
+        let level = decide(
+            &mut self.level,
+            &mut self.window,
+            Part::Level,
+            capped,
+            FLASH_LUMINANCE_THRESHOLD,
+            SUPPRESSION_DEADBAND,
+            dark_ok,
+        );
+        self.level.present(level, FLASH_LUMINANCE_THRESHOLD);
+
+        // Red: the overlay's redness, weighted by how strongly it blends.
+        let color_red = redness(rgb);
+        let red_target = level * color_red;
+        let saturated = color_red >= RED_SATURATED || self.was_saturated_red;
+        self.was_saturated_red = color_red >= RED_SATURATED;
+        let red = decide(
+            &mut self.red,
+            &mut self.window,
+            Part::Red,
+            red_target,
+            RED_TRANSITION_THRESHOLD,
+            RED_SUPPRESSION_DEADBAND,
+            saturated,
+        );
+        self.red.present(red, RED_TRANSITION_THRESHOLD);
+        let rgb = if red < red_target && red_target > 0.0 {
+            // Hold the presented redness (strength × tint redness) by
+            // desaturating the tint toward its own luminance; `red_target > 0`
+            // means `level > 0`.
+            let held = (red / level).clamp(0.0, 1.0);
+            let d = desaturation_to_redness(rgb, held);
+            let gray = luminance(rgb);
+            rgb.map(|channel| channel + (gray - channel) * d)
+        } else {
+            rgb
+        };
+        (level, rgb)
     }
 
     /// Record a frame on which the value presented nothing: it fell to zero
@@ -478,27 +330,51 @@ impl ValueClamp {
     /// vanished. The fall counts as a return, so a value that strobes by
     /// appearing and vanishing spends its budget like any other strobe.
     pub fn absent(&mut self, frame: &LimiterFrameUniform) {
-        self.limit(0.0, [0.0; 3], &vanishing(frame));
+        // A rate allowance of a full blend lets the strength reach zero now.
+        let vanish = LimiterFrameUniform {
+            dt_rate: 1.0 / INTENSITY_RATE_PER_SECOND,
+            ..*frame
+        };
+        self.limit(0.0, [0.0; 3], &vanish);
     }
 
     /// Start fresh against this frame's own values: an empty window and
     /// nothing to rate-cap from, so the next [`Self::limit`] of the same value
     /// presents it unchanged.
     pub fn restart(&mut self, strength: f32, rgb: [f32; 3]) {
+        let strength = unit_strength(strength);
         self.window = FlashWindow::default();
-        self.value.restart(strength, rgb);
+        self.level.restart(strength);
+        self.red.restart(strength * redness(rgb));
+        self.was_saturated_red = redness(rgb) >= RED_SATURATED;
     }
 
     /// Whether the clamp holds nothing a fresh one at zero would not: its
     /// window is empty and it presents nothing.
     pub fn is_at_rest(&self) -> bool {
-        self.window.is_empty() && self.value.presents_nothing()
+        self.window.count == 0 && self.level.out == 0.0 && self.red.out == 0.0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_onset_waits_for_the_returns_earlier_onsets_still_owe() {
+        let mut window = FlashWindow::default();
+        // A return with no onset before it owes nothing.
+        window.push(Part::Level, false);
+        window.push(Part::Level, true);
+        assert!(window.onset_fits(), "2 held + 1 owed + 2 fits in six");
+        window.push(Part::Red, true);
+        // Two onsets now owe their returns: 3 + 2 + 2 is over six, though
+        // counting held transitions alone would admit it.
+        assert!(!window.onset_fits());
+        window.push(Part::Level, false);
+        window.push(Part::Red, false);
+        assert!(!window.onset_fits(), "five held leaves no room for a pair");
+    }
 
     #[test]
     fn a_held_red_tint_presents_exactly_its_held_redness() {
@@ -517,17 +393,5 @@ mod tests {
         }
         // Already at or below the held redness: nothing to take away.
         assert_eq!(desaturation_to_redness([0.3, 0.3, 0.3], 0.2), 0.0);
-    }
-
-    #[test]
-    fn each_dark_state_rule_judges_its_own_side_of_a_swing() {
-        // A swing between 1 and 0.81: dark only over a white background.
-        assert!(!DarkState::Weaker.counts(1.0, 0.81));
-        assert!(DarkState::Stronger.counts(1.0, 0.81));
-        assert!(DarkState::Either.counts(1.0, 0.81));
-        // A swing between 0.1 and 0.19: dark only over a dark background.
-        assert!(DarkState::Weaker.counts(0.19, 0.1));
-        assert!(!DarkState::Stronger.counts(0.19, 0.1));
-        assert!(DarkState::Either.counts(0.19, 0.1));
     }
 }

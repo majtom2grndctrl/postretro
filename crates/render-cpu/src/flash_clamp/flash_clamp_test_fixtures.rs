@@ -1,74 +1,82 @@
 // An independent WCAG flash counter the flash-clamp tests judge presented
-// series against, shared by the screen-channel, keyed-clamp and ghost-look tests,
-// and a ghost's drawn value over the backgrounds that bound any other.
+// series against, shared by the screen-channel, keyed-clamp and ghost-look
+// tests, and what a ghost draws over a dense grid of albedos and backgrounds.
 // See: context/lib/testing_guide.md §4 · context/lib/rendering_pipeline.md §7.8
 
 /// Count transitions of `series` (one value per frame at `dt`) in any one
 /// second, WCAG-style, from the last extremum. A reversal ends an
 /// excursion only once it reaches the 0.1 threshold itself.
 pub(super) fn worst_transitions(series: &[f32], dt: f32) -> usize {
-    most_in_any_second(&transition_times(series, dt))
+    let times: Vec<f32> = (0..series.len()).map(|n| n as f32 * dt).collect();
+    most_in_any_second(&transition_times(series, &times))
 }
 
-/// Count transitions of every series in any one second together: what one
-/// source presenting all of them at once shows.
-pub(super) fn worst_transitions_across(series: &[&[f32]], dt: f32) -> usize {
-    let mut times: Vec<f32> = series
+/// Steps of the albedo and background grid a ghost's drawn value is counted
+/// over: 0, 1/40, …, 1 on each axis. Denser than the clamp's own edge
+/// samples, and off them, so a leak between samples shows.
+const GRID_STEPS: usize = 40;
+
+/// Every (albedo, background) of the grid.
+fn grid() -> impl Iterator<Item = (f32, f32)> {
+    let step = |k: usize| k as f32 / GRID_STEPS as f32;
+    (0..=GRID_STEPS).flat_map(move |a| (0..=GRID_STEPS).map(move |b| (step(a), step(b))))
+}
+
+/// What a ghost draws, frame by frame, with `albedo` over `background`: at
+/// presented (drawn) opacity o and drawn tint luminance L, B(1 − o) + a·o·L.
+fn drawn_over(albedo: f32, background: f32, opacity: &[f32], tint_luminance: &[f32]) -> Vec<f32> {
+    opacity
         .iter()
-        .flat_map(|series| transition_times(series, dt))
-        .collect();
-    times.sort_by(f32::total_cmp);
-    most_in_any_second(&times)
+        .zip(tint_luminance)
+        .map(|(level, luminance)| background * (1.0 - level) + albedo * level * luminance)
+        .collect()
 }
 
-/// Count transitions of a ghost's drawn brightness in any one second: each
-/// frame's presented opacity times its drawn tint luminance, judged as one
-/// series. Over black that product is what the ghost draws, so a strobe that
-/// moves opacity and tint together counts on the product, not on either part.
-pub(super) fn worst_brightness_transitions(
+/// Count transitions of what a ghost draws in any one second with `albedo`
+/// over `background`, one frame per `dt`.
+pub(super) fn transitions_over(
+    albedo: f32,
+    background: f32,
     opacity: &[f32],
     tint_luminance: &[f32],
     dt: f32,
 ) -> usize {
-    let brightness: Vec<f32> = opacity
-        .iter()
-        .zip(tint_luminance)
-        .map(|(level, luminance)| level * luminance)
-        .collect();
-    worst_transitions(&brightness, dt)
+    worst_transitions(&drawn_over(albedo, background, opacity, tint_luminance), dt)
 }
 
-/// Backgrounds and albedos a ghost's drawn value is counted over: a white ghost
-/// over black, a black ghost over white and a white ghost over white (the
-/// corners where its change is largest), then a white and a black ghost over
-/// mid grey.
-const BACKGROUNDS: [(f32, f32); 5] = [(0.0, 1.0), (1.0, 0.0), (1.0, 1.0), (0.5, 1.0), (0.5, 0.0)];
-
-/// Count transitions of what a ghost draws in any one second, over each of
-/// [`BACKGROUNDS`], and return the most: each frame's background B and albedo
-/// a draw B(1 − o) + a·o·L at presented opacity o and drawn tint luminance L.
+/// Count transitions of what a ghost draws in any one second at every albedo
+/// and background of the grid, and return the most: the WCAG counter (a swing
+/// of 0.1 with its darker state under 0.8) on the drawn value, one frame per
+/// `dt`. `opacity` is what draws: the screen door's coverage when dithered.
 pub(super) fn worst_transitions_over_any_background(
     opacity: &[f32],
     tint_luminance: &[f32],
     dt: f32,
 ) -> usize {
-    BACKGROUNDS
-        .iter()
-        .map(|&(background, albedo)| {
-            let drawn: Vec<f32> = opacity
-                .iter()
-                .zip(tint_luminance)
-                .map(|(level, luminance)| background * (1.0 - level) + albedo * level * luminance)
-                .collect();
-            worst_transitions(&drawn, dt)
+    let times: Vec<f32> = (0..opacity.len()).map(|n| n as f32 * dt).collect();
+    worst_transitions_over_any_background_at(opacity, tint_luminance, &times)
+}
+
+/// [`worst_transitions_over_any_background`] for frames presented at `times`
+/// (seconds, ascending), so hitches and skipped frames count as they elapsed.
+pub(super) fn worst_transitions_over_any_background_at(
+    opacity: &[f32],
+    tint_luminance: &[f32],
+    times: &[f32],
+) -> usize {
+    grid()
+        .map(|(albedo, background)| {
+            let drawn = drawn_over(albedo, background, opacity, tint_luminance);
+            most_in_any_second(&transition_times(&drawn, times))
         })
         .max()
         .unwrap_or(0)
 }
 
-/// When each transition of `series` is counted, in order.
-fn transition_times(series: &[f32], dt: f32) -> Vec<f32> {
-    let mut times = Vec::new();
+/// When each transition of `series` is counted, frame `n` presenting at
+/// `times[n]`.
+fn transition_times(series: &[f32], times: &[f32]) -> Vec<f32> {
+    let mut counted_at = Vec::new();
     let (mut ext, mut peak, mut dir, mut counted) = (series[0], series[0], 0.0f32, false);
     for (n, &v) in series.iter().enumerate().skip(1) {
         let beyond = (v - peak) * dir;
@@ -87,10 +95,10 @@ fn transition_times(series: &[f32], dt: f32) -> Vec<f32> {
         }
         if !counted && (v - ext).abs() >= 0.1 && v.min(ext) < 0.8 {
             counted = true;
-            times.push(n as f32 * dt);
+            counted_at.push(times[n]);
         }
     }
-    times
+    counted_at
 }
 
 /// The most of `times` (ascending) inside any one second.

@@ -563,8 +563,8 @@ fn a_model_bodied_projectile_ghosts_through_the_skinned_ghost_path() {
 }
 
 // Wiring: a ghost's tint strobing white and black at 10 Hz at steady
-// opacity is limited on its tint luminance and rests dark over budget; with
-// the limiter off it passes through.
+// opacity is limited on its tint luminance and over budget rests at a held
+// state; with the limiter off it passes through.
 #[test]
 fn a_white_black_tint_strobe_is_limited_on_its_tint_luminance() {
     let mut registry = EntityRegistry::new();
@@ -592,11 +592,13 @@ fn a_white_black_tint_strobe_is_limited_on_its_tint_luminance() {
         }
         if enabled {
             assert!(worst_transitions(&luminance, dt) <= 6, "{luminance:?}");
-            let tail_white = (120..180).filter(|&n| tint_at(n)[0] == 1.0).count();
-            let held = (120..180)
-                .filter(|&n| tint_at(n)[0] == 1.0 && luminance[n] <= 0.05)
-                .count();
-            assert!(held * 2 > tail_white, "rests at its pre-flash luminance");
+            // Held for at least 0.3 s, three periods of the strobe.
+            let mut held = (1, 1);
+            for pair in luminance.windows(2) {
+                held.0 = if pair[0] == pair[1] { held.0 + 1 } else { 1 };
+                held.1 = held.1.max(held.0);
+            }
+            assert!(held.1 >= 18, "rests at a held state: {luminance:?}");
         } else {
             assert!(worst_transitions(&luminance, dt) > 6);
         }

@@ -1,4 +1,4 @@
-// Skinned ghost pipelines (blend and screen-door, each with its depth pre-pass) and
+// Skinned ghost pipelines (blend and screen-door, each with its depth-only draw) and
 // their draw recording.
 // See: context/lib/rendering_pipeline.md §7.9
 
@@ -6,36 +6,40 @@ use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::MeshFramePlan;
 
 use super::ghost_depth::ghost_depth_pipeline_state;
+use super::ghost_order::{GhostDrawStep, SkinnedGhostSpan};
 use super::mesh_pass::MeshPass;
 
 /// Unlit ghost shader: skins like the skinned pass, shades base color by the
-/// instance's packed look, and has one fragment entry per transparency mode.
-/// Only the shared ghost look helper is appended: it binds no lights, shadows
-/// or SH.
+/// instance's packed look, and has a colour and a depth-only fragment entry
+/// per transparency mode. Only the shared ghost look helper is appended: it
+/// binds no lights, shadows or SH.
 pub(super) const SKINNED_GHOST_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/skinned_ghost.wgsl"),
     "\n",
     include_str!("../shaders/ghost_look.wgsl"),
 );
 
-/// The fixed-function state one transparency mode's colour pass draws with.
-/// Pure data, so the mode → state mapping is testable without a device.
+/// The fixed-function state one ghost pipeline draws with: a mode's colour
+/// draw here, its depth-only draw in [`ghost_depth_pipeline_state`]. Pure
+/// data, so the mode → state mapping is testable without a device.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct GhostPipelineState {
     pub(super) fragment_entry: &'static str,
     pub(super) blend: Option<wgpu::BlendState>,
+    pub(super) write_mask: wgpu::ColorWrites,
     pub(super) depth: wgpu::DepthStencilState,
     pub(super) cull_mode: Option<wgpu::Face>,
 }
 
 /// Blend: straight alpha over the scene, the fluid surface's blend.
 /// Dither: blend off; the fragment discards pixels the screen-door pattern
-/// drops. Both test `Equal` against the ghost depth the pre-pass wrote
-/// (`ghost_depth.rs`) and never write depth, so each pixel shows only its
-/// nearest ghost surface, scene depth stays untouched and a ghost hides
-/// nothing drawn after it. `Equal` is exact: both passes run one `@invariant`
-/// vertex stage over the same triangles. Both cull back faces like the
-/// skinned pass.
+/// drops. Both test `Equal` against the depth the ghost's own depth-only
+/// draw just wrote (`ghost_depth.rs`) and never write depth, so each pixel
+/// shows only the ghost's nearest surface, scene depth stays untouched and a
+/// ghost hides nothing drawn after it. `Equal` is exact: both draws run one
+/// `@invariant` vertex stage over the same triangles. A ghost face exactly
+/// coplanar with the opaque scene draws, and z-fights with it either way.
+/// Both cull back faces like the skinned pass.
 pub(super) fn ghost_pipeline_state(
     mode: GhostTransparency,
     depth_format: wgpu::TextureFormat,
@@ -61,6 +65,7 @@ pub(super) fn ghost_pipeline_state(
     GhostPipelineState {
         fragment_entry,
         blend,
+        write_mask: wgpu::ColorWrites::ALL,
         depth: wgpu::DepthStencilState {
             format: depth_format,
             depth_write_enabled: Some(false),
@@ -106,8 +111,8 @@ fn skinned_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// A colour and a depth pre-pass pipeline per transparency mode, built once;
-/// a frame draws every ghost through the mode the mod's render profile picks.
+/// A colour and a depth-only pipeline per transparency mode, built once; a
+/// frame draws every ghost through the mode the mod's render profile picks.
 pub(super) struct GhostPipelines {
     blend: wgpu::RenderPipeline,
     dither: wgpu::RenderPipeline,
@@ -118,9 +123,10 @@ pub(super) struct GhostPipelines {
 impl GhostPipelines {
     /// Colour layout: group 0 camera, group 1 material, group 3 the skinned
     /// pass's palette + instance data (the same bind group, at the same
-    /// index); group 2 stays empty. The depth pre-pass layout drops the
-    /// material. No light, shadow or SH group, so ghosts add nothing to any
-    /// fragment binding budget.
+    /// index); group 2 stays empty. The depth-only layout drops the material.
+    /// No light, shadow or SH group, so ghosts add nothing to any fragment
+    /// binding budget. Every pipeline targets the scene colour, so both draws
+    /// of a ghost share one pass; the depth-only one writes no colour.
     pub(super) fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
@@ -147,11 +153,10 @@ impl GhostPipelines {
             bind_group_layouts: &[Some(camera_bgl), None, None, Some(instance_bgl)],
             immediate_size: 0,
         });
-        let build = |mode: GhostTransparency, label: &str| {
-            let state = ghost_pipeline_state(mode, depth_format);
+        let build = |layout: &wgpu::PipelineLayout, state: GhostPipelineState, label: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
@@ -172,7 +177,7 @@ impl GhostPipelines {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: super::SCENE_COLOR_FORMAT,
                         blend: state.blend,
-                        write_mask: wgpu::ColorWrites::ALL,
+                        write_mask: state.write_mask,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }),
@@ -180,128 +185,81 @@ impl GhostPipelines {
                 cache: None,
             })
         };
-        let build_depth = |mode: GhostTransparency, label: &str| {
-            let state = ghost_depth_pipeline_state(mode, depth_format);
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&depth_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[Some(skinned_ghost_vertex_layout())],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: state.cull_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(state.depth),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: state.fragment_entry.map(|entry| wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(entry),
-                    targets: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+        let colour = |mode| ghost_pipeline_state(mode, depth_format);
+        let depth = |mode| ghost_depth_pipeline_state(mode, depth_format);
         Self {
-            blend: build(GhostTransparency::Blend, "Skinned Ghost Blend Pipeline"),
-            dither: build(GhostTransparency::Dither, "Skinned Ghost Dither Pipeline"),
-            depth_blend: build_depth(
-                GhostTransparency::Blend,
+            blend: build(
+                &layout,
+                colour(GhostTransparency::Blend),
+                "Skinned Ghost Blend Pipeline",
+            ),
+            dither: build(
+                &layout,
+                colour(GhostTransparency::Dither),
+                "Skinned Ghost Dither Pipeline",
+            ),
+            depth_blend: build(
+                &depth_layout,
+                depth(GhostTransparency::Blend),
                 "Skinned Ghost Blend Depth Pipeline",
             ),
-            depth_dither: build_depth(
-                GhostTransparency::Dither,
+            depth_dither: build(
+                &depth_layout,
+                depth(GhostTransparency::Dither),
                 "Skinned Ghost Dither Depth Pipeline",
             ),
         }
     }
 
-    fn for_mode(&self, mode: GhostTransparency) -> &wgpu::RenderPipeline {
-        match mode {
-            GhostTransparency::Blend => &self.blend,
-            GhostTransparency::Dither => &self.dither,
-        }
-    }
-
-    fn depth_for_mode(&self, mode: GhostTransparency) -> &wgpu::RenderPipeline {
-        match mode {
-            GhostTransparency::Blend => &self.depth_blend,
-            GhostTransparency::Dither => &self.depth_dither,
+    fn for_step(&self, mode: GhostTransparency, step: GhostDrawStep) -> &wgpu::RenderPipeline {
+        match (step, mode) {
+            (GhostDrawStep::Depth, GhostTransparency::Blend) => &self.depth_blend,
+            (GhostDrawStep::Depth, GhostTransparency::Dither) => &self.depth_dither,
+            (GhostDrawStep::Colour, GhostTransparency::Blend) => &self.blend,
+            (GhostDrawStep::Colour, GhostTransparency::Dither) => &self.dither,
         }
     }
 }
 
 impl MeshPass {
-    /// Record the ghost plan through `mode`'s pipeline, from the buffers
+    /// Record one skinned ghost's `spans` of the ghost plan as `step` of its
+    /// draw pair, through `mode`'s pipelines, from the buffers
     /// [`MeshPass::plan_and_upload`] already filled this frame. Group 0
-    /// (camera) must be set by the caller; this sets material per submesh and
-    /// the instance data once. Every ghost is forward-visible by construction
-    /// (the collector culls at the mapped position), so each model group is one
-    /// instanced draw per submesh. Projectile billboard ghosts are not here:
-    /// they draw through the billboard ghost variant and always blend.
-    pub(super) fn record_ghost_draws(
+    /// (camera) must be set by the caller; this sets the instance data and,
+    /// for the colour step, the material per submesh. Every ghost is
+    /// forward-visible by construction (the collector culls at the mapped
+    /// position). Projectile billboard ghosts are not here: they draw through
+    /// the billboard ghost variant and always blend.
+    pub(super) fn record_ghost_spans(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         plan: &MeshFramePlan,
+        spans: &[SkinnedGhostSpan],
         mode: GhostTransparency,
+        step: GhostDrawStep,
     ) {
-        if plan.groups.is_empty() {
+        if spans.is_empty() {
             return;
         }
-        pass.set_pipeline(self.ghost_pipelines.for_mode(mode));
+        pass.set_pipeline(self.ghost_pipelines.for_step(mode, step));
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
-        for group in &plan.groups {
+        for span in spans {
+            let Some(group) = plan.groups.get(span.group as usize) else {
+                continue;
+            };
             let Some(model) = self.models.get(&group.model) else {
                 continue;
             };
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
             pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            let start = group.instance_offset;
-            let instances = start..start + group.instances.len() as u32;
             for (material_bind_group, indices) in &model.submeshes {
                 if indices.is_empty() {
                     continue;
                 }
-                pass.set_bind_group(1, material_bind_group, &[]);
-                pass.draw_indexed(indices.clone(), 0, instances.clone());
-            }
-        }
-    }
-
-    /// Record the ghost plan's depth pre-pass through `mode`'s depth pipeline:
-    /// the same draws as [`MeshPass::record_ghost_draws`], with no material.
-    /// Group 0 (camera) must be set by the caller.
-    pub(super) fn record_ghost_depth_draws(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        plan: &MeshFramePlan,
-        mode: GhostTransparency,
-    ) {
-        if plan.groups.is_empty() {
-            return;
-        }
-        pass.set_pipeline(self.ghost_pipelines.depth_for_mode(mode));
-        pass.set_bind_group(3, &self.instance_bind_group, &[]);
-        for group in &plan.groups {
-            let Some(model) = self.models.get(&group.model) else {
-                continue;
-            };
-            pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
-            pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            let start = group.instance_offset;
-            let instances = start..start + group.instances.len() as u32;
-            for (_, indices) in &model.submeshes {
-                if indices.is_empty() {
-                    continue;
+                if step == GhostDrawStep::Colour {
+                    pass.set_bind_group(1, material_bind_group, &[]);
                 }
-                pass.draw_indexed(indices.clone(), 0, instances.clone());
+                pass.draw_indexed(indices.clone(), 0, span.instances());
             }
         }
     }
@@ -313,9 +271,9 @@ mod tests {
 
     const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-    // Each mode's colour pass tests `Equal` against the ghost depth target and
-    // never writes depth, so it draws only the nearest ghost surface per pixel
-    // and leaves scene depth to the opaque passes.
+    // Each mode's colour draw writes colour, tests `Equal` against the ghost
+    // depth target and never writes depth, so it draws only the ghost's
+    // nearest surface per pixel and leaves scene depth to the opaque passes.
     #[test]
     fn ghost_mode_selects_its_fragment_and_blend_and_tests_ghost_depth_equal_without_writing() {
         let blend = ghost_pipeline_state(GhostTransparency::Blend, DEPTH);
@@ -329,6 +287,7 @@ mod tests {
         assert_eq!(dither.blend, None, "screen-door draws opaque survivors");
 
         for state in [blend, dither] {
+            assert_eq!(state.write_mask, wgpu::ColorWrites::ALL);
             assert_eq!(state.depth.depth_write_enabled, Some(false));
             assert_eq!(
                 state.depth.depth_compare,

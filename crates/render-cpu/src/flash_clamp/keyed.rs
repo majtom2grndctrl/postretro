@@ -13,8 +13,8 @@ pub(super) trait KeyClamp: Clone {
     /// What a key asks to present on a frame, and what it presents.
     type Value: Copy;
 
-    /// A clamp starting fresh against `value`: an empty window and nothing to
-    /// rate-cap from, so its first limit of `value` presents it unchanged.
+    /// A clamp starting fresh against `value`: nothing to rate-cap from and
+    /// room in its window, so its first limit of `value` presents it unchanged.
     fn fresh(value: Self::Value) -> Self;
 
     /// Limit `value` for one presented frame. Returns what presents.

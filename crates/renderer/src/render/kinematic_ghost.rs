@@ -1,4 +1,4 @@
-// Kinematic-brush ghost pipelines (blend and screen-door, each with its depth pre-pass),
+// Kinematic-brush ghost pipelines (blend and screen-door, each with its depth-only draw),
 // their instance upload and draw recording over the mover pass's shared geometry.
 // See: context/lib/rendering_pipeline.md §7.9
 
@@ -8,8 +8,9 @@ use postretro_render_cpu::ghost_instance::{
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 
 use super::ghost_depth::ghost_depth_pipeline_state;
+use super::ghost_order::GhostDrawStep;
 use super::kinematic_brush::KinematicBrushPass;
-use super::mesh_ghost::ghost_pipeline_state;
+use super::mesh_ghost::{GhostPipelineState, ghost_pipeline_state};
 use super::{GpuTexture, SCENE_COLOR_FORMAT};
 
 /// Unlit mover ghost shader with the shared ghost look helper appended. It
@@ -44,11 +45,13 @@ fn kinematic_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 }
 
 /// One packed ghost instance's draw: which mover's geometry, at which slot of
-/// the ghost instance buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// the ghost instance buffer, and where its geometry's centre lands, the
+/// key the frame sorts ghosts by.
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct GhostDraw {
     mover_id: u32,
     instance_index: u32,
+    center: glam::Vec3,
 }
 
 /// Mover ghosts: their own 80-byte instance list (model plus packed look),
@@ -72,9 +75,11 @@ pub(crate) struct KinematicGhostPass {
 
 impl KinematicGhostPass {
     /// Colour layout: group 0 camera, group 1 the world material, group 2 the
-    /// ghost instances; the depth pre-pass layout drops the material. No
-    /// light, shadow or SH group, so mover ghosts add nothing to any fragment
-    /// binding budget.
+    /// ghost instances; the depth-only layout drops the material. No light,
+    /// shadow or SH group, so mover ghosts add nothing to any fragment binding
+    /// budget. Every pipeline targets the scene colour, so both draws of a
+    /// ghost share one pass with the skinned ghosts; the depth-only one writes
+    /// no colour.
     pub(crate) fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
@@ -113,11 +118,10 @@ impl KinematicGhostPass {
             bind_group_layouts: &[Some(camera_bgl), None, Some(&instance_bind_group_layout)],
             immediate_size: 0,
         });
-        let build = |mode: GhostTransparency, label: &str| {
-            let state = ghost_pipeline_state(mode, depth_format);
+        let build = |layout: &wgpu::PipelineLayout, state: GhostPipelineState, label: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
@@ -138,7 +142,7 @@ impl KinematicGhostPass {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: SCENE_COLOR_FORMAT,
                         blend: state.blend,
-                        write_mask: wgpu::ColorWrites::ALL,
+                        write_mask: state.write_mask,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }),
@@ -146,47 +150,30 @@ impl KinematicGhostPass {
                 cache: None,
             })
         };
-        let build_depth = |mode: GhostTransparency, label: &str| {
-            let state = ghost_depth_pipeline_state(mode, depth_format);
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&depth_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[Some(kinematic_ghost_vertex_layout())],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: state.cull_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(state.depth),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: state.fragment_entry.map(|entry| wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(entry),
-                    targets: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+        let colour = |mode| ghost_pipeline_state(mode, depth_format);
+        let depth = |mode| ghost_depth_pipeline_state(mode, depth_format);
         let instance_buffer = create_instance_buffer(device, 1);
         let instance_bind_group =
             create_instance_bind_group(device, &instance_bind_group_layout, &instance_buffer);
         Self {
-            blend: build(GhostTransparency::Blend, "Kinematic Ghost Blend Pipeline"),
-            dither: build(GhostTransparency::Dither, "Kinematic Ghost Dither Pipeline"),
-            depth_blend: build_depth(
-                GhostTransparency::Blend,
+            blend: build(
+                &layout,
+                colour(GhostTransparency::Blend),
+                "Kinematic Ghost Blend Pipeline",
+            ),
+            dither: build(
+                &layout,
+                colour(GhostTransparency::Dither),
+                "Kinematic Ghost Dither Pipeline",
+            ),
+            depth_blend: build(
+                &depth_layout,
+                depth(GhostTransparency::Blend),
                 "Kinematic Ghost Blend Depth Pipeline",
             ),
-            depth_dither: build_depth(
-                GhostTransparency::Dither,
+            depth_dither: build(
+                &depth_layout,
+                depth(GhostTransparency::Dither),
                 "Kinematic Ghost Dither Depth Pipeline",
             ),
             instance_bind_group_layout,
@@ -211,12 +198,13 @@ impl KinematicGhostPass {
         self.draws.clear();
         self.instance_bytes.clear();
         for instance in instances {
-            if brush.material_spans(instance.mover_id).is_none() {
+            let Some(local_center) = brush.mover_center(instance.mover_id) else {
                 continue;
-            }
+            };
             self.draws.push(GhostDraw {
                 mover_id: instance.mover_id,
                 instance_index: self.draws.len() as u32,
+                center: instance.transform.transform_point3(local_center),
             });
             self.instance_bytes
                 .extend_from_slice(&pack_kinematic_ghost_instance(
@@ -249,22 +237,36 @@ impl KinematicGhostPass {
         !self.draws.is_empty()
     }
 
-    /// Record every mover ghost through `mode`'s pipeline. Group 0 (camera)
-    /// must be set by the caller. One instanced draw per material span per
-    /// ghost, from the mover pass's shared geometry.
-    pub(crate) fn record_draws(
+    /// Each mover ghost's world-space geometry centre, in draw-slot order.
+    pub(super) fn draw_centers(&self) -> impl Iterator<Item = glam::Vec3> + '_ {
+        self.draws.iter().map(|draw| draw.center)
+    }
+
+    /// Record the mover ghost in slot `draw` as `step` of its draw pair,
+    /// through `mode`'s pipelines: one draw per material span, from the mover
+    /// pass's shared geometry. Group 0 (camera) must be set by the caller;
+    /// this sets the instances and, for the colour step, each span's world
+    /// material.
+    pub(super) fn record_ghost(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         brush: &KinematicBrushPass,
         materials: &[GpuTexture],
+        draw: u32,
         mode: GhostTransparency,
+        step: GhostDrawStep,
     ) {
-        if self.draws.is_empty() {
+        let Some(draw) = self.draws.get(draw as usize) else {
             return;
-        }
-        pass.set_pipeline(match mode {
-            GhostTransparency::Blend => &self.blend,
-            GhostTransparency::Dither => &self.dither,
+        };
+        let Some(spans) = brush.material_spans(draw.mover_id) else {
+            return;
+        };
+        pass.set_pipeline(match (step, mode) {
+            (GhostDrawStep::Depth, GhostTransparency::Blend) => &self.depth_blend,
+            (GhostDrawStep::Depth, GhostTransparency::Dither) => &self.depth_dither,
+            (GhostDrawStep::Colour, GhostTransparency::Blend) => &self.blend,
+            (GhostDrawStep::Colour, GhostTransparency::Dither) => &self.dither,
         });
         pass.set_bind_group(2, &self.instance_bind_group, &[]);
         pass.set_vertex_buffer(0, brush.shared_vertex_buffer().slice(..));
@@ -272,52 +274,16 @@ impl KinematicGhostPass {
             brush.shared_index_buffer().slice(..),
             wgpu::IndexFormat::Uint32,
         );
-        for draw in &self.draws {
-            let Some(spans) = brush.material_spans(draw.mover_id) else {
-                continue;
-            };
-            let instances = draw.instance_index..draw.instance_index + 1;
-            for (material_index, indices) in spans {
+        let instances = draw.instance_index..draw.instance_index + 1;
+        for (material_index, indices) in spans {
+            if step == GhostDrawStep::Colour {
                 let material = materials
                     .get(material_index)
                     .or_else(|| materials.first())
                     .expect("renderer always keeps a placeholder material bind group");
                 pass.set_bind_group(1, &material.bind_group, &[]);
-                pass.draw_indexed(indices, 0, instances.clone());
             }
-        }
-    }
-
-    /// Record every mover ghost's depth pre-pass through `mode`'s depth
-    /// pipeline: the same draws as [`Self::record_draws`], with no material.
-    /// Group 0 (camera) must be set by the caller.
-    pub(crate) fn record_depth_draws(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        brush: &KinematicBrushPass,
-        mode: GhostTransparency,
-    ) {
-        if self.draws.is_empty() {
-            return;
-        }
-        pass.set_pipeline(match mode {
-            GhostTransparency::Blend => &self.depth_blend,
-            GhostTransparency::Dither => &self.depth_dither,
-        });
-        pass.set_bind_group(2, &self.instance_bind_group, &[]);
-        pass.set_vertex_buffer(0, brush.shared_vertex_buffer().slice(..));
-        pass.set_index_buffer(
-            brush.shared_index_buffer().slice(..),
-            wgpu::IndexFormat::Uint32,
-        );
-        for draw in &self.draws {
-            let Some(spans) = brush.material_spans(draw.mover_id) else {
-                continue;
-            };
-            let instances = draw.instance_index..draw.instance_index + 1;
-            for (_, indices) in spans {
-                pass.draw_indexed(indices, 0, instances.clone());
-            }
+            pass.draw_indexed(indices, 0, instances.clone());
         }
     }
 }

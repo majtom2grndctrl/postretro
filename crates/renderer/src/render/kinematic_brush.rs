@@ -83,6 +83,9 @@ pub(crate) struct KinematicBrushPass {
     /// Camera-visible subset of `active_draws` for the beauty pass.
     beauty_draws: Vec<ActiveMoverDraw>,
     mover_index_ranges: Vec<MoverIndexRange>,
+    /// Each uploaded mover's geometry-bounds centre, parallel to `movers`:
+    /// where a ghost of it sorts among the frame's ghosts.
+    mover_centers: Vec<glam::Vec3>,
     instance_bytes: Vec<u8>,
 }
 
@@ -486,6 +489,7 @@ impl KinematicBrushPass {
             active_draw_lookup: HashMap::new(),
             beauty_draws: Vec::new(),
             mover_index_ranges: Vec::new(),
+            mover_centers: Vec::new(),
             instance_bytes: Vec::new(),
         }
     }
@@ -502,6 +506,7 @@ impl KinematicBrushPass {
         self.active_draw_lookup.clear();
         self.beauty_draws.clear();
         self.mover_index_ranges.clear();
+        self.mover_centers.clear();
 
         let Some(geometry) = geometry else {
             self.install_empty_geometry(device);
@@ -546,6 +551,14 @@ impl KinematicBrushPass {
                 index_start: index_base,
                 index_count: mover.indices.len() as u32,
             });
+            let (min, max) = mover.vertices.iter().fold(
+                (glam::Vec3::INFINITY, glam::Vec3::NEG_INFINITY),
+                |(min, max), vertex| {
+                    let position = glam::Vec3::from_array(vertex.position);
+                    (min.min(position), max.max(position))
+                },
+            );
+            self.mover_centers.push((min + max) * 0.5);
         }
 
         if vertices.is_empty() || indices.is_empty() {
@@ -610,6 +623,12 @@ impl KinematicBrushPass {
     /// use the camera-visible subset held separately.
     pub(crate) fn active_draws(&self) -> &[ActiveMoverDraw] {
         &self.active_draws
+    }
+
+    /// One uploaded mover's geometry-bounds centre, in the space its model
+    /// matrix maps from. `None` for a mover id this level did not upload.
+    pub(super) fn mover_center(&self, mover_id: u32) -> Option<glam::Vec3> {
+        Some(self.mover_centers[*self.mover_lookup.get(&mover_id)?])
     }
 
     /// One full index span per uploaded mover, keyed by `mover_draw_index`.

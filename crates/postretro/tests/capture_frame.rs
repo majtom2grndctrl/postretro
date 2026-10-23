@@ -1499,8 +1499,10 @@ fn differing(a: &RgbaImage, b: &RgbaImage, region: &[(u32, u32)]) -> usize {
 // where they overlap, the doubled ghost's capture matches the single
 // barrier's, blended and dithered alike, rather than the far face blending in
 // under the near one or a dithered far face drawing over it. The copy alone
-// reads differently there, so each match can fail. The capture recorder runs
-// the windowed frame's ghost depth seed, pre-pass and colour passes.
+// reads differently there, so each match can fail. And no pixel of the
+// nearer face is lost: blended, each one the ghost visibly changes draws;
+// dithered, each fully covered 4×4 tile keeps the screen door's share. The
+// capture recorder runs the windowed frame's ghost depth seed and ghost pass.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
 fn ghost_link_capture_draws_only_the_ghosts_nearest_surface_in_both_modes() {
@@ -1510,6 +1512,7 @@ fn ghost_link_capture_draws_only_the_ghosts_nearest_surface_in_both_modes() {
     let push = capture_ghost_controls::quake_point(BARRIER_COPY_PUSH, 0.0, 0.0);
     let doubled = capture_ghost_controls::with_mover_doubled(&map, "vault_barrier", push);
     let copy_alone = capture_ghost_controls::with_mover_copy_alone(&map, "vault_barrier", push);
+    let off = capture_ghost_controls::with_links_disarmed(&map);
 
     let loaded = postretro_level_loader::load_prl(&map.to_string_lossy()).expect("load fixture");
     let link = &loaded.ghost_links.links[0];
@@ -1525,21 +1528,26 @@ fn ghost_link_capture_draws_only_the_ghosts_nearest_surface_in_both_modes() {
 
     let temp = tempfile::tempdir().expect("create isolated capture directory");
     let camera = ghost_camera(GHOST_COPY_B_X);
-    let shot = |label: &str, map: &std::path::Path, transparency| {
+    let styled_shot = |label: &str, map: &std::path::Path, styles, transparency| {
         capture_ghost_scene(
             &workspace,
             temp.path(),
             label,
             map,
             camera,
-            echo_style(ECHO_OPACITY),
+            styles,
             transparency,
             LAMP_WARM,
         )
     };
+    let shot = |label: &str, map: &std::path::Path, transparency| {
+        styled_shot(label, map, echo_style(ECHO_OPACITY), transparency)
+    };
     let Some(single_blend) = shot("single-blend", &map, "blend") else {
         return;
     };
+    let scene = shot("scene", &off, "blend").unwrap();
+    let opaque = styled_shot("opaque", &map, echo_style(1.0), "blend").unwrap();
     let doubled_blend = shot("doubled-blend", &doubled, "blend").unwrap();
     let copy_blend = shot("copy-blend", &copy_alone, "blend").unwrap();
     let single_dither = shot("single-dither", &map, "dither").unwrap();
@@ -1603,8 +1611,76 @@ fn ghost_link_capture_draws_only_the_ghosts_nearest_surface_in_both_modes() {
         0,
         "dither: the doubled ghost shows only its nearer face"
     );
+
+    // Regression: an `Equal` test that is not exact loses kept pixels, the
+    // same speckle in the single and doubled captures, which the matches
+    // above cannot see. Across the overlap pixels the opaque ghost visibly
+    // changes, every blended pixel draws, and every 4×4 tile the region fully
+    // covers keeps exactly the screen door's share of its pixels.
+    let footprint = ghost_footprint(&opaque, &scene);
+    let visible: Vec<bool> = {
+        let mut mask = vec![false; (width * height) as usize];
+        for &(x, y) in &overlap {
+            let index = (y * width + x) as usize;
+            mask[index] = footprint[index];
+        }
+        mask
+    };
+    let visible_pixels: Vec<(u32, u32)> = masked(&visible, width).collect();
+    assert!(
+        visible_pixels.len() > 500,
+        "the ghost visibly changes the overlap ({} pixels)",
+        visible_pixels.len()
+    );
+    let drawn = |frame: &RgbaImage, x: u32, y: u32| {
+        channel_delta(frame.get_pixel(x, y).0, scene.get_pixel(x, y).0) > GHOST_PIXEL_SLACK
+    };
+    let undrawn_blend = visible_pixels
+        .iter()
+        .filter(|&&(x, y)| !drawn(&single_blend, x, y))
+        .count();
+    assert_eq!(
+        undrawn_blend, 0,
+        "blend: every visible overlap pixel of the nearer face draws"
+    );
+    let tile_side = 4u32;
+    let kept_per_tile = (postretro_render_cpu::ghost_instance::screen_door_coverage(ECHO_OPACITY)
+        * postretro_render_cpu::ghost_instance::SCREEN_DOOR_PIXELS as f32)
+        .round() as usize;
+    let mut full_tiles = 0usize;
+    for tile_y in 0..height / tile_side {
+        for tile_x in 0..width / tile_side {
+            let tile: Vec<(u32, u32)> = (0..tile_side)
+                .flat_map(|dy| {
+                    (0..tile_side).map(move |dx| (tile_x * tile_side + dx, tile_y * tile_side + dy))
+                })
+                .collect();
+            if !tile.iter().all(|&(x, y)| visible[(y * width + x) as usize]) {
+                continue;
+            }
+            full_tiles += 1;
+            let kept = tile
+                .iter()
+                .filter(|&&(x, y)| drawn(&single_dither, x, y))
+                .count();
+            assert_eq!(
+                kept,
+                kept_per_tile,
+                "dither: the tile at ({}, {}) keeps the screen door's share",
+                tile_x * tile_side,
+                tile_y * tile_side
+            );
+        }
+    }
+    assert!(
+        full_tiles >= 16,
+        "the overlap fully covers enough 4×4 tiles ({full_tiles})"
+    );
     eprintln!(
-        "ghost self-overlap capture: {} overlap pixels match the single barrier in both modes",
-        overlap.len()
+        "ghost self-overlap capture: {} overlap pixels match the single barrier in both modes; \
+         {} visible pixels all draw blended, {full_tiles} full tiles keep {kept_per_tile} of 16 \
+         dithered",
+        overlap.len(),
+        visible_pixels.len()
     );
 }

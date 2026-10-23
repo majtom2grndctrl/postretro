@@ -8,7 +8,8 @@
 // as the mover does; a test pins the copies equal. Two colour fragment
 // entries, one per `render.ghosts` mode, each sampling before any `discard` so
 // the derivatives stay in uniform control flow; neither loops (§8 FXC).
-// `fs_dither_depth` is dither's depth pre-pass entry; it samples nothing.
+// `fs_blend_depth` and `fs_dither_depth` are the depth-only draws' entries;
+// they sample nothing.
 
 struct CameraUniforms {
     view_proj: mat4x4<f32>,
@@ -34,10 +35,10 @@ struct VertexInput {
 };
 
 struct VertexOutput {
-    // `@invariant`: the ghost depth pre-pass and the colour pass run this
-    // vertex stage in separate pipelines, and the colour pass tests `Equal`
-    // against the depth the pre-pass wrote, so clip-space Z must match bit
-    // for bit (rendering_pipeline.md §7.2).
+    // `@invariant`: a ghost's depth-only draw and its colour draw run this
+    // vertex stage in separate pipelines, and the colour draw tests `Equal`
+    // against the depth the depth-only draw wrote, so clip-space Z must match
+    // bit for bit (rendering_pipeline.md §7.2).
     @invariant @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) look: vec2<u32>,
@@ -82,7 +83,8 @@ fn ghost_base(uv: vec2<f32>) -> vec4<f32> {
 
 // True where the screen door drops this pixel: the presented opacity is at
 // or under the pixel's threshold. `fs_dither` and `fs_dither_depth` share it,
-// so the pre-pass writes depth at exactly the pixels the colour pass keeps.
+// so the depth-only draw writes depth at exactly the pixels the colour draw
+// keeps.
 fn screen_door_drops(look: vec2<u32>, position: vec4<f32>) -> bool {
     return ghost_opacity(look) <= screen_door_threshold(vec2<u32>(position.xy));
 }
@@ -106,12 +108,20 @@ fn fs_dither(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(color, 1.0);
 }
 
-// The ghost depth pre-pass under `render.ghosts: "dither"`: depth only, where
-// `fs_dither` keeps the pixel, so a pixel a near ghost drops never hides a
-// farther ghost that keeps it. Blend's pre-pass has no fragment stage.
+// A ghost's depth-only draw: its pipeline masks every colour write, so the
+// returned colour is never stored; the entries exist so the draw shares the
+// colour draws' pass. Blend's writes depth at every fragment.
 @fragment
-fn fs_dither_depth(in: VertexOutput) {
+fn fs_blend_depth(in: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
+}
+
+// Dither's writes depth only where `fs_dither` keeps the pixel, so a pixel a
+// near ghost drops never hides a farther ghost that keeps it.
+@fragment
+fn fs_dither_depth(in: VertexOutput) -> @location(0) vec4<f32> {
     if screen_door_drops(in.look, in.clip_position) {
         discard;
     }
+    return vec4<f32>(0.0);
 }

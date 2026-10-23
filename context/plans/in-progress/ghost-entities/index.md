@@ -40,7 +40,7 @@ The game owner wants a new capability for The Dreadgate Trials, the first game o
 - **Descriptor flags resolve locally, like styles.** Each peer reads `ghost` from its own descriptors by the class the entity was materialized from, at install and on each committed reload, which re-resolves membership through the membership ramp. Peers whose descriptors differ see different ghosts, as with styles. The flag never rides the wire and never enters a digest.
 - **Ghost draw.**
   - Unlit: the base color's saturation is scaled by `saturation` (1 keeps full color, 0 is grey), then multiplied by `tint`, and drawn translucent at the presented opacity.
-  - Depth-tested without depth write; no shadows.
+  - Depth-tested against the scene, never writing scene depth; no shadows. Skinned and mover ghosts first write a ghost-only depth target seeded from scene depth, so each ghost draws only its nearest surface (owner decision after the playtest, 2026-10-22).
   - Culled at the mapped position against the viewer's visible cells, whatever the real position's visibility.
   - A projectile ghost gets the same treatment on its billboard or model body.
   - Transparency is mod-wide: `ModManifest.render.ghosts` is `"blend"` (alpha blend, the default) or `"dither"` (screen-door: a screen-space ordered pattern keeps or discards each pixel at the presented opacity). It follows the render profile: a malformed value warns and uses blend without touching `bloom` or `reflections`, a successful staged mod-init replaces it, and it stays local, off the wire and out of every digest. A projectile billboard ghost blends in both modes. Owner amendment, 2026-10-21.
@@ -189,7 +189,7 @@ Pins are in `research.md`.
   - `setMembers` toggling a category at 10 Hz
   - a member oscillating across the volume boundary at 10 Hz
 - [ ] With the limiter on, a red `setColorFilter` tint strobe desaturates over budget, keeping luminance, while a single red tint change keeps its hue.
-- [ ] With the limiter on and opacity steady, a `setColorFilter` tint alternating white and black at `periodMs` 0 presents at most 3 flashes in any 1 s window and rests at its weaker (darker) drawn brightness, as a limited screen channel rests at its weaker blend (provisional amendment).
+- [ ] With the limiter on and opacity steady, a `setColorFilter` tint alternating white and black at `periodMs` 0 presents at most 3 flashes in any 1 s window on any background and rests at a held state (provisional amendment; owner restatement, 2026-10-23).
 - [ ] With the limiter on, a single `arm` reaches full style opacity within 250 ms, and the example's 1500 ms `setColorFilter` fade presents exactly as with the limiter off. A new ghost's first presented frame starts from membership 0 (P21). Turning the limiter on while ghosts present dips none (P31).
 - [ ] With the limiter turned off by the player, the 10 Hz `arm`/`disarm` strobe presents unclamped, the membership ramp still applies, and a hitch frame steps at most the hitch ceiling (P30). When script time is frozen (the dev `freeze_time`), `setColorFilter` ramps hold while the membership ramp continues (P42). Owner restatement, 2026-10-22: the shipped pause menu keeps script time running.
 **Look and audio values**

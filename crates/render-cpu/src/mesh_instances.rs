@@ -68,7 +68,9 @@ impl MeshPaletteCacheKey {
     /// namespace (0 for real draws, the link plus one for ghosts) and the raw
     /// holder id. Plan membership completes the group identity because a
     /// connected client's body and viewmodel may deliberately share this id.
-    fn holder_group(self) -> (u32, u32) {
+    /// Within the ghost plan it names one ghost: a holder and its attachments
+    /// seen through one link.
+    pub fn holder_group(self) -> (u32, u32) {
         match self {
             Self::Entity(entity) => (0, entity),
             Self::Attachment { holder, .. } => (0, holder),

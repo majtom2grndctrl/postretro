@@ -885,8 +885,8 @@ fn the_worst_case_over_any_background_presents_at_most_three_flashes() {
 }
 
 // Regression: the screen door keeps the nearest sixteenth of its pixels, which
-// the clamp didn't judge: a dithered opacity strobe of 0.6874 ↔ 0.7874 (a step
-// just under 0.1) presents 11/16 ↔ 13/16 coverage, a step of 0.125. Dithered,
+// the clamp didn't judge: a dithered opacity strobe of 0.6876 ↔ 0.7874 (a step
+// just under 0.1, in f32 as well) presents 11/16 ↔ 13/16 coverage, a step of 0.125. Dithered,
 // it is judged on that coverage and limited; blended, the same strobe is no
 // flash and presents as asked, within the rate cap. A strobe of 1 ↔ 0.8124
 // presents 1 ↔ 13/16 in either mode: no deeper when dithered.
@@ -898,7 +898,7 @@ fn a_dithered_ghost_is_judged_on_the_coverage_its_screen_door_presents() {
         let frames = (3.0 * fps) as usize;
         let asked = |n: usize| {
             let high = (n as f32 * dt * 10.0).fract() >= 0.5;
-            look(if high { 0.7874 } else { 0.6874 }, WHITE)
+            look(if high { 0.7874 } else { 0.6876 }, WHITE)
         };
 
         // Blended: no flash, and every frame is the asked strobe rate-capped.

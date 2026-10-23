@@ -1,0 +1,90 @@
+   Compiling serde v1.0.229
+    Checking ahash v0.8.12
+    Checking image v0.25.10
+    Checking url v2.5.8
+   Compiling dashmap v6.2.1
+    Checking mlua v0.12.2
+    Checking hashbrown v0.14.5
+   Compiling triomphe v0.1.16
+   Compiling bytes-str v0.2.9
+   Compiling hstr v4.0.2
+   Compiling num-bigint v0.4.8
+   Compiling swc_config v6.0.1
+   Compiling swc_atoms v10.0.0
+   Compiling serde-value v0.7.0
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+    Checking gltf v1.4.1
+   Compiling swc_common v26.0.0
+    Checking postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\foundation)
+   Compiling swc_ecma_ast v29.0.2
+   Compiling swc_ecma_loader v27.0.0
+    Checking postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-data)
+    Checking read-fonts v0.41.0
+    Checking postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+    Checking postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\entities)
+   Compiling swc_ecma_visit v29.0.0
+   Compiling swc_ecma_parser v45.1.6
+   Compiling swc_ecma_utils v35.0.2
+   Compiling swc_ecma_hooks v1.0.0
+    Checking skrifa v0.44.0
+   Compiling swc_ecma_transforms_base v49.0.1
+   Compiling swc_ecma_codegen v32.0.3
+    Checking notify v8.2.0
+    Checking wgpu-types v30.0.1
+    Checking symphonia-core v0.6.1
+   Compiling swc_ecma_transforms_react v55.0.1
+   Compiling swc_ecma_transforms_optimization v52.0.2
+    Checking wgpu-naga-bridge v30.0.1
+    Checking notify-debouncer-full v0.7.0
+    Checking wgpu-hal v30.0.1
+    Checking symphonia-metadata v0.6.1
+   Compiling swc_ecma_transforms_typescript v55.0.4
+   Compiling swc_bundler v56.0.1
+    Checking spade v2.15.1
+   Compiling postretro-script-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\script-compiler)
+    Checking vello_cpu v0.1.0
+    Checking wgpu-core-deps-windows-linux-android v30.0.1
+    Checking harfrust v0.12.0
+    Checking postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\model)
+    Checking swash v0.2.10
+    Checking epaint v0.36.2
+    Checking parry3d v0.31.1
+    Checking wgpu-core v30.0.1
+    Checking postretro-net v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\net)
+    Checking harfrust v0.5.2
+    Checking symphonia-common v0.6.1
+    Checking accesskit v0.24.1
+    Checking postretro-collision v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\collision)
+    Checking egui v0.36.2
+    Checking cosmic-text v0.19.0
+    Checking postretro-physics v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\physics)
+    Checking wgpu v30.0.1
+    Checking postretro-combat-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\combat-model)
+    Checking postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+    Checking symphonia-format-riff v0.6.1
+    Checking arboard v3.6.1
+    Checking symphonia-format-ogg v0.6.1
+    Checking symphonia-codec-vorbis v0.6.1
+    Checking symphonia-codec-pcm v0.6.1
+    Checking webbrowser v1.2.4
+    Checking swc_allocator v5.0.0
+    Checking symphonia v0.6.1
+    Checking crossterm v0.29.0
+    Checking postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+    Checking glyphon v0.12.0
+    Checking egui-winit v0.36.2
+    Checking egui-wgpu v0.36.2
+    Checking kira v0.12.5
+    Checking ratatui-crossterm v0.1.2
+    Checking postretro-audio v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\audio)
+    Checking ratatui v0.30.2
+    Checking postretro-level-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-compiler)
+   Compiling postretro-scripting-core v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\scripting-core)
+   Compiling postretro v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\postretro)
+    Checking postretro-lighting v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\lighting)
+    Checking postretro-ui v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\ui)
+    Checking postretro-sim v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\sim)
+    Checking postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+    Checking postretro-netcode v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\netcode)
+    Checking postretro-ai v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\ai)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 3m 29s

@@ -1,0 +1,30 @@
+{
+  "binary_sha256": "e37e17b4c63ba694b8b1d56f83ef1eaf3aafa7c0c516899e4ee0cbe3f1189ddf",
+  "map_sha256": "7cce7c5f69397b20f2cab3740deecd97b5114d5f8985b737244752315b5f15f4",
+  "git_head": "2afe2613bf7e7c08e509666b914e9d20adc3ecf8",
+  "profile": "release",
+  "features": [
+    "dev-tools",
+    "capture"
+  ],
+  "backend": "Vulkan",
+  "indirect_validation": "release default off",
+  "streaming": "ordinary",
+  "seconds": 20,
+  "repeats": 2,
+  "pose": "across",
+  "engine_arguments": [
+    "--mod",
+    "dev",
+    "maps/reflection-lake-test.prl",
+    "--core-root",
+    "core",
+    "--windowed",
+    "--start-pose=-16.8656,1.2,-48.768,90,-10",
+    "--pool-seed",
+    "1"
+  ],
+  "very_high_app_name": "postretro-walk-budget-vh",
+  "very_high_settings": "C:\\Users\\danhi\\AppData\\Roaming\\postretro-walk-budget-vh\\config\\settings.toml",
+  "note": "Fixed standing camera. Tail CPU/GPU windows are asynchronous; live GPU logs round to 0.01 ms. mirror_walk times only the mirror portal walk; the fallback per-cell cull is inside visibility."
+}

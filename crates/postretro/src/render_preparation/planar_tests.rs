@@ -98,6 +98,7 @@ fn prepare(
             on,
             ..Default::default()
         },
+        postretro_visibility::DEFAULT_MIRROR_WALK_STEPS,
         &[],
         TimingGate::OFF,
     );

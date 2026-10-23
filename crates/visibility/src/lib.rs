@@ -16,7 +16,8 @@ pub const PORTAL_WALK_EPOCH: u32 = 1;
 
 pub use cpu_stages::VisibilityStage;
 pub use mirror_visibility::{
-    MirrorVisibilityPath, MirrorVisibilityResult, determine_mirror_visible_cells,
+    DEFAULT_MIRROR_WALK_STEPS, MirrorVisibilityPath, MirrorVisibilityResult,
+    determine_mirror_visible_cells,
 };
 pub use portal_vis::{narrow_frustum, portal_traverse};
 pub use postretro_stage_timing::TimingGate;

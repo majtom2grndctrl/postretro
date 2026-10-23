@@ -1,0 +1,43 @@
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+   Compiling postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+   Compiling postretro-level-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-compiler)
+   Compiling postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+   Compiling postretro v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\postretro)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 20s
+     Running unittests src\main.rs (target\debug\deps\postretro-cbef0e993f2e5e38.exe)
+
+running 7 tests
+test capture::planar::tests::planar_capture_defaults_and_explicit_knobs_reach_settings ... ok
+test render_preparation::planar::tests::planar_preparation_unions_empty_mirror_cells_for_entities_residency_and_sh ... ok
+test render_preparation::planar::tests::planar_preparation_preserves_unisolated_fog_sentinel_on_main_fallback ... ok
+test render_preparation::planar::tests::planar_preparation_off_restores_main_inputs_and_reinstall_drops_selection ... ok
+test lightmap_streaming::controller::tests::planar_mirror_cells_request_lightmaps_on_main_visibility_fallbacks ... ok
+test capture::planar::tests::planar_capture_rejects_invalid_knobs_before_gpu_initialization ... ok
+test startup::lifecycle::lifecycle_environment_install_tests::planar_candidates_follow_installed_local_fluid_reflectivity_and_probe_binding ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1954 filtered out; finished in 1.97s
+
+     Running tests\capture_frame.rs (target\debug\deps\capture_frame-4b889cfe9f615220.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests\capture_lightmap_streaming.rs (target\debug\deps\capture_lightmap_streaming-4308cdf2fa5b770d.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests\capture_shadowmask_groups.rs (target\debug\deps\capture_shadowmask_groups-3da49b16e70a4553.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests\dependency_isolation.rs (target\debug\deps\dependency_isolation-6bb7e39495a22480.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

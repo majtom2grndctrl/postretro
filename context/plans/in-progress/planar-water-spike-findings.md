@@ -145,3 +145,31 @@ D15 removes about 98% of the unlimited mirror-walk cost and lowers frame time ab
 Eight accepted static illustrations have complete GPU windows and clean counters. Half/quarter D15 repeat byte-identically; quarter D15 is also byte-identical to probes-only at this pose. Half D15 has a substantial near-water contribution absent from quarter; this reproducible scale difference needs visual/correctness investigation, rather than being assumed to be an acceptable resolution tradeoff. Capture omits game VM/manifest fluid tuning and does not establish motion quality.
 
 Recommendation: **half D15, R unlimited, 4 m fade as the first motion-test candidate**, with D30 as the reach comparison. This supports the owner's hybrid strategy and largely resolves traversal cost without a visibility rewrite; it does not select a shipping preset or establish a live FPS win. Full provenance, source review, 110 focused renderer checks, exclusions, stills, replay and limitations: [bounded live findings](planar-water-spike-evidence/windows-bounded-live-2026-10-23/findings.md).
+
+## Walk budget follow-up — 2026-10-23
+
+Summary of the [walk budget findings](planar-water-spike-evidence/windows-walk-budget-2026-10-23/findings.md):
+
+- **The seed.** `POSTRETRO_PLANAR_WALK_STEPS` is a new dev-tools launch seed, ranging 0–20,000. It caps the mirror walk only; 0 skips the walk and goes straight to the mirror-frustum fallback. Default behaviour is unchanged.
+- **Method.** Release live runs at the bounded-live across pose, 1600×900, VSync off. Seven configurations, forward and reverse: 14 accepted runs. The engine window was visible and unoccluded but not foreground, with the GeForce Overlay present.
+
+| Mode | Frame means, ms | Mirror walk, ms | Reflection GPU, ms |
+|---|---:|---:|---:|
+| SSR High | 4.745 / 4.717 | absent | 0.947 |
+| SSR very_high | 5.071 / 5.079 | absent | 1.748 |
+| Half unlimited | 7.719 / 7.635 | 2.689 | 0.210 |
+| Half, budget 2,000 | 5.200 / 5.259 | 0.283 | 0.210 |
+| Half, budget 500 | 5.047 / 4.956 | 0.071 | 0.210 |
+| Half, budget 0 | 4.969 / 4.962 | 0.000 | 0.210 |
+| Half D15 | 4.953 / 4.961 | 0.060 | 0.090 |
+
+**Images.** Budgets 0, 500 and 2,000 draw the same 126 frustum-fallback cells as unlimited. Their stills are byte-identical to unlimited (AE 0, RMSE 0). The reason is structural: a tripped walk's partial result is discarded.
+
+**D15 and probes.** Half D15 differs from probes-only in only 2 pixels. That reproduces in the bounded-live half and quarter D15 stills. The earlier note of a broad half-D15 near-water contribution is not supported by pixel data at this pose.
+
+**Not measured:**
+- A pose where the unlimited walk completes seeded. There, a small budget would widen to the frustum superset.
+- The downward over-water pose. It was conditional on the budgets being indistinguishable, and they were not.
+- Motion.
+
+No shipping preset is selected.

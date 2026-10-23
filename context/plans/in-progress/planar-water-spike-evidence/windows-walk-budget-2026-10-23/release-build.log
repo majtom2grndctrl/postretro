@@ -1,0 +1,12 @@
+2026-10-23T20:27:45Z
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+   Compiling postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+   Compiling postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+   Compiling postretro v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\postretro)
+    Finished `release` profile [optimized] target(s) in 7m 46s
+
+real	7m46.575s
+user	0m0.015s
+sys	0m0.000s
+exit 0
+2026-10-23T20:35:32Z

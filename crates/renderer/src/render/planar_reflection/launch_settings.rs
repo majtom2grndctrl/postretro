@@ -2,11 +2,35 @@
 // See: context/plans/in-progress/planar-water-spike-contract.md
 
 use postretro_render_cpu::planar_reflection::PlanarReflectionSettings;
+use postretro_visibility::DEFAULT_MIRROR_WALK_STEPS;
 
 pub(super) fn from_environment() -> PlanarReflectionSettings {
     let settings = from_values(|key| std::env::var(key).ok());
     log::info!("[Renderer] Planar launch settings: {settings:?}");
     settings
+}
+
+/// Mirror-walk step budget only; the main camera walk keeps its own cap.
+/// 0 skips the mirror walk and takes the mirror-frustum fallback directly.
+pub(super) fn walk_steps_from_environment() -> u32 {
+    let steps = walk_steps_from_value(std::env::var("POSTRETRO_PLANAR_WALK_STEPS").ok());
+    log::info!("[Renderer] Planar mirror walk steps: {steps}");
+    steps
+}
+
+fn walk_steps_from_value(value: Option<String>) -> u32 {
+    let Some(value) = value else {
+        return DEFAULT_MIRROR_WALK_STEPS;
+    };
+    match value.parse::<u32>() {
+        Ok(steps) if steps <= DEFAULT_MIRROR_WALK_STEPS => steps,
+        _ => {
+            log::warn!(
+                "[Renderer] invalid POSTRETRO_PLANAR_WALK_STEPS={value:?}; keeping {DEFAULT_MIRROR_WALK_STEPS}"
+            );
+            DEFAULT_MIRROR_WALK_STEPS
+        }
+    }
 }
 
 fn from_values(read: impl Fn(&str) -> Option<String>) -> PlanarReflectionSettings {
@@ -103,5 +127,22 @@ mod tests {
             assert_defaults(settings, true);
             logs.assert_logged_once(log::Level::Warn, &format!("invalid {key}="));
         }
+    }
+
+    #[test]
+    fn planar_launch_walk_steps_seed_bounds_the_mirror_walk_only() {
+        assert_eq!(walk_steps_from_value(None), DEFAULT_MIRROR_WALK_STEPS);
+        assert_eq!(DEFAULT_MIRROR_WALK_STEPS, 20_000);
+        for (value, expected) in [("0", 0), ("500", 500), ("2000", 2000), ("20000", 20_000)] {
+            assert_eq!(walk_steps_from_value(Some(value.to_owned())), expected);
+        }
+        let logs = postretro_test_log_capture::LogCapture::start();
+        for value in ["-1", "20001", "1.5", "off", ""] {
+            assert_eq!(
+                walk_steps_from_value(Some(value.to_owned())),
+                DEFAULT_MIRROR_WALK_STEPS
+            );
+        }
+        logs.assert_logged(log::Level::Warn, "invalid POSTRETRO_PLANAR_WALK_STEPS=");
     }
 }

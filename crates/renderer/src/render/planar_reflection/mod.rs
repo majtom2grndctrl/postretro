@@ -15,6 +15,8 @@ use targets::PlanarTargets;
 
 pub(super) struct PlanarReflectionPass {
     pub settings: PlanarReflectionSettings,
+    /// Mirror-walk step budget; dev-tools launch seed, otherwise the default.
+    pub walk_steps: u32,
     pub camera: Option<MirrorCamera>,
     pub visible: VisibleCells,
     pub uniform_buffer: wgpu::Buffer,
@@ -70,8 +72,13 @@ impl PlanarReflectionPass {
         let settings = launch_settings::from_environment();
         #[cfg(not(feature = "dev-tools"))]
         let settings = PlanarReflectionSettings::default();
+        #[cfg(feature = "dev-tools")]
+        let walk_steps = launch_settings::walk_steps_from_environment();
+        #[cfg(not(feature = "dev-tools"))]
+        let walk_steps = postretro_visibility::DEFAULT_MIRROR_WALK_STEPS;
         Self {
             settings,
+            walk_steps,
             camera: None,
             visible: VisibleCells::Culled(Vec::new()),
             uniform_buffer,

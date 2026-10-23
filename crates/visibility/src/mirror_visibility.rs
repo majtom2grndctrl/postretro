@@ -30,9 +30,14 @@ pub struct MirrorVisibilityResult {
     pub cpu: StageFrame<VisibilityStage>,
 }
 
+/// The mirror walk's default step budget: the main walk's cap. A dev-tools
+/// launch seed may lower it for the mirror walk only.
+pub const DEFAULT_MIRROR_WALK_STEPS: u32 = portal_vis::MAX_PORTAL_WALK_STEPS;
+
 /// Flood from main-visible water cells. Never calls `locate_cell`.
 /// `clip_plane` is a world half-space, inward toward reflected content.
 /// `cull_vp` carries D as its far plane; the water plane replaces its near.
+/// `step_limit` bounds the mirror walk; 0 skips it for the frustum fallback.
 /// Reclaim `VisibleCells::Culled` into `scratch` after rendering.
 #[allow(clippy::too_many_arguments)]
 pub fn determine_mirror_visible_cells(
@@ -44,6 +49,7 @@ pub fn determine_mirror_visible_cells(
     blocked_portals: &[bool],
     scratch: &mut Vec<u32>,
     timing: TimingGate,
+    step_limit: u32,
 ) -> (MirrorVisibilityResult, Frustum) {
     determine_with_step_limit(
         mirror_eye,
@@ -54,7 +60,7 @@ pub fn determine_mirror_visible_cells(
         blocked_portals,
         scratch,
         timing,
-        portal_vis::MAX_PORTAL_WALK_STEPS,
+        step_limit,
     )
 }
 
@@ -100,21 +106,23 @@ fn determine_with_step_limit(
             frustum,
         );
     }
-    let walk = portal_vis::portal_traverse_seeded(
-        mirror_eye,
-        seeds,
-        &frustum,
-        world,
-        blocked_portals,
-        step_limit,
-        timing,
-    );
-    if let Some(nanos) = walk.stats.walk_nanos {
-        cpu.add_nanos(VisibilityStage::MirrorWalk, nanos);
-    }
+    // A zero budget skips the walk; the stage stays present at zero time.
+    let walk = (step_limit > 0).then(|| {
+        portal_vis::portal_traverse_seeded(
+            mirror_eye,
+            seeds,
+            &frustum,
+            world,
+            blocked_portals,
+            step_limit,
+            timing,
+        )
+    });
+    let stats = walk.as_ref().map(|walk| walk.stats).unwrap_or_default();
+    cpu.add_nanos(VisibilityStage::MirrorWalk, stats.walk_nanos.unwrap_or(0));
     let path = if !world.has_portals {
         MirrorVisibilityPath::NoPortalsFallback
-    } else if walk.stats.step_limit_hit {
+    } else if walk.is_none() || stats.step_limit_hit {
         MirrorVisibilityPath::StepLimitFallback
     } else {
         MirrorVisibilityPath::Seeded
@@ -124,7 +132,7 @@ fn determine_with_step_limit(
     for (id, cell) in world.cells.iter().enumerate() {
         if cell.is_solid
             || cell.is_exterior
-            || (!fallback && !walk.visible[id])
+            || (!fallback && !walk.as_ref().is_some_and(|walk| walk.visible[id]))
             || is_aabb_outside_frustum(cell.bounds_min, cell.bounds_max, &frustum)
         {
             continue;
@@ -139,8 +147,8 @@ fn determine_with_step_limit(
             visible_cells: VisibleCells::Culled(std::mem::take(scratch)),
             reachable_cells,
             path,
-            considered: walk.stats.considered,
-            accepted: walk.stats.accepted,
+            considered: stats.considered,
+            accepted: stats.accepted,
             cpu,
         },
         frustum,

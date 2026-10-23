@@ -66,6 +66,7 @@ impl PlanarRenderPreparation {
         main_camera: RenderCamera,
         main: &VisibleRenderPreparation,
         settings: PlanarReflectionSettings,
+        walk_steps: u32,
         blocked_portals: &[bool],
         timing: TimingGate,
     ) -> StageFrame<VisibilityStage> {
@@ -155,6 +156,7 @@ impl PlanarRenderPreparation {
             blocked_portals,
             &mut self.scratch,
             timing,
+            walk_steps,
         );
         if let VisibleCells::Culled(cells) = result.visible_cells {
             let previous = std::mem::replace(&mut self.visible, VisibleCells::Culled(cells));

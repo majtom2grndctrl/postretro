@@ -1679,11 +1679,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             r.reflection_quality() != FluidReflectionQuality::Off
                 && r.light_term_mask() == render::LightTermMask::ALL
         });
+        let walk_steps = app
+            .renderer
+            .as_ref()
+            .map_or(postretro_visibility::DEFAULT_MIRROR_WALK_STEPS, |r| {
+                r.planar_mirror_walk_steps()
+            });
         let mirror_cpu = app.planar_render.prepare(
             world,
             render_camera,
             &visible_render,
             settings,
+            walk_steps,
             &app.blocked_portals,
             app.cpu_timer.gate(),
         );

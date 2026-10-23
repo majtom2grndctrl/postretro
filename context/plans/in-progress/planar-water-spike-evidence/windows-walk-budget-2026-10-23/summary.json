@@ -1,0 +1,603 @@
+[
+  {
+    "configuration": "ssr-high",
+    "settings": {
+      "on": false,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "high",
+      "walk": null
+    },
+    "repeats": 2,
+    "frame_ms": 4.7311,
+    "frame_ms_runs": [
+      4.7452,
+      4.717
+    ],
+    "work_cpu_ms": 4.6143,
+    "visibility_ms": 2.9191,
+    "main_walk_ms": 2.9071,
+    "mirror_walk_ms": null,
+    "render_submit_ms": 0.7002999999999999,
+    "reflection_gpu_label": "fluid_reflection",
+    "reflection_gpu_ms": 0.9466666666666665,
+    "planar_forward_gpu_ms": null,
+    "forward_gpu_ms": 1.7416666666666667,
+    "mirror": [
+      null,
+      null
+    ],
+    "lightmap": [
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      },
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      }
+    ],
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "window": [
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      },
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      }
+    ]
+  },
+  {
+    "configuration": "ssr-very-high",
+    "settings": {
+      "on": false,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "very_high",
+      "walk": null
+    },
+    "repeats": 2,
+    "frame_ms": 5.0748,
+    "frame_ms_runs": [
+      5.0706,
+      5.079
+    ],
+    "work_cpu_ms": 4.7981,
+    "visibility_ms": 2.9632,
+    "main_walk_ms": 2.9508,
+    "mirror_walk_ms": null,
+    "render_submit_ms": 0.8398,
+    "reflection_gpu_label": "fluid_reflection",
+    "reflection_gpu_ms": 1.7483333333333333,
+    "planar_forward_gpu_ms": null,
+    "forward_gpu_ms": 2.3383333333333334,
+    "mirror": [
+      null,
+      null
+    ],
+    "lightmap": [
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      },
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      }
+    ],
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "window": [
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      },
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      }
+    ]
+  },
+  {
+    "configuration": "half-unlimited",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "high",
+      "walk": null
+    },
+    "repeats": 2,
+    "frame_ms": 7.6767,
+    "frame_ms_runs": [
+      7.7188,
+      7.6346
+    ],
+    "work_cpu_ms": 7.5556,
+    "visibility_ms": 5.7045,
+    "main_walk_ms": 2.9846000000000004,
+    "mirror_walk_ms": 2.6889,
+    "render_submit_ms": 0.8099,
+    "reflection_gpu_label": "planar_reflection",
+    "reflection_gpu_ms": 0.21,
+    "planar_forward_gpu_ms": 0.14,
+    "forward_gpu_ms": 1.7233333333333334,
+    "mirror": [
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 126,
+        "reachable": 126,
+        "mirror_only": 0,
+        "path": "StepLimitFallback",
+        "considered": 20000,
+        "accepted": 2084
+      },
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 126,
+        "reachable": 126,
+        "mirror_only": 0,
+        "path": "StepLimitFallback",
+        "considered": 20000,
+        "accepted": 2084
+      }
+    ],
+    "lightmap": [
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      },
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      }
+    ],
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "window": [
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      },
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      }
+    ]
+  },
+  {
+    "configuration": "half-unlimited-w2000",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "high",
+      "walk": 2000
+    },
+    "repeats": 2,
+    "frame_ms": 5.229100000000001,
+    "frame_ms_runs": [
+      5.1996,
+      5.2586
+    ],
+    "work_cpu_ms": 5.1076,
+    "visibility_ms": 3.2602,
+    "main_walk_ms": 2.9469000000000003,
+    "mirror_walk_ms": 0.2828,
+    "render_submit_ms": 0.8201,
+    "reflection_gpu_label": "planar_reflection",
+    "reflection_gpu_ms": 0.21,
+    "planar_forward_gpu_ms": 0.14,
+    "forward_gpu_ms": 1.7349999999999999,
+    "mirror": [
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 126,
+        "reachable": 126,
+        "mirror_only": 0,
+        "path": "StepLimitFallback",
+        "considered": 2000,
+        "accepted": 198
+      },
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 126,
+        "reachable": 126,
+        "mirror_only": 0,
+        "path": "StepLimitFallback",
+        "considered": 2000,
+        "accepted": 198
+      }
+    ],
+    "lightmap": [
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      },
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      }
+    ],
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "window": [
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      },
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      }
+    ]
+  },
+  {
+    "configuration": "half-unlimited-w500",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "high",
+      "walk": 500
+    },
+    "repeats": 2,
+    "frame_ms": 5.0016,
+    "frame_ms_runs": [
+      5.047,
+      4.9562
+    ],
+    "work_cpu_ms": 4.8833,
+    "visibility_ms": 3.0708,
+    "main_walk_ms": 2.9697,
+    "mirror_walk_ms": 0.0715,
+    "render_submit_ms": 0.8038000000000001,
+    "reflection_gpu_label": "planar_reflection",
+    "reflection_gpu_ms": 0.21,
+    "planar_forward_gpu_ms": 0.14,
+    "forward_gpu_ms": 1.7333333333333334,
+    "mirror": [
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 126,
+        "reachable": 126,
+        "mirror_only": 0,
+        "path": "StepLimitFallback",
+        "considered": 500,
+        "accepted": 54
+      },
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 126,
+        "reachable": 126,
+        "mirror_only": 0,
+        "path": "StepLimitFallback",
+        "considered": 500,
+        "accepted": 54
+      }
+    ],
+    "lightmap": [
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      },
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      }
+    ],
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "window": [
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      },
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      }
+    ]
+  },
+  {
+    "configuration": "half-unlimited-w0",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "high",
+      "walk": 0
+    },
+    "repeats": 2,
+    "frame_ms": 4.9652,
+    "frame_ms_runs": [
+      4.9686,
+      4.9618
+    ],
+    "work_cpu_ms": 4.8452,
+    "visibility_ms": 3.0133,
+    "main_walk_ms": 2.9837,
+    "mirror_walk_ms": 0.0,
+    "render_submit_ms": 0.8144,
+    "reflection_gpu_label": "planar_reflection",
+    "reflection_gpu_ms": 0.21,
+    "planar_forward_gpu_ms": 0.14,
+    "forward_gpu_ms": 1.7333333333333334,
+    "mirror": [
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 126,
+        "reachable": 126,
+        "mirror_only": 0,
+        "path": "StepLimitFallback",
+        "considered": 0,
+        "accepted": 0
+      },
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 126,
+        "reachable": 126,
+        "mirror_only": 0,
+        "path": "StepLimitFallback",
+        "considered": 0,
+        "accepted": 0
+      }
+    ],
+    "lightmap": [
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      },
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      }
+    ],
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "window": [
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      },
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      }
+    ]
+  },
+  {
+    "configuration": "half-d15",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": 15,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "high",
+      "walk": null
+    },
+    "repeats": 2,
+    "frame_ms": 4.9566,
+    "frame_ms_runs": [
+      4.9526,
+      4.9606
+    ],
+    "work_cpu_ms": 4.837400000000001,
+    "visibility_ms": 3.0410000000000004,
+    "main_walk_ms": 2.9548,
+    "mirror_walk_ms": 0.060399999999999995,
+    "render_submit_ms": 0.7969,
+    "reflection_gpu_label": "planar_reflection",
+    "reflection_gpu_ms": 0.09,
+    "planar_forward_gpu_ms": 0.03,
+    "forward_gpu_ms": 1.7283333333333333,
+    "mirror": [
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 11,
+        "reachable": 11,
+        "mirror_only": 0,
+        "path": "Seeded",
+        "considered": 354,
+        "accepted": 33
+      },
+      {
+        "plane": -1.219,
+        "seeds": 41,
+        "drawable": 11,
+        "reachable": 11,
+        "mirror_only": 0,
+        "path": "Seeded",
+        "considered": 354,
+        "accepted": 33
+      }
+    ],
+    "lightmap": [
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      },
+      {
+        "failed_installs": 0.0,
+        "failed_reads": 0.0,
+        "visible_misses_outside": 0.0,
+        "visible_misses_not_resident": 0.0,
+        "streaming_lines": 1
+      }
+    ],
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "window": [
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      },
+      {
+        "samples": 10,
+        "overlay_samples": 7,
+        "user_window_above_samples": 0,
+        "minimized_samples": 0,
+        "engine_foreground_samples": 0,
+        "excluded": false
+      }
+    ]
+  }
+]

@@ -6,6 +6,11 @@ impl Renderer {
         self.full().planar_reflection.settings
     }
 
+    /// Mirror-walk step budget for `determine_mirror_visible_cells`.
+    pub fn planar_mirror_walk_steps(&self) -> u32 {
+        self.full().planar_reflection.walk_steps
+    }
+
     pub fn set_planar_reflection_settings(&mut self, settings: PlanarReflectionSettings) {
         let settings = settings.sanitized();
         let full = self.full_mut();

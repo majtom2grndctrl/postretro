@@ -1,0 +1,13 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.40s
+     Running unittests src\lib.rs (target\debug\deps\postretro_visibility-18cc6da5c3f940b0.exe)
+
+running 6 tests
+test mirror_visibility::tests::mirror_solid_apex_floods_from_water_seeds_without_solid_fallback_log ... ok
+test mirror_visibility::tests::mirror_distance_far_plane_and_water_halfspace_bound_step_limit_fallback ... ok
+test mirror_visibility::tests::mirror_walk_budget_zero_and_small_take_the_bounded_frustum_fallback ... ok
+test mirror_visibility::tests::mirror_multiple_seeds_share_a_step_budget_and_no_portals_fallback_stays_bounded ... ok
+test mirror_visibility::tests::mirror_seeded_walk_honors_blocked_portals_and_keeps_empty_lighting_cells ... ok
+test mirror_visibility::tests::mirror_empty_or_invalid_seeds_never_widen_to_every_cell ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 54 filtered out; finished in 0.00s
+

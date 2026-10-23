@@ -1,0 +1,44 @@
+{
+  "ssr-high": {
+    "walk_steps": 20000,
+    "mirror": []
+  },
+  "ssr-very-high": {
+    "walk_steps": 20000,
+    "mirror": []
+  },
+  "half-unlimited": {
+    "walk_steps": 20000,
+    "mirror": [
+      "plane=-1.219 seeds=41 visible=126 reachable=126 mirror-only=0 path=StepLimitFallback considered=20000 accepted=2080"
+    ]
+  },
+  "half-unlimited-w2000": {
+    "walk_steps": 2000,
+    "mirror": [
+      "plane=-1.219 seeds=41 visible=126 reachable=126 mirror-only=0 path=StepLimitFallback considered=2000 accepted=197"
+    ]
+  },
+  "half-unlimited-w500": {
+    "walk_steps": 500,
+    "mirror": [
+      "plane=-1.219 seeds=41 visible=126 reachable=126 mirror-only=0 path=StepLimitFallback considered=500 accepted=54"
+    ]
+  },
+  "half-unlimited-w0": {
+    "walk_steps": 0,
+    "mirror": [
+      "plane=-1.219 seeds=41 visible=126 reachable=126 mirror-only=0 path=StepLimitFallback considered=0 accepted=0"
+    ]
+  },
+  "half-d15": {
+    "walk_steps": 20000,
+    "mirror": [
+      "plane=-1.219 seeds=41 visible=11 reachable=11 mirror-only=0 path=Seeded considered=354 accepted=33"
+    ]
+  },
+  "probes-only": {
+    "walk_steps": 20000,
+    "mirror": []
+  }
+}

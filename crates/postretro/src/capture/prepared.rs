@@ -211,6 +211,7 @@ impl PreparedCapture {
             camera,
             &visible_render,
             settings,
+            renderer.planar_mirror_walk_steps(),
             &[],
             postretro_visibility::TimingGate::OFF,
         );

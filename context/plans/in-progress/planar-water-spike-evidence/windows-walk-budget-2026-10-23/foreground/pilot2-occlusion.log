@@ -1,0 +1,11 @@
+13:41:54 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=none
+13:41:56 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=none
+13:41:58 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=none
+13:42:00 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=[CEF-OSC-WIDGET 'NVIDIA GeForce Overlay DT' pid 13808 overlap 1294x758] 
+13:42:02 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=[CEF-OSC-WIDGET 'NVIDIA GeForce Overlay DT' pid 13808 overlap 1294x758] 
+13:42:04 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=[CEF-OSC-WIDGET 'NVIDIA GeForce Overlay DT' pid 13808 overlap 1294x758] 
+13:42:06 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=[CEF-OSC-WIDGET 'NVIDIA GeForce Overlay DT' pid 13808 overlap 1294x758] 
+13:42:08 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=[CEF-OSC-WIDGET 'NVIDIA GeForce Overlay DT' pid 13808 overlap 1294x758] 
+13:42:10 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=[CEF-OSC-WIDGET 'NVIDIA GeForce Overlay DT' pid 13808 overlap 1294x758] 
+13:42:12 fg=10408 class=Shell_TrayWnd '' | engine pid=22708 rect=102,102,1396,860 minimized=False overlapped_above_by=none
+13:42:14 no engine window

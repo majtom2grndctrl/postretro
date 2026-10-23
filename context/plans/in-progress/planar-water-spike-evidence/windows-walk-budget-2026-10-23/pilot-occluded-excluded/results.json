@@ -1,0 +1,165 @@
+[
+  {
+    "key": "ssr-very-high-run1",
+    "configuration": "ssr-very-high",
+    "repeat": 1,
+    "started_utc": "2026-10-23T20:35:43.765829+00:00",
+    "settings": {
+      "on": false,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "very_high",
+      "walk": null
+    },
+    "engine_arguments": [
+      "--mod",
+      "dev",
+      "maps/reflection-lake-test.prl",
+      "--core-root",
+      "core",
+      "--windowed",
+      "--start-pose=-16.8656,1.2,-48.768,90,-10",
+      "--pool-seed",
+      "1",
+      "--app-name",
+      "postretro-walk-budget-vh"
+    ],
+    "effective_settings": {
+      "on": false,
+      "scale": 0.5,
+      "d": null,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "walk_steps": 20000,
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.381,
+      "work": 5.1886,
+      "wait": 0.1926,
+      "visibility": 3.0944,
+      "portal_walk": 3.0776,
+      "mirror_walk": null,
+      "render_prep": 0.219,
+      "render_record": 0.5626,
+      "render_submit": 0.9394
+    },
+    "gpu_ms": {
+      "fluid_reflection": 1.85,
+      "planar_reflection": null,
+      "planar_forward": null,
+      "forward": 2.1,
+      "fluid_surface": 0.49666666666666665,
+      "bloom": 0.21333333333333332,
+      "resolve": 0.08333333333333333
+    },
+    "mirror": null,
+    "mirror_diagnostics": 0,
+    "lightmap": {
+      "failed_installs": 0.0,
+      "failed_reads": 0.0,
+      "visible_misses_outside": 0.0,
+      "visible_misses_not_resident": 0.0,
+      "streaming_lines": 1
+    }
+  },
+  {
+    "key": "half-unlimited-w0-run1",
+    "configuration": "half-unlimited-w0",
+    "repeat": 1,
+    "started_utc": "2026-10-23T20:36:04.410558+00:00",
+    "settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "r": null,
+      "band_d": 4,
+      "band_r": 4,
+      "quality": "high",
+      "walk": 0
+    },
+    "engine_arguments": [
+      "--mod",
+      "dev",
+      "maps/reflection-lake-test.prl",
+      "--core-root",
+      "core",
+      "--windowed",
+      "--start-pose=-16.8656,1.2,-48.768,90,-10",
+      "--pool-seed",
+      "1"
+    ],
+    "effective_settings": {
+      "on": true,
+      "scale": 0.5,
+      "d": null,
+      "band_d": 4.0,
+      "r": null,
+      "band_r": 4.0
+    },
+    "walk_steps": 0,
+    "extents": [
+      "1600",
+      "900",
+      "1600",
+      "900",
+      "1"
+    ],
+    "cpu_windows": 5,
+    "cpu_frames": 600,
+    "gpu_windows": 3,
+    "gpu_readbacks": 360,
+    "cpu_ms": {
+      "total": 5.3904000000000005,
+      "work": 5.2432,
+      "wait": 0.147,
+      "visibility": 3.1458,
+      "portal_walk": 3.1126,
+      "mirror_walk": 0.0,
+      "render_prep": 0.2258,
+      "render_record": 0.5884,
+      "render_submit": 0.9302
+    },
+    "gpu_ms": {
+      "fluid_reflection": null,
+      "planar_reflection": 0.21333333333333332,
+      "planar_forward": 0.14,
+      "forward": 1.79,
+      "fluid_surface": 0.5033333333333333,
+      "bloom": 0.20666666666666667,
+      "resolve": 0.08
+    },
+    "mirror": {
+      "plane": -1.219,
+      "seeds": 41,
+      "drawable": 126,
+      "reachable": 126,
+      "mirror_only": 0,
+      "path": "StepLimitFallback",
+      "considered": 0,
+      "accepted": 0
+    },
+    "mirror_diagnostics": 2,
+    "lightmap": {
+      "failed_installs": 0.0,
+      "failed_reads": 0.0,
+      "visible_misses_outside": 0.0,
+      "visible_misses_not_resident": 0.0,
+      "streaming_lines": 1
+    }
+  }
+]

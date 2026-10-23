@@ -1,0 +1,11 @@
+ssr-high-run1 frame 4.849 mirror None vis 2.941 path None considered None cells None
+ssr-very-high-run1 frame 5.283 mirror None vis 2.95 path None considered None cells None
+half-unlimited-run1 frame 7.658 mirror 2.6928 vis 5.691 path StepLimitFallback considered 20000 cells 123
+half-unlimited-w2000-run1 frame 5.559 mirror 0.29919999999999997 vis 3.422 path StepLimitFallback considered 2000 cells 126
+half-unlimited-w500-run1 frame 5.032 mirror 0.06960000000000001 vis 3.099 path StepLimitFallback considered 500 cells 125
+half-unlimited-w0-run1 frame 4.986 mirror 0.0 vis 3.043 path StepLimitFallback considered 0 cells 126
+half-d15-run1 frame 5.008 mirror 0.0596 vis 3.081 path Seeded considered 354 cells 11
+half-d15-run2 frame 4.983 mirror 0.059199999999999996 vis 3.101 path Seeded considered 354 cells 11
+half-unlimited-w0-run2 frame 4.982 mirror 0.0 vis 3.021 path StepLimitFallback considered 0 cells 126
+half-unlimited-w500-run2 frame 5.04 mirror 0.0708 vis 3.084 path StepLimitFallback considered 500 cells 126
+exit 127

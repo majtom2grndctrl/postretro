@@ -1,0 +1,39 @@
+    Checking image v0.25.10
+    Checking mlua v0.12.2
+   Compiling swc_ecma_transforms_react v55.0.1
+    Checking wgpu-types v30.0.1
+    Checking read-fonts v0.41.0
+    Checking notify v8.2.0
+    Checking notify-debouncer-full v0.7.0
+    Checking harfrust v0.5.2
+    Checking gltf v1.4.1
+   Compiling swc_ecma_transforms_typescript v55.0.4
+    Checking postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\foundation)
+    Checking postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-format)
+   Compiling postretro-script-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\script-compiler)
+    Checking postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\level-loader)
+    Checking postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\entities)
+    Checking wgpu-naga-bridge v30.0.1
+    Checking skrifa v0.44.0
+    Checking wgpu-hal v30.0.1
+    Checking spade v2.15.1
+    Checking swash v0.2.10
+    Checking postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\model)
+    Checking rstar v0.13.0
+    Checking postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\visibility)
+    Checking wgpu-core-deps-windows-linux-android v30.0.1
+    Checking taffy v0.14.0
+    Checking wgpu-core v30.0.1
+    Checking parry3d v0.31.1
+    Checking cosmic-text v0.19.0
+    Checking postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\render-cpu)
+    Checking postretro-combat-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\combat-model)
+    Checking postretro-physics v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\physics)
+    Checking wgpu v30.0.1
+   Compiling postretro-scripting-core v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\scripting-core)
+    Checking glyphon v0.12.0
+    Checking postretro-lighting v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\lighting)
+    Checking postretro-ui v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\ui)
+    Checking postretro-sim v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\sim)
+    Checking postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\fluid-ssr-reflections-0b3212\crates\renderer)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 55.45s

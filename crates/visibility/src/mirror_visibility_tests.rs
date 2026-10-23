@@ -164,3 +164,42 @@ fn mirror_multiple_seeds_share_a_step_budget_and_no_portals_fallback_stays_bound
     assert_eq!(result.path, MirrorVisibilityPath::NoPortalsFallback);
     assert_eq!(draw_ids(&result), &[1, 2]);
 }
+
+#[test]
+fn mirror_walk_budget_zero_and_small_take_the_bounded_frustum_fallback() {
+    let world = world();
+    for budget in [0, 1] {
+        let result = run(&world, &[1], &[], budget);
+        assert_eq!(result.path, MirrorVisibilityPath::StepLimitFallback);
+        assert_eq!(draw_ids(&result), &[1, 2], "budget {budget}");
+        assert!(!result.reachable_cells.is_empty());
+        assert!(!result.reachable_cells.contains(&3), "beyond D excluded");
+        assert!(
+            !result.reachable_cells.contains(&4),
+            "beneath water excluded"
+        );
+        assert!(result.considered <= budget);
+        assert!(result.cpu.value(VisibilityStage::MirrorWalk).is_some());
+    }
+    assert_eq!(
+        run(&world, &[1], &[], 0).considered,
+        0,
+        "zero skips the walk"
+    );
+    // The public entry point's default budget is the unchanged main-walk cap.
+    assert_eq!(DEFAULT_MIRROR_WALK_STEPS, portal_vis::MAX_PORTAL_WALK_STEPS);
+    assert_eq!(DEFAULT_MIRROR_WALK_STEPS, 20_000);
+    let (default, _) = determine_mirror_visible_cells(
+        Vec3::new(0.0, -2.0, 2.0),
+        cull_vp(15.0),
+        Vec4::Y,
+        &[1],
+        &world,
+        &[],
+        &mut Vec::new(),
+        TimingGate::ON,
+        DEFAULT_MIRROR_WALK_STEPS,
+    );
+    assert_eq!(default.path, MirrorVisibilityPath::Seeded);
+    assert_eq!(draw_ids(&default), &[1, 2]);
+}

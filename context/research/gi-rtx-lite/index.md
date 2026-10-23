@@ -40,12 +40,12 @@ Rule that followed: a probe's partner must supply **appearance from a vantage th
 
 ## Diagnosis of today's GI
 
-- **Runtime.** Animated SH compose is the Mac's costliest lighting term. After the contributing-row filter the 5300M station still pays 2.89 ms indirect + 0.61 ms Pass A + 0.89 ms Pass B per frame, ~4.4 ms (`sh-compose-contributing-rows`); the 1660 pays 0.17–1.55 ms. The 5300M costs ~3.0–3.5 µs per composed row against well under 1 µs on the 1660. The older 41.93 vs 4.11 ms frame interval (1 m spacing, live spawn, 1660) predates the dispatch-collapse fix and measured mostly dispatch count (~1,590 dispatches a frame), so it no longer motivates anything. The forward pass's SH share has never been isolated (`rendering_pipeline.md` §12).
+- **Runtime.** Animated SH compose is the Mac's costliest lighting term. After the contributing-row filter the 5300M at the kinematic-platform station still pays 2.89 ms indirect + 0.61 ms Pass A + 0.89 ms Pass B per frame, ~4.4 ms (`sh-compose-contributing-rows`); the 1660 pays 0.17–1.55 ms. The 5300M costs ~3.0–3.5 µs per composed row against well under 1 µs on the 1660. The older 41.93 vs 4.11 ms frame interval (1 m spacing, live spawn, 1660) predates the dispatch-collapse fix and measured mostly dispatch count (~1,590 dispatches a frame), so it no longer motivates anything. The forward pass's SH share has never been isolated (`rendering_pipeline.md` §12).
 - **VRAM.** Hallway SH 193.8 MiB across 3,385 clusters, worst mandatory set 49–125 MiB by reach, pool capacity 720 MiB at spawn; campaign composed atlas 55.88 MB for 194,028 grid probes; lightmap pool 136.5 MiB mandatory at L = 16 m, ~295 MiB with animated data.
 - **Bake.** `stress-warren-hallway-inspection` at 1 m SH spacing: 11.15 h, 4.82 GiB peak, SH-dominated. One run, 2026-09-18; the cold SH falloff early-out (~20.9× on a synthetic fixture) may postdate it. Re-measure before treating it as a cost driver. Each probe casts 256 rays and, at every hit, re-shadows each light in range with area samples: most SH time is re-shadowing direct light. Bounce is one bounce off a constant grey albedo (0.45), black sky, emissive ignored, so today's indirect has no colour bleeding. Probe validity is BSP solidity plus an exterior-leaf test, not a ray test. SH and delta stages finish before atlas preparation, so they cannot read the lightmap.
 - **Doors.** Bake auto-detects which portals each mover's closed brush fully seals (`sealed_portal_ids`); a docked-closed door blocks the camera flood. Movers shadow every dynamic light and each static light they promote, onto world through the shadowmask union. Limits: 8 spot + 2 cube promoted slots, ≤ 4 mask channels per texel. Unpromoted baked light passes through a closed door, since the bake has no movers. Bounce ignores doors.
 - **What carries the look:** the soft-penumbra directional lightmap, animated lightmaps with real shadows, entity shadows through promotion, an indirect term that follows normals.
-- **Grid costs that cleanup fixes:** air probes. Entities and fog need indirect in the air, so every design stores some; receiver-reach culling keeps about one 4 m layer above floors (`lighting-scale--sh-delta-receiver-reach-cull`, draft). Valid-only storage and L1/L2 coarsening already cut campaign stored tiles 194,028 → 57,128. What remains is the octahedral tile format and world surfaces reading the grid.
+- **Grid costs that cleanup fixes:** what air probes cost, not their existence. Entities and fog need indirect in the air, so every design stores some. Culling per-light entries by receiver reach is ruled out (`lighting-scale--sh-delta-receiver-reach-cull`, routed to no work): it would double-count a light on receivers in culled cells, and capsule + jump + dilation already spans about one 4 m layer above every floor, so little is left to cull. Valid-only storage and L1/L2 coarsening already cut campaign stored tiles 194,028 → 57,128. What remains is the octahedral tile format and world surfaces reading the grid.
 - **Grid costs that cleanup cannot fix:** the grid ignores the portal graph, so door effects must be baked, and door bounce deltas sum only approximately for doors in series. Per-light deltas (ids 27/41/45) grow with lights × volume reached, the real exposure for larger maps. World indirect stays tied to probe spacing while world surfaces read the grid. Depth moments exist to stop the grid leaking through walls.
 
 ## Baked visibility queries lighter than a dense SDF
@@ -105,7 +105,7 @@ Recommended direction after an independent review (2026-10-23). Today's stack, f
 | 6 | Door factor in direct-SH compose | Entity behind a closed door goes dark, no promotion pop | Yes | As step 5 |
 | 7 | Slab shadows | 5300M forward ≤ ~0.5 ms at the kinematic-platform stations; promoted-slot pressure falls | Runtime | Kay–Kajiya 1986; not charted |
 | 8 | Probe classification and relocation, fed by step 4's leak counts and navmesh-guided coarsening | Stored tiles and residency fall; no entity or fog regression | Small format change | Appears clear |
-| 9 | Compose scoping by residency and visibility | Mac compose at the station | Exact | Frame as a residency gate, never a per-light change trigger ('451 element a) |
+| 9 | Compose scoping by residency and visibility | Mac compose at the kinematic-platform station falls | Exact | Frame as a residency gate, never a per-light change trigger ('451 element a) |
 | 10 | Optional: bounce in lightmap + coarser grid | 5300M world-SH share (plan item 7) ≥ ~1.5 ms; animated-bounce path chosen; wall-vs-entity and normal-mapped A/Bs | While both paths sit behind a bake flag | Low (Quake 2 / Source) if summed |
 | 11 | Optional: shadowmask-mode owners | Step 1 detector; 5300M forward ≤ ~0.3 ms; mask VRAM inside the mandatory set; no-entity soft-penumbra gate re-proved | Bake flag | Valve 2007 prior art; combination not triaged |
 | 12 | Optional: emissive bounce, mover rest-pose channel, specular occlusion cones, door bounce deltas | Owner rulings | Yes | Door bounce shares the '451 question with shipped id-27 deltas |
@@ -169,7 +169,7 @@ Complementary. The mirror view reuses the world pipelines, so door masks, slab s
 Cheapest check first. All must hold.
 
 1. Owner requires bounce that combines correctly across several doors. Today's ruling: not required.
-2. Cleanup does not shrink the grid: after graft 1 plus receiver-reach culling, stored tiles stay ≥ 40% of today, or the mandatory set ≥ 60 MiB. Plan item 2.
+2. Cleanup does not shrink the grid: after graft 1 plus navmesh-guided coarsening, stored tiles stay ≥ 40% of today, or the mandatory set ≥ 60 MiB. Plan item 2.
 3. Patches and links fit: hallway links ≤ 256 MB on disk, ≤ 64 MB resident, ≤ 5% energy lost to top-K truncation. Plan item 4.
 4. 5300M compose plus world-SH sampling stays ≥ 2 ms after build step 9 and a graft 4 prototype.
 5. Per-cell probes show no pop where characters cross leaf boundaries in a large hall. Plan item 8.
@@ -225,10 +225,10 @@ Animation gains are new kinds of change and lower cost, not more expressive per-
 
 ## Measurement plan
 
-Hybrid steps first, then redesign conditions. Cheapest first; the first six need no renderer change.
+Items 1–3 and 7 serve the hybrid (the roadmap's door item and hybrid GI measurements); the rest test the redesign conditions. Cheapest first; the first six need no renderer change.
 
 1. **Door classification report** on `stress-warren-showcase` and `kinematic-platform`: doors, gated lights, changed texels, KiB, influence graph → sizes build step 5.
-2. **Grid shrink** on the hallway and campaign after graft 1 plus receiver-reach culling: stored tiles, mandatory set → redesign condition 2.
+2. **Grid shrink** on the hallway and campaign after graft 1 plus navmesh-guided coarsening: stored tiles, mandatory set → redesign condition 2.
 3. **`stress-warren-lit`, `stress-warren-crates`:** lights within reach of each mover → slab-test cost vs promotion rationing.
 4. **`stress-warren-hallway-inspection`:** cells, cell volumes and the large-cell tail, surface area by patch size → real probe counts, link bytes, patch counts.
 5. **`stress-env-volumes`:** probes per cell vs per fluid volume.

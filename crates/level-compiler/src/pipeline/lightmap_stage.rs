@@ -17,11 +17,13 @@ use crate::lightmap_bake::{self, LightmapBakeOutput, LightmapConfig, PreparedAtl
 use crate::lightmap_layer::{self, SharedAtlas};
 use crate::map_data::ShadowType;
 use crate::shadowmask_bake;
+use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 
 mod cache;
 mod metadata;
 mod partitions;
 mod peak;
+mod texel_steps;
 mod window;
 
 #[cfg(test)]
@@ -31,6 +33,9 @@ use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
 pub(super) use peak::log_predicted_peak;
 #[cfg(test)]
 pub(super) use peak::predicted_peak;
+#[cfg(test)]
+use texel_steps::StepSite;
+use texel_steps::{StepDetector, TexelStepReport};
 use window::LIGHTMAP_PARTITION_WINDOW;
 #[cfg(test)]
 pub(crate) use window::WindowProbe;
@@ -39,6 +44,12 @@ pub(crate) struct FusedLightingOutput {
     pub lightmap: LightmapBakeOutput,
     pub shadowmask: Option<ShadowmaskAtlasSection>,
     pub shadowmask_elapsed: Duration,
+    /// Every stepped (light, face) the texel-step detector found, already
+    /// logged; replayed from the `lightmap_section` memo on a hit.
+    #[cfg(test)]
+    pub texel_steps: TexelStepReport,
+    /// Detector time summed over workers; zero on a memo hit. Never keyed.
+    pub texel_step_elapsed: Duration,
 }
 
 /// How the fused walk windows its (layer, light) partitions. Production uses
@@ -52,6 +63,9 @@ pub(crate) struct PartitionWindow {
     pub(crate) hooks: PartitionHooks,
     #[cfg(test)]
     pub(crate) raw_fill_probe: Option<shadowmask_bake::RawFillProbe>,
+    /// Replaces [`TEXEL_STEP_THRESHOLD`] in the detector and the section key.
+    #[cfg(test)]
+    pub(crate) step_threshold: Option<f32>,
 }
 
 impl Default for PartitionWindow {
@@ -64,6 +78,8 @@ impl Default for PartitionWindow {
             hooks: PartitionHooks::default(),
             #[cfg(test)]
             raw_fill_probe: None,
+            #[cfg(test)]
+            step_threshold: None,
         }
     }
 }
@@ -171,6 +187,9 @@ pub(crate) fn bake_fused_windowed(
             },
             shadowmask: None,
             shadowmask_elapsed: Duration::ZERO,
+            #[cfg(test)]
+            texel_steps: TexelStepReport::default(),
+            texel_step_elapsed: Duration::ZERO,
         });
     }
     let density = config.lightmap_density;
@@ -265,6 +284,10 @@ pub(crate) fn bake_fused_windowed(
     let total = prepared.placements.len().saturating_mul(layer_lights.len());
     lightmap_control.publish_total(total);
 
+    #[cfg(not(test))]
+    let step_threshold = TEXEL_STEP_THRESHOLD;
+    #[cfg(test)]
+    let step_threshold = window.step_threshold.unwrap_or(TEXEL_STEP_THRESHOLD);
     let section_key = stage_cache.map(|_| {
         let input_hash = lightmap_layer::section_input_hash(
             layer_hashes(&layer_prefixes, prepared.layer_count),
@@ -272,6 +295,7 @@ pub(crate) fn bake_fused_windowed(
             density,
             config.uncompressed_irradiance,
             config.direction_texel_scale,
+            step_threshold,
         );
         CacheKey::new(
             "lightmap_section",
@@ -283,13 +307,21 @@ pub(crate) fn bake_fused_windowed(
         .zip(section_key.as_ref())
         .and_then(|(cache, key)| cache.get(key))
         .and_then(|bytes| {
-            match postretro_level_format::lightmap::LightmapSection::from_bytes(&bytes) {
+            let Some((report, section_bytes)) =
+                TexelStepReport::parse(&bytes, layer_lights.len(), prepared.charts.len())
+            else {
+                log::warn!(
+                    "[Compiler] corrupt lightmap section, recomposing: memo entry has no texel-step report"
+                );
+                return None;
+            };
+            match postretro_level_format::lightmap::LightmapSection::from_bytes(section_bytes) {
                 Ok(section) => match lightmap_layer::validate_cached_lightmap_section(
                     &section,
                     &shared,
                     config.uncompressed_irradiance,
                 ) {
-                    Ok(()) => Some(section),
+                    Ok(()) => Some((section, report)),
                     Err(reason) => {
                         log::warn!(
                             "[Compiler] lightmap_section cache entry does not match current atlas ({reason}), recomposing"
@@ -322,8 +354,9 @@ pub(crate) fn bake_fused_windowed(
         }
     }
 
-    let section = if let Some(section) = cached_section {
-        section
+    let mut texel_step_elapsed = Duration::ZERO;
+    let (section, texel_steps) = if let Some(cached) = cached_section {
+        cached
     } else {
         // Every bake layer is folded, dilated, encoded, and sliced into its
         // blocks before the next layer's first partition is folded (that
@@ -335,6 +368,7 @@ pub(crate) fn bake_fused_windowed(
             &prepared.layout,
             config.uncompressed_irradiance,
         );
+        let mut texel_steps = TexelStepReport::default();
         if layer_lights.is_empty() {
             for target_layer in 0..prepared.layer_count {
                 // Dilate and whole-layer encode are CPU work bounded by `-j`,
@@ -351,6 +385,16 @@ pub(crate) fn bake_fused_windowed(
             // plane is live: the consumer closes a layer when the first item of
             // the next one arrives.
             let items = LayerItems::all(prepared.layer_count, layer_lights.len());
+            // Every partition this pass bakes or loads is checked, so a layer
+            // cache hit reports what its bake found.
+            let detector = StepDetector::new(
+                step_threshold,
+                &shared,
+                bvh,
+                primitives,
+                geometry,
+                &prepared.cut_parents,
+            );
             let source = LayerPartitions::new(
                 args,
                 stage_cache,
@@ -363,6 +407,7 @@ pub(crate) fn bake_fused_windowed(
                 &layer_prefixes,
                 items,
                 config.penumbra_floor,
+                Some(&detector),
                 window,
             );
             let mut open: Option<(u32, lightmap_layer::IncrementalLayerAccumulator)> = None;
@@ -419,9 +464,14 @@ pub(crate) fn bake_fused_windowed(
                 let _permit = lightmap_control.governor().enter();
                 close_layer(done);
             }
+            drop(source);
+            (texel_steps, texel_step_elapsed) = detector.finish();
         }
-        builder.finish()
+        (builder.finish(), texel_steps)
     };
+    // Cold, warm or replayed, the same report logs once, here, on the
+    // caller's thread.
+    texel_steps.log(&layer_lights);
 
     // If the lightmap memo hit but the shadowmask memo missed, consume only the
     // owner-eligible partitions. They are read/baked once here and never by a later
@@ -447,6 +497,7 @@ pub(crate) fn bake_fused_windowed(
             &layer_prefixes,
             items,
             config.penumbra_floor,
+            None,
             window,
         );
         let completed_work = prepared.placements.len().saturating_mul(selected.len());
@@ -479,7 +530,7 @@ pub(crate) fn bake_fused_windowed(
         #[cfg(test)]
         RAW_FILL_AT_LIGHTMAP_CACHE_WRITE
             .with(|sample| sample.set(Some(shadowmask.raw_fill_live_bytes())));
-        cache::cache_lightmap_section(cache, key, &section);
+        cache::cache_lightmap_section(cache, key, &section, &texel_steps);
     }
     let shadowmask_bake::FusedShadowmaskOutput {
         section: shadowmask,
@@ -500,6 +551,9 @@ pub(crate) fn bake_fused_windowed(
         },
         shadowmask,
         shadowmask_elapsed,
+        #[cfg(test)]
+        texel_steps,
+        texel_step_elapsed,
     })
 }
 

@@ -51,8 +51,8 @@ pub use cache_keys::{
 /// (`texel_footprint`) unless `--no-penumbra-floor`.
 pub const LAYER_FORMAT_VERSION: u32 = 10;
 
-/// Bump when the composite/dilate/`encode_section` pipeline or
-/// `LightmapSection::to_bytes` serialization changes. Folded into the
+/// Bump when the composite/dilate/`encode_section` pipeline, the memo entry's
+/// layout or `LightmapSection::to_bytes` serialization changes. Folded into the
 /// `"lightmap_section"` cache key (the second-level memo of the composited
 /// section), so a bump invalidates every cached section and forces a recompose.
 ///
@@ -63,10 +63,14 @@ pub const LAYER_FORMAT_VERSION: u32 = 10;
 /// invalidates every section entry — `section_input_hash` folds
 /// `LAYER_FORMAT_VERSION` directly, so the section key changes with it.
 /// Bump `LIGHTMAP_SECTION_VERSION` only when the composite/dilate/encode
-/// pipeline or `LightmapSection::to_bytes` format changes independently.
+/// pipeline, the entry layout or `LightmapSection::to_bytes` format changes
+/// independently.
 ///
 /// v4: id 22 v3, per-cell blocks sliced from each encoded bake layer.
-pub const LIGHTMAP_SECTION_VERSION: u32 = 4;
+///
+/// v5: the entry leads with the texel-step report, so a hit repeats the
+/// detector's warnings.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 5;
 
 /// One analytically reached atlas texel from a single light.
 ///

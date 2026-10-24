@@ -1600,6 +1600,8 @@ fn run_after_parsing(
         lightmap: lightmap_bake_output,
         shadowmask: shadowmask_atlas_section,
         shadowmask_elapsed,
+        texel_step_elapsed,
+        ..
     } = fused_lighting;
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
@@ -1615,6 +1617,9 @@ fn run_after_parsing(
         StageId::LightmapBake.label(),
         fused_elapsed.saturating_sub(shadowmask_elapsed),
     ));
+    // A sub-line of the lightmap bake, not a stage: the texel-step detector's
+    // time summed over workers, which bounds its share of the line above.
+    timings.push(("  TexelSteps", texel_step_elapsed));
     if !static_baked_lights.is_empty() && !face_placements.is_empty() {
         reporter.finish_stage(StageId::LightmapBake);
     } else {

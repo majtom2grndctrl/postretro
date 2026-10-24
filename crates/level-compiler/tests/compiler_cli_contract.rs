@@ -32,6 +32,7 @@ const SUMMARY_LABELS: &[&str] = &[
     "Atlas Preparation",
     "Cell Residency Set",
     "Lightmap Bake",
+    "  TexelSteps",
     "ShadowmaskAtlas",
     "AnimLightChunks",
     "AnimWeightMaps",

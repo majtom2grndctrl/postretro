@@ -1677,3 +1677,5 @@ mod budget_gate_tests;
 mod metadata_tests;
 
 mod penumbra_floor_tests;
+
+mod texel_step_tests;

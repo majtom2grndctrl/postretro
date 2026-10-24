@@ -338,7 +338,6 @@ pub fn bake_prepared_lightmap_controlled(
     prepared: PreparedAtlas,
     control: &BakeControl,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
-    let texel_density = config.lightmap_density;
     let area_sample_count = config.area_sample_count;
 
     // No static lights, or atlas prep produced no placements → emit a section with no blocks
@@ -369,10 +368,6 @@ pub fn bake_prepared_lightmap_controlled(
         .map(|e| e.light)
         .filter(|l| l.shadow_type != crate::map_data::ShadowType::Sdf)
         .collect();
-
-    // Author hint: flag any light whose emitter is too small to soften at this
-    // atlas density before baking (Task 6). Output-only — never alters the bake.
-    warn_sub_texel_penumbra_lights(&static_lights, texel_density);
 
     let charts = prepared.charts;
     let placements = prepared.placements;
@@ -794,69 +789,6 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 // `soft_visibility` in the per-texel loop above; the animated weight-map and SH
 // bounce bakers (Tasks 4/4b) wrap their own `segment_clear` as the trace closure.
 
-/// Sub-texel-penumbra warning threshold, in atlas texels (Task 6). An emitter
-/// whose estimated penumbra spans fewer than this many texels can't produce a
-/// visibly-soft edge — the area samples collapse into one texel and the result
-/// reads as a hard step. Diagnostic-only: this constant never feeds bake output,
-/// so it is exempt from the determinism fixed-constant rule (it only gates a
-/// `log::warn!`). One texel is the floor below which softening is wasted.
-const SUB_TEXEL_PENUMBRA_THRESHOLD: f32 = 1.0;
-
-/// Coarse estimate of an emitter's penumbra width in **atlas texels**, used by
-/// the sub-texel-penumbra author hint (Task 6). Deliberately uses only the
-/// emitter size (`_light_size` / `_angular_diameter`), its `_falloff_range`
-/// reach, and the atlas texel world-size (`texel_density`) — **no
-/// distance-to-occluder term**, matching the no-occluder-distance design of
-/// `soft_visibility`. It is an author hint, not an exact penumbra width.
-///
-/// Point/Spot: the emitter subtends `2·atan(light_size / falloff_range)` from the
-/// receiver at the falloff reach; projected back over that reach the world-space
-/// penumbra is `angular · falloff_range` (≈ `2·light_size` at small angles).
-/// Directional: the angular diameter is given directly; projected over the
-/// falloff reach as the characteristic scale. Dividing by `texel_density` yields
-/// the span in texels.
-fn penumbra_span_texels(light: &MapLight, texel_density: f32) -> f32 {
-    let texel = texel_density.max(1.0e-4);
-    let reach = light.falloff_range.max(1.0e-4);
-    let angular = match light.light_type {
-        LightType::Point | LightType::Spot => 2.0 * (light.light_size.max(0.0) / reach).atan(),
-        LightType::Directional => light.angular_diameter.max(0.0).to_radians(),
-    };
-    let world_width = angular * reach;
-    world_width / texel
-}
-
-/// Whether `light`'s estimated penumbra is narrower than one atlas texel — the
-/// pure predicate behind the sub-texel-penumbra warning. A hard-authored light
-/// (`light_size`/`angular_diameter == 0`, i.e. zero span) is intentionally *not*
-/// flagged: the author opted into a hard edge, so a "too soft to see" hint would
-/// be noise. Factored out of the logging path so it is unit-testable without
-/// capturing `log` output.
-fn penumbra_below_one_texel(light: &MapLight, texel_density: f32) -> bool {
-    let span = penumbra_span_texels(light, texel_density);
-    span > 0.0 && span < SUB_TEXEL_PENUMBRA_THRESHOLD
-}
-
-/// Emit one `log::warn!` per `static_light_map` light whose estimated penumbra is
-/// narrower than one atlas texel (Task 6 author hint). Names the light's index
-/// and origin so the author can locate the offending emitter. Lights at or above
-/// the threshold — and explicitly-hard lights (zero size) — warn not at all.
-pub(crate) fn warn_sub_texel_penumbra_lights(lights: &[&MapLight], texel_density: f32) {
-    for (index, light) in lights.iter().enumerate() {
-        if penumbra_below_one_texel(light, texel_density) {
-            log::warn!(
-                "[Lightmap] static light #{index} at ({:.2}, {:.2}, {:.2}) subtends a sub-texel \
-                 penumbra (~{:.2} texel at {texel_density} m/texel) — its soft shadow will read \
-                 as a hard edge; raise `_light_size`/`_angular_diameter` or `_falloff_range`",
-                light.origin.x,
-                light.origin.y,
-                light.origin.z,
-                penumbra_span_texels(light, texel_density),
-            );
-        }
-    }
-}
-
 /// Probe samples traced before escalating. Tracing this many first lets the
 /// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;
 /// only a penumbra (probes disagree) pays for the full set. Fixed constant — the
@@ -886,8 +818,7 @@ pub(crate) const DEFAULT_AREA_SAMPLE_COUNT: u32 = 32;
 /// pole / hug the cone axis — they spread in azimuth but not in polar angle. An
 /// occluder edge crossing the *lower* hemisphere of the emitter then leaves all
 /// four contiguous probes in agreement, early-outs to a hard 0/1, and silently
-/// drops the penumbra — re-introducing the hard 1-texel edge for occluders facing
-/// away from the pole.
+/// drops the penumbra for occluders facing away from the pole.
 ///
 /// Why not a plain index stride (`k·full/N`): on this lattice azimuth is linear in
 /// the index (`golden_angle·i`), so any arithmetic stride aliases the azimuth into

@@ -12,6 +12,7 @@ use crate::lightmap_bake::{
 use crate::map_data::{FalloffModel, ShadowType};
 use crate::reporter::StageProgress;
 use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
+use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 use glam::DVec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -749,7 +750,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 #[test]
 fn sparse_cache_epochs_are_pinned() {
     assert_eq!(LAYER_FORMAT_VERSION, 10);
-    assert_eq!(LIGHTMAP_SECTION_VERSION, 4);
+    assert_eq!(LIGHTMAP_SECTION_VERSION, 5);
 }
 
 #[test]
@@ -1286,7 +1287,16 @@ fn layer_and_section_keys_fold_the_penumbra_floor_switch() {
     let hash =
         |on: bool| layer_input_hash(&light, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, on, 0);
     assert_ne!(hash(true), hash(false));
-    let section = |on: bool| section_input_hash([hash(on)].into_iter(), &shared, DENSITY, false, 1);
+    let section = |on: bool| {
+        section_input_hash(
+            [hash(on)].into_iter(),
+            &shared,
+            DENSITY,
+            false,
+            1,
+            TEXEL_STEP_THRESHOLD,
+        )
+    };
     assert_ne!(section(true), section(false));
 }
 
@@ -1832,6 +1842,7 @@ fn section_key(
         density,
         uncompressed_irradiance,
         crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+        TEXEL_STEP_THRESHOLD,
     );
     CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
 }
@@ -1876,6 +1887,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             DENSITY,
             true,
             2,
+            TEXEL_STEP_THRESHOLD,
         ),
     );
     let at_scale_one = CacheKey::new(
@@ -1887,6 +1899,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             DENSITY,
             true,
             1,
+            TEXEL_STEP_THRESHOLD,
         ),
     );
     assert_ne!(

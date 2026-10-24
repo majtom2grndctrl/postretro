@@ -3,14 +3,22 @@
 
 use postretro_level_format::lightmap::LightmapSection;
 
+use super::TexelStepReport;
 use crate::cache::{CacheKey, StageCache};
 
+/// Store the texel-step report, then the section's wire bytes, as one entry,
+/// so a memo hit repeats the cold build's warnings and can never lose them
+/// apart from the section.
 pub(super) fn cache_lightmap_section(
     cache: &StageCache,
     key: &CacheKey,
     section: &LightmapSection,
+    texel_steps: &TexelStepReport,
 ) {
-    cache.put_streamed(key, section.byte_len() as u64, |writer| {
+    let report = texel_steps.to_bytes();
+    let entry_len = report.len() + section.byte_len();
+    cache.put_streamed(key, entry_len as u64, |writer| {
+        writer.write_all(&report)?;
         section.write_to(writer)
     });
 }
@@ -23,7 +31,7 @@ mod tests {
     };
 
     #[test]
-    fn streamed_lightmap_cache_matches_contiguous_entry_including_header() {
+    fn streamed_lightmap_cache_matches_contiguous_entry_including_report_and_header() {
         let directory = tempfile::tempdir().unwrap();
         let cache = StageCache::new(directory.path()).unwrap();
         let section = LightmapSection {
@@ -42,8 +50,12 @@ mod tests {
         };
         let streamed = CacheKey::new("lightmap_section", 1, b"streamed");
         let contiguous = CacheKey::new("lightmap_section_reference", 1, b"contiguous");
-        cache_lightmap_section(&cache, &streamed, &section);
-        cache.put(&contiguous, &section.to_bytes());
+        let report = TexelStepReport::default();
+        cache_lightmap_section(&cache, &streamed, &section, &report);
+        cache.put(
+            &contiguous,
+            &[report.to_bytes(), section.to_bytes()].concat(),
+        );
         assert_eq!(
             std::fs::read(directory.path().join(streamed.as_filename())).unwrap(),
             std::fs::read(directory.path().join(contiguous.as_filename())).unwrap(),

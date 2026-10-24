@@ -480,6 +480,10 @@ pub fn validate_cached_lightmap_section(
 ///    resolution. It also sets the block alignment, which the layout
 ///    fingerprint already covers, so a scale that changes the alignment
 ///    re-keys the per-light layers too.
+/// 8. `step_threshold` bits (u32 LE) — the texel-step detector's threshold.
+///    The entry stores the detector's report beside the section, so a new
+///    threshold must not replay warnings found under the old one. Layer keys
+///    leave it out: their partitions do not depend on it.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.
@@ -489,6 +493,7 @@ pub fn section_input_hash(
     texel_density: f32,
     uncompressed_irradiance: bool,
     direction_texel_scale: u32,
+    step_threshold: f32,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
@@ -500,5 +505,6 @@ pub fn section_input_hash(
     hasher.update(&texel_density.to_le_bytes());
     hasher.update(&[u8::from(uncompressed_irradiance)]);
     hasher.update(&direction_texel_scale.to_le_bytes());
+    hasher.update(&step_threshold.to_bits().to_le_bytes());
     *hasher.finalize().as_bytes()
 }

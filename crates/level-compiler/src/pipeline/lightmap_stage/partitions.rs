@@ -16,6 +16,7 @@ use crate::lightmap_layer::{self, SharedAtlas, chart_texel_bounds, light_may_rea
 #[cfg(test)]
 use super::PartitionHooks;
 use super::PartitionWindow;
+use super::texel_steps::StepDetector;
 use super::window::PartitionSource;
 
 /// Layer-major Cartesian work, indexed without a layer-by-light allocation.
@@ -124,6 +125,9 @@ pub(super) struct LayerPartitions<'a> {
     items: LayerItems<'a>,
     /// The bake's receiver-footprint switch (`LightmapConfig::penumbra_floor`).
     penumbra_floor: bool,
+    /// The texel-step detector, on the pass that composes the lightmap; the
+    /// shadowmask-only pass after a memo hit replays the memo's report.
+    steps: Option<&'a StepDetector<'a>>,
     /// Each bake layer's charts in placement order, built once.
     pub(super) layer_charts: Vec<Vec<usize>>,
     /// Padded world bounds of each chart's texels; `None` for a chart with no
@@ -147,6 +151,7 @@ impl<'a> LayerPartitions<'a> {
         layer_prefixes: &'a [blake3::Hasher],
         items: LayerItems<'a>,
         penumbra_floor: bool,
+        steps: Option<&'a StepDetector<'a>>,
         #[cfg_attr(not(test), allow(unused_variables))] window: &PartitionWindow,
     ) -> Self {
         let mut layer_charts = vec![Vec::new(); lightmap_layer::atlas_layer_count(shared) as usize];
@@ -166,6 +171,7 @@ impl<'a> LayerPartitions<'a> {
             layer_prefixes,
             items,
             penumbra_floor,
+            steps,
             layer_charts,
             chart_bounds,
             #[cfg(test)]
@@ -181,6 +187,30 @@ impl<'a> LayerPartitions<'a> {
             lightmap_layer::LAYER_FORMAT_VERSION,
             &hash,
         )
+    }
+
+    /// Run the step detector over a baked or loaded partition: the same
+    /// check either way, so a cache hit reports what the bake did. Segment
+    /// traces make it ray work, so it holds a permit.
+    fn detect_steps(&self, item: usize, partition: &lightmap_layer::LightmapLayer) {
+        let Some(steps) = self.steps else {
+            return;
+        };
+        if partition.texels.is_empty() {
+            return;
+        }
+        let (layer, light) = self.items.get(item);
+        let map_light = self.layer_lights[light].light;
+        let _permit = self.control.governor().enter();
+        steps.detect(
+            item,
+            light,
+            partition,
+            self.layer_charts[layer as usize]
+                .iter()
+                .copied()
+                .filter(|&chart| light_may_reach(map_light, self.chart_bounds[chart])),
+        );
     }
 }
 
@@ -216,9 +246,10 @@ impl PartitionSource for LayerPartitions<'_> {
                 if partition.is_some() { "hit" } else { "miss" }
             );
         }
-        if partition.is_some() {
+        if let Some(partition) = &partition {
             self.control
                 .advance(self.layer_charts[target_layer as usize].len());
+            self.detect_steps(item, partition);
         }
         partition
     }
@@ -277,6 +308,7 @@ impl PartitionSource for LayerPartitions<'_> {
             }
             cache.put(&self.key(item), &partition.to_bytes());
         }
+        self.detect_steps(item, &partition);
         partition
     }
 }

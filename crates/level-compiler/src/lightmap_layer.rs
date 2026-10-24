@@ -51,7 +51,12 @@ pub use cache_keys::{
 ///
 /// v10: texel visibility is filtered over a one-texel receiver footprint
 /// (`texel_footprint`) unless `--no-penumbra-floor`.
-pub const LAYER_FORMAT_VERSION: u32 = 10;
+///
+/// v11: soft-light footprint samples pair with emitter samples by crossing
+/// direction; clear footprint rays test their skipped lead-in; clip segments
+/// are tested from the texel centre itself; the probe ring sits at a fixed
+/// 0.6 texel at every count.
+pub const LAYER_FORMAT_VERSION: u32 = 11;
 
 /// Bump when the composite/dilate/`encode_section` pipeline, the memo entry's
 /// layout or `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -600,6 +605,9 @@ fn bake_light_layer_chart_clipped(
     skip_unreachable_clips: bool,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
+    // One permit covers the clip pre-pass and the walk, so pause and the
+    // concurrency cap apply to both.
+    let _permit = control.governor().enter();
     let chart = &atlas.charts[face_idx];
     let capacity = if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
         let (width, height) = chart_interior_dims(chart);
@@ -611,6 +619,8 @@ fn bake_light_layer_chart_clipped(
     let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor);
     let frame = TexelFrame::for_chart(chart);
     let band = ClipBand::for_chart(chart);
+    // Light-independent, but partitions bake per light; it costs little
+    // beside the light's rays.
     let clip_reach = (skip_unreachable_clips && matches!(sampler, TexelSampler::Footprint(_)))
         .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
     // One chart's texels are walked in order on one thread, so the occluder
@@ -619,7 +629,7 @@ fn bake_light_layer_chart_clipped(
     // the triangle that shadows the next texel.
     let last_occluder = Cell::new(None);
     let clip_occluder = Cell::new(None);
-    for_each_light_layer_chart_texel_controlled(atlas, face_idx, control, |sample| {
+    for_each_light_layer_chart_texel(atlas, face_idx, |sample| {
         let site = TexelSite {
             world_p: sample.world_p,
             normal: sample.surface_normal,
@@ -645,6 +655,7 @@ fn bake_light_layer_chart_clipped(
             texels.push(texel);
         }
     });
+    control.advance(1);
     texels
 }
 
@@ -686,7 +697,8 @@ pub(crate) fn visit_light_chart_coverage_controlled(
     control: &BakeControl,
     mut visit_covered: impl FnMut(CoveredChartTexel),
 ) {
-    for_each_light_layer_chart_texel_controlled(atlas, face_idx, control, |sample| {
+    let _permit = control.governor().enter();
+    for_each_light_layer_chart_texel(atlas, face_idx, |sample| {
         if light_texel_is_covered(light, sample.world_p, sample.surface_normal) {
             visit_covered(CoveredChartTexel {
                 idx: sample.idx,
@@ -694,6 +706,7 @@ pub(crate) fn visit_light_chart_coverage_controlled(
             });
         }
     });
+    control.advance(1);
 }
 
 #[derive(Clone, Copy)]
@@ -707,22 +720,10 @@ pub(crate) struct ChartWalkSample {
     pub seed: u64,
 }
 
-pub(crate) fn for_each_light_layer_chart_texel_controlled(
-    atlas: &SharedAtlas<'_>,
-    face_idx: usize,
-    control: &BakeControl,
-    sample_texel: impl FnMut(ChartWalkSample),
-) {
-    // Parallel bake work must enter once at its outermost boundary so pause
-    // and the shared concurrency cap apply to every chart.
-    let _permit = control.governor().enter();
-    for_each_light_layer_chart_texel(atlas, face_idx, sample_texel);
-    control.advance(1);
-}
-
-/// Walk one chart without acquiring a governor permit. Callers that include
-/// prune/setup work in the same parallel item acquire the permit outside this
-/// helper, then use this exact raster loop.
+/// Walk one chart without acquiring a governor permit. Parallel bake work
+/// enters once at its outermost boundary, so pause and the shared concurrency
+/// cap apply to every chart: callers acquire the permit around this walk and
+/// any setup in the same parallel item, then advance by one.
 pub(crate) fn for_each_light_layer_chart_texel(
     atlas: &SharedAtlas<'_>,
     face_idx: usize,

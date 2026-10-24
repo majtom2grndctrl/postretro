@@ -9,8 +9,8 @@ use glam::Vec3;
 
 use crate::chart_raster::chart_grid;
 use crate::lightmap_bake::{
-    Chart, RAY_EPSILON, SoftProbes, area_sample_target, emitter_lattice_spin, hard_ray_target,
-    probe_sample_direction, soft_visibility_with,
+    Chart, RAY_EPSILON, SoftProbes, area_sample_target, hard_ray_target, probe_sample_direction,
+    soft_visibility_with,
 };
 use crate::map_data::{LightType, MapLight};
 
@@ -29,13 +29,18 @@ pub(crate) const FOOTPRINT_PROBES: usize = 9;
 
 const RING_SAMPLES: usize = FOOTPRINT_PROBES - 1;
 
-/// Smallest ring radius, in texels. A texel's probes must split whenever the
-/// kernel filters it to a fraction, which is within 0.52 texel of an edge (the
-/// cone's 10% point). Eight points 45° apart put one within 22.5° of any edge
-/// normal, so this radius reaches `0.6 · cos 22.5° ≈ 0.55` texel across it. At
-/// nine samples, centre plus ring, it also keeps the spread near the cone's
-/// (`E[r²] = 0.3` wants a ring at 0.58).
-pub(crate) const RING_MIN_RADIUS_TEXELS: f32 = 0.6;
+/// Ring radius, in texels, at every count. A texel's probes must split
+/// whenever the kernel filters it to a fraction, which is within 0.52 texel
+/// of an edge (the cone's 10% point). Eight points 45° apart put one within
+/// 22.5° of any edge normal, so this radius reaches `0.6 · cos 22.5° ≈ 0.55`
+/// texel across it. A strip covering `[a, b]` texels from the centre holds a
+/// ring point wherever `cos θ ∈ [a / 0.6, b / 0.6]`, which spans more than
+/// 45° of the ring for every strip 0.4 texel wide that the kernel filters to
+/// a fraction; a ring farther out lets such strips slip between centre and
+/// ring. Narrower strips, and discs of radius 0.25 to 0.31 texel, can still
+/// fit between the centre and the ring. At nine samples, centre plus ring, it
+/// also keeps the spread near the cone's (`E[r²] = 0.3` wants a ring at 0.58).
+pub(crate) const RING_RADIUS_TEXELS: f32 = 0.6;
 
 /// Ring probe `k` sits at ring position `k · 3 mod 8`, so consecutive probes
 /// lie 135° apart. Probes whose sector holds no emitter sample claim one in
@@ -43,7 +48,7 @@ pub(crate) const RING_MIN_RADIUS_TEXELS: f32 = 0.6;
 /// neighbouring sectors from claiming one after the other.
 const RING_POSITION_STRIDE: usize = 3;
 
-/// Golden angle, the azimuth step between interior strata.
+/// Golden angle, the azimuth step between the strata off the ring.
 const GOLDEN_ANGLE: f32 = 2.399_963_3;
 
 /// Radius `r` in texels whose cone-kernel CDF `F(r) = 3r² − 2r³` equals `u`:
@@ -53,14 +58,10 @@ pub(crate) fn cone_radius_quantile(u: f32) -> f32 {
     0.5 - ((1.0 - 2.0 * u).asin() / 3.0).sin()
 }
 
-/// Interior strata that pair against the ring's correlation: the eight just
-/// inside it, or as many as there are ([`TexelFootprint::claim_counter_ring`]).
+/// Strata off the ring that pair against its correlation: the eight with the
+/// largest radii, or as many as there are
+/// ([`TexelFootprint::claim_counter_ring`]).
 const COUNTER_RING_SAMPLES: usize = RING_SAMPLES;
-
-/// Smallest cosine between the light direction and the receiver normal that
-/// emitter offsets are projected along the light at; below it they project
-/// straight down, so a grazing ray cannot blow them up.
-const MIN_PROJECTION_COSINE: f32 = 1.0e-3;
 
 /// How far a footprint sample's lead-in test runs past each end of the
 /// stretch its trace skips: back from the sample point, where its clip
@@ -78,120 +79,27 @@ const LEAD_IN_OVERLAP: f32 = 0.25 * RAY_EPSILON;
 pub(crate) struct TexelFootprint {
     full_samples: u32,
     /// Unrotated offsets in parent-grid texels: the centre, the eight ring
-    /// probes, then the interior strata by ascending radius, so the counter
-    /// ring comes last.
+    /// probes, then the strata off the ring by ascending radius, so the
+    /// counter ring comes last.
     offsets: Vec<[f32; 2]>,
     /// Each emitter sample's offset from the emitter's centre at seed 0, up
     /// to scale: the unit sphere direction for a point or spot light, the part
     /// of the jittered direction perpendicular to the axis for a sun. A
-    /// texel's seed turns the whole lattice ([`emitter_lattice_spin`]).
+    /// texel's seed turns the whole lattice
+    /// ([`emitter_lattice_spin`](crate::lightmap_bake::emitter_lattice_spin)).
     lattice: Vec<Vec3>,
-    /// Interior strata in the counter ring.
+    /// Strata in the counter ring.
     counter_len: usize,
-    /// Stride dealing the unclaimed emitter samples to the interior strata
-    /// inside the counter ring ([`decorrelating_stride`]).
+    /// Stride dealing the unclaimed emitter samples to the strata off the ring
+    /// and outside the counter ring ([`decorrelating_stride`]).
     rest_stride: usize,
-}
-
-/// Which emitter sample each footprint sample of one soft-light texel traces.
-#[derive(Debug, Clone, Copy)]
-struct EmitterPairing {
-    /// Lattice sample `e` lies at `(x_axis·e, y_axis·e)` in the footprint's
-    /// unrotated texel frame, up to the emitter's scale
-    /// ([`TexelFootprint::emitter_pairing`]).
-    x_axis: Vec3,
-    y_axis: Vec3,
-    /// `[0]` is the sample nearest the centre, which the centre probe's ray
-    /// to the emitter's centre replaces; `[k]` is ring probe `k`'s sample.
-    probes: [u32; FOOTPRINT_PROBES],
-    /// `counter[j]` pairs with offset `len − 1 − j`, once claimed.
-    counter: [u32; COUNTER_RING_SAMPLES],
-    /// The probes' samples, then the counter ring's: the first `claimed_len`,
-    /// sorted ascending once the counter ring is claimed.
-    claimed: [u32; FOOTPRINT_PROBES + COUNTER_RING_SAMPLES],
-    claimed_len: usize,
-}
-
-impl EmitterPairing {
-    fn frame_position(&self, offset: Vec3) -> [f32; 2] {
-        [self.x_axis.dot(offset), self.y_axis.dot(offset)]
-    }
-}
-
-/// Unit direction of each ring position, `position · 45°`, in the
-/// footprint's unrotated texel frame.
-const RING_DIRECTIONS: [[f32; 2]; RING_SAMPLES] = {
-    use std::f32::consts::FRAC_1_SQRT_2 as D;
-    [
-        [1.0, 0.0],
-        [D, D],
-        [0.0, 1.0],
-        [-D, D],
-        [-1.0, 0.0],
-        [-D, -D],
-        [0.0, -1.0],
-        [D, -D],
-    ]
-};
-
-/// The ring sector of a point in the footprint's unrotated texel frame, the
-/// eighth of the plane within 22.5° of ring position `sector · 45°`, and how
-/// far the point reaches along that direction: the ring direction it reaches
-/// farthest along, among `±x`, `±(x + y)/√2`, `±y` and `±(y − x)/√2`. Ties
-/// keep the first in that order, `+` before `−`.
-///
-/// A lattice sample's sector is as good as random, so the choice is written
-/// as selects between magnitudes, which compile without branches to
-/// mispredict, rather than a scan of the eight signed values.
-fn ring_sector([x, y]: [f32; 2]) -> (usize, f32) {
-    let diagonal = std::f32::consts::FRAC_1_SQRT_2;
-    let along = [x, (x + y) * diagonal, y, (y - x) * diagonal];
-    // Spelled out: a generic `along.map(f32::abs)` stayed an outlined call
-    // in the dev profile, at about twice the cost of the whole sector pass.
-    let reach = [
-        along[0].abs(),
-        along[1].abs(),
-        along[2].abs(),
-        along[3].abs(),
-    ];
-    let (low, low_reach) = if reach[1] > reach[0] {
-        (1, reach[1])
-    } else {
-        (0, reach[0])
-    };
-    let (high, high_reach) = if reach[3] > reach[2] {
-        (3, reach[3])
-    } else {
-        (2, reach[2])
-    };
-    let (position, reach) = if high_reach > low_reach {
-        (high, high_reach)
-    } else {
-        (low, low_reach)
-    };
-    let opposite = usize::from(along[position] < 0.0) * (RING_SAMPLES / 2);
-    (position + opposite, reach)
-}
-
-/// A lattice sample keyed for the sector pass: its reach's bits above its
-/// inverted index, so keys compare as `(reach, −index)` do. A reach is never
-/// negative, so its bits order like its value, and of two equal reaches the
-/// lower index keys higher, as the first found does in a strict `>` scan.
-/// Taking the larger of two keys is then a branch-free top-1 update. Key 0,
-/// below every sample, marks an empty slot.
-fn reach_key(reach: f32, index: u32) -> u64 {
-    (u64::from(reach.to_bits()) << 32) | u64::from(u32::MAX - index)
-}
-
-/// The lattice index a [`reach_key`] holds; `u32::MAX` for an empty slot.
-fn reach_key_index(key: u64) -> u32 {
-    u32::MAX - key as u32
 }
 
 impl TexelFootprint {
     /// `N = max(area_sample_count, 9)` radial strata at the cone quantiles
-    /// `F⁻¹((j + 0.5) / N)`. Stratum 0 becomes the exact centre and the top
-    /// eight the ring; the rest take golden-angle azimuths.
+    /// `F⁻¹((j + 0.5) / N)`. Stratum 0 becomes the exact centre and the eight
+    /// [`ring_strata`] the ring at [`RING_RADIUS_TEXELS`]; the rest keep their
+    /// radii and take golden-angle azimuths.
     fn build(light: &MapLight, area_sample_count: u32) -> Self {
         let full_samples = area_sample_count.max(FOOTPRINT_PROBES as u32);
         let count = full_samples as usize;
@@ -200,13 +108,12 @@ impl TexelFootprint {
 
         let mut offsets = Vec::with_capacity(count);
         offsets.push([0.0, 0.0]);
-        let ring_first = count - RING_SAMPLES;
         for k in 0..RING_SAMPLES {
             let position = (k * RING_POSITION_STRIDE) % RING_SAMPLES;
-            let r = radius(ring_first + position).max(RING_MIN_RADIUS_TEXELS);
-            offsets.push(polar(r, position as f32 * FRAC_PI_4));
+            offsets.push(polar(RING_RADIUS_TEXELS, position as f32 * FRAC_PI_4));
         }
-        for stratum in 1..ring_first {
+        let ring = ring_strata(count);
+        for stratum in (1..count).filter(|stratum| !ring.contains(stratum)) {
             offsets.push(polar(radius(stratum), GOLDEN_ANGLE * stratum as f32));
         }
 
@@ -222,212 +129,15 @@ impl TexelFootprint {
                 }
             })
             .collect();
-        let interior = count - FOOTPRINT_PROBES;
-        let counter_len = COUNTER_RING_SAMPLES.min(interior);
+        let off_ring = count - FOOTPRINT_PROBES;
+        let counter_len = COUNTER_RING_SAMPLES.min(off_ring);
         Self {
             full_samples,
             offsets,
             lattice,
             counter_len,
-            rest_stride: decorrelating_stride(interior - counter_len),
+            rest_stride: decorrelating_stride(off_ring - counter_len),
         }
-    }
-
-    /// The emitter samples one soft-light texel's probes trace.
-    ///
-    /// A sample's ray from footprint point `p + δ` to emitter point `L + ε`
-    /// crosses an occluder a fraction `t` of the way to the light. Carried
-    /// back to the receiver along the light, that crossing sits at
-    /// `δ + t / (1 − t) · ε_r` from the texel centre, where `ε_r` is the
-    /// emitter offset projected onto the receiver plane along the light. The
-    /// ring splits every edge within the kernel's reach only where those
-    /// points still form a centre and a ring, at every `t`, so each probe
-    /// pairs with an emitter point that keeps its place: ring probe `k` with
-    /// the sample reaching farthest within its own 45° sector of the
-    /// footprint frame, and the centre with the emitter's centre itself, in
-    /// place of the sample nearest it. The centre probe is then the texel's
-    /// own centre ray, so a strip too thin for the ring is caught for soft
-    /// lights as for hard ones. A sector with no sample left takes the
-    /// unclaimed sample reaching farthest its way. Ties keep the lowest
-    /// index; the samples are distinct and deterministic.
-    fn emitter_pairing(
-        &self,
-        light: &MapLight,
-        site: &TexelSite,
-        rotation: (f32, f32),
-    ) -> EmitterPairing {
-        let mut pairing = self.pairing_frame(light, site, rotation);
-        self.claim_probes(&mut pairing);
-        pairing
-    }
-
-    /// One texel's pairing with nothing claimed yet: the two vectors that
-    /// carry a lattice sample into the footprint's unrotated texel frame.
-    fn pairing_frame(
-        &self,
-        light: &MapLight,
-        site: &TexelSite,
-        rotation: (f32, f32),
-    ) -> EmitterPairing {
-        let axis = match light.light_type {
-            LightType::Point | LightType::Spot => (light.origin.as_vec3()
-                - (site.world_p + site.normal * RAY_EPSILON))
-                .normalize_or_zero(),
-            LightType::Directional => sun_axis(light),
-        };
-        // A world offset `w` projects onto the receiver along `axis` as
-        // `w − axis · (n·w) / (n·axis)`; its texel coordinates are dots with
-        // the pitch axes over their squared lengths, unrotated by the
-        // footprint's turn. All of that is linear in `w`, so it folds into two
-        // vectors, carried into the unrotated lattice's frame instead of
-        // turning every lattice sample by the texel's seed.
-        let normal = site.normal;
-        let facing = normal.dot(axis);
-        let lean = if facing > MIN_PROJECTION_COSINE {
-            axis / facing
-        } else {
-            normal
-        };
-        let texel_axis = |pitch: Vec3| {
-            let along = pitch / pitch.length_squared();
-            along - normal * lean.dot(along)
-        };
-        let (u, v) = (
-            texel_axis(site.frame.pitch_u),
-            texel_axis(site.frame.pitch_v),
-        );
-        let (sin, cos) = rotation;
-        let unspin = emitter_lattice_spin(light, site.seed).inverse();
-        EmitterPairing {
-            x_axis: unspin * (u * cos + v * sin),
-            y_axis: unspin * (v * cos - u * sin),
-            probes: [0; FOOTPRINT_PROBES],
-            counter: [0; COUNTER_RING_SAMPLES],
-            claimed: [0; FOOTPRINT_PROBES + COUNTER_RING_SAMPLES],
-            claimed_len: 0,
-        }
-    }
-
-    /// Claims the probes' emitter samples ([`TexelFootprint::emitter_pairing`]).
-    fn claim_probes(&self, pairing: &mut EmitterPairing) {
-        // One pass finds the sample nearest the centre and each sector's two
-        // farthest, the second standing in when the first is that nearest.
-        // Both are kept as keys, so every update is a `min` or `max`: the
-        // nearest's squared radius (never negative) above its index, and the
-        // sectors' [`reach_key`]s.
-        let mut nearest = u64::MAX;
-        let mut first = [0u64; RING_SAMPLES];
-        let mut second = [0u64; RING_SAMPLES];
-        // Copied out of `pairing`, which the compiler would otherwise reload
-        // on every sample.
-        let (x_axis, y_axis) = (pairing.x_axis, pairing.y_axis);
-        for (index, offset) in self.lattice.iter().enumerate() {
-            let index = index as u32;
-            let position = [x_axis.dot(*offset), y_axis.dot(*offset)];
-            let radius_sq = position[0] * position[0] + position[1] * position[1];
-            nearest = nearest.min((u64::from(radius_sq.to_bits()) << 32) | u64::from(index));
-            let (sector, reach) = ring_sector(position);
-            let key = reach_key(reach, index);
-            let displaced = first[sector];
-            first[sector] = displaced.max(key);
-            second[sector] = second[sector].max(displaced.min(key));
-        }
-        let nearest = nearest as u32;
-        pairing.probes[0] = nearest;
-        pairing.claimed[0] = nearest;
-        pairing.claimed_len = 1;
-        // Bit `k`: ring probe `k`'s sector held no sample to claim.
-        let mut unfilled = 0u16;
-        for k in 1..FOOTPRINT_PROBES {
-            let sector = (k - 1) * RING_POSITION_STRIDE % RING_SAMPLES;
-            let index = if reach_key_index(first[sector]) == nearest {
-                reach_key_index(second[sector])
-            } else {
-                reach_key_index(first[sector])
-            };
-            if index == u32::MAX {
-                unfilled |= 1 << k;
-            } else {
-                pairing.probes[k] = index;
-                pairing.claimed[pairing.claimed_len] = index;
-                pairing.claimed_len += 1;
-            }
-        }
-        for k in (1..FOOTPRINT_PROBES).filter(|k| unfilled & (1 << k) != 0) {
-            let sector = (k - 1) * RING_POSITION_STRIDE % RING_SAMPLES;
-            let index = self.farthest_unclaimed(pairing, RING_DIRECTIONS[sector]);
-            pairing.probes[k] = index;
-            pairing.claimed[pairing.claimed_len] = index;
-            pairing.claimed_len += 1;
-        }
-    }
-
-    /// Claims the counter ring's emitter samples, before the interior strata
-    /// are traced.
-    ///
-    /// Aligning the ring's footprint and emitter offsets correlates them, so
-    /// those eight samples land farther out than independent pairs would and
-    /// the full set alone would read a wider penumbra: an occluder standing
-    /// well clear of the receiver gains over half a texel of ramp. The
-    /// interior strata nearest the ring, largest first, each take the
-    /// unclaimed sample reaching farthest against their own offset, which
-    /// cancels most of that correlation, so an escalated texel keeps nearly
-    /// the spread of its footprint and emitter taken independently.
-    fn claim_counter_ring(&self, pairing: &mut EmitterPairing) {
-        let len = self.offsets.len();
-        for j in 0..self.counter_len {
-            let [x, y] = self.offsets[len - 1 - j];
-            let length = x.hypot(y);
-            let index = self.farthest_unclaimed(pairing, [-x / length, -y / length]);
-            pairing.counter[j] = index;
-            pairing.claimed[pairing.claimed_len] = index;
-            pairing.claimed_len += 1;
-        }
-        pairing.claimed[..pairing.claimed_len].sort_unstable();
-    }
-
-    /// The unclaimed lattice sample reaching farthest along unit direction
-    /// `[x, y]` of the footprint's unrotated texel frame. Ties keep the lowest
-    /// index.
-    fn farthest_unclaimed(&self, pairing: &EmitterPairing, [x, y]: [f32; 2]) -> u32 {
-        let claimed = &pairing.claimed[..pairing.claimed_len];
-        let mut best = f32::NEG_INFINITY;
-        let mut best_index = 0;
-        for (index, offset) in self.lattice.iter().enumerate() {
-            let position = pairing.frame_position(*offset);
-            let reach = position[0] * x + position[1] * y;
-            if reach > best && !claimed.contains(&(index as u32)) {
-                best = reach;
-                best_index = index as u32;
-            }
-        }
-        best_index
-    }
-
-    /// Emitter sample traced by footprint sample `k`, once the counter ring
-    /// is claimed. The samples left unclaimed, ascending in lattice latitude,
-    /// are dealt to the interior strata inside the counter ring, ascending in
-    /// radius, by a stride coprime to their count, so emitter latitude does
-    /// not track footprint radius.
-    fn emitter_index(&self, pairing: &EmitterPairing, k: usize) -> u32 {
-        let len = self.offsets.len();
-        if k < FOOTPRINT_PROBES {
-            return pairing.probes[k];
-        }
-        if k >= len - self.counter_len {
-            return pairing.counter[len - 1 - k];
-        }
-        let rest = len - FOOTPRINT_PROBES - self.counter_len;
-        // The slot's rank among the unclaimed indices, stepped past each
-        // claimed index at or below it.
-        let mut index = ((k - FOOTPRINT_PROBES) * self.rest_stride % rest) as u32;
-        for &claimed in &pairing.claimed[..pairing.claimed_len] {
-            if claimed > index {
-                break;
-            }
-            index += 1;
-        }
-        index
     }
 
     /// Unrotated offsets in parent-grid texels, in trace order.
@@ -435,18 +145,19 @@ impl TexelFootprint {
     pub(crate) fn offsets(&self) -> &[[f32; 2]] {
         &self.offsets
     }
+}
 
-    /// Emitter sample per footprint sample, in trace order, for one texel of
-    /// a soft light; the centre's is the sample its ray to the emitter's
-    /// centre replaces.
-    #[cfg(test)]
-    pub(crate) fn emitter_indices(&self, light: &MapLight, site: &TexelSite) -> Vec<u32> {
-        let mut pairing = self.emitter_pairing(light, site, footprint_rotation(site.seed));
-        self.claim_counter_ring(&mut pairing);
-        (0..self.offsets.len())
-            .map(|k| self.emitter_index(&pairing, k))
-            .collect()
-    }
+/// The eight consecutive strata of `count` whose quantile band
+/// `[j / count, (j + 8) / count]` is centred nearest the cone's CDF at the
+/// ring radius, `F(0.6) = 0.648`, clamped so the centre keeps stratum 0. The
+/// ring takes the mass the cone holds about its radius, so the radial
+/// distribution departs from the cone's by at most about half the band.
+fn ring_strata(count: usize) -> std::ops::Range<usize> {
+    let r = f64::from(RING_RADIUS_TEXELS);
+    let quantile = 3.0 * r * r - 2.0 * r * r * r;
+    let first = (quantile * count as f64 - (RING_SAMPLES / 2) as f64).round();
+    let first = (first.max(1.0) as usize).min(count - RING_SAMPLES);
+    first..first + RING_SAMPLES
 }
 
 /// Unit direction toward a sun, the axis of its emitter cone.
@@ -597,9 +308,11 @@ impl TexelSampler {
 
     /// The texel's raw visibility in `[0, 1]`. `trace(from, to)`,
     /// `reach(from, to)` and `lead_in(from, to)` all return true for a clear
-    /// segment. `reach` tests the footprint's wall clip and should keep its
-    /// own occluder cache; `lead_in` is [`lead_in_clear`] against the chart's
-    /// [`ClipBand`].
+    /// segment. `trace` and `reach` skip their segment's first `RAY_EPSILON`,
+    /// as [`segment_clear`](crate::lightmap_bake::segment_clear) does, which
+    /// the footprint relies on. `reach` tests the footprint's wall clip and
+    /// should keep its own occluder cache; `lead_in` is [`lead_in_clear`]
+    /// against the chart's [`ClipBand`].
     pub(crate) fn visibility(
         &self,
         light: &MapLight,
@@ -655,16 +368,24 @@ fn footprint_rotation(seed: u64) -> (f32, f32) {
 /// thinner than the footprint) is dropped and the fraction renormalizes over
 /// the survivors. Clip results depend on the texel alone.
 ///
-/// The trace starts each ray `RAY_EPSILON` along it, clear of the receiver,
-/// and tests nothing before that. A footprint point, unlike a texel centre
-/// half a texel in from its face's edge, can lie within that distance of a
-/// wall. A ray from it heading into the wall would start past the wall's
-/// face, inside a brush whose other sides a compile culls, and escape to a
-/// light the wall hides. So a clear ray from a footprint point counts only if
-/// its lead-in, the skipped stretch overlapped by [`LEAD_IN_OVERLAP`] at each
-/// end, enters no wall (`lead_in`); otherwise the sample is dropped, as a
-/// clipped one is. A blocked ray takes no light, so it needs no lead-in, and
-/// the centre's ray stays the texel's own.
+/// Every trace starts `RAY_EPSILON` along its segment, clear of the receiver,
+/// and tests nothing before that. A texel centre and a footprint point alike
+/// can lie within that distance of a wall, wherever a face's edge, or a solid
+/// standing on it, cuts the texel grid off its axes. So the clip segment,
+/// from the lifted centre to the lifted point, is handed to `reach` starting
+/// `RAY_EPSILON` behind the centre: the skip then covers exactly the stretch
+/// behind the centre, and every wall the segment crosses clips, however near
+/// the centre. Only a wall within `f32` rounding of the centre, where its side
+/// is ambiguous anyway, could go either way.
+///
+/// A ray from a footprint point heading into a wall that near would start
+/// past the wall's face, inside a brush whose other sides a compile culls,
+/// and escape to a light the wall hides. So a clear ray from a footprint point
+/// counts only if its lead-in, the skipped stretch overlapped by
+/// [`LEAD_IN_OVERLAP`] at each end, enters no wall (`lead_in`); otherwise the
+/// sample is dropped, as a clipped one is. A blocked ray takes no light, so it
+/// needs no lead-in. The centre's ray stays the texel's own, traced as the
+/// floor-off bake traces it.
 ///
 /// The nine probes are traced first. When none is clipped and all agree, the
 /// texel is exactly 0 or 1. A clipped probe breaks the ring, so the texel then
@@ -707,8 +428,17 @@ fn footprint_visibility_with(
         let point = if k == 0 {
             site.world_p
         } else {
-            let point = site.world_p + site.frame.offset(footprint.offsets[k], rotation);
-            if site.may_clip && !reach(centre_origin, point + lift) {
+            let offset = site.frame.offset(footprint.offsets[k], rotation);
+            let point = site.world_p + offset;
+            // Started `RAY_EPSILON` behind the centre, `reach` skips exactly
+            // the stretch behind it and tests the clip segment from the
+            // centre on.
+            if site.may_clip
+                && !reach(
+                    centre_origin - offset.normalize_or_zero() * RAY_EPSILON,
+                    point + lift,
+                )
+            {
                 return None;
             }
             point
@@ -776,7 +506,9 @@ fn footprint_visibility_with(
 }
 
 mod clip_reach;
+mod pairing;
 pub(crate) use clip_reach::{ClipBand, ClipReach, lead_in_clear};
+use pairing::EmitterPairing;
 
 #[cfg(test)]
 mod test_fixtures;

@@ -48,6 +48,12 @@ pub(super) struct SceneBuilder {
 impl SceneBuilder {
     /// A planar quad, corners in winding order, facing `normal`.
     pub(super) fn quad(&mut self, corners: [Vec3; 4], normal: Vec3) {
+        self.polygon(&corners, normal);
+    }
+
+    /// A planar convex polygon, corners in winding order, facing `normal`,
+    /// fanned from its first corner as geometry extraction fans a face.
+    pub(super) fn polygon(&mut self, corners: &[Vec3], normal: Vec3) {
         let base = self.vertices.len() as u32;
         let tangent = (corners[1] - corners[0]).normalize_or_zero();
         for corner in corners {
@@ -61,12 +67,14 @@ impl SceneBuilder {
                 0,
             ));
         }
+        let index_offset = self.indices.len() as u32;
+        for i in 1..corners.len() as u32 - 1 {
+            self.indices.extend([base, base + i, base + i + 1]);
+        }
         self.ranges.push(FaceIndexRange {
-            index_offset: self.indices.len() as u32,
-            index_count: 6,
+            index_offset,
+            index_count: self.indices.len() as u32 - index_offset,
         });
-        self.indices
-            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
     /// A box spanning `local_min..local_max` in a frame turned `yaw` radians
@@ -596,6 +604,78 @@ pub(super) fn cone_esf(d: f64) -> f64 {
     let i = (t.floor() as usize).min(STEPS - 1);
     let f = t - i as f64;
     table[i] * (1.0 - f) + table[i + 1] * f
+}
+
+/// Exact cone-kernel visibility at texel coordinates `centre` of a hard
+/// shadow covering the convex polygons `shadow`, in texel coordinates: one
+/// minus the share of the kernel's weight they cover, integrated on a polar
+/// grid fine enough that it errs by well under 0.002.
+pub(super) fn cone_visibility_of_shadow(centre: [f64; 2], shadow: &[Vec<[f64; 2]>]) -> f64 {
+    const RINGS: usize = 96;
+    const SPOKES: usize = 192;
+    // Signed distance from `p` to a convex polygon's boundary, negative
+    // inside, whichever way it winds.
+    let signed_distance = |polygon: &[[f64; 2]], p: [f64; 2]| {
+        let (mut nearest, mut inside, mut sign) = (f64::INFINITY, true, 0.0);
+        for (i, &a) in polygon.iter().enumerate() {
+            let b = polygon[(i + 1) % polygon.len()];
+            let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+            let (px, py) = (p[0] - a[0], p[1] - a[1]);
+            let t = ((px * ex + py * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
+            nearest = nearest.min((px - t * ex).hypot(py - t * ey));
+            let cross = ex * py - ey * px;
+            if cross != 0.0 {
+                if sign == 0.0 {
+                    sign = cross.signum();
+                } else if cross.signum() != sign {
+                    inside = false;
+                }
+            }
+        }
+        if inside { -nearest } else { nearest }
+    };
+    let inside = |polygon: &[[f64; 2]], p: [f64; 2]| {
+        let mut sign = 0.0;
+        for (i, &a) in polygon.iter().enumerate() {
+            let b = polygon[(i + 1) % polygon.len()];
+            let cross = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+            if cross != 0.0 {
+                if sign == 0.0 {
+                    sign = cross.signum();
+                } else if cross.signum() != sign {
+                    return false;
+                }
+            }
+        }
+        true
+    };
+    let mut near = Vec::new();
+    for polygon in shadow {
+        let d = signed_distance(polygon, centre);
+        if d <= -1.0 {
+            return 0.0;
+        }
+        if d < 1.0 {
+            near.push(polygon);
+        }
+    }
+    if near.is_empty() {
+        return 1.0;
+    }
+    let (mut covered, mut total) = (0.0, 0.0);
+    for i in 0..RINGS {
+        let r = (i as f64 + 0.5) / RINGS as f64;
+        let weight = (1.0 - r) * r;
+        for j in 0..SPOKES {
+            let angle = (j as f64 + 0.5) / SPOKES as f64 * std::f64::consts::TAU;
+            let p = [centre[0] + r * angle.cos(), centre[1] + r * angle.sin()];
+            total += weight;
+            if near.iter().any(|polygon| inside(polygon, p)) {
+                covered += weight;
+            }
+        }
+    }
+    1.0 - covered / total
 }
 
 /// A straight shadow edge in receiver texel coordinates: a point on it, its

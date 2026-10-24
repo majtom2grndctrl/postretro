@@ -32,10 +32,12 @@ use super::ownership::{Candidate, FaceChannels, LIT_TEXEL_FLOOR};
 pub(crate) const ESTIMATE_STRIDE: u32 = LIT_TEXEL_FLOOR.isqrt();
 
 /// Each sample runs the walk's own visibility sampler (receiver footprint,
-/// seed and sample count), so a sample reads exactly what the walk bakes at
-/// that texel. A thin own segment with no lattice coordinate is sampled at its
-/// centre; the tag names that placement so a build without it never shares a
-/// memo entry.
+/// seed and sample count), so a sample reads what the walk bakes at that
+/// texel, barring the occluder cache's documented rounding catch
+/// (`segment_clear_remembering`): the estimate's caches remember other
+/// triangles at a texel than the walk's do. A thin own segment with no lattice
+/// coordinate is sampled at its centre; the tag names that placement so a
+/// build without it never shares a memo entry.
 const ESTIMATE_MODE: &[u8] = b"walk-area-samples;thin-segment-centres";
 
 /// The estimate's inputs that can change id 42 while every partition stays
@@ -142,9 +144,18 @@ fn light_may_reach_box(light: &MapLight, (min, max): (Vec3, Vec3)) -> bool {
     origin.clamp(min, max).distance(origin) <= light.falloff_range
 }
 
+/// One sub-face's light-independent sampling setup, read by every light.
+struct SubFaceSampling {
+    frame: TexelFrame,
+    band: ClipBand,
+    /// `None` with the floor off, where nothing is clipped.
+    reach: Option<ClipReach>,
+}
+
 /// Trace the estimate for every cut face and rank each one's owners. Work is
-/// one `(cut face, light)` pair per governed item; results are summed in a
-/// fixed sample order and ranked by the same total order as the walk, so the
+/// one `(cut face, light)` pair per governed item, after one governed item
+/// per cut face for its sub-faces' setup; results are summed in a fixed
+/// sample order and ranked by the same total order as the walk, so the
 /// owners never depend on worker count.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn estimate_cut_owners(
@@ -174,22 +185,24 @@ pub(super) fn estimate_cut_owners(
                 .map(move |(l, _)| (c, l))
         })
         .collect();
-    // Clip reach is light-independent: one per sub-face, read by every light.
-    let clip_reaches: Vec<Vec<ClipReach>> = if penumbra_floor {
-        cut_parents
-            .par_iter()
-            .map(|cut| {
-                cut.faces
-                    .clone()
-                    .map(|face| {
-                        ClipReach::for_chart(&shared.charts[face], bvh, primitives, geometry)
-                    })
-                    .collect()
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let sub_faces: Vec<Vec<SubFaceSampling>> = cut_parents
+        .par_iter()
+        .map(|cut| {
+            let _permit = control.governor().enter();
+            cut.faces
+                .clone()
+                .map(|face| {
+                    let chart = &shared.charts[face];
+                    SubFaceSampling {
+                        frame: TexelFrame::for_chart(chart),
+                        band: ClipBand::for_chart(chart),
+                        reach: penumbra_floor
+                            .then(|| ClipReach::for_chart(chart, bvh, primitives, geometry)),
+                    }
+                })
+                .collect()
+        })
+        .collect();
     // (lit samples, contribution, traces) per pair, in pair order.
     let results: Vec<(u32, f64, usize)> = pairs
         .par_iter()
@@ -202,7 +215,7 @@ pub(super) fn estimate_cut_owners(
             let (mut lit, mut contribution, mut traces) = (0u32, 0f64, 0usize);
             for &(face, tx, ty) in &samples[c] {
                 let chart = &shared.charts[face];
-                let band = ClipBand::for_chart(chart);
+                let sub_face = &sub_faces[c][face - cut_parents[c].faces.start];
                 let world_p = chart_texel_world_position(chart, tx, ty);
                 // A sub-chart's frame is its parent grid's, so every sample of
                 // one cut face draws the walk's own footprint offsets.
@@ -210,10 +223,11 @@ pub(super) fn estimate_cut_owners(
                     world_p,
                     normal: chart.normal,
                     seed: chart_texel_seed(chart, tx, ty),
-                    frame: TexelFrame::for_chart(chart),
-                    may_clip: clip_reaches.get(c).is_none_or(|reaches| {
-                        reaches[face - cut_parents[c].faces.start].may_clip(tx, ty)
-                    }),
+                    frame: sub_face.frame,
+                    may_clip: sub_face
+                        .reach
+                        .as_ref()
+                        .is_none_or(|reach| reach.may_clip(tx, ty)),
                 };
                 let (_, _, visibility) = light_texel_contribution_and_visibility_with(
                     light,
@@ -243,7 +257,9 @@ pub(super) fn estimate_cut_owners(
                                     &clip_occluder,
                                 )
                             },
-                            |from, to| lead_in_clear(bvh, primitives, geometry, &band, from, to),
+                            |from, to| {
+                                lead_in_clear(bvh, primitives, geometry, &sub_face.band, from, to)
+                            },
                         )
                     },
                 );

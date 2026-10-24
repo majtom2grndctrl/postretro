@@ -112,14 +112,17 @@ pub(crate) fn lead_in_clear(
 /// could block.
 ///
 /// A clip segment runs from the texel centre to a sample point, both lifted
-/// `RAY_EPSILON` along the normal, so every segment lies in the receiver's
-/// plane raised by the lift and within one texel of the centre. A triangle can
-/// block one only if it reaches that raised plane there: it reaches the
-/// [`ClipBand`] and its projection onto the chart comes within a texel.
-/// Triangles wholly below the raised plane, the receiver and its coplanar
-/// neighbours among them, or wholly above it, cannot. A lead-in leaves the
-/// raised plane, but it counts only triangles the band admits, and it ends
-/// under `2 · RAY_EPSILON` from its sample point, inside the pad on the
+/// `RAY_EPSILON` along the normal, and is tested from the centre on, never
+/// behind it, so everything it tests lies in the receiver's plane raised by
+/// the lift and within one texel of the centre. A triangle can block one only
+/// if it reaches that raised plane there: it reaches the [`ClipBand`] and its
+/// projection onto the chart comes within a texel. Triangles wholly below the
+/// raised plane, the receiver and its coplanar neighbours among them, or
+/// wholly above it, cannot. A lead-in leaves the raised plane, but it counts
+/// only triangles the band admits, and it runs from `0.25 · RAY_EPSILON`
+/// before its lifted sample point to `1.25 · RAY_EPSILON` past it: at most
+/// `2.25 · RAY_EPSILON` from the sample point with the lift, and at most
+/// `1.25 · RAY_EPSILON` of it along the receiver, inside the pad on the
 /// texel's reach. Every other texel's clip segments and lead-ins are all
 /// clear, so the walk skips them; the answers, and the occluder cache a
 /// skipped texel would have probed and left untouched, are those the segments

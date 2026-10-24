@@ -73,6 +73,10 @@ pub(crate) const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// unless the penumbra floor is off, and the entry stores the texel-step
 /// report ahead of the section.
 ///
+/// v11: clear footprint rays test their skipped lead-in, clip segments are
+/// tested from the texel centre itself, and the probe ring sits at a fixed
+/// 0.6 texel at every count.
+///
 /// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
 /// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
 /// per-stage version-constant pattern every cached stage uses. Bumping this
@@ -80,7 +84,7 @@ pub(crate) const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
-pub const STAGE_VERSION: u32 = 10;
+pub const STAGE_VERSION: u32 = 11;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,

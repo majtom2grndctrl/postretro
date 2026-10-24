@@ -3,6 +3,7 @@
 
 use glam::{Vec2, Vec3};
 
+use super::pairing::{RING_DIRECTIONS, ring_sector};
 use super::test_fixtures::*;
 use super::*;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, SOFT_PROBE_SAMPLES};
@@ -51,14 +52,13 @@ fn footprint_offsets_lie_within_one_pitch_and_follow_the_cone_kernel() {
         assert_eq!(offsets.len(), count as usize);
         let n = f64::from(count);
         let ks = cone_ks_distance(offsets);
-        // Replacing stratum 0 by the exact centre puts 1/N of the mass at
-        // r = 0, so the statistic is at least 1/N; the ring's minimum radius
-        // sits below every ring stratum at these counts and moves nothing.
-        let bound = 1.0 / n + 1.0e-6;
-        println!(
-            "count {count}: KS {ks:.5} (1/N {:.5}, bound {bound:.5})",
-            1.0 / n
-        );
+        // Stratum 0 at the exact centre puts 1/N of the mass at r = 0. The
+        // ring puts the eight strata of a quantile band at one radius, so
+        // just inside and just outside it the empirical CDF sits half the
+        // band, 4/N, from the cone's, plus up to 1/(2N) for how far the
+        // band's centre falls from F(0.6).
+        let bound = 4.0 / n + 0.5 / n + 1.0e-6;
+        println!("count {count}: KS {ks:.5} (bound {bound:.5})");
         assert!(
             matches_one_texel_cone(offsets, bound),
             "count {count}: KS {ks} past {bound}"
@@ -120,8 +120,8 @@ fn footprint_probes_are_the_centre_and_a_ring_within_reach() {
             .map(|&[x, y]| {
                 let r = x.hypot(y);
                 assert!(
-                    (RING_MIN_RADIUS_TEXELS - 1.0e-5..1.0).contains(&r),
-                    "ring radius {r}"
+                    (r - RING_RADIUS_TEXELS).abs() < 1.0e-6,
+                    "count {count}: ring radius {r}"
                 );
                 y.atan2(x).rem_euclid(std::f32::consts::TAU)
             })
@@ -318,8 +318,8 @@ fn footprint_memo_matches_a_fresh_build_for_interleaved_lights() {
 
 // --- probe claim: keyed pass against the reference scan ---------------------
 
-/// The sector of a point as first written: a scan of the eight signed
-/// directions, keeping the first strictly farther one.
+/// Branching reference sector the keyed pass must reproduce: a scan of the
+/// eight signed directions, keeping the first strictly farther one.
 fn ring_sector_reference([x, y]: [f32; 2]) -> (usize, f32) {
     let diagonal = std::f32::consts::FRAC_1_SQRT_2;
     let along = [x, (x + y) * diagonal, y, (y - x) * diagonal];
@@ -336,8 +336,8 @@ fn ring_sector_reference([x, y]: [f32; 2]) -> (usize, f32) {
     (sector, reach)
 }
 
-/// [`TexelFootprint::claim_probes`] as first written, with branches on every
-/// comparison: the claim the keyed pass must reproduce sample for sample.
+/// Branching reference claim the keyed pass must reproduce sample for
+/// sample: [`TexelFootprint::claim_probes`] with a branch on every comparison.
 fn claim_probes_reference(footprint: &TexelFootprint, pairing: &mut EmitterPairing) {
     let mut nearest = (f32::INFINITY, 0u32);
     let mut first = [(f32::NEG_INFINITY, u32::MAX); RING_SAMPLES];
@@ -1103,6 +1103,228 @@ fn soft_light_penumbra_edges_never_snap_at_any_sample_count() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+// --- thin strips and small discs off the centre --------------------------------
+
+/// Counts the strip and disc sweeps run at: the minimum, the probe set alone,
+/// and up to 64.
+const SNAP_SWEEP_COUNTS: [u32; 5] = [SOFT_PROBE_SAMPLES, 9, 16, DEFAULT_AREA_SAMPLE_COUNT, 64];
+
+/// Hard and default-size lights, point and sun, over the sweep receivers.
+fn snap_sweep_lights() -> [(&'static str, MapLight); 4] {
+    let aim = [0.3, -1.0, 0.2];
+    let mut sun = hard_sun(aim);
+    sun.angular_diameter = crate::map_data::DEFAULT_ANGULAR_DIAMETER_DEG;
+    [
+        ("hard point", hard_point([0.3, 2.0, -0.2])),
+        ("default point", default_point([0.3, 2.0, -0.2])),
+        ("hard sun", hard_sun(aim)),
+        ("default sun", sun),
+    ]
+}
+
+/// Flat convex occluders, `CONTACT_GAP` above a receiver: corners on the
+/// floor plane, in metres.
+struct ContactOccluders {
+    receiver: Receiver,
+    polygons: Vec<Vec<Vec2>>,
+}
+
+impl ContactOccluders {
+    fn fixture(&self) -> Fixture {
+        let mut scene = SceneBuilder::default();
+        self.receiver.add_floor(&mut scene);
+        for polygon in &self.polygons {
+            let corners: Vec<Vec3> = polygon
+                .iter()
+                .map(|p| Vec3::new(p.x, CONTACT_GAP, p.y))
+                .collect();
+            scene.polygon(&corners, -Vec3::Y);
+        }
+        Fixture::new(scene, self.receiver)
+    }
+
+    /// Exact cone-kernel visibility of the hard shadow `light`'s centre
+    /// casts from the occluders, per texel. Default-size lights spread a
+    /// contact edge by under 1/80 texel, so it stands for theirs too.
+    fn exact(&self, light: &MapLight) -> VisibilityGrid {
+        let shadow: Vec<Vec<[f64; 2]>> = self
+            .polygons
+            .iter()
+            .map(|polygon| {
+                polygon
+                    .iter()
+                    .map(|p| {
+                        let corner = Vec3::new(p.x, CONTACT_GAP, p.y);
+                        let to_light = toward_light(light, corner);
+                        let on_floor = corner - to_light * (CONTACT_GAP / to_light.y);
+                        self.receiver.texel_coords(on_floor)
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut grid = VisibilityGrid::new(self.receiver.width, self.receiver.height);
+        for y in 0..self.receiver.height {
+            for x in 0..self.receiver.width {
+                let centre = [f64::from(x) + 0.5, f64::from(y) + 0.5];
+                grid.set(x, y, cone_visibility_of_shadow(centre, &shadow) as f32);
+            }
+        }
+        grid
+    }
+}
+
+/// Per light and count: texels whose exact visibility lies in `(0.1, 0.9)`
+/// and, of those, the ones baked to exactly 0 or 1.
+type SnapTally = [[(usize, usize); SNAP_SWEEP_COUNTS.len()]; 4];
+
+fn tally_snaps(occluders: &ContactOccluders) -> SnapTally {
+    // Integration error stays far inside this.
+    const TOLERANCE: f32 = 0.002;
+    let fixture = occluders.fixture();
+    let lights = snap_sweep_lights();
+    // Each default-size light shares its hard twin's centre, so its shadow.
+    let exacts = [occluders.exact(&lights[0].1), occluders.exact(&lights[2].1)];
+    let mut tally = SnapTally::default();
+    for (l, (_, light)) in lights.iter().enumerate() {
+        let exact = &exacts[l / 2];
+        let in_window =
+            |x, y| matches!(exact.get(x, y), Some(v) if v > 0.1 + TOLERANCE && v < 0.9 - TOLERANCE);
+        for (c, &count) in SNAP_SWEEP_COUNTS.iter().enumerate() {
+            let grid = fixture.bake(light, count, true);
+            for y in 0..grid.height() {
+                for x in 0..grid.width() {
+                    if !in_window(x, y) {
+                        continue;
+                    }
+                    tally[l][c].0 += 1;
+                    if matches!(grid.get(x, y), Some(v) if v == 0.0 || v == 1.0) {
+                        tally[l][c].1 += 1;
+                    }
+                }
+            }
+        }
+    }
+    tally
+}
+
+/// [`tally_snaps`] summed over `configurations`, traced in parallel.
+fn tally_all(configurations: &[ContactOccluders]) -> SnapTally {
+    use rayon::prelude::*;
+    configurations
+        .par_iter()
+        .map(tally_snaps)
+        .reduce(SnapTally::default, |mut sum, tally| {
+            for (row, other) in sum.iter_mut().zip(tally) {
+                for (cell, (window, snaps)) in row.iter_mut().zip(other) {
+                    cell.0 += window;
+                    cell.1 += snaps;
+                }
+            }
+            sum
+        })
+}
+
+/// Prints `tally` for one occluder shape and size, and returns its snapped
+/// texels over every light and count.
+fn report_snaps(shape: &str, tally: &SnapTally) -> usize {
+    let lights = snap_sweep_lights();
+    let mut snapped = 0;
+    for (l, row) in tally.iter().enumerate() {
+        let cells: Vec<String> = row
+            .iter()
+            .zip(SNAP_SWEEP_COUNTS)
+            .map(|(&(window, snaps), count)| format!("@{count} {snaps}/{window}"))
+            .collect();
+        println!(
+            "{shape}, {}: snapped/in-window {}",
+            lights[l].0,
+            cells.join(", ")
+        );
+        snapped += row.iter().map(|&(_, snaps)| snaps).sum::<usize>();
+    }
+    snapped
+}
+
+// Agreeing probes snap a texel to 0 or 1, so an occluder slipping between
+// the centre and the ring snaps one the kernel filters to a fraction. A
+// strip covering `[a, b]` texels from the centre holds a ring point wherever
+// `cos θ ∈ [a / 0.6, b / 0.6]`, so every strip 0.4 texel wide that the kernel
+// filters to a fraction meets a probe, at any count, for hard and soft
+// lights. Narrower strips, and discs a quarter to a third of a texel across
+// that sit between the centre and the ring, can still slip past all nine
+// probes; their counts are printed, not asserted. Strips are swept in width,
+// angle and offset from the texel centres; discs in radius and sub-texel
+// place.
+#[test]
+fn off_centre_strips_and_discs_never_snap_where_the_ring_reaches_them() {
+    let receiver = Receiver::centred(16, 16);
+    let mut failures = Vec::new();
+    for width in [0.2f32, 0.3, 0.4, 0.5] {
+        let mut configurations = Vec::new();
+        for angle_deg in [0.0f32, 15.0, 30.0, 45.0] {
+            let (sin, cos) = angle_deg.to_radians().sin_cos();
+            let (along, across) = (Vec2::new(sin, cos), Vec2::new(cos, -sin));
+            for step in 0..8 {
+                let offset = step as f32 / 8.0;
+                // A phase along the strip as well as across it.
+                let anchor = across * (offset * PITCH) + along * (0.37 * offset * PITCH);
+                let half = across * (0.5 * width * PITCH);
+                let reach = along * 1.0;
+                let strip = vec![
+                    anchor - half - reach,
+                    anchor + half - reach,
+                    anchor + half + reach,
+                    anchor - half + reach,
+                ];
+                configurations.push(ContactOccluders {
+                    receiver,
+                    polygons: vec![strip],
+                });
+            }
+        }
+        let tally = tally_all(&configurations);
+        let snapped = report_snaps(&format!("{width}-texel strip"), &tally);
+        assert!(tally.iter().flatten().all(|&(window, _)| window > 100));
+        if width >= 0.4 && snapped > 0 {
+            failures.push(format!("{width}-texel strip: {snapped} snapped"));
+        }
+    }
+
+    let mut stream = Stream(0x0d15_c0de_0000_0001);
+    for radius in [0.25f32, 0.31, 0.35, 0.4] {
+        let mut configurations = Vec::new();
+        for _ in 0..8 {
+            // Discs three texels apart, each at its own sub-texel place, so
+            // no two share a texel's kernel.
+            let mut polygons = Vec::new();
+            for i in 0..5 {
+                for j in 0..5 {
+                    let centre = Vec2::new(
+                        receiver.x0 + (1.5 + 3.0 * i as f32 + stream.next()) * PITCH,
+                        receiver.z0 + (1.5 + 3.0 * j as f32 + stream.next()) * PITCH,
+                    );
+                    polygons.push(
+                        (0..16)
+                            .map(|k| {
+                                let angle = k as f32 / 16.0 * std::f32::consts::TAU;
+                                centre + Vec2::from_angle(angle) * (radius * PITCH)
+                            })
+                            .collect(),
+                    );
+                }
+            }
+            configurations.push(ContactOccluders { receiver, polygons });
+        }
+        let tally = tally_all(&configurations);
+        let snapped = report_snaps(&format!("{radius}-texel-radius disc"), &tally);
+        assert!(tally.iter().flatten().all(|&(window, _)| window > 100));
+        if !(0.25..=0.31).contains(&radius) && snapped > 0 {
+            failures.push(format!("{radius}-texel-radius disc: {snapped} snapped"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 // --- AC 8, 10: walls ---------------------------------------------------------
 
 /// A floor `width × 40` texels ending at the face of a wall standing at
@@ -1263,6 +1485,112 @@ fn thin_wall_keeps_its_shadowed_floor_exactly_dark() {
         }
     }
     assert!(checked > 0);
+}
+
+/// A floor whose column `WALL_COLUMN` of texel centres stands `gap` in front
+/// of a wall face at `x = 0`, facing −x: a solid on an uncut floor, whose
+/// face cuts the texel grid wherever it stands.
+fn wall_within_a_millimetre(gap: f32, culled: bool) -> Fixture {
+    const WALL_COLUMN: f32 = 20.0;
+    let mut receiver = Receiver::centred(24, 40);
+    receiver.x0 = -gap - (WALL_COLUMN + 0.5) * PITCH;
+    let mut scene = SceneBuilder::default();
+    receiver.add_floor(&mut scene);
+    if culled {
+        // Only the side facing the floor survives, as at a corridor's seams.
+        scene.quad(
+            [
+                Vec3::new(0.0, 0.0, -4.0),
+                Vec3::new(0.0, 0.0, 4.0),
+                Vec3::new(0.0, 3.0, 4.0),
+                Vec3::new(0.0, 3.0, -4.0),
+            ],
+            -Vec3::X,
+        );
+    } else {
+        scene.aabb(Vec3::new(0.0, 0.0, -2.0), Vec3::new(0.2, 1.0, 2.0));
+    }
+    Fixture::new(scene, receiver)
+}
+
+// A texel centre, like a footprint point, can lie within the trace's skipped
+// first `RAY_EPSILON` of a wall: wherever a face's edge, or a solid standing
+// on it, cuts the texel grid off its axes. Clip segments from such a centre
+// cross the wall inside that stretch. With the light on the floor's side the
+// samples across the wall are clipped, so the column at its foot stays exactly
+// lit (P4); with only the wall's floor side surviving and the light behind it,
+// no sample across it takes light through it.
+#[test]
+fn samples_across_a_wall_within_a_millimetre_of_their_centre_never_count() {
+    let column = 20;
+    let counts = [SOFT_PROBE_SAMPLES, DEFAULT_AREA_SAMPLE_COUNT];
+    let mut failures = Vec::new();
+    let (mut lit_checked, mut dark_checked) = (0, 0);
+    for gap in [0.25e-3, 0.5e-3, 0.9e-3] {
+        let fixture = wall_within_a_millimetre(gap, false);
+        let mut room_lights = vec![
+            hard_point([-0.5, 2.5, 0.0]),
+            default_point([-0.5, 2.5, 0.0]),
+        ];
+        room_lights.extend(suns_toward(&[160.0, 200.0], &[40.0]));
+        for light in &room_lights {
+            for count in counts {
+                let grid = fixture.bake(light, count, true);
+                for y in 0..grid.height() {
+                    lit_checked += 1;
+                    if grid.get(column, y) != Some(1.0) {
+                        failures.push(format!(
+                            "{gap} m, light on the floor's side, {:?} @{count}: ({column}, {y}) \
+                             stores {:?}",
+                            light.light_type,
+                            grid.get(column, y)
+                        ));
+                    }
+                }
+            }
+        }
+
+        let fixture = wall_within_a_millimetre(gap, true);
+        // Points far enough behind that no emitter sample reaches the
+        // floor's side of the wall.
+        let mut behind = suns_toward(&[-30.0, 0.0, 30.0], &[70.0, 80.0]);
+        for origin in [[0.4, 2.0, 0.0], [0.5, 1.5, 0.5]] {
+            behind.extend([hard_point(origin), default_point(origin)]);
+        }
+        for light in &behind {
+            for count in counts {
+                let grid = fixture.bake(light, count, true);
+                for y in 0..grid.height() {
+                    // A centre ray the trace lets past the wall is the
+                    // floor-off bake's own reading; only samples are at issue.
+                    if !fixture.centre_ray_blocked(light, column, y) {
+                        continue;
+                    }
+                    dark_checked += 1;
+                    if grid.get(column, y) != Some(0.0) {
+                        failures.push(format!(
+                            "{gap} m, light behind the wall, {:?} @{count}: ({column}, {y}) \
+                             stores {:?}",
+                            light.light_type,
+                            grid.get(column, y)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "wall within a millimetre: {lit_checked} lit and {dark_checked} dark texels checked, \
+         {} wrong",
+        failures.len()
+    );
+    assert!(lit_checked > 0 && dark_checked > 0);
+    assert!(
+        failures.is_empty(),
+        "{} texels, e.g. {:#?}",
+        failures.len(),
+        &failures[..failures.len().min(8)]
+    );
 }
 
 // --- sealed rooms: no light from outside -------------------------------------

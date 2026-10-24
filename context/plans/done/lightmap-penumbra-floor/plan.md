@@ -73,7 +73,7 @@ After the branch-free pairing (ac9015fb3; claim 518 → 281 ns at 32 samples, by
 
 ## AC-to-proof
 
-Results at c7a15045a; rows 13–16, 25 and 26 updated for the embedded-emitter fix. Test names are in the bin target `prl-build` unless noted; on-demand A/B checks are `lightmap_bake/penumbra_ab_tests.rs` (bakes in `lpf-bin/final/ab/`).
+Results at c7a15045a; rows 13–16, 25 and 26 updated for the embedded-emitter fix. Test names are in the bin target `prl-build` unless noted; on-demand A/B checks are `lightmap_bake/penumbra_ab_tests.rs` (bakes in `lpf-bin/final/ab/`). The `lpf-bin` scratch and the capture stations (`measurements/lightmap-penumbra-floor/`) were removed at landing; the station cameras and the capture `README` are in git history at 2e3a67a4e.
 
 | AC | Proof | Result |
 |---|---|---|

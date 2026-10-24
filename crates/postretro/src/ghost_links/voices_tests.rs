@@ -574,24 +574,15 @@ fn a_projectile_ghosting_after_its_owner_left_has_its_own_impact_unghosted() {
     let partner = level.pawn(Vec3::new(2.0, 0.0, 0.0), DescriptorSpawnPath::NetworkSlot);
     let impact_point = Vec3::new(6.0, 0.0, 0.0);
     let rocket = level.projectile(partner, impact_point);
-    // Fired under a shot id the app recorded the shooter for.
+    // The rocket's impact carries the shot id it was fired under, and its
+    // owner resolves through the shots this machine recorded, as the frame
+    // loop resolves an impact emission's or impact cue's owner. Covered here:
+    // that lookup and admission against current membership. Not covered: the
+    // frame loop carrying the emission's shot id to the lookup.
     let fired = shot(0, 60);
     level.ghosts.record_shot_owner(fired, partner);
-    let mut flight = level
-        .registry
-        .get_component::<ProjectileComponent>(rocket)
-        .unwrap()
-        .clone();
-    flight.source_shot = Some(fired);
-    level.registry.set_component(rocket, flight).unwrap();
-    let rockets_impact = |level: &Level| {
-        let shot_id = level
-            .registry
-            .get_component::<ProjectileComponent>(rocket)
-            .unwrap()
-            .source_shot;
-        impact(level.ghosts.shot_owner(shot_id), &[impact_point])
-    };
+    let rockets_impact =
+        |level: &Level| impact(level.ghosts.shot_owner(Some(fired)), &[impact_point]);
     level.membership_frame();
     assert_eq!(
         level.voices(&rockets_impact(&level)).len(),

@@ -218,13 +218,13 @@ fn close(a: f32, b: f32) -> bool {
     (a - b).abs() < 1e-5
 }
 
-// The staged-manifest commit reaches installed links through the App's style
-// hook: an armed link whose member is mid ramp-in and a disarmed link whose
-// member is mid fade-out both present the reloaded style from the next frame,
-// while their membership ramps run on unbroken. The field `setColorFilter`
-// set keeps its value and its ramp runs to its target.
+// A committed staged manifest reload, through the real commit route, re-resolves
+// installed links: an armed link whose member is mid ramp-in and a disarmed
+// link whose member is mid fade-out both present the reloaded style from the
+// next frame, while their membership ramps run on unbroken. The field
+// `setColorFilter` set keeps its value and its ramp runs to its target.
 #[test]
-fn the_apps_reload_hook_re_resolves_links_mid_ramp_armed_or_not_and_keeps_filter_fields() {
+fn a_committed_staged_reload_re_resolves_links_mid_ramp_armed_or_not_and_keeps_filter_fields() {
     const VOLUME: (Vec3, Vec3) = (Vec3::new(0.0, 0.0, -5.0), Vec3::new(10.0, 4.0, 5.0));
     let echo = style(0.45, [0.6, 0.8, 1.0], true);
     let link = |source_entity, armed, target: Vec3| {
@@ -274,20 +274,34 @@ fn the_apps_reload_hook_re_resolves_links_mid_ramp_armed_or_not_and_keeps_filter
     let filtered_tint = linked.app.ghost_links.link_look(0).tint;
     assert_ne!(filtered_tint, echo.tint, "the tint ramp is under way");
 
-    // The commit replaces the committed table, then calls the App's hook.
-    let retuned = GhostStyle {
-        tint: [1.0, 0.4, 0.3],
-        opacity: 0.8,
-        saturation: 0.7,
-        audio: false,
-        impact_audio: false,
-    };
-    linked
+    // The reloaded manifest keeps the wraith opted in and retunes `echo`.
+    let mod_root = tempfile::tempdir().expect("temporary mod root");
+    std::fs::write(
+        mod_root.path().join("start-script.js"),
+        "globalThis.__postretroModManifest = { name: 'Ghosts', id: 'ghosts', version: '1', \
+         entities: [{ canonicalName: 'wraith', ghost: true }], \
+         ghostStyles: [{ name: 'echo', tint: [1, 0.4, 0.3], opacity: 0.8, saturation: 0.7, \
+                         audio: false, impactAudio: false }] };",
+    )
+    .expect("reloaded manifest written");
+    crate::startup::lifecycle::lifecycle_environment_install_tests::commit_staged_manifest(
+        &mut linked.app,
+        mod_root.path(),
+    );
+    let retuned = *linked
         .ctx
         .data_registry
-        .borrow_mut()
-        .replace_ghost_styles(styles(&[("echo", retuned)]));
-    linked.app.refresh_ghost_styles();
+        .borrow()
+        .ghost_styles
+        .get("echo")
+        .expect("the reload declares `echo`");
+    assert!(
+        close(retuned.opacity, 0.8)
+            && close(retuned.saturation, 0.7)
+            && retuned.tint != echo.tint
+            && !retuned.audio,
+        "the commit retuned `echo`: {retuned:?}"
+    );
 
     let reloaded = linked.app.ghost_links.link_look(0);
     assert_eq!(

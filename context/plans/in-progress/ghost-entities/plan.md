@@ -8,16 +8,15 @@ Brief grounded at d6f3471; 76 commits since. Every Decision and Path symbol was 
 
 Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time only). It touches `parse.rs`, `map_data.rs` and the FGD, but none of the runtime renderer, capture, limiter or netcode files this plan builds on, and not the pre-BSP peel path `ghost_link` shares with teleporters. No Correction changes.
 
-## Resume point (2026-10-23, round-6 fix pass)
-- Round-6 fixes are committed locally as `ee39a9c3f`; nothing is pushed (the last push is `b45767212`). Verified at that commit: the workspace compiles clean with no warnings; render-cpu 586, binary ghost 157, renderer ghost 38 and kinematic 25; both `ghost_link` GPU capture tests and the GPU platform frame test on Metal. With the new limiter rule switched off, its three regressions fail at 7 transitions.
-- Round 6 owner decisions are under Delegated answers (contact-based sort, E23 reuse wording, sprite opacity limited).
-- Fixed in round 6:
-  - Limiter: a 7th transition after a drop, closed by the faint-first-move carry-on rule (Bound note). The targeted drop test is aimed and asserts each attack lands. `ghost_look.rs` is split into the judge and `ghost_look_clamp.rs`. Hygiene nits are done.
-  - Sort: contact-based (`MoverGhostBounds` in `kinematic_ghost.rs`, margin 0.1 m), door and in-cab regressions, and the reaching-mover test now pins contact. The leaf `render/ghost_pipeline.rs` removes both module cycles.
-  - Sprite opacity is judged (`presented_body_look` in `ghost_render.rs`).
-  - Docs and brief: the whole-object sort limit, the unknown-value warning, and sprite opacity among what is judged.
-- Next: a short re-review of the round-6 fixes, the full gate, the AC results, and the manual rows (45–47 and the self-overlap fix). On the Windows box, watch the D3D12 debug layer for warnings on the scene-depth to ghost-depth copy. Push only when the owner says so.
-- Round 1–6 review reports and the limiter ports live in the session scratchpad only. Their findings are captured here.
+## Resume point (2026-10-23, after review round 8)
+- Local only; nothing pushed since `b45767212`. Rounds 6–8 are committed locally (`ee39a9c3f`, `a281c3161`, `6b5d042d5` and the round-8 commit after it).
+- Round 8 (one reviewer, no 🔴) fixes:
+  - Eye-side contact test from the mover's own triangles (`MoverGhostShape::surface_between` in `kinematic_ghost_shape.rs`; triangle copy kept at install). Skinned ghosts key on their body point (the envelope's centre over its feet, halfway up), which also fixes clipless models whose box isn't over their origin. A GPU capture from below the floor pins the eye plumbing.
+  - Limiter: unknown history always starts from nothing drawn; the exempt ray never raises what draws (`exempt_opacity`, `LookValueClamp::drawn`), so a `render.ghosts` switch can't raise it; the faint-first-move fallback restarts the latest slot only when the step raises nothing, with a dev assertion that the exempt ray never takes the other branch.
+  - Acceptance tests: row 8 through the real staged-commit route; row 12 projectile boundary on the client; `HostProjectilePresentations` exported from netcode for the harness; honest docs on rows 20 and P22.
+- Verified before commit: workspace compiles clean; render-cpu 592, renderer ghost/kinematic 74 (GPU included), binary ghost 169. The previous full gate at `6b5d042d5` passed 12,612 workspace tests and 2,137 with `dev-tools,capture`; clippy needed three test-only fixes since applied.
+- Next: final gate on this commit, AC results column, then wait for "land the plane". Manual rows 45–47 and the D3D12 debug-layer check of the scene-depth → ghost-depth copy are the owner's on Windows. Push only when the owner says so.
+- Follow-ups recorded under Delegated answers: per-pixel ghost ordering (own plan); `reference_enemy` hit-zone multipliers and `startle` lint (pre-existing).
 
 ## Corrections
 - `WIRE_VERSION` 32 → 33 (Wire format) → it is already 33 (`crates/net/src/handshake.rs:43`, PRLC Input-lane bump ae87ca368). This brief bumps **33 → 34**; `SNAPSHOT_VERSION` 21 → 22 stands (`crates/net/src/wire.rs:357`). AC "handshake across the old and new wire versions is refused" keeps its meaning.
@@ -115,6 +114,7 @@ Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time onl
   - **Ghost sort is contact-based** (supersedes the farthest-corner key above). Mover ghosts sort by their centre. A mover draws just before a skinned ghost only when that ghost's feet are inside the mover's oriented local bounds: on a platform, on a lift, or in a cab. The farthest-corner key hid a ghost standing close behind a door seen at an angle.
   - **E23 reuse** (index Decision reworded): E23 reuses `KeyClamp` and `ValueClamp`. Under v2 the per-ghost look clamp is ghost-only.
   - **Sprite opacity is limited.** A projectile sprite ghost's own opacity folds into the look the limiter judges, so the capped value is the one that draws.
+- Owner direction, 2026-10-23, round 8 ("build more right faster"): the eye-side contact test asks whether any of the mover's surface lies between the eye and the rider, answered from the mover's own triangles (kept CPU-side at install, the box only an early-out) behind one named seam. Right for railings, posts, open decks and closed cabs alike; only movers carrying a ghost pay. Skinned ghosts key on their body point. The limit that remains is whole-object sorting itself (ghosts passing through each other); per-pixel ordering (order-independent transparency or depth peeling) is the long-term fix, a renderer feature that needs its own plan, replacing `GhostDrawOrder` behind the same seam. Follow-up, not this brief.
 - Owner decisions, 2026-10-23, AC results (row 43, zero warnings): the surface test excludes four warnings, none from the ghost-link manifest or scripts. The dev maps' `debug_*` textures warning `[Material] Unknown prefix 'debug'` is accepted as outside the row's wording (it names the manifest and scripts; 12 of 55 dev maps share those textures). The shared `reference_enemy` descriptor's hit-zone multipliers without model zones and its `startle` activity the lint calls unreachable predate this branch and are out of scope, noted as follow-ups. `[Model]` uncached-model warnings are an artifact of the test install's no-op upload.
 - Round 7, contact sort (coordinator call within the round-6 decision; revisit if the owner disagrees):
   - The feet point is the holder transform's origin. Animated models' bounds are an origin-centred cube, so the envelope's bottom sat about one model radius below the feet and contact never fired in game.

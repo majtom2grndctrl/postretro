@@ -9,7 +9,7 @@ use super::ghost_window::{Budget, GhostWindow, SlotClass};
 use super::keyed::KeyClamp;
 use super::value::{INTENSITY_RATE_PER_SECOND, unit_strength};
 use crate::flash_limiter::LimiterFrameUniform;
-use crate::ghost_instance::{GhostInstanceLook, screen_door_coverage};
+use crate::ghost_instance::{GhostInstanceLook, SCREEN_DOOR_PIXELS, screen_door_coverage};
 use crate::ghost_transparency::GhostTransparency;
 
 /// Halvings of a refused frame's segment while searching for the furthest
@@ -34,6 +34,23 @@ fn drawn_opacity(transparency: GhostTransparency) -> fn(f32) -> f32 {
     }
 }
 
+/// The sixteenth at or below `drawn`: the screen door keeps the nearest
+/// sixteenth and a sixteenth keeps itself, so this is the highest opacity
+/// that draws no more than `drawn` dithered.
+fn sixteenth_below(drawn: f32) -> f32 {
+    let pixels = SCREEN_DOOR_PIXELS as f32;
+    (drawn * pixels).floor() / pixels
+}
+
+/// The highest opacity that draws no more than a drawn opacity under
+/// `transparency`: itself when blended, the sixteenth below when dithered.
+fn drawing_at_most(transparency: GhostTransparency) -> fn(f32) -> f32 {
+    match transparency {
+        GhostTransparency::Blend => blended,
+        GhostTransparency::Dither => sixteenth_below,
+    }
+}
+
 /// What a ghost asks to present on a frame, and how it draws.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct AskedLook {
@@ -42,9 +59,9 @@ pub(super) struct AskedLook {
 }
 
 /// One frame's choices, as opacity and drawn tint luminance: from the exempt
-/// ray's end (the asked opacity's fall at the held luminance) to the asked
-/// look under the rate cap. A point between them draws on the straight line
-/// between what the two draw.
+/// ray's end (the asked opacity's fall at the held luminance, drawing no more
+/// than the presented look) to the asked look under the rate cap. A point
+/// between them draws on the straight line between what the two draw.
 #[derive(Clone, Copy, Debug)]
 struct Segment {
     exempt: (f32, f32),
@@ -102,7 +119,10 @@ struct FrameAsk {
 ///   point draws faster than a screen channel ramps;
 /// - the exempt ray, the asked opacity's fall at the held tint, always
 ///   presents: a ghost can always fade out or vanish, and its transitions share
-///   one slot;
+///   one slot. It never draws more than the look presented before, judged
+///   as drawn, a `render.ghosts` switch included ([`Self::exempt_opacity`]),
+///   so it moves every edge point toward what nothing drawn draws, f32
+///   rounding aside;
 /// - under budget, the capped look presents if every transition it counts
 ///   joins a slot or opens one with room for one more; otherwise the furthest
 ///   look toward it that needs no new slot presents, its tint at that look's
@@ -165,19 +185,20 @@ struct FrameAsk {
 ///    then on steps 2 to 5 run as from a history start. For the window the
 ///    first moves change nothing: an appearance is one step, so its first
 ///    moves share one exempt slot; a point still since the drop draws at the
-///    presented look what it drew with nothing drawn, so the exempt ray, a
-///    lower opacity at that luminance, moves it by f32 rounding at most (a
-///    tint drawing luminance exactly k/16 can leave it an ulp off). Such a
-///    move counts once, joining the latest slot, at six edge slots the
-///    exempt one that opened the sixth; the point's neighbours move both
+///    presented look what it drew with nothing drawn, so the exempt ray, no
+///    higher a drawn opacity at that luminance, moves it by f32 rounding at
+///    most (a tint drawing luminance exactly k/16 can leave it an ulp off).
+///    Such a move counts once, joining the latest slot, at six edge slots
+///    the exempt one that opened the sixth; the point's neighbours move both
 ///    ways on any opacity change, so a later rounding move carries that
 ///    count on rather than counting: as a swing stopped short of its peak,
 ///    or, once its swing back has counted, as a pass of its peak, which on
 ///    the exempt ray restarts a slot holding the point and opens none (the
 ///    ray moves every point toward what nothing drawn draws, where a first
-///    move starts, so it passes such a peak by rounding alone). From six
-///    edge slots a tracker still counts at most once on the ray, and the
-///    exempt ray always fits, so a fade or vanish presents.
+///    move starts, on a transparency switch too, so it passes such a peak by
+///    rounding alone). From six edge slots a tracker still counts at most
+///    once on the ray, and the exempt ray always fits, so a fade or vanish
+///    presents.
 ///
 /// The thresholds leave room for the unorm16 opacity the draw packs and f32
 /// rounding. Not covered across a drop, each searched with no seventh
@@ -201,6 +222,9 @@ pub(super) struct LookValueClamp {
     red: GhostRedness,
     /// The presented opacity. Dithered, the screen door draws its coverage.
     opacity: f32,
+    /// The opacity the presented look drew at, under the transparency it
+    /// was judged in: the exempt ray draws no more than this.
+    drawn: f32,
     /// The presented tint and the luminance it draws at.
     tint: [f32; 3],
     luminance: f32,
@@ -221,25 +245,42 @@ impl LookValueClamp {
             edges: edges(Drawn::of(drawn, luminance)),
             red: GhostRedness::fresh(drawn, look.tint),
             opacity,
+            drawn,
             tint: look.tint,
             luminance,
             hue: look.tint,
         }
     }
 
-    /// A clamp presenting `asked` whose earlier presentation it can't see:
-    /// the screen showed states it never judged, so any point may be part way
-    /// into a swing. Its edge trackers start with unknown history
-    /// ([`EdgeTrackers::unknown_history`]), each counting its first move as a
-    /// transition. The rule for any ghost the clamp lost sight of: one dropped
-    /// at rest and appearing again today; a reload or a join in the middle of
-    /// a strobe later.
+    /// A clamp presenting nothing at `tint` under `transparency` whose
+    /// earlier presentation it can't see: the screen showed states it never
+    /// judged, so any point may be part way into a swing. Its edge trackers
+    /// start with unknown history ([`EdgeTrackers::unknown_history`]), each
+    /// counting its first move as a transition.
+    ///
+    /// It starts from nothing drawn by construction, since the trackers'
+    /// exempt rule is sound only from there: a ghost dropped at rest and
+    /// appearing again ([`Self::appearing`]). A later caller whose ghost was
+    /// still drawn when the clamp lost sight of it (a reload or a join in the
+    /// middle of a strobe) can't start here and present that look: the
+    /// screen showed the look, not nothing, so every first move would count
+    /// from the wrong place. It needs trackers started at that look, a seam
+    /// of their own under the exempt caveat
+    /// [`EdgeTrackers::unknown_history`] gives.
     ///
     /// Redness needs no such start while a ghost is dropped only at rest: its
     /// presented redness is then zero, the floor, so no swing it forgot can
     /// complete. A later caller presenting redness has to weigh that.
-    fn with_unknown_history(asked: AskedLook) -> Self {
-        Self::starting(asked, EdgeTrackers::unknown_history)
+    fn with_unknown_history(tint: [f32; 3], transparency: GhostTransparency) -> Self {
+        let unseen = AskedLook {
+            look: GhostInstanceLook {
+                opacity: 0.0,
+                saturation: 0.0,
+                tint,
+            },
+            transparency,
+        };
+        Self::starting(unseen, |_| EdgeTrackers::unknown_history())
     }
 
     /// The asked `opacity` and drawn `luminance` under the straight-line rate
@@ -264,6 +305,26 @@ impl LookValueClamp {
         (capped_opacity, capped_luminance)
     }
 
+    /// The exempt ray's opacity toward `capped` under `transparency`: the
+    /// lower of `capped` and the presented opacity, so the fall keeps the
+    /// rate cap, held to draw no more than the presented look drew. At one
+    /// transparency the fall draws no more already. On the frame
+    /// `render.ghosts` switches it can: the screen door rounds a held opacity
+    /// up to its coverage, or blending draws it above a coverage the door
+    /// rounded down. The ray then holds at the highest opacity that draws no
+    /// more, so it never moves an edge point away from what nothing drawn
+    /// draws. Dithered, that is the sixteenth below, which can fall further
+    /// than the rate cap since the door draws nothing between; a fall is what
+    /// the ray exists to present, and a vanish falls all at once anyway. The
+    /// hold only bounds a rise, so a disarm or vanish still reaches nothing.
+    fn exempt_opacity(&self, capped: f32, transparency: GhostTransparency) -> f32 {
+        let fall = self.opacity.min(capped);
+        if drawn_opacity(transparency)(fall) <= self.drawn {
+            return fall;
+        }
+        fall.min(drawing_at_most(transparency)(self.drawn))
+    }
+
     /// The tint that draws luminance `aimed` at the hue of `hue`, and the
     /// luminance it draws at: `hue` itself when it already draws at `aimed`,
     /// the presented tint while neither changed (so a held tint never drifts
@@ -286,10 +347,10 @@ impl LookValueClamp {
     fn advance(&self, ask: &FrameAsk, tau: f32) -> (Self, bool) {
         let mut next = *self;
         if tau == 0.0 {
-            // The exempt ray: the opacity's fall at the held luminance,
-            // exactly, so it is monotone at every edge point. The held tint
-            // presents unchanged; its redness falls with the opacity, which
-            // the red rule counts as it would any fall.
+            // The exempt ray: no higher a drawn opacity at the held
+            // luminance, exactly, so it is monotone at every edge point. The
+            // held tint presents unchanged; its redness falls with the
+            // opacity, which the red rule counts as it would any fall.
             let (exempt_opacity, held) = ask.segment.exempt;
             let drawn = (ask.drawn_opacity)(exempt_opacity);
             let fits = next.edges.step(
@@ -301,6 +362,7 @@ impl LookValueClamp {
             );
             next.red.limit(&mut next.window, drawn, self.tint);
             next.opacity = exempt_opacity;
+            next.drawn = drawn;
             return (next, fits);
         }
         let (opacity, aimed) = ask.segment.at(tau);
@@ -322,6 +384,7 @@ impl LookValueClamp {
             return (next, false);
         }
         next.opacity = opacity;
+        next.drawn = drawn;
         next.tint = tint;
         next.luminance = luminance;
         next.hue = hue;
@@ -380,14 +443,7 @@ impl KeyClamp for LookValueClamp {
     /// first move later, in whatever slot that step counts in.
     fn appearing(asked: AskedLook) -> Self {
         let AskedLook { look, transparency } = asked;
-        let unseen = AskedLook {
-            look: GhostInstanceLook {
-                opacity: 0.0,
-                ..look
-            },
-            transparency,
-        };
-        let mut clamp = Self::with_unknown_history(unseen);
+        let mut clamp = Self::with_unknown_history(look.tint, transparency);
         let opacity = unit_strength(look.opacity);
         let drawn = drawn_opacity(transparency)(opacity);
         // An empty window has room for a red onset, so the tint is unchanged.
@@ -401,6 +457,7 @@ impl KeyClamp for LookValueClamp {
         );
         debug_assert!(counted, "an empty window admits an exempt slot");
         clamp.opacity = opacity;
+        clamp.drawn = drawn;
         clamp
     }
 
@@ -413,7 +470,7 @@ impl KeyClamp for LookValueClamp {
             tint: look.tint,
             drawn_opacity: drawn_opacity(transparency),
             segment: Segment {
-                exempt: (self.opacity.min(capped.0), self.luminance),
+                exempt: (self.exempt_opacity(capped.0, transparency), self.luminance),
                 capped,
             },
             budget: self.window.budget(),

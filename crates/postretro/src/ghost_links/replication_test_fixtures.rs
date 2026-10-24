@@ -36,7 +36,7 @@ use postretro_physics::movement::MovementInput;
 use crate::ghost_links::bus::GhostBus;
 use crate::ghost_links::clocks::{ClockSource, MemberLane, PoseStamps, PresentationClocks};
 use crate::ghost_links::eligibility::CandidateView;
-use crate::ghost_links::opt_ins_test_fixtures::{data_registry, descriptor};
+use crate::ghost_links::opt_ins_test_fixtures::{data_registry, descriptor, projectile_weapon};
 use crate::ghost_links::voices::VoiceFrame;
 use crate::ghost_links::{GhostFrame, GhostLinks, GhostLook, GhostMember, LocalSound};
 use crate::netcode;
@@ -278,8 +278,11 @@ pub(super) struct PresentedFrame {
     /// The Ghost bus profile this peer resolves this frame, at its own script
     /// time: what it hands its audio bus.
     pub ghost_audio: postretro_foundation::GhostAudioValues,
-    /// Host-now this frame, in host ticks, as this peer estimates it: the
-    /// clock a cue received this frame would read if it ignored where its
+    /// Host-now this frame, in host ticks: the harness's host tick plus this
+    /// frame's alpha, on both peers. It is the true host time, not an
+    /// estimate; the client's clocks take the same value as their estimated
+    /// server tick only because the harness clock has no estimation error.
+    /// The clock a cue received this frame would read if it ignored where its
     /// member presents.
     pub host_now: f64,
     /// On the client, with [`Loopback::client_fire_probe`] set: the ghost
@@ -354,6 +357,11 @@ pub(super) struct Loopback {
     owners: netcode::MovementOwners,
     weapons: netcode::WeaponOwners,
     queues: netcode::HostCommandQueues,
+    /// The host endpoint's remote-fire flight table ([`Self::fly_remote_rocket`]).
+    /// Its flights are never advanced.
+    projectile_presentations: netcode::HostProjectilePresentations,
+    /// Rockets flown so far: each takes its own shot id.
+    rockets_flown: u8,
     pending_hits: netcode::PendingHitDeclarations,
     open_shots: netcode::OpenAuthorizedShots,
     seat_buffer: netcode::RemoteInterpolationBuffer,
@@ -594,6 +602,8 @@ impl Loopback {
             owners,
             weapons,
             queues: Default::default(),
+            projectile_presentations: Default::default(),
+            rockets_flown: 0,
             pending_hits: Default::default(),
             open_shots: Default::default(),
             seat_buffer: Default::default(),
@@ -813,29 +823,6 @@ impl Loopback {
         self.server.is_participating(CLIENT_A) && self.client.is_participating()
     }
 
-    /// Run a host-side spawn against the host's registry and replication
-    /// state, as a host tick's spawn stage does: `spawn` receives them with
-    /// the latest completed tick.
-    pub(super) fn with_host_replication<R>(
-        &mut self,
-        spawn: impl FnOnce(
-            &mut EntityRegistry,
-            &mut netcode::NetworkIdAllocator,
-            &mut netcode::ReplicableSet,
-            &mut ServerReplication,
-            u32,
-        ) -> R,
-    ) -> R {
-        let mut registry = self.host.registry.borrow_mut();
-        spawn(
-            &mut *registry,
-            &mut self.allocator,
-            &mut self.replicable,
-            &mut self.replication,
-            self.tick,
-        )
-    }
-
     /// The client's display copy of host entity `host_entity`, once replicated.
     pub(super) fn client_entity_of(&self, host_entity: EntityId) -> Option<EntityId> {
         let network_id = self.allocator.network_id_for_entity(host_entity)?;
@@ -843,6 +830,62 @@ impl Loopback {
             .entity_network_ids()
             .into_iter()
             .find_map(|(entity, id)| (id == network_id).then_some(entity))
+    }
+
+    /// Fly a remote client's rocket on the host at `at`, through the host's
+    /// production remote-fire presentation. It is fired by the slot that never
+    /// connects, so the measured client receives it under its weapon's class,
+    /// `rocket_launcher`. The flight is never advanced: the rocket holds at
+    /// `at`. Returns the host's presentation entity.
+    pub(super) fn fly_remote_rocket(&mut self, at: Vec3) -> EntityId {
+        let projectile = projectile_weapon("rocket_launcher", true)
+            .weapon
+            .and_then(|weapon| weapon.projectile)
+            .expect("a projectile weapon");
+        let launch = postretro_sim::sim::RemoteProjectilePresentationLaunch {
+            action: None,
+            model_scale: 1.0,
+            owner_client_id: CLIENT_B,
+            shot_id: postretro_foundation::ShotId::from_parts(
+                1,
+                self.tick,
+                postretro_foundation::ActivationLane::Primary,
+                self.rockets_flown,
+            ),
+            origin: at,
+            direction: Vec3::X,
+            range: 64.0,
+            descriptor_class: "rocket_launcher".to_string(),
+            projectile,
+        };
+        self.rockets_flown += 1;
+        let presentations = |registry: &EntityRegistry| -> Vec<EntityId> {
+            registry
+                .iter_with_kind(postretro_entities::ComponentKind::DescriptorProvenance)
+                .map(|(id, _)| id)
+                .filter(|id| {
+                    registry
+                        .get_component::<DescriptorProvenance>(*id)
+                        .is_ok_and(|provenance| {
+                            provenance.spawn_path == DescriptorSpawnPath::ProjectilePresentation
+                        })
+                })
+                .collect()
+        };
+        let mut registry = self.host.registry.borrow_mut();
+        let before = presentations(&registry);
+        self.projectile_presentations.spawn_remote(
+            &mut registry,
+            &mut self.allocator,
+            &mut self.replicable,
+            &mut self.replication,
+            &launch,
+            self.tick + 1,
+        );
+        presentations(&registry)
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .expect("the host flies the rocket's presentation")
     }
 
     /// Run one ghost-link member step on link `link` through the host's
@@ -1238,7 +1281,7 @@ impl Loopback {
             let origin = registry.get_component::<Transform>(shooter).ok()?.position;
             let mut movers = crate::runtime_movers::KinematicMoverRenderCollector::new();
             let mut scene = crate::sound_events::AnchorScene {
-                registry: &*registry,
+                registry: &registry,
                 world: Some(&self.world),
                 movers: &mut movers,
             };
@@ -1258,7 +1301,7 @@ impl Loopback {
             };
             let mut voices = Vec::new();
             self.client_ghosts
-                .ghost_voices(&*registry, &frame, &fire, &mut voices);
+                .ghost_voices(&registry, &frame, &fire, &mut voices);
             Some(voices.len())
         });
         self.client_frames.push(PresentedFrame {

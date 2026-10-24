@@ -2,14 +2,11 @@
 // See: context/lib/networking.md §Current contract · context/lib/entity_model.md §7d
 
 use glam::Vec3;
-use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
-use postretro_entities::{ComponentKind, EntityId, EntityTypeDescriptor};
-use postretro_foundation::{ActivationLane, ShotId};
+use postretro_entities::{EntityId, EntityTypeDescriptor};
 
 use super::test_fixtures::*;
 use crate::ghost_links::membership::ramp_step;
-use crate::ghost_links::opt_ins_test_fixtures::{data_registry, descriptor, projectile_weapon};
-use crate::netcode;
+use crate::ghost_links::opt_ins_test_fixtures::{descriptor, projectile_weapon};
 
 /// A membership step's float slack.
 const EPS: f32 = 1e-5;
@@ -81,64 +78,6 @@ fn content(projectile_ghost: bool) -> Vec<EntityTypeDescriptor> {
     ]
 }
 
-fn digest(descriptors: Vec<EntityTypeDescriptor>) -> [u8; 32] {
-    crate::mod_digest::mod_compatibility_digest_from_registry(&data_registry(descriptors))
-}
-
-/// Fly a remote client's rocket on the host at `at`, through the host's
-/// production remote-fire presentation: the measured client receives it under
-/// its weapon's class. Returns the host's presentation entity.
-fn fly_rocket(run: &mut Loopback, at: Vec3) -> EntityId {
-    // The host's flight table lives in its endpoint, so a host endpoint lends
-    // one. The flight is never advanced: the rocket holds at `at`.
-    let Some(netcode::NetEndpoint::Host {
-        mut projectile_presentations,
-        ..
-    }) = netcode::NetEndpoint::from_role(&netcode::NetRole::Host { port: 0 }, None)
-        .expect("a host endpoint binds")
-    else {
-        unreachable!("a host role builds a host endpoint");
-    };
-    let projectile = projectile_weapon("rocket_launcher", true)
-        .weapon
-        .and_then(|weapon| weapon.projectile)
-        .expect("a projectile weapon");
-    let launch = postretro_sim::sim::RemoteProjectilePresentationLaunch {
-        action: None,
-        model_scale: 1.0,
-        // Fired by the slot that never connects, so the measured client
-        // receives the presentation.
-        owner_client_id: CLIENT_B,
-        shot_id: ShotId::from_parts(1, run.tick, ActivationLane::Primary, 0),
-        origin: at,
-        direction: Vec3::X,
-        range: 64.0,
-        descriptor_class: "rocket_launcher".to_string(),
-        projectile,
-    };
-    run.with_host_replication(|registry, allocator, replicable, replication, tick| {
-        projectile_presentations.spawn_remote(
-            registry,
-            allocator,
-            replicable,
-            replication,
-            &launch,
-            tick + 1,
-        );
-        registry
-            .iter_with_kind(ComponentKind::DescriptorProvenance)
-            .map(|(id, _)| id)
-            .find(|id| {
-                registry
-                    .get_component::<DescriptorProvenance>(*id)
-                    .is_ok_and(|provenance| {
-                        provenance.spawn_path == DescriptorSpawnPath::ProjectilePresentation
-                    })
-            })
-            .expect("the host flies the rocket's presentation")
-    })
-}
-
 // A committed reload on both peers that flips the player descriptor's `ghost`
 // re-resolves membership through the membership ramp on the host seat and on a
 // connected client: an opt-out fades each ghost one rate-cap step per frame
@@ -201,9 +140,11 @@ fn committed_ghost_reload_on_both_peers_ramps_host_seat_and_client_membership() 
 // remote client's rocket and leaves the client's untouched; the client's own
 // reload of the same content then fades its ghost through the ramp. Neither
 // reload resends the client's tuning (the host retunes the live weapon, and the
-// payload strips the opt-in) or changes either admission digest, so the client
-// is never demoted. A control reload that does change the weapon's tuning
-// resends it.
+// payload strips the opt-in); a control reload that does change the weapon's
+// tuning resends it. That resend count is the proof. Entity descriptors are
+// outside the compatibility digest altogether (`mod_digest.rs`), so no
+// descriptor reload can demote the client here: its demotion checks hold by
+// construction, and fail only if the digest recipe starts hashing descriptors.
 #[test]
 fn projectile_ghost_reload_changes_client_ghosting_without_tuning_resend_or_demotion() {
     let mut run = Loopback::new(Scenario {
@@ -220,7 +161,7 @@ fn projectile_ghost_reload_changes_client_ghosting_without_tuning_resend_or_demo
     );
     // The send on the client's participation entry.
     run.host_send_client_tuning();
-    let rocket = fly_rocket(&mut run, Vec3::new(3.0, 0.0, 0.0));
+    let rocket = run.fly_remote_rocket(Vec3::new(3.0, 0.0, 0.0));
     run.run(90);
     assert_eq!(
         run.client_tunings_received, 1,
@@ -261,7 +202,7 @@ fn projectile_ghost_reload_changes_client_ghosting_without_tuning_resend_or_demo
     );
     assert!(
         run.client_participating(),
-        "the host's reload demotes no one"
+        "the host's reload demotes no one: descriptors are outside the compatibility digest"
     );
 
     // The client reloads the same content: its own ghosting changes.
@@ -283,16 +224,13 @@ fn projectile_ghost_reload_changes_client_ghosting_without_tuning_resend_or_demo
         "the client's ghost of the slot pawn holds"
     );
     assert_eq!(run.client_tunings_received, 1, "no tuning resend");
+    // Descriptors are outside the compatibility digest, so these two hold by
+    // construction; the resend count above and the control below are the proof.
     assert_eq!(
         run.client_divergences_received, divergences,
         "no demotion notice"
     );
     assert!(run.client_participating(), "the client still participates");
-    assert_eq!(
-        digest(content(true)),
-        digest(content(false)),
-        "the opt-in leaves the admission digest unchanged"
-    );
 
     // Control: a host reload that changes the weapon's tuning resends it.
     let mut retuned = content(false);

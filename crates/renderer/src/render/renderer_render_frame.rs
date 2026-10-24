@@ -683,7 +683,7 @@ impl Renderer {
                 let eye = full.last_camera_position;
                 full.ghost_order.build(
                     skinned_ghost_plan,
-                    full.kinematic_ghost.draw_bounds(),
+                    full.kinematic_ghost.draw_shapes(&full.kinematic_brush),
                     view_proj,
                     eye,
                 );

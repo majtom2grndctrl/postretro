@@ -1,17 +1,16 @@
 // Kinematic-brush ghost pipelines (a colour and a depth-only draw per mode),
-// their instance upload, each ghost's placed bounds, and draw recording over
-// the mover pass's geometry.
+// their instance upload, each ghost's placed shape for the sort, and draw
+// recording over the mover pass's geometry.
 // See: context/lib/rendering_pipeline.md §7.9
 
-use glam::{Mat4, Vec3};
 use postretro_render_cpu::ghost_instance::{
     KINEMATIC_GHOST_INSTANCE_SIZE, KinematicGhostInstance, pack_kinematic_ghost_instance,
 };
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
-use postretro_render_data::cone_frustum::Aabb;
 
 use super::ghost_pipeline::{GhostDrawStep, GhostPipelines};
 use super::kinematic_brush::KinematicBrushPass;
+use super::kinematic_ghost_shape::{MoverGhostBounds, MoverGhostShape};
 use super::{GpuTexture, SCENE_COLOR_FORMAT};
 
 /// Unlit mover ghost shader with the shared ghost look helper appended. It
@@ -42,98 +41,6 @@ fn kinematic_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
         array_stride: postretro_render_data::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &KINEMATIC_GHOST_VERTEX_ATTRIBUTES,
-    }
-}
-
-/// A mover ghost's geometry as placed: its mover's local geometry bounds
-/// under the ghost's model transform. The frame sorts the ghost by the box's
-/// centre and asks which skinned ghosts stand on or in the box.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct MoverGhostBounds {
-    local: Aabb,
-    transform: Mat4,
-    /// World to mover-local, when the box can hold a point: `None` for a
-    /// transform with no inverse, or a box that is not finite and ordered.
-    local_from_world: Option<Mat4>,
-    /// World length of one local unit along each local axis.
-    metres_per_unit: Vec3,
-}
-
-impl MoverGhostBounds {
-    pub(super) fn new(transform: Mat4, local: Aabb) -> Self {
-        let ordered =
-            local.min.is_finite() && local.max.is_finite() && local.min.cmple(local.max).all();
-        let local_from_world = if ordered {
-            transform.try_inverse()
-        } else {
-            None
-        };
-        Self {
-            local,
-            transform,
-            local_from_world,
-            metres_per_unit: Vec3::new(
-                transform.x_axis.truncate().length(),
-                transform.y_axis.truncate().length(),
-                transform.z_axis.truncate().length(),
-            ),
-        }
-    }
-
-    /// World-space centre of the box; not finite when the box or transform
-    /// is not.
-    pub(super) fn center(&self) -> Vec3 {
-        self.transform
-            .transform_point3((self.local.min + self.local.max) * 0.5)
-    }
-
-    /// Whether world `point` lies in the oriented box grown by `margin`
-    /// metres along each of its axes. Tested in the mover's own frame, so a
-    /// point beside a turned box but inside its world-axis enclosure is out.
-    /// Never true for a box with no inverse or bounds, or a non-finite point.
-    pub(super) fn contains(&self, point: Vec3, margin: f32) -> bool {
-        self.meets_segment(point, point, margin)
-    }
-
-    /// Whether the world segment from `start` to `end` touches the oriented
-    /// box grown by `margin` metres along each of its axes: a slab test in
-    /// the mover's own frame, ends included. A segment of zero length asks
-    /// whether its point lies in the box. Never true for a box with no
-    /// inverse or bounds, or a non-finite end.
-    pub(super) fn meets_segment(&self, start: Vec3, end: Vec3, margin: f32) -> bool {
-        let Some(local_from_world) = self.local_from_world else {
-            return false;
-        };
-        let start = local_from_world.transform_point3(start);
-        let end = local_from_world.transform_point3(end);
-        if !(start.is_finite() && end.is_finite()) {
-            return false;
-        }
-        let reach = Vec3::splat(margin) / self.metres_per_unit;
-        let low = self.local.min - reach;
-        let high = self.local.max + reach;
-        let step = end - start;
-        // The part of the segment, as a fraction of its length, inside every
-        // slab seen so far.
-        let (mut enter, mut leave) = (0.0_f32, 1.0_f32);
-        for axis in 0..3 {
-            let (from, along) = (start[axis], step[axis]);
-            if along == 0.0 {
-                // Parallel to this slab: inside it everywhere or nowhere.
-                if from < low[axis] || from > high[axis] {
-                    return false;
-                }
-                continue;
-            }
-            let near = (low[axis] - from) / along;
-            let far = (high[axis] - from) / along;
-            enter = enter.max(near.min(far));
-            leave = leave.min(near.max(far));
-            if enter > leave {
-                return false;
-            }
-        }
-        true
     }
 }
 
@@ -310,9 +217,15 @@ impl KinematicGhostPass {
         !self.draws.is_empty()
     }
 
-    /// Each mover ghost's placed geometry bounds, in draw-slot order.
-    pub(super) fn draw_bounds(&self) -> impl Iterator<Item = MoverGhostBounds> + '_ {
-        self.draws.iter().map(|draw| draw.bounds)
+    /// Each mover ghost's placed shape, in draw-slot order: its geometry
+    /// bounds, and its mover's triangles as `brush` keeps them.
+    pub(super) fn draw_shapes<'a>(
+        &'a self,
+        brush: &'a KinematicBrushPass,
+    ) -> impl Iterator<Item = MoverGhostShape<'a>> + 'a {
+        self.draws.iter().map(move |draw| {
+            MoverGhostShape::new(draw.bounds, brush.mover_triangles(draw.mover_id))
+        })
     }
 
     /// Record the mover ghost in slot `draw` as `step` of its draw pair,

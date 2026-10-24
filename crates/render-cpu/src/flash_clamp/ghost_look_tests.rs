@@ -11,6 +11,7 @@ use super::super::flash_clamp_test_fixtures::{
 };
 use super::super::ghost_look_clamp::GhostLookClamp;
 use super::super::ghost_tint::{drawn_luminance, tint_at_luminance};
+use super::super::ghost_trackers::EDGE_POINTS;
 use super::super::value::{INTENSITY_RATE_PER_SECOND, RED_SATURATED, luminance, redness};
 use super::*;
 use crate::flash_limiter::{HITCH_CEILING_SECONDS, LimiterFrameInput, pack_limiter_frame};
@@ -2027,4 +2028,132 @@ fn random_looks_across_drops_present_at_most_three_flashes_over_any_background()
             "{fps} fps {transparency:?}: {worst} transitions"
         );
     }
+}
+
+// Regression: on the frame `render.ghosts` switched blend to dither, the
+// exempt ray drew the screen door's coverage, rounded up from the held
+// opacity, so it drew more than the frame before and could pass a faint
+// first move's peak for real: counted anew, from six edge slots that opens a
+// seventh. A white ghost appears at 0.3, swings back to 0.29 and holds there
+// over budget. On the switch, 0.29 would keep 5/16 of the door's pixels, past
+// the appearance; the ray holds at 4/16 instead, the sixteenth below what
+// blending drew, until the window has room for the asked look.
+#[test]
+fn a_blend_to_dither_switch_over_budget_draws_no_more_than_blending_drew() {
+    let frame = frame(1.0 / 60.0, true);
+    let asked = |opacity: f32, transparency| AskedLook {
+        look: look(opacity, WHITE),
+        transparency,
+    };
+    let in_blend = |opacity| asked(opacity, GhostTransparency::Blend);
+    let mut clamp = LookValueClamp::appearing(in_blend(0.3));
+    for _ in 0..30 {
+        clamp.limit(in_blend(0.3), &frame);
+    }
+    clamp.limit(in_blend(0.29), &frame);
+    assert_eq!(clamp.window.len(), 2, "the appearance and the swing back");
+    for _ in 0..33 {
+        clamp.limit(in_blend(0.29), &frame);
+    }
+    assert_eq!(clamp.window.len(), 1, "the appearance's slot aged out");
+    // The corner (1, 1), which a white ghost never moves, fills the window
+    // over budget, so the switch frame takes the exempt ray.
+    let corner = EDGE_POINTS / 2;
+    for _ in 0..4 {
+        assert!(clamp.window.count_edge(corner, SlotClass::Exempt, true));
+    }
+    assert_eq!(clamp.window.budget(), Budget::ExemptOnly);
+
+    let in_dither = asked(0.29, GhostTransparency::Dither);
+    assert!(
+        screen_door_coverage(0.29) > 0.3,
+        "the held opacity dithered draws past the appearance"
+    );
+    let shown = clamp.limit(in_dither, &frame).look;
+    assert_eq!(
+        shown.opacity, 0.25,
+        "the sixteenth below what blending drew"
+    );
+    assert_eq!(screen_door_coverage(shown.opacity), 0.25);
+    assert_eq!(clamp.window.len(), 5, "nothing opens");
+    for _ in 0..20 {
+        assert_eq!(clamp.window.budget(), Budget::ExemptOnly);
+        let shown = clamp.limit(in_dither, &frame).look;
+        assert_eq!(shown.opacity, 0.25, "over budget the ray never rises");
+    }
+    for _ in 0..29 {
+        clamp.limit(in_dither, &frame);
+    }
+    let last = clamp.limit(in_dither, &frame).look;
+    assert_eq!(
+        last.opacity, 0.29,
+        "the asked look once the window has room"
+    );
+}
+
+// A fade-out over budget, switched from blend to dither at every frame of
+// it: each frame draws no more than the frame before, judged as drawn (the
+// screen door's coverage once dithered), and the fade still reaches nothing.
+// At 240 fps the fall per frame is under the door's widest round-up, so some
+// switch frames would draw more than blending drew without the hold.
+#[test]
+fn a_blend_to_dither_switch_during_a_fade_out_never_raises_what_draws() {
+    let fps = 240.0;
+    let frame = frame(1.0 / fps, true);
+    let cap = INTENSITY_RATE_PER_SECOND * frame.dt_rate;
+    let fade_frames = (fps / INTENSITY_RATE_PER_SECOND) as usize;
+    let mut held_on_a_switch = 0;
+    for switch in 0..fade_frames {
+        let mut clamp = LookValueClamp::fresh(AskedLook {
+            look: look(1.0, WHITE),
+            transparency: GhostTransparency::Blend,
+        });
+        // The corner (1, 1), which a white ghost never moves, fills the
+        // window over budget, so every frame of the fade takes the exempt
+        // ray.
+        let corner = EDGE_POINTS / 2;
+        for _ in 0..5 {
+            assert!(clamp.window.count_edge(corner, SlotClass::Exempt, true));
+        }
+        let mut drew = 1.0;
+        for n in 0..fade_frames + 8 {
+            let transparency = if n < switch {
+                GhostTransparency::Blend
+            } else {
+                GhostTransparency::Dither
+            };
+            if n == switch {
+                let asked = clamp.capped(0.0, drawn_luminance(WHITE), cap);
+                let fall = clamp.opacity.min(asked.0);
+                if screen_door_coverage(fall) > drew {
+                    held_on_a_switch += 1;
+                }
+            }
+            assert_eq!(clamp.window.budget(), Budget::ExemptOnly);
+            let shown = clamp
+                .limit(
+                    AskedLook {
+                        look: look(0.0, WHITE),
+                        transparency,
+                    },
+                    &frame,
+                )
+                .look;
+            let draws = drawn_opacity(transparency)(shown.opacity);
+            assert!(
+                draws <= drew,
+                "switch at frame {switch}: frame {n} draws {draws} after {drew}"
+            );
+            drew = draws;
+        }
+        assert_eq!(
+            clamp.opacity, 0.0,
+            "switch at frame {switch}: reaches nothing"
+        );
+        assert_eq!(drew, 0.0, "switch at frame {switch}: draws nothing");
+    }
+    assert!(
+        held_on_a_switch > 0,
+        "some switch frame's fall would draw more than blending drew"
+    );
 }

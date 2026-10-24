@@ -232,6 +232,7 @@ pub use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
     route_host_presentation_spawns, update_client_overlay_anchors, update_host_overlay_roster,
 };
+pub use projectile_presentation::HostProjectilePresentations;
 pub use seat::clear_released_seat_slot_values;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]

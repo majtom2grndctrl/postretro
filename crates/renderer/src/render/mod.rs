@@ -26,6 +26,7 @@ mod ghost_order;
 mod ghost_pipeline;
 mod kinematic_brush;
 mod kinematic_ghost;
+mod kinematic_ghost_shape;
 mod lightmap_residency;
 mod lightmap_streaming;
 mod loaded_texture;

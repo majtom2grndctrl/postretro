@@ -199,17 +199,20 @@ such as teeth behind closed lips, never show through. Ghosts draw farthest
 first, so a nearer ghost blends over a farther one.
 
 Ghosts sort as whole objects, not surface by surface. A ghost standing on or
-inside a moving ghost, such as a platform, a lift or a cab, layers correctly
-with it when you see it from the side it stands on: a platform or lift from
-above, a cab from inside. Seen through the moving ghost instead, from under a
-bridge or from outside a closed cab, the moving ghost's near side draws over
-it and the ghost shows through. A ghost jumping on a moving ghost keeps its
-layering through an ordinary jump.
+inside a moving ghost, such as a platform, a lift, a train car or a cab,
+layers with it by what of the moving ghost actually lies between you and the
+ghost. Railings, a lamp post or an open deck beside your line of sight are
+fine: seen from above, a lift with railings draws beneath its rider. A wall,
+a deck or a roof in the way is not: from outside a closed cab, from under a
+bridge, or from inside a cab looking at a ghost on its roof, the moving
+ghost's near side draws over the ghost and the ghost shows through. A ghost
+jumping on a moving ghost keeps its layering through an ordinary jump.
 
-Two ghosts that pass through each other, or a ghost close beside a large
-moving ghost without standing on it, can hide each other where they overlap:
-in `"blend"` as if solid there, in `"dither"` everywhere but the pattern's
-gaps.
+What remains is the whole-object sort itself. Two ghosts that pass through
+each other, or a ghost partly in front of and partly behind a moving ghost,
+such as one close behind the near end of a long ghost wall seen along its
+length, can hide each other where they overlap: in `"blend"` as if solid
+there, in `"dither"` everywhere but the pattern's gaps.
 
 Ghosts of projectiles drawn as sprites blend in either mode and sit outside
 that ordering, like any sprite.

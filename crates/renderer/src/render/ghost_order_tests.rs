@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.9
 
 use super::*;
+use crate::render::kinematic_ghost_shape::tests::box_triangles;
 use postretro_model::ModelHandle;
 use postretro_model::sample_params::MeshSampleParams;
 use postretro_render_cpu::mesh_instances::ModelDrawGroup;
@@ -22,7 +23,8 @@ const POSE_RADIUS: f32 = 1.8;
 
 /// A skinned ghost instance as the planner stamps an animated model: its
 /// transform at the model's feet, its pose envelope the cube of
-/// [`POSE_RADIUS`] centred there. Its sort key is its feet's depth.
+/// [`POSE_RADIUS`] centred there. Its sort key is its body point's depth,
+/// half a pose radius above its feet.
 fn instance(key: MeshPaletteCacheKey, feet: Vec3) -> PlannedInstance {
     PlannedInstance {
         transform: Mat4::from_translation(feet),
@@ -74,17 +76,55 @@ fn one_pawn(feet: Vec3) -> MeshFramePlan {
     )
 }
 
+/// [`instance`]'s sort key: its body point, half a pose radius above `feet`.
+fn body_of(feet: Vec3) -> Vec3 {
+    feet + Vec3::Y * POSE_RADIUS * 0.5
+}
+
 fn at_depth(z: f32) -> Vec3 {
     Vec3::new(0.0, 0.0, z)
 }
 
+/// A mover ghost for the sort: its geometry as boxes in its own space,
+/// placed by a transform, with the triangles its shape borrows.
+struct TestMover {
+    bounds: MoverGhostBounds,
+    triangles: Vec<[Vec3; 3]>,
+}
+
+impl TestMover {
+    /// The boxes' faces as the mover's triangles, and their enclosure as its
+    /// bounds.
+    fn boxes(transform: Mat4, boxes: &[Aabb]) -> Self {
+        let local = boxes[1..].iter().fold(boxes[0], |all, part| Aabb {
+            min: all.min.min(part.min),
+            max: all.max.max(part.max),
+        });
+        Self {
+            bounds: MoverGhostBounds::new(transform, local),
+            triangles: boxes.iter().copied().flat_map(box_triangles).collect(),
+        }
+    }
+
+    fn shape(&self) -> MoverGhostShape<'_> {
+        MoverGhostShape::new(self.bounds, &self.triangles)
+    }
+}
+
+fn aabb(min: [f32; 3], max: [f32; 3]) -> Aabb {
+    Aabb {
+        min: Vec3::from_array(min),
+        max: Vec3::from_array(max),
+    }
+}
+
 /// A mover ghost whose bounds collapse to one point at `point`.
-fn mover_at_point(point: Vec3) -> MoverGhostBounds {
-    MoverGhostBounds::new(Mat4::from_translation(point), Aabb::default())
+fn mover_at_point(point: Vec3) -> TestMover {
+    TestMover::boxes(Mat4::from_translation(point), &[Aabb::default()])
 }
 
 /// A mover ghost whose bounds collapse to one point at depth `z`.
-fn mover_at(z: f32) -> MoverGhostBounds {
+fn mover_at(z: f32) -> TestMover {
     mover_at_point(at_depth(z))
 }
 
@@ -123,10 +163,10 @@ const PLATFORM_LOCAL: Aabb = Aabb {
 };
 
 /// A ghost platform 6 m ahead of the origin, its top face at y 0.
-fn platform() -> MoverGhostBounds {
-    MoverGhostBounds::new(
+fn platform() -> TestMover {
+    TestMover::boxes(
         Mat4::from_translation(Vec3::new(0.0, 0.0, -6.0)),
-        PLATFORM_LOCAL,
+        &[PLATFORM_LOCAL],
     )
 }
 
@@ -169,7 +209,7 @@ fn ghost_order_draws_skinned_and_mover_ghosts_farthest_first() {
     let mut order = GhostDrawOrder::default();
     order.build(
         Some(&skinned),
-        [mover_at(0.2), mover_at(0.8)],
+        [mover_at(0.2).shape(), mover_at(0.8).shape()],
         Mat4::IDENTITY,
         IDENTITY_EYE,
     );
@@ -251,7 +291,11 @@ fn ghost_order_draws_a_ghost_centred_behind_the_eye_last() {
     // Right-handed view: forward is -z, so +z lies behind the eye.
     order.build(
         None,
-        [mover_at(2.0), mover_at(-10.0), mover_at(-2.0)],
+        [
+            mover_at(2.0).shape(),
+            mover_at(-10.0).shape(),
+            mover_at(-2.0).shape(),
+        ],
         view_proj,
         Vec3::ZERO,
     );
@@ -268,14 +312,16 @@ fn ghost_order_draws_a_ghost_centred_behind_the_eye_last() {
 
 // A skinned ghost stands at its holder's origin, the model's feet, not at
 // its envelope's bottom, which for an animated model lies a model height
-// below the feet. Its body point sits halfway up the envelope's reach.
+// below the feet. Its body point, its sort key, sits halfway up the
+// envelope's reach. For a clipless model's tight box standing on its origin
+// and centred over it, that is the box's centre.
 #[test]
 fn ghost_order_stands_a_ghost_at_its_origin_and_aims_at_its_mid_body() {
     let rider = instance(ghost_key(0, 3, None), FAR_HALF_FEET);
     assert_eq!(feet_point(&rider), Some(FAR_HALF_FEET));
     assert_eq!(instance_center(&rider), FAR_HALF_FEET);
     let body = body_point(&rider, FAR_HALF_FEET);
-    assert!(body.abs_diff_eq(FAR_HALF_FEET + Vec3::Y * POSE_RADIUS * 0.5, 1e-5));
+    assert!(body.abs_diff_eq(body_of(FAR_HALF_FEET), 1e-5));
 
     let twice = PlannedInstance {
         transform: Mat4::from_scale_rotation_translation(
@@ -288,6 +334,13 @@ fn ghost_order_stands_a_ghost_at_its_origin_and_aims_at_its_mid_body() {
     assert_eq!(feet_point(&twice), Some(FAR_HALF_FEET));
     let body = body_point(&twice, FAR_HALF_FEET);
     assert!(body.abs_diff_eq(FAR_HALF_FEET + Vec3::Y * POSE_RADIUS, 1e-4));
+
+    let tight = PlannedInstance {
+        bounds: aabb([-0.3, 0.0, -0.3], [0.3, 1.8, 0.3]),
+        ..rider.clone()
+    };
+    let body = body_point(&tight, FAR_HALF_FEET);
+    assert!(body.abs_diff_eq(instance_center(&tight), 1e-6));
 
     // An envelope reaching no higher than the feet aims at the feet.
     let sunk = PlannedInstance {
@@ -306,6 +359,62 @@ fn ghost_order_stands_a_ghost_at_its_origin_and_aims_at_its_mid_body() {
     assert_eq!(feet_point(&lost), None);
 }
 
+// Regression: an animated ghost keyed at its feet, standing 0.45 m in front
+// of a 2 × 3 m ghost door, seen from 1.6 m up looking 25° down, sorted
+// behind the door's centre, so the door cut a pawn-shaped hole in it. Keyed
+// at its body point it sorts nearer, draws after the door and blends over
+// it.
+#[test]
+fn ghost_order_draws_a_pawn_just_in_front_of_a_tall_door_after_it_seen_looking_down() {
+    let eye = Vec3::new(0.0, 1.6, 0.0);
+    let pitch = 25f32.to_radians();
+    let view_proj = view_from(eye, eye + Vec3::new(0.0, -pitch.sin(), -pitch.cos()));
+    let door = TestMover::boxes(
+        Mat4::from_translation(Vec3::new(0.0, 1.5, -4.5)),
+        &[aabb([-1.0, -1.5, -0.05], [1.0, 1.5, 0.05])],
+    );
+    let feet = Vec3::new(0.0, 0.0, -4.0);
+    let door_depth = view_depth(view_proj, door.bounds.center());
+    assert!(view_depth(view_proj, feet) > door_depth);
+    assert!(view_depth(view_proj, body_of(feet)) < door_depth);
+    assert!(!door.bounds.meets_segment(
+        feet,
+        feet - Vec3::Y * MOVER_RIDER_REACH_ABOVE,
+        MOVER_CONTACT_MARGIN
+    ));
+    let mut order = GhostDrawOrder::default();
+    order.build(Some(&one_pawn(feet)), [door.shape()], view_proj, eye);
+    assert_eq!(units_of(&order), [MOVER, PAWN]);
+}
+
+// Regression: a clipless ghost whose tight box lies wholly 0.6–0.65 m
+// beyond its origin along the view, behind a mover ghost 0.2–0.25 m out,
+// keyed on its origin's vertical and drew after the mover, so the mover hid
+// it. Keyed over its box's centre it sorts behind the mover and draws first.
+#[test]
+fn ghost_order_keys_a_clipless_ghost_over_its_box_not_its_origin() {
+    let offset = PlannedInstance {
+        transform: Mat4::IDENTITY,
+        bounds: aabb([-0.25, -0.75, 0.6], [0.75, 0.75, 0.65]),
+        ..instance(ghost_key(0, 3, None), Vec3::ZERO)
+    };
+    let body = body_point(&offset, Vec3::ZERO);
+    assert!(body.abs_diff_eq(Vec3::new(0.25, 0.375, 0.625), 1e-6));
+    let near = TestMover::boxes(
+        Mat4::IDENTITY,
+        &[aabb([-0.75, -0.75, 0.2], [0.25, 0.75, 0.25])],
+    );
+    assert!(!near.bounds.contains(Vec3::ZERO, MOVER_CONTACT_MARGIN));
+    let mut order = GhostDrawOrder::default();
+    order.build(
+        Some(&plan(0, vec![("enemy", vec![offset])])),
+        [near.shape()],
+        Mat4::IDENTITY,
+        IDENTITY_EYE,
+    );
+    assert_eq!(units_of(&order), [PAWN, MOVER]);
+}
+
 // A platform whose centre is nearer than an animated pawn standing on its
 // far half, seen from above, still draws first: the pawn's feet are on it,
 // so the pawn blends over it instead of cutting a pawn-shaped hole in it.
@@ -317,17 +426,24 @@ fn ghost_order_draws_a_platform_before_an_animated_pawn_standing_on_its_far_half
     let rider = instance(ghost_key(0, 3, None), FAR_HALF_FEET);
     let envelope_bottom = FAR_HALF_FEET - Vec3::Y * POSE_RADIUS;
     let platform = platform();
-    assert!(platform.contains(FAR_HALF_FEET, MOVER_CONTACT_MARGIN));
-    assert!(!platform.meets_segment(
+    assert!(
+        platform
+            .bounds
+            .contains(FAR_HALF_FEET, MOVER_CONTACT_MARGIN)
+    );
+    assert!(!platform.bounds.meets_segment(
         envelope_bottom,
         envelope_bottom - Vec3::Y * MOVER_RIDER_REACH_ABOVE,
         MOVER_CONTACT_MARGIN
     ));
-    assert!(view_depth(view_proj, platform.center()) < view_depth(view_proj, FAR_HALF_FEET));
+    assert!(
+        view_depth(view_proj, platform.bounds.center())
+            < view_depth(view_proj, body_of(FAR_HALF_FEET))
+    );
     let mut order = GhostDrawOrder::default();
     order.build(
         Some(&plan(0, vec![("enemy", vec![rider])])),
-        [platform],
+        [platform.shape()],
         view_proj,
         ABOVE_EYE,
     );
@@ -336,23 +452,33 @@ fn ghost_order_draws_a_platform_before_an_animated_pawn_standing_on_its_far_half
 
 // A ghost jumping on the platform's far half keeps the platform drawing
 // first through the jump: its feet stay within a jump's apex above the top
-// face. A ghost hovering well above that is not carried, so the centres
-// decide.
+// face. A ghost hovering higher is not carried, so the keys decide.
 #[test]
 fn ghost_order_keeps_a_platform_before_a_ghost_jumping_on_it() {
     let view_proj = above_view();
     let platform = platform();
+    let centre = view_depth(view_proj, platform.bounds.center());
     let mut order = GhostDrawOrder::default();
     for rise in [0.0, 0.5, 1.1] {
-        let feet = FAR_HALF_FEET + Vec3::Y * rise;
-        assert!(view_depth(view_proj, platform.center()) < view_depth(view_proj, feet));
-        order.build(Some(&one_pawn(feet)), [platform], view_proj, ABOVE_EYE);
+        let feet = Vec3::new(0.0, 0.02 + rise, -7.4);
+        assert!(centre < view_depth(view_proj, body_of(feet)));
+        order.build(
+            Some(&one_pawn(feet)),
+            [platform.shape()],
+            view_proj,
+            ABOVE_EYE,
+        );
         assert_eq!(units_of(&order), [MOVER, PAWN], "feet {rise} m up");
     }
 
-    let hovering = Vec3::new(0.0, 2.02, -7.4);
-    assert!(view_depth(view_proj, platform.center()) < view_depth(view_proj, hovering));
-    order.build(Some(&one_pawn(hovering)), [platform], view_proj, ABOVE_EYE);
+    let hovering = Vec3::new(0.0, 1.5, -7.4);
+    assert!(centre < view_depth(view_proj, body_of(hovering)));
+    order.build(
+        Some(&one_pawn(hovering)),
+        [platform.shape()],
+        view_proj,
+        ABOVE_EYE,
+    );
     assert_eq!(units_of(&order), [PAWN, MOVER]);
 }
 
@@ -365,47 +491,148 @@ fn ghost_order_draws_a_turned_lift_before_a_pawn_riding_its_far_half() {
     let view_proj = wide_view();
     let transform = Mat4::from_translation(Vec3::new(0.0, -1.5, -6.0))
         * Mat4::from_rotation_y(30f32.to_radians());
-    let lift = MoverGhostBounds::new(
-        transform,
-        Aabb {
-            min: Vec3::new(-1.5, -0.2, -1.5),
-            max: Vec3::new(1.5, 0.0, 1.5),
-        },
-    );
+    let lift = TestMover::boxes(transform, &[aabb([-1.5, -0.2, -1.5], [1.5, 0.0, 1.5])]);
     let feet = transform.transform_point3(Vec3::new(0.3, 0.02, -1.2));
     let rider = instance(ghost_key(0, 3, None), feet);
-    assert!(view_depth(view_proj, lift.center()) < view_depth(view_proj, instance_center(&rider)));
+    assert!(
+        view_depth(view_proj, lift.bounds.center())
+            < view_depth(view_proj, body_point(&rider, feet))
+    );
     let mut order = GhostDrawOrder::default();
     order.build(
         Some(&plan(0, vec![("enemy", vec![rider])])),
-        [lift],
+        [lift.shape()],
         view_proj,
         Vec3::ZERO,
     );
     assert_eq!(units_of(&order), [MOVER, PAWN]);
 }
 
+/// [`platform`]'s size class as a 3 × 3 m lift, 6 m ahead, its deck topping
+/// out at y 0, ringed by railings 1.1 m high and 5 cm thick.
+fn railed_lift() -> TestMover {
+    TestMover::boxes(
+        Mat4::from_translation(Vec3::new(0.0, 0.0, -6.0)),
+        &[
+            aabb([-1.5, -0.2, -1.5], [1.5, 0.0, 1.5]),
+            aabb([-1.5, 0.0, -1.5], [1.5, 1.1, -1.45]),
+            aabb([-1.5, 0.0, 1.45], [1.5, 1.1, 1.5]),
+            aabb([-1.5, 0.0, -1.5], [-1.45, 1.1, 1.5]),
+            aabb([1.45, 0.0, -1.5], [1.5, 1.1, 1.5]),
+        ],
+    )
+}
+
+// Regression: an open lift with waist-high railings, seen from above, was
+// taken for a closed cab because the eye's line to its rider entered its
+// bounds, so the lift drew after its rider and cut a rider-shaped hole in
+// it. That line passes over the railings and touches none of the lift's
+// surfaces, so the lift draws first and its rider blends over it.
+#[test]
+fn ghost_order_draws_a_railed_lift_before_its_rider_seen_from_above() {
+    let view_proj = above_view();
+    let lift = railed_lift();
+    let body = body_of(FAR_HALF_FEET);
+    assert!(lift.bounds.contains(FAR_HALF_FEET, MOVER_CONTACT_MARGIN));
+    assert!(lift.bounds.meets_segment(ABOVE_EYE, body, 0.0));
+    assert!(!lift.shape().surface_between(ABOVE_EYE, body));
+    assert!(view_depth(view_proj, lift.bounds.center()) < view_depth(view_proj, body));
+    let mut order = GhostDrawOrder::default();
+    order.build(
+        Some(&one_pawn(FAR_HALF_FEET)),
+        [lift.shape()],
+        view_proj,
+        ABOVE_EYE,
+    );
+    assert_eq!(units_of(&order), [MOVER, PAWN]);
+}
+
+// A platform with a 2.5 m lamp post at one corner, seen from above, its
+// rider on the far half: the eye's line to the rider enters the post-tall
+// bounds but misses the post, so the platform still draws first.
+#[test]
+fn ghost_order_draws_a_platform_with_a_post_before_its_rider_seen_from_above() {
+    let view_proj = above_view();
+    let platform = TestMover::boxes(
+        Mat4::from_translation(Vec3::new(0.0, 0.0, -6.0)),
+        &[PLATFORM_LOCAL, aabb([-1.9, 0.0, 1.2], [-1.7, 2.5, 1.4])],
+    );
+    let body = body_of(FAR_HALF_FEET);
+    assert!(platform.bounds.meets_segment(ABOVE_EYE, body, 0.0));
+    assert!(!platform.shape().surface_between(ABOVE_EYE, body));
+    assert!(view_depth(view_proj, platform.bounds.center()) < view_depth(view_proj, body));
+    let mut order = GhostDrawOrder::default();
+    order.build(
+        Some(&one_pawn(FAR_HALF_FEET)),
+        [platform.shape()],
+        view_proj,
+        ABOVE_EYE,
+    );
+    assert_eq!(units_of(&order), [MOVER, PAWN]);
+}
+
+// A train car seen from above, outside its cabin: a 6 m deck under a cabin
+// over its right part. A rider on the open deck is seen clear of the cabin,
+// so the car draws first and the rider blends over it. A rider inside the
+// cabin is seen through the cabin's wall, so the keys decide and the wall
+// blends over it.
+#[test]
+fn ghost_order_layers_a_train_cars_riders_by_what_of_the_car_lies_between() {
+    let view_proj = above_view();
+    let car = TestMover::boxes(
+        Mat4::from_translation(Vec3::new(0.0, 0.0, -6.0)),
+        &[
+            aabb([-3.0, -0.2, -1.5], [3.0, 0.0, 1.5]),
+            aabb([0.5, 0.0, -1.5], [3.0, 2.2, 1.5]),
+        ],
+    );
+    let centre = view_depth(view_proj, car.bounds.center());
+    let mut order = GhostDrawOrder::default();
+
+    let on_deck = Vec3::new(-1.5, 0.02, -7.0);
+    assert!(car.bounds.meets_segment(ABOVE_EYE, body_of(on_deck), 0.0));
+    assert!(!car.shape().surface_between(ABOVE_EYE, body_of(on_deck)));
+    assert!(centre < view_depth(view_proj, body_of(on_deck)));
+    order.build(
+        Some(&one_pawn(on_deck)),
+        [car.shape()],
+        view_proj,
+        ABOVE_EYE,
+    );
+    assert_eq!(units_of(&order), [MOVER, PAWN]);
+
+    let in_cabin = Vec3::new(1.75, 0.02, -6.8);
+    assert!(car.bounds.contains(in_cabin, MOVER_CONTACT_MARGIN));
+    assert!(car.shape().surface_between(ABOVE_EYE, body_of(in_cabin)));
+    assert!(centre < view_depth(view_proj, body_of(in_cabin)));
+    order.build(
+        Some(&one_pawn(in_cabin)),
+        [car.shape()],
+        view_proj,
+        ABOVE_EYE,
+    );
+    assert_eq!(units_of(&order), [PAWN, MOVER]);
+}
+
 // The camera on the ground under a 6 × 0.3 × 2 m ghost bridge whose top is
 // 3 m up, looking up at a ghost standing on it past the bridge's centre.
 // The bridge carries the ghost, but the camera sees it through the bridge,
-// so the centres decide: the ghost draws first and the bridge blends over
-// its legs, instead of hiding them.
+// so the keys decide: the ghost draws first and the bridge blends over its
+// legs, instead of hiding them.
 #[test]
 fn ghost_order_draws_a_pawn_on_a_bridge_before_the_bridge_seen_from_below() {
     let eye = Vec3::new(0.0, 1.6, 2.5);
     let view_proj = view_from(eye, Vec3::new(0.0, 3.6, -0.2));
-    let bridge = MoverGhostBounds::new(
+    let bridge = TestMover::boxes(
         Mat4::from_translation(Vec3::new(0.0, 2.85, 0.0)),
-        Aabb {
-            min: Vec3::new(-3.0, -0.15, -1.0),
-            max: Vec3::new(3.0, 0.15, 1.0),
-        },
+        &[aabb([-3.0, -0.15, -1.0], [3.0, 0.15, 1.0])],
     );
     let feet = Vec3::new(0.0, 3.02, -0.2);
-    assert!(bridge.contains(feet, MOVER_CONTACT_MARGIN));
-    assert!(view_depth(view_proj, bridge.center()) < view_depth(view_proj, feet));
+    assert!(bridge.bounds.contains(feet, MOVER_CONTACT_MARGIN));
+    assert!(bridge.shape().surface_between(eye, body_of(feet)));
+    assert!(view_depth(view_proj, bridge.bounds.center()) < view_depth(view_proj, body_of(feet)));
     let mut order = GhostDrawOrder::default();
-    order.build(Some(&one_pawn(feet)), [bridge], view_proj, eye);
+    order.build(Some(&one_pawn(feet)), [bridge.shape()], view_proj, eye);
     assert_eq!(units_of(&order), [PAWN, MOVER]);
 }
 
@@ -415,40 +642,60 @@ fn ghost_order_draws_a_pawn_on_a_bridge_before_the_bridge_seen_from_below() {
 #[test]
 fn ghost_order_draws_a_pawn_in_a_cab_before_the_cab_seen_from_outside() {
     let view_proj = wide_view();
-    let cab = MoverGhostBounds::new(
+    let cab = TestMover::boxes(
         Mat4::from_translation(Vec3::new(0.0, 0.0, -8.0)),
-        Aabb {
-            min: Vec3::splat(-1.5),
-            max: Vec3::splat(1.5),
-        },
+        &[aabb([-1.5; 3], [1.5; 3])],
     );
     let feet = Vec3::new(0.5, -1.48, -9.0);
-    assert!(cab.contains(feet, MOVER_CONTACT_MARGIN));
-    assert!(view_depth(view_proj, cab.center()) < view_depth(view_proj, feet));
+    assert!(cab.bounds.contains(feet, MOVER_CONTACT_MARGIN));
+    assert!(cab.shape().surface_between(Vec3::ZERO, body_of(feet)));
+    assert!(view_depth(view_proj, cab.bounds.center()) < view_depth(view_proj, body_of(feet)));
     let mut order = GhostDrawOrder::default();
-    order.build(Some(&one_pawn(feet)), [cab], view_proj, Vec3::ZERO);
+    order.build(Some(&one_pawn(feet)), [cab.shape()], view_proj, Vec3::ZERO);
     assert_eq!(units_of(&order), [PAWN, MOVER]);
 }
 
+/// A closed 4 × 3 × 4 m ghost cab around the eye at the origin, centred 1 m
+/// ahead of it.
+fn cab_around_camera() -> TestMover {
+    TestMover::boxes(
+        Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0)),
+        &[aabb([-2.0, -1.5, -2.0], [2.0, 1.5, 2.0])],
+    )
+}
+
 // The camera inside a 4 × 3 × 4 m ghost cab, a pawn standing in it on its
-// far side: the camera sees the pawn from inside, so the cab draws first
-// though its centre is nearer, and the pawn blends over its far wall.
+// far side: none of the cab lies between, so the cab draws first though its
+// centre is nearer, and the pawn blends over its far wall.
 #[test]
 fn ghost_order_draws_a_cab_around_the_camera_before_a_pawn_standing_in_it() {
     let view_proj = wide_view();
-    let cab = MoverGhostBounds::new(
-        Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0)),
-        Aabb {
-            min: Vec3::new(-2.0, -1.5, -2.0),
-            max: Vec3::new(2.0, 1.5, 2.0),
-        },
-    );
+    let cab = cab_around_camera();
     let feet = Vec3::new(0.5, -1.48, -2.5);
-    assert!(cab.contains(Vec3::ZERO, 0.0));
-    assert!(view_depth(view_proj, cab.center()) < view_depth(view_proj, feet));
+    assert!(cab.bounds.contains(Vec3::ZERO, 0.0));
+    assert!(!cab.shape().surface_between(Vec3::ZERO, body_of(feet)));
+    assert!(view_depth(view_proj, cab.bounds.center()) < view_depth(view_proj, body_of(feet)));
     let mut order = GhostDrawOrder::default();
-    order.build(Some(&one_pawn(feet)), [cab], view_proj, Vec3::ZERO);
+    order.build(Some(&one_pawn(feet)), [cab.shape()], view_proj, Vec3::ZERO);
     assert_eq!(units_of(&order), [MOVER, PAWN]);
+}
+
+// Regression: the camera inside a ghost cab lifted the cab past a ghost
+// standing on its roof, so the roof hid it. The roof lies between the eye
+// and that rider, so the keys decide: the rider draws first and the roof
+// blends over it.
+#[test]
+fn ghost_order_draws_a_pawn_on_the_roof_of_a_cab_around_the_camera_before_the_cab() {
+    let view_proj = wide_view();
+    let cab = cab_around_camera();
+    let feet = Vec3::new(0.0, 1.52, -2.5);
+    assert!(cab.bounds.contains(Vec3::ZERO, 0.0));
+    assert!(cab.bounds.contains(feet, MOVER_CONTACT_MARGIN));
+    assert!(cab.shape().surface_between(Vec3::ZERO, body_of(feet)));
+    assert!(view_depth(view_proj, cab.bounds.center()) < view_depth(view_proj, body_of(feet)));
+    let mut order = GhostDrawOrder::default();
+    order.build(Some(&one_pawn(feet)), [cab.shape()], view_proj, Vec3::ZERO);
+    assert_eq!(units_of(&order), [PAWN, MOVER]);
 }
 
 // The camera inside a ghost cab, and a ghost lift floor inside the cab
@@ -458,26 +705,20 @@ fn ghost_order_draws_a_cab_around_the_camera_before_a_pawn_standing_in_it() {
 #[test]
 fn ghost_order_keeps_two_movers_lifted_past_one_rider_in_their_own_order() {
     let view_proj = wide_view();
-    let cab = MoverGhostBounds::new(
-        Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0)),
-        Aabb {
-            min: Vec3::new(-2.0, -1.5, -2.0),
-            max: Vec3::new(2.0, 1.5, 2.0),
-        },
-    );
-    let floor = MoverGhostBounds::new(
+    let cab = cab_around_camera();
+    let floor = TestMover::boxes(
         Mat4::from_translation(Vec3::new(0.0, -1.45, -2.2)),
-        Aabb {
-            min: Vec3::new(-1.0, -0.05, -0.6),
-            max: Vec3::new(1.0, 0.05, 0.6),
-        },
+        &[aabb([-1.0, -0.05, -0.6], [1.0, 0.05, 0.6])],
     );
     let feet = Vec3::new(0.2, -1.38, -2.4);
-    assert!(cab.contains(feet, MOVER_CONTACT_MARGIN));
-    assert!(floor.contains(feet, MOVER_CONTACT_MARGIN));
-    assert!(view_depth(view_proj, cab.center()) < view_depth(view_proj, floor.center()));
-    assert!(view_depth(view_proj, floor.center()) < view_depth(view_proj, feet));
+    assert!(cab.bounds.contains(feet, MOVER_CONTACT_MARGIN));
+    assert!(floor.bounds.contains(feet, MOVER_CONTACT_MARGIN));
+    assert!(
+        view_depth(view_proj, cab.bounds.center()) < view_depth(view_proj, floor.bounds.center())
+    );
+    assert!(view_depth(view_proj, floor.bounds.center()) < view_depth(view_proj, body_of(feet)));
     let riding = one_pawn(feet);
+    let (cab, floor) = (cab.shape(), floor.shape());
     let mut order = GhostDrawOrder::default();
     for (movers, floor_slot, cab_slot) in [([cab, floor], 1, 0), ([floor, cab], 0, 1)] {
         order.build(Some(&riding), movers, view_proj, Vec3::ZERO);
@@ -504,23 +745,19 @@ fn ghost_order_draws_a_mover_reaching_past_the_eye_before_a_pawn_on_its_far_part
         vec![("enemy", vec![instance(ghost_key(0, 3, None), feet)])],
     );
     // Right-handed view: forward is -z, so +z lies behind the eye.
-    let reaching = MoverGhostBounds::new(
+    let reaching = TestMover::boxes(
         Mat4::IDENTITY,
-        Aabb {
-            min: Vec3::new(-1.0, -2.0, -20.0),
-            max: Vec3::new(1.0, -1.0, 3.0),
-        },
+        &[aabb([-1.0, -2.0, -20.0], [1.0, -1.0, 3.0])],
     );
-    let behind = MoverGhostBounds::new(
-        Mat4::IDENTITY,
-        Aabb {
-            min: Vec3::new(-1.0, -2.0, 2.0),
-            max: Vec3::new(1.0, -1.0, 4.0),
-        },
-    );
-    assert!(view_depth(view_proj, reaching.center()) < view_depth(view_proj, feet));
+    let behind = TestMover::boxes(Mat4::IDENTITY, &[aabb([-1.0, -2.0, 2.0], [1.0, -1.0, 4.0])]);
+    assert!(view_depth(view_proj, reaching.bounds.center()) < view_depth(view_proj, body_of(feet)));
     let mut order = GhostDrawOrder::default();
-    order.build(Some(&pawn), [behind, reaching], view_proj, Vec3::ZERO);
+    order.build(
+        Some(&pawn),
+        [behind.shape(), reaching.shape()],
+        view_proj,
+        Vec3::ZERO,
+    );
     assert_eq!(
         units_of(&order),
         [
@@ -548,7 +785,7 @@ fn ghost_order_draws_a_platform_before_its_farthest_rider_and_after_a_ghost_besi
         )],
     );
     let mut order = GhostDrawOrder::default();
-    order.build(Some(&riders), [platform()], above_view(), ABOVE_EYE);
+    order.build(Some(&riders), [platform().shape()], above_view(), ABOVE_EYE);
     assert_eq!(
         units_of(&order),
         [
@@ -574,26 +811,26 @@ fn ghost_order_draws_a_pawn_close_behind_an_angled_door_before_the_door() {
         min: Vec3::new(-1.0, -1.0, -0.05),
         max: Vec3::new(1.0, 1.0, 0.05),
     };
-    let door = MoverGhostBounds::new(transform, slab);
+    let door = TestMover::boxes(transform, &[slab]);
     let feet = transform.transform_point3(Vec3::new(0.0, -1.0, -0.5));
     let waiting = instance(ghost_key(0, 3, None), feet);
-    let pawn_depth = view_depth(view_proj, feet);
+    let pawn_depth = view_depth(view_proj, body_of(feet));
 
     assert_eq!(feet_point(&waiting), Some(feet));
     let enclosure = slab.transformed(&transform);
     assert!(enclosure.min.cmple(feet).all() && enclosure.max.cmpge(feet).all());
-    assert!(!door.meets_segment(
+    assert!(!door.bounds.meets_segment(
         feet,
         feet - Vec3::Y * MOVER_RIDER_REACH_ABOVE,
         MOVER_CONTACT_MARGIN
     ));
     assert!(farthest_corner_depth(view_proj, transform, slab) > pawn_depth);
-    assert!(view_depth(view_proj, door.center()) < pawn_depth);
+    assert!(view_depth(view_proj, door.bounds.center()) < pawn_depth);
 
     let mut order = GhostDrawOrder::default();
     order.build(
         Some(&plan(0, vec![("enemy", vec![waiting])])),
-        [door],
+        [door.shape()],
         view_proj,
         Vec3::ZERO,
     );
@@ -612,19 +849,22 @@ fn ghost_order_draws_a_cab_around_the_camera_after_a_pawn_outside_its_wall() {
         min: Vec3::new(-2.0, -1.5, -2.0),
         max: Vec3::new(2.0, 1.5, 2.0),
     };
-    let cab = MoverGhostBounds::new(transform, local);
+    let cab = TestMover::boxes(transform, &[local]);
     let feet = transform.transform_point3(Vec3::new(-2.5, -1.5, -1.0));
     let outside = instance(ghost_key(0, 3, None), feet);
-    let pawn_depth = view_depth(view_proj, feet);
+    let pawn_depth = view_depth(view_proj, body_of(feet));
     let off_axis = feet.x.abs().atan2(-feet.z).to_degrees();
     assert!((off_axis - 23.2).abs() < 0.1, "{off_axis}");
     assert!(farthest_corner_depth(view_proj, transform, local) > pawn_depth);
-    assert_eq!(view_depth(view_proj, cab.center()), f32::NEG_INFINITY);
+    assert_eq!(
+        view_depth(view_proj, cab.bounds.center()),
+        f32::NEG_INFINITY
+    );
 
     let mut order = GhostDrawOrder::default();
     order.build(
         Some(&plan(0, vec![("enemy", vec![outside])])),
-        [cab],
+        [cab.shape()],
         view_proj,
         Vec3::ZERO,
     );
@@ -646,15 +886,15 @@ fn ghost_order_lifts_no_mover_without_an_inverse_or_finite_bounds() {
         )],
     );
     let mut order = GhostDrawOrder::default();
-    order.build(Some(&standing), [platform()], view_proj, ABOVE_EYE);
+    order.build(Some(&standing), [platform().shape()], view_proj, ABOVE_EYE);
     assert_eq!(units_of(&order), [MOVER, PAWN]);
 
-    let sheet = MoverGhostBounds::new(
+    let sheet = TestMover::boxes(
         Mat4::from_translation(Vec3::new(0.0, 0.0, -6.0))
             * Mat4::from_scale(Vec3::new(1.0, 0.0, 1.0)),
-        PLATFORM_LOCAL,
+        &[PLATFORM_LOCAL],
     );
-    order.build(Some(&standing), [sheet], view_proj, ABOVE_EYE);
+    order.build(Some(&standing), [sheet.shape()], view_proj, ABOVE_EYE);
     assert_eq!(units_of(&order), [PAWN, MOVER]);
 
     let shapeless = plan(
@@ -670,20 +910,27 @@ fn ghost_order_lifts_no_mover_without_an_inverse_or_finite_bounds() {
             }],
         )],
     );
-    assert!(platform().contains(FAR_HALF_FEET, MOVER_CONTACT_MARGIN));
-    order.build(Some(&shapeless), [platform()], view_proj, ABOVE_EYE);
+    assert!(
+        platform()
+            .bounds
+            .contains(FAR_HALF_FEET, MOVER_CONTACT_MARGIN)
+    );
+    order.build(Some(&shapeless), [platform().shape()], view_proj, ABOVE_EYE);
     assert_eq!(units_of(&order), [PAWN, MOVER]);
 
-    let nan_mover = MoverGhostBounds::new(
+    let nan_mover = TestMover::boxes(
         Mat4::from_translation(Vec3::new(0.0, 0.0, -6.0)),
-        Aabb {
+        &[Aabb {
             min: Vec3::splat(f32::NAN),
             max: Vec3::ONE,
-        },
+        }],
     );
     order.build(
         Some(&standing),
-        [nan_mover, mover_at_point(Vec3::new(0.0, 0.0, -3.0))],
+        [
+            nan_mover.shape(),
+            mover_at_point(Vec3::new(0.0, 0.0, -3.0)).shape(),
+        ],
         view_proj,
         ABOVE_EYE,
     );
@@ -696,8 +943,9 @@ fn ghost_order_lifts_no_mover_without_an_inverse_or_finite_bounds() {
 // Equal depths keep build order, so the frame is deterministic.
 #[test]
 fn ghost_order_keeps_build_order_between_ghosts_at_one_depth() {
+    let mover = mover_at(0.5);
     let mut order = GhostDrawOrder::default();
-    order.build(None, [mover_at(0.5); 3], Mat4::IDENTITY, IDENTITY_EYE);
+    order.build(None, [mover.shape(); 3], Mat4::IDENTITY, IDENTITY_EYE);
     let units: Vec<GhostUnit> = order.units().collect();
     assert_eq!(
         units,
@@ -726,10 +974,11 @@ fn ghost_order_rebuild_replaces_the_frame_without_growing_its_scratch() {
             ),
         ],
     );
+    let mover = mover_at(0.6);
     let mut order = GhostDrawOrder::default();
     order.build(
         Some(&skinned),
-        [mover_at(0.6)],
+        [mover.shape()],
         Mat4::IDENTITY,
         IDENTITY_EYE,
     );
@@ -741,7 +990,7 @@ fn ghost_order_rebuild_replaces_the_frame_without_growing_its_scratch() {
     );
     order.build(
         Some(&skinned),
-        [mover_at(0.6)],
+        [mover.shape()],
         Mat4::IDENTITY,
         IDENTITY_EYE,
     );

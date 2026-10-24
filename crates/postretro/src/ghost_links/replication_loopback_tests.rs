@@ -1,10 +1,13 @@
-// Two-peer ghost-link loopback scenarios: the swap, pose stamps, and one-tick arms.
+// Two-peer ghost-link loopback scenarios: the swap, pose stamps, one-tick arms, and a
+// projectile's boundary edge.
 // See: context/lib/networking.md §Current contract · context/lib/entity_model.md §7d
 
 use glam::Vec3;
 
 use super::test_fixtures::*;
+use crate::ghost_links::GhostCategory;
 use crate::ghost_links::membership::ramp_step;
+use crate::ghost_links::opt_ins_test_fixtures::{descriptor, projectile_weapon};
 
 /// A membership step's float slack.
 const EPS: f32 = 1e-5;
@@ -286,5 +289,77 @@ fn ghost_arm_then_disarm_on_consecutive_ticks_presents_at_most_one_rise_and_fall
             );
         }
         assert_eq!(*client.last().unwrap(), 0.0);
+    }
+}
+
+// On the host seat and on a connected client, a remote client's rocket whose
+// presented origin sits just inside link 0's volume ghosts at that origin, and
+// one just outside it never ghosts.
+#[test]
+fn a_projectiles_origin_just_inside_ghosts_it_on_host_and_client_and_just_outside_does_not() {
+    let mut run = Loopback::new(Scenario {
+        links_armed: true,
+        pawns: [Vec3::new(-50.0, 0.0, 0.0), Vec3::new(50.0, 0.0, 0.0)],
+        barrier: false,
+    });
+    let content = || {
+        vec![
+            descriptor("player", true),
+            projectile_weapon("rocket_launcher", true),
+        ]
+    };
+    run.commit_descriptors(Some(content()), Some(content()));
+    run.run(90);
+    let (min, max) = run.link_volume(0);
+    let face = Vec3::new(max.x, (min.y + max.y) * 0.5, (min.z + max.z) * 0.5);
+    let inside_origin = face - Vec3::new(0.01, 0.0, 0.0);
+    let outside_origin = face + Vec3::new(0.01, 0.0, 0.0);
+    let (host_start, client_start) = (run.host_frames.len(), run.client_frames.len());
+    let just_inside = run.fly_remote_rocket(inside_origin);
+    let just_outside = run.fly_remote_rocket(outside_origin);
+    run.run(90);
+
+    let client_inside = run
+        .client_entity_of(just_inside)
+        .expect("the inside rocket reaches the client");
+    let client_outside = run
+        .client_entity_of(just_outside)
+        .expect("the outside rocket reaches the client");
+    for (who, frames, inside, outside) in [
+        (
+            "host seat",
+            &run.host_frames[host_start..],
+            just_inside,
+            just_outside,
+        ),
+        (
+            "client",
+            &run.client_frames[client_start..],
+            client_inside,
+            client_outside,
+        ),
+    ] {
+        let last = frames.last().expect("frames presented");
+        let ghost = last
+            .members
+            .iter()
+            .find(|member| member.link == 0 && member.entity == inside)
+            .unwrap_or_else(|| panic!("{who}: an origin just inside ghosts"));
+        assert_eq!(ghost.category, GhostCategory::Projectiles, "{who}");
+        assert!(
+            !ghost.frozen && ghost.membership == 1.0,
+            "{who}: the inside rocket ghosts in full"
+        );
+        assert!(
+            (ghost.source.position - inside_origin).length() < 1e-4,
+            "{who}: the ghost's source is the origin just inside, not {}",
+            ghost.source.position
+        );
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.members.iter().all(|member| member.entity != outside)),
+            "{who}: an origin just outside never ghosts"
+        );
     }
 }

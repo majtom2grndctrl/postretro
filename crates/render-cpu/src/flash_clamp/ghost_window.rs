@@ -69,12 +69,16 @@ pub(super) enum Budget {
 ///   counts on it at most once and joins its latest slot. A tracker whose
 ///   history is unknown and that has not moved yet draws at the presented
 ///   look what it drew with nothing drawn, so it draws that at every lower
-///   opacity of the held luminance too, and the ray moves it by f32 rounding
-///   at most. Such a move counts once and joins the latest slot like any
+///   drawn opacity of the held luminance too, and the ray moves it by f32
+///   rounding at most. Such a move counts once and joins the latest slot like any
 ///   other, and a later one carries that count on as a swing stopped short
 ///   of its peak, since a still point's neighbours move both ways; or, once
 ///   its swing back has counted, as a pass of its peak, which on the ray
-///   restarts a slot holding it, if any, and opens none.
+///   restarts a slot holding it, if any, and opens none. That holds across
+///   a `render.ghosts` switch too: the ray never draws more than the look
+///   before it, judged as drawn, so a screen door rounding a held opacity up
+///   to its coverage can't raise it (the look clamp holds the ray at the
+///   highest opacity drawing no more).
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct GhostWindow {
     // Slot fields side by side, not as an array of slots, so the window packs

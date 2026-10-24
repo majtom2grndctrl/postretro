@@ -308,7 +308,7 @@ fn an_unknown_history_tracker_counts_its_first_move_of_any_size_then_runs_as_usu
     );
 
     let mut window = GhostWindow::default();
-    let mut edges = EdgeTrackers::unknown_history(Drawn::of(0.0, 1.0));
+    let mut edges = EdgeTrackers::unknown_history();
     assert!(edges.step(faint, SlotClass::Budgeted, true, 0, &mut window));
     assert_eq!(window.len(), 1, "every first move counts, in one slot");
     assert_eq!(edges.trackers[0].last_sign, 1, "a rise over black");
@@ -340,24 +340,26 @@ fn an_unknown_history_tracker_counts_its_first_move_of_any_size_then_runs_as_usu
     ));
     assert!(window.is_empty(), "holding still counts nothing");
 
-    // Either way: a faint fall from a presented look counts too.
-    let mut window = GhostWindow::default();
-    let mut edges = EdgeTrackers::unknown_history(Drawn::of(0.5, 1.0));
-    assert!(edges.step(
-        Drawn::of(0.4999, 1.0),
-        SlotClass::Budgeted,
-        true,
-        0,
-        &mut window
-    ));
-    assert_eq!(window.len(), 1, "a faint fall counts");
-    assert_eq!(edges.trackers[0].last_sign, -1, "a fall over black");
-
     // A first move is a transition like any other: with no slot to join and
     // none to open, it does not fit.
     let mut window = GhostWindow::default();
-    let mut edges = EdgeTrackers::unknown_history(Drawn::of(0.0, 1.0));
+    let mut edges = EdgeTrackers::unknown_history();
     assert!(!edges.step(faint, SlotClass::Budgeted, false, 0, &mut window));
+}
+
+// Unknown history starts from nothing drawn whatever the caller presents
+// next: every edge point at its background, which the exempt rule for a
+// faint first move's peak rests on.
+#[test]
+fn unknown_history_starts_every_edge_point_at_what_nothing_drawn_draws() {
+    let edges = EdgeTrackers::unknown_history();
+    for edge in 0..EDGE_POINTS {
+        let (_, background) = edge_point(edge);
+        assert_eq!(edges.trackers[edge].out, background, "edge {edge}");
+    }
+    // The points the exempt rule reads the drawn opacity from.
+    assert_eq!(edge_point(LIT_EDGE), (1.0, 0.0));
+    assert_eq!(edge_point(COVERED_EDGE), (0.0, 1.0));
 }
 
 // Regression: with unknown history a faint first move counted, and so did its
@@ -371,8 +373,7 @@ fn passing_a_faint_first_moves_peak_after_its_swing_back_carries_it_on() {
     // A black ghost appearing faintly, back near nothing, then further on:
     // every point but (1, 0), which a black ghost never moves, falls by
     // under the edge threshold.
-    let (rest, faint, back, further) = (
-        Drawn::of(0.0, 0.0),
+    let (faint, back, further) = (
         Drawn::of(0.004, 0.0),
         Drawn::of(0.0005, 0.0),
         Drawn::of(0.0606, 0.0),
@@ -381,7 +382,7 @@ fn passing_a_faint_first_moves_peak_after_its_swing_back_carries_it_on() {
     // last count; aged 0.97 that slot is gone, so the fall counts anew.
     for (aged, last_sign) in [(0.9, 1), (0.97, -1)] {
         let mut window = GhostWindow::default();
-        let mut edges = EdgeTrackers::unknown_history(rest);
+        let mut edges = EdgeTrackers::unknown_history();
         assert!(edges.step(faint, SlotClass::Budgeted, true, 0, &mut window));
         window.age(0.05);
         assert!(edges.step(back, SlotClass::Budgeted, true, 0, &mut window));
@@ -396,47 +397,82 @@ fn passing_a_faint_first_moves_peak_after_its_swing_back_carries_it_on() {
 }
 
 // A faint first move's swing back counted, its first move's slot aged out,
-// then an exempt step passing that move's peak: counting anew there could
-// open a seventh edge slot. The exempt ray only moves a point back toward
-// what nothing drawn draws, so such a pass is f32 rounding, no flash: it
-// restarts the slot holding the tracker and opens none.
+// then an exempt step passing that move's peak without raising the drawn
+// opacity: counting anew there opens a slot, a seventh edge slot from six.
+// The exempt ray at a held luminance and no higher opacity only moves a point
+// back toward what nothing drawn draws, so such a pass is f32 rounding, no
+// flash: it restarts the slot holding the tracker and opens none.
 #[test]
 fn passing_a_faint_first_moves_peak_on_an_exempt_step_opens_no_slot() {
-    // The faint black ghost above. An exempt step reaching a little further
-    // stands in for the rounding pass: it takes the same rule.
-    let (rest, faint, back, past) = (
-        Drawn::of(0.0, 0.0),
+    // A white ghost appearing faintly, then back near nothing. A step drawing
+    // less over black and more over white that still reaches past the peak
+    // of (1, 15/16), whose first move is faint, stands in for the rounding
+    // pass: it takes the same rule.
+    let near_white = EDGE_SAMPLES - 1;
+    let (faint, back, past) = (
+        Drawn::of(0.004, 1.0),
+        Drawn::of(0.0005, 1.0),
+        drawn(0.0004, 1.0),
+    );
+    let mut window = GhostWindow::default();
+    let mut edges = EdgeTrackers::unknown_history();
+    assert!(edges.step(faint, SlotClass::Budgeted, true, 0, &mut window));
+    window.age(0.97);
+    assert!(edges.step(back, SlotClass::Exempt, true, 0, &mut window));
+    window.age(0.05);
+    assert_eq!(window.len(), 1, "the first move's slot aged out");
+    let tracker = edges.trackers[near_white];
+    assert_eq!(
+        (tracker.dir, tracker.last_sign),
+        (1.0, -1),
+        "a faint rise, counted back near the rest"
+    );
+    let (albedo, background) = edge_point(near_white);
+    assert!(
+        past.at(albedo, background) > tracker.peak,
+        "passes the peak"
+    );
+    assert!(
+        past.white_over_black <= back.white_over_black
+            && past.black_over_white >= back.black_over_white,
+        "raises no drawn opacity"
+    );
+    // The tracker is in the latest slot, so a count anew has no slot to join
+    // and opens one of its own.
+    let mut probe = window;
+    assert!(!probe.count_edge(near_white, SlotClass::Exempt, false));
+
+    assert!(edges.step(past, SlotClass::Exempt, true, 0, &mut window));
+    assert_eq!(window.len(), 1, "no slot opened");
+    assert_eq!(
+        edges.trackers[near_white].last_sign, -1,
+        "the swing back stays last"
+    );
+}
+
+// The look clamp's exempt ray never raises the drawn opacity, a
+// `render.ghosts` switch included. An exempt step that did could pass a
+// faint first move's peak for real; it counts anew, as a budgeted step does,
+// and from six edge slots that would open a seventh, so dev builds flag it.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "the exempt ray never raises the drawn opacity")]
+fn an_exempt_step_raising_the_drawn_opacity_past_a_faint_first_moves_peak_is_flagged() {
+    // A black ghost appearing faintly, back near nothing, then a little
+    // further on: every point but (1, 0) falls past its first move's peak.
+    let (faint, back, past) = (
         Drawn::of(0.004, 0.0),
         Drawn::of(0.0005, 0.0),
         Drawn::of(0.0041, 0.0),
     );
-    // (1, 0), which a black ghost never moves, fills the window: each exempt
-    // count of it after the first opens a slot of its own.
-    let still = 0;
     let mut window = GhostWindow::default();
-    let mut edges = EdgeTrackers::unknown_history(rest);
+    let mut edges = EdgeTrackers::unknown_history();
     assert!(edges.step(faint, SlotClass::Budgeted, true, 0, &mut window));
     window.age(0.97);
-    for _ in 0..5 {
-        assert!(window.count_edge(still, SlotClass::Exempt, true));
-    }
-    window.age(0.05);
-    assert!(window.count_edge(still, SlotClass::Exempt, true));
     assert!(edges.step(back, SlotClass::Exempt, true, 0, &mut window));
-    assert_eq!(window.len(), 6, "the first move's slot aged out");
-    assert_eq!(window.edge_slots(), 6);
+    window.age(0.05);
+    assert_eq!(window.len(), 1, "the first move's slot aged out");
     assert_eq!(edges.trackers[1].last_sign, 1, "counted back near the rest");
-    // Each moving tracker is in the latest slot alone, so a count anew has
-    // no slot to join and could only open a seventh.
-    let mut probe = window;
-    assert!(!probe.count_edge(1, SlotClass::Exempt, false));
 
-    window.age(0.5);
-    assert!(edges.step(past, SlotClass::Exempt, true, 0, &mut window));
-    assert_eq!(window.edge_slots(), 6, "no seventh edge slot");
-    assert_eq!(edges.trackers[1].last_sign, 1, "the swing back stays last");
-    // The pass restarted the slot holding the trackers, so it outlives the
-    // fillers counted before it.
-    window.age(0.6);
-    assert_eq!(window.len(), 1, "the trackers' slot restarted");
+    edges.step(past, SlotClass::Exempt, true, 0, &mut window);
 }

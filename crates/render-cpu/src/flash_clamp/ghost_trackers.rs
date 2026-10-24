@@ -12,6 +12,14 @@ const EDGE_SAMPLES: usize = 16;
 /// (1, 1) once.
 pub(super) const EDGE_POINTS: usize = 2 * EDGE_SAMPLES + 1;
 
+/// Edge point (1, 0), a white ghost over black: it draws `white_over_black`
+/// alone.
+const LIT_EDGE: usize = 0;
+
+/// Edge point (0, 1), a black ghost over white: it draws `black_over_white`
+/// alone.
+const COVERED_EDGE: usize = EDGE_SAMPLES + 1;
+
 /// Half the step between neighbouring edge samples. What two neighbours draw
 /// differs by at most a step, so a point between them draws within half a
 /// step of the line through the nearer one, and its swings differ from that
@@ -83,6 +91,12 @@ pub(super) struct Drawn {
 }
 
 impl Drawn {
+    /// What nothing drawn draws: every background as it is.
+    const NOTHING: Self = Self {
+        white_over_black: 0.0,
+        black_over_white: 1.0,
+    };
+
     /// What a ghost draws at presented `opacity` with drawn tint `luminance`.
     pub(super) fn of(opacity: f32, luminance: f32) -> Self {
         Self {
@@ -164,18 +178,25 @@ impl EdgeTrackers {
         edges
     }
 
-    /// Trackers at what `drawn` draws whose history is unknown: the screen
-    /// showed earlier states the clamp cannot see, so each point may be part
-    /// way into a swing that any move completes. Each tracker counts its
-    /// first move, of any size and either way, as a transition that way, and
-    /// from then on runs as [`Self::step`] describes. A tracker that has not
-    /// moved counts nothing.
+    /// Trackers whose history is unknown, at what nothing drawn draws: the
+    /// screen showed earlier states the clamp cannot see, so each point may
+    /// be part way into a swing that any move completes. Each tracker counts
+    /// its first move, of any size and either way, as a transition that way,
+    /// and from then on runs as [`Self::step`] describes. A tracker that has
+    /// not moved counts nothing.
     ///
-    /// The rule for any ghost whose earlier presentation the clamp can't see:
-    /// one dropped at rest and appearing again today; a reload or a join in
-    /// the middle of a strobe later.
-    pub(super) fn unknown_history(drawn: Drawn) -> Self {
-        let mut edges = Self::fresh(drawn);
+    /// They always start from nothing drawn, because [`Self::step`]'s exempt
+    /// rule rests on it: a first move then leaves what nothing drawn draws,
+    /// and the exempt ray falls back toward there, so it passes a faint first
+    /// move's peak by f32 rounding alone. That covers a ghost dropped at rest
+    /// and appearing again. A later caller whose ghost is still drawn when
+    /// the clamp loses sight of it (a reload or a join in the middle of a
+    /// strobe) needs trackers started at that look instead, and there the
+    /// falling exempt ray can carry a point past a first fall's peak for
+    /// real. Such a start is a seam of its own, whose trackers count every
+    /// pass of a first move's peak anew, on the exempt ray too.
+    pub(super) fn unknown_history() -> Self {
+        let mut edges = Self::fresh(Drawn::NOTHING);
         for tracker in &mut edges.trackers {
             tracker.last_sign = UNKNOWN_HISTORY;
         }
@@ -227,12 +248,19 @@ impl EdgeTrackers {
     ///   reaching past its peak again carries that earlier transition on
     ///   while the window holds both ([`GhostWindow::restart_earlier`]), and
     ///   otherwise counts it anew: a point nearby may only now complete the
-    ///   swing the clamp could not see. On an exempt step it carries its last
-    ///   count on in place instead ([`GhostWindow::restart_latest`]), opening
-    ///   nothing: the first move left what nothing drawn draws and the exempt
-    ///   ray moves every point back toward there, so the ray passes the peak
-    ///   by f32 rounding at most, never a flash; a real pass is a budgeted
-    ///   step, which still counts;
+    ///   swing the clamp could not see. On an exempt step that raises no
+    ///   drawn opacity ((1, 0) does not rise, (0, 1) does not fall) it
+    ///   carries its last count on in place instead
+    ///   ([`GhostWindow::restart_latest`]), opening nothing: unknown history
+    ///   starts from nothing drawn ([`Self::unknown_history`]), so the first
+    ///   move left what nothing drawn draws, and the exempt ray at the held
+    ///   luminance and no higher opacity moves every point back toward there,
+    ///   passing the peak by f32 rounding at most, never a flash. The look
+    ///   clamp's exempt ray never raises the drawn opacity (the screen
+    ///   door's coverage, dithered), a `render.ghosts` switch included, so an
+    ///   exempt step always carries on in place. One that did raise it would
+    ///   move points away from there and could pass the peak for real: it
+    ///   counts anew, as a budgeted step does, and a debug assertion flags it;
     /// - a counted swing that stops short of its peak, on a frame that moves
     ///   this point or a neighbour its way and draws the segment between
     ///   them below the reference line somewhere (by twice how far short it
@@ -264,6 +292,9 @@ impl EdgeTrackers {
         });
         let moved: [f32; EDGE_POINTS] =
             std::array::from_fn(|edge| next[edge] - self.trackers[edge].out);
+        // At a held luminance only a rising opacity moves any point away from
+        // what nothing drawn draws.
+        let opacity_rose = moved[LIT_EDGE] > 0.0 || moved[COVERED_EDGE] < 0.0;
         for edge in 0..EDGE_POINTS {
             let tracker = self.trackers[edge];
             let value = next[edge];
@@ -314,13 +345,19 @@ impl EdgeTrackers {
             } else if turned_back_small && further {
                 if window.restart_earlier(edge) {
                     true
-                } else if class == SlotClass::Exempt {
-                    // A pass on the exempt ray is f32 rounding only while
-                    // unknown history starts from nothing drawn; a caller
-                    // starting it from a drawn look has to weigh this.
+                } else if class == SlotClass::Exempt && !opacity_rose {
+                    // The exempt ray falling toward where unknown history
+                    // starts: this pass is rounding.
                     window.restart_latest(edge);
                     true
                 } else {
+                    // A pass that can be real counts anew. The exempt ray
+                    // never raises the drawn opacity, and an exempt step
+                    // that did could open a seventh edge slot here.
+                    debug_assert!(
+                        class == SlotClass::Budgeted,
+                        "the exempt ray never raises the drawn opacity"
+                    );
                     stepped.last_sign = if tracker.dir > 0.0 { 1 } else { -1 };
                     window.count_edge(edge, class, opens)
                 }

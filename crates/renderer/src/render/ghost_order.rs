@@ -9,7 +9,8 @@ use postretro_render_cpu::mesh_instances::{MeshFramePlan, MeshPaletteCacheKey, P
 use super::GpuTexture;
 use super::ghost_pipeline::{GhostDrawStep, SkinnedGhostSpan};
 use super::kinematic_brush::KinematicBrushPass;
-use super::kinematic_ghost::{KinematicGhostPass, MoverGhostBounds};
+use super::kinematic_ghost::KinematicGhostPass;
+use super::kinematic_ghost_shape::{MoverGhostBounds, MoverGhostShape};
 use super::mesh_pass::MeshPass;
 
 /// How far outside a mover ghost's bounds, in metres along each of the
@@ -43,11 +44,11 @@ pub(super) enum GhostUnit {
 
 #[derive(Debug, Clone, Copy)]
 struct OrderedUnit {
-    /// The sort key: the centre's depth, a carrying mover's lifted past its
-    /// rider's.
+    /// The sort key: a skinned ghost's body point's depth, a mover's centre's,
+    /// a carrying mover's lifted past its rider's.
     depth: f32,
-    /// The centre's depth before any lift, the first tie-break: two movers
-    /// lifted past one rider keep their own order.
+    /// The key before any lift, the first tie-break: two movers lifted past
+    /// one rider keep their own order.
     centre: f32,
     /// Build order, the last tie-break, which keeps the order deterministic.
     order: u32,
@@ -62,7 +63,8 @@ struct SkinnedMember {
     index: u32,
 }
 
-/// Where one skinned ghost stands, a point on its body, and its sort key.
+/// Where one skinned ghost stands, the middle of its body, and that body
+/// point's depth, its sort key.
 #[derive(Debug, Clone, Copy)]
 struct Footing {
     feet: Vec3,
@@ -76,10 +78,14 @@ struct Footing {
 /// Ghosts sort as whole objects, each by one key, not per pixel. Where that
 /// order is wrong for a pair at some pixel, the ghost nearer there hides the
 /// one drawn after it instead of blending over it: wholly in blend, all but
-/// the pixels the screen door drops in dither. Two ghosts that interpenetrate
-/// can do this where they overlap, and so can a ghost close to a large mover
-/// ghost without standing on or in it, such as one just behind the near end
-/// of a long ghost wall seen along its length.
+/// the pixels the screen door drops in dither. A rider and the mover carrying
+/// it layer by what of the mover lies between the eye and the rider, so
+/// railings, posts and open decks are fine. What remains is whole-object
+/// sorting itself: two ghosts that pass through each other, or one partly in
+/// front of and partly behind a mover ghost (just behind the near end of a
+/// long ghost wall seen along its length), can hide each other where they
+/// overlap. Per-pixel ordering is the fix, and would replace this order
+/// behind [`Self::build`] and [`Self::record`].
 #[derive(Default)]
 pub(super) struct GhostDrawOrder {
     units: Vec<OrderedUnit>,
@@ -100,36 +106,42 @@ pub(super) struct GhostDrawSources<'a> {
 impl GhostDrawOrder {
     /// Rebuild this frame's order. Skinned instances group into one ghost by
     /// their palette key's holder group (a holder and its attachments through
-    /// one link); each mover ghost is its own, given as its placed bounds in
-    /// draw-slot order. Each ghost keys on the depth of its bounds centre
-    /// under `view_proj`: a skinned ghost its holder's, a mover ghost its
-    /// geometry's.
+    /// one link); each mover ghost is its own, given as its placed shape in
+    /// draw-slot order. Each ghost keys on a point's depth under `view_proj`:
+    /// a skinned ghost on its holder's body point (above its feet, halfway up
+    /// its posed envelope), a mover ghost on its geometry bounds' centre.
     ///
-    /// Contact then lifts a mover past a skinned ghost it carries, when the
-    /// camera sees that rider from the rider's side of it. It carries a
-    /// ghost whose feet (its holder's origin) lie in the mover's oriented
-    /// bounds grown by [`MOVER_CONTACT_MARGIN`], or up to
-    /// [`MOVER_RIDER_REACH_ABOVE`] above them. The rider's side: the line
-    /// from `eye` to the middle of the rider's body does not pass through
-    /// the mover's bounds, or `eye` is inside them. Then, if the rider keys
-    /// at or past the mover, the mover keys just past it. So a platform or
-    /// lift seen from above, or a cab the camera rides in, draws before the
-    /// farthest ghost it carries, and its riders blend over it. Seen through
-    /// the mover, from under a bridge or outside a closed cab, the centres
-    /// decide, and the mover's near surface blends over its rider. Movers
-    /// lifted to one key keep their centres' order. Keys stay scalar, so the
-    /// sort is unchanged. Cost: one containment test per mover, and up to two
-    /// segment tests per mover and skinned ghost pair.
+    /// Contact then lifts a mover past a skinned ghost it carries, when none
+    /// of the mover's surface lies between the camera and that rider. It
+    /// carries a ghost whose feet (its holder's origin) lie in the mover's
+    /// oriented bounds grown by [`MOVER_CONTACT_MARGIN`], or up to
+    /// [`MOVER_RIDER_REACH_ABOVE`] above them: standing on or in a mover is a
+    /// question its box answers well. What lies between is not: the line from
+    /// `eye` to the rider's body point is tested against the mover's own
+    /// triangles ([`MoverGhostShape::surface_between`]). Then, if the rider
+    /// keys at or past the mover, the mover keys just past it. So a platform
+    /// or lift seen from above, railings and posts included, or a cab the
+    /// camera rides in, draws before the farthest ghost it carries, and its
+    /// riders blend over it. Seen through the mover, from under a bridge,
+    /// outside a closed cab, or from inside a cab at a rider on its roof, the
+    /// keys decide, and the mover's near surface blends over its rider.
+    /// Movers lifted to one key keep their own keys' order. Keys stay scalar,
+    /// so the sort is unchanged.
+    ///
+    /// Cost: one box test per mover and skinned ghost pair; for a carried
+    /// rider at or past the mover, one box test of the eye's line, then one
+    /// segment–triangle test per mover triangle when the line meets the box.
+    /// Only a mover carrying a ghost pays for its triangles.
     ///
     /// A key point at or behind the eye sorts nearest, so that ghost draws
     /// last: a ghost wrapping the camera, a cab the camera rides in included,
     /// stays on top unless it carries a ghost. A ghost whose bounds or
     /// transform are not finite, or a mover whose transform has no inverse,
     /// touches nothing.
-    pub(super) fn build(
+    pub(super) fn build<'m>(
         &mut self,
         skinned: Option<&MeshFramePlan>,
-        movers: impl IntoIterator<Item = MoverGhostBounds>,
+        movers: impl IntoIterator<Item = MoverGhostShape<'m>>,
         view_proj: Mat4,
         eye: Vec3,
     ) {
@@ -165,11 +177,16 @@ impl GhostDrawOrder {
                     .find(|member| is_holder(planned(plan, member)))
                     .unwrap_or(&run[0]);
                 let anchor = planned(plan, anchor);
-                let depth = view_depth(view_proj, instance_center(anchor));
-                if let Some(feet) = feet_point(anchor) {
+                let feet = feet_point(anchor);
+                let key_point = match feet {
+                    Some(feet) => body_point(anchor, feet),
+                    None => instance_center(anchor),
+                };
+                let depth = view_depth(view_proj, key_point);
+                if let Some(feet) = feet {
                     self.footings.push(Footing {
                         feet,
-                        body: body_point(anchor, feet),
+                        body: key_point,
                         depth,
                     });
                 }
@@ -204,16 +221,16 @@ impl GhostDrawOrder {
             }
         }
 
-        for (draw, bounds) in movers.into_iter().enumerate() {
-            let centre = view_depth(view_proj, bounds.center());
+        for (draw, shape) in movers.into_iter().enumerate() {
+            let centre = view_depth(view_proj, shape.bounds().center());
             let mut depth = centre;
-            let eye_inside = bounds.contains(eye, 0.0);
             for footing in &self.footings {
                 // Strictly past: an equal key would fall to build order,
-                // which puts the skinned ghost first.
+                // which puts the skinned ghost first. The triangle test runs
+                // last, only for a carried rider at or past the mover.
                 if footing.depth >= depth
-                    && carries(&bounds, footing)
-                    && (eye_inside || !bounds.meets_segment(eye, footing.body, 0.0))
+                    && carries(shape.bounds(), footing)
+                    && !shape.surface_between(eye, footing.body)
                 {
                     depth = footing.depth.next_up();
                 }
@@ -309,7 +326,7 @@ fn is_holder(instance: &PlannedInstance) -> bool {
 }
 
 /// World-space centre of an instance's pose envelope; its origin when the
-/// envelope is degenerate.
+/// envelope is degenerate. The sort key of a ghost with no feet.
 fn instance_center(instance: &PlannedInstance) -> Vec3 {
     let local = (instance.bounds.min + instance.bounds.max) * 0.5;
     if local.is_finite() {
@@ -347,11 +364,19 @@ fn feet_point(instance: &PlannedInstance) -> Option<Vec3> {
         .then_some(instance.transform.w_axis.truncate())
 }
 
-/// The point a line from the eye aims at to ask whether the camera sees a
-/// ghost from its side of a mover: above `feet`, halfway up the posed
-/// envelope's reach along world up, so roughly the middle of the body. The
-/// feet themselves sit on the mover's face, where a line to them only grazes
-/// it. An envelope that reaches no higher than the feet gives the feet.
+/// A skinned ghost's sort key, and the point a line from the eye aims at to
+/// ask whether a mover's surface hides it: over the posed envelope's centre,
+/// halfway from `feet` up to the envelope's top along world up, so roughly
+/// the middle of the body. Not the envelope's centre itself, which for an
+/// animated model's origin-centred cube is the feet: keyed there, a ghost
+/// close in front of a tall ghost door, seen looking down, sorts behind the
+/// door's centre. Not on the feet's vertical either: a clipless model's
+/// tight box need not sit over its origin, and keyed off it, a ghost whose
+/// mesh lies wholly behind a mover ghost sorts in front of it. For an
+/// animated model, and a clipless one centred over its origin, the two
+/// verticals agree. An envelope that reaches no higher than the feet gives
+/// the point at foot height; an envelope with no finite centre gives the
+/// feet.
 fn body_point(instance: &PlannedInstance, feet: Vec3) -> Vec3 {
     let bounds = instance.bounds;
     let center = instance
@@ -361,10 +386,16 @@ fn body_point(instance: &PlannedInstance, feet: Vec3) -> Vec3 {
     // How far the transformed envelope reaches above its centre along +Y.
     let top = center.y + instance.transform.row(1).truncate().abs().dot(half);
     let rise = (top - feet.y) * 0.5;
-    if rise > 0.0 && rise.is_finite() {
-        feet + Vec3::Y * rise
+    let under_center = Vec3::new(center.x, feet.y, center.z);
+    let base = if under_center.is_finite() {
+        under_center
     } else {
         feet
+    };
+    if rise > 0.0 && rise.is_finite() {
+        base + Vec3::Y * rise
+    } else {
+        base
     }
 }
 

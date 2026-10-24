@@ -5,7 +5,7 @@
 mod lifecycle_boot_state;
 #[cfg(test)]
 #[path = "lifecycle_environment_install_tests.rs"]
-mod lifecycle_environment_install_tests;
+pub(crate) mod lifecycle_environment_install_tests;
 #[path = "lifecycle_model_sweep.rs"]
 mod lifecycle_model_sweep;
 #[path = "lifecycle_net.rs"]

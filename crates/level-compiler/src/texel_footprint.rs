@@ -129,21 +129,54 @@ const RING_DIRECTIONS: [[f32; 2]; RING_SAMPLES] = {
 /// eighth of the plane within 22.5° of ring position `sector · 45°`, and how
 /// far the point reaches along that direction: the ring direction it reaches
 /// farthest along, among `±x`, `±(x + y)/√2`, `±y` and `±(y − x)/√2`. Ties
-/// keep the first in that order.
+/// keep the first in that order, `+` before `−`.
+///
+/// A lattice sample's sector is as good as random, so the choice is written
+/// as selects between magnitudes, which compile without branches to
+/// mispredict, rather than a scan of the eight signed values.
 fn ring_sector([x, y]: [f32; 2]) -> (usize, f32) {
     let diagonal = std::f32::consts::FRAC_1_SQRT_2;
     let along = [x, (x + y) * diagonal, y, (y - x) * diagonal];
-    let mut sector = 0;
-    let mut reach = x;
-    for (position, value) in along.into_iter().enumerate() {
-        if value > reach {
-            (sector, reach) = (position, value);
-        }
-        if -value > reach {
-            (sector, reach) = (position + RING_SAMPLES / 2, -value);
-        }
-    }
-    (sector, reach)
+    // Spelled out: a generic `along.map(f32::abs)` stayed an outlined call
+    // in the dev profile, at about twice the cost of the whole sector pass.
+    let reach = [
+        along[0].abs(),
+        along[1].abs(),
+        along[2].abs(),
+        along[3].abs(),
+    ];
+    let (low, low_reach) = if reach[1] > reach[0] {
+        (1, reach[1])
+    } else {
+        (0, reach[0])
+    };
+    let (high, high_reach) = if reach[3] > reach[2] {
+        (3, reach[3])
+    } else {
+        (2, reach[2])
+    };
+    let (position, reach) = if high_reach > low_reach {
+        (high, high_reach)
+    } else {
+        (low, low_reach)
+    };
+    let opposite = usize::from(along[position] < 0.0) * (RING_SAMPLES / 2);
+    (position + opposite, reach)
+}
+
+/// A lattice sample keyed for the sector pass: its reach's bits above its
+/// inverted index, so keys compare as `(reach, −index)` do. A reach is never
+/// negative, so its bits order like its value, and of two equal reaches the
+/// lower index keys higher, as the first found does in a strict `>` scan.
+/// Taking the larger of two keys is then a branch-free top-1 update. Key 0,
+/// below every sample, marks an empty slot.
+fn reach_key(reach: f32, index: u32) -> u64 {
+    (u64::from(reach.to_bits()) << 32) | u64::from(u32::MAX - index)
+}
+
+/// The lattice index a [`reach_key`] holds; `u32::MAX` for an empty slot.
+fn reach_key_index(key: u64) -> u32 {
+    u32::MAX - key as u32
 }
 
 impl TexelFootprint {
@@ -214,6 +247,19 @@ impl TexelFootprint {
         site: &TexelSite,
         rotation: (f32, f32),
     ) -> EmitterPairing {
+        let mut pairing = self.pairing_frame(light, site, rotation);
+        self.claim_probes(&mut pairing);
+        pairing
+    }
+
+    /// One texel's pairing with nothing claimed yet: the two vectors that
+    /// carry a lattice sample into the footprint's unrotated texel frame.
+    fn pairing_frame(
+        &self,
+        light: &MapLight,
+        site: &TexelSite,
+        rotation: (f32, f32),
+    ) -> EmitterPairing {
         let axis = match light.light_type {
             LightType::Point | LightType::Spot => (light.origin.as_vec3()
                 - (site.world_p + site.normal * RAY_EPSILON))
@@ -243,46 +289,52 @@ impl TexelFootprint {
         );
         let (sin, cos) = rotation;
         let unspin = emitter_lattice_spin(light, site.seed).inverse();
-        let mut pairing = EmitterPairing {
+        EmitterPairing {
             x_axis: unspin * (u * cos + v * sin),
             y_axis: unspin * (v * cos - u * sin),
             probes: [0; FOOTPRINT_PROBES],
             counter: [0; COUNTER_RING_SAMPLES],
             claimed: [0; FOOTPRINT_PROBES + COUNTER_RING_SAMPLES],
             claimed_len: 0,
-        };
+        }
+    }
 
+    /// Claims the probes' emitter samples ([`TexelFootprint::emitter_pairing`]).
+    fn claim_probes(&self, pairing: &mut EmitterPairing) {
         // One pass finds the sample nearest the centre and each sector's two
         // farthest, the second standing in when the first is that nearest.
-        let mut nearest = (f32::INFINITY, 0u32);
-        let mut first = [(f32::NEG_INFINITY, u32::MAX); RING_SAMPLES];
-        let mut second = [(f32::NEG_INFINITY, u32::MAX); RING_SAMPLES];
+        // Both are kept as keys, so every update is a `min` or `max`: the
+        // nearest's squared radius (never negative) above its index, and the
+        // sectors' [`reach_key`]s.
+        let mut nearest = u64::MAX;
+        let mut first = [0u64; RING_SAMPLES];
+        let mut second = [0u64; RING_SAMPLES];
+        // Copied out of `pairing`, which the compiler would otherwise reload
+        // on every sample.
+        let (x_axis, y_axis) = (pairing.x_axis, pairing.y_axis);
         for (index, offset) in self.lattice.iter().enumerate() {
             let index = index as u32;
-            let position = pairing.frame_position(*offset);
+            let position = [x_axis.dot(*offset), y_axis.dot(*offset)];
             let radius_sq = position[0] * position[0] + position[1] * position[1];
-            if radius_sq < nearest.0 {
-                nearest = (radius_sq, index);
-            }
+            nearest = nearest.min((u64::from(radius_sq.to_bits()) << 32) | u64::from(index));
             let (sector, reach) = ring_sector(position);
-            if reach > first[sector].0 {
-                second[sector] = first[sector];
-                first[sector] = (reach, index);
-            } else if reach > second[sector].0 {
-                second[sector] = (reach, index);
-            }
+            let key = reach_key(reach, index);
+            let displaced = first[sector];
+            first[sector] = displaced.max(key);
+            second[sector] = second[sector].max(displaced.min(key));
         }
-        pairing.probes[0] = nearest.1;
-        pairing.claimed[0] = nearest.1;
+        let nearest = nearest as u32;
+        pairing.probes[0] = nearest;
+        pairing.claimed[0] = nearest;
         pairing.claimed_len = 1;
         // Bit `k`: ring probe `k`'s sector held no sample to claim.
         let mut unfilled = 0u16;
         for k in 1..FOOTPRINT_PROBES {
             let sector = (k - 1) * RING_POSITION_STRIDE % RING_SAMPLES;
-            let (_, index) = if first[sector].1 == nearest.1 {
-                second[sector]
+            let index = if reach_key_index(first[sector]) == nearest {
+                reach_key_index(second[sector])
             } else {
-                first[sector]
+                reach_key_index(first[sector])
             };
             if index == u32::MAX {
                 unfilled |= 1 << k;
@@ -294,12 +346,11 @@ impl TexelFootprint {
         }
         for k in (1..FOOTPRINT_PROBES).filter(|k| unfilled & (1 << k) != 0) {
             let sector = (k - 1) * RING_POSITION_STRIDE % RING_SAMPLES;
-            let index = self.farthest_unclaimed(&pairing, RING_DIRECTIONS[sector]);
+            let index = self.farthest_unclaimed(pairing, RING_DIRECTIONS[sector]);
             pairing.probes[k] = index;
             pairing.claimed[pairing.claimed_len] = index;
             pairing.claimed_len += 1;
         }
-        pairing
     }
 
     /// Claims the counter ring's emitter samples, before the interior strata

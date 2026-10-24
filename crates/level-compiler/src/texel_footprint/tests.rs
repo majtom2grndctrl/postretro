@@ -316,6 +316,238 @@ fn footprint_memo_matches_a_fresh_build_for_interleaved_lights() {
     }
 }
 
+// --- probe claim: keyed pass against the reference scan ---------------------
+
+/// The sector of a point as first written: a scan of the eight signed
+/// directions, keeping the first strictly farther one.
+fn ring_sector_reference([x, y]: [f32; 2]) -> (usize, f32) {
+    let diagonal = std::f32::consts::FRAC_1_SQRT_2;
+    let along = [x, (x + y) * diagonal, y, (y - x) * diagonal];
+    let mut sector = 0;
+    let mut reach = x;
+    for (position, value) in along.into_iter().enumerate() {
+        if value > reach {
+            (sector, reach) = (position, value);
+        }
+        if -value > reach {
+            (sector, reach) = (position + RING_SAMPLES / 2, -value);
+        }
+    }
+    (sector, reach)
+}
+
+/// [`TexelFootprint::claim_probes`] as first written, with branches on every
+/// comparison: the claim the keyed pass must reproduce sample for sample.
+fn claim_probes_reference(footprint: &TexelFootprint, pairing: &mut EmitterPairing) {
+    let mut nearest = (f32::INFINITY, 0u32);
+    let mut first = [(f32::NEG_INFINITY, u32::MAX); RING_SAMPLES];
+    let mut second = [(f32::NEG_INFINITY, u32::MAX); RING_SAMPLES];
+    for (index, offset) in footprint.lattice.iter().enumerate() {
+        let index = index as u32;
+        let position = pairing.frame_position(*offset);
+        let radius_sq = position[0] * position[0] + position[1] * position[1];
+        if radius_sq < nearest.0 {
+            nearest = (radius_sq, index);
+        }
+        let (sector, reach) = ring_sector_reference(position);
+        if reach > first[sector].0 {
+            second[sector] = first[sector];
+            first[sector] = (reach, index);
+        } else if reach > second[sector].0 {
+            second[sector] = (reach, index);
+        }
+    }
+    pairing.probes[0] = nearest.1;
+    pairing.claimed[0] = nearest.1;
+    pairing.claimed_len = 1;
+    let mut unfilled = 0u16;
+    for k in 1..FOOTPRINT_PROBES {
+        let sector = (k - 1) * RING_POSITION_STRIDE % RING_SAMPLES;
+        let (_, index) = if first[sector].1 == nearest.1 {
+            second[sector]
+        } else {
+            first[sector]
+        };
+        if index == u32::MAX {
+            unfilled |= 1 << k;
+        } else {
+            pairing.probes[k] = index;
+            pairing.claimed[pairing.claimed_len] = index;
+            pairing.claimed_len += 1;
+        }
+    }
+    for k in (1..FOOTPRINT_PROBES).filter(|k| unfilled & (1 << k) != 0) {
+        let sector = (k - 1) * RING_POSITION_STRIDE % RING_SAMPLES;
+        let index = footprint.farthest_unclaimed(pairing, RING_DIRECTIONS[sector]);
+        pairing.probes[k] = index;
+        pairing.claimed[pairing.claimed_len] = index;
+        pairing.claimed_len += 1;
+    }
+}
+
+/// A deterministic xorshift stream of floats in `[-1, 1)`.
+struct Stream(u64);
+
+impl Stream {
+    fn next(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 40) as f32 / (1u64 << 23) as f32 - 1.0
+    }
+
+    fn unit(&mut self) -> Vec3 {
+        loop {
+            let v = Vec3::new(self.next(), self.next(), self.next());
+            if (0.01..1.0).contains(&v.length_squared()) {
+                return v.normalize();
+            }
+        }
+    }
+}
+
+// The keyed, branch-free probe claim selects the reference scan's samples
+// for point, spot and sun lights at every count from 4 to 64, over random
+// seeds, receivers and pitches, with the light from straight overhead down
+// to grazing and below the projection floor; and the counter ring and the
+// interior strata built on it follow.
+#[test]
+fn keyed_probe_claim_selects_the_reference_scans_samples() {
+    let mut stream = Stream(0x5eed_1234_abcd_0001);
+    let mut lights = vec![point_light([0.3, 1.7, -0.4], 0.25), {
+        let mut spot = hard_spot([-0.8, 2.4, 0.6]);
+        spot.light_size = 0.4;
+        spot
+    }];
+    for (aim, diameter) in [
+        ([0.3, -1.0, 0.2], 4.0),
+        ([0.0, -1.0, 0.0], 0.5),
+        ([1.0, -0.02, 0.3], 20.0),
+        ([-0.6, -0.8, 0.0], 0.01),
+    ] {
+        let mut sun = hard_sun(aim);
+        sun.angular_diameter = diameter;
+        lights.push(sun);
+    }
+    // Cosines between the receiver normal and the light: overhead to grazing,
+    // straddling the projection floor, and from behind.
+    let facings: [f32; 9] = [1.0, 0.7, 0.2, 0.01, 2.0e-3, 1.0e-3, 5.0e-4, 0.0, -0.3];
+    let mut compared = 0;
+    for light in &lights {
+        for count in 4..=64 {
+            let footprint = TexelFootprint::build(light, count);
+            for (site_index, &facing) in facings.iter().cycle().take(36).enumerate() {
+                let world_p = Vec3::new(stream.next(), stream.next() * 0.2, stream.next()) * 2.0;
+                let axis = toward_light(light, world_p);
+                let random = stream.unit();
+                let across = (random - axis * axis.dot(random)).normalize_or_zero();
+                let across = if across == Vec3::ZERO {
+                    axis.any_orthonormal_vector()
+                } else {
+                    across
+                };
+                let side = (1.0 - facing * facing).max(0.0).sqrt();
+                let normal = (axis * facing + across * side).normalize();
+                let tangent = normal.any_orthonormal_vector();
+                let turn = stream.next() * std::f32::consts::PI;
+                let tangent = tangent * turn.cos() + normal.cross(tangent) * turn.sin();
+                let pitch = PITCH * (1.0 + 0.5 * stream.next().abs());
+                let frame = TexelFrame::new(
+                    tangent * pitch,
+                    normal.cross(tangent) * (pitch * (1.0 + 0.3 * stream.next().abs())),
+                );
+                let seed = stream.0 ^ (site_index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                let site = TexelSite {
+                    world_p,
+                    normal,
+                    seed,
+                    frame,
+                    may_clip: false,
+                };
+                let rotation = footprint_rotation(seed);
+                let mut keyed = footprint.pairing_frame(light, &site, rotation);
+                let mut reference = keyed;
+                footprint.claim_probes(&mut keyed);
+                claim_probes_reference(&footprint, &mut reference);
+                assert_eq!(
+                    keyed.probes, reference.probes,
+                    "{:?} at {count}, facing {facing}, seed {seed:#x}",
+                    light.light_type
+                );
+                footprint.claim_counter_ring(&mut keyed);
+                footprint.claim_counter_ring(&mut reference);
+                for k in 0..footprint.offsets.len() {
+                    assert_eq!(
+                        footprint.emitter_index(&keyed, k),
+                        footprint.emitter_index(&reference, k),
+                        "{:?} at {count}, sample {k}",
+                        light.light_type
+                    );
+                }
+                compared += 1;
+            }
+        }
+    }
+    println!("keyed probe claim matches the reference scan on {compared} texels");
+}
+
+// Exact ties, which random geometry almost never produces: a lattice drawn
+// from a few points on the axes and diagonals, zero and signed zero among
+// them, repeated, so samples tie on reach, on radius and on sector borders.
+// The keyed pass breaks every tie as the reference scan does.
+#[test]
+fn keyed_probe_claim_breaks_ties_as_the_reference_scan_does() {
+    let points = [
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [-1.0, 0.0],
+        [0.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, 1.0],
+        [-1.0, -1.0],
+        [1.0, -1.0],
+        [2.0, 0.0],
+        [0.0, 0.0],
+        [-0.0, -0.0],
+        [0.5, 0.5],
+        [-2.0, 2.0],
+        [0.0, -0.5],
+    ];
+    for &[x, y] in &points {
+        let (sector, reach) = ring_sector([x, y]);
+        let (expected, expected_reach) = ring_sector_reference([x, y]);
+        assert_eq!(sector, expected, "sector of ({x}, {y})");
+        assert_eq!(reach, expected_reach, "reach of ({x}, {y})");
+    }
+    let light = default_point([0.0, 2.0, 0.0]);
+    let mut stream = Stream(0x7135_0000_0000_0001);
+    let mut compared = 0;
+    for count in 9..=40 {
+        let mut footprint = TexelFootprint::build(&light, count);
+        for _ in 0..32 {
+            for offset in footprint.lattice.iter_mut() {
+                let pick = ((stream.next() + 1.0) * 0.5 * points.len() as f32) as usize;
+                let [x, y] = points[pick.min(points.len() - 1)];
+                *offset = Vec3::new(x, stream.next(), y);
+            }
+            let mut keyed = EmitterPairing {
+                x_axis: Vec3::X,
+                y_axis: Vec3::Z,
+                probes: [0; FOOTPRINT_PROBES],
+                counter: [0; COUNTER_RING_SAMPLES],
+                claimed: [0; FOOTPRINT_PROBES + COUNTER_RING_SAMPLES],
+                claimed_len: 0,
+            };
+            let mut reference = keyed;
+            footprint.claim_probes(&mut keyed);
+            claim_probes_reference(&footprint, &mut reference);
+            assert_eq!(keyed.probes, reference.probes, "count {count}");
+            compared += 1;
+        }
+    }
+    println!("tie-heavy lattices: {compared} claims match");
+}
+
 // --- fixtures -------------------------------------------------------------
 
 /// A 48×48-texel floor and a plate resting `CONTACT_GAP` above it, turned

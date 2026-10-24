@@ -797,6 +797,49 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
 // texels carry large relative but small absolute error.
 #[test]
 fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
+    // Centre-point visibility: the bound compares BC6H's step at a cut with
+    // its error on this bake's other texels, measured on the centre-point
+    // penumbra. The floor smooths that penumbra, so the baseline it sets
+    // drops to the step's size (0.088 vs 0.090).
+    let seam = encoded_cut_seam(false);
+    assert!(seam.compared > 0);
+    assert!(
+        seam.worst_abs <= seam.noise,
+        "encoded step {} at a cut past BC6H's error elsewhere, {}",
+        seam.worst_abs,
+        seam.noise
+    );
+}
+
+// Measured, not gated: the same seam with the floor on and off.
+// `cargo test -p postretro-level-compiler --bin prl-build encoded_cut_seam_floor -- --ignored --nocapture`
+#[test]
+#[ignore = "measurement: prints the encoded cut step with the floor on and off"]
+fn encoded_cut_seam_floor_on_and_off() {
+    for penumbra_floor in [false, true] {
+        let seam = encoded_cut_seam(penumbra_floor);
+        println!(
+            "penumbra floor {}: {} twin texels, worst step {:.4} ({:.4} relative); BC6H error elsewhere up to {:.4}",
+            if penumbra_floor { "on" } else { "off" },
+            seam.compared,
+            seam.worst_abs,
+            seam.worst_rel,
+            seam.noise
+        );
+    }
+}
+
+struct EncodedCutSeam {
+    compared: usize,
+    worst_abs: f32,
+    worst_rel: f32,
+    noise: f32,
+}
+
+/// Bake the cut floor at one floor setting and measure BC6H's step between
+/// twin texels on a cut's bilinear footprint, beside its error on every
+/// interior texel against the exact pre-encode bake at the same setting.
+fn encoded_cut_seam(floor: bool) -> EncodedCutSeam {
     use crate::bake_control::BakeControl;
     use crate::bc6h::decode_bc6h_block;
     use crate::bvh_build::build_bvh;
@@ -834,11 +877,7 @@ fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
             lightmap_density: 0.1,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
-            // Centre-point visibility: the bound compares BC6H's step at a
-            // cut with its error on this bake's other texels, measured on the
-            // centre-point penumbra. The floor smooths that penumbra, so the
-            // baseline it sets drops to the step's size (0.088 vs 0.090).
-            penumbra_floor: false,
+            penumbra_floor: floor,
             uncompressed_irradiance: false,
         },
         prepared,
@@ -895,7 +934,7 @@ fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
             &light_refs,
             chart,
             DEFAULT_AREA_SAMPLE_COUNT,
-            false,
+            floor,
         );
         for y in 0..chart.height_texels - PADDING {
             for x in 0..chart.width_texels - PADDING {
@@ -926,9 +965,10 @@ fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
     println!(
         "encoded seam: {compared} twin texels on cut footprints, worst step {worst_abs:.4} ({worst:.4} relative); BC6H error elsewhere up to {noise:.4}"
     );
-    assert!(compared > 0);
-    assert!(
-        worst_abs <= noise,
-        "encoded step {worst_abs} at a cut past BC6H's error elsewhere, {noise}"
-    );
+    EncodedCutSeam {
+        compared,
+        worst_abs,
+        worst_rel: worst,
+        noise,
+    }
 }

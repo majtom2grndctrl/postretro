@@ -1385,6 +1385,8 @@ fn dilate_edges(
 }
 
 #[cfg(test)]
+mod penumbra_ab_tests;
+#[cfg(test)]
 mod reseed_baseline_tests;
 #[cfg(test)]
 mod tests;

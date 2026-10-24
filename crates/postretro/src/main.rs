@@ -4138,13 +4138,15 @@ impl App {
                                     );
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
+                                    let joinable =
+                                        crate::scripting::builtins::player_spawn::joinable_spawns(
+                                            &host_spawn_points,
+                                            &net_descriptors,
+                                        );
                                     let Some(placement_index) =
                                         seat_table.as_deref_mut().and_then(|seats| {
-                                            seats.assign_joiner_placement(
-                                                &registry,
-                                                seat,
-                                                host_spawn_points.len(),
-                                            )
+                                            seats
+                                                .assign_joiner_placement(&registry, seat, &joinable)
                                         })
                                     else {
                                         log::warn!(

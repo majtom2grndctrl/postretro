@@ -325,7 +325,7 @@
 
 // Player spawn point: a place a player can start, not a pawn by itself. The
 // first player (single player, or a co-op host) starts at the first spawn in
-// map order not marked `coop_only`; each co-op joiner takes the next free one.
+// map order not marked `coop_only`; each co-op joiner takes the first free one.
 // Rest the box on the floor: its bottom is where the player's feet stand.
 // `entity_class` picks the registered classname (defaults to `"player"`).
 @PointClass base(EntitySpawn)

@@ -576,8 +576,10 @@ pub struct HealthDescriptor {
 }
 
 /// Authored hitbox sub-block: one world-aligned AABB. `half_extents` is the
-/// box half-size on each axis; `offset` shifts the box center from the entity's
-/// transform position (defaults to zero when absent).
+/// box half-size on each axis; `offset` (zero when absent) shifts the box
+/// center: a descriptor with `behavior` measures it from the feet; anything
+/// else from the entity's transform position, which for a `movement` pawn is
+/// its capsule centre.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HitboxDescriptor {

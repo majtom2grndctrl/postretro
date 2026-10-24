@@ -126,7 +126,7 @@ fn install_captures_map_placed_descriptor_npcs_and_excludes_later_spawner_output
             |_models, _clip_tables| {
                 crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
             },
-            |_spawn_points| {},
+            |_first_player| {},
         );
     }
     logs.assert_not_logged(

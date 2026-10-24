@@ -148,17 +148,25 @@ fn two_spawns_and_one_player_yield_one_player_pawn() {
 // The spawned pawn never starts inside the floor. A box resting on the floor
 // (24 units under the origin) starts the pawn standing, grounded on its first
 // tick and still there later; a box above the floor drops the pawn onto it.
-// mover-pins (32 units) and campaign-test (72 units) sit above their floors.
+// The raised case lifts a small map's spawns rather than compiling a large map
+// whose box happens to float (testing_guide.md, slow maps).
 #[test]
 fn spawned_pawn_rests_on_the_floor_not_in_it() {
+    const RAISE: f32 = 0.8;
     let out = tempfile::tempdir().unwrap();
-    for (map, box_on_floor) in [
-        ("trap-volley", true),
-        ("coop-presentation-test", true),
-        ("mover-pins", false),
-        ("campaign-test", false),
+    for (map, raise) in [
+        ("trap-volley", 0.0),
+        ("coop-presentation-test", 0.0),
+        ("coop-presentation-test", RAISE),
     ] {
-        let level = Installed::new(compile(map, out.path()));
+        let box_on_floor = raise == 0.0;
+        let mut world = compile(map, out.path());
+        for record in &mut world.map_entities {
+            if record.classname == "player_spawn" {
+                record.origin[1] += raise;
+            }
+        }
+        let level = Installed::new(world);
         let pawn = level.first_player.expect("the first player spawns").pawn;
         let (mut position, mut movement) = {
             let registry = level.ctx.registry.borrow();
@@ -223,8 +231,9 @@ fn spawned_pawn_rests_on_the_floor_not_in_it() {
             );
         } else {
             assert!(
-                position.y < spawned_at.y,
-                "{map}: a raised box drops the pawn onto the floor"
+                (position.y - (spawned_at.y - raise)).abs() < 0.05,
+                "{map}: a raised box drops the pawn onto the floor beneath it: \
+                 {position} vs {spawned_at} less {raise} m"
             );
         }
     }

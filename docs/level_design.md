@@ -65,9 +65,11 @@ many a map has, one player gets one body.
   the floor is an error in the map, not something the engine fixes.
 - **Who starts where.** In single player, and for the host of a co-op game, the
   player starts at the first `player_spawn` in the map that is not marked
-  `coop_only`. Each player who joins a co-op game takes the next spawn nobody is
-  using, in map order. When every spawn is taken, a joiner shares one and the
-  engine logs a warning, so give a co-op map one spawn per player.
+  `coop_only` and whose `entity_class` is registered. Each player who joins a
+  co-op game takes the first spawn in map order that nobody is using. A spawn
+  whose `entity_class` is not registered is skipped for everyone. When every
+  spawn is taken, joiners share them and the engine logs a warning, so give a
+  co-op map one spawn per player.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

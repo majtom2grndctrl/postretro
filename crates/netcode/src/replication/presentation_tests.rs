@@ -168,7 +168,6 @@ fn presentation_pawn_host_only_capture_keeps_player_start_and_network_slot_recor
                     DescriptorSpawnPath::PlayerSpawn => {
                         assert!(
                             spawn_from_player_starts(&[start], &descriptors, &mut registry, None)
-                                .spawned
                                 .is_some()
                         );
                         registry.local_player_pawn().unwrap()

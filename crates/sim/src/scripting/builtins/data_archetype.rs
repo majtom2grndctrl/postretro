@@ -720,6 +720,21 @@ pub(super) fn descriptor_spawn_rotation(
     }
 }
 
+/// Offset from a placement's canonical origin to the spawned entity's
+/// transform. A placement's origin is the feet (the compiler translates a
+/// `player_spawn`'s authoring box), so a movement pawn rises by its standing
+/// capsule's half extent to put the capsule's centre at its transform. An AI
+/// body rises to its agent capsule's centre. Anything else spawns at the origin.
+pub fn spawn_origin_shift(
+    descriptor: &EntityTypeDescriptor,
+    agent_params: Option<NavAgentParams>,
+) -> Vec3 {
+    if let Some(movement) = descriptor.movement.as_ref() {
+        return Vec3::Y * (movement.capsule.half_height + movement.capsule.radius);
+    }
+    ai_capsule_center_from_feet_offset(descriptor, agent_params)
+}
+
 pub(super) fn spawn_descriptor_instance(
     registry: &mut EntityRegistry,
     descriptor: &EntityTypeDescriptor,
@@ -728,7 +743,7 @@ pub(super) fn spawn_descriptor_instance(
     spawn_path: DescriptorSpawnPath,
     agent_params: Option<NavAgentParams>,
 ) -> Option<EntityId> {
-    let origin_shift = player_spawn::spawn_origin_shift(descriptor, agent_params);
+    let origin_shift = spawn_origin_shift(descriptor, agent_params);
     let transform = Transform {
         position: entity.origin + origin_shift,
         rotation: descriptor_spawn_rotation(entity, spawn_path),
@@ -881,13 +896,9 @@ pub const PLAYER_START_CLASSNAME: &str = "player_spawn";
 /// `components.inventory.loadout` spawns sibling wieldable instances. The
 /// placement's KVP bag is forwarded with `entity_class` stripped, and its tags
 /// pass directly to `try_spawn`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PlayerSpawnResult {
-    /// The first player's pawn and the spawn it took; `None` when no spawn
-    /// resolved or the registry is exhausted.
-    pub spawned: Option<PlayerSpawned>,
-}
-
+///
+/// Returns the first player's pawn and the spawn it took; `None` when no spawn
+/// resolved or the registry is exhausted.
 /// One materialized player pawn and the index of the `player_spawn` it took.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerSpawned {
@@ -900,7 +911,7 @@ pub fn spawn_from_player_starts(
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
-) -> PlayerSpawnResult {
+) -> Option<PlayerSpawned> {
     spawn_from_player_starts_with_carried_loadout(
         spawn_points,
         descriptors,
@@ -919,8 +930,8 @@ pub fn spawn_from_player_starts_with_carried_loadout(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
     carried_loadout: Option<&CarriedState>,
-) -> PlayerSpawnResult {
-    for placement in player_spawn::first_player_spawn_order(spawn_points) {
+) -> Option<PlayerSpawned> {
+    for (placement, coop_only) in player_spawn::first_player_spawn_order(spawn_points) {
         let entity = &spawn_points[placement];
         let entity_class = entity
             .key_values
@@ -948,7 +959,7 @@ pub fn spawn_from_player_starts_with_carried_loadout(
                 "[Loader] {origin}: entity registry exhausted; dropping player spawn `{entity_class}`",
                 origin = entity.diagnostic_origin(),
             );
-            return PlayerSpawnResult::default();
+            return None;
         };
 
         let is_local_pawn = registry.local_player_pawn().is_none()
@@ -977,7 +988,7 @@ pub fn spawn_from_player_starts_with_carried_loadout(
             is_local_pawn.then_some(carried_loadout).flatten(),
         );
 
-        if player_spawn::is_coop_only(entity) {
+        if coop_only {
             log::warn!(
                 "[Loader] no player_spawn without `coop_only` resolved; the first player takes {origin}",
                 origin = entity.diagnostic_origin(),
@@ -987,12 +998,10 @@ pub fn spawn_from_player_starts_with_carried_loadout(
             "[Loader] first player spawned at player_spawn {placement} of {total}",
             total = spawn_points.len(),
         );
-        return PlayerSpawnResult {
-            spawned: Some(PlayerSpawned {
-                pawn: id,
-                placement,
-            }),
-        };
+        return Some(PlayerSpawned {
+            pawn: id,
+            placement,
+        });
     }
 
     if !spawn_points.is_empty() {
@@ -1000,7 +1009,7 @@ pub fn spawn_from_player_starts_with_carried_loadout(
             "[Loader] no player_spawn resolved a registered entity_class; no player spawned"
         );
     }
-    PlayerSpawnResult::default()
+    None
 }
 
 #[cfg(test)]
@@ -2531,7 +2540,7 @@ mod tests {
             1,
             "exactly one player pawn"
         );
-        let spawned = result.spawned.expect("the first player spawns");
+        let spawned = result.expect("the first player spawns");
         assert_eq!(spawned.placement, 0);
         assert_eq!(reg.local_player_pawn(), Some(spawned.pawn));
     }
@@ -2570,7 +2579,7 @@ mod tests {
 
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        assert_eq!(result.spawned.expect("a player spawns").placement, 1);
+        assert_eq!(result.expect("a player spawns").placement, 1);
         assert_eq!(reg.iter_with_kind(ComponentKind::PlayerMovement).count(), 1);
     }
 
@@ -2586,7 +2595,7 @@ mod tests {
 
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        assert_eq!(result.spawned.expect("a player still spawns").placement, 0);
+        assert_eq!(result.expect("a player still spawns").placement, 0);
         assert!(
             capture
                 .records()
@@ -2594,6 +2603,46 @@ mod tests {
                 .any(|record| record.level == log::Level::Warn
                     && record.message.contains("without `coop_only` resolved")),
             "the fallback warns"
+        );
+    }
+
+    // Regression: the order pass and the chosen-spawn check each parsed the key.
+    #[test]
+    fn malformed_coop_only_on_the_chosen_spawn_warns_once() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![player_with_movement("player")];
+        let points = vec![spawn_point_at(
+            Vec3::ZERO,
+            Vec3::ZERO,
+            &[("coop_only", "yes")],
+        )];
+
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+
+        assert_eq!(result.expect("a player spawns").placement, 0);
+        let warnings = capture
+            .records()
+            .iter()
+            .filter(|record| {
+                record.level == log::Level::Warn && record.message.contains("`coop_only` value")
+            })
+            .count();
+        assert_eq!(warnings, 1);
+    }
+
+    #[test]
+    fn joiners_are_offered_only_spawns_whose_class_resolves() {
+        let descriptors = vec![player_with_movement("player")];
+        let points = vec![
+            spawn_point(&[]),
+            spawn_point(&[("entity_class", "ghost")]),
+            spawn_point(&[("entity_class", "player"), ("coop_only", "1")]),
+        ];
+
+        assert_eq!(
+            player_spawn::joinable_spawns(&points, &descriptors),
+            vec![0, 2]
         );
     }
 
@@ -2614,7 +2663,7 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(live_count(&reg), 1);
-        let spawned = result.spawned.expect("the later spawn resolves");
+        let spawned = result.expect("the later spawn resolves");
         assert_eq!(spawned.placement, 1);
         assert_eq!(reg.local_player_pawn(), Some(spawned.pawn));
         assert_eq!(
@@ -2648,7 +2697,7 @@ mod tests {
 
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        assert!(result.spawned.is_some());
+        assert!(result.is_some());
         let pawn = reg
             .iter_with_kind(ComponentKind::Inventory)
             .next()
@@ -2733,7 +2782,7 @@ mod tests {
 
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        assert!(result.spawned.is_some());
+        assert!(result.is_some());
         let pawn = reg
             .iter_with_kind(ComponentKind::Inventory)
             .next()
@@ -2770,7 +2819,7 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(live_count(&reg), 1);
-        let pawn = result.spawned.expect("the first spawn resolves").pawn;
+        let pawn = result.expect("the first spawn resolves").pawn;
         assert_eq!(
             reg.get_component::<DescriptorProvenance>(pawn)
                 .unwrap()

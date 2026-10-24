@@ -103,8 +103,8 @@ pub struct SeatTable {
     /// Level-scoped seat placement. Kept separate from carried state so merely
     /// assigning a spawn cannot make an empty carry record authoritative.
     placement_assignments: HashMap<Seat, usize>,
-    /// Placement provenance captured while level-spawned pawns are still at
-    /// their authored origins. It remains valid after movement changes transforms.
+    /// The spawn each install-time pawn took, keyed by pawn so occupancy never
+    /// reads positions.
     level_spawn_placements: HashMap<EntityId, usize>,
     connect_claims: HashMap<Seat, ConnectClaim>,
     hold_deadlines: HashMap<Seat, HoldDeadline>,
@@ -114,7 +114,9 @@ pub struct SeatTable {
     hold_order: HashMap<Seat, u64>,
     next_hold_order: u64,
     hold_clock: Duration,
-    next_placement_cursor: usize,
+    /// Round-robin position for joiners beyond the spawn count, which share a
+    /// spawn. Level-scoped, like the assignments.
+    overflow_cursor: usize,
     /// Coalesces all roster-affecting mutations in one transport poll into one
     /// publication after its lifecycle batch completes.
     roster_dirty: bool,
@@ -152,7 +154,7 @@ impl SeatTable {
             hold_order: HashMap::new(),
             next_hold_order: 0,
             hold_clock: Duration::ZERO,
-            next_placement_cursor: 0,
+            overflow_cursor: 0,
             roster_dirty: true,
         }
     }
@@ -475,8 +477,7 @@ impl SeatTable {
         }
     }
 
-    /// Capture one level-spawned pawn's authored placement before simulation
-    /// can move it away from that origin.
+    /// Record the spawn an install-time pawn took.
     pub fn bind_level_spawn_placement(&mut self, pawn: EntityId, placement: usize) {
         self.level_spawn_placements.insert(pawn, placement);
     }
@@ -603,45 +604,40 @@ impl SeatTable {
         }
         self.placement_assignments.clear();
         self.level_spawn_placements.clear();
+        self.overflow_cursor = 0;
     }
 
-    /// Resolve live placement occupancy from durable pawn associations, not
-    /// from positions that movement changes on the first simulation tick.
-    pub fn occupied_live_placements(
-        &self,
-        registry: &EntityRegistry,
-        placement_count: usize,
-    ) -> HashSet<usize> {
-        let mut occupied = HashSet::new();
-        for (seat, pawn) in &self.pawn_bindings {
-            if registry.exists(*pawn)
-                && let Some(placement) = self.placement_assignments.get(seat)
-                && *placement < placement_count
-            {
-                occupied.insert(*placement);
-            }
-        }
-        for (pawn, placement) in &self.level_spawn_placements {
-            if registry.exists(*pawn) && *placement < placement_count {
-                occupied.insert(*placement);
-            }
-        }
-        occupied
+    /// Spawns held by live pawns, read from durable pawn associations, never
+    /// from positions.
+    fn occupied_live_placements(&self, registry: &EntityRegistry) -> HashSet<usize> {
+        let seat_pawns = self.pawn_bindings.iter().filter_map(|(seat, pawn)| {
+            registry
+                .exists(*pawn)
+                .then(|| self.placement_assignments.get(seat).copied())
+                .flatten()
+        });
+        let level_pawns = self
+            .level_spawn_placements
+            .iter()
+            .filter(|(pawn, _)| registry.exists(**pawn))
+            .map(|(_, placement)| *placement);
+        seat_pawns.chain(level_pawns).collect()
     }
 
-    /// Assign or recall a placement for `seat` without allowing a held seat or a
-    /// currently-live pawn to be overlapped whenever a free index exists.
+    /// Recall `seat`'s placement, else assign the lowest `eligible` spawn that
+    /// no live pawn or held seat occupies. With every eligible spawn occupied,
+    /// joiners share them round-robin, with a warning.
     ///
-    /// `live_placements` deliberately comes from the spawning path rather than
-    /// from seat bindings alone: map installation may leave live player pawns
-    /// that are not currently represented by a remote connection binding.
-    pub fn assign_placement(
+    /// `eligible` is in map order and holds only spawns that can materialize a
+    /// pawn; the caller owns that resolution, so this table never reads the
+    /// descriptor registry. `live_placements` are the spawns live pawns hold.
+    fn assign_placement(
         &mut self,
         seat: Seat,
-        placement_count: usize,
+        eligible: &[usize],
         live_placements: impl IntoIterator<Item = usize>,
     ) -> Option<usize> {
-        if placement_count == 0 || !self.carried.contains_key(&seat) {
+        if eligible.is_empty() || !self.carried.contains_key(&seat) {
             return None;
         }
 
@@ -649,50 +645,50 @@ impl SeatTable {
             .placement_assignments
             .get(&seat)
             .copied()
-            .filter(|placement| *placement < placement_count)
+            .filter(|placement| eligible.contains(placement))
         {
             return Some(placement);
         }
 
-        let mut occupied: HashSet<usize> = live_placements
-            .into_iter()
-            .filter(|placement| *placement < placement_count)
-            .collect();
+        let mut occupied: HashSet<usize> = live_placements.into_iter().collect();
         occupied.extend(
             self.placement_assignments
                 .iter()
                 .filter(|(other, _)| **other != seat && !self.client_bindings.contains_key(other))
-                .map(|(_, placement)| *placement)
-                .filter(|placement| *placement < placement_count),
+                .map(|(_, placement)| *placement),
         );
 
-        let fallback = self.next_placement_cursor % placement_count;
-        let placement = (0..placement_count)
-            .map(|offset| (self.next_placement_cursor + offset) % placement_count)
+        let placement = match eligible
+            .iter()
+            .copied()
             .find(|candidate| !occupied.contains(candidate))
-            .unwrap_or_else(|| {
+        {
+            Some(free) => free,
+            None => {
+                let shared = eligible[self.overflow_cursor % eligible.len()];
+                self.overflow_cursor = self.overflow_cursor.wrapping_add(1);
                 log::warn!(
-                    "[Net] every player_spawn placement is occupied; reusing index {fallback}"
+                    "[Net] every player_spawn placement is occupied; sharing index {shared}"
                 );
-                fallback
-            });
-        self.next_placement_cursor = placement.wrapping_add(1);
+                shared
+            }
+        };
         self.placement_assignments.insert(seat, placement);
         Some(placement)
     }
 
     /// The `player_spawn` a participating joiner's pawn materializes at: its
-    /// seat's earlier assignment, else the next spawn no live pawn or held seat
-    /// occupies. Occupancy reads durable pawn associations, so the host's own
-    /// pawn keeps its spawn after movement carries it away.
+    /// seat's earlier assignment, else the lowest `eligible` spawn no live pawn
+    /// or held seat occupies. Occupancy reads durable pawn associations, so the
+    /// host's own pawn keeps its spawn after movement carries it away.
     pub fn assign_joiner_placement(
         &mut self,
         registry: &EntityRegistry,
         seat: Seat,
-        placement_count: usize,
+        eligible: &[usize],
     ) -> Option<usize> {
-        let live = self.occupied_live_placements(registry, placement_count);
-        self.assign_placement(seat, placement_count, live)
+        let live = self.occupied_live_placements(registry);
+        self.assign_placement(seat, eligible, live)
     }
 
     #[cfg(test)]
@@ -1801,14 +1797,14 @@ mod tests {
             .expect("third remote seat")
             .seat;
 
-        assert_eq!(seats.assign_placement(first, 3, []), Some(0));
+        assert_eq!(seats.assign_placement(first, &[0, 1, 2], []), Some(0));
         assert_eq!(
             seats.carried_state_for_test(first),
             None,
             "placement alone must not make an empty carried record authoritative"
         );
         assert_eq!(
-            seats.assign_placement(second, 3, [0]),
+            seats.assign_placement(second, &[0, 1, 2], [0]),
             Some(1),
             "a live pawn at index zero keeps a new seat away from it"
         );
@@ -1817,12 +1813,12 @@ mod tests {
             Some(first)
         );
         assert_eq!(
-            seats.assign_placement(third, 3, [1]),
+            seats.assign_placement(third, &[0, 1, 2], [1]),
             Some(2),
             "a held seat reserves its old placement even with no live pawn"
         );
         assert_eq!(
-            seats.assign_placement(first, 3, []),
+            seats.assign_placement(first, &[0, 1, 2], []),
             Some(0),
             "a fresh connection can recover the placement through its durable seat"
         );
@@ -1833,15 +1829,14 @@ mod tests {
             .expect("a post-level admission mints a fresh seat")
             .seat;
         assert_eq!(
-            seats.assign_placement(post_level_admission, 3, [0, 1]),
+            seats.assign_placement(post_level_admission, &[0, 1, 2], [0, 1]),
             Some(2),
             "a post-level admission scans live pawn occupancy before assigning a spawn"
         );
     }
 
-    // The host's install-time pawn holds only its own spawn: the first joiner
-    // takes the next one, the second the one after, and a joiner beyond the
-    // spawn count shares one.
+    // The host's install-time pawn holds only its own spawn: each joiner takes
+    // the lowest free one, and a joiner beyond the spawn count shares one.
     #[test]
     fn joiners_take_the_spawns_the_host_pawn_leaves_free() {
         let mut seats = SeatTable::from_test_session_id([14; 16]);
@@ -1853,21 +1848,99 @@ mod tests {
             .collect();
 
         assert_eq!(
-            seats.assign_joiner_placement(&registry, joiners[0], 3),
+            seats.assign_joiner_placement(&registry, joiners[0], &[0, 1, 2]),
             Some(1)
         );
         let first = registry.spawn(Transform::default());
         seats.bind_pawn(&mut registry, joiners[0], first);
         assert_eq!(
-            seats.assign_joiner_placement(&registry, joiners[1], 3),
+            seats.assign_joiner_placement(&registry, joiners[1], &[0, 1, 2]),
             Some(2)
         );
         let second = registry.spawn(Transform::default());
         seats.bind_pawn(&mut registry, joiners[1], second);
         assert_eq!(
-            seats.assign_joiner_placement(&registry, joiners[2], 3),
+            seats.assign_joiner_placement(&registry, joiners[2], &[0, 1, 2]),
             Some(0),
             "every spawn taken: the joiner shares one"
+        );
+    }
+
+    // Regression: a spawn whose class could not materialize a pawn was assigned,
+    // and the joiner was closed on every reconnect.
+    #[test]
+    fn joiners_are_never_given_a_spawn_outside_the_eligible_list() {
+        let mut seats = SeatTable::from_test_session_id([15; 16]);
+        let mut registry = EntityRegistry::new();
+        let host = registry.spawn(Transform::default());
+        seats.bind_level_spawn_placement(host, 0);
+        let joiner = seats.admit_or_reclaim(51, None, false).unwrap().seat;
+
+        assert_eq!(
+            seats.assign_joiner_placement(&registry, joiner, &[0, 2]),
+            Some(2),
+            "spawn 1 is free but not eligible"
+        );
+        assert_eq!(
+            seats.assign_joiner_placement(&registry, joiner, &[]),
+            None,
+            "no eligible spawn: nothing to assign, not a recalled ineligible one"
+        );
+    }
+
+    // Regression: a cursor that only advanced skipped a spawn freed by a leave.
+    #[test]
+    fn a_join_after_a_leave_takes_the_freed_lower_spawn() {
+        let mut seats = SeatTable::from_test_session_id([16; 16]);
+        let mut registry = EntityRegistry::new();
+        let eligible = [0, 1, 2, 3];
+        let host = registry.spawn(Transform::default());
+        seats.bind_level_spawn_placement(host, 0);
+        let join = |seats: &mut SeatTable, registry: &mut EntityRegistry, client: u64| {
+            let seat = seats.admit_or_reclaim(client, None, false).unwrap().seat;
+            let placement = seats.assign_joiner_placement(registry, seat, &eligible);
+            let pawn = registry.spawn(Transform::default());
+            seats.bind_pawn(registry, seat, pawn);
+            (placement, pawn)
+        };
+        let (first_placement, first_pawn) = join(&mut seats, &mut registry, 51);
+        let (second_placement, _) = join(&mut seats, &mut registry, 52);
+        assert_eq!((first_placement, second_placement), (Some(1), Some(2)));
+
+        registry.despawn(first_pawn).unwrap();
+        seats.hold_disconnected_client(&mut registry, 51).unwrap();
+        seats.advance_hold_clock(HOLD_WINDOW);
+        assert_eq!(seats.release_expired_holds().len(), 1);
+
+        assert_eq!(join(&mut seats, &mut registry, 53).0, Some(1));
+    }
+
+    // Regression: the cursor survived level unload, so the next level's first
+    // joiner started past free spawns.
+    #[test]
+    fn the_first_joiner_after_a_level_change_takes_the_first_free_spawn() {
+        let mut seats = SeatTable::from_test_session_id([17; 16]);
+        let mut registry = EntityRegistry::new();
+        let eligible = [0, 1, 2, 3];
+        let host = registry.spawn(Transform::default());
+        seats.bind_level_spawn_placement(host, 0);
+        let joiners: Vec<Seat> = (51..=52)
+            .map(|client| seats.admit_or_reclaim(client, None, false).unwrap().seat)
+            .collect();
+        for joiner in &joiners {
+            seats.assign_joiner_placement(&registry, *joiner, &eligible);
+            let pawn = registry.spawn(Transform::default());
+            seats.bind_pawn(&mut registry, *joiner, pawn);
+        }
+
+        registry.clear_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut registry);
+        let next_host = registry.spawn(Transform::default());
+        seats.bind_level_spawn_placement(next_host, 0);
+
+        assert_eq!(
+            seats.assign_joiner_placement(&registry, joiners[1], &eligible),
+            Some(1)
         );
     }
 
@@ -1889,7 +1962,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            seats.occupied_live_placements(&registry, 2),
+            seats.occupied_live_placements(&registry),
             HashSet::from([0])
         );
     }

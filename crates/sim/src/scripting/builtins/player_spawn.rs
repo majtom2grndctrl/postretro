@@ -1,6 +1,4 @@
-// Player spawn points: which `player_spawn` the first player takes, and where a
-// pawn stands relative to a spawn point's origin. A spawn point is a place a
-// player can be put, never a pawn by itself.
+// Player spawn points: first-player order, joinable spawns, standing position.
 // See: context/lib/entity_model.md §7b (Player spawn points)
 
 use glam::Vec3;
@@ -9,8 +7,7 @@ use postretro_foundation::NavAgentParams;
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
 use super::MapEntity;
-use super::data_archetype::find_descriptor;
-use super::host_replicated::ai_capsule_center_from_feet_offset;
+use super::data_archetype::{find_descriptor, spawn_origin_shift};
 
 /// `player_spawn` key: `1` keeps the spawn for co-op joiners only, so the first
 /// player (single player, or a co-op host) never starts there. Default `0`.
@@ -31,46 +28,60 @@ pub fn is_coop_only(spawn: &MapEntity) -> bool {
     })
 }
 
-/// The order the first player tries spawn points in: every spawn not marked
-/// [`COOP_ONLY_KEY`], in map order, then the co-op-only ones as a fallback.
-/// Joiners take whichever spawns are free afterwards, in map order, through
-/// the host's seat table.
-pub fn first_player_spawn_order(spawn_points: &[MapEntity]) -> Vec<usize> {
-    let (open, coop): (Vec<usize>, Vec<usize>) =
-        (0..spawn_points.len()).partition(|&index| !is_coop_only(&spawn_points[index]));
-    open.into_iter().chain(coop).collect()
+/// The order the first player tries spawn points in, each paired with whether
+/// it is [`COOP_ONLY_KEY`]: every open spawn in map order, then the co-op-only
+/// ones as a fallback. Reads each spawn's key once, so a malformed value warns
+/// once.
+pub fn first_player_spawn_order(spawn_points: &[MapEntity]) -> Vec<(usize, bool)> {
+    let mut order: Vec<(usize, bool)> = spawn_points
+        .iter()
+        .enumerate()
+        .map(|(index, spawn)| (index, is_coop_only(spawn)))
+        .collect();
+    // Stable: map order holds within the open and the co-op-only spawns.
+    order.sort_by_key(|&(_, coop_only)| coop_only);
+    order
 }
 
-/// Offset from a placement's canonical origin to the spawned entity's
-/// transform. A spawn point's origin is the feet (the compiler translates the
-/// authoring box), so a movement pawn rises by its standing capsule's half
-/// extent to put the capsule's centre at its transform. An AI body rises to its
-/// agent capsule's centre. Anything else spawns at the origin.
-pub fn spawn_origin_shift(
-    descriptor: &EntityTypeDescriptor,
-    agent_params: Option<NavAgentParams>,
-) -> Vec3 {
-    if let Some(movement) = descriptor.movement.as_ref() {
-        return Vec3::Y * (movement.capsule.half_height + movement.capsule.radius);
-    }
-    ai_capsule_center_from_feet_offset(descriptor, agent_params)
-}
-
-/// Where a pawn spawned at `spawn` stands: its origin plus the
-/// [`spawn_origin_shift`] of the descriptor its `entity_class` (default
-/// `"player"`) names. An unregistered class stands at the origin.
-pub fn standing_position(
+/// The descriptor a spawn's `entity_class` (default `"player"`) names, if it is
+/// registered.
+pub fn spawn_descriptor<'a>(
     spawn: &MapEntity,
-    descriptors: &[EntityTypeDescriptor],
-    agent_params: Option<NavAgentParams>,
-) -> Vec3 {
+    descriptors: &'a [EntityTypeDescriptor],
+) -> Option<&'a EntityTypeDescriptor> {
     let entity_class = spawn
         .key_values
         .get("entity_class")
         .map(String::as_str)
         .unwrap_or("player");
+    find_descriptor(descriptors, entity_class)
+}
+
+/// The spawns a co-op joiner may be given, in map order: every spawn whose
+/// `entity_class` resolves. A spawn that cannot materialize a pawn is never
+/// assigned, so a joiner is not closed for the map's authoring mistake.
+pub fn joinable_spawns(
+    spawn_points: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<usize> {
+    spawn_points
+        .iter()
+        .enumerate()
+        .filter(|(_, spawn)| spawn_descriptor(spawn, descriptors).is_some())
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Where a pawn spawned at `spawn` stands: its origin plus the
+/// [`spawn_origin_shift`] of the descriptor its `entity_class` names. An
+/// unregistered class stands at the origin.
+pub fn standing_position(
+    spawn: &MapEntity,
+    descriptors: &[EntityTypeDescriptor],
+    agent_params: Option<NavAgentParams>,
+) -> Vec3 {
     spawn.origin
-        + find_descriptor(descriptors, entity_class).map_or(Vec3::ZERO, |descriptor| {
+        + spawn_descriptor(spawn, descriptors).map_or(Vec3::ZERO, |descriptor| {
             spawn_origin_shift(descriptor, agent_params)
         })
 }
@@ -103,7 +114,10 @@ mod tests {
             spawn(&[]),
             spawn(&[(COOP_ONLY_KEY, "0")]),
         ];
-        assert_eq!(first_player_spawn_order(&points), vec![1, 2, 0]);
+        assert_eq!(
+            first_player_spawn_order(&points),
+            vec![(1, false), (2, false), (0, true)]
+        );
     }
 
     #[test]
@@ -112,7 +126,10 @@ mod tests {
             spawn(&[(COOP_ONLY_KEY, "1")]),
             spawn(&[(COOP_ONLY_KEY, "1")]),
         ];
-        assert_eq!(first_player_spawn_order(&points), vec![0, 1]);
+        assert_eq!(
+            first_player_spawn_order(&points),
+            vec![(0, true), (1, true)]
+        );
     }
 
     #[test]

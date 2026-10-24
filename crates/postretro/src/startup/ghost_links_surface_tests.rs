@@ -327,7 +327,14 @@ impl Level {
             .expect("the partner is admitted to a seat")
             .seat;
         let partner_placement = seats
-            .assign_joiner_placement(&ctx.registry.borrow(), seat, products.spawn_points.len())
+            .assign_joiner_placement(
+                &ctx.registry.borrow(),
+                seat,
+                &crate::scripting::builtins::player_spawn::joinable_spawns(
+                    &products.spawn_points,
+                    &manifest.entities,
+                ),
+            )
             .expect("the partner is assigned a player_spawn");
         let partner =
             postretro_sim::scripting::builtins::net_descriptor::spawn_net_slot_pawn_with_carried_loadout(

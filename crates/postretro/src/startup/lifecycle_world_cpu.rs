@@ -387,7 +387,6 @@ pub(crate) fn install_world_cpu(
                 agent_params,
                 local_carried_loadout.as_ref(),
             )
-            .spawned
         } else {
             log::info!("[Loader] no player_spawn in map; skipping player spawn");
             None
@@ -396,9 +395,11 @@ pub(crate) fn install_world_cpu(
         // Camera pose: where a pawn stands at the first player's spawn, seeded
         // regardless of spawn success (a connected client holds it until the
         // net baseline arms its pawn).
-        let camera_spawn = first_player
-            .map(|spawned| spawned.placement)
-            .or_else(|| first_player_spawn_order(&spawn_points).first().copied());
+        let camera_spawn = first_player.map(|spawned| spawned.placement).or_else(|| {
+            first_player_spawn_order(&spawn_points)
+                .first()
+                .map(|&(index, _)| index)
+        });
         let first_spawn: Option<(Vec3, Vec3)> = camera_spawn.map(|index| {
             let spawn = &spawn_points[index];
             (

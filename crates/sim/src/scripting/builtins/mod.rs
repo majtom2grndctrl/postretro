@@ -33,7 +33,7 @@ pub mod data_archetype_test_fixtures;
 pub use data_archetype::apply_data_archetype_dispatch;
 #[allow(unused_imports)]
 pub use data_archetype::{
-    PLAYER_START_CLASSNAME, PlayerSpawnResult, PlayerSpawned, spawn_from_player_starts,
+    PLAYER_START_CLASSNAME, PlayerSpawned, spawn_from_player_starts,
     spawn_from_player_starts_with_carried_loadout,
 };
 // Connected-client host-authoritative map-placement suppression. `gen-script-types`

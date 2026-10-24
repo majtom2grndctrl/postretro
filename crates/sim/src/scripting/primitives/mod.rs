@@ -583,9 +583,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("HitboxDescriptor")
-        .doc("One world-aligned direct-impact AABB. Hitscan rays and swept projectiles share this target query; projectile radius expands the tested shape. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.")
+        .doc("One world-aligned direct-impact AABB. Hitscan rays and swept projectiles share this target query; projectile radius expands the tested shape. `halfExtents` is the box half-size on each axis; `offset` shifts the box center: a descriptor with `behavior` measures it from the feet; anything else from the entity's transform position, which for a `movement` pawn is its capsule centre.")
         .field("halfExtents", "[f32; 3]", "Box half-size on each axis, in metres. Each element must be finite and > 0.")
-        .field("offset?", "[f32; 3]", "Center offset from the entity's transform position, in metres. Each element must be finite. Optional; defaults to [0, 0, 0].")
+        .field("offset?", "[f32; 3]", "Center offset, in metres: from the feet for a descriptor with `behavior`, else from the entity's transform position (a `movement` pawn's capsule centre). Each element must be finite. Optional; defaults to [0, 0, 0].")
         .finish();
     registry
         .register_type("HealthDescriptor")

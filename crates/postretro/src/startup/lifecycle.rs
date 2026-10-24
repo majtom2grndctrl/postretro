@@ -1545,8 +1545,9 @@ pub(crate) struct WorldInstallProducts {
     /// field is dead only in a build without that feature.
     #[cfg_attr(not(feature = "observability"), allow(dead_code))]
     pub(crate) mover_tick_states: crate::kinematic_mover::MoverTickStateTable,
-    /// First `player_spawn` origin + engine-convention YXZ angles (x=pitch,
-    /// y=yaw), for the windowed camera teleport. `None` when the map has none.
+    /// Where a pawn stands at the first player's `player_spawn`, plus that
+    /// spawn's engine-convention YXZ angles (x=pitch, y=yaw), for the windowed
+    /// camera teleport. `None` when the map has no spawn.
     pub(crate) first_spawn: Option<(Vec3, Vec3)>,
     /// The map's `player_spawn` placements, retained by the windowed host for the
     /// runtime net-slot accept path.
@@ -1554,8 +1555,7 @@ pub(crate) struct WorldInstallProducts {
 }
 
 /// Bind the installed first player to the host's seat (seat 0) and record the
-/// `player_spawn` it took, before movement moves its pawn, so joiners are
-/// assigned the spawns left free.
+/// `player_spawn` it took, so joiners are assigned the spawns left free.
 pub(crate) fn bind_installed_first_player(
     seats: &mut crate::netcode::SeatTable,
     registry: &mut postretro_entities::EntityRegistry,
@@ -2656,7 +2656,7 @@ pub(crate) mod tests {
                     }));
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
-                |_spawn_points| {},
+                |_first_player| {},
             )
         };
 
@@ -2916,7 +2916,7 @@ pub(crate) mod tests {
             handles,
             &mut StartupTimings::new(),
             |_models, _clips| crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide,
-            |_spawns| {},
+            |_first_player| {},
         );
         start_installed_presentation_animations(
             &ctx.registry.borrow(),
@@ -4931,7 +4931,7 @@ pub(crate) mod tests {
                 |_models, _clip_tables| {
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
-                |_spawn_points| {},
+                |_first_player| {},
             );
         }
 

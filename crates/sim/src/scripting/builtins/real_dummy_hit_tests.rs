@@ -343,7 +343,6 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
             &mut pawns,
             None
         )
-        .spawned
         .is_some()
     );
     let pawn = pawns

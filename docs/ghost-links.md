@@ -427,12 +427,13 @@ The SDK bundle's dev mod ships a two-copy fixture with both set-pieces:
 `content/dev/maps/ghost-links.map` (its Luau twin is `ghost-links-luau.map`).
 Copy A has a yellow barrier in its east doorway; copy B has a red button on its
 north wall. The blue plate in either copy reveals the second link and swells
-the echo. The first press of a purple pad sends whoever stands on it alone into
-the other copy, so two players who start in the same copy can split up. Every
-later press swaps both players' copies and starts the battle: the purple
-closet doors in the north and south walls of both copies sink, and the
-monsters behind them wake. Copy A's closets hold three knights and copy B's two
-limitators. Until that press the monsters stay shut away and asleep. The split
+the echo. The first press of a purple pad is the split: it sends whoever
+stands on that pad alone into the other copy. The pads arm for the swap only
+once that crossing lands. Every later press swaps both players' copies and
+starts the battle: the purple closet doors in the north and south walls of
+both copies sink, and the monsters behind them wake. Copy A's closets hold
+three knights and copy B's two limitators. Until that press the monsters stay
+shut away and asleep. The split
 stands in for a game condition such as a timer or a health threshold, and it
 fires only once, so press it alone from the middle of the pad. From the bundle
 root:
@@ -448,8 +449,11 @@ Alone, press the purple pad to cross into copy B, press the red button, and
 watch the barrier's ghost sink; press the pad again to return to copy A and
 start the battle, where the knights come out for you. For two players,
 run a host and a client on one machine as in
-[diagnostics.md](diagnostics.md). If both start in the same copy, one of you
-presses the purple pad first to cross over alone.
+[diagnostics.md](diagnostics.md). The host starts in copy A and the client in
+copy B, whose spawn is `coop_only`. The first purple-pad press is still the
+split, so whoever presses it crosses alone and you end up together in one
+copy. Once that crossing lands, the next press swaps you into the other copy
+and starts the battle.
 
 ```bash
 # Terminal 1

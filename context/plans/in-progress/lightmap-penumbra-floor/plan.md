@@ -1,10 +1,10 @@
 # lightmap-penumbra-floor — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: 52d726196 (no `crates/`, `docs/` or `sdk/` change since the brief's a0a2c0239)
 
-## Block (AC 25 wall-time gate)
+## AC 25 wall-time gate (resolved by owner)
 
 Cold `--no-cache` bakes, dev profile, default 5 workers, Windows 1660 Super machine (SATA SSD + Defender), one bake at a time. Baseline `prl-build` built from c587d8e74 (pre-change); floored from f0ed5c08c. Detector not yet wired, so its share is unmeasured.
 
@@ -28,6 +28,8 @@ After A (151ba1f3f: light-independent clip pre-pass, bit-identical output; shari
 | `stress-warren-hallway-inspection-mini` | 178.9 s → 320.7 s | 1.79× | 448 s → 592 s (1.32×) |
 
 Still over 1.5× on both. A scratch run with no clip work at all measured the same as A, so the remaining cost is the nine light rays per lit texel (soft 4 → 9, hard 1 → 9). Remaining levers: B or C.
+
+Owner (2026-10-23): accept the ~1.8× / 2.2× lightmap-stage cost (C); raise the gate and carry on with Tasks 2–4. AC 25 now reports the final ratios against the accepted figures and flags any rise above them, with the 5% detector-share stop unchanged.
 
 ## Corrections
 
@@ -75,7 +77,7 @@ Still over 1.5× on both. A scratch run with no clip work at all measured the sa
 | 22 default floored; `--help` lists switch; not in `docs/` | CLI test + grep | achievable as stated |
 | 23 sub-texel warning gone; no "0 = hard" text | grep gate | achievable as stated |
 | 24 nothing under `crates/level-format/` or `crates/renderer/src/shaders/` | diff gate | achievable as stated |
-| 25 lightmap stage cold wall time ≤ 1.5×, detector ≤ 5% | timed bakes, hallway-mini + groups-capture | **tripped: after A, 1.79× (hallway-mini) and 2.22× (groups-capture); see Block** |
+| 25 lightmap stage cold wall time ≤ 1.5×, detector ≤ 5% | timed bakes, hallway-mini + groups-capture | gate raised by owner to the accepted 1.79× / 2.22×; final run reports against them; detector ≤ 5% still stops |
 | 26 capture 2560×1440, floor off vs on, vs `_lightmap_density 0.01` | owner, in-engine | manual |
 | 27 shadowmask specular, no step / no banding rise | owner, in-engine | manual |
 | 28 hallway-mini full compile logs no texel-step warnings | compile + log grep (executor runs it) | achievable as stated |

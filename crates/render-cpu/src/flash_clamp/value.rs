@@ -70,6 +70,9 @@ pub(super) struct Tracker {
     ext: f32,
     pub(super) dir: f32,
     pub(super) peak: f32,
+    /// The way of the last counted transition, ±1, or 0 before any. A ghost
+    /// edge tracker whose history is unknown holds a sentinel here instead
+    /// (`ghost_trackers.rs`, `UNKNOWN_HISTORY`).
     pub(super) last_sign: i8,
     pub(super) suppressing: bool,
 }

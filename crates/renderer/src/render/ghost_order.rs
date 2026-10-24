@@ -5,37 +5,21 @@
 use glam::{Mat4, Vec3};
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::{MeshFramePlan, MeshPaletteCacheKey, PlannedInstance};
-use postretro_render_data::cone_frustum::Aabb;
 
 use super::GpuTexture;
+use super::ghost_pipeline::{GhostDrawStep, SkinnedGhostSpan};
 use super::kinematic_brush::KinematicBrushPass;
-use super::kinematic_ghost::KinematicGhostPass;
+use super::kinematic_ghost::{KinematicGhostPass, MoverGhostBounds};
 use super::mesh_pass::MeshPass;
 
-/// Which half of one ghost's draw pair to record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum GhostDrawStep {
-    /// Colour writes off; depth written where nearer than everything drawn
-    /// so far, so the target holds this ghost's nearest surface.
-    Depth,
-    /// Colour where the fragment equals the ghost depth; no depth write.
-    Colour,
-}
-
-/// One skinned plan group's instances that belong to one ghost, as an
-/// absolute instance-buffer range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SkinnedGhostSpan {
-    pub(super) group: u32,
-    pub(super) start: u32,
-    pub(super) end: u32,
-}
-
-impl SkinnedGhostSpan {
-    pub(super) fn instances(&self) -> std::ops::Range<u32> {
-        self.start..self.end
-    }
-}
+/// How far outside a mover ghost's bounds, in metres along each of the
+/// mover's axes, a skinned ghost's feet may sit and still stand on or in it.
+/// A standing pawn's collision capsule rests a skin (2 cm) above the floor,
+/// and its pose envelope's bottom need not meet the capsule's exactly; a
+/// tenth of a metre absorbs both and float error at the box face, and stays
+/// well short of an actor merely near a mover, such as one waiting half a
+/// metre behind a door.
+pub(super) const MOVER_CONTACT_MARGIN: f32 = 0.1;
 
 /// One ghost: the unit that runs its depth draw then its colour draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,18 +47,29 @@ struct SkinnedMember {
     index: u32,
 }
 
+/// Where one skinned ghost stands, and its sort key.
+#[derive(Debug, Clone, Copy)]
+struct Footing {
+    feet: Vec3,
+    depth: f32,
+}
+
 /// The frame's ghosts, farthest first. Every list is retained scratch, so a
 /// warm frame builds the order without allocating.
 ///
-/// Ghosts are sorted, not resolved per pixel. Where the order is wrong for a
-/// pair (two ghosts interpenetrating, or keys that disagree with the depths
-/// at some pixel), the ghost nearer at a pixel hides the one drawn after it
-/// there, as if it were opaque, instead of blending over it.
+/// Ghosts sort as whole objects, each by one key, not per pixel. Where that
+/// order is wrong for a pair at some pixel, the ghost nearer there hides the
+/// one drawn after it, as if it were opaque, instead of blending over it.
+/// Two ghosts that interpenetrate can do this where they overlap, and so can
+/// a ghost close to a large mover ghost without standing on or in it, such
+/// as one just behind the near end of a long ghost wall seen along its
+/// length.
 #[derive(Default)]
 pub(super) struct GhostDrawOrder {
     units: Vec<OrderedUnit>,
     spans: Vec<SkinnedGhostSpan>,
     members: Vec<SkinnedMember>,
+    footings: Vec<Footing>,
 }
 
 /// Everything the ordered ghost draws read.
@@ -89,26 +84,33 @@ pub(super) struct GhostDrawSources<'a> {
 impl GhostDrawOrder {
     /// Rebuild this frame's order. Skinned instances group into one ghost by
     /// their palette key's holder group (a holder and its attachments through
-    /// one link); each mover ghost is its own, given as its world-space bounds
-    /// corners ([`mover_ghost_corners`]) in draw-slot order. Depth is taken
-    /// under `view_proj`:
-    /// - a skinned ghost keys on its holder's bounds centre;
-    /// - a mover ghost keys on its farthest bounds corner, so a platform,
-    ///   bridge or lift draws before the actors standing on it. Corners at or
-    ///   behind the eye are skipped: a mover reaching past the camera keys on
-    ///   its farthest corner ahead, and one wholly behind it has no key point.
+    /// one link); each mover ghost is its own, given as its placed bounds in
+    /// draw-slot order. Each ghost keys on the depth of its bounds centre
+    /// under `view_proj`: a skinned ghost its holder's, a mover ghost its
+    /// geometry's.
     ///
-    /// A key point at or behind the eye, or none, sorts nearest, so that ghost
-    /// draws last: a skinned ghost wrapping the camera stays on top.
+    /// Contact then lifts a mover: when a skinned ghost's feet (the bottom
+    /// centre of its holder's bounds along world up) lie in the mover's
+    /// oriented bounds, grown by [`MOVER_CONTACT_MARGIN`], and that ghost
+    /// keys at or past the mover, the mover keys just past it. So a platform,
+    /// lift floor or cab draws before the farthest ghost it carries, and its
+    /// riders blend over it. Keys stay scalar, so the sort is unchanged.
+    /// Cost: one contact test per mover and skinned ghost pair.
+    ///
+    /// A key point at or behind the eye sorts nearest, so that ghost draws
+    /// last: a ghost wrapping the camera, a cab the camera rides in included,
+    /// stays on top. A ghost whose bounds or transform are not finite, or a
+    /// mover whose transform has no inverse, touches nothing.
     pub(super) fn build(
         &mut self,
         skinned: Option<&MeshFramePlan>,
-        mover_corners: impl IntoIterator<Item = [Vec3; 8]>,
+        movers: impl IntoIterator<Item = MoverGhostBounds>,
         view_proj: Mat4,
     ) {
         self.units.clear();
         self.spans.clear();
         self.members.clear();
+        self.footings.clear();
 
         if let Some(plan) = skinned {
             for (group, draw_group) in plan.groups.iter().enumerate() {
@@ -136,7 +138,11 @@ impl GhostDrawOrder {
                     .iter()
                     .find(|member| is_holder(planned(plan, member)))
                     .unwrap_or(&run[0]);
-                let depth = view_depth(view_proj, instance_center(planned(plan, anchor)));
+                let anchor = planned(plan, anchor);
+                let depth = view_depth(view_proj, instance_center(anchor));
+                if let Some(feet) = feet_point(anchor) {
+                    self.footings.push(Footing { feet, depth });
+                }
 
                 let first = self.spans.len();
                 for member in run {
@@ -167,10 +173,18 @@ impl GhostDrawOrder {
             }
         }
 
-        for (draw, corners) in mover_corners.into_iter().enumerate() {
+        for (draw, bounds) in movers.into_iter().enumerate() {
+            let mut depth = view_depth(view_proj, bounds.center());
+            for footing in &self.footings {
+                // Strictly past: an equal key would fall to build order,
+                // which puts the skinned ghost first.
+                if footing.depth >= depth && bounds.contains(footing.feet, MOVER_CONTACT_MARGIN) {
+                    depth = footing.depth.next_up();
+                }
+            }
             let order = self.units.len() as u32;
             self.units.push(OrderedUnit {
-                depth: farthest_depth(view_proj, &corners),
+                depth,
                 order,
                 unit: GhostUnit::Mover { draw: draw as u32 },
             });
@@ -267,26 +281,22 @@ fn instance_center(instance: &PlannedInstance) -> Vec3 {
     }
 }
 
-/// The eight corners of a mover's local geometry `bounds` under a ghost's
-/// model `transform`: the points its ghost sorts by.
-pub(super) fn mover_ghost_corners(transform: Mat4, bounds: Aabb) -> [Vec3; 8] {
-    std::array::from_fn(|corner| {
-        let pick = |bit: usize, min: f32, max: f32| if corner & bit == 0 { min } else { max };
-        transform.transform_point3(Vec3::new(
-            pick(1, bounds.min.x, bounds.max.x),
-            pick(2, bounds.min.y, bounds.max.y),
-            pick(4, bounds.min.z, bounds.max.z),
-        ))
-    })
-}
-
-/// Depth of the farthest of `corners` in front of the eye; nearest of all
-/// when none is.
-fn farthest_depth(view_proj: Mat4, corners: &[Vec3; 8]) -> f32 {
-    corners
-        .iter()
-        .map(|&corner| view_depth(view_proj, corner))
-        .fold(f32::NEG_INFINITY, f32::max)
+/// Where a ghost instance stands: the bottom centre, along world up (+Y), of
+/// the world-axis box around its posed envelope. `None` when the envelope is
+/// not finite and ordered, or the transform is not finite.
+fn feet_point(instance: &PlannedInstance) -> Option<Vec3> {
+    let bounds = instance.bounds;
+    if !(bounds.min.is_finite() && bounds.max.is_finite() && bounds.min.cmple(bounds.max).all()) {
+        return None;
+    }
+    let center = instance
+        .transform
+        .transform_point3((bounds.min + bounds.max) * 0.5);
+    let half = (bounds.max - bounds.min) * 0.5;
+    // How far the transformed envelope reaches below its centre along +Y.
+    let below = instance.transform.row(1).truncate().abs().dot(half);
+    let feet = center - Vec3::Y * below;
+    feet.is_finite().then_some(feet)
 }
 
 /// Depth of `point` under `view_proj`, larger farther. At or behind the eye

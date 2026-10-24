@@ -12,7 +12,7 @@ use postretro_render_cpu::ghost_instance::pack_ghost_sprite_instance;
 use postretro_render_cpu::mesh_pass::mesh_visible;
 use postretro_visibility::VisibleCells;
 
-use super::ghost_render::{GhostDrawKey, presented_look};
+use super::ghost_render::{GhostDrawKey, presented_body_look};
 use super::particle_render::{ParticleRenderCollector, projectile_sprite_body};
 use crate::ghost_links::GhostMember;
 
@@ -53,7 +53,7 @@ struct GhostSprite {
     collection: usize,
     size: f32,
     rotation: f32,
-    /// The body's own sprite opacity, under the ghost's presented opacity.
+    /// The body's own sprite opacity, judged with the ghost's look.
     opacity: f32,
     age: f32,
     /// Still a ghost this frame; sprites of departed ghosts are dropped.
@@ -109,8 +109,11 @@ impl BillboardGhostRenderCollector {
             };
             sprite.seen = true;
             let sprite = *sprite;
-            let mut ghost_look = presented_look(&mut self.clamp, member);
-            ghost_look.opacity *= sprite.opacity;
+            // Every presented ghost passes its clamp, a sprite at opacity 0
+            // included, so its history settles as any other ghost's. The
+            // sprite's own opacity is judged with the link look: a fade-out
+            // rides the exempt fall, a strobe is held.
+            let ghost_look = presented_body_look(&mut self.clamp, member, sprite.opacity);
             let position = member.mapped.position;
             if ghost_look.opacity <= 0.0 || !mesh_visible(frame.world, frame.visible, position) {
                 continue;

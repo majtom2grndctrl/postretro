@@ -35,7 +35,11 @@ const ONWARD_ROUNDING: f32 = 1.0e-6;
 
 /// The `last_sign` of an edge tracker whose history is unknown and that has
 /// not moved since ([`EdgeTrackers::unknown_history`]). Its `dir` is 0, as for
-/// any tracker that has not moved; its first move sets a sign of its own.
+/// any tracker that has not moved; its first move sets a sign of its own. A
+/// sentinel in the sign rather than a field of its own: the trackers are the
+/// screen channels' [`Tracker`], and a mask beside them would leave the look
+/// clamp no room in its per-ghost size budget. [`EdgeTrackers::step`] handles
+/// it before any rule reads the sign.
 const UNKNOWN_HISTORY: i8 = i8::MIN;
 
 /// The (albedo, background) of edge point `edge`.
@@ -168,8 +172,8 @@ impl EdgeTrackers {
     /// moved counts nothing.
     ///
     /// The rule for any ghost whose earlier presentation the clamp can't see:
-    /// one dropped at rest and appearing again today; a re-tenanted key, a
-    /// reload or a join in the middle of a strobe later.
+    /// one dropped at rest and appearing again today; a reload or a join in
+    /// the middle of a strobe later.
     pub(super) fn unknown_history(drawn: Drawn) -> Self {
         let mut edges = Self::fresh(drawn);
         for tracker in &mut edges.trackers {
@@ -218,6 +222,12 @@ impl EdgeTrackers {
     ///   other way from the one last counted, counts a transition;
     /// - a counted swing reaching past its peak carries its count on
     ///   ([`GhostWindow::extend`]);
+    /// - a counted swing smaller than the edge threshold (only an unknown
+    ///   first move counts one), once this point has counted its swing back,
+    ///   reaching past its peak again carries that earlier transition on
+    ///   while the window holds both ([`GhostWindow::restart_earlier`]), and
+    ///   otherwise counts it anew: a point nearby may only now complete the
+    ///   swing the clamp could not see;
     /// - a counted swing that stops short of its peak, on a frame that moves
     ///   this point or a neighbour its way and draws the segment between
     ///   them below the reference line somewhere (by twice how far short it
@@ -285,11 +295,24 @@ impl EdgeTrackers {
             let counted_run = tracker.dir != 0.0
                 && stepped.dir == tracker.dir
                 && f32::from(tracker.last_sign) == tracker.dir;
+            // This point counted a swing back inside a swing smaller than the
+            // edge threshold, which only an unknown first move counts.
+            let turned_back_small = tracker.dir != 0.0
+                && stepped.dir == tracker.dir
+                && f32::from(tracker.last_sign) == -tracker.dir
+                && (tracker.peak - extremum).abs() < EDGE_THRESHOLD;
             let counted = if swung && sign != tracker.last_sign {
                 stepped.last_sign = sign;
                 window.count_edge(edge, class, opens)
             } else if swung && further {
                 window.extend(edge, class, opens)
+            } else if turned_back_small && further {
+                if window.restart_earlier(edge) {
+                    true
+                } else {
+                    stepped.last_sign = if tracker.dir > 0.0 { 1 } else { -1 };
+                    window.count_edge(edge, class, opens)
+                }
             } else if !counted_run {
                 true
             } else if self.nears_new_extreme(edge, drawn, &tracker, value, &moved) {

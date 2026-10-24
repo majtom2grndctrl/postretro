@@ -98,6 +98,29 @@ fn a_swing_reaching_further_keeps_its_count_or_counts_again() {
     assert_eq!(window.len(), 1);
 }
 
+// A tracker's transition before its last sits in the earlier of the two
+// latest slots holding it; carrying that one on restarts that slot alone.
+#[test]
+fn a_trackers_transition_before_its_last_restarts_its_own_slot() {
+    let mut window = GhostWindow::default();
+    window.count_edge(3, E, true);
+    window.age(0.5);
+    window.count_edge(3, B, true);
+    window.age(0.4);
+    assert!(window.restart_earlier(3), "the earlier slot still holds it");
+    window.age(0.7);
+    assert_eq!(
+        window.len(),
+        1,
+        "the earlier slot restarted, the later aged out"
+    );
+    assert!(
+        !window.restart_earlier(3),
+        "one slot holds it: its last transition only"
+    );
+    assert!(!window.restart_earlier(4), "no slot holds it");
+}
+
 #[test]
 fn a_new_budgeted_slot_needs_room_for_one_more_and_an_exempt_one_always_opens() {
     let mut window = GhostWindow::default();

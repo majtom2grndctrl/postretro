@@ -69,7 +69,10 @@ pub(super) enum Budget {
 ///   counts on it at most once and joins its latest slot. A tracker whose
 ///   history is unknown and that has not moved yet draws at the presented
 ///   look what it drew with nothing drawn, so it draws that at every lower
-///   opacity of the held luminance too, and the ray never moves it.
+///   opacity of the held luminance too, and the ray moves it by f32 rounding
+///   at most. Such a move counts once and joins the latest slot like any
+///   other, and a later one carries that count on as a swing stopped short
+///   of its peak, since a still point's neighbours move both ways.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct GhostWindow {
     // Slot fields side by side, not as an array of slots, so the window packs
@@ -167,6 +170,24 @@ impl GhostWindow {
             return true;
         }
         self.count_edge(edge, class, opens)
+    }
+
+    /// Carry edge tracker `edge`'s transition before its last on: the slot
+    /// holding it restarts its age, so it stays counted a full second from
+    /// this frame. A tracker's transitions sit in slots of their own in the
+    /// order it counted them, so that is the earlier of its two latest slots.
+    /// Returns `false`, restarting nothing, unless two slots hold the tracker.
+    pub(super) fn restart_earlier(&mut self, edge: usize) -> bool {
+        let bit = 1u64 << edge;
+        let Some(slot) = (0..self.len())
+            .rev()
+            .filter(|&slot| self.members[slot] & bit != 0)
+            .nth(1)
+        else {
+            return false;
+        };
+        self.ages[slot] = 0.0;
+        true
     }
 
     /// The slot a transition of the tracker at `bit` in `class` joins: the

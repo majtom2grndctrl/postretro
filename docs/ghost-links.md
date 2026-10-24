@@ -191,13 +191,21 @@ render: { ghosts: "dither" },
   the ghost or the scene. Opacity rounds to the nearest sixteenth of a 4×4
   pattern, and the limiter judges that coverage. It suits a retro look.
 
+Any other value logs a warning that `render.ghosts` must be `"blend"` or
+`"dither"`, and ghosts blend; the rest of the render profile stays as written.
+
 In both modes a ghost draws only its nearest surface, so its inner surfaces,
 such as teeth behind closed lips, never show through. Ghosts draw farthest
 first, so a nearer ghost blends over a farther one.
 
-Ghosts of projectiles drawn as sprites blend either way, and sit outside that
-ordering, like any sprite. An unknown value warns
-and uses `"blend"`, leaving the rest of the render profile as written.
+Ghosts sort as whole objects, not surface by surface. A ghost standing on or
+inside a moving ghost, such as a platform, a lift or a cab, layers correctly
+with it. Two ghosts that pass through each other, or a ghost close beside a
+large moving ghost without standing on it, can hide each other where they
+overlap, as if solid there.
+
+Ghosts of projectiles drawn as sprites blend in either mode and sit outside
+that ordering, like any sprite.
 
 ### Flashing and the photosensitivity limiter
 
@@ -211,9 +219,10 @@ Ghosts can never strobe past the player's photosensitivity limiter
 - With the limiter on, a ghost presents at most three flashes in any second,
   judged as it would draw over any background and any texture from black to
   white: a link toggled rapidly, a member jittering across the boundary, a
-  colour filter flicked between bright and dark or into red. Past that it holds
-  its look until the second clears, though a fade-out always goes through.
-  Ordinary reveals and slow fades are never held.
+  colour filter flicked between bright and dark or into red, or a projectile
+  sprite's own opacity flickering. Past that it holds its look until the
+  second clears, though a fade-out always goes through. Ordinary reveals and
+  slow fades are never held.
 
 Design reveals as fades; a strobing set-piece simply will not strobe for a
 player who has the limiter on.

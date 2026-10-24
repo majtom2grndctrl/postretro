@@ -915,7 +915,7 @@ pub struct MeshPass {
 
     /// Unlit ghost pipelines, one per `render.ghosts` mode, over the same
     /// palette + instance bind group (`mesh_ghost.rs`).
-    pub(super) ghost_pipelines: super::mesh_ghost::GhostPipelines,
+    pub(super) ghost_pipelines: super::ghost_pipeline::GhostPipelines,
 
     /// Shared bone-palette storage buffer, sized for `MAX_PALETTE_ENTRIES`
     /// entries. Each instance's contiguous run of joints is written at its
@@ -1232,7 +1232,7 @@ impl MeshPass {
             &instance_bind_group_layout,
             shadow_depth_format,
         );
-        let ghost_pipelines = super::mesh_ghost::GhostPipelines::skinned(
+        let ghost_pipelines = super::ghost_pipeline::GhostPipelines::skinned(
             device,
             depth_format,
             camera_bgl,

@@ -1,6 +1,7 @@
 // Billboard ghost collection: mapped-cell culling, the packed look and pose, fading
-// after despawn, and which bodies are billboards at all.
-// See: context/lib/rendering_pipeline.md §7.9, §7.4 · context/lib/entity_model.md §7d
+// after despawn, which bodies are billboards at all, and the sprite's own opacity
+// through the flash limiter.
+// See: context/lib/rendering_pipeline.md §7.9, §7.4, §7.8 · context/lib/entity_model.md §7d
 
 use std::collections::BTreeSet;
 
@@ -11,6 +12,7 @@ use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::SeamlessMapping;
 use postretro_level_loader::{CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld};
+use postretro_render_cpu::flash_limiter::{LimiterFrameInput, pack_limiter_frame};
 use postretro_render_cpu::ghost_instance::{GHOST_SPRITE_INSTANCE_SIZE, GhostInstanceLook};
 use postretro_visibility::VisibleCells;
 
@@ -180,6 +182,16 @@ impl Fixture {
         members: &[GhostMember],
         visible: &VisibleCells,
     ) {
+        self.collect_limited(registry, members, visible, None);
+    }
+
+    fn collect_limited(
+        &mut self,
+        registry: &EntityRegistry,
+        members: &[GhostMember],
+        visible: &VisibleCells,
+        limiter: Option<LimiterFrameUniform>,
+    ) {
         self.ghosts.collect(
             registry,
             members,
@@ -188,9 +200,10 @@ impl Fixture {
                 world: &self.world,
                 visible,
                 presentation_tick: 0.0,
-                limiter: None,
+                limiter,
             },
         );
+        self.ghosts.finish_presentation(true);
     }
 
     fn drawn(&self) -> Vec<Decoded> {
@@ -336,4 +349,154 @@ fn a_billboard_body_presents_at_its_current_transform_and_other_members_interpol
         mesh.position
             .abs_diff_eq(previous.lerp(SOURCE, alpha), 1e-5)
     );
+}
+
+fn limiter(dt: f32, enabled: bool) -> LimiterFrameUniform {
+    pack_limiter_frame(
+        LimiterFrameInput {
+            elapsed_seconds: dt,
+        },
+        enabled,
+        false,
+    )
+}
+
+/// A steady, opaque, white link look: the ghost's own look never changes, so
+/// what the drawn opacity does comes from the sprite alone.
+fn steady(entity: EntityId) -> GhostMember {
+    GhostMember {
+        look: GhostLook {
+            tint: [1.0; 3],
+            opacity: 1.0,
+            saturation: 1.0,
+        },
+        ..member(entity, 1.0, false)
+    }
+}
+
+/// Present `sprite_opacity(n)` as the shot's own sprite opacity for `frames`
+/// frames at 60 Hz under a steady look; return each frame's asked and drawn
+/// opacity (0 when no sprite packs).
+fn present_sprite_opacity(
+    limiter_on: Option<bool>,
+    frames: usize,
+    sprite_opacity: impl Fn(usize) -> f32,
+) -> Vec<(f32, f32)> {
+    let mut registry = EntityRegistry::new();
+    let shot = spawn_projectile_copy(&mut registry, SOURCE);
+    let members = [steady(shot)];
+    let dt = 1.0 / 60.0;
+    let mut fixture = Fixture::new();
+    (0..frames)
+        .map(|n| {
+            let opacity = sprite_opacity(n);
+            registry
+                .set_component(
+                    shot,
+                    SpriteVisual {
+                        opacity,
+                        ..sprite()
+                    },
+                )
+                .unwrap();
+            fixture.collect_limited(
+                &registry,
+                &members,
+                &VisibleCells::DrawAll,
+                limiter_on.map(|enabled| limiter(dt, enabled)),
+            );
+            let drawn = fixture.drawn();
+            assert!(drawn.len() <= 1);
+            for ghost in &drawn {
+                let look = ghost.look;
+                assert!((look.saturation - 1.0).abs() < 1e-4, "steady: {look:?}");
+                assert!(
+                    look.tint.iter().all(|&channel| channel > 1.0 - 1.5 / 255.0),
+                    "steady: {look:?}"
+                );
+            }
+            (
+                opacity,
+                drawn.first().map_or(0.0, |ghost| ghost.look.opacity),
+            )
+        })
+        .collect()
+}
+
+/// Counted transitions in the worst one-second window, WCAG-style from the
+/// last extremum: the judge `render-cpu`'s clamp tests use, restated for a
+/// series that reaches the screen through the billboard ghost collector.
+fn worst_transitions(series: &[f32], dt: f32) -> usize {
+    let mut times = Vec::new();
+    let (mut ext, mut peak, mut dir, mut counted) = (series[0], series[0], 0.0f32, false);
+    for (n, &v) in series.iter().enumerate().skip(1) {
+        let beyond = (v - peak) * dir;
+        if dir == 0.0 {
+            if v != peak {
+                dir = (v - peak).signum();
+                peak = v;
+            }
+        } else if beyond > 0.0 {
+            peak = v;
+        } else if -beyond >= 0.1 {
+            ext = peak;
+            peak = v;
+            dir = -dir;
+            counted = false;
+        }
+        if !counted && (v - ext).abs() >= 0.1 && v.min(ext) < 0.8 {
+            counted = true;
+            times.push(n as f32 * dt);
+        }
+    }
+    (0..times.len())
+        .map(|i| {
+            times[i..]
+                .iter()
+                .take_while(|&&t| t < times[i] + 1.0)
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+// Regression: the sprite's own opacity multiplied in after the limiter, so a
+// script strobing it drew unlimited. Strobing at 10 Hz under a steady look, it
+// draws at most 3 flashes (6 transitions) in any second; with the limiter off
+// by the player, or in a capture, it draws as asked and exceeds the budget.
+#[test]
+fn a_sprite_opacity_strobe_under_a_steady_ghost_look_is_limited() {
+    let dt = 1.0 / 60.0;
+    let strobe = |n: usize| -> f32 {
+        if (n as f32 * dt * 10.0).fract() >= 0.5 {
+            1.0
+        } else {
+            0.0
+        }
+    };
+    let limited = present_sprite_opacity(Some(true), 120, strobe);
+    let drawn: Vec<f32> = limited.iter().map(|&(_, drawn)| drawn).collect();
+    assert!(worst_transitions(&drawn, dt) <= 6, "{drawn:?}");
+
+    for unlimited in [
+        present_sprite_opacity(Some(false), 120, strobe),
+        present_sprite_opacity(None, 120, strobe),
+    ] {
+        for &(asked, drawn) in &unlimited {
+            assert!((drawn - asked).abs() < 1e-4, "{asked} drew {drawn}");
+        }
+        let drawn: Vec<f32> = unlimited.iter().map(|&(_, drawn)| drawn).collect();
+        assert!(worst_transitions(&drawn, dt) > 6);
+    }
+}
+
+// An ordinary sprite fade-out under the limiter is never held: it rides the
+// exempt fall to nothing, drawing as asked on every frame.
+#[test]
+fn a_sprite_opacity_fade_out_draws_unheld_under_the_limiter() {
+    // Steady for a quarter second, then a half-second linear fade to nothing.
+    let fade = |n: usize| -> f32 { (1.0 - n.saturating_sub(15) as f32 / 30.0).max(0.0) };
+    for &(asked, drawn) in &present_sprite_opacity(Some(true), 60, fade) {
+        assert!((drawn - asked).abs() < 1e-4, "{asked} drew {drawn}");
+    }
 }

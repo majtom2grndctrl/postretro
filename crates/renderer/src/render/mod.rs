@@ -23,6 +23,7 @@ mod fog_pass;
 mod frame_timing;
 mod ghost_depth;
 mod ghost_order;
+mod ghost_pipeline;
 mod kinematic_brush;
 mod kinematic_ghost;
 mod lightmap_residency;

@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use postretro_render_data::cone_frustum::Aabb;
 use wgpu::util::DeviceExt;
 
 use super::*;
@@ -84,8 +85,9 @@ pub(crate) struct KinematicBrushPass {
     beauty_draws: Vec<ActiveMoverDraw>,
     mover_index_ranges: Vec<MoverIndexRange>,
     /// Each uploaded mover's local geometry bounds, parallel to `movers`: a
-    /// ghost of it sorts among the frame's ghosts by their farthest corner.
-    mover_bounds: Vec<postretro_render_data::cone_frustum::Aabb>,
+    /// ghost of it sorts among the frame's ghosts by these bounds under its
+    /// model transform.
+    mover_bounds: Vec<Aabb>,
     instance_bytes: Vec<u8>,
 }
 
@@ -558,8 +560,7 @@ impl KinematicBrushPass {
                     (min.min(position), max.max(position))
                 },
             );
-            self.mover_bounds
-                .push(postretro_render_data::cone_frustum::Aabb { min, max });
+            self.mover_bounds.push(Aabb { min, max });
         }
 
         if vertices.is_empty() || indices.is_empty() {
@@ -628,10 +629,7 @@ impl KinematicBrushPass {
 
     /// One uploaded mover's geometry bounds, in the space its model matrix
     /// maps from. `None` for a mover id this level did not upload.
-    pub(super) fn mover_bounds(
-        &self,
-        mover_id: u32,
-    ) -> Option<postretro_render_data::cone_frustum::Aabb> {
+    pub(super) fn mover_bounds(&self, mover_id: u32) -> Option<Aabb> {
         Some(self.mover_bounds[*self.mover_lookup.get(&mover_id)?])
     }
 

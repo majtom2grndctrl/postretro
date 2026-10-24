@@ -44,6 +44,22 @@ pub(super) fn transitions_over(
     worst_transitions(&drawn_over(albedo, background, opacity, tint_luminance), dt)
 }
 
+/// The frames on which what a ghost draws with `albedo` over `background`
+/// counts a transition, so an attack can show its crossing look presents.
+pub(super) fn transition_frames_over(
+    albedo: f32,
+    background: f32,
+    opacity: &[f32],
+    tint_luminance: &[f32],
+) -> Vec<usize> {
+    let drawn = drawn_over(albedo, background, opacity, tint_luminance);
+    let frames: Vec<f32> = (0..drawn.len()).map(|n| n as f32).collect();
+    transition_times(&drawn, &frames)
+        .into_iter()
+        .map(|frame| frame as usize)
+        .collect()
+}
+
 /// Count transitions of what a ghost draws in any one second at every albedo
 /// and background of the grid, and return the most: the WCAG counter (a swing
 /// of 0.1 with its darker state under 0.8) on the drawn value, one frame per

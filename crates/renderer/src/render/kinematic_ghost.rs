@@ -1,15 +1,17 @@
 // Kinematic-brush ghost pipelines (a colour and a depth-only draw per mode),
-// their instance upload and draw recording over the mover pass's geometry.
+// their instance upload, each ghost's placed bounds, and draw recording over
+// the mover pass's geometry.
 // See: context/lib/rendering_pipeline.md §7.9
 
+use glam::{Mat4, Vec3};
 use postretro_render_cpu::ghost_instance::{
     KINEMATIC_GHOST_INSTANCE_SIZE, KinematicGhostInstance, pack_kinematic_ghost_instance,
 };
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
+use postretro_render_data::cone_frustum::Aabb;
 
-use super::ghost_order::{GhostDrawStep, mover_ghost_corners};
+use super::ghost_pipeline::{GhostDrawStep, GhostPipelines};
 use super::kinematic_brush::KinematicBrushPass;
-use super::mesh_ghost::GhostPipelines;
 use super::{GpuTexture, SCENE_COLOR_FORMAT};
 
 /// Unlit mover ghost shader with the shared ghost look helper appended. It
@@ -43,14 +45,70 @@ fn kinematic_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
+/// A mover ghost's geometry as placed: its mover's local geometry bounds
+/// under the ghost's model transform. The frame sorts the ghost by the box's
+/// centre and asks which skinned ghosts stand on or in the box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct MoverGhostBounds {
+    local: Aabb,
+    transform: Mat4,
+    /// World to mover-local, when the box can hold a point: `None` for a
+    /// transform with no inverse, or a box that is not finite and ordered.
+    local_from_world: Option<Mat4>,
+    /// World length of one local unit along each local axis.
+    metres_per_unit: Vec3,
+}
+
+impl MoverGhostBounds {
+    pub(super) fn new(transform: Mat4, local: Aabb) -> Self {
+        let ordered =
+            local.min.is_finite() && local.max.is_finite() && local.min.cmple(local.max).all();
+        let local_from_world = if ordered {
+            transform.try_inverse()
+        } else {
+            None
+        };
+        Self {
+            local,
+            transform,
+            local_from_world,
+            metres_per_unit: Vec3::new(
+                transform.x_axis.truncate().length(),
+                transform.y_axis.truncate().length(),
+                transform.z_axis.truncate().length(),
+            ),
+        }
+    }
+
+    /// World-space centre of the box; not finite when the box or transform
+    /// is not.
+    pub(super) fn center(&self) -> Vec3 {
+        self.transform
+            .transform_point3((self.local.min + self.local.max) * 0.5)
+    }
+
+    /// Whether world `point` lies in the oriented box grown by `margin`
+    /// metres along each of its axes. Tested in the mover's own frame, so a
+    /// point beside a turned box but inside its world-axis enclosure is out.
+    /// Never true for a box with no inverse or bounds, or a non-finite point.
+    pub(super) fn contains(&self, point: Vec3, margin: f32) -> bool {
+        let Some(local_from_world) = self.local_from_world else {
+            return false;
+        };
+        let local = local_from_world.transform_point3(point);
+        let reach = Vec3::splat(margin) / self.metres_per_unit;
+        (local.cmpge(self.local.min - reach) & local.cmple(self.local.max + reach)).all()
+    }
+}
+
 /// One packed ghost instance's draw: which mover's geometry, at which slot of
-/// the ghost instance buffer, and where its geometry's bounds corners land,
-/// the points the frame sorts ghosts by.
+/// the ghost instance buffer, and its geometry's placed bounds, which the
+/// frame sorts ghosts by.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct GhostDraw {
     mover_id: u32,
     instance_index: u32,
-    corners: [glam::Vec3; 8],
+    bounds: MoverGhostBounds,
 }
 
 /// Mover ghosts: their own 80-byte instance list (model plus packed look),
@@ -183,7 +241,7 @@ impl KinematicGhostPass {
             self.draws.push(GhostDraw {
                 mover_id: instance.mover_id,
                 instance_index: self.draws.len() as u32,
-                corners: mover_ghost_corners(instance.transform, local_bounds),
+                bounds: MoverGhostBounds::new(instance.transform, local_bounds),
             });
             self.instance_bytes
                 .extend_from_slice(&pack_kinematic_ghost_instance(
@@ -216,10 +274,9 @@ impl KinematicGhostPass {
         !self.draws.is_empty()
     }
 
-    /// Each mover ghost's world-space geometry bounds corners, in draw-slot
-    /// order.
-    pub(super) fn draw_corners(&self) -> impl Iterator<Item = [glam::Vec3; 8]> + '_ {
-        self.draws.iter().map(|draw| draw.corners)
+    /// Each mover ghost's placed geometry bounds, in draw-slot order.
+    pub(super) fn draw_bounds(&self) -> impl Iterator<Item = MoverGhostBounds> + '_ {
+        self.draws.iter().map(|draw| draw.bounds)
     }
 
     /// Record the mover ghost in slot `draw` as `step` of its draw pair,

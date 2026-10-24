@@ -25,6 +25,8 @@ use super::Renderer;
 use super::fluid_surface_frame_test::{
     SIDE, capture_encode, capture_from, fluid_quad, look_draw, renderer,
 };
+use super::ghost_order::MOVER_CONTACT_MARGIN;
+use super::kinematic_ghost::MoverGhostBounds;
 
 /// One mover holding a near quad and, overlapping it on screen, a far one:
 /// the self-overlap a closed mouth over teeth makes. Then each quad alone.
@@ -56,9 +58,9 @@ const NEAR_GHOST_INNER: f32 = 0.25;
 const FAR_GHOST_OUTER: f32 = 0.6;
 const FAR_GHOST_INNER: f32 = 0.65;
 /// The platform's depth at its near (left) and far (right) edges, so its
-/// bounds centre sits at 0.5 and its farthest corner at 0.875; the pawn's
-/// depth, nearer than the platform across the pawn's columns but behind the
-/// platform's centre.
+/// bounds centre sits at 0.5; the pawn's depth, nearer than the platform
+/// across the pawn's columns but behind the platform's centre, its feet in
+/// the platform's bounds.
 const PLATFORM_NEAR_EDGE: f32 = 0.125;
 const PLATFORM_FAR_EDGE: f32 = 0.875;
 const PAWN_DEPTH: f32 = 0.6;
@@ -649,11 +651,12 @@ fn platform_and_pawn_expected(mode: GhostTransparency, column: u32, row: u32) ->
 }
 
 // A ghost pawn standing in front of the far half of a long ghost platform,
-// its bounds centre behind the platform's. The platform keys on its farthest
-// bounds corner, so it draws first and shows through the pawn's silhouette
-// at the expected blend. Keyed by its centre it would draw after the pawn
-// and lose the pawn's whole silhouette, a pawn-shaped hole. Blend only:
-// dither keeps the nearest pixel in either order.
+// its bounds centre behind the platform's. The pawn's feet are in the
+// platform's bounds, so the platform draws first and shows through the
+// pawn's silhouette at the expected blend. Keyed by its centre alone it
+// would draw after the pawn and lose the pawn's whole silhouette, a
+// pawn-shaped hole. Blend only: dither keeps the nearest pixel in either
+// order.
 #[test]
 fn a_ghost_platform_shows_through_the_ghost_pawn_on_its_far_half() {
     let Some(mut renderer) = renderer() else {
@@ -664,6 +667,19 @@ fn a_ghost_platform_shows_through_the_ghost_pawn_on_its_far_half() {
     // The pawn keys on its bounds centre, behind the platform's (0.5).
     let pawn_bounds = renderer.skinned_model_local_bounds(SKINNED_PAWN);
     assert!(((pawn_bounds.min.z + pawn_bounds.max.z) * 0.5 - PAWN_DEPTH).abs() < 1e-6);
+    // Its feet, the bottom centre of its bounds, stand in the platform's.
+    let feet = Vec3::new(
+        (pawn_bounds.min.x + pawn_bounds.max.x) * 0.5,
+        pawn_bounds.min.y,
+        PAWN_DEPTH,
+    );
+    let platform_bounds = renderer
+        .full()
+        .kinematic_brush
+        .mover_bounds(PLATFORM)
+        .expect("the platform uploads");
+    let platform = MoverGhostBounds::new(Mat4::IDENTITY, platform_bounds);
+    assert!(platform.contains(feet, MOVER_CONTACT_MARGIN));
     let mode = GhostTransparency::Blend;
     renderer.set_ghost_transparency(mode);
     let frame = frame_with(

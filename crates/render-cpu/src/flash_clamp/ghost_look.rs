@@ -2,15 +2,13 @@
 // the edge points on one flash window per ghost, and the look that presents.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter), §7.9
 
-use std::hash::Hash;
-
 use super::ghost_red::GhostRedness;
 use super::ghost_tint::{drawn_luminance, on_grid_at_luminance};
 use super::ghost_trackers::{Drawn, EdgeTrackers, rate_cap_scale};
 use super::ghost_window::{Budget, GhostWindow, SlotClass};
-use super::keyed::{KeyClamp, KeyedClamp};
+use super::keyed::KeyClamp;
 use super::value::{INTENSITY_RATE_PER_SECOND, unit_strength};
-use crate::flash_limiter::{LimiterFrameInput, LimiterFrameUniform, pack_limiter_frame};
+use crate::flash_limiter::LimiterFrameUniform;
 use crate::ghost_instance::{GhostInstanceLook, screen_door_coverage};
 use crate::ghost_transparency::GhostTransparency;
 
@@ -38,9 +36,9 @@ fn drawn_opacity(transparency: GhostTransparency) -> fn(f32) -> f32 {
 
 /// What a ghost asks to present on a frame, and how it draws.
 #[derive(Clone, Copy, Debug)]
-struct AskedLook {
-    look: GhostInstanceLook,
-    transparency: GhostTransparency,
+pub(super) struct AskedLook {
+    pub(super) look: GhostInstanceLook,
+    pub(super) transparency: GhostTransparency,
 }
 
 /// One frame's choices, as opacity and drawn tint luminance: from the exempt
@@ -159,25 +157,33 @@ struct FrameAsk {
 ///    on a frame x reaches further its way than on any frame since it
 ///    rested. There y or z has moved and counted, and that count runs as in
 ///    step 3: carried on while it reaches further, counted again back near
-///    where it rested. From then on steps 2 to 5 run as from a history
-///    start. For the window the first moves change nothing: an appearance is
-///    one step, so its first moves share one exempt slot; a point still since
-///    the drop draws at the presented look what it drew with nothing drawn,
-///    so the exempt ray, a lower opacity at that luminance, never moves it,
-///    and from six edge slots a tracker still counts at most once on the
-///    ray. The exempt ray still always fits, so a fade or vanish presents.
+///    where it rested. Once a first move under the edge threshold is
+///    counted back, no swing threshold sees it pass that move's peak again,
+///    so passing it carries the first count on, restarting its slot (or
+///    counting it anew, which only limits more): the hidden transition holds
+///    a slot restarted on its frame, and the swing back keeps its own. From
+///    then on steps 2 to 5 run as from a history start. For the window the
+///    first moves change nothing: an appearance is one step, so its first
+///    moves share one exempt slot; a point still since the drop draws at the
+///    presented look what it drew with nothing drawn, so the exempt ray, a
+///    lower opacity at that luminance, moves it by f32 rounding at most (a
+///    tint drawing luminance exactly k/16 can leave it an ulp off). Such a
+///    move counts once, joining the latest slot, at six edge slots the
+///    exempt one that opened the sixth; the point's neighbours move both
+///    ways on any opacity change, so a later rounding move carries that
+///    count on, as a swing stopped short of its peak, rather than counting. From six edge slots a tracker still counts at
+///    most once on the ray, and the exempt ray always fits, so a fade or
+///    vanish presents.
 ///
 /// The thresholds leave room for the unorm16 opacity the draw packs and f32
-/// rounding. Not covered across a drop: a sample whose first move is under
-/// the edge threshold, once it has counted its swing back near where it
-/// rested, counts nothing moving on that way short of the threshold, so a
-/// hidden swing completing there restarts no slot on its frame; and a point
-/// whose nearer sample has not moved since the drop (a white tint keeps the
-/// corner (1, 1) still) leans on the farther one, whose slot the nearer
-/// one's first count may later join. Targeted searches over both find no
-/// seventh transition.
+/// rounding. Not covered across a drop: a point between samples passing its
+/// old extreme while its nearer sample, counted back near where it rested,
+/// stays short of its first move's peak; and a point whose nearer sample has
+/// not moved since the drop (a white tint keeps the corner (1, 1) still)
+/// leans on the farther one, whose slot the nearer one's first count may
+/// later join. Targeted searches over both find no seventh transition.
 #[derive(Clone, Copy, Debug)]
-struct LookValueClamp {
+pub(super) struct LookValueClamp {
     window: GhostWindow,
     edges: EdgeTrackers,
     red: GhostRedness,
@@ -214,8 +220,8 @@ impl LookValueClamp {
     /// into a swing. Its edge trackers start with unknown history
     /// ([`EdgeTrackers::unknown_history`]), each counting its first move as a
     /// transition. The rule for any ghost the clamp lost sight of: one dropped
-    /// at rest and appearing again today; a re-tenanted key, a reload or a
-    /// join in the middle of a strobe later.
+    /// at rest and appearing again today; a reload or a join in the middle of
+    /// a strobe later.
     ///
     /// Redness needs no such start while a ghost is dropped only at rest: its
     /// presented redness is then zero, the floor, so no swing it forgot can
@@ -434,139 +440,6 @@ impl KeyClamp for LookValueClamp {
 
     fn is_at_rest(&self) -> bool {
         self.window.is_empty() && self.opacity == 0.0 && self.red.presented() == 0.0
-    }
-}
-
-/// Every ghost's look through the photosensitivity limiter, the one place a
-/// ghost draw collector limits a look. Keys are a collector's ghost identity
-/// (its link and generation-checked entity), so an entity seen through two
-/// links is two ghosts with their own history.
-///
-/// Each frame: [`Self::begin_frame`], then [`Self::present`] once per
-/// presented ghost (culled or not: the limiter judges the source, not its
-/// framing), then [`Self::end_frame`], then [`Self::finish_presentation`] once
-/// the renderer knows whether the frame presented. A frame begun with no
-/// limiter input (a capture) passes every look through and leaves history
-/// untouched. [`Self::set_transparency`] says how the ghosts draw, so a
-/// dithered ghost is judged on the coverage its screen door presents.
-///
-/// What each ghost draws over any background, and its tint's redness, share
-/// one flash window, so one ghost presents at most 3 flashes in any 1 s over
-/// any background, and over budget it rests at a held look. A ghost not
-/// presented on a frame vanished: its opacity falls to nothing, which always
-/// presents and counts once. A ghost appearing presents as asked and counts
-/// its appearance the same way, however faint, since it may be one whose
-/// history was dropped at rest; one already presenting when the limiter
-/// turns on starts against its look and counts nothing.
-#[derive(Clone, Debug)]
-pub struct GhostLookClamp<K> {
-    /// Every ghost's look clamp.
-    looks: KeyedClamp<K, LookValueClamp>,
-    /// `looks` as the unsettled frame began, restored if it never presents.
-    /// Overwritten in place each frame. Both tables start allocated at the
-    /// same size and only swap, so the snapshot allocates only when `looks`
-    /// outgrows it.
-    frame_start: KeyedClamp<K, LookValueClamp>,
-    /// The limiter input of the frame begun and not yet settled.
-    unsettled: Option<LimiterFrameUniform>,
-    /// Presented time of frames that never presented, which the next limited
-    /// frame takes on.
-    unconsumed: Option<LimiterFrameInput>,
-    /// This frame runs the limiter: it was begun with a limiter input.
-    limiting: bool,
-    /// How these ghosts draw translucent.
-    transparency: GhostTransparency,
-}
-
-impl<K> Default for GhostLookClamp<K> {
-    fn default() -> Self {
-        Self {
-            looks: KeyedClamp::default(),
-            frame_start: KeyedClamp::default(),
-            unsettled: None,
-            unconsumed: None,
-            limiting: false,
-            transparency: GhostTransparency::default(),
-        }
-    }
-}
-
-impl<K: Copy + Eq + Hash> GhostLookClamp<K> {
-    /// How the ghosts this clamp limits draw translucent (`render.ghosts`;
-    /// billboard ghosts always blend). Blend until set.
-    pub fn set_transparency(&mut self, transparency: GhostTransparency) {
-        self.transparency = transparency;
-    }
-
-    /// Start a frame. `frame` is this frame's limiter input (the ghost ramp's
-    /// presented-frame time and the fail-safe enable flag), or `None` for a
-    /// capture, which never involves the limiter. Time from earlier frames
-    /// that never presented merges into it. A frame begun before the last one
-    /// settled settles that one as presented.
-    pub fn begin_frame(&mut self, frame: Option<&LimiterFrameUniform>) {
-        self.limiting = frame.is_some();
-        self.unsettled = None;
-        let Some(frame) = frame else {
-            return;
-        };
-        let frame = match self.unconsumed.take() {
-            Some(unconsumed) => pack_limiter_frame(
-                unconsumed.merge(LimiterFrameInput {
-                    elapsed_seconds: frame.dt_window,
-                }),
-                frame.enabled,
-                frame.init,
-            ),
-            None => *frame,
-        };
-        self.frame_start.clone_from(&self.looks);
-        self.looks.begin_frame(&frame);
-        self.unsettled = Some(frame);
-    }
-
-    /// The look ghost `key` presents this frame, from its unclamped look
-    /// (`opacity` already the link's opacity times membership): judged over
-    /// every background as [`GhostLookClamp`] describes, its tint at the
-    /// presented luminance keeping its hue, and over budget a red tint
-    /// desaturated at unchanged luminance. Saturation passes through.
-    pub fn present(&mut self, key: K, look: GhostInstanceLook) -> GhostInstanceLook {
-        if !self.limiting {
-            return look;
-        }
-        let asked = AskedLook {
-            look,
-            transparency: self.transparency,
-        };
-        self.looks.limit(key, asked).look
-    }
-
-    /// End the frame: a ghost not presented this frame vanished. Its opacity
-    /// falls to nothing, counted once, and its history is kept until its clamp
-    /// is at rest.
-    pub fn end_frame(&mut self) {
-        if !self.limiting {
-            return;
-        }
-        self.looks.end_frame();
-    }
-
-    /// Settle the frame last begun once the renderer knows whether it
-    /// presented. A frame that presented nothing (its surface acquire failed)
-    /// never consumes its presented time: every ghost's clamp returns to where
-    /// the frame began, and its time merges into the next limited frame's, as
-    /// the resolve's limiter input does.
-    pub fn finish_presentation(&mut self, presented: bool) {
-        let Some(frame) = self.unsettled.take() else {
-            return;
-        };
-        if presented {
-            return;
-        }
-        std::mem::swap(&mut self.looks, &mut self.frame_start);
-        // The frame's time already holds any earlier unconsumed time.
-        self.unconsumed = Some(LimiterFrameInput {
-            elapsed_seconds: frame.dt_window,
-        });
     }
 }
 

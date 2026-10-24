@@ -4,6 +4,7 @@
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter)
 
 use super::*;
+use crate::ghost_instance::GhostInstanceLook;
 
 /// A tiny xorshift generator: deterministic, uniform in [0, 1).
 fn sequence(seed: u64) -> impl FnMut() -> f32 {
@@ -27,9 +28,26 @@ fn edge_points_sample_both_outer_edges_of_the_albedo_and_background_square() {
     for (i, point) in points.iter().enumerate() {
         assert!(!points[i + 1..].contains(point), "{point:?} twice");
     }
-    // The flash threshold less half a sample step, less room for what the
-    // draw rounds.
-    assert_eq!(EDGE_THRESHOLD, 0.06875 - DRAWN_ROUNDING);
+    // The room for what the draw rounds covers the unorm16 opacity it packs:
+    // a swing compares two drawn values, each within half that room of the
+    // opacity judged.
+    let mut next = sequence(0x5DEE_CE66_D1CE_4E5B);
+    for _ in 0..10_000 {
+        let opacity = next();
+        let drawn = GhostInstanceLook::unpack(
+            GhostInstanceLook {
+                opacity,
+                saturation: 0.0,
+                tint: [0.0; 3],
+            }
+            .pack(),
+        )
+        .opacity;
+        assert!(
+            (drawn - opacity).abs() <= 0.5 * DRAWN_ROUNDING,
+            "{opacity} draws {drawn}"
+        );
+    }
 }
 
 #[test]
@@ -340,4 +358,39 @@ fn an_unknown_history_tracker_counts_its_first_move_of_any_size_then_runs_as_usu
     let mut window = GhostWindow::default();
     let mut edges = EdgeTrackers::unknown_history(Drawn::of(0.0, 1.0));
     assert!(!edges.step(faint, SlotClass::Budgeted, false, 0, &mut window));
+}
+
+// Regression: with unknown history a faint first move counted, and so did its
+// swing back near the rest, after which moving on past that first move's
+// peak counted nothing: a swing the clamp could not see completing there
+// restarted no slot on its frame. Passing the peak again carries the first
+// move's count on, restarting its slot, or counts it anew once that slot has
+// aged out.
+#[test]
+fn passing_a_faint_first_moves_peak_after_its_swing_back_carries_it_on() {
+    // A black ghost appearing faintly, back near nothing, then further on:
+    // every point but (1, 0), which a black ghost never moves, falls by
+    // under the edge threshold.
+    let (rest, faint, back, further) = (
+        Drawn::of(0.0, 0.0),
+        Drawn::of(0.004, 0.0),
+        Drawn::of(0.0005, 0.0),
+        Drawn::of(0.0606, 0.0),
+    );
+    // Aged 0.9 the first move's slot restarts and the swing back stays the
+    // last count; aged 0.97 that slot is gone, so the fall counts anew.
+    for (aged, last_sign) in [(0.9, 1), (0.97, -1)] {
+        let mut window = GhostWindow::default();
+        let mut edges = EdgeTrackers::unknown_history(rest);
+        assert!(edges.step(faint, SlotClass::Budgeted, true, 0, &mut window));
+        window.age(0.05);
+        assert!(edges.step(back, SlotClass::Budgeted, true, 0, &mut window));
+        assert_eq!(window.len(), 2, "the first move and the swing back");
+        assert_eq!(edges.trackers[1].last_sign, 1, "counted back near the rest");
+        window.age(aged);
+        assert!(edges.step(further, SlotClass::Budgeted, true, 0, &mut window));
+        window.age(0.2);
+        assert_eq!(window.len(), 1, "aged {aged}: the crossing keeps a slot");
+        assert_eq!(edges.trackers[1].last_sign, last_sign, "aged {aged}");
+    }
 }

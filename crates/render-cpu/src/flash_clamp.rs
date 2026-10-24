@@ -1,12 +1,14 @@
 // Channel clamp: the photosensitivity limiter on the screen channels.
 // `screen.flash`, `screen.vignette` and the engine's fluid view tint are each a
 // per-value clamp (`value.rs`), limited as they pack into the resolve's effect
-// uniform. `keyed.rs` holds one clamp per draw-side source, and `ghost_look.rs`
+// uniform. `keyed.rs` holds one clamp per draw-side source. `ghost_look.rs`
 // limits what each ghost draws over any background, tracked at edge points
-// (`ghost_trackers.rs`) on one flash window per ghost (`ghost_window.rs`).
+// (`ghost_trackers.rs`) on one flash window per ghost (`ghost_window.rs`), and
+// `ghost_look_clamp.rs` keys it per ghost and settles each frame.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter)
 
 mod ghost_look;
+mod ghost_look_clamp;
 mod ghost_red;
 mod ghost_tint;
 mod ghost_trackers;
@@ -14,7 +16,7 @@ mod ghost_window;
 mod keyed;
 mod value;
 
-pub use ghost_look::GhostLookClamp;
+pub use ghost_look_clamp::GhostLookClamp;
 pub use value::{INTENSITY_RATE_PER_SECOND, ValueClamp};
 
 use crate::flash_limiter::{LimiterFrameInput, LimiterFrameUniform, pack_limiter_frame};

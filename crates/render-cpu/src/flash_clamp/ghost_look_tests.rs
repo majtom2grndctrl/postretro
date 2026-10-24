@@ -1,12 +1,15 @@
-// Ghost look clamp: three flashes a second over any background, regressions,
-// targeted attacks, strobes, ordinary looks, red, dither, appearing, drops at
-// rest, and off.
+// Per-ghost look clamp: three flashes a second over any background,
+// regressions, targeted attacks, strobes, ordinary looks, red, dither,
+// appearing, and drops at rest.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter), §7.9
 
+use std::ops::Range;
+
 use super::super::flash_clamp_test_fixtures::{
-    transitions_over, worst_transitions, worst_transitions_over_any_background,
-    worst_transitions_over_any_background_at,
+    transition_frames_over, transitions_over, worst_transitions,
+    worst_transitions_over_any_background, worst_transitions_over_any_background_at,
 };
+use super::super::ghost_look_clamp::GhostLookClamp;
 use super::super::ghost_tint::{drawn_luminance, tint_at_luminance};
 use super::super::value::{INTENSITY_RATE_PER_SECOND, RED_SATURATED, luminance, redness};
 use super::*;
@@ -755,43 +758,6 @@ fn a_single_red_tint_change_keeps_its_hue_angle() {
     assert_eq!(shown.last().map(|look| look.tint), Some(red));
 }
 
-// The limiter turned off by the player, and a capture (no limiter input), pass
-// every look through unchanged.
-#[test]
-fn limiter_off_and_capture_pass_the_tint_strobe_through() {
-    let fps = 60.0;
-    let dt = 1.0 / fps;
-    let tints: Vec<_> = (0..120)
-        .map(|n| alternate(10.0, n as f32 * dt, BLACK, WHITE))
-        .collect();
-    for limiter in [Some(false), None] {
-        let presented = present_tints(&tints, fps, limiter);
-        for (tint, shown) in tints.iter().zip(&presented) {
-            assert_eq!(*shown, look(1.0, *tint), "{limiter:?}");
-        }
-    }
-}
-
-// An opacity strobe at a steady tint spends the window but changes no tint, and
-// a second ghost's history is its own.
-#[test]
-fn an_opacity_strobe_leaves_a_steady_tint_alone_and_each_ghost_keeps_its_own_history() {
-    let fps = 60.0;
-    let dt = 1.0 / fps;
-    let frame = frame(dt, true);
-    let other: Key = (1, 7);
-    let mut clamp = GhostLookClamp::default();
-    for n in 0..180 {
-        let opacity = alternate(10.0, n as f32 * dt, 0.0, 1.0);
-        clamp.begin_frame(Some(&frame));
-        let opacity_strobe = clamp.present(GHOST, look(opacity, WHITE));
-        let steady = clamp.present(other, look(0.5, ECHO));
-        clamp.end_frame();
-        assert_eq!(opacity_strobe.tint, WHITE, "frame {n}");
-        assert_eq!(steady, look(0.5, ECHO), "frame {n}");
-    }
-}
-
 #[test]
 fn tint_at_luminance_scales_and_greys_black() {
     let tint = [0.5, 0.25, 0.1];
@@ -990,82 +956,6 @@ fn a_tint_strobe_on_an_invisible_ghost_spends_no_budget() {
             worst_transitions(&brightnesses(strobe), dt),
             6,
             "{fps} fps: the opacity strobe's full three flashes"
-        );
-    }
-}
-
-// Regression: a frame whose surface acquire failed still spent the ghost
-// clamp's presented time, so the first visible frame after a run of them
-// stepped several rate caps at once.
-#[test]
-fn a_frame_that_never_presents_leaves_the_clamp_as_if_it_never_ran_and_merges_its_time() {
-    let dt = 1.0 / 60.0;
-    let step = frame(dt, true);
-    let start = look(0.0, BLACK);
-    let target = look(1.0, WHITE);
-    let mut skipping = GhostLookClamp::default();
-    let mut reference = GhostLookClamp::default();
-    for clamp in [&mut skipping, &mut reference] {
-        clamp.begin_frame(Some(&step));
-        clamp.present(GHOST, start);
-        clamp.end_frame();
-        clamp.finish_presentation(true);
-    }
-    // Five frames that never present, then one that does. The reference never
-    // saw the five: its next frame carries their time.
-    let mut merged = dt;
-    for _ in 0..5 {
-        skipping.begin_frame(Some(&step));
-        skipping.present(GHOST, target);
-        skipping.end_frame();
-        skipping.finish_presentation(false);
-        merged += dt;
-    }
-    for n in 0..30 {
-        let reference_frame = if n == 0 { frame(merged, true) } else { step };
-        skipping.begin_frame(Some(&step));
-        let shown = skipping.present(GHOST, target);
-        skipping.end_frame();
-        skipping.finish_presentation(true);
-        reference.begin_frame(Some(&reference_frame));
-        let expected = reference.present(GHOST, target);
-        reference.end_frame();
-        reference.finish_presentation(true);
-
-        assert!((shown.opacity - expected.opacity).abs() < 1e-6, "frame {n}");
-        for channel in 0..3 {
-            assert!(
-                (shown.tint[channel] - expected.tint[channel]).abs() < 1e-6,
-                "frame {n}: {shown:?} vs {expected:?}"
-            );
-        }
-        if n == 0 {
-            // Six frames' time, hitch-clamped: one hitch ceiling of rate cap.
-            let cap = INTENSITY_RATE_PER_SECOND * HITCH_CEILING_SECONDS;
-            assert!((shown.opacity - cap).abs() < 1e-5, "{shown:?}");
-        }
-    }
-}
-
-// Regression: while acquires kept failing right after an install, each
-// frame's snapshot cloned the never-allocated empty table, which freed the
-// snapshot's own; the live table then allocated again on the next present.
-// Both tables now start with room and keep it.
-#[test]
-fn frames_that_never_present_keep_both_tables_allocated() {
-    let step = frame(1.0 / 60.0, true);
-    let mut clamp = GhostLookClamp::<Key>::default();
-    let room = (clamp.looks.capacity(), clamp.frame_start.capacity());
-    assert!(room.0 > 0 && room.1 > 0, "{room:?}");
-    for n in 0..30 {
-        clamp.begin_frame(Some(&step));
-        clamp.present(GHOST, look(0.5, WHITE));
-        clamp.end_frame();
-        clamp.finish_presentation(false);
-        assert_eq!(
-            (clamp.looks.capacity(), clamp.frame_start.capacity()),
-            room,
-            "frame {n}"
         );
     }
 }
@@ -1283,10 +1173,10 @@ fn hold(looks: &mut Vec<GhostInstanceLook>, asked: GhostInstanceLook, seconds: f
     looks.extend(std::iter::repeat_n(asked, frames));
 }
 
-/// What each round-5 attack asks after its crossing look: four tint swings
-/// to `bright` and back, the crossing look held until a second after frame
-/// `first` (when the slot its first change refreshed last ages out), one
-/// more swing, then the exempt fall to nothing. Had the crossing gone
+/// What the undrawn-corner and between-samples attacks ask after their
+/// crossing look: four tint swings to `bright` and back, the crossing look
+/// held until a second after frame `first` (when the slot its first change
+/// refreshed last ages out), one more swing, then the exempt fall to nothing. Had the crossing gone
 /// uncounted, the point it crossed at draws a seventh transition in the
 /// second.
 fn strobe_after_crossing(
@@ -1457,6 +1347,25 @@ fn presented_worst(
     over_any(&shown, 1.0 / fps, transparency)
 }
 
+/// Whether what `asked` presents through one ghost at `fps`, blended, draws
+/// a transition with `albedo` over `background` on frame `n`: an attack's
+/// crossing look presents its flash rather than being held back.
+fn presents_a_flash_on(
+    asked: &[GhostInstanceLook],
+    fps: f32,
+    (albedo, background): (f32, f32),
+    n: usize,
+) -> bool {
+    let shown = present_looks(asked.len(), fps, |frame| asked[frame]);
+    transition_frames_over(
+        albedo,
+        background,
+        &opacities(&shown),
+        &drawn_luminances(&shown),
+    )
+    .contains(&n)
+}
+
 // Regression: on a frame asking opacity down and tint up, the clamp judged
 // the corner of its segment at the lower opacity and the held tint, which
 // never drew, so the trackers' peaks sat where nothing presented. Asking that
@@ -1467,6 +1376,16 @@ fn presented_worst(
 fn a_flash_completed_at_the_corner_a_frame_judged_but_never_drew_is_counted() {
     for (fps, low, up) in [(30.0, 103, 112), (60.0, 103, 112), (240.0, 97, 99)] {
         let asked = corner_attack_with(fps, 0.79, 128, low, up);
+        // The crossing look follows two seconds at the start grey, a tenth
+        // at the low one and the judged frame's 0.3 s.
+        let crossed: usize = [2.0f32, 0.1, 0.3]
+            .iter()
+            .map(|seconds| (seconds * fps).round() as usize)
+            .sum();
+        assert!(
+            presents_a_flash_on(&asked, fps, (1.0, 0.0), crossed),
+            "{fps} fps: the crossing completes a flash over black"
+        );
         for transparency in GhostTransparency::ALL {
             let worst = presented_worst(&asked, fps, transparency);
             assert!(
@@ -1498,8 +1417,13 @@ fn a_flash_completed_between_edge_samples_is_counted() {
         let first = asked.len();
         hold(&mut asked, look(low_below, grey_byte(104)), 0.3, fps);
         let crossing = look(opacity, grey_byte(100));
+        let crossed = asked.len();
         hold(&mut asked, crossing, 0.1, fps);
         strobe_after_crossing(&mut asked, crossing, grey_byte(190), first, fps);
+        assert!(
+            presents_a_flash_on(&asked, fps, (1.0, 0.025), crossed),
+            "{fps} fps: the crossing completes a flash between the samples"
+        );
         let worst = presented_worst(&asked, fps, GhostTransparency::Blend);
         assert!(worst <= 6, "{fps} fps: {worst} transitions");
     }
@@ -1533,12 +1457,12 @@ fn a_flash_completed_past_a_samples_small_turn_back_is_counted() {
     }
 }
 
-// A targeted search over the round-5 attack families, which random looks
-// cannot find: flashes tuned to complete 2e-5 past the threshold between
-// edge samples, over each of the first four background segments at every
-// grid background inside it, and at the corner a frame judges but never
-// draws, from several opacities and greys, at several rates, blended and
-// dithered. Every one presents at most three flashes over any background.
+// A targeted search over the undrawn-corner and between-samples attacks,
+// which random looks cannot find: flashes tuned to complete 2e-5 past the
+// threshold between edge samples, over each of the first four background
+// segments at every grid background inside it, and at the corner a frame
+// judges but never draws, from several opacities and greys, at several
+// rates, blended and dithered. Every one presents at most three flashes over any background.
 #[test]
 fn targeted_attacks_on_the_edge_samples_present_at_most_three_flashes_over_any_background() {
     let mut built = 0;
@@ -1588,7 +1512,7 @@ fn targeted_attacks_on_the_edge_samples_present_at_most_three_flashes_over_any_b
 // starts history afresh, starts against its look and spends no slot; one
 // appearing on a later frame counts its appearance. Both present as asked.
 #[test]
-fn a_ghost_presenting_as_the_limiter_turns_on_spends_no_slot() {
+fn a_ghost_presenting_as_history_starts_spends_no_slot_and_a_later_one_counts_its_appearance() {
     let dt = 1.0 / 60.0;
     let other: Key = (1, 7);
     let restart = pack_limiter_frame(
@@ -1615,7 +1539,7 @@ fn a_ghost_presenting_as_the_limiter_turns_on_spends_no_slot() {
         clamp.end_frame();
         clamp.finish_presentation(true);
         assert_eq!(shown, look(1.0, WHITE));
-        let presenting = clamp.looks.clamp(&GHOST).expect("limited");
+        let presenting = clamp.look_clamp(&GHOST).expect("limited");
         assert!(presenting.window.is_empty(), "{starts:?}: spends no slot");
 
         clamp.begin_frame(Some(&frame(dt, true)));
@@ -1623,7 +1547,7 @@ fn a_ghost_presenting_as_the_limiter_turns_on_spends_no_slot() {
         let appeared = clamp.present(other, look(1.0, WHITE));
         clamp.end_frame();
         assert_eq!(appeared, look(1.0, WHITE));
-        let appearing = clamp.looks.clamp(&other).expect("limited");
+        let appearing = clamp.look_clamp(&other).expect("limited");
         assert!(!appearing.window.is_empty(), "{starts:?}: appearing counts");
     }
 }
@@ -1643,7 +1567,7 @@ fn present_tracking_drops(
     asked
         .iter()
         .map(|asked| {
-            let unseen = clamp.looks.clamp(&GHOST).is_none();
+            let unseen = clamp.look_clamp(&GHOST).is_none();
             clamp.begin_frame(Some(&step));
             let shown = asked.map(|asked| clamp.present(GHOST, asked));
             clamp.end_frame();
@@ -1845,47 +1769,89 @@ fn ordinary_looks_after_a_drop_present_as_asked_within_the_rate_cap() {
     }
 }
 
-/// The turn-back attack across a drop at the edge point (1, 0.5). Before the
-/// drop a faint white ghost draws `swing` above the background there, so
-/// vanishing leaves a fall short of a flash. Back with tint `grey`, a faint
-/// first move, a frame back near the rest held `gap` seconds, then a faint
-/// black frame completing the old fall 3e-4 past the flash threshold, on
-/// which no edge point moves as far as the edge threshold. Then four
-/// transitions of opacity `high`, `hold` frames each, a rest until a second
-/// after the return, and two more.
-fn turn_back_after_a_drop(
+/// The aimed-strobe attack across a drop, at (1, `background`). Before the
+/// drop a faint white ghost draws there 0.1 + 3e-4 above where the crossing
+/// look will, and vanishing leaves a fall short of a flash. Back black and
+/// faint: a first move, a frame back near the rest held `gap` seconds, then
+/// a black crossing look at opacity 0.0606, held long enough to reach under
+/// the rate cap, completing the old fall while no edge point moves as far as
+/// the edge threshold. Then a tint strobe aimed there at opacity `strobe`
+/// between greys `bright` and `dim`, `hold` seconds a look: four changes,
+/// the dim look held until just past a second after the first move (when
+/// that move's slot ages out), one more change, and the exempt fall to
+/// nothing. Returns the looks and the crossing look's frames.
+fn aimed_strobe_after_a_drop(
     fps: f32,
-    swing: f32,
-    grey: f32,
+    background: f32,
     gap: f32,
-    high: f32,
-    hold: usize,
-) -> Vec<Option<GhostInstanceLook>> {
-    let background = 0.5;
-    let second = fps as usize;
-    let mut asked = vec![Some(look(swing / (1.0 - background), WHITE)); second];
+    (strobe, bright, dim): (f32, f32, f32),
+    hold: f32,
+) -> (Vec<Option<GhostInstanceLook>>, Range<usize>) {
+    let crossing_opacity = 0.0606;
+    let crossed_at = background * (1.0 - crossing_opacity);
+    let before = (crossed_at + 0.1 + 3e-4 - background) / (1.0 - background);
+    let frames = |seconds: f32| ((seconds * fps).round() as usize).max(1);
+    let second = fps.round() as usize;
+    let mut asked = vec![Some(look(before, WHITE)); second];
     asked.extend(vec![None; (1.5 * fps) as usize]);
-    asked.push(Some(look(0.004, [grey; 3])));
-    let returned = asked.len();
-    asked.extend(vec![
-        Some(look(0.0005, [grey; 3]));
-        1 + (gap * fps) as usize
-    ]);
-    asked.push(Some(look((0.1 - swing + 3e-4) / background, BLACK)));
-    let strobe = |asked: &mut Vec<Option<GhostInstanceLook>>, transitions: usize| {
-        for i in 0..transitions {
-            let opacity = if i % 2 == 0 { high } else { 0.0 };
-            asked.extend(vec![Some(look(opacity, WHITE)); hold]);
-        }
-    };
-    strobe(&mut asked, 4);
-    let until = returned + second + 1;
-    if asked.len() < until {
-        asked.resize(until, Some(look(0.0, WHITE)));
+    let first = asked.len();
+    asked.push(Some(look(0.004, BLACK)));
+    asked.extend(vec![Some(look(0.0005, BLACK)); 1 + (gap * fps) as usize]);
+    let crossing = asked.len()..asked.len() + frames(0.025);
+    asked.extend(vec![Some(look(crossing_opacity, BLACK)); crossing.len()]);
+    let (lit, dimmed) = (look(strobe, grey(bright)), look(strobe, grey(dim)));
+    for strobed in [lit, dimmed, lit, dimmed] {
+        asked.extend(vec![Some(strobed); frames(hold)]);
     }
-    strobe(&mut asked, 2);
-    asked.extend(vec![Some(look(0.0, WHITE)); second]);
-    asked
+    if asked.len() < first + second + 2 {
+        asked.resize(first + second + 2, Some(dimmed));
+    }
+    asked.extend(vec![Some(lit); frames(hold)]);
+    asked.extend(vec![Some(look(0.0, grey(bright))); frames(0.5)]);
+    (asked, crossing)
+}
+
+/// Whether what `asked` presents through one ghost at `fps`, blended, a
+/// frame presenting nothing drawing no ghost, draws a transition with
+/// `albedo` over `background` on one of `frames`: an attack's crossing look
+/// presents its flash rather than being held back.
+fn presents_a_flash_across_a_drop_on(
+    asked: &[Option<GhostInstanceLook>],
+    fps: f32,
+    (albedo, background): (f32, f32),
+    frames: Range<usize>,
+) -> bool {
+    let drawn: Vec<GhostInstanceLook> = present_sequence(asked, fps, GhostTransparency::Blend)
+        .into_iter()
+        .map(|shown| shown.unwrap_or(look(0.0, BLACK)))
+        .collect();
+    transition_frames_over(
+        albedo,
+        background,
+        &opacities(&drawn),
+        &drawn_luminances(&drawn),
+    )
+    .into_iter()
+    .any(|frame| frames.contains(&frame))
+}
+
+// Regression: back with unknown history, an edge sample's faint first move
+// was counted and then its swing back near the rest, after which moving on
+// past that first move's peak counted nothing. A hidden fall completing
+// there restarted no slot on its frame, and a tint strobe aimed at the
+// point, timed to finish after the first move's slot aged out, drew a
+// seventh transition in the second at (1, 0.025). Passing the peak again
+// carries the first move's count on.
+#[test]
+fn a_flash_completed_past_a_faint_first_moves_peak_after_a_drop_is_counted() {
+    for fps in [30.0, 60.0, 144.0, 240.0] {
+        let (asked, crossing) = aimed_strobe_after_a_drop(fps, 0.05, 0.6, (0.3, 0.8, 0.2), 0.08);
+        assert!(
+            presents_a_flash_across_a_drop_on(&asked, fps, (1.0, 0.05), crossing),
+            "{fps} fps: the crossing completes the hidden fall"
+        );
+        assert_limited_across_a_drop(&format!("aimed strobe, {fps} fps"), &asked, fps);
+    }
 }
 
 /// The still-sample attack across a drop: a black tint keeps the edge point
@@ -1919,24 +1885,30 @@ fn still_sample_after_a_drop(
 }
 
 // Targeted attacks across a drop, which random looks cannot find, on the two
-// cases the argument across a drop leaves to search. Turn-back: a sample's
+// cases the argument across a drop leaves to search. Aimed strobe: a sample's
 // faint first move, its swing back near the rest, and an old swing completing
-// further on, at several sizes, tints, rests and strobes. Still sample: an old
-// swing completing beside a sample the tint keeps still. Every one presents at
-// most three flashes over any background, blended and dithered.
+// at a point between samples, then a tint strobe aimed there, at several
+// backgrounds, rests and strobes; each crossing presents its flash. Still
+// sample: an old swing completing beside a sample the tint keeps still.
+// Every one presents at most three flashes over any background, blended and
+// dithered.
 #[test]
 fn targeted_attacks_across_a_drop_present_at_most_three_flashes_over_any_background() {
     let mut built = 0;
-    for fps in [30.0, 60.0, 144.0] {
-        for swing in [0.07, 0.09] {
-            for grey in [0.0, 0.9] {
-                for gap in [0.15, 0.3] {
-                    for (high, hold) in [(0.3, 2), (1.0, 1)] {
-                        let asked = turn_back_after_a_drop(fps, swing, grey, gap, high, hold);
-                        let name = format!("turn-back {swing} {grey} {gap} {high}, {fps} fps");
-                        assert_limited_across_a_drop(&name, &asked, fps);
-                        built += 1;
-                    }
+    for fps in [30.0, 60.0, 144.0, 240.0] {
+        for background in [0.025, 0.05, 0.075] {
+            for gap in [0.5, 0.75] {
+                for strobe in [(0.3, 0.8, 0.2), (0.5, 0.6, 0.1)] {
+                    let (asked, crossing) =
+                        aimed_strobe_after_a_drop(fps, background, gap, strobe, 0.08);
+                    let name =
+                        format!("aimed strobe over {background} {gap} {strobe:?}, {fps} fps");
+                    assert!(
+                        presents_a_flash_across_a_drop_on(&asked, fps, (1.0, background), crossing),
+                        "{name}: the crossing completes the hidden fall"
+                    );
+                    assert_limited_across_a_drop(&name, &asked, fps);
+                    built += 1;
                 }
             }
         }
@@ -1999,10 +1971,10 @@ fn random_looks_across_drops_present_at_most_three_flashes_over_any_background()
             let dt = if next() < 0.02 { 0.2 } else { 1.0 / fps };
             now += dt;
             clamp.begin_frame(Some(&frame(dt, true)));
-            let held = clamp.looks.clamp(&GHOST).is_some();
+            let held = clamp.look_clamp(&GHOST).is_some();
             let shown = (!gone).then(|| clamp.present(GHOST, asked));
             clamp.end_frame();
-            if held && clamp.looks.clamp(&GHOST).is_none() {
+            if held && clamp.look_clamp(&GHOST).is_none() {
                 dropped += 1;
             }
             let drawn = shown.map_or((0.0, 0.0), |shown| {

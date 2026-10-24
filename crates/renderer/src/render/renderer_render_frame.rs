@@ -681,7 +681,7 @@ impl Renderer {
                 let full = self.full_mut();
                 full.ghost_order.build(
                     skinned_ghost_plan,
-                    full.kinematic_ghost.draw_corners(),
+                    full.kinematic_ghost.draw_bounds(),
                     view_proj,
                 );
             }

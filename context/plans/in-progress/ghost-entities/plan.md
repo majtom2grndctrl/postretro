@@ -8,23 +8,16 @@ Brief grounded at d6f3471; 76 commits since. Every Decision and Path symbol was 
 
 Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time only). It touches `parse.rs`, `map_data.rs` and the FGD, but none of the runtime renderer, capture, limiter or netcode files this plan builds on, and not the pre-BSP peel path `ghost_link` shares with teleporters. No Correction changes.
 
-## Resume point (2026-10-23, paused after review round 6)
-- HEAD `a8c22bc1d`, local and not pushed (the last push is `b45767212`). It holds `744b375dd` (round-5 fixes: limiter rules F and R, the onward guard, container-first mover sort keys, shared ghost pipelines), `c3d56efd7` (a dropped ghost reappears with unknown history) and a merge of `origin/main` that touched only `context/`.
-- Verified at `c3d56efd7`, before the merge: render-cpu 583, binary ghost 155, and both `ghost_link` GPU capture tests on Metal. The full gate has not run since `d6ccf08b2`.
-- Review round 6 ran three lenses. The reports are in the session scratchpad (`scratchpad/reviews/round6-*.md`), which may not survive; their findings are summarized here.
-  - **Owner call: mover sort key.** The farthest-corner key mis-sorts a ghost close behind a mover seen at an angle (a pawn 0.5 m behind a 2 m door yawed 45°, 4 m ahead) or just outside a ghost cab the camera is inside. The mover draws first and hides the ghost. Round 5 sorted both correctly. Option (a): document it as a limit. Option (b), recommended: key movers by centre again, and raise a mover's key to just past a skinned ghost's only when that ghost's feet are inside the mover's oriented local bounds (about 0.1 m margin). Add both cases as `ghost_order` regressions.
-  - **Owner call: index Decision on reuse.** It says E23 reuses the per-ghost clamp, but under v2 that clamp is ghost-only. Proposed wording: E23 reuses `KeyClamp` and `ValueClamp`.
-  - **Not yet settled: sprite opacity.** `billboard_ghost_render.rs:113` multiplies by the sprite's own opacity after the clamp, so animating a sprite's opacity is never limited. Check whether the brief means to cover it.
-  - **Limiter, still open.** A hidden fall after an unknown tracker's tiny first move and its R count can complete on a frame that touches no slot. This is documented hole 1, and the port shows a transition no slot counts (60 fps, blend, swing 0.07, black tint, (a,B) = (0.75, 0.05) and 53 other grid points). It has not been amplified to a 7th transition; the best so far is 6. Next: a strobe aimed at the naked point at 144 and 240 fps, with a 0.6–0.9 s gap. The Rust targeted test is weak here, because the rate cap flattens its strobe (worst 2). Also check whether tints that draw luminance exactly k/16 (for example (12, 105, 249) at 0.375) trip the debug assert at `ghost_window.rs:248`. The reviewer's f32 port (`scratchpad/r6review/port.py`) matches the Rust frame for frame. The earlier `r6/unknown.py` holds `LUMA`, `BLACKL` and `THETA` in f64.
-  - **Mechanical fixes queued:**
-    - Move `GhostPipelines`, `ghost_pipeline_state`, `GhostPipelineState`, `GhostDrawStep` and `SkinnedGhostSpan` into a leaf `render/ghost_pipeline.rs`, and move `mover_ghost_corners` into `kinematic_ghost.rs`. This breaks the `ghost_order` cycles.
-    - Split `ghost_look.rs` into the per-ghost judge and the `GhostLookClamp` frame container.
-    - Put the pawn at z −12 in `ghost_order_tests.rs:217`, so the test fails under the old centre key.
-    - Docs and brief: state the whole-object sort limit (`docs/ghost-links.md:194-200` and `index.md:43`, including the reflow and the "unknown value warns" wording). Record the sort key.
-    - `plan.md`: mark the round-5 "re-count after aging out" bullet superseded. Add an as-implemented line to the Bound note: two drop cases are left to search, and redness has no unknown start. Restate AC rows 23 and 24a to v2 wording.
-    - Nits: round labels in test comments, a "re-tenanted key" example (keys are generation-checked), a half-covering test name, `use` for `Aabb` in `kinematic_brush.rs`, a doc for the `UNKNOWN_HISTORY` sentinel, a tautological `EDGE_THRESHOLD` assert.
-  - **DX12 depth copy:** legal from the code. On the Windows box, watch the D3D12 debug layer for warnings on the scene-depth to ghost-depth copy.
-- Then: the fix pass, a re-review only while new findings appear, the full gate, the AC results, and the manual rows (45–47 and the self-overlap fix). Push only when the owner says so.
+## Resume point (2026-10-23, round-6 fix pass)
+- Round-6 fixes are committed locally on top of `cb2d2b4d4`; nothing is pushed (the last push is `b45767212`). Verified at that commit: the workspace compiles clean with no warnings; render-cpu 586, binary ghost 157, renderer ghost 38 and kinematic 25; both `ghost_link` GPU capture tests and the GPU platform frame test on Metal. With the new limiter rule switched off, its three regressions fail at 7 transitions.
+- Round 6 owner decisions are under Delegated answers (contact-based sort, E23 reuse wording, sprite opacity limited).
+- Fixed in round 6:
+  - Limiter: a 7th transition after a drop, closed by the faint-first-move carry-on rule (Bound note). The targeted drop test is aimed and asserts each attack lands. `ghost_look.rs` is split into the judge and `ghost_look_clamp.rs`. Hygiene nits are done.
+  - Sort: contact-based (`MoverGhostBounds` in `kinematic_ghost.rs`, margin 0.1 m), door and in-cab regressions, and the reaching-mover test now pins contact. The leaf `render/ghost_pipeline.rs` removes both module cycles.
+  - Sprite opacity is judged (`presented_body_look` in `ghost_render.rs`).
+  - Docs and brief: the whole-object sort limit, the unknown-value warning, and sprite opacity among what is judged.
+- Next: a short re-review of the round-6 fixes, the full gate, the AC results, and the manual rows (45–47 and the self-overlap fix). On the Windows box, watch the D3D12 debug layer for warnings on the scene-depth to ghost-depth copy. Push only when the owner says so.
+- Round 1–6 review reports and the limiter ports live in the session scratchpad only. Their findings are captured here.
 
 ## Corrections
 - `WIRE_VERSION` 32 → 33 (Wire format) → it is already 33 (`crates/net/src/handshake.rs:43`, PRLC Input-lane bump ae87ca368). This brief bumps **33 → 34**; `SNAPSHOT_VERSION` 21 → 22 stands (`crates/net/src/wire.rs:357`). AC "handshake across the old and new wire versions is refused" keeps its meaning.
@@ -107,16 +100,17 @@ Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time onl
     - Keys presenting on an enable or `init` frame start fresh. Only later appearances count.
     - `GhostWindow` is stored as a struct of arrays; `LookValueClamp` is about 1016 B against a 1024 B budget.
   - **Bound:** argued in full from the frame a ghost's history starts. The argument is in the `LookValueClamp` docs: reduce to an edge point, the crossing frame, F/R/extend keep a live slot for each transition, at most 6 edge slots. f32 and unorm16 are covered by margins. Bisection monotonicity affects only which look presents. A ghost dropped at rest forgets an excursion older than its window. Owner direction, 2026-10-23, "build more right faster": a dropped ghost reappears with **unknown history**, so each tracker counts its first move of any size. This is the general seam for any ghost whose earlier presentation the clamp can't see: a drop today; a re-tenanted key, a reload or a mid-strobe join later. On enable or init, a ghost still starts fresh, since nothing was presented under the limiter yet.
+    - As implemented: across a drop the written argument covers the general case. Round 6 found a 7th transition in the first gap (a faint first move, its swing back, then a crossing past its peak that restarted no slot; a tint strobe at fixed opacity amplified it). It is closed by one rule: a tracker that counted back inside a counted swing smaller than the edge threshold (only an unknown first move can) restarts the slot of its transition before its last when it reaches past that peak again, or counts anew. No new state; a no-op for known history. What remains on targeted search, documented in the `LookValueClamp` docs: a point between samples whose nearer sample stays short of its first move's peak, and a point whose nearer sample stays still. Tints whose drawn luminance is exactly k/16 move a still tracker by f32 rounding; the window docs allow for it and 400 targeted runs never opened a 7th edge slot. Redness gets no unknown start, because a ghost is dropped only at redness 0, the floor.
 - Owner decisions, 2026-10-23, round 5:
   - **Hold the ≤6-transitions-per-second bound**, stricter than WCAG's pair count. Two counterexamples reached 7:
     1. The exempt corner was judged on a tau>0 frame but never drawn.
     2. A point between edge samples reached a new extreme while neither sample did.
   - The fix has three parts:
     - judge only the look that draws (the exempt corner only when tau=0);
-    - re-count a near-peak move after its slot has aged out;
+    - re-count a near-peak move after its slot has aged out (superseded in the same round by rules F and R; see Round-5 changes);
     - write down the between-sample argument.
   - Both attack sequences become regressions, plus a targeted search.
-  - **Ghost sort:** mover ghosts are keyed by the farthest corner of their bounds, so containers such as platforms and bridges draw before the actors on them. Remaining mis-sorts are a documented limit.
+  - **Ghost sort:** mover ghosts are keyed by the farthest corner of their bounds, so containers such as platforms and bridges draw before the actors on them. Remaining mis-sorts are a documented limit. (Superseded in round 6 by the contact-based sort.)
 - Owner decisions, 2026-10-23, round 6:
   - **Ghost sort is contact-based** (supersedes the farthest-corner key above). Mover ghosts sort by their centre. A mover draws just before a skinned ghost only when that ghost's feet are inside the mover's oriented local bounds: on a platform, on a lift, or in a cab. The farthest-corner key hid a ghost standing close behind a door seen at an angle.
   - **E23 reuse** (index Decision reworded): E23 reuses `KeyClamp` and `ValueClamp`. Under v2 the per-ghost look clamp is ghost-only.
@@ -157,9 +151,9 @@ Row numbers follow the brief's Acceptance order; 9a is the owner-amended `render
 | 20 reload flips `ghost` (P46); `projectile.ghost` without pawn rebuild | `postretro` reload test (P46) + harness test reloading both peers, asserting no tuning resend, no demotion, client ghosting changed (see Corrections) | achievable as clarified |
 | 21 non-boolean `ghost` / `projectile.ghost` rejects init, same error both runtimes | `scripting-core` descriptor tests, JS and Luau | achievable as stated |
 | 22 ghost never a hit, overlap, trigger or AI target | `postretro` test with a presenting ghost: hitscan, splash, trigger and AI acquisition through the mapped pose | achievable as stated |
-| 23 four 10 Hz strobes ≤ 3 flashes, rest at pre-flash level | ghost clamp tests driving membership and look through the per-ghost channel | achievable as stated |
+| 23 four 10 Hz strobes ≤ 3 flashes, rest at pre-flash level | ghost look clamp tests driving membership and look through the edge-sampled per-ghost window | achievable as stated |
 | 24 red tint strobe desaturates; single change keeps hue | ghost clamp test | achievable as stated |
-| 24a white↔black tint strobe at steady opacity limited; rests at the darker luminance (provisional amendment) | ghost clamp wiring test on drawn brightness | achievable as stated |
+| 24a white↔black tint strobe at steady opacity: at most 3 flashes in any 1 s window on any background, rests at a held state (owner restatement, 2026-10-23) | ghost look clamp tests over the (a,B) background grid, blend and dither coverage | achievable as stated |
 | 25 arm ≤ 250 ms; 1500 ms fade unchanged; P21, P31 | ghost clamp + ramp tests | achievable as stated |
 | 26 limiter off strobe; hitch ceiling (P30); script-time freeze (P42) | ramp tests with injected frame time | achievable as stated |
 | 27 per-field `setColorFilter`, P5, P7, P41 | look-resolution unit tests + sim primitive validation tests | achievable as stated |

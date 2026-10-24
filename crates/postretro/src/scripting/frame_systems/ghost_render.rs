@@ -38,17 +38,30 @@ pub(crate) type GhostDrawKey = (u16, EntityId);
 /// (link opacity times membership), limited with its opacity, tint redness
 /// and drawn brightness sharing one flash window. The one place a ghost draw
 /// collector turns a link look into a drawn look; the skinned, mover and
-/// billboard ghost collectors each call it for every presented ghost, culled
-/// or not, between their clamp's `begin_frame` and `end_frame`.
+/// billboard ghost collectors each call it (or [`presented_body_look`]) for
+/// every presented ghost, culled or not, between their clamp's `begin_frame`
+/// and `end_frame`.
 pub(crate) fn presented_look(
     clamp: &mut GhostLookClamp<GhostDrawKey>,
     member: &GhostMember,
+) -> GhostInstanceLook {
+    presented_body_look(clamp, member, 1.0)
+}
+
+/// [`presented_look`] for a body that draws at an opacity of its own, a
+/// projectile sprite's: `body_opacity` folds into the opacity the limiter
+/// judges, so a script animating it is limited like the link look and the
+/// capped value is the one that draws.
+pub(crate) fn presented_body_look(
+    clamp: &mut GhostLookClamp<GhostDrawKey>,
+    member: &GhostMember,
+    body_opacity: f32,
 ) -> GhostInstanceLook {
     let link = member.look;
     clamp.present(
         (member.link, member.entity),
         GhostInstanceLook {
-            opacity: link.opacity * member.membership,
+            opacity: link.opacity * member.membership * body_opacity,
             saturation: link.saturation,
             tint: link.tint,
         },

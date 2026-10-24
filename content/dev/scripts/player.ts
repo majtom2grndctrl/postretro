@@ -15,15 +15,17 @@ export const playerEntity = defineEntity({
   ghost: true,
   components: {
     // The body-spanning hitbox makes the player a normal targetable presence.
-    // It mirrors the 0.2 m-radius, 0.8 m-half-height movement capsule: feet at
-    // y=0, head at y=1.6, and the 0.5 m camera eye lies inside its Y range.
-    // Player weapon queries exclude their firing pawn, preventing that interior
-    // eye ray from reporting a range-0 self-hit.
+    // A movement pawn's transform is its capsule's centre, not its feet, so the
+    // box centres there and spans the whole standing capsule (0.2 m radius,
+    // 0.8 m half-height): 1.0 m below the centre to the floor, 1.0 m above to
+    // the head. The 0.5 m camera eye lies inside its Y range. Player weapon
+    // queries exclude their firing pawn, preventing that interior eye ray from
+    // reporting a range-0 self-hit.
     health: {
       max: 100,
       hitbox: {
-        halfExtents: [0.2, 0.8, 0.2],
-        offset: [0, 0.8, 0],
+        halfExtents: [0.2, 1.0, 0.2],
+        offset: [0, 0, 0],
       },
     },
     inventory: {

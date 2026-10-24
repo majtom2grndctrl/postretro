@@ -229,3 +229,91 @@ fn spawned_pawn_rests_on_the_floor_not_in_it() {
         }
     }
 }
+
+// The real player's hitbox covers its standing body. The pawn's transform is
+// its capsule centre, so the authored box must reach the floor: the dev
+// pistol's hitscan aimed at the shins or knees of a pawn standing on a
+// compiled floor strikes it, and one aimed just over its head does not.
+#[test]
+fn hitscan_strikes_the_standing_players_legs_and_passes_over_its_head() {
+    use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_sim::weapon::{FireButtonState, resolve_test_client_shot};
+
+    let out = tempfile::tempdir().unwrap();
+    let level = Installed::new(compile("coop-presentation-test", out.path()));
+    let pawn = level.first_player.expect("the first player spawns").pawn;
+    let pistol = level
+        .ctx
+        .data_registry
+        .borrow()
+        .entities
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some("reference_pistol"))
+        .and_then(|descriptor| descriptor.weapon.clone())
+        .expect("the dev mod defines the reference pistol");
+    let registry = level.ctx.registry.borrow();
+    let position = registry.get_component::<Transform>(pawn).unwrap().position;
+    let capsule = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .capsule
+        .clone();
+    // The spawn surface test proves this pawn stands on the floor where it
+    // spawned, so its capsule's bottom is the floor.
+    let floor = position.y - (capsule.half_height + capsule.radius);
+    let head = position.y + capsule.half_height + capsule.radius;
+    let store = &level.app.session.as_ref().unwrap().hit_zone_store;
+    // No world geometry: only the entity query decides what the ray strikes.
+    let collision = crate::collision::CollisionWorld::new();
+    let struck = |height: f32| {
+        let aim = Vec3::new(position.x, height, position.z);
+        let mut weapon = WeaponComponent::from_descriptor(&pistol);
+        resolve_test_client_shot(
+            None,
+            &mut weapon,
+            "reference_pistol",
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            aim + Vec3::new(0.0, 0.0, 2.0),
+            Vec3::NEG_Z,
+            &pistol.placement.clone().unwrap_or_default(),
+            pistol.muzzle_offset.map(Vec3::from),
+            1,
+            &[0.0],
+            &[],
+            &collision,
+            &registry,
+            store,
+            0.0,
+            0.0,
+        )
+        .expect("the dev pistol fires")
+        .hits
+        .into_iter()
+        .find(|hit| hit.target == pawn)
+    };
+    let hitbox = registry
+        .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
+        .unwrap()
+        .hitbox;
+    for (part, height) in [("shins", floor + 0.3), ("knees", floor + 0.5)] {
+        let hit = struck(height).unwrap_or_else(|| {
+            panic!(
+                "a shot at the {part} ({height} m, floor {floor} m, centre {}) strikes \
+                 the player; hitbox {hitbox:?}",
+                position.y
+            )
+        });
+        assert!(hit.zone.is_none(), "the authored body box supplies the hit");
+        assert!((hit.point.y - height).abs() < 1e-4);
+    }
+    assert!(
+        struck(head + 0.3).is_none(),
+        "a shot 0.3 m over the head ({} m, centre {}) passes over the player; hitbox {hitbox:?}",
+        head + 0.3,
+        position.y
+    );
+}

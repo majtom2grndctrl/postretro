@@ -73,10 +73,12 @@ const JS_CAPTURE: &str = "\n;(function () {\n  const original = globalThis.setup
 const LUAU_CAPTURE: &str = "\ndo\n  local original = setupLevel\n  setupLevel = function(ctx)\n    local result = original(ctx)\n    __ghostFixtureCapture(result)\n    return result\n  end\nend\n";
 
 /// Warnings this harness logs for any dev level under the dev mod, none from
-/// the ghost-link surface: the model-less test install never loads models
-/// (`[HitZones]` zone tags, `[Model]` animation caches), the debug textures
-/// carry no material prefix, and a dev descriptor declares an unreachable
-/// behavior activity. The teleporter fixture's install logs the same set.
+/// the ghost-link manifest or scripts. The shared `reference_enemy`
+/// descriptor declares zone multipliers its model has no zones for
+/// (`[HitZones]`) and a behavior activity the lint calls unreachable; the
+/// dev maps' debug textures carry no material prefix; and this install's
+/// no-op upload leaves animation caches empty (`[Model]`), which a real
+/// install fills. The teleporter fixture's install logs the same set.
 const UNRELATED_WARNINGS: [&str; 4] = [
     "[HitZones] archetype",
     "[Model] mesh entity references uncached model",

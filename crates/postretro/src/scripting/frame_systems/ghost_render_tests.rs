@@ -2,19 +2,37 @@
 // transform, fading ghosts after despawn, and the per-ghost flash clamp's wiring.
 // See: context/lib/rendering_pipeline.md §7.9, §7.8 · context/lib/entity_model.md §7d
 
+use std::sync::Arc;
+
 use glam::{Mat4, Quat, Vec3};
-use postretro_entities::components::mesh::{AttachmentBinding, MeshAttachment, MeshComponent};
-use postretro_entities::{EntityRegistry, SlotTable, SlotValue, Transform};
-use postretro_foundation::SeamlessMapping;
+use postretro_entities::components::mesh::{
+    AnimationState, AttachmentBinding, InterruptPolicy, MeshAnimation, MeshAttachment,
+    MeshComponent, resolve_pending_animation_stamps,
+};
+use postretro_entities::{EntityRegistry, PoseInputs, SlotTable, SlotValue, Transform};
+use postretro_foundation::{
+    DescriptorError, GhostStyle, GhostStyleDescriptor, GhostStyleRegistry, SET_GHOST_LINK_MEMBERS,
+    SeamlessMapping,
+};
+use postretro_level_format::ghost_links::GhostMembers;
 use postretro_level_loader::{CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld};
+use postretro_model::pose_modifier::{JointMask, ModifierEntry, PoseModifier, PoseModifierStack};
+use postretro_model::skeleton::{
+    AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, Track,
+};
 use postretro_render_cpu::flash_clamp::INTENSITY_RATE_PER_SECOND;
 use postretro_render_cpu::flash_limiter::{
     FLASH_LIMITER_SLOT, HITCH_CEILING_SECONDS, LimiterFrameInput, pack_limiter_frame,
 };
+use postretro_render_data::cone_frustum::Aabb;
 use postretro_visibility::VisibleCells;
+use serde_json::json;
 
 use super::*;
+use crate::ghost_links::app_test_fixtures::{FRAME_SECONDS, LinkedApp, box_link};
 use crate::ghost_links::{GhostCategory, GhostLook};
+use crate::scripting_systems::hit_zones::{HitZoneStore, ModelHitZones};
+use crate::scripting_systems::mesh_render::MeshRenderCollector;
 
 /// Cell 0 holds the real copy (x >= 0), cell 1 the other copy (x < 0).
 const REAL_CELL: usize = 0;
@@ -274,6 +292,176 @@ fn pawn_ghost_group_carries_its_weapon_attachment_at_the_mapped_transform() {
     }
 }
 
+const AIMING_HOLDER: &str = "models/aiming_pawn.gltf";
+
+/// [`AIMING_HOLDER`]'s pose data: two joints, the child (the weapon socket) 2 m
+/// up its root and bent by the aim pitch, and an idle clip carrying the root
+/// 3 m along +x.
+fn aim_pitch_socket_store() -> HitZoneStore {
+    let skeleton = Skeleton {
+        joints: vec![
+            Joint {
+                parent: None,
+                inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal::default(),
+            },
+            Joint {
+                parent: Some(0),
+                inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal {
+                    translation: Vec3::new(0.0, 2.0, 0.0),
+                    ..RestLocal::default()
+                },
+            },
+        ],
+    };
+    let clip = AnimationClip {
+        name: "idle".to_string(),
+        duration: 0.0,
+        joints: vec![
+            JointTracks {
+                translation: Track::new(vec![0.0], vec![Vec3::new(3.0, 0.0, 0.0)], Interp::Linear)
+                    .expect("one finite key builds"),
+                ..JointTracks::default()
+            },
+            JointTracks::default(),
+        ],
+        travel_speed: None,
+    };
+    let mut socket = JointMask::new();
+    assert!(socket.insert(1));
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        ModelHandle::from(AIMING_HOLDER),
+        ModelHitZones::for_test(
+            Arc::new(skeleton),
+            Arc::new(vec![clip]),
+            vec![None, None],
+            HashMap::new(),
+            None,
+            Vec::new(),
+            Arc::new(PoseModifierStack::new(vec![ModifierEntry {
+                mask: socket,
+                modifier: PoseModifier::AimPitchBend {
+                    bend_weights: vec![1.0],
+                },
+            }])),
+        ),
+    );
+    store
+}
+
+/// A pawn of [`AIMING_HOLDER`] at the source pose aiming at `aim_pitch`, its
+/// third-person weapon on the socket the pitch bends.
+fn aiming_pawn(registry: &mut EntityRegistry, aim_pitch: f32) -> EntityId {
+    let id = registry.spawn(source_pose());
+    let mut states = HashMap::new();
+    states.insert(
+        "idle".to_string(),
+        AnimationState {
+            clip: "idle".into(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: Some(0),
+        },
+    );
+    let mut mesh = MeshComponent::animated(
+        AIMING_HOLDER.to_string(),
+        MeshAnimation::new(states, "idle".to_string()),
+    );
+    mesh.pose_inputs = Some(PoseInputs {
+        aim_pitch,
+        ..Default::default()
+    });
+    mesh.attachments = vec![MeshAttachment {
+        socket: "hand".to_string(),
+        model: "models/gun.gltf".to_string(),
+        binding: AttachmentBinding::Skinned(1),
+    }];
+    registry.set_component(id, mesh).unwrap();
+    resolve_pending_animation_stamps(registry, 0.0);
+    id
+}
+
+// A ghost pawn presents its real draw carried through the mapping: the body,
+// the aim pitch its pose modifiers bend by, and the third-person weapon on the
+// socket that pitch bends. The mapping turns yaw only, so the pitch passes
+// through: the weapon sits on the ghost holder as the source's aim pitch places it.
+#[test]
+fn a_ghost_pawn_presents_its_mapped_real_draw_aim_pitch_and_weapon_included() {
+    let store = aim_pitch_socket_store();
+    let mut tables = MeshClipTables::new();
+    tables.insert_with_bounds(
+        ModelHandle::from(AIMING_HOLDER),
+        &[postretro_model::ClipMetadata {
+            name: "idle".to_string(),
+            duration: 0.0,
+        }],
+        Aabb::default(),
+    );
+    let mapped = mapping().matrix();
+    for aim_pitch in [0.0, 0.5] {
+        let mut registry = EntityRegistry::new();
+        let pawn = aiming_pawn(&mut registry, aim_pitch);
+        let mut fixture = Fixture::new();
+        let mut real = MeshRenderCollector::new();
+        real.collect_with_hit_zones(
+            &registry,
+            &fixture.world,
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &tables,
+            Vec3::ZERO,
+            &store,
+        );
+        let socket_poses = SocketPoseResolver::new(&store);
+        fixture.collector.collect(
+            &registry,
+            &[member(pawn, 1.0, false)],
+            &GhostDrawFrame {
+                world: &fixture.world,
+                visible: &VisibleCells::DrawAll,
+                anim_time: 0.0,
+                camera_pos: Vec3::ZERO,
+                tables: &tables,
+                socket_poses: &socket_poses,
+                force_resample_model: &|_| false,
+                limiter: None,
+                transparency: Default::default(),
+            },
+        );
+
+        let (real, ghost) = (real.instances(), fixture.collector.instances());
+        assert_eq!(ghost.len(), 2, "pitch {aim_pitch}: holder then its weapon");
+        assert_eq!(real.len(), ghost.len());
+        for (real, ghost) in real.iter().zip(ghost) {
+            assert_eq!(ghost.model, real.model);
+            assert!(
+                ghost.transform.abs_diff_eq(mapped * real.transform, 1e-4),
+                "pitch {aim_pitch}: {} at the mapped real transform",
+                ghost.model.as_str()
+            );
+            assert_eq!(ghost.pose_inputs, real.pose_inputs);
+        }
+        assert_eq!(
+            ghost[0].pose_inputs.map(|inputs| inputs.aim_pitch),
+            Some(aim_pitch),
+            "the aim pitch passes through the mapping"
+        );
+        let socket = ghost[0].transform.inverse() * ghost[1].transform;
+        let bent = Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0))
+            * Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0))
+            * Mat4::from_rotation_x(-aim_pitch);
+        assert!(
+            socket.abs_diff_eq(bent, 1e-4),
+            "pitch {aim_pitch}: the weapon rides the pitch-bent socket: {socket:?}"
+        );
+    }
+}
+
 #[test]
 fn fading_ghost_re_emits_its_cached_group_after_despawn_and_never_its_live_pose() {
     let mut registry = EntityRegistry::new();
@@ -440,6 +628,147 @@ fn ghost_pack_routes_presented_opacity_through_the_keyed_clamp() {
         let presented: Vec<f32> = unlimited.iter().map(|&(presented, _)| presented).collect();
         assert!(worst_transitions(&presented, dt) > 6);
     }
+}
+
+/// The link volume over the real copy, which [`mapping`] carries into the other.
+const LINK_VOLUME: (Vec3, Vec3) = (Vec3::new(10.0, -5.0, -5.0), Vec3::new(20.0, 5.0, 5.0));
+/// A swing the judge counts as a transition.
+const FLASH_SWING: f32 = 0.1;
+/// A presented opacity at or under this has not left its rest.
+const AT_REST: f32 = 0.02;
+
+/// A windowless App with one link over [`LINK_VOLUME`], armed on spawn,
+/// showing `members` under a style at opacity 1, with `wraith` opted in.
+fn opaque_link_app(members: GhostMembers) -> LinkedApp {
+    let mut world = two_copy_world();
+    world.ghost_links.links = vec![box_link(
+        4,
+        LINK_VOLUME,
+        (Vec3::new(10.0, 0.0, 0.0), 0.0),
+        (Vec3::new(-20.0, 0.0, 0.0), std::f32::consts::FRAC_PI_2),
+        true,
+        members,
+        "opaque",
+    )];
+    let styles = GhostStyleRegistry::from_declarations(
+        "test",
+        [Ok::<_, DescriptorError>(GhostStyleDescriptor {
+            name: "opaque".to_string(),
+            style: GhostStyle {
+                opacity: 1.0,
+                ..GhostStyle::FLOOR
+            },
+        })],
+    );
+    LinkedApp::new(&world, styles, &["wraith"])
+}
+
+/// Present 3 s of a 10 Hz strobe at 60 Hz through the App's membership update
+/// and the collector, the limiter `enabled` or not. Before each frame's tick,
+/// `drive` sets the strobe's side for that frame (`true` the shown side). A
+/// wraith starts inside the volume. Returns each frame's presented opacity and
+/// the link opacity times membership the ghost was handed (0 with no ghost).
+fn membership_strobe(
+    members: GhostMembers,
+    enabled: bool,
+    mut drive: impl FnMut(&LinkedApp, EntityId, bool),
+) -> Vec<(f32, f32)> {
+    let mut linked = opaque_link_app(members);
+    let wraith = linked.entity("wraith", SOURCE);
+    let mut fixture = Fixture::new();
+    let dt = FRAME_SECONDS as f32;
+    (0..180)
+        .map(|n| {
+            drive(&linked, wraith, square(10.0, n as f32 * dt) > 0.5);
+            linked.tick_and_frame();
+            let members = linked.members().to_vec();
+            let handed = members
+                .iter()
+                .find(|member| member.entity == wraith)
+                .map_or(0.0, |member| member.look.opacity * member.membership);
+            let registry = linked.ctx.registry.borrow();
+            fixture.collect_with(
+                &registry,
+                &members,
+                &VisibleCells::DrawAll,
+                |member| member.look,
+                Some(limiter(linked.app.ghost_links.presented_elapsed(), enabled)),
+            );
+            (fixture.presented().0, handed)
+        })
+        .collect()
+}
+
+/// A strobe the membership code produced: with the limiter off it presents as
+/// handed and exceeds the budget; with it on it presents at most 3 flashes (6
+/// transitions) in any second, judged as the arm/disarm strobe is, and over
+/// budget most frames handed a flash's worth present nothing, its pre-flash
+/// level.
+fn assert_limited_membership_strobe(what: &str, run: impl Fn(bool) -> Vec<(f32, f32)>) {
+    let dt = FRAME_SECONDS as f32;
+    let unlimited = run(false);
+    for &(presented, handed) in &unlimited {
+        assert_eq!(presented, handed, "{what}: the limiter off passes it");
+    }
+    let handed: Vec<f32> = unlimited.iter().map(|&(_, handed)| handed).collect();
+    assert!(
+        worst_transitions(&handed, dt) > 6,
+        "{what}: membership strobes: {handed:?}"
+    );
+
+    let limited = run(true);
+    let presented: Vec<f32> = limited.iter().map(|&(presented, _)| presented).collect();
+    assert!(
+        worst_transitions(&presented, dt) <= 6,
+        "{what}: {presented:?}"
+    );
+    let onsets = limited
+        .iter()
+        .filter(|&&(_, handed)| handed >= FLASH_SWING)
+        .count();
+    let held = limited
+        .iter()
+        .filter(|&&(presented, handed)| handed >= FLASH_SWING && presented <= AT_REST)
+        .count();
+    assert!(
+        held * 2 > onsets,
+        "{what}: {held} of {onsets} onset frames rest at the pre-flash level"
+    );
+}
+
+// A script toggling a category with `setMembers` at 10 Hz, through the real
+// steps, link history and membership ramp, presents at most 3 flashes a second
+// and rests at its pre-flash level over budget.
+#[test]
+fn a_10hz_set_members_toggle_presents_at_most_three_flashes_and_rests_at_its_pre_flash_level() {
+    let hidden = GhostMembers::PLAYERS | GhostMembers::PROJECTILES | GhostMembers::MOVERS;
+    assert_limited_membership_strobe("setMembers", |enabled| {
+        let mut shown = false;
+        membership_strobe(hidden, enabled, |linked, _, on| {
+            if on != shown {
+                linked.step(
+                    linked.link(0),
+                    SET_GHOST_LINK_MEMBERS,
+                    json!({ "entities": on }),
+                );
+                shown = on;
+            }
+        })
+    });
+}
+
+// A member oscillating across the volume boundary at 10 Hz, through the real
+// membership point query and ramp, presents at most 3 flashes a second and
+// rests at its pre-flash level over budget.
+#[test]
+fn a_member_crossing_the_volume_boundary_at_10hz_presents_at_most_three_flashes_and_rests() {
+    let just_inside = Vec3::new(LINK_VOLUME.0.x + 0.05, 0.0, 2.0);
+    let just_outside = Vec3::new(LINK_VOLUME.0.x - 0.05, 0.0, 2.0);
+    assert_limited_membership_strobe("boundary", |enabled| {
+        membership_strobe(GhostMembers::all(), enabled, |linked, wraith, on| {
+            linked.place(wraith, if on { just_inside } else { just_outside });
+        })
+    });
 }
 
 #[test]

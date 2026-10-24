@@ -564,6 +564,63 @@ fn impacts_ghost_only_from_a_member_owners_shot_under_impact_audio_and_drop_outs
     );
 }
 
+// A ghost-opted projectile still inside after its owner leaves the volume
+// keeps ghosting, while that projectile's own impact is not ghosted: its
+// shot's owner is no longer a member. The same impact admits a ghost voice
+// while the owner is inside.
+#[test]
+fn a_projectile_ghosting_after_its_owner_left_has_its_own_impact_unghosted() {
+    let mut level = Level::new("impacts");
+    let partner = level.pawn(Vec3::new(2.0, 0.0, 0.0), DescriptorSpawnPath::NetworkSlot);
+    let impact_point = Vec3::new(6.0, 0.0, 0.0);
+    let rocket = level.projectile(partner, impact_point);
+    // Fired under a shot id the app recorded the shooter for.
+    let fired = shot(0, 60);
+    level.ghosts.record_shot_owner(fired, partner);
+    let mut flight = level
+        .registry
+        .get_component::<ProjectileComponent>(rocket)
+        .unwrap()
+        .clone();
+    flight.source_shot = Some(fired);
+    level.registry.set_component(rocket, flight).unwrap();
+    let rockets_impact = |level: &Level| {
+        let shot_id = level
+            .registry
+            .get_component::<ProjectileComponent>(rocket)
+            .unwrap()
+            .source_shot;
+        impact(level.ghosts.shot_owner(shot_id), &[impact_point])
+    };
+    level.membership_frame();
+    assert_eq!(
+        level.voices(&rockets_impact(&level)).len(),
+        1,
+        "the owner inside: the rocket's impact ghosts"
+    );
+
+    level.place(partner, Vec3::new(-3.0, 0.0, 0.0));
+    level.membership_frame();
+    let ghost = |entity: EntityId| {
+        level
+            .ghosts
+            .members()
+            .iter()
+            .find(|member| member.entity == entity)
+            .copied()
+    };
+    let rocket_ghost = ghost(rocket).expect("the rocket keeps ghosting");
+    assert!(!rocket_ghost.frozen && rocket_ghost.membership == 1.0);
+    assert!(
+        ghost(partner).expect("the owner fades out").frozen,
+        "the owner left the volume"
+    );
+    assert!(
+        level.voices(&rockets_impact(&level)).is_empty(),
+        "the ghosting rocket's own impact is not ghosted"
+    );
+}
+
 // Impact owners come from the shot ids this machine saw fired, matched
 // whole. The host's own raw shot id (pawn 0) is never read as network id 0,
 // and an id two owners fired under is attributed to neither, so the host's own

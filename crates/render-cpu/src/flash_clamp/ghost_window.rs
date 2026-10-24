@@ -72,7 +72,9 @@ pub(super) enum Budget {
 ///   opacity of the held luminance too, and the ray moves it by f32 rounding
 ///   at most. Such a move counts once and joins the latest slot like any
 ///   other, and a later one carries that count on as a swing stopped short
-///   of its peak, since a still point's neighbours move both ways.
+///   of its peak, since a still point's neighbours move both ways; or, once
+///   its swing back has counted, as a pass of its peak, which on the ray
+///   restarts a slot holding it, if any, and opens none.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct GhostWindow {
     // Slot fields side by side, not as an array of slots, so the window packs
@@ -161,15 +163,14 @@ impl GhostWindow {
     /// A long ramp that keeps reaching further keeps its slot for as long as
     /// it runs, and a second after: that only ever limits more, never less.
     pub(super) fn extend(&mut self, edge: usize, class: SlotClass, opens: bool) -> bool {
-        let bit = 1u64 << edge;
-        if let Some(slot) = (0..self.len())
-            .rev()
-            .find(|&slot| self.members[slot] & bit != 0)
-        {
-            self.ages[slot] = 0.0;
-            return true;
-        }
-        self.count_edge(edge, class, opens)
+        self.restart_held(edge, 0) || self.count_edge(edge, class, opens)
+    }
+
+    /// Carry edge tracker `edge`'s last transition on in place, opening
+    /// nothing: the latest slot holding it restarts its age. Returns `false`,
+    /// restarting nothing, when no slot holds the tracker.
+    pub(super) fn restart_latest(&mut self, edge: usize) -> bool {
+        self.restart_held(edge, 0)
     }
 
     /// Carry edge tracker `edge`'s transition before its last on: the slot
@@ -178,11 +179,17 @@ impl GhostWindow {
     /// order it counted them, so that is the earlier of its two latest slots.
     /// Returns `false`, restarting nothing, unless two slots hold the tracker.
     pub(super) fn restart_earlier(&mut self, edge: usize) -> bool {
+        self.restart_held(edge, 1)
+    }
+
+    /// Restart the age of the slot holding edge tracker `edge` with `back`
+    /// later slots holding it, and whether there is one.
+    fn restart_held(&mut self, edge: usize, back: usize) -> bool {
         let bit = 1u64 << edge;
         let Some(slot) = (0..self.len())
             .rev()
             .filter(|&slot| self.members[slot] & bit != 0)
-            .nth(1)
+            .nth(back)
         else {
             return false;
         };

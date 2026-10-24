@@ -529,6 +529,81 @@ fn projectiles_ghost_by_their_weapon_opt_in_whoever_fired_them() {
     assert!(scene.ghost(imp_plasma).is_none() && scene.ghost(mirror).is_none());
 }
 
+// A projectile's presented origin just inside the volume ghosts it, and just
+// outside does not: one crossing out fades at its last inside pose, and one
+// presented just outside from the start never ghosts.
+#[test]
+fn a_projectiles_origin_just_inside_the_volume_ghosts_it_and_just_outside_does_not() {
+    let mut scene = Scene::new(vec![projectile_weapon("rocket_launcher", true)]);
+    let partner = scene.pawn(OUTSIDE + Vec3::Z, DescriptorSpawnPath::NetworkSlot);
+    let just_inside = Vec3::new(0.01, 1.0, 0.0);
+    let just_outside = Vec3::new(-0.01, 1.0, 0.0);
+    let crossing = scene.projectile("rocket_launcher", partner, just_inside);
+    let outside = scene.projectile("rocket_launcher", partner, just_outside - Vec3::Z);
+    scene.frame();
+    let inside = scene.ghost(crossing).expect("an origin just inside ghosts");
+    assert_eq!(inside.category, GhostCategory::Projectiles);
+    assert!(!inside.frozen);
+    assert!(
+        scene.ghost(outside).is_none(),
+        "an origin just outside never ghosts"
+    );
+
+    scene.place(crossing, just_outside);
+    scene.frame();
+    let fading = scene.ghost(crossing).expect("an exit fades out");
+    assert!(fading.frozen, "just outside is not a target");
+    assert!(
+        (fading.source.position - just_inside).length() < 1e-6,
+        "the fade holds the last inside pose"
+    );
+    assert!(scene.ghost(outside).is_none());
+}
+
+// A member's projectile ghost ramps in from 0 from the frame it spawns, and on
+// despawn fades out at its last presented pose, mapped, until it is gone.
+#[test]
+fn a_members_projectile_ghost_ramps_in_from_spawn_and_fades_at_its_last_pose_on_despawn() {
+    let mut scene = Scene::new(vec![
+        descriptor("player", true),
+        projectile_weapon("rocket_launcher", true),
+    ]);
+    let partner = scene.pawn(INSIDE, DescriptorSpawnPath::NetworkSlot);
+    scene.frame();
+    assert!(scene.ghost(partner).is_some(), "the shooter is a member");
+
+    let rocket = scene.projectile("rocket_launcher", partner, INSIDE + Vec3::X);
+    scene.frame();
+    let spawned = scene
+        .ghost(rocket)
+        .expect("the shot ghosts on its first frame");
+    assert_eq!(spawned.category, GhostCategory::Projectiles);
+    assert_eq!(spawned.membership, 0.0, "a new ghost starts at 0");
+    let last = INSIDE + Vec3::new(3.0, 0.5, 0.0);
+    scene.place(rocket, last);
+    scene.frame();
+    scene.frame();
+    let flying = scene.ghost(rocket).unwrap();
+    assert!((flying.membership - 2.0 * ramp_step(FRAME)).abs() < 1e-6);
+    assert!(!flying.frozen);
+
+    scene.registry.despawn(rocket).unwrap();
+    scene.frame();
+    let fading = scene
+        .ghost(rocket)
+        .expect("a despawned shot's ghost fades out");
+    assert!(fading.frozen);
+    assert!((fading.membership - ramp_step(FRAME)).abs() < 1e-6);
+    assert!((fading.source.position - last).length() < 1e-6);
+    let mapped = scene.ghosts.mapping(0).unwrap().point(last);
+    assert!(
+        (fading.mapped.position - mapped).length() < 1e-5,
+        "at its last pose, mapped"
+    );
+    scene.frame();
+    assert!(scene.ghost(rocket).is_none(), "the fade ran out");
+}
+
 // The viewer's own projectiles never ghost on its machine,
 // while the partner's do.
 #[test]

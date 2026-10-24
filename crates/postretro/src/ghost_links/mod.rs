@@ -1,6 +1,8 @@
 // Ghost-link runtime: installed links, their state history and per-frame membership.
 // See: context/lib/entity_model.md §7d
 
+#[cfg(test)]
+pub(crate) mod app_test_fixtures;
 mod bus;
 #[cfg(feature = "capture")]
 mod capture;

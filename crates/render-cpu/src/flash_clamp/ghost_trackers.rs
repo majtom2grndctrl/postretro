@@ -227,7 +227,12 @@ impl EdgeTrackers {
     ///   reaching past its peak again carries that earlier transition on
     ///   while the window holds both ([`GhostWindow::restart_earlier`]), and
     ///   otherwise counts it anew: a point nearby may only now complete the
-    ///   swing the clamp could not see;
+    ///   swing the clamp could not see. On an exempt step it carries its last
+    ///   count on in place instead ([`GhostWindow::restart_latest`]), opening
+    ///   nothing: the first move left what nothing drawn draws and the exempt
+    ///   ray moves every point back toward there, so the ray passes the peak
+    ///   by f32 rounding at most, never a flash; a real pass is a budgeted
+    ///   step, which still counts;
     /// - a counted swing that stops short of its peak, on a frame that moves
     ///   this point or a neighbour its way and draws the segment between
     ///   them below the reference line somewhere (by twice how far short it
@@ -308,6 +313,12 @@ impl EdgeTrackers {
                 window.extend(edge, class, opens)
             } else if turned_back_small && further {
                 if window.restart_earlier(edge) {
+                    true
+                } else if class == SlotClass::Exempt {
+                    // A pass on the exempt ray is f32 rounding only while
+                    // unknown history starts from nothing drawn; a caller
+                    // starting it from a drawn look has to weigh this.
+                    window.restart_latest(edge);
                     true
                 } else {
                     stepped.last_sign = if tracker.dir > 0.0 { 1 } else { -1 };

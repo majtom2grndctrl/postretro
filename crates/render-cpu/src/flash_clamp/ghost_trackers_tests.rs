@@ -394,3 +394,49 @@ fn passing_a_faint_first_moves_peak_after_its_swing_back_carries_it_on() {
         assert_eq!(edges.trackers[1].last_sign, last_sign, "aged {aged}");
     }
 }
+
+// A faint first move's swing back counted, its first move's slot aged out,
+// then an exempt step passing that move's peak: counting anew there could
+// open a seventh edge slot. The exempt ray only moves a point back toward
+// what nothing drawn draws, so such a pass is f32 rounding, no flash: it
+// restarts the slot holding the tracker and opens none.
+#[test]
+fn passing_a_faint_first_moves_peak_on_an_exempt_step_opens_no_slot() {
+    // The faint black ghost above. An exempt step reaching a little further
+    // stands in for the rounding pass: it takes the same rule.
+    let (rest, faint, back, past) = (
+        Drawn::of(0.0, 0.0),
+        Drawn::of(0.004, 0.0),
+        Drawn::of(0.0005, 0.0),
+        Drawn::of(0.0041, 0.0),
+    );
+    // (1, 0), which a black ghost never moves, fills the window: each exempt
+    // count of it after the first opens a slot of its own.
+    let still = 0;
+    let mut window = GhostWindow::default();
+    let mut edges = EdgeTrackers::unknown_history(rest);
+    assert!(edges.step(faint, SlotClass::Budgeted, true, 0, &mut window));
+    window.age(0.97);
+    for _ in 0..5 {
+        assert!(window.count_edge(still, SlotClass::Exempt, true));
+    }
+    window.age(0.05);
+    assert!(window.count_edge(still, SlotClass::Exempt, true));
+    assert!(edges.step(back, SlotClass::Exempt, true, 0, &mut window));
+    assert_eq!(window.len(), 6, "the first move's slot aged out");
+    assert_eq!(window.edge_slots(), 6);
+    assert_eq!(edges.trackers[1].last_sign, 1, "counted back near the rest");
+    // Each moving tracker is in the latest slot alone, so a count anew has
+    // no slot to join and could only open a seventh.
+    let mut probe = window;
+    assert!(!probe.count_edge(1, SlotClass::Exempt, false));
+
+    window.age(0.5);
+    assert!(edges.step(past, SlotClass::Exempt, true, 0, &mut window));
+    assert_eq!(window.edge_slots(), 6, "no seventh edge slot");
+    assert_eq!(edges.trackers[1].last_sign, 1, "the swing back stays last");
+    // The pass restarted the slot holding the trackers, so it outlives the
+    // fillers counted before it.
+    window.age(0.6);
+    assert_eq!(window.len(), 1, "the trackers' slot restarted");
+}

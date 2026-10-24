@@ -13,12 +13,15 @@ use std::net::{Ipv4Addr, UdpSocket};
 use std::time::Duration;
 
 use glam::Vec3;
+use postretro_entities::components::inventory::Inventory;
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::presentation_binding::{
     PresentationBindingKey, PresentationBindingResolver,
 };
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{
-    EntityId, EntityRegistry, GhostLinkComponent, ScriptCtx, TeleporterComponent, Transform,
+    Emitter, EntityId, EntityRegistry, EntityTypeDescriptor, GhostLinkComponent, ScriptCtx,
+    TeleporterComponent, Transform,
 };
 use postretro_level_format::environment_volumes::{EnvironmentBrush, EnvironmentPlane};
 use postretro_level_format::ghost_links::{GhostLinkRecord, GhostMembers};
@@ -27,20 +30,22 @@ use postretro_level_loader::LevelWorld;
 use postretro_net::harness::{LinkConfig, PacketConditioner};
 use postretro_net::replication::ServerReplication;
 use postretro_net::transport::{NetClient, NetServer};
+use postretro_net::wire::ServerControlMessage;
 use postretro_physics::movement::MovementInput;
 
 use crate::ghost_links::bus::GhostBus;
 use crate::ghost_links::clocks::{ClockSource, MemberLane, PoseStamps, PresentationClocks};
 use crate::ghost_links::eligibility::CandidateView;
 use crate::ghost_links::opt_ins_test_fixtures::{data_registry, descriptor};
-use crate::ghost_links::{GhostFrame, GhostLinks, GhostLook, GhostMember};
+use crate::ghost_links::voices::VoiceFrame;
+use crate::ghost_links::{GhostFrame, GhostLinks, GhostLook, GhostMember, LocalSound};
 use crate::netcode;
 
 /// The connected client whose view is measured.
 pub(super) const CLIENT_A: u64 = 7;
 /// Owner of the slot pawn the host seat presents through its delay buffer; it
 /// never connects, so the host simulates its pawn on neutral input.
-const CLIENT_B: u64 = 8;
+pub(super) const CLIENT_B: u64 = 8;
 pub(super) const FRAMES_PER_TICK: usize = 4;
 const TICK_SECONDS: f32 = 1.0 / 60.0;
 pub(super) const FRAME_SECONDS: f32 = TICK_SECONDS / FRAMES_PER_TICK as f32;
@@ -273,6 +278,15 @@ pub(super) struct PresentedFrame {
     /// The Ghost bus profile this peer resolves this frame, at its own script
     /// time: what it hands its audio bus.
     pub ghost_audio: postretro_foundation::GhostAudioValues,
+    /// Host-now this frame, in host ticks, as this peer estimates it: the
+    /// clock a cue received this frame would read if it ignored where its
+    /// member presents.
+    pub host_now: f64,
+    /// On the client, with [`Loopback::client_fire_probe`] set: the ghost
+    /// voices a fire sound from that pawn admits when it is received and
+    /// played on this frame. `None` on the host seat, without a probe, or
+    /// before the pawn replicates.
+    pub fire_voices: Option<usize>,
 }
 
 impl PresentedFrame {
@@ -374,6 +388,20 @@ pub(super) struct Loopback {
     pub client_rtt_micros: Option<f64>,
     /// Every link record the client received, in apply order.
     pub client_received: Vec<netcode::GhostLinkUpdate>,
+    /// Tuning payloads the client received on Control.
+    pub client_tunings_received: usize,
+    /// Divergence notices the client received on Control: each one a parity
+    /// or reveal demotion.
+    pub client_divergences_received: usize,
+    /// The host-side holder the measured client's tuning payload is built
+    /// from ([`Self::host_hold_client_weapon`]).
+    tuning_holder: Option<EntityId>,
+    /// The host's last tuning sent to the measured client, for the
+    /// whole-struct dedupe that decides a resend.
+    last_sent_tuning: std::collections::HashMap<u64, postretro_combat_model::TuningPayload>,
+    /// Host pawn index whose fire the client probes on every frame
+    /// ([`PresentedFrame::fire_voices`]).
+    pub client_fire_probe: Option<usize>,
     /// Every presented frame, in order.
     pub host_frames: Vec<PresentedFrame>,
     pub client_frames: Vec<PresentedFrame>,
@@ -385,6 +413,15 @@ impl Loopback {
         let client_collision = crate::collision::CollisionWorld::from_level(&world).unwrap();
 
         let host = ScriptCtx::new();
+        // Level install seeds the level gravity over the context's NaN
+        // sentinel. The host's movement runs gravity-free here, and the tuning
+        // payload carries this value: left NaN, it never equals itself, so the
+        // whole-struct dedupe would resend every payload.
+        host.gravity.set(0.0);
+        // Each peer's committed descriptor snapshot, as mod init commits it.
+        host.data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![descriptor("player", true)]);
         let (pawns, links, teleporters, host_ghosts, collision, host_barrier) = {
             let mut registry = host.registry.borrow_mut();
             let host_barrier = spawn_barrier(&mut registry, &world);
@@ -476,7 +513,17 @@ impl Loopback {
         }
 
         let client_ctx = ScriptCtx::new();
-        client_ctx.data_registry.borrow_mut().entities = vec![descriptor("player", true)];
+        client_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![descriptor("player", true)]);
+        // Each peer's admission digest, from its committed registry, as
+        // installing its network mod content computes it.
+        let host_digest =
+            crate::mod_digest::mod_compatibility_digest_from_registry(&host.data_registry.borrow());
+        let client_digest = crate::mod_digest::mod_compatibility_digest_from_registry(
+            &client_ctx.data_registry.borrow(),
+        );
         let (client_ghosts, client_barrier) = {
             let mut registry = client_ctx.registry.borrow_mut();
             let client_barrier = spawn_barrier(&mut registry, &world);
@@ -496,7 +543,7 @@ impl Loopback {
         )
         .unwrap();
         server.set_mod_identity("ghost.fixture".into(), "1".into());
-        server.set_mod_digest(Some(FINGERPRINT));
+        server.set_mod_digest(Some(host_digest));
         server.set_level_parity(Some(("ghosts".into(), FINGERPRINT)));
         let mut client = NetClient::new(
             UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
@@ -508,7 +555,7 @@ impl Loopback {
         )
         .unwrap();
         client.set_mod_identity("ghost.fixture".into(), "1".into());
-        client.set_mod_digest(Some(FINGERPRINT));
+        client.set_mod_digest(Some(client_digest));
         client.set_level_parity(Some(("ghosts".into(), FINGERPRINT)));
         postretro_net::harness::reveal_both(&mut server, &mut client, "ghosts");
         server.add_relay_connection(CLIENT_A, None);
@@ -572,6 +619,11 @@ impl Loopback {
             client_audio_received: Vec::new(),
             client_rtt_micros: Some(120_000.0),
             client_received: Vec::new(),
+            client_tunings_received: 0,
+            client_divergences_received: 0,
+            tuning_holder: None,
+            last_sent_tuning: Default::default(),
+            client_fire_probe: None,
             host_frames: Vec::new(),
             client_frames: Vec::new(),
         }
@@ -611,6 +663,186 @@ impl Loopback {
         if let Some(styles) = client {
             self.client_ghosts.rebind_styles(styles);
         }
+    }
+
+    /// A committed staged reload of one or both peers' entity descriptors,
+    /// as each peer commits its own: the committed snapshot replaced, its
+    /// ghosts following that snapshot from the next frame, and its network
+    /// mod content reinstalled (the admission digest from its registry; on the
+    /// host, the measured client's tuning resent only when it changed, after
+    /// the reload retunes the live weapon it is built from).
+    pub(super) fn commit_descriptors(
+        &mut self,
+        host: Option<Vec<EntityTypeDescriptor>>,
+        client: Option<Vec<EntityTypeDescriptor>>,
+    ) {
+        if let Some(descriptors) = host {
+            self.host
+                .data_registry
+                .borrow_mut()
+                .replace_entity_types(descriptors);
+            {
+                let data = self.host.data_registry.borrow();
+                self.host_ghosts.refresh_opt_ins(&data);
+                self.server.set_mod_digest(Some(
+                    crate::mod_digest::mod_compatibility_digest_from_registry(&data),
+                ));
+            }
+            self.retune_held_weapon();
+            self.host_send_client_tuning();
+        }
+        if let Some(descriptors) = client {
+            self.client_ctx
+                .data_registry
+                .borrow_mut()
+                .replace_entity_types(descriptors);
+            let data = self.client_ctx.data_registry.borrow();
+            self.client_ghosts.refresh_opt_ins(&data);
+            self.client.set_mod_digest(Some(
+                crate::mod_digest::mod_compatibility_digest_from_registry(&data),
+            ));
+        }
+    }
+
+    /// Give the host a stand-in for the measured client's slot pawn: a
+    /// holder carrying one instance of `weapon` from the host's committed
+    /// descriptors, which the host builds that client's tuning payload from.
+    /// It carries no provenance and is never replicated, so it neither ghosts
+    /// nor reaches the client.
+    pub(super) fn host_hold_client_weapon(&mut self, weapon: &str) {
+        let data = self.host.data_registry.borrow();
+        let descriptor = data
+            .entities
+            .iter()
+            .find(|entry| entry.canonical_name.as_deref() == Some(weapon))
+            .and_then(|entry| entry.weapon.as_ref())
+            .expect("the host's committed descriptors carry the weapon");
+        let mut registry = self.host.registry.borrow_mut();
+        let far = Transform {
+            position: Vec3::new(0.0, -50.0, 0.0),
+            ..Default::default()
+        };
+        let instance = registry.spawn(far);
+        registry
+            .set_component(
+                instance,
+                WeaponComponent::from_descriptor_with_canonical(descriptor, Some(weapon)),
+            )
+            .unwrap();
+        registry
+            .set_component(
+                instance,
+                DescriptorProvenance {
+                    canonical_name: weapon.to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let holder = registry.spawn(far);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(instance);
+        registry.set_component(holder, inventory).unwrap();
+        self.tuning_holder = Some(holder);
+    }
+
+    /// The host's tuning send for the measured client, through the production
+    /// whole-struct dedupe: sent on Control only when it differs from the last.
+    pub(super) fn host_send_client_tuning(&mut self) {
+        let Some(holder) = self.tuning_holder else {
+            return;
+        };
+        let payload = {
+            let registry = self.host.registry.borrow();
+            let data = self.host.data_registry.borrow();
+            netcode::tuning_payload_for_pawn(
+                &registry,
+                holder,
+                &data.entities,
+                data.default_weapon_placement.as_ref(),
+                &netcode::host_environment_tuning(&self.host),
+            )
+        };
+        netcode::host_send_tuning_if_changed(
+            &mut self.server,
+            &mut self.last_sent_tuning,
+            CLIENT_A,
+            payload,
+        );
+    }
+
+    /// The reload's retune of the held weapon instance from the host's newly
+    /// committed descriptor: every field, the projectile opt-in included.
+    fn retune_held_weapon(&mut self) {
+        let Some(holder) = self.tuning_holder else {
+            return;
+        };
+        let data = self.host.data_registry.borrow();
+        let mut registry = self.host.registry.borrow_mut();
+        let Some(instance) = registry
+            .get_component::<Inventory>(holder)
+            .ok()
+            .and_then(|inventory| inventory.wieldables[0])
+        else {
+            return;
+        };
+        let name = registry
+            .get_component::<DescriptorProvenance>(instance)
+            .unwrap()
+            .canonical_name
+            .clone();
+        let Some(descriptor) = data
+            .entities
+            .iter()
+            .find(|entry| entry.canonical_name.as_deref() == Some(name.as_str()))
+            .and_then(|entry| entry.weapon.as_ref())
+        else {
+            return;
+        };
+        let mut weapon = registry
+            .get_component::<WeaponComponent>(instance)
+            .unwrap()
+            .clone();
+        weapon.refresh_from_descriptor(descriptor);
+        registry.set_component(instance, weapon).unwrap();
+    }
+
+    /// Whether the measured client participates, on both ends of the link.
+    pub(super) fn client_participating(&self) -> bool {
+        self.server.is_participating(CLIENT_A) && self.client.is_participating()
+    }
+
+    /// Run a host-side spawn against the host's registry and replication
+    /// state, as a host tick's spawn stage does: `spawn` receives them with
+    /// the latest completed tick.
+    pub(super) fn with_host_replication<R>(
+        &mut self,
+        spawn: impl FnOnce(
+            &mut EntityRegistry,
+            &mut netcode::NetworkIdAllocator,
+            &mut netcode::ReplicableSet,
+            &mut ServerReplication,
+            u32,
+        ) -> R,
+    ) -> R {
+        let mut registry = self.host.registry.borrow_mut();
+        spawn(
+            &mut *registry,
+            &mut self.allocator,
+            &mut self.replicable,
+            &mut self.replication,
+            self.tick,
+        )
+    }
+
+    /// The client's display copy of host entity `host_entity`, once replicated.
+    pub(super) fn client_entity_of(&self, host_entity: EntityId) -> Option<EntityId> {
+        let network_id = self.allocator.network_id_for_entity(host_entity)?;
+        self.client_replication
+            .entity_network_ids()
+            .into_iter()
+            .find_map(|(entity, id)| (id == network_id).then_some(entity))
     }
 
     /// Run one ghost-link member step on link `link` through the host's
@@ -812,7 +1044,13 @@ impl Loopback {
     }
 
     fn client_receive(&mut self) {
-        let _ = self.client.drain_control();
+        for message in self.client.drain_control() {
+            match message {
+                ServerControlMessage::Tuning(_) => self.client_tunings_received += 1,
+                ServerControlMessage::Divergence(_) => self.client_divergences_received += 1,
+                _ => {}
+            }
+        }
         // The client's fixed tick predicts its loaded movers, as production's
         // `client_predict_loaded_movers_tick` does, before applying snapshots.
         {
@@ -946,6 +1184,8 @@ impl Loopback {
             barrier,
             link_looks: [0, 1].map(|link| self.host_ghosts.link_look(link)),
             ghost_audio: self.host_bus.resolve(script_time),
+            host_now: f64::from(self.tick) + f64::from(alpha),
+            fire_voices: None,
         });
     }
 
@@ -990,6 +1230,37 @@ impl Loopback {
             })
         });
         let barrier = presented_barrier(&registry, self.client_barrier, alpha);
+        // A fire sound from the probed pawn, received and played this frame:
+        // anchored as the client's drain anchors it, admitted through the same
+        // clocks, view and stamps this frame's membership read.
+        let fire_voices = self.client_fire_probe.and_then(|pawn| {
+            let shooter = client_entities[pawn]?;
+            let origin = registry.get_component::<Transform>(shooter).ok()?.position;
+            let mut movers = crate::runtime_movers::KinematicMoverRenderCollector::new();
+            let mut scene = crate::sound_events::AnchorScene {
+                registry: &*registry,
+                world: Some(&self.world),
+                movers: &mut movers,
+            };
+            let fire: LocalSound = crate::sound_events::frozen_sound(
+                "rifle_fire",
+                &Emitter::Entity {
+                    id: shooter,
+                    origin,
+                },
+                &mut scene,
+            )
+            .into();
+            let frame = VoiceFrame {
+                clocks,
+                view: CandidateView::Client(&self.client_replication),
+                stamps: PoseStamps::Client(&self.client_replication),
+            };
+            let mut voices = Vec::new();
+            self.client_ghosts
+                .ghost_voices(&*registry, &frame, &fire, &mut voices);
+            Some(voices.len())
+        });
         self.client_frames.push(PresentedFrame {
             members: self.client_ghosts.members().to_vec(),
             pawns: client_pawns,
@@ -998,6 +1269,8 @@ impl Loopback {
             barrier,
             link_looks: [0, 1].map(|link| self.client_ghosts.link_look(link)),
             ghost_audio: self.client_bus.resolve(script_time),
+            host_now: f64::from(self.tick) + f64::from(alpha),
+            fire_voices,
         });
     }
 }

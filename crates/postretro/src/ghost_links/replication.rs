@@ -287,3 +287,11 @@ mod look_tests;
 #[cfg(test)]
 #[path = "replication_audio_tests.rs"]
 mod audio_tests;
+
+#[cfg(test)]
+#[path = "replication_reload_tests.rs"]
+mod reload_tests;
+
+#[cfg(test)]
+#[path = "replication_voice_tests.rs"]
+mod voice_tests;

@@ -171,17 +171,29 @@ struct FrameAsk {
 ///    move counts once, joining the latest slot, at six edge slots the
 ///    exempt one that opened the sixth; the point's neighbours move both
 ///    ways on any opacity change, so a later rounding move carries that
-///    count on, as a swing stopped short of its peak, rather than counting. From six edge slots a tracker still counts at
-///    most once on the ray, and the exempt ray always fits, so a fade or
-///    vanish presents.
+///    count on rather than counting: as a swing stopped short of its peak,
+///    or, once its swing back has counted, as a pass of its peak, which on
+///    the exempt ray restarts a slot holding the point and opens none (the
+///    ray moves every point toward what nothing drawn draws, where a first
+///    move starts, so it passes such a peak by rounding alone). From six
+///    edge slots a tracker still counts at most once on the ray, and the
+///    exempt ray always fits, so a fade or vanish presents.
 ///
 /// The thresholds leave room for the unorm16 opacity the draw packs and f32
-/// rounding. Not covered across a drop: a point between samples passing its
-/// old extreme while its nearer sample, counted back near where it rested,
-/// stays short of its first move's peak; and a point whose nearer sample has
-/// not moved since the drop (a white tint keeps the corner (1, 1) still)
-/// leans on the farther one, whose slot the nearer one's first count may
-/// later join. Targeted searches over both find no seventh transition.
+/// rounding. Not covered across a drop, each searched with no seventh
+/// transition found:
+///
+/// - a point between samples passing its old extreme while its nearer
+///   sample, counted back near where it rested, stays short of its first
+///   move's peak, or dips past its rest away from that peak. That frame
+///   passes no peak and restarts no slot, so the bound rests on the next
+///   change: swinging x 0.1 again moves some sample near its rest past its
+///   faint first move's peak by less than the edge threshold on the way,
+///   and step 6's rule, carrying that first count on, restarts its slot.
+///   Without that rule a strobe after such a dip draws a seventh;
+/// - a point whose nearer sample has not moved since the drop (a white tint
+///   keeps the corner (1, 1) still) leans on the farther one, whose slot the
+///   nearer one's first count may later join.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct LookValueClamp {
     window: GhostWindow,

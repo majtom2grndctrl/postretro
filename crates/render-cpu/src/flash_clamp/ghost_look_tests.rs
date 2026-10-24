@@ -1854,6 +1854,36 @@ fn a_flash_completed_past_a_faint_first_moves_peak_after_a_drop_is_counted() {
     }
 }
 
+// Back with unknown history, the sample nearer (1, 0.475) counts its faint
+// first move and its swing back near the rest, then dips past the rest away
+// from that move's peak, under the edge threshold, on the frame the point
+// completes the fall the drop hid. That frame passes no peak, so it restarts
+// no slot. The tint strobe after it moves such samples past their faint first
+// moves' peaks, carrying those counts on and restarting the appearance's
+// slot, which holds back a seventh transition in the second there; without
+// that carry-on the strobe draws seven.
+#[test]
+fn a_flash_completed_as_a_sample_dips_past_its_rest_after_a_drop_is_limited() {
+    let fps = 60.0;
+    let held = |asked: GhostInstanceLook, frames: usize| vec![Some(asked); frames];
+    let mut asked = held(look(0.183477, WHITE), 60);
+    asked.extend(vec![None; 90]);
+    asked.extend(held(look(0.039361, grey(0.787879)), 1));
+    asked.extend(held(look(0.066723, grey(0.492562)), 1));
+    asked.extend(held(look(0.026117, grey(0.460099)), 51));
+    let crossing = asked.len();
+    asked.extend(held(look(0.022045, grey(0.160281)), 1));
+    for tint in [WHITE, BLACK, WHITE, BLACK, WHITE] {
+        asked.extend(held(look(0.5, tint), 5));
+    }
+    asked.extend(held(look(0.0, WHITE), 30));
+    assert!(
+        presents_a_flash_across_a_drop_on(&asked, fps, (1.0, 0.475), crossing..crossing + 1),
+        "the crossing completes the hidden fall"
+    );
+    assert_limited_across_a_drop("a dip past the rest", &asked, fps);
+}
+
 /// The still-sample attack across a drop: a black tint keeps the edge point
 /// (1, 0) still while (1, 1/16) moves. Before the drop a faint white ghost
 /// draws 0.0995 above the background 0.025, nearer the still sample. Back

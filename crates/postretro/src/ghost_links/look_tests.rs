@@ -5,12 +5,18 @@
 use glam::Vec3;
 use log::Level;
 use postretro_entities::EntityRegistry;
-use postretro_foundation::{GhostStyle, GhostStyleDescriptor, GhostStyleRegistry};
+use postretro_foundation::{
+    ARM_GHOST_LINK, DISARM_GHOST_LINK, GhostStyle, GhostStyleDescriptor, GhostStyleRegistry,
+    SET_GHOST_LINK_COLOR_FILTER,
+};
 use postretro_level_format::environment_volumes::EnvironmentBrush;
 use postretro_level_format::ghost_links::{GhostLinkRecord, GhostMembers};
 use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
 use postretro_test_log_capture::LogCapture;
+use serde_json::json;
 
+use super::super::app_test_fixtures::{LinkedApp, box_link};
+use super::super::membership::ramp_step;
 use super::*;
 use crate::ghost_links::GhostLinks;
 
@@ -206,4 +212,145 @@ fn reload_dropping_a_style_warns_once_per_link_and_a_still_undeclared_link_stays
             .count(),
         2
     );
+}
+
+fn close(a: f32, b: f32) -> bool {
+    (a - b).abs() < 1e-5
+}
+
+// The staged-manifest commit reaches installed links through the App's style
+// hook: an armed link whose member is mid ramp-in and a disarmed link whose
+// member is mid fade-out both present the reloaded style from the next frame,
+// while their membership ramps run on unbroken. The field `setColorFilter`
+// set keeps its value and its ramp runs to its target.
+#[test]
+fn the_apps_reload_hook_re_resolves_links_mid_ramp_armed_or_not_and_keeps_filter_fields() {
+    const VOLUME: (Vec3, Vec3) = (Vec3::new(0.0, 0.0, -5.0), Vec3::new(10.0, 4.0, 5.0));
+    let echo = style(0.45, [0.6, 0.8, 1.0], true);
+    let link = |source_entity, armed, target: Vec3| {
+        box_link(
+            source_entity,
+            VOLUME,
+            (Vec3::ZERO, 0.0),
+            (target, 0.0),
+            armed,
+            GhostMembers::all(),
+            "echo",
+        )
+    };
+    let world = world(vec![
+        link(4, false, Vec3::new(100.0, 0.0, 0.0)),
+        link(5, true, Vec3::new(0.0, 0.0, 100.0)),
+    ]);
+    let mut linked = LinkedApp::new(&world, styles(&[("echo", echo)]), &["wraith"]);
+    let wraith = linked.entity("wraith", Vec3::new(2.0, 1.0, 0.0));
+    linked.tick_and_frame();
+    assert!(linked.ghost(0, wraith).is_none(), "link 0 starts disarmed");
+    assert_eq!(
+        linked.ghost(1, wraith).map(|ghost| ghost.membership),
+        Some(1.0),
+        "link 1 is armed on spawn"
+    );
+
+    let (link_0, link_1) = (linked.link(0), linked.link(1));
+    linked.step(link_0, ARM_GHOST_LINK, json!({}));
+    linked.step(
+        link_0,
+        SET_GHOST_LINK_COLOR_FILTER,
+        json!({ "tint": [0.0, 0.0, 0.0], "periodMs": 1000 }),
+    );
+    linked.step(link_1, DISARM_GHOST_LINK, json!({}));
+    for _ in 0..4 {
+        linked.tick_and_frame();
+    }
+    let rising = linked
+        .ghost(0, wraith)
+        .expect("the armed link's member ramps in");
+    let fading = linked
+        .ghost(1, wraith)
+        .expect("the disarmed link's member fades out");
+    assert!(!rising.frozen && rising.membership > 0.0 && rising.membership < 1.0);
+    assert!(fading.frozen && fading.membership > 0.0 && fading.membership < 1.0);
+    let filtered_tint = linked.app.ghost_links.link_look(0).tint;
+    assert_ne!(filtered_tint, echo.tint, "the tint ramp is under way");
+
+    // The commit replaces the committed table, then calls the App's hook.
+    let retuned = GhostStyle {
+        tint: [1.0, 0.4, 0.3],
+        opacity: 0.8,
+        saturation: 0.7,
+        audio: false,
+        impact_audio: false,
+    };
+    linked
+        .ctx
+        .data_registry
+        .borrow_mut()
+        .replace_ghost_styles(styles(&[("echo", retuned)]));
+    linked.app.refresh_ghost_styles();
+
+    let reloaded = linked.app.ghost_links.link_look(0);
+    assert_eq!(
+        reloaded.tint, filtered_tint,
+        "the filtered tint keeps its ramp's value"
+    );
+    assert_eq!(
+        (reloaded.opacity, reloaded.saturation),
+        (retuned.opacity, retuned.saturation),
+        "unset fields follow the reloaded style"
+    );
+    assert_eq!(
+        linked.app.ghost_links.link_look(1),
+        look_of(retuned),
+        "the disarmed link re-resolves"
+    );
+    assert_eq!(
+        linked.app.ghost_links.link_style(1),
+        retuned,
+        "flags come from the reloaded style"
+    );
+
+    linked.tick_and_frame();
+    let step = ramp_step(linked.app.ghost_links.presented_elapsed());
+    let risen = linked.ghost(0, wraith).expect("still ramping in");
+    assert!(
+        close(risen.membership, rising.membership + step),
+        "the ramp-in runs on from {} to {}",
+        rising.membership,
+        risen.membership
+    );
+    assert_eq!(
+        (risen.look.opacity, risen.look.saturation),
+        (retuned.opacity, retuned.saturation),
+        "the rising member presents the reloaded style"
+    );
+    assert!(
+        risen.look.tint[2] < filtered_tint[2] && risen.look.tint[2] > 0.0,
+        "the tint ramp runs on toward black: {:?}",
+        risen.look.tint
+    );
+    let faded = linked.ghost(1, wraith).expect("still fading out");
+    assert!(faded.frozen);
+    assert!(
+        close(faded.membership, fading.membership - step),
+        "the fade runs on from {} to {}",
+        fading.membership,
+        faded.membership
+    );
+    assert_eq!(
+        faded.look,
+        look_of(retuned),
+        "the fading member presents the reloaded style"
+    );
+
+    for _ in 0..60 {
+        linked.tick_and_frame();
+    }
+    let settled = linked.ghost(0, wraith).expect("the armed link shows it");
+    assert_eq!(settled.membership, 1.0);
+    assert_eq!(
+        settled.look.tint, [0.0; 3],
+        "the filter ramp reaches its target"
+    );
+    assert!(linked.ghost(1, wraith).is_none(), "the fade ran out");
 }

@@ -827,3 +827,98 @@ fn the_floored_weight_map_stage_warns_about_no_contact_corner_wall_or_open_floor
         }
     }
 }
+
+// --- the embedded-emitter warning --------------------------------------------
+
+/// A 6 m floor with a 2 m wall standing on it across `x` 3.0..3.5, its `-X`
+/// face toward [`embedded_animated`].
+fn walled_floor_geometry() -> GeometryResult {
+    let mut geometry = floor(6.0);
+    push_box(
+        &mut geometry,
+        Vec3::new(3.0, 0.0, 0.0),
+        Vec3::new(3.5, 2.0, 6.0),
+    );
+    geometry
+}
+
+/// A default-size animated light 0.1 m from the wall's face, so about a
+/// third of its sphere lies inside the wall.
+fn embedded_animated() -> MapLight {
+    let mut light = animated([2.9, 1.0, 3.0], 6.0);
+    light.light_size = DEFAULT_LIGHT_SIZE;
+    light
+}
+
+/// Every embedded-emitter warning `compiled` logged, in order.
+fn emitter_warnings(compiled: &Compiled) -> Vec<String> {
+    compiled
+        .records
+        .iter()
+        .filter(|record| {
+            record.level == Level::Warn && record.message.contains("emitter inside geometry")
+        })
+        .map(|record| record.message.clone())
+        .collect()
+}
+
+// The weight-map stage tests its lights' emitters every compile, cold or
+// warm, and warns once per embedded light on the caller's thread, naming it
+// by its source label: the static light ahead of it is no animated light, so
+// the label is looked up through the animated entry's source index. A cache
+// hit warns exactly as the cold miss did; with the floor off, nothing does.
+#[test]
+fn an_embedded_animated_emitter_warns_once_per_compile_cold_or_warm() {
+    let lights = vec![placing_light(), embedded_animated()];
+    let dir = fresh_cache_dir("embedded_emitter");
+    let cache = StageCache::new(&dir).expect("create embedded-emitter cache");
+    let warm = || {
+        compile(
+            walled_floor_geometry(),
+            &lights,
+            Run {
+                cache: Some(&cache),
+                ..Run::default()
+            },
+        )
+    };
+
+    let cold = warm();
+    assert_eq!(
+        cold.logged(Level::Info, "[cache] animated_lm_weight_maps miss"),
+        1
+    );
+    let cold_warnings = emitter_warnings(&cold);
+    assert_eq!(cold_warnings.len(), 1, "{cold_warnings:?}");
+    assert!(
+        cold_warnings[0].contains("animated light entity 11 'light':"),
+        "{}",
+        cold_warnings[0]
+    );
+    assert!(
+        cold_warnings[0].contains("0.250 m emitter sphere"),
+        "{}",
+        cold_warnings[0]
+    );
+
+    let hit = warm();
+    assert_eq!(
+        hit.logged(Level::Info, "[cache] animated_lm_weight_maps hit"),
+        1
+    );
+    assert_eq!(
+        emitter_warnings(&hit),
+        cold_warnings,
+        "a hit warns as cold did"
+    );
+    assert_eq!(hit.section, cold.section);
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let off = compile(walled_floor_geometry(), &lights, floor_off());
+    assert!(
+        emitter_warnings(&off).is_empty(),
+        "{:?}",
+        emitter_warnings(&off)
+    );
+}

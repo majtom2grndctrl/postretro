@@ -22,8 +22,7 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{LightType, MapLight};
 use crate::texel_footprint::{
-    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, embedded_emitter_fraction,
-    lead_in_clear,
+    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, has_embedded_emitter, lead_in_clear,
 };
 use glam::DVec3;
 
@@ -360,15 +359,16 @@ impl IncrementalLayerAccumulator {
 }
 
 /// Influence AABB used to bound the geometry slice folded into a light's cache
-/// key. Point/Spot → `falloff_range + AABB_PADDING_METERS` cube, widened by
-/// `footprint_radius`; Directional → the whole-world AABB. Delegates to the
-/// authoritative `affinity_grid::light_aabb` (the f32-falloff copy).
+/// key. Point/Spot → `falloff_range + AABB_PADDING_METERS` cube, widened by the
+/// larger of `footprint_radius` and the emitter's overhang past that reach;
+/// Directional → the whole-world AABB. Delegates to the authoritative
+/// `affinity_grid::light_aabb` (the f32-falloff copy).
 ///
 /// A reached texel lies within `falloff_range`, but a footprint sample's ray
 /// leaves from up to one texel pitch beside it, and `_lightmap_scale` lets a
 /// pitch exceed the padding. `footprint_radius` is the largest footprint
 /// radius among the charts the light reaches; zero (floor off) leaves the
-/// bound unchanged.
+/// bound unchanged unless the emitter overhangs.
 ///
 /// Shadow rays end on the emitter sphere, and the embedded-emitter test
 /// (`texel_footprint::embedded_emitter_fraction`) traces segments that stay
@@ -470,9 +470,11 @@ pub fn bake_light_layer(
     penumbra_floor: bool,
     control: &BakeControl,
 ) -> Vec<LightmapLayer> {
+    // Once for the light, before any layer, as the production stage tests it.
+    let embedded_emitter = embedded_emitter_flag(light, bvh, primitives, geometry, penumbra_floor);
     (0..atlas_layer_count(atlas))
         .map(|target_layer| {
-            bake_light_layer_controlled(
+            bake_light_layer_on(
                 light,
                 atlas,
                 bvh,
@@ -481,10 +483,23 @@ pub fn bake_light_layer(
                 target_layer,
                 area_sample_count,
                 penumbra_floor,
+                embedded_emitter,
                 control,
             )
         })
         .collect()
+}
+
+/// The light's embedded-emitter flag as the production stage tests it: only
+/// with the floor on, which alone reads it.
+fn embedded_emitter_flag(
+    light: &MapLight,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    penumbra_floor: bool,
+) -> bool {
+    penumbra_floor && has_embedded_emitter(light, bvh, primitives, geometry)
 }
 
 /// Bake one light's cacheable contribution for exactly one atlas array layer.
@@ -504,10 +519,39 @@ pub fn bake_light_layer_controlled(
     penumbra_floor: bool,
     control: &BakeControl,
 ) -> LightmapLayer {
-    // One light, so its emitter test runs here, as the production stage
-    // runs it once per light before any partition.
-    let embedded_emitter =
-        penumbra_floor && embedded_emitter_fraction(light, bvh, primitives, geometry) > 0.0;
+    // One light and one layer, so the light's emitter test runs here; the
+    // production stage runs it once per light before any partition, and
+    // [`bake_light_layer`] once before its layers.
+    let embedded_emitter = embedded_emitter_flag(light, bvh, primitives, geometry, penumbra_floor);
+    bake_light_layer_on(
+        light,
+        atlas,
+        bvh,
+        primitives,
+        geometry,
+        target_layer,
+        area_sample_count,
+        penumbra_floor,
+        embedded_emitter,
+        control,
+    )
+}
+
+/// [`bake_light_layer_controlled`] with the light's emitter flag already
+/// tested ([`embedded_emitter_flag`]).
+#[allow(clippy::too_many_arguments)]
+fn bake_light_layer_on(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    target_layer: u32,
+    area_sample_count: u32,
+    penumbra_floor: bool,
+    embedded_emitter: bool,
+    control: &BakeControl,
+) -> LightmapLayer {
     let face_indices: Vec<usize> = atlas
         .placements
         .iter()
@@ -545,21 +589,12 @@ pub(crate) fn bake_light_layer_full_sets(
 ) -> Vec<LightmapLayer> {
     (0..atlas_layer_count(atlas))
         .map(|target_layer| {
-            let face_indices: Vec<usize> = atlas
-                .placements
-                .iter()
-                .enumerate()
-                .filter_map(|(face_idx, placement)| {
-                    (placement.layer == target_layer).then_some(face_idx)
-                })
-                .collect();
-            bake_light_layer_for_faces(
+            bake_light_layer_on(
                 light,
                 atlas,
                 bvh,
                 primitives,
                 geometry,
-                &face_indices,
                 target_layer,
                 area_sample_count,
                 true,
@@ -735,8 +770,9 @@ fn bake_light_layer_chart_clipped(
     texels
 }
 
-/// [`bake_light_layer_chart_controlled`] tracing every texel's clip segments:
-/// the reference the clip pre-pass is checked against.
+/// [`bake_light_layer_chart_controlled`], floored, tracing every texel's clip
+/// segments: the reference the clip pre-pass is checked against, with the
+/// light's `embedded_emitter` flag as the stage would pass it.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_light_layer_chart_without_clip_prepass(
@@ -747,6 +783,7 @@ pub(crate) fn bake_light_layer_chart_without_clip_prepass(
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     area_sample_count: u32,
+    embedded_emitter: bool,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
     bake_light_layer_chart_clipped(
@@ -758,7 +795,7 @@ pub(crate) fn bake_light_layer_chart_without_clip_prepass(
         geometry,
         area_sample_count,
         true,
-        false,
+        embedded_emitter,
         false,
         control,
     )

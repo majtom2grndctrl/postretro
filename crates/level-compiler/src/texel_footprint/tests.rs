@@ -1698,7 +1698,7 @@ fn lit_records(
     let control = crate::bake_control::BakeControl::unrestricted();
     let (mut lit, mut checked) = (Vec::new(), 0);
     for (index, light) in lights.iter().enumerate() {
-        let embedded = super::embedded_emitter_fraction(light, &bvh, &primitives, geometry) > 0.0;
+        let embedded = super::has_embedded_emitter(light, &bvh, &primitives, geometry);
         for &count in counts {
             for face in 0..atlas.charts.len() {
                 let texels = crate::lightmap_layer::bake_light_layer_chart_controlled(
@@ -1991,6 +1991,8 @@ fn floor_disabled_bakes_centre_point_soft_visibility() {
 
 /// Every chart of `atlas`, baked for each light with the clip pre-pass and
 /// with every clip segment traced: the layer records must match bit for bit.
+/// Each light bakes with its own embedded-emitter flag, then, if clear, with
+/// the flag forced on, so the full-set walk is checked on every fixture.
 /// Returns how many texels the pre-pass let skip their clip segments.
 fn assert_prepass_matches_full_clip(
     geometry: &crate::geometry::GeometryResult,
@@ -2000,6 +2002,10 @@ fn assert_prepass_matches_full_clip(
 ) -> (usize, usize) {
     let (bvh, primitives, _) = crate::bvh_build::build_bvh(geometry).unwrap();
     let control = crate::bake_control::BakeControl::unrestricted();
+    let own_flags: Vec<bool> = lights
+        .iter()
+        .map(|light| super::has_embedded_emitter(light, &bvh, &primitives, geometry))
+        .collect();
     let (mut skipped, mut total) = (0, 0);
     for (face, chart) in atlas.charts.iter().enumerate() {
         if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
@@ -2013,36 +2019,43 @@ fn assert_prepass_matches_full_clip(
                 skipped += usize::from(!reach.may_clip(tx, ty));
             }
         }
-        for light in lights {
-            for &count in counts {
-                let fast = crate::lightmap_layer::bake_light_layer_chart_controlled(
-                    light,
-                    atlas,
-                    face,
-                    &bvh,
-                    &primitives,
-                    geometry,
-                    count,
-                    true,
-                    false,
-                    &control,
-                );
-                let full = crate::lightmap_layer::bake_light_layer_chart_without_clip_prepass(
-                    light,
-                    atlas,
-                    face,
-                    &bvh,
-                    &primitives,
-                    geometry,
-                    count,
-                    &control,
-                );
-                assert_eq!(
-                    bytemuck::cast_slice::<_, u8>(&fast),
-                    bytemuck::cast_slice::<_, u8>(&full),
-                    "face {face}, {:?} light, count {count}",
-                    light.light_type
-                );
+        for (light, &own_flag) in lights.iter().zip(&own_flags) {
+            // Its own flag, then forced on; a flagged light bakes only flagged.
+            for embedded in [false, true] {
+                if own_flag && !embedded {
+                    continue;
+                }
+                for &count in counts {
+                    let fast = crate::lightmap_layer::bake_light_layer_chart_controlled(
+                        light,
+                        atlas,
+                        face,
+                        &bvh,
+                        &primitives,
+                        geometry,
+                        count,
+                        true,
+                        embedded,
+                        &control,
+                    );
+                    let full = crate::lightmap_layer::bake_light_layer_chart_without_clip_prepass(
+                        light,
+                        atlas,
+                        face,
+                        &bvh,
+                        &primitives,
+                        geometry,
+                        count,
+                        embedded,
+                        &control,
+                    );
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&fast),
+                        bytemuck::cast_slice::<_, u8>(&full),
+                        "face {face}, {:?} light, count {count}, embedded {embedded}",
+                        light.light_type
+                    );
+                }
             }
         }
     }

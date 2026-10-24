@@ -37,7 +37,17 @@ fn bake_on(
         .num_threads(workers)
         .build()
         .expect("build fixture pool")
-        .install(|| bake_with(&control, cache, lights, config, geometry, regions))
+        .install(|| {
+            bake_with(
+                &control,
+                cache,
+                lights,
+                config,
+                geometry,
+                regions,
+                &PartitionWindow::default(),
+            )
+        })
 }
 
 /// [`bake_on`] on the calling thread, where log capture reads the stage's
@@ -55,6 +65,7 @@ fn bake_here(
         config,
         geometry,
         &[],
+        &PartitionWindow::default(),
     )
 }
 
@@ -65,6 +76,7 @@ fn bake_with(
     config: &LightmapConfig,
     mut geometry: GeometryResult,
     regions: &[MapLightmapScaleRegion],
+    window: &PartitionWindow,
 ) -> Baked {
     let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH must build");
     let static_lights = StaticBakedLights::from_lights(lights);
@@ -76,8 +88,13 @@ fn bake_with(
         regions,
     )
     .expect("fixture atlas must prepare");
-    let output = bake_fused_prepared(
-        &test_args(),
+    // The layer walk reads the CLI's count, the reference the config's.
+    let args = Args {
+        soft_shadow_samples: config.area_sample_count,
+        ..test_args()
+    };
+    let output = bake_fused_windowed(
+        &args,
         cache,
         control,
         &BakeControl::unrestricted(),
@@ -90,6 +107,7 @@ fn bake_with(
         &primitives,
         config,
         prepared,
+        window,
     )
     .expect("fused fixture bake must succeed");
     (
@@ -440,16 +458,46 @@ fn an_embedded_emitter_bakes_alike_on_every_path_and_warns_once_per_compile() {
         .collect();
     assert!(flags[0] > 0.05 && flags[1] == 0.0, "fractions {flags:?}");
 
+    // Past the nine probes, so a full set traces more than the probes and the
+    // flag can move a texel; at the fixtures' 4 the probes are the full set.
+    let config_at = |on: bool| LightmapConfig {
+        area_sample_count: 16,
+        ..floored(false, on)
+    };
     for on in [true, false] {
-        let config = floored(false, on);
+        let config = config_at(on);
         let reference = reference_lightmap_of(mixed_geometry(), &lights, &config);
         for workers in [1, 4] {
             let cold = bake_on(workers, None, &lights, &config, mixed_geometry(), &[]);
             assert_eq!(cold.0, reference, "floor {on}, {workers} worker(s)");
         }
+        // The equality above means something only if the flag moves bytes:
+        // with the emitter test skipped, the floored stage keeps the probe
+        // early-out for the embedded light and bakes other lightmap and
+        // shadowmask bytes. (The fixture cuts no face, so the shadowmask's
+        // cut-owner estimate never runs here.)
+        let flagged = bake_here(None, &lights, &config, mixed_geometry());
+        let unflagged = bake_with(
+            &BakeControl::unrestricted(),
+            None,
+            &lights,
+            &config,
+            mixed_geometry(),
+            &[],
+            &PartitionWindow {
+                ignore_embedded_emitters: true,
+                ..PartitionWindow::default()
+            },
+        );
+        assert_eq!(flagged.0, reference, "floor {on}");
+        assert_eq!(
+            (unflagged.0 != flagged.0, unflagged.1 != flagged.1),
+            (on, on),
+            "floor {on}: the flag moves the lightmap and shadowmask exactly when the floor is on"
+        );
     }
 
-    let config = floored(false, true);
+    let config = config_at(true);
     let dir = fresh_cache_dir("penumbra_floor_embedded");
     let cache = StageCache::new(&dir).expect("create embedded-emitter cache");
     let warnings = |baked: &dyn Fn() -> Baked, memo: &str| {
@@ -819,5 +867,69 @@ fn an_occluder_only_a_footprint_reaches_rekeys_the_layer_past_the_padding() {
         }
         drop(cache);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// P10 for the emitter: a sphere larger than the light's reach
+// (`falloff_range + 0.5 m`) holds geometry the embedded-emitter test reads
+// and no texel's ray can. A plate only that sphere reaches, past the reach
+// and every footprint pad, re-keys the light's layer when it moves, at either
+// floor setting. The same light with an ordinary sphere keeps its key.
+#[test]
+fn an_occluder_only_an_oversized_emitter_reaches_rekeys_the_layer() {
+    let density = config(false).lightmap_density;
+    let origin = DVec3::new(5.0, 0.3, 5.0);
+    let mut oversized = point_light(origin, [1.0, 0.9, 0.8]);
+    oversized.falloff_range = 0.4;
+    oversized.light_size = 1.5;
+    let ordinary = MapLight {
+        light_size: DEFAULT_LIGHT_SIZE,
+        ..oversized.clone()
+    };
+    let reach = oversized.falloff_range + LAYER_AABB_PADDING_METERS;
+    let lights = vec![oversized.clone(), ordinary.clone()];
+
+    // The plate starts past the reach plus the floor's footprint radius and
+    // ends inside the sphere's 1.5 m.
+    let open_floor = Prepared::new(padding_geometry(None), &lights, density, &[]);
+    let radius = TexelFrame::for_chart(&open_floor.atlas.charts[0]).radius();
+    let o = [origin.x as f32, origin.z as f32];
+    let plate_x = [o[0] + 1.2, o[0] + 1.35];
+    assert!(
+        plate_x[0] > o[0] + reach + radius,
+        "the plate lies past the reach {reach} m and the footprint radius {radius} m"
+    );
+    let nearest = Vec3::new(plate_x[0], PLATE_HEIGHT, o[1]).distance(origin.as_vec3());
+    assert!(
+        nearest < oversized.light_size,
+        "the sphere reaches the plate: {nearest} m"
+    );
+    let beside = (plate_x, [o[1] - 0.1, o[1] + 0.1]);
+    let moved = (plate_x, [o[1] + 0.2, o[1] + 0.4]);
+    let (beside_at, moved_at) = (
+        Prepared::new(padding_geometry(Some(beside)), &lights, density, &[]),
+        Prepared::new(padding_geometry(Some(moved)), &lights, density, &[]),
+    );
+    assert_eq!(
+        crate::lightmap_layer::atlas_layout_fingerprint(&beside_at.shared()),
+        crate::lightmap_layer::atlas_layout_fingerprint(&moved_at.shared()),
+        "the move must not change any chart"
+    );
+
+    for on in [true, false] {
+        let config = floored(false, on);
+        let key = |prepared: &Prepared, light: &MapLight| {
+            prepared.layer_key(light, &config, 0).as_filename()
+        };
+        assert_ne!(
+            key(&beside_at, &oversized),
+            key(&moved_at, &oversized),
+            "floor {on}: the oversized emitter's key must see the plate"
+        );
+        assert_eq!(
+            key(&beside_at, &ordinary),
+            key(&moved_at, &ordinary),
+            "floor {on}: an ordinary emitter's key cannot see the plate"
+        );
     }
 }

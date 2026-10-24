@@ -10,7 +10,7 @@ use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::{
-    ClipBand, FootprintOutcome, TexelFrame, TexelSite, footprint_for, footprint_visibility_with,
+    ClipBand, FootprintOutcome, TexelFrame, TexelSite, footprint_for, footprint_visibility,
     lead_in_clear,
 };
 use crate::bake_control::BakeControl;
@@ -316,7 +316,7 @@ impl Fixture {
             layout: &layout,
         };
         // The emitter test the production stage runs once per light.
-        let embedded = floor && self.embedded_emitter_fraction(light) > 0.0;
+        let embedded = floor && self.has_embedded_emitter(light);
         let texels = bake_light_layer_chart_controlled(
             light,
             &shared,
@@ -341,6 +341,11 @@ impl Fixture {
     /// [`super::embedded_emitter_fraction`] against this fixture.
     pub(super) fn embedded_emitter_fraction(&self, light: &MapLight) -> f32 {
         super::embedded_emitter_fraction(light, &self.bvh, &self.primitives, &self.geometry)
+    }
+
+    /// [`super::has_embedded_emitter`] against this fixture.
+    pub(super) fn has_embedded_emitter(&self, light: &MapLight) -> bool {
+        super::has_embedded_emitter(light, &self.bvh, &self.primitives, &self.geometry)
     }
 
     /// Bake `light` over the receiver as an animated light through the
@@ -523,7 +528,7 @@ impl Fixture {
                     frame,
                     may_clip: true,
                 };
-                outcomes.push(Some(footprint_visibility_with(
+                outcomes.push(Some(footprint_visibility(
                     light,
                     &site,
                     &footprint,

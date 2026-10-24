@@ -277,3 +277,61 @@ fn the_warning_names_each_embedded_light_with_its_fraction() {
         );
     }
 }
+
+/// The flag callers read without the fraction stops at the first embedded
+/// direction, and equals `fraction > 0` exactly: across the sphere's tangent
+/// to the wall, where the cap shrinks below one direction, snapped onto and
+/// just inside the face, for a spot, and for lights with no sphere.
+#[test]
+fn the_embedded_flag_is_exactly_a_non_zero_fraction() {
+    let fixture = walled_floor();
+    let r = f64::from(DEFAULT_LIGHT_SIZE);
+    let near = [f64::from(WALL_FACE_X) - 0.1, LIGHT_HEIGHT, 0.0];
+    let mut lights: Vec<MapLight> = [
+        0.4,
+        0.3,
+        r + 0.001,
+        r,
+        r - 0.0005,
+        r - 0.002,
+        r - 0.01,
+        0.2,
+        0.1,
+        0.0005,
+        0.0,
+        -0.0005,
+    ]
+    .into_iter()
+    .map(beside_wall)
+    .collect();
+    let mut spot = beside_wall(0.1);
+    spot.light_type = LightType::Spot;
+    spot.cone_direction = Some([0.0, -1.0, 0.0]);
+    spot.cone_angle_inner = Some(1.2);
+    spot.cone_angle_outer = Some(1.4);
+    let mut sdf = default_point(near);
+    sdf.shadow_type = ShadowType::Sdf;
+    lights.extend([spot, sdf, hard_point(near)]);
+
+    let (mut flagged, mut clear) = (0, 0);
+    for light in &lights {
+        let fraction = fixture.embedded_emitter_fraction(light);
+        let flag = fixture.has_embedded_emitter(light);
+        assert_eq!(
+            flag,
+            fraction > 0.0,
+            "{:?} light at {:?}: fraction {fraction}",
+            light.light_type,
+            light.origin
+        );
+        if flag {
+            flagged += 1;
+        } else {
+            clear += 1;
+        }
+    }
+    assert!(
+        flagged >= 6 && clear >= 4,
+        "{flagged} flagged, {clear} clear"
+    );
+}

@@ -297,7 +297,7 @@ pub(crate) enum TexelSampler {
     Footprint {
         footprint: Arc<TexelFootprint>,
         /// Trace every sample, with no probe early-out: the light's emitter
-        /// sphere reaches into geometry ([`embedded_emitter_fraction`]).
+        /// sphere reaches into geometry ([`has_embedded_emitter`]).
         full_set: bool,
     },
 }
@@ -356,7 +356,7 @@ impl TexelSampler {
                 footprint,
                 full_set,
             } => {
-                footprint_visibility_with(light, site, footprint, trace, reach, lead_in, !full_set)
+                footprint_visibility(light, site, footprint, trace, reach, lead_in, !full_set)
                     .visibility
             }
         }
@@ -420,8 +420,8 @@ fn footprint_rotation(seed: u64) -> (f32, f32) {
 /// stay a centre and a ring in every occluder plane
 /// ([`TexelFootprint::emitter_pairing`]). Without `early_out` every sample is
 /// traced: a light whose emitter reaches into geometry
-/// ([`embedded_emitter_fraction`]), and the tests' reference.
-fn footprint_visibility_with(
+/// ([`has_embedded_emitter`]), and the tests' reference.
+fn footprint_visibility(
     light: &MapLight,
     site: &TexelSite,
     footprint: &TexelFootprint,
@@ -525,9 +525,9 @@ mod clip_reach;
 mod embedded_emitter;
 mod pairing;
 pub(crate) use clip_reach::{ClipBand, ClipReach, lead_in_clear};
+pub(crate) use embedded_emitter::{EmbeddedEmitters, has_embedded_emitter};
 #[cfg(test)]
-pub(crate) use embedded_emitter::NO_EMBEDDED_EMITTERS;
-pub(crate) use embedded_emitter::{EmbeddedEmitters, embedded_emitter_fraction};
+pub(crate) use embedded_emitter::{NO_EMBEDDED_EMITTERS, embedded_emitter_fraction};
 use pairing::EmitterPairing;
 
 #[cfg(test)]

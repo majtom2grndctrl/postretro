@@ -70,6 +70,11 @@ pub(crate) struct PartitionWindow {
     /// Replaces [`TEXEL_STEP_THRESHOLD`] in the detector and the section key.
     #[cfg(test)]
     pub(crate) step_threshold: Option<f32>,
+    /// Skips the embedded-emitter test, so every light keeps the probe
+    /// early-out, to show a fixture's bytes depend on the flags. No key
+    /// holds this; run it without a cache.
+    #[cfg(test)]
+    pub(crate) ignore_embedded_emitters: bool,
 }
 
 impl Default for PartitionWindow {
@@ -84,7 +89,20 @@ impl Default for PartitionWindow {
             raw_fill_probe: None,
             #[cfg(test)]
             step_threshold: None,
+            #[cfg(test)]
+            ignore_embedded_emitters: false,
         }
+    }
+}
+
+impl PartitionWindow {
+    /// Whether the stage tests its lights' emitters: always, outside tests.
+    fn tests_embedded_emitters(&self) -> bool {
+        #[cfg(test)]
+        if self.ignore_embedded_emitters {
+            return false;
+        }
+        true
     }
 }
 
@@ -215,7 +233,7 @@ pub(crate) fn bake_fused_windowed(
     // only the light and geometry inside its layer key's bound
     // (`lightmap_layer::layer_influence_aabb`), so a cached partition was
     // baked under the same verdict, and the warning never rides a memo.
-    let embedded_emitters = if config.penumbra_floor {
+    let embedded_emitters = if config.penumbra_floor && window.tests_embedded_emitters() {
         EmbeddedEmitters::classify(
             layer_lights
                 .iter()

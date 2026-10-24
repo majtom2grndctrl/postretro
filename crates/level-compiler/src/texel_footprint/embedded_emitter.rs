@@ -16,6 +16,10 @@ use crate::map_data::{LightType, MapLight, ShadowType};
 /// sphere lattice at this count, fixed so every bake asks the same question.
 /// A cap of the sphere smaller than about one direction's share (0.2%) can
 /// go unseen, and the early-out then misses no more of the light than that.
+///
+/// Changing this, or the segment's `RAY_EPSILON` lead, changes the verdict,
+/// which no cache key holds: bump both `LAYER_FORMAT_VERSION` and the
+/// weight-map `STAGE_VERSION`.
 pub(crate) const EMBEDDED_EMITTER_DIRECTIONS: u32 = 512;
 
 /// The fraction of a point or spot light's emitter sphere that lies inside or
@@ -35,9 +39,10 @@ pub(crate) const EMBEDDED_EMITTER_DIRECTIONS: u32 = 512;
 ///
 /// Each segment starts `RAY_EPSILON` behind the centre, so a face through
 /// the centre itself, where an author snapped the light onto a wall, is
-/// entered from the side the direction leaves. Only fronts count
-/// ([`front_faces_clear`]), so the directions that leave a wall through its
-/// face never do. A centre up to `RAY_EPSILON` inside a wall, which the
+/// reached by every direction. Only fronts count ([`front_faces_clear`]): a
+/// direction heading into the wall starts on its open side and enters the face
+/// through its front, while one heading out starts behind it and crosses only
+/// a back face, so it never counts. A centre up to `RAY_EPSILON` inside a wall, which the
 /// buried-light test keeps (`buried_lights.rs`), is still flagged, but counts
 /// only the directions whose lead starts in front of the face, so its
 /// fraction reads low.
@@ -50,23 +55,47 @@ pub(crate) fn embedded_emitter_fraction(
     if !has_emitter_sphere(light) {
         return 0.0;
     }
+    let embedded = (0..EMBEDDED_EMITTER_DIRECTIONS)
+        .filter(|&index| direction_embedded(light, index, bvh, primitives, geometry))
+        .count();
+    embedded as f32 / EMBEDDED_EMITTER_DIRECTIONS as f32
+}
+
+/// Whether [`embedded_emitter_fraction`] is non-zero, stopping at the first
+/// embedded direction: for callers that need only the light's flag, not the
+/// warning's fraction.
+pub(crate) fn has_embedded_emitter(
+    light: &MapLight,
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+) -> bool {
+    has_emitter_sphere(light)
+        && (0..EMBEDDED_EMITTER_DIRECTIONS)
+            .any(|index| direction_embedded(light, index, bvh, primitives, geometry))
+}
+
+/// Whether lattice direction `index`'s segment, from `RAY_EPSILON` behind the
+/// light's centre out to its sphere, enters a triangle through its front.
+fn direction_embedded(
+    light: &MapLight,
+    index: u32,
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+) -> bool {
     // The emitter's centre as the bake's shadow rays see it
     // (`hard_ray_target`, `area_sample_target`).
     let centre = light.origin.as_vec3();
-    let embedded = (0..EMBEDDED_EMITTER_DIRECTIONS)
-        .filter(|&index| {
-            let direction: Vec3 = probe_sample_direction(light, index, EMBEDDED_EMITTER_DIRECTIONS);
-            !front_faces_clear(
-                bvh,
-                primitives,
-                geometry,
-                centre - direction * RAY_EPSILON,
-                centre + direction * light.light_size,
-                |_| true,
-            )
-        })
-        .count();
-    embedded as f32 / EMBEDDED_EMITTER_DIRECTIONS as f32
+    let direction: Vec3 = probe_sample_direction(light, index, EMBEDDED_EMITTER_DIRECTIONS);
+    !front_faces_clear(
+        bvh,
+        primitives,
+        geometry,
+        centre - direction * RAY_EPSILON,
+        centre + direction * light.light_size,
+        |_| true,
+    )
 }
 
 /// Whether the emitter test has a sphere to trace: a point or spot light of
@@ -108,7 +137,9 @@ impl EmbeddedEmitters {
             .into_iter()
             .filter(|&(_, light)| has_emitter_sphere(light))
             .collect();
-        debug_assert!(lights.is_sorted_by_key(|&(key, _)| key));
+        // Strictly: a duplicate key would leave `fraction`'s binary search
+        // free to find either entry.
+        debug_assert!(lights.windows(2).all(|pair| pair[0].0 < pair[1].0));
         // Indexed collect keeps key order whatever worker ran which light.
         let fractions: Vec<f32> = lights
             .par_iter()

@@ -1272,6 +1272,72 @@ fn geometry_slice_hash_ignores_faces_outside_influence() {
     );
 }
 
+// The influence bound's emitter branch widens only a sphere that overhangs
+// the light's reach. Every other point or spot light keeps the bound the
+// footprint pad alone gave it, and at radius 0 the unpadded cube, so its
+// layer keys are unchanged; an overhanging sphere's bound holds the sphere,
+// or the footprint pad when that is wider; a sun ignores both.
+#[test]
+fn the_influence_bound_widens_only_for_an_emitter_past_the_reach() {
+    let world = (DVec3::splat(-100.0), DVec3::splat(100.0));
+    let unwidened = |light: &MapLight, radius: f32| {
+        let (min, max) = light_aabb(light, world);
+        if radius > 0.0 {
+            let pad = DVec3::splat(f64::from(radius));
+            (min - pad, max + pad)
+        } else {
+            (min, max)
+        }
+    };
+    let radii = [0.0, 0.1, 0.75];
+    let mut checked = 0;
+    for light_type in [LightType::Point, LightType::Spot] {
+        for range in [0.4f32, 3.0, 12.0] {
+            let reach = (range + AABB_PADDING_METERS).max(0.01);
+            for size in [0.0, crate::map_data::DEFAULT_LIGHT_SIZE, 0.5 * reach, reach] {
+                let mut light = point_light([1.5, 2.0, -0.5], range);
+                light.light_type = light_type;
+                light.light_size = size;
+                for radius in radii {
+                    assert_eq!(
+                        layer_influence_aabb(&light, world, radius),
+                        unwidened(&light, radius),
+                        "{light_type:?}, range {range}, size {size}, radius {radius}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 2 * 3 * 4 * radii.len());
+
+    // Range 0.4 reaches 0.9 m; a 1.5 m sphere overhangs it by 0.6 m.
+    let mut oversized = point_light([1.5, 2.0, -0.5], 0.4);
+    oversized.light_size = 1.5;
+    let origin = oversized.origin;
+    let (min, max) = layer_influence_aabb(&oversized, world, 0.0);
+    for (corner, expected) in [(min, origin - 1.5), (max, origin + 1.5)] {
+        assert!(
+            (corner - expected).abs().max_element() < 1.0e-6,
+            "{corner} vs {expected}"
+        );
+    }
+    assert_eq!(
+        layer_influence_aabb(&oversized, world, 0.4),
+        layer_influence_aabb(&oversized, world, 0.0),
+        "a footprint pad under the overhang adds nothing"
+    );
+    assert_eq!(
+        layer_influence_aabb(&oversized, world, 0.75),
+        unwidened(&oversized, 0.75),
+        "a footprint pad over the overhang is the bound"
+    );
+
+    let mut sun = directional_light();
+    sun.light_size = 50.0;
+    assert_eq!(layer_influence_aabb(&sun, world, 0.75), world);
+}
+
 // The receiver-footprint switch is part of every layer key, so the section
 // key, which folds the layer hashes, moves with it too.
 #[test]

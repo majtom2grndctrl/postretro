@@ -15,13 +15,15 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 use log::Level as LogLevel;
 use postretro_entities::components::brain::BrainComponent;
-use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::health::{
+    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
+};
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, EntityId, GhostLinkComponent, KinematicMoverComponent, ReactionDescriptor,
     ScriptCtx, ScriptError, SequenceTarget, TeleporterComponent, Transform, TriggerVolumeComponent,
 };
-use postretro_foundation::{GhostStyle, PlayerMovementComponent};
+use postretro_foundation::{DamagePayload, GhostStyle, PlayerMovementComponent};
 use postretro_level_format::ghost_links::GhostMembers;
 use postretro_level_loader::LevelWorld;
 use postretro_physics::movement::{MovementInput, TeleportEvent};
@@ -31,7 +33,8 @@ use postretro_scripting_core::reaction_dispatch::dispatch_deferred_named_events_
 use postretro_scripting_core::runtime::{ModGhostAudio, ModGhostTransparency, ModManifestResult};
 use postretro_sim::residual_drain::ResidualRegistries;
 use postretro_sim::sim::{
-    PostMovementCommand, SimCommand, TriggerTickContext, simulate_tick_with_presentation_aim,
+    PostMovementCommand, RemotePawnCommand, SimCommand, TriggerTickContext,
+    simulate_tick_with_presentation_aim,
 };
 use postretro_sim::trigger_system::PlayerId;
 use postretro_test_log_capture::LogCapture;
@@ -40,6 +43,7 @@ use serde_json::Value;
 use crate::coop_fixture_tests::initialize_dev_mod;
 use crate::frame_loop::named_drains::{NamedFrameEvents, drain_frame_named_events};
 use crate::ghost_links::{GhostCategory, GhostMember};
+use crate::netcode::frame_order::ReplicatedStateFrame;
 use crate::startup::StartupTimings;
 use crate::startup::lifecycle::tests::{script_ctx, test_app};
 use crate::startup::lifecycle::{WorldInstallHandles, install_world_cpu};
@@ -58,6 +62,37 @@ const UNITS_PER_METRE: f32 = 39.37;
 const COPY_OFFSET: Vec3 = Vec3::new(0.0, 0.0, -4096.0 / UNITS_PER_METRE);
 /// The closets' open faces, Quake y ±208, on engine x: past it is a closet.
 const CLOSET_LINE: f32 = 208.0 / UNITS_PER_METRE;
+/// The partner's client id: its seat, and its `PlayerId::Remote` while live.
+const PARTNER_CLIENT: u64 = 7;
+/// The final wave's beat between its fire and the closet doors starting.
+const WAVE_BEAT_SECS: f64 = 3.0;
+/// Slack around the beat's end: a few ticks either side of three seconds.
+const WAVE_BEAT_SLACK: f64 = 0.1;
+/// Frames that carry a removal to `progress` and its fired reaction.
+const PROGRESS_FRAMES: usize = 5;
+/// Frames past the beat that show a wave did not start: four seconds.
+const NO_WAVE_FRAMES: usize = 240;
+/// Frames a pedestal takes to rise its 56 units at 1 m/s, with margin.
+const RISE_FRAMES: usize = 120;
+/// Where the players stand for the final wave: in room A just inside the
+/// doorway, east of the cover wall, in sight of the final closet. From farther
+/// back in room A the baked navmesh offers the closet's knights no route (a
+/// `find_path` limit, not this map's geometry), so they would wait in it.
+const HOST_STAND: (f32, f32) = (160.0, -32.0);
+const PARTNER_STAND: (f32, f32) = (160.0, 32.0);
+const SOLO_STAND: (f32, f32) = (160.0, 0.0);
+/// Quake x of the final closet's open face: past it is the closet.
+const FINAL_CLOSET_X: f32 = 448.0;
+
+/// A Quake map point in engine metres (`build_pipeline.md` §Supported Map Formats).
+fn quake(x: f32, y: f32, z: f32) -> Vec3 {
+    Vec3::new(-y, z, -x) / UNITS_PER_METRE
+}
+
+/// Horizontal distance: pawns settle onto floors, so heights differ a little.
+fn flat_distance(a: Vec3, b: Vec3) -> f32 {
+    Vec3::new(a.x - b.x, 0.0, a.z - b.z).length()
+}
 
 /// The dev mod's `echo` style (`content/dev/start-script.ts`).
 const ECHO: GhostStyle = GhostStyle {
@@ -96,7 +131,7 @@ const UNRELATED_WARNINGS: [&str; 5] = [
     "[AI] enemy animation state",
 ];
 
-const LEVEL_REACTIONS: [&str; 8] = [
+const LEVEL_REACTIONS: [&str; 15] = [
     "echo.reveal",
     "echo.swell",
     "echo.fight",
@@ -105,6 +140,13 @@ const LEVEL_REACTIONS: [&str; 8] = [
     "split.settle",
     "battle.swap",
     "battle.settle",
+    "wave.start",
+    "ready.rise",
+    "clear.a",
+    "return.rise",
+    "clear.b",
+    "return.arm",
+    "return.settle",
 ];
 
 fn workspace() -> PathBuf {
@@ -170,6 +212,12 @@ struct Level {
     boot_players: usize,
     /// The `player_spawn` index the host's seat table assigned the partner.
     partner_placement: usize,
+    /// Whether the partner joined. A solo level's `partner` is its own pawn.
+    has_partner: bool,
+    /// Whether the partner runs as a connected client's pawn: one neutral
+    /// remote command per tick, so triggers and teleporters see it.
+    /// Off, the host moves it only where a test puts it.
+    partner_live: bool,
     input_tick: u32,
     anim_time: f64,
     /// The presented-frame clock the ghost update ramps by, one `DT` per frame.
@@ -185,6 +233,15 @@ impl Level {
     /// Load the compiled level and install it the way level load does, under the
     /// production dev mod, including the ghost-link install `lifecycle.rs` runs.
     fn install(world: LevelWorld) -> Self {
+        Self::install_with(world, true)
+    }
+
+    /// The same level with nobody joining: single player.
+    fn install_solo(world: LevelWorld) -> Self {
+        Self::install_with(world, false)
+    }
+
+    fn install_with(world: LevelWorld, with_partner: bool) -> Self {
         let mut app = test_app();
         let ctx = script_ctx(&app);
         let captured: Rc<RefCell<Option<Value>>> = Rc::new(RefCell::new(None));
@@ -315,28 +372,31 @@ impl Level {
         // The partner joins: the host's seat table assigns its spawn, as the
         // participating-slot path in `main.rs` does, and the network-slot
         // materialization spawns it there.
-        let seat = seats
-            .admit_or_reclaim(
-                7,
-                Some(postretro_net::wire::ConnectClaim {
-                    player_id: postretro_net::wire::PlayerClaimId([7; 16]),
-                    display_name: "Partner".to_string(),
-                }),
-                false,
-            )
-            .expect("the partner is admitted to a seat")
-            .seat;
-        let partner_placement = seats
-            .assign_joiner_placement(
-                &ctx.registry.borrow(),
-                seat,
-                &crate::scripting::builtins::player_spawn::joinable_spawns(
-                    &products.spawn_points,
-                    &manifest.entities,
-                ),
-            )
-            .expect("the partner is assigned a player_spawn");
-        let partner =
+        let (partner, partner_placement) = if !with_partner {
+            (pawn, 0)
+        } else {
+            let seat = seats
+                .admit_or_reclaim(
+                    PARTNER_CLIENT,
+                    Some(postretro_net::wire::ConnectClaim {
+                        player_id: postretro_net::wire::PlayerClaimId([7; 16]),
+                        display_name: "Partner".to_string(),
+                    }),
+                    false,
+                )
+                .expect("the partner is admitted to a seat")
+                .seat;
+            let partner_placement = seats
+                .assign_joiner_placement(
+                    &ctx.registry.borrow(),
+                    seat,
+                    &crate::scripting::builtins::player_spawn::joinable_spawns(
+                        &products.spawn_points,
+                        &manifest.entities,
+                    ),
+                )
+                .expect("the partner is assigned a player_spawn");
+            let partner =
             postretro_sim::scripting::builtins::net_descriptor::spawn_net_slot_pawn_with_carried_loadout(
                 &products.spawn_points[partner_placement],
                 &manifest.entities,
@@ -345,6 +405,8 @@ impl Level {
                 None,
             )
             .expect("the partner pawn spawns from the dev player descriptor");
+            (partner, partner_placement)
+        };
         Self {
             app,
             ctx,
@@ -355,6 +417,8 @@ impl Level {
             partner,
             boot_players,
             partner_placement,
+            has_partner: with_partner,
+            partner_live: false,
             input_tick: 0,
             anim_time: 0.0,
             start: Instant::now(),
@@ -415,6 +479,28 @@ impl Level {
             .get_component::<DescriptorProvenance>(entity)
             .unwrap()
             .canonical_name
+            .clone()
+    }
+
+    fn armed(&self, teleporter: EntityId) -> bool {
+        self.teleporter(teleporter).armed
+    }
+
+    fn started(&self, mover: EntityId) -> bool {
+        self.ctx
+            .registry
+            .borrow()
+            .get_component::<KinematicMoverComponent>(mover)
+            .unwrap()
+            .started
+    }
+
+    fn brain(&self, npc: EntityId) -> BrainComponent {
+        self.ctx
+            .registry
+            .borrow()
+            .get_component::<BrainComponent>(npc)
+            .unwrap()
             .clone()
     }
 
@@ -484,12 +570,34 @@ impl Level {
         self.frame_with(false)
     }
 
-    /// One single-player host frame of one fixed tick, in `frame_loop` order:
-    /// the frame's script time, the host-only ghost-link and Ghost bus steps at
-    /// the tick's start, the authoritative tick with the AI, link history after
-    /// it, the frame-end drains, the system-command drain, then the ghost
-    /// update.
     fn frame_with(&mut self, use_pressed: bool) -> Vec<(EntityId, TeleportEvent)> {
+        self.frame_full(use_pressed, false, &[])
+    }
+
+    /// One frame in which the live partner presses use.
+    fn partner_frame_with_use(&mut self) -> Vec<(EntityId, TeleportEvent)> {
+        assert!(self.partner_live, "only a live partner presses");
+        self.frame_full(false, true, &[])
+    }
+
+    /// One frame that first deals each of `kill` lethal damage, as a shot
+    /// would, before the tick.
+    fn frame_killing(&mut self, kill: &[EntityId]) -> Vec<(EntityId, TeleportEvent)> {
+        self.frame_full(false, false, kill)
+    }
+
+    /// One host frame of one fixed tick, in `frame_loop` order: the frame's
+    /// script time, the host-only ghost-link and Ghost bus steps at the tick's
+    /// start, the authoritative tick with the AI (and the live partner's
+    /// command), link history after it, the frame-end drains, the crossing
+    /// stage, the frame-end removal that reports `progress`, the
+    /// system-command drain, then the ghost update.
+    fn frame_full(
+        &mut self,
+        use_pressed: bool,
+        partner_use: bool,
+        kill: &[EntityId],
+    ) -> Vec<(EntityId, TeleportEvent)> {
         self.frames += 1;
         self.app.script_time += f64::from(DT);
         self.ctx.presentation_script_time.set(self.app.script_time);
@@ -501,11 +609,33 @@ impl Level {
         let app = &mut self.app;
         let session = app.session.as_mut().unwrap();
         session.scripting.scheduler.begin_frame();
-        let use_edges: HashMap<PlayerId, bool> = if use_pressed {
-            [(PlayerId::Local(pawn), true)].into()
-        } else {
-            HashMap::new()
-        };
+        let mut deaths = std::mem::take(&mut session.pending_death_events);
+        if !kill.is_empty() {
+            let mut registry = ctx.registry.borrow_mut();
+            for &target in kill {
+                let mut context = DamageContext::new("ghost-links-fixture", DamageProducer::InTick);
+                context.attacker = Some(pawn);
+                apply_damage_with_context(
+                    &mut registry,
+                    target,
+                    &DamagePayload {
+                        amount: 10_000.0,
+                        impulse: Vec3::ZERO,
+                    },
+                    context,
+                );
+                session
+                    .scripting
+                    .evaluate_pending_in_tick_impacts(&mut registry);
+            }
+        }
+        let mut use_edges: HashMap<PlayerId, bool> = HashMap::new();
+        if use_pressed {
+            use_edges.insert(PlayerId::Local(pawn), true);
+        }
+        if partner_use {
+            use_edges.insert(PlayerId::Remote(PARTNER_CLIENT), true);
+        }
         let command = SimCommand {
             input_tick: self.input_tick,
             movement: MovementInput {
@@ -534,6 +664,28 @@ impl Level {
             use_pressed,
             drop_pressed: false,
         };
+        // A connected client's pawn: one neutral command a tick, pressing use
+        // only when the test says so.
+        let remote: Vec<RemotePawnCommand> = if self.partner_live {
+            let mut partner_command = command.clone();
+            partner_command.use_pressed = partner_use;
+            partner_command.movement.use_pressed = partner_use;
+            vec![RemotePawnCommand {
+                real_command: true,
+                rejected_activation: None,
+                pawn: self.partner,
+                owner_client_id: PARTNER_CLIENT,
+                weapon: None,
+                shot_id: None,
+                fire_tick: self.input_tick,
+                client_tick: self.input_tick,
+                aim_pitch: 0.0,
+                command: partner_command,
+                start_aim: None,
+            }]
+        } else {
+            Vec::new()
+        };
         self.input_tick += 1;
         let auto_close = session.scripting.auto_close_timers.clone();
         let scripting = &mut session.scripting;
@@ -554,7 +706,7 @@ impl Level {
             postretro_ai::tick_runner!(&mut self.ai_runtime),
             &app.kinematic_mover_colliders,
             &mut app.kinematic_mover_tick_states,
-            &[],
+            &remote,
             &command,
             |_| PostMovementCommand {
                 aim_origin: Vec3::ZERO,
@@ -584,6 +736,7 @@ impl Level {
             postretro_stage_timing::TimingGate::OFF,
         );
         drop(data_registry);
+        deaths.extend(tick.death.iter().cloned());
         self.anim_time += f64::from(DT);
         session
             .scripting
@@ -602,7 +755,7 @@ impl Level {
                 observer: &[],
                 weapon: &[],
                 movers: &[],
-                deaths: &tick.death,
+                deaths: &deaths,
             },
             &session.scripting,
             &ctx,
@@ -651,6 +804,15 @@ impl Level {
             .scripting
             .impact_policy_runtime
             .discard_app_drain_pending();
+        self.app.dispatch_state_crossings();
+        crate::impact_effects::run_end_of_frame_removal_pass(
+            &mut ctx.registry.borrow_mut(),
+            |removal| {
+                let session = self.app.session.as_mut().unwrap();
+                let fired = removal.report_to_progress(&mut session.progress_tracker);
+                session.pending_death_events.extend(fired);
+            },
+        );
         self.app.record_ghost_link_history();
         // `setGhostAudio` leaves the reaction drain as a system command.
         self.app.dispatch_system_commands();
@@ -782,12 +944,13 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
         let mut expected = LEVEL_REACTIONS.to_vec();
         expected.sort_unstable();
         assert_eq!(names, expected, "every level reaction installs");
-        // Echo plate, split pad and swap pad in each copy, the button in copy B.
-        assert_eq!(data.volume_trigger_events().len(), 7);
+        // Echo plate, split pad and swap pad in each copy, the button and the
+        // return pad in copy B, the ready pad in copy A.
+        assert_eq!(data.volume_trigger_events().len(), 9);
         assert_eq!(
             data.teleport_events().len(),
-            4,
-            "both split and both swap teleporters bind"
+            5,
+            "both split, both swap and the return teleporter bind"
         );
     }
     let manifest_of = |level: &Level| {
@@ -1308,4 +1471,449 @@ fn run_set_pieces(map: &str, mut level: Level) {
         health(&level, level.partner) < partner_full,
         "{map}: copy B's limitators hit the partner"
     );
+}
+
+/// The final wave's closet door and monsters, checked as the level installs:
+/// one purple door in back room A's east wall, two knights and two limitators
+/// behind it, asleep.
+fn final_wave(map: &str, level: &Level) -> (Vec<EntityId>, Vec<EntityId>) {
+    let doors = level.entities(ComponentKind::KinematicMover, "final_closet_door");
+    assert_eq!(doors.len(), 1, "{map}: one final-wave closet");
+    let monsters = level.entities(ComponentKind::Health, "final_wave");
+    let mut classes: Vec<String> = monsters.iter().map(|&npc| level.class(npc)).collect();
+    classes.sort_unstable();
+    assert_eq!(
+        classes,
+        [
+            "limitator",
+            "limitator",
+            "reference_enemy",
+            "reference_enemy"
+        ],
+        "{map}: the final wave mixes knights and limitators"
+    );
+    for &npc in &monsters {
+        assert!(
+            !level.brain(npc).aggro_armed,
+            "{map}: the final wave sleeps"
+        );
+    }
+    (doors, monsters)
+}
+
+/// The one map entity of `kind` tagged `tag`.
+fn only(map: &str, level: &Level, kind: ComponentKind, tag: &str) -> EntityId {
+    let found = level.entities(kind, tag);
+    assert_eq!(found.len(), 1, "{map}: one `{tag}`");
+    found[0]
+}
+
+/// The host splits from copy A's purple pad into copy B, then presses the pad
+/// there and swaps back alone, starting the battle: whatever stands outside
+/// copy B's room, the partner in back room B included, stays.
+fn split_then_swap_back(map: &str, level: &mut Level, height: f32) {
+    level.place(level.trigger_center("split_pad", false), height);
+    for _ in 0..SETTLE {
+        assert!(level.frame().is_empty());
+    }
+    level.frame_with(true);
+    let crossed = level.frame();
+    assert_eq!(crossed.len(), 1, "{map}: the host splits alone");
+    assert_eq!(crossed[0].0, level.pawn);
+    for _ in 0..SETTLE {
+        assert!(level.frame().is_empty());
+    }
+    level.frame_with(true);
+    let swapped = level.frame();
+    assert_eq!(swapped.len(), 1, "{map}: the host swaps back alone");
+    assert_eq!(swapped[0].0, level.pawn);
+    level.frame();
+    level.frame();
+    for &npc in &level.entities(ComponentKind::Health, "echo_monster") {
+        assert!(
+            level.brain(npc).aggro_armed,
+            "{map}: the swap starts the battle"
+        );
+    }
+}
+
+/// Kill every monster tagged `monsters`; the dev mod's death policy removes
+/// them, `progress` fires, and the pedestal tagged `pedestal` rises out of the
+/// floor while its pad arms.
+fn clear_and_raise(map: &str, level: &mut Level, monsters: &str, pedestal: &str, pad: &str) {
+    let pedestal = only(map, level, ComponentKind::KinematicMover, pedestal);
+    let pad = only(map, level, ComponentKind::TriggerVolume, pad);
+    assert!(
+        !level.started(pedestal) && !level.trigger_armed(pad),
+        "{map}: the button waits for its copy's clear"
+    );
+    let sunk = level.position(pedestal).y;
+    let residents = level.entities(ComponentKind::Health, monsters);
+    assert!(!residents.is_empty(), "{map}: `{monsters}` placed");
+    level.frame_killing(&residents);
+    for _ in 0..PROGRESS_FRAMES {
+        level.frame();
+    }
+    assert!(
+        level.entities(ComponentKind::Health, monsters).is_empty(),
+        "{map}: the death policy removed every `{monsters}`"
+    );
+    assert!(
+        level.started(pedestal),
+        "{map}: the clear raises the pedestal"
+    );
+    assert!(level.trigger_armed(pad), "{map}: the clear arms its pad");
+    for _ in 0..RISE_FRAMES {
+        level.frame();
+    }
+    let rise = level.position(pedestal).y - sunk;
+    assert!(
+        close(rise, 56.0 / UNITS_PER_METRE, 0.02),
+        "{map}: the pedestal stands out of the floor: {rise}"
+    );
+}
+
+/// The host presses the ready button in copy A's north closet; returns the
+/// script time of the press.
+fn press_ready(map: &str, level: &mut Level, height: f32) -> f64 {
+    let pad = only(map, level, ComponentKind::TriggerVolume, "ready_pad");
+    level.place(level.trigger_center("ready_pad", false), height);
+    for _ in 0..SETTLE {
+        assert!(level.frame().is_empty());
+    }
+    level.frame_with(true);
+    let pressed_at = level.app.script_time;
+    level.frame();
+    assert!(
+        !level.trigger_armed(pad),
+        "{map}: the wave turns the ready pad off"
+    );
+    pressed_at
+}
+
+/// The partner presses the return pad in back room B and alone arrives at
+/// `return_a` in room A; returns the script time of the arrival.
+fn partner_returns(map: &str, level: &mut Level, height: f32) -> f64 {
+    let gate = only(map, level, ComponentKind::Teleporter, "echo_return");
+    level.place_pawn(
+        level.partner,
+        level.trigger_center("return_pad", true),
+        height,
+    );
+    for _ in 0..SETTLE {
+        assert!(level.frame().is_empty());
+    }
+    assert!(!level.armed(gate), "{map}: the return waits for a press");
+    let host_before = level.position(level.pawn);
+    level.partner_frame_with_use();
+    let returned = level.frame();
+    let arrived_at = level.app.script_time;
+    assert_eq!(returned.len(), 1, "{map}: the press sends one player");
+    assert_eq!(returned[0].0, level.partner, "{map}: the presser returns");
+    assert!(
+        flat_distance(level.position(level.partner), quake(-96.0, 0.0, 0.0)) < 0.05,
+        "{map}: the partner lands at return_a: {}",
+        level.position(level.partner)
+    );
+    assert!(
+        flat_distance(level.position(level.pawn), host_before) < 1e-2,
+        "{map}: the host stays where it is"
+    );
+    level.frame();
+    level.frame();
+    assert!(!level.armed(gate), "{map}: the arrival disarms the return");
+    arrived_at
+}
+
+/// From `fired_at`, the frame the final wave fired, the closet doors hold shut
+/// and the monsters sleep through the three-second beat, then the doors start
+/// and the monsters wake.
+fn assert_wave_beat(
+    map: &str,
+    level: &mut Level,
+    fired_at: f64,
+    doors: &[EntityId],
+    monsters: &[EntityId],
+) {
+    while level.app.script_time < fired_at + WAVE_BEAT_SECS - WAVE_BEAT_SLACK {
+        for &door in doors {
+            assert!(
+                !level.started(door),
+                "{map}: the closet doors hold through the beat ({:.2} s in)",
+                level.app.script_time - fired_at
+            );
+        }
+        for &npc in monsters {
+            assert!(
+                !level.brain(npc).aggro_armed,
+                "{map}: the wave sleeps through the beat"
+            );
+        }
+        level.frame();
+    }
+    while level.app.script_time < fired_at + WAVE_BEAT_SECS + WAVE_BEAT_SLACK {
+        level.frame();
+    }
+    for &door in doors {
+        assert!(level.started(door), "{map}: the doors start after the beat");
+    }
+    for &npc in monsters {
+        assert!(
+            level.brain(npc).aggro_armed,
+            "{map}: the wave wakes after the beat"
+        );
+    }
+}
+
+/// The final wave fights: the door sinks open, the knights walk out and every
+/// monster engages a player in room A, under the real AI tick. Whether a hit
+/// lands is left to play: a limitator firing past a knight can start the
+/// monsters fighting each other.
+fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monsters: &[EntityId]) {
+    let shut: Vec<f32> = doors.iter().map(|&door| level.position(door).y).collect();
+    let players = [level.pawn, level.partner];
+    let classes: HashMap<EntityId, String> = monsters
+        .iter()
+        .map(|&npc| (npc, level.class(npc)))
+        .collect();
+    let mut engaged: HashSet<EntityId> = HashSet::new();
+    let mut left_closet: HashSet<EntityId> = HashSet::new();
+    for _ in 0..BATTLE_FRAMES {
+        level.frame();
+        // A monster can fall to the others' crossfire; the dead are removed.
+        let alive: Vec<EntityId> = monsters
+            .iter()
+            .copied()
+            .filter(|&npc| level.ctx.registry.borrow().exists(npc))
+            .collect();
+        for &npc in &alive {
+            let brain = level.brain(npc);
+            if brain.active_path_names().first() == Some(&"engage")
+                && brain
+                    .acquired_target
+                    .is_some_and(|target| players.contains(&target))
+            {
+                engaged.insert(npc);
+            }
+            // Quake x is engine −z.
+            if -level.position(npc).z * UNITS_PER_METRE < FINAL_CLOSET_X {
+                left_closet.insert(npc);
+            }
+        }
+    }
+    for &npc in monsters {
+        if classes[&npc] == "reference_enemy" {
+            assert!(
+                left_closet.contains(&npc),
+                "{map}: every final-wave knight walks out of the closet"
+            );
+        }
+    }
+    for (&door, closed) in doors.iter().zip(&shut) {
+        let drop = closed - level.position(door).y;
+        assert!(
+            drop > 2.5,
+            "{map}: every final closet door sinks open: {drop}"
+        );
+    }
+    for &npc in monsters {
+        assert!(
+            engaged.contains(&npc),
+            "{map}: every final-wave monster engages a player ({})",
+            classes[&npc]
+        );
+    }
+}
+
+/// The wave already fired: a second path's fire leaves the open doors and the
+/// woken monsters exactly as they are.
+fn assert_wave_not_restarted(
+    map: &str,
+    level: &mut Level,
+    doors: &[EntityId],
+    monsters: &[EntityId],
+    open: &[Vec3],
+) {
+    for _ in 0..NO_WAVE_FRAMES {
+        level.frame();
+        for (&door, at) in doors.iter().zip(open) {
+            assert!(level.started(door), "{map}");
+            assert!(
+                (level.position(door) - *at).length() < 1e-4,
+                "{map}: the second fire does not move an open door"
+            );
+        }
+    }
+    for &npc in monsters {
+        if level
+            .entities(ComponentKind::Health, "final_wave")
+            .contains(&npc)
+        {
+            assert!(level.brain(npc).aggro_armed, "{map}: the wave stays awake");
+        }
+    }
+}
+
+// Alone, copy B's monsters never fight anyone. Copy A cleared raises the ready
+// button in copy A's north closet; its press drops a barrier no button
+// dropped, so the final wave can reach room A, and three seconds later back
+// room A's closets open and the knights and limitators engage the player
+// under the real AI tick.
+#[test]
+fn ghost_link_solo_ready_button_starts_the_final_wave() {
+    let out = tempfile::tempdir().unwrap();
+    for map in ["ghost-links", "ghost-links-luau"] {
+        run_solo_flow(map, Level::install_solo(compile(map, out.path())));
+    }
+}
+
+fn run_solo_flow(map: &str, mut level: Level) {
+    assert!(
+        !level.has_partner && level.boot_players == 1,
+        "{map}: alone"
+    );
+    let (doors, monsters) = final_wave(map, &level);
+    let barrier = level.barrier();
+    level.settle();
+    let height = level.position(level.pawn).y;
+    split_then_swap_back(map, &mut level, height);
+    clear_and_raise(
+        map,
+        &mut level,
+        "echo_monster_a",
+        "ready_pedestal",
+        "ready_pad",
+    );
+    assert!(!level.started(barrier), "{map}: nobody pressed the button");
+    let pressed_at = press_ready(map, &mut level, height);
+    assert!(
+        level.started(barrier),
+        "{map}: the wave drops the barrier as it fires"
+    );
+    level.place(quake(SOLO_STAND.0, SOLO_STAND.1, 0.0), height);
+    assert_wave_beat(map, &mut level, pressed_at, &doors, &monsters);
+    assert_wave_engages(map, &mut level, &doors, &monsters);
+}
+
+// Co-op, the return path first: the host starts in copy A and the partner, a
+// connected client's pawn, in copy B. The partner's press in back room B drops
+// copy A's barrier. The host splits into copy B and swaps back alone, since the
+// partner stands outside the swap. Copy B cleared raises the return pedestal;
+// its press sends only the partner to room A, and the arrival starts the wave:
+// three seconds later back room A's closets open and the monsters engage.
+// Copy A cleared afterwards raises the ready button, whose press starts
+// nothing again.
+#[test]
+fn ghost_link_coop_return_arrival_starts_the_final_wave_once() {
+    let out = tempfile::tempdir().unwrap();
+    for map in ["ghost-links", "ghost-links-luau"] {
+        run_coop_return_first(map, Level::install(compile(map, out.path())));
+    }
+}
+
+/// A co-op level with the barrier dropped from back room B and the battle
+/// started, the host in room A and the partner in back room B.
+fn coop_battle(map: &str, level: &mut Level) -> f32 {
+    level.partner_live = true;
+    let barrier = level.barrier();
+    level.settle();
+    let height = level.position(level.pawn).y;
+    level.place_pawn(
+        level.partner,
+        level.trigger_center("vault_button", true),
+        height,
+    );
+    for _ in 0..SETTLE {
+        assert!(level.frame().is_empty());
+    }
+    level.partner_frame_with_use();
+    level.frame();
+    assert!(
+        level.started(barrier),
+        "{map}: the button in back room B drops copy A's barrier"
+    );
+    split_then_swap_back(map, level, height);
+    height
+}
+
+fn run_coop_return_first(map: &str, mut level: Level) {
+    let (doors, monsters) = final_wave(map, &level);
+    let height = coop_battle(map, &mut level);
+    level.place(quake(HOST_STAND.0, HOST_STAND.1, 0.0), height);
+    clear_and_raise(
+        map,
+        &mut level,
+        "echo_monster_b",
+        "return_pedestal",
+        "return_pad",
+    );
+    for &door in &doors {
+        assert!(!level.started(door), "{map}: the wave waits for a return");
+    }
+    let arrived_at = partner_returns(map, &mut level, height);
+    level.place_pawn(
+        level.partner,
+        quake(PARTNER_STAND.0, PARTNER_STAND.1, 0.0),
+        height,
+    );
+    assert_wave_beat(map, &mut level, arrived_at, &doors, &monsters);
+    assert_wave_engages(map, &mut level, &doors, &monsters);
+
+    // The second path: copy A cleared raises the ready button; its press
+    // starts nothing again and turns the pad back off.
+    let open: Vec<Vec3> = doors.iter().map(|&door| level.position(door)).collect();
+    clear_and_raise(
+        map,
+        &mut level,
+        "echo_monster_a",
+        "ready_pedestal",
+        "ready_pad",
+    );
+    press_ready(map, &mut level, height);
+    assert_wave_not_restarted(map, &mut level, &doors, &monsters, &open);
+}
+
+// Co-op, the ready button first: the host clears copy A and presses the ready
+// button without the partner, which the wave accepts. Three seconds later the
+// closets open. Copy B cleared afterwards still returns the partner alone to
+// room A, and the arrival starts nothing again.
+#[test]
+fn ghost_link_coop_ready_button_starts_the_final_wave_once() {
+    let out = tempfile::tempdir().unwrap();
+    for map in ["ghost-links", "ghost-links-luau"] {
+        run_coop_ready_first(map, Level::install(compile(map, out.path())));
+    }
+}
+
+fn run_coop_ready_first(map: &str, mut level: Level) {
+    let (doors, monsters) = final_wave(map, &level);
+    let height = coop_battle(map, &mut level);
+    clear_and_raise(
+        map,
+        &mut level,
+        "echo_monster_a",
+        "ready_pedestal",
+        "ready_pad",
+    );
+    let pressed_at = press_ready(map, &mut level, height);
+    level.place(quake(HOST_STAND.0, HOST_STAND.1, 0.0), height);
+    assert_wave_beat(map, &mut level, pressed_at, &doors, &monsters);
+    for _ in 0..NO_WAVE_FRAMES {
+        level.frame();
+    }
+    let open: Vec<Vec3> = doors.iter().map(|&door| level.position(door)).collect();
+
+    clear_and_raise(
+        map,
+        &mut level,
+        "echo_monster_b",
+        "return_pedestal",
+        "return_pad",
+    );
+    partner_returns(map, &mut level, height);
+    assert!(
+        !level.trigger_armed(only(map, &level, ComponentKind::TriggerVolume, "ready_pad")),
+        "{map}: the ready pad stays off"
+    );
+    assert_wave_not_restarted(map, &mut level, &doors, &monsters, &open);
 }

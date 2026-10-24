@@ -1,42 +1,57 @@
 // Game: Postretro
 // Format: Standard
 // Ghost-link acceptance fixture. All coordinates below are Quake map units.
-// Two identical room copies: copy A centred at 0 0 and copy B at 4096 0, so the
-// copies sit about 104 metres apart, farther than the 60 metre dev mod
-// attenuation maxDistance. A real voice in one copy never reaches the other.
-// Each copy has an east doorway into a small alcove and a low green cover wall
-// west of the doorway. Only the copy A doorway holds the yellow barrier mover.
-// Only copy B has the red button switch on its north wall.
-// Two ghost links tagged vault_echo, both styled echo. echo_a covers copy A and
-// ghosts it into copy B, armed on spawn, listing the barrier tag. echo_b covers
-// copy B and ghosts it into copy A, disarmed until the echo plate reveal.
-// Barrier puzzle: press the red button in copy B. The barrier in copy A drops
-// into the floor, the player in copy B watches its ghost drop in copy B, and the
-// player in copy A walks into the alcove. Each link volume reaches below the
-// floor so the sinking barrier stays a member until it is out of sight.
+// Two corresponding copies of one room: copy A centred at 0 0 and copy B at
+// 4096 0, so the copies sit about 104 metres apart, farther than the 60 metre
+// dev mod attenuation maxDistance. A real voice in one copy never reaches the
+// other. Each room has an east doorway, y -64 to 64, into a back room, x 208
+// to 432, and a low green cover wall west of the doorway. Only copy A doorway
+// holds the yellow barrier mover; copy B doorway stays open. Openings a
+// monster must path through are 128 units wide: the baked navmesh routes
+// nothing through a 64 unit gap.
+// Back room B holds the red button switch on its north wall and the green
+// return pedestal, a mover sunk below its floor by the east wall. Back room A
+// opens on the final-wave closet in its east wall, x 448 to 544, y -64 to 64,
+// in line with the doorway so its monsters see into room A once its door
+// sinks.
+// Two ghost links tagged vault_echo, both styled echo, each covering a room and
+// its back room. echo_a ghosts copy A into copy B, armed on spawn, listing the
+// barrier tag. echo_b ghosts copy B into copy A, disarmed until the echo plate
+// reveal. Each link volume reaches below the floor so the sinking barrier
+// stays a member until it is out of sight.
+// Barrier puzzle: press the red button in back room B. The barrier in copy A
+// drops into the floor, and its ghost drops in copy B doorway.
 // Split: the first press of the purple use pad in either copy sends whoever
 // stands on it alone into the other copy, through the seamless split teleporter
-// laid over each pad. Two players who start in one copy separate this way.
-// Battle swap: each copy hides its monsters in two closets sealed by purple
-// doors tagged echo_closet_door. The north closet opens x 32 to 160 and the
-// south closet x -64 to 64 in copy A, plus 4096 in copy B. Each is 96 units
-// deep and full room height, so a monster eye clears its ceiling. Copy A holds
-// three knights, reference_enemy, two north and one south. Copy B holds two
-// limitators, one per closet. Each monster waits just behind its door, so the
-// purple pads are in sight once the doors sink. Every monster sleeps until the
-// swap: a sealed aggro gate, enabled_on_spawn 0, ignores even damage. Their
-// descriptors do not opt into ghosting, so each player sees only their own
-// monsters plus the partner ghost. Every later pad press arms both seamless
-// swap teleporters, sinks all four closet doors and wakes every echo monster,
-// so both players change copies and each faces the other copy monsters. The
-// first teleport through either swap teleporter disarms both. The closets sit
+// laid over each pad.
+// Battle swap: each copy hides monsters in two closets sealed by purple doors
+// tagged echo_closet_door. The north closet opens x 32 to 160 and the south
+// closet x -64 to 64 in copy A, plus 4096 in copy B. Each is 96 units deep and
+// full room height, so a monster eye clears its ceiling. Copy A holds three
+// knights, reference_enemy, two north and one south. Copy B holds two
+// limitators, one per closet. Every later pad press arms both seamless swap
+// teleporters, sinks all four closet doors and wakes every echo monster. The
+// first teleport through either swap teleporter disarms both. These closets sit
 // outside the swap teleporter and ghost link volumes, and both copies build
 // them alike, so the copies still line up.
+// Ready button: once copy A monsters are cleared the green ready pedestal
+// rises against the back wall of copy A north closet and its purple use pad
+// arms. A press starts the final wave and turns the pad off.
+// Return: once copy B monsters are cleared the return pedestal rises and its
+// purple use pad arms. A press arms the classic teleporter over the pad, which
+// sends whoever stands there alone to return_a in room A, then disarms.
+// Final wave: a ready press or a return arrival, whichever comes first, drops
+// the barrier, and three seconds later the final closet door sinks and two
+// knights and two limitators wake. Their sealed aggro gate, enabled_on_spawn
+// 0, ignores even damage until then. A second fire starts nothing again. No
+// placed monster opts into ghosting.
 // The blue touch plate in either copy runs echo.reveal and echo.swell.
-// Player spawn 1 is in copy A and spawn 2 in copy B. Body centres are 40 units up.
-// An animated-bake lamp in each alcove, tagged alcove_lamp, shines out through
-// the doorway. The ghost capture forces it to two colours: the scene around the
-// ghost relights, the unlit ghost does not change.
+// Player spawn 1 is in copy A and spawn 2, coop_only, in copy B. Body centres
+// are 40 units up.
+// An animated-bake lamp in each back room near the doorway, tagged
+// alcove_lamp, shines out through the doorway. The ghost capture forces it to
+// two colours: the scene around the ghost relights, the unlit ghost does not
+// change.
 // Cheap bake: one quarter metre per lightmap texel. No compiled output is
 // committed.
 // NOTE: keep map comments free of braces and quotes, and never leave a blank
@@ -50,7 +65,7 @@
 "_lightmap_density" "0.25"
 {
 ( -208 0 0 ) ( -208 1 0 ) ( -208 0 1 ) DebugTextures/debug_floor_grey 0 0 0 1 1
-( 288 0 0 ) ( 288 0 1 ) ( 288 1 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 448 0 0 ) ( 448 0 1 ) ( 448 1 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
 ( 0 -208 0 ) ( 0 -208 1 ) ( 1 -208 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
 ( 0 208 0 ) ( 1 208 0 ) ( 0 208 1 ) DebugTextures/debug_floor_grey 0 0 0 1 1
 ( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) DebugTextures/debug_floor_grey 0 0 0 1 1
@@ -58,7 +73,7 @@
 }
 {
 ( -208 0 0 ) ( -208 1 0 ) ( -208 0 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 208 0 0 ) ( 208 0 1 ) ( 208 1 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( 448 0 0 ) ( 448 0 1 ) ( 448 1 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
 ( 0 -208 0 ) ( 0 -208 1 ) ( 1 -208 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
 ( 0 208 0 ) ( 1 208 0 ) ( 0 208 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
 ( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
@@ -188,14 +203,14 @@
 ( 192 0 0 ) ( 192 1 0 ) ( 192 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 208 0 0 ) ( 208 0 1 ) ( 208 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 -192 0 ) ( 0 -192 1 ) ( 1 -192 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 -32 0 ) ( 1 -32 0 ) ( 0 -32 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -64 0 ) ( 1 -64 0 ) ( 0 -64 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 }
 {
 ( 192 0 0 ) ( 192 1 0 ) ( 192 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 208 0 0 ) ( 208 0 1 ) ( 208 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 32 0 ) ( 0 32 1 ) ( 1 32 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 64 0 ) ( 0 64 1 ) ( 1 64 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 192 0 ) ( 1 192 0 ) ( 0 192 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
@@ -203,42 +218,10 @@
 {
 ( 192 0 0 ) ( 192 1 0 ) ( 192 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 208 0 0 ) ( 208 0 1 ) ( 208 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 -32 0 ) ( 0 -32 1 ) ( 1 -32 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 32 0 ) ( 1 32 0 ) ( 0 32 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 96 ) ( 1 0 96 ) ( 0 1 96 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-}
-{
-( 208 0 0 ) ( 208 1 0 ) ( 208 0 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 288 0 0 ) ( 288 0 1 ) ( 288 1 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 0 0 96 ) ( 1 0 96 ) ( 0 1 96 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 0 0 112 ) ( 0 1 112 ) ( 1 0 112 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-}
-{
-( 272 0 0 ) ( 272 1 0 ) ( 272 0 1 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 288 0 0 ) ( 288 0 1 ) ( 288 1 0 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 0 -48 0 ) ( 0 -48 1 ) ( 1 -48 0 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 0 48 0 ) ( 1 48 0 ) ( 0 48 1 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 0 0 96 ) ( 0 1 96 ) ( 1 0 96 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-}
-{
-( 208 0 0 ) ( 208 1 0 ) ( 208 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 288 0 0 ) ( 288 0 1 ) ( 288 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 48 0 ) ( 0 48 1 ) ( 1 48 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 0 96 ) ( 0 1 96 ) ( 1 0 96 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-}
-{
-( 208 0 0 ) ( 208 1 0 ) ( 208 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 288 0 0 ) ( 288 0 1 ) ( 288 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 -48 0 ) ( 1 -48 0 ) ( 0 -48 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 0 96 ) ( 0 1 96 ) ( 1 0 96 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 }
 {
 ( 112 0 0 ) ( 112 1 0 ) ( 112 0 1 ) DebugTextures/debug_wall_green 0 0 0 1 1
@@ -266,7 +249,7 @@
 }
 {
 ( 3888 0 0 ) ( 3888 1 0 ) ( 3888 0 1 ) DebugTextures/debug_floor_grey 0 0 0 1 1
-( 4384 0 0 ) ( 4384 0 1 ) ( 4384 1 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 4544 0 0 ) ( 4544 0 1 ) ( 4544 1 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
 ( 0 -208 0 ) ( 0 -208 1 ) ( 1 -208 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
 ( 0 208 0 ) ( 1 208 0 ) ( 0 208 1 ) DebugTextures/debug_floor_grey 0 0 0 1 1
 ( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) DebugTextures/debug_floor_grey 0 0 0 1 1
@@ -274,7 +257,7 @@
 }
 {
 ( 3888 0 0 ) ( 3888 1 0 ) ( 3888 0 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 4304 0 0 ) ( 4304 0 1 ) ( 4304 1 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( 4544 0 0 ) ( 4544 0 1 ) ( 4544 1 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
 ( 0 -208 0 ) ( 0 -208 1 ) ( 1 -208 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
 ( 0 208 0 ) ( 1 208 0 ) ( 0 208 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
 ( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
@@ -404,14 +387,14 @@
 ( 4288 0 0 ) ( 4288 1 0 ) ( 4288 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 4304 0 0 ) ( 4304 0 1 ) ( 4304 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 -192 0 ) ( 0 -192 1 ) ( 1 -192 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 -32 0 ) ( 1 -32 0 ) ( 0 -32 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -64 0 ) ( 1 -64 0 ) ( 0 -64 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 }
 {
 ( 4288 0 0 ) ( 4288 1 0 ) ( 4288 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 4304 0 0 ) ( 4304 0 1 ) ( 4304 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 32 0 ) ( 0 32 1 ) ( 1 32 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 64 0 ) ( 0 64 1 ) ( 1 64 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 192 0 ) ( 1 192 0 ) ( 0 192 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
@@ -419,42 +402,10 @@
 {
 ( 4288 0 0 ) ( 4288 1 0 ) ( 4288 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 4304 0 0 ) ( 4304 0 1 ) ( 4304 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 -32 0 ) ( 0 -32 1 ) ( 1 -32 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 32 0 ) ( 1 32 0 ) ( 0 32 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 96 ) ( 1 0 96 ) ( 0 1 96 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 ( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-}
-{
-( 4304 0 0 ) ( 4304 1 0 ) ( 4304 0 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 4384 0 0 ) ( 4384 0 1 ) ( 4384 1 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 0 0 96 ) ( 1 0 96 ) ( 0 1 96 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( 0 0 112 ) ( 0 1 112 ) ( 1 0 112 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-}
-{
-( 4368 0 0 ) ( 4368 1 0 ) ( 4368 0 1 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 4384 0 0 ) ( 4384 0 1 ) ( 4384 1 0 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 0 -48 0 ) ( 0 -48 1 ) ( 1 -48 0 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 0 48 0 ) ( 1 48 0 ) ( 0 48 1 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-( 0 0 96 ) ( 0 1 96 ) ( 1 0 96 ) DebugTextures/debug_wall_blue 0 0 0 1 1
-}
-{
-( 4304 0 0 ) ( 4304 1 0 ) ( 4304 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 4384 0 0 ) ( 4384 0 1 ) ( 4384 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 48 0 ) ( 0 48 1 ) ( 1 48 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 0 96 ) ( 0 1 96 ) ( 1 0 96 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-}
-{
-( 4304 0 0 ) ( 4304 1 0 ) ( 4304 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 4384 0 0 ) ( 4384 0 1 ) ( 4384 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 -48 0 ) ( 1 -48 0 ) ( 0 -48 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
-( 0 0 96 ) ( 0 1 96 ) ( 1 0 96 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 }
 {
 ( 4208 0 0 ) ( 4208 1 0 ) ( 4208 0 1 ) DebugTextures/debug_wall_green 0 0 0 1 1
@@ -479,6 +430,102 @@
 ( 0 -112 0 ) ( 1 -112 0 ) ( 0 -112 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 0 4 ) ( 0 1 4 ) ( 1 0 4 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+{
+( 208 0 0 ) ( 208 1 0 ) ( 208 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 448 0 0 ) ( 448 0 1 ) ( 448 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 192 0 ) ( 0 192 1 ) ( 1 192 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 208 0 ) ( 1 208 0 ) ( 0 208 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 208 0 0 ) ( 208 1 0 ) ( 208 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 448 0 0 ) ( 448 0 1 ) ( 448 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -208 0 ) ( 0 -208 1 ) ( 1 -208 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -192 0 ) ( 1 -192 0 ) ( 0 -192 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 4304 0 0 ) ( 4304 1 0 ) ( 4304 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 4544 0 0 ) ( 4544 0 1 ) ( 4544 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 192 0 ) ( 0 192 1 ) ( 1 192 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 208 0 ) ( 1 208 0 ) ( 0 208 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 4304 0 0 ) ( 4304 1 0 ) ( 4304 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 4544 0 0 ) ( 4544 0 1 ) ( 4544 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -208 0 ) ( 0 -208 1 ) ( 1 -208 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -192 0 ) ( 1 -192 0 ) ( 0 -192 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 432 0 0 ) ( 432 1 0 ) ( 432 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 448 0 0 ) ( 448 0 1 ) ( 448 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 64 0 ) ( 0 64 1 ) ( 1 64 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 192 0 ) ( 1 192 0 ) ( 0 192 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 432 0 0 ) ( 432 1 0 ) ( 432 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 448 0 0 ) ( 448 0 1 ) ( 448 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -192 0 ) ( 0 -192 1 ) ( 1 -192 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -64 0 ) ( 1 -64 0 ) ( 0 -64 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 448 0 0 ) ( 448 1 0 ) ( 448 0 1 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 560 0 0 ) ( 560 0 1 ) ( 560 1 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 0 -80 0 ) ( 0 -80 1 ) ( 1 -80 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 0 80 0 ) ( 1 80 0 ) ( 0 80 1 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) DebugTextures/debug_floor_grey 0 0 0 1 1
+}
+{
+( 448 0 0 ) ( 448 1 0 ) ( 448 0 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( 560 0 0 ) ( 560 0 1 ) ( 560 1 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( 0 -80 0 ) ( 0 -80 1 ) ( 1 -80 0 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( 0 80 0 ) ( 1 80 0 ) ( 0 80 1 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( 0 0 144 ) ( 0 1 144 ) ( 1 0 144 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+}
+{
+( 448 0 0 ) ( 448 1 0 ) ( 448 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 544 0 0 ) ( 544 0 1 ) ( 544 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 64 0 ) ( 0 64 1 ) ( 1 64 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 80 0 ) ( 1 80 0 ) ( 0 80 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 448 0 0 ) ( 448 1 0 ) ( 448 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 544 0 0 ) ( 544 0 1 ) ( 544 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -80 0 ) ( 0 -80 1 ) ( 1 -80 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -64 0 ) ( 1 -64 0 ) ( 0 -64 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 544 0 0 ) ( 544 1 0 ) ( 544 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 560 0 0 ) ( 560 0 1 ) ( 560 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -80 0 ) ( 0 -80 1 ) ( 1 -80 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 80 0 ) ( 1 80 0 ) ( 0 80 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+}
+{
+( 4528 0 0 ) ( 4528 1 0 ) ( 4528 0 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 4544 0 0 ) ( 4544 0 1 ) ( 4544 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 -192 0 ) ( 0 -192 1 ) ( 1 -192 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 192 0 ) ( 1 192 0 ) ( 0 192 1 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_grey 0 0 0 1 1
 }
 }
 {
@@ -505,8 +552,8 @@
 {
 ( 192 0 0 ) ( 192 1 0 ) ( 192 0 1 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
 ( 208 0 0 ) ( 208 0 1 ) ( 208 1 0 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
-( 0 -32 0 ) ( 0 -32 1 ) ( 1 -32 0 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
-( 0 32 0 ) ( 1 32 0 ) ( 0 32 1 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
+( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
 ( 0 0 96 ) ( 0 1 96 ) ( 1 0 96 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
 }
@@ -530,8 +577,8 @@
 "enabled_on_spawn" "1"
 "_tags" "vault_button"
 {
-( 4080 0 0 ) ( 4080 1 0 ) ( 4080 0 1 ) DebugTextures/debug_wall_red 0 0 0 1 1
-( 4112 0 0 ) ( 4112 0 1 ) ( 4112 1 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 4320 0 0 ) ( 4320 1 0 ) ( 4320 0 1 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 4352 0 0 ) ( 4352 0 1 ) ( 4352 1 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
 ( 0 184 0 ) ( 0 184 1 ) ( 1 184 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
 ( 0 192 0 ) ( 1 192 0 ) ( 0 192 1 ) DebugTextures/debug_wall_red 0 0 0 1 1
 ( 0 0 32 ) ( 1 0 32 ) ( 0 1 32 ) DebugTextures/debug_wall_red 0 0 0 1 1
@@ -694,6 +741,124 @@
 "enabled_on_spawn" "0"
 }
 {
+"classname" "kinematic_mover"
+"name" "final_closet"
+"path" "final_closet_closed"
+"speed" "4"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"open_sound" "movers/door_open"
+"_tags" "final_closet_door"
+{
+( 432 0 0 ) ( 432 1 0 ) ( 432 0 1 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 448 0 0 ) ( 448 0 1 ) ( 448 1 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_waypoint"
+"origin" "440 0 64"
+"name" "final_closet_closed"
+"next" "final_closet_open"
+}
+{
+"classname" "kinematic_waypoint"
+"origin" "440 0 -72"
+"name" "final_closet_open"
+}
+{
+"classname" "reference_enemy"
+"origin" "472 48 16"
+"angles" "0 180 0"
+"_tags" "enemy final_wave"
+"enabled_on_spawn" "0"
+}
+{
+"classname" "limitator"
+"origin" "520 16 16"
+"angles" "0 180 0"
+"_tags" "enemy final_wave"
+"enabled_on_spawn" "0"
+}
+{
+"classname" "reference_enemy"
+"origin" "472 -48 16"
+"angles" "0 180 0"
+"_tags" "enemy final_wave"
+"enabled_on_spawn" "0"
+}
+{
+"classname" "limitator"
+"origin" "520 -16 16"
+"angles" "0 180 0"
+"_tags" "enemy final_wave"
+"enabled_on_spawn" "0"
+}
+{
+"classname" "kinematic_mover"
+"name" "return_pedestal"
+"path" "return_pedestal_closed"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"open_sound" "movers/door_open"
+"_tags" "return_pedestal"
+{
+( 4496 0 0 ) ( 4496 1 0 ) ( 4496 0 1 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 4528 0 0 ) ( 4528 0 1 ) ( 4528 1 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 -24 0 ) ( 0 -24 1 ) ( 1 -24 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 24 0 ) ( 1 24 0 ) ( 0 24 1 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 0 -56 ) ( 1 0 -56 ) ( 0 1 -56 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 0 -8 ) ( 0 1 -8 ) ( 1 0 -8 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_waypoint"
+"origin" "4512 0 -32"
+"name" "return_pedestal_closed"
+"next" "return_pedestal_open"
+}
+{
+"classname" "kinematic_waypoint"
+"origin" "4512 0 24"
+"name" "return_pedestal_open"
+}
+{
+"classname" "kinematic_mover"
+"name" "ready_pedestal"
+"path" "ready_pedestal_closed"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"open_sound" "movers/door_open"
+"_tags" "ready_pedestal"
+{
+( 80 0 0 ) ( 80 1 0 ) ( 80 0 1 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 112 0 0 ) ( 112 0 1 ) ( 112 1 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 272 0 ) ( 0 272 1 ) ( 1 272 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 304 0 ) ( 1 304 0 ) ( 0 304 1 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 0 -56 ) ( 1 0 -56 ) ( 0 1 -56 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 0 -8 ) ( 0 1 -8 ) ( 1 0 -8 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_waypoint"
+"origin" "96 288 -32"
+"name" "ready_pedestal_closed"
+"next" "ready_pedestal_open"
+}
+{
+"classname" "kinematic_waypoint"
+"origin" "96 288 24"
+"name" "ready_pedestal_open"
+}
+{
 "classname" "light"
 "origin" "0 0 104"
 "light" "180"
@@ -732,6 +897,24 @@
 "_shadow_type" "static_light_map"
 "_animated" "1"
 "_tags" "alcove_lamp"
+}
+{
+"classname" "light"
+"origin" "352 0 112"
+"light" "160"
+"_color" "200 210 230"
+"_falloff_range" "320"
+"_light_size" "0"
+"_shadow_type" "static_light_map"
+}
+{
+"classname" "light"
+"origin" "4448 0 112"
+"light" "160"
+"_color" "200 210 230"
+"_falloff_range" "320"
+"_light_size" "0"
+"_shadow_type" "static_light_map"
 }
 {
 "classname" "trigger_volume"
@@ -908,7 +1091,7 @@
 "ghost_tags" "vault_barrier"
 {
 ( -192 0 0 ) ( -192 1 0 ) ( -192 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
-( 272 0 0 ) ( 272 0 1 ) ( 272 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 432 0 0 ) ( 432 0 1 ) ( 432 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 -192 0 ) ( 0 -192 1 ) ( 1 -192 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 192 0 ) ( 1 192 0 ) ( 0 192 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 0 -112 ) ( 1 0 -112 ) ( 0 1 -112 ) DebugTextures/debug_floor_purple 0 0 0 1 1
@@ -925,7 +1108,7 @@
 "ghost_style" "echo"
 {
 ( 3904 0 0 ) ( 3904 1 0 ) ( 3904 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
-( 4368 0 0 ) ( 4368 0 1 ) ( 4368 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 4528 0 0 ) ( 4528 0 1 ) ( 4528 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 -192 0 ) ( 0 -192 1 ) ( 1 -192 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 192 0 ) ( 1 192 0 ) ( 0 192 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 0 -112 ) ( 1 0 -112 ) ( 0 1 -112 ) DebugTextures/debug_floor_purple 0 0 0 1 1
@@ -942,5 +1125,59 @@
 "classname" "teleport_destination"
 "origin" "4096 0 40"
 "name" "era_b"
+"angles" "0 0 0"
+}
+{
+"classname" "trigger_volume"
+"name" "return_pad"
+"_tags" "return_pad"
+"activation" "use"
+"fire_mode" "multiple"
+"enabled_on_spawn" "0"
+{
+( 4440 0 0 ) ( 4440 1 0 ) ( 4440 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 4496 0 0 ) ( 4496 0 1 ) ( 4496 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -32 0 ) ( 0 -32 1 ) ( 1 -32 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 32 0 ) ( 1 32 0 ) ( 0 32 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 80 ) ( 0 1 80 ) ( 1 0 80 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "trigger_volume"
+"name" "ready_pad"
+"_tags" "ready_pad"
+"activation" "use"
+"fire_mode" "multiple"
+"enabled_on_spawn" "0"
+{
+( 72 0 0 ) ( 72 1 0 ) ( 72 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 120 0 0 ) ( 120 0 1 ) ( 120 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 224 0 ) ( 0 224 1 ) ( 1 224 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 80 ) ( 0 1 80 ) ( 1 0 80 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "trigger_teleport"
+"name" "return_b_to_a"
+"_tags" "echo_return"
+"mode" "classic"
+"target" "return_a"
+"enabled_on_spawn" "0"
+{
+( 4440 0 0 ) ( 4440 1 0 ) ( 4440 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 4496 0 0 ) ( 4496 0 1 ) ( 4496 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -32 0 ) ( 0 -32 1 ) ( 1 -32 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 32 0 ) ( 1 32 0 ) ( 0 32 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 80 ) ( 0 1 80 ) ( 1 0 80 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "teleport_destination"
+"origin" "-96 0 40"
+"name" "return_a"
 "angles" "0 0 0"
 }

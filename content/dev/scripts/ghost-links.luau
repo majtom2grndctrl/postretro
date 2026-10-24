@@ -33,8 +33,8 @@ function setupLevel(_ctx)
   local swell = Postretro.defineReaction("echo.swell",
     Audio.setGhostAudio({ volume = 0.9, lowPassHz = 5000, periodMs = 1500 }))
 
-  -- Barrier puzzle: the button in copy B drops the barrier in copy A. Link
-  -- echo_a lists the barrier's tag, so the player in copy B watches it drop.
+  -- Barrier puzzle: the button in back room B drops the barrier in copy A.
+  -- Link echo_a lists the barrier's tag, so the player in copy B watches it drop.
   local barrier = Postretro.getMapEntities("mover", { tag = "vault_barrier" })
   local open = Postretro.defineReaction("barrier.open", {
     sequence = each(barrier, function(door) return door:start() end),
@@ -73,16 +73,60 @@ function setupLevel(_ctx)
     sequence = each(swap, function(t) return t:disarm() end),
   })
 
+  -- Final wave: the barrier drops, and after a three-second beat the closet in
+  -- back room A opens and its monsters wake. It turns the ready button off. A
+  -- start on a mover already moving or open does nothing, so whichever path
+  -- fires it second starts nothing again.
+  local readyPads = Postretro.getMapEntities("trigger", { tag = "ready_pad" })
+  local finalDoors = Postretro.getMapEntities("mover", { tag = "final_closet_door" })
+  local waveSteps = each(readyPads, function(p) return p:disarm() end)
+  append(waveSteps, each(barrier, function(door) return door:start() end))
+  append(waveSteps, Postretro.wait(3000))
+  append(waveSteps, each(finalDoors, function(door) return door:start() end))
+  table.insert(waveSteps, Postretro.npcs({ tag = "final_wave" }):update({ aggro = true }))
+  local wave = Postretro.defineReaction("wave.start", { sequence = waveSteps })
+
+  -- Ready button: copy A cleared raises a pedestal in the north closet the
+  -- knights came from and arms its pad. A press starts the wave.
+  local readyPedestal = Postretro.getMapEntities("mover", { tag = "ready_pedestal" })
+  local readySteps = each(readyPedestal, function(m) return m:start() end)
+  append(readySteps, each(readyPads, function(p) return p:arm() end))
+  local ready = Postretro.defineReaction("ready.rise", { sequence = readySteps })
+  local clearA = Postretro.defineReaction("clear.a", { progress = { tag = "echo_monster_a", at = 1.0, fire = "ready.rise" } })
+
+  -- Return: copy B cleared raises a pedestal in back room B and arms its pad. A
+  -- press arms the classic teleporter over the pad, so only whoever stands
+  -- there goes to room A; the arrival disarms it and starts the wave.
+  local returnPedestal = Postretro.getMapEntities("mover", { tag = "return_pedestal" })
+  local returnPads = Postretro.getMapEntities("trigger", { tag = "return_pad" })
+  local returnGate = Postretro.getMapEntities("teleporter", { tag = "echo_return" })
+  local riseSteps = each(returnPedestal, function(m) return m:start() end)
+  append(riseSteps, each(returnPads, function(p) return p:arm() end))
+  local rise = Postretro.defineReaction("return.rise", { sequence = riseSteps })
+  local clearB = Postretro.defineReaction("clear.b", { progress = { tag = "echo_monster_b", at = 1.0, fire = "return.rise" } })
+  local returnArm = Postretro.defineReaction("return.arm", {
+    sequence = each(returnGate, function(t) return t:arm() end),
+  })
+  local returnSettle = Postretro.defineReaction("return.settle", {
+    sequence = each(returnGate, function(t) return t:disarm() end),
+  })
+
   local triggerEvents = {}
   bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "echo_plate" }), "enter", { reveal, swell })
   bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "vault_button" }), "enter", { open })
   bind(triggerEvents, splitPads, "enter", { splitArm })
   bind(triggerEvents, swapPads, "enter", { battle, fight })
+  bind(triggerEvents, readyPads, "enter", { wave })
+  bind(triggerEvents, returnPads, "enter", { returnArm })
   local teleportEvents = {}
   bind(teleportEvents, split, "teleport", { splitSettle })
   bind(teleportEvents, swap, "teleport", { settle })
+  bind(teleportEvents, returnGate, "teleport", { returnSettle, wave })
   return {
-    reactions = { reveal, swell, fight, open, splitArm, splitSettle, battle, settle },
+    reactions = {
+      reveal, swell, fight, open, splitArm, splitSettle, battle, settle,
+      wave, ready, clearA, rise, clearB, returnArm, returnSettle,
+    },
     triggerEvents = triggerEvents,
     teleportEvents = teleportEvents,
   }

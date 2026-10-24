@@ -180,6 +180,7 @@ live, so renaming it after release strands them.\n\
 - `docs/scripting-reference.md` — the scripting API surface.\n\
 - `docs/weapon-mounts.md` — weapon mount and viewmodel authoring.\n\
 - `docs/teleporters.md` — classic and seamless teleporters.\n\
+- `docs/ghost-links.md` — seeing another room copy through a ghost link.\n\
 - `docs/diagnostics.md` — diagnosing and profiling a running session.\n\
 - `tools/` — Python asset helpers. See `tools/README.md` for the Python and\n\
   library requirements they need.\n\
@@ -320,6 +321,7 @@ mod tests {
             "docs/scripting-reference.md",
             "docs/weapon-mounts.md",
             "docs/teleporters.md",
+            "docs/ghost-links.md",
             "docs/diagnostics.md",
             "docs/distribution.md",
             "tools/",

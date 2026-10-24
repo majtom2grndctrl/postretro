@@ -14,6 +14,8 @@ mod prl_environment;
 #[cfg(feature = "load-prl")]
 mod prl_file;
 #[cfg(feature = "load-prl")]
+mod prl_ghost_links;
+#[cfg(feature = "load-prl")]
 mod prl_lighting;
 #[cfg(feature = "load-prl")]
 mod prl_lightmap;

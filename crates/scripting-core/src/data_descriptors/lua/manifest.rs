@@ -187,7 +187,28 @@ pub fn drain_render_profile_lua(
     Ok(ModRenderProfile {
         bloom: drain_bloom_profile_lua(&render, scope)?,
         reflections: drain_reflection_profile_lua(&render, scope)?,
+        ghosts: drain_ghost_transparency_lua(&render, scope)?,
     })
+}
+
+/// `render.ghosts`; absent or malformed is blend, the default.
+fn drain_ghost_transparency_lua(
+    render: &Table,
+    scope: &str,
+) -> Result<ModGhostTransparency, DescriptorError> {
+    let authored = match render.get::<LuaValue>("ghosts").map_err(lua_err)? {
+        LuaValue::Nil => return Ok(ModGhostTransparency::default()),
+        LuaValue::String(value) => value
+            .to_str()
+            .ok()
+            .as_deref()
+            .and_then(ModGhostTransparency::from_authored),
+        _ => None,
+    };
+    Ok(authored.unwrap_or_else(|| {
+        warn_ghost_transparency(scope);
+        ModGhostTransparency::default()
+    }))
 }
 
 /// `render.bloom`; absent or malformed is the default bloom profile.
@@ -320,66 +341,6 @@ pub fn drain_mover_defaults_lua(
     }
     Ok(ModMoverDefaults {
         auto_close_ms: value as f32,
-    })
-}
-
-/// Luau twin of [`drain_audio_profile_js`]: same validation and degradation,
-/// through the same shared attenuation resolver.
-pub fn drain_audio_profile_lua(
-    table: &Table,
-    scope: &str,
-) -> Result<ModAudioProfile, DescriptorError> {
-    let raw_audio: LuaValue = table.get("audio").map_err(lua_err)?;
-    let audio = match raw_audio {
-        LuaValue::Nil => return Ok(ModAudioProfile::default()),
-        // Luau has no array/object distinction at the type level, so a
-        // sequence-style table (`audio = {}` with integer keys, e.g. `{1, 2}`)
-        // must be caught explicitly here to match QuickJS's `Array.isArray`
-        // rejection — otherwise it silently passes as a valid, field-less
-        // table and the seeded default applies with no warning.
-        LuaValue::Table(audio) if audio.raw_len() == 0 => audio,
-        _ => {
-            log::warn!(
-                "[Scripting] {scope}: `audio` must be a table; using the default audio profile"
-            );
-            return Ok(ModAudioProfile::default());
-        }
-    };
-    let raw_attenuation: LuaValue = audio.get("attenuation").map_err(lua_err)?;
-    let attenuation = match raw_attenuation {
-        LuaValue::Nil => return Ok(ModAudioProfile::default()),
-        // Same sequence-style rejection as `audio` above, for the twin field.
-        LuaValue::Table(attenuation) if attenuation.raw_len() == 0 => attenuation,
-        _ => {
-            log::warn!(
-                "[Scripting] {scope}: `audio.attenuation` must be a table; using the default attenuation"
-            );
-            return Ok(ModAudioProfile::default());
-        }
-    };
-    Ok(ModAudioProfile {
-        attenuation: resolve_authored_attenuation(
-            scope,
-            attenuation_field_lua(&attenuation, "minDistance")?,
-            attenuation_field_lua(&attenuation, "maxDistance")?,
-            attenuation_field_lua(&attenuation, "curve")?,
-        ),
-    })
-}
-
-fn attenuation_field_lua(
-    attenuation: &Table,
-    key: &str,
-) -> Result<AuthoredAttenuationField, DescriptorError> {
-    Ok(match attenuation.get::<LuaValue>(key).map_err(lua_err)? {
-        LuaValue::Nil => AuthoredAttenuationField::Absent,
-        LuaValue::Integer(value) => AuthoredAttenuationField::Number(value as f64),
-        LuaValue::Number(value) => AuthoredAttenuationField::Number(value),
-        LuaValue::String(value) => match value.to_str() {
-            Ok(value) => AuthoredAttenuationField::String(value.to_string()),
-            Err(_) => AuthoredAttenuationField::Other,
-        },
-        _ => AuthoredAttenuationField::Other,
     })
 }
 

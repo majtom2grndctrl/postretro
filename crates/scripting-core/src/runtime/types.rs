@@ -14,9 +14,10 @@ use super::input_block::ModInputBlock;
 use super::loading_screen::ModLoading;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
-    EntityTypeDescriptor, FluidRegistry, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
-    PlayerEventDescriptor, PresentationOverlay, PresentationTemplate, RegisteredUiTree,
-    SwitchingDescriptor, TriggerEventDescriptor, TriggerPoolDescriptor, WeaponPlacementDescriptor,
+    EntityTypeDescriptor, FluidRegistry, GhostStyleRegistry, ImpactEventDescriptor, ModFontAssets,
+    ModThemeTokens, PlayerEventDescriptor, PresentationOverlay, PresentationTemplate,
+    RegisteredUiTree, SwitchingDescriptor, TriggerEventDescriptor, TriggerPoolDescriptor,
+    WeaponPlacementDescriptor,
 };
 use crate::data_registry::{
     FactionRegistry, FactionSentimentDescriptor, ScopedCrossing, ScopedReaction,
@@ -92,10 +93,43 @@ pub struct ModReflectionProfile {
     pub style: ModReflectionStyle,
 }
 
+/// `render.ghosts`: how every ghost draw is made translucent. Local
+/// presentation: never on the wire, in no digest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModGhostTransparency {
+    /// Alpha blend at the presented opacity. The default.
+    #[default]
+    Blend,
+    /// Screen-door: an ordered screen-space pattern keeps or discards each
+    /// pixel at the presented opacity.
+    Dither,
+}
+
+impl ModGhostTransparency {
+    /// Every mode, in SDK declaration order.
+    pub const ALL: [Self; 2] = [Self::Blend, Self::Dither];
+
+    /// The authored spelling.
+    pub const fn authored_name(self) -> &'static str {
+        match self {
+            Self::Blend => "blend",
+            Self::Dither => "dither",
+        }
+    }
+
+    /// The mode an authored string names, if any.
+    pub fn from_authored(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.authored_name() == name)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModRenderProfile {
     pub bloom: ModBloomProfile,
     pub reflections: ModReflectionProfile,
+    pub ghosts: ModGhostTransparency,
 }
 
 /// Mod-global static defaults for authored kinematic movers.
@@ -140,11 +174,52 @@ impl Default for ModAttenuation {
     }
 }
 
+/// The Ghost bus mix, parsed from `audio.ghost`. Mirrors the audio crate's
+/// `GhostBusProfile` without depending on it; the binary converts between the
+/// two at one chokepoint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModGhostAudio {
+    /// Linear `0..=1`, on the perceptual volume taper; 0 silences the bus.
+    pub volume: f32,
+    /// High-pass cutoff in Hz, within the cutoff range and below `low_pass_hz`.
+    pub high_pass_hz: f32,
+    /// Low-pass cutoff in Hz, within the cutoff range and above `high_pass_hz`.
+    pub low_pass_hz: f32,
+    /// Distortion drive `0..=1`; 0 applies no distortion.
+    pub drive: f32,
+}
+
+impl ModGhostAudio {
+    /// The engine floor: band-limited, quieter than SFX and undistorted, a
+    /// neutral echo rather than any game's taste. The single source of these
+    /// values: a manifest field it omits, a malformed `audio.ghost`, and a
+    /// resolved profile whose cutoffs cross all fall back to it.
+    pub const FLOOR: Self = Self {
+        volume: 0.6,
+        high_pass_hz: 200.0,
+        low_pass_hz: 4000.0,
+        drive: 0.0,
+    };
+
+    /// Lowest accepted filter cutoff, in Hz.
+    pub const MIN_CUTOFF_HZ: f32 = 20.0;
+    /// Highest accepted filter cutoff, in Hz.
+    pub const MAX_CUTOFF_HZ: f32 = 20_000.0;
+}
+
+impl Default for ModGhostAudio {
+    fn default() -> Self {
+        Self::FLOOR
+    }
+}
+
 /// Mod-global audio preferences parsed from the optional `audio` manifest
 /// object. Omission or malformed values normalize to the engine seed.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ModAudioProfile {
     pub attenuation: ModAttenuation,
+    /// The Ghost bus profile from `audio.ghost`; the floor when omitted.
+    pub ghost: ModGhostAudio,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -201,6 +276,10 @@ pub struct ModManifestResult {
     /// and later duplicate names were warned and dropped at drain; the rest of
     /// the manifest stands.
     pub fluids: FluidRegistry,
+    /// Manifest `ghostStyles`, in declaration order, each field resolved
+    /// against the floor style. Malformed entries and later duplicate names
+    /// were warned and dropped at drain; the rest of the manifest stands.
+    pub ghost_styles: GhostStyleRegistry,
     /// UI trees registered via the mod manifest's `uiTrees` field (each a name +
     /// `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Empty when absent. A malformed entry is
     /// logged and skipped at parse time (`ui.md` §1.1). Drained into the app-side
@@ -616,6 +695,7 @@ mod tests {
 
     fn entity_descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(name.to_string()),

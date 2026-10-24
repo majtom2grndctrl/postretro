@@ -34,6 +34,7 @@ export type { MoverEntityHandle } from "./entities/movers";
 
 export type { TriggerVolumeHandle } from "./entities/triggers";
 export type { TeleporterEntity, TeleporterHandle, TeleportEventDescriptor, TeleportEventReaction } from "./entities/teleporters";
+export type { GhostLinkEntity, GhostLinkHandle } from "./entities/ghost_links";
 
 export type { SpawnerEntityHandle } from "./entities/spawners";
 
@@ -73,6 +74,12 @@ export type {
   TeleporterTarget,
   ArmTeleporterStep,
   DisarmTeleporterStep,
+  ArmGhostLinkStep,
+  DisarmGhostLinkStep,
+  SetGhostLinkMembersStep,
+  SetGhostLinkColorFilterStep,
+  GhostLinkMembersArgs,
+  GhostColorFilterArgs,
   EmitterParams,
   EmitterTarget,
   PlayerEventParams,
@@ -128,6 +135,7 @@ export {
   defineFaction,
   sentiment,
   defineFluid,
+  defineGhostStyle,
   defineMapCatalog,
   defineWeaponPlacement,
   defineTriggerPool,

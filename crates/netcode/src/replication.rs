@@ -311,6 +311,17 @@ fn collect_payloads(
         );
         payloads.push(payload);
     }
+    if let Ok(link) = registry.get_component::<postretro_entities::GhostLinkComponent>(id) {
+        // Always on: armed state, member categories, and each look field a
+        // script has set, with its unclamped ramp.
+        let payload = ComponentPayload::GhostLinkState(super::ghost_link_state_to_wire(link));
+        debug_assert_eq!(
+            component_kind_discriminant(ComponentKind::GhostLink),
+            payload.kind(),
+            "engine/wire ghost link discriminant diverged"
+        );
+        payloads.push(payload);
+    }
     payloads
 }
 
@@ -597,21 +608,53 @@ pub fn host_register_loaded_teleporters(
     replicable: &mut ReplicableSet,
     tracked: &mut HashSet<EntityId>,
 ) {
+    register_installed_regions(
+        ComponentKind::Teleporter,
+        registry,
+        allocator,
+        replicable,
+        tracked,
+    );
+}
+
+/// Register every installed ghost link for always-on replication, as
+/// teleporters register: each joiner receives the current link state as its
+/// baseline, and the client binds it to its own installed link.
+pub fn host_register_loaded_ghost_links(
+    registry: &EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracked: &mut HashSet<EntityId>,
+) {
+    register_installed_regions(
+        ComponentKind::GhostLink,
+        registry,
+        allocator,
+        replicable,
+        tracked,
+    );
+}
+
+/// Reconcile `tracked` with the installed entities carrying `kind`: forget the
+/// stale, stamp and register the live. Reload-safe.
+fn register_installed_regions(
+    kind: ComponentKind,
+    registry: &EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracked: &mut HashSet<EntityId>,
+) {
     let stale: Vec<_> = tracked
         .iter()
         .copied()
-        .filter(|&entity| {
-            !registry
-                .has_component_kind(entity, ComponentKind::Teleporter)
-                .unwrap_or(false)
-        })
+        .filter(|&entity| !registry.has_component_kind(entity, kind).unwrap_or(false))
         .collect();
     for entity in stale {
         tracked.remove(&entity);
         replicable.unregister(entity);
         allocator.forget(entity);
     }
-    for (entity, _) in registry.iter_with_kind(ComponentKind::Teleporter) {
+    for (entity, _) in registry.iter_with_kind(kind) {
         allocator.stamp(entity);
         replicable.register(entity);
         tracked.insert(entity);
@@ -1264,3 +1307,7 @@ mod tests {
 #[cfg(test)]
 #[path = "replication/presentation_tests.rs"]
 mod presentation_tests;
+
+#[cfg(test)]
+#[path = "replication/ghost_link_tests.rs"]
+mod ghost_link_tests;

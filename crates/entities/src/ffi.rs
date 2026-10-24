@@ -184,6 +184,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Immersion => "immersion",
         ComponentKind::Teleporter => "teleporter",
         ComponentKind::ProjectileTrap => "projectile_trap",
+        ComponentKind::GhostLink => "ghost_link",
     }
 }
 
@@ -271,6 +272,10 @@ impl<'js> FromJs<'js> for ComponentValue {
             "projectile_trap" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "ProjectileTrap component is engine-managed and not exposed to scripts",
+            )),
+            "ghost_link" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "GhostLink component is engine-managed and not exposed to scripts",
             )),
             "fog_volume" => fog_from_js(ctx, &o),
             other => Err(rquickjs::Exception::throw_type(
@@ -409,6 +414,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "ProjectileTrap component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::GhostLink(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "GhostLink component is engine-managed and not exposed to scripts",
+            )),
             ComponentValue::HitVolume(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "HitVolume component is engine-managed and not exposed to scripts",
@@ -491,6 +500,9 @@ impl FromLua for ComponentValue {
             "projectile_trap" => Err(mlua::Error::RuntimeError(
                 "ProjectileTrap component is engine-managed and not exposed to scripts"
                     .to_string(),
+            )),
+            "ghost_link" => Err(mlua::Error::RuntimeError(
+                "GhostLink component is engine-managed and not exposed to scripts".to_string(),
             )),
             "fog_volume" => fog_from_lua(t),
             other => Err(mlua::Error::RuntimeError(format!(
@@ -597,6 +609,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::ProjectileTrap(_) => Err(mlua::Error::RuntimeError(
                 "ProjectileTrap component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::GhostLink(_) => Err(mlua::Error::RuntimeError(
+                "GhostLink component is engine-managed and not exposed to scripts".to_string(),
             )),
             ComponentValue::HitVolume(_) => Err(mlua::Error::RuntimeError(
                 "HitVolume component is engine-managed and not exposed to scripts".to_string(),
@@ -881,7 +896,12 @@ mod tests {
         let runtime = rquickjs::Runtime::new().unwrap();
         let context = rquickjs::Context::full(&runtime).unwrap();
         context.with(|ctx| {
-            for kind in ["kinematic_mover", "trigger_volume", "teleporter"] {
+            for kind in [
+                "kinematic_mover",
+                "trigger_volume",
+                "teleporter",
+                "ghost_link",
+            ] {
                 let value = Object::new(ctx.clone()).unwrap();
                 value.set("kind", kind).unwrap();
                 let err = ComponentValue::from_js(&ctx, value.into_value())
@@ -893,7 +913,12 @@ mod tests {
         });
 
         let lua = Lua::new();
-        for kind in ["kinematic_mover", "trigger_volume", "teleporter"] {
+        for kind in [
+            "kinematic_mover",
+            "trigger_volume",
+            "teleporter",
+            "ghost_link",
+        ] {
             let value = lua.create_table().unwrap();
             value.set("kind", kind).unwrap();
             let err = ComponentValue::from_lua(LuaValue::Table(value), &lua).unwrap_err();

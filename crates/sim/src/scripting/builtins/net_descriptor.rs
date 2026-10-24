@@ -721,6 +721,7 @@ mod tests {
         };
 
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -1265,6 +1266,7 @@ mod tests {
     #[test]
     fn remote_enemy_presentation_meshless_descriptor_leaves_transform_only() {
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             touchable: None,
             mesh: None,
             ..enemy_mesh_descriptor("meshless_enemy", false)
@@ -1337,6 +1339,7 @@ mod tests {
 
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -1354,6 +1357,7 @@ mod tests {
 
     fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -1373,6 +1377,7 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -2804,14 +2809,15 @@ mod tests {
         let id = spawn_net_slot_pawn(&placement, &descriptors, &mut reg, None)
             .expect("net-slot pawn spawns from a player descriptor");
 
-        // It is a movement pawn at the placement origin.
+        // It is a movement pawn standing on the placement origin: its feet.
         assert!(matches!(
             reg.has_component_kind(id, ComponentKind::PlayerMovement),
             Ok(true)
         ));
+        let capsule = &descriptors[0].movement.as_ref().unwrap().capsule;
         assert_eq!(
             reg.get_component::<Transform>(id).unwrap().position,
-            Vec3::new(2.0, 1.0, -3.0)
+            Vec3::new(2.0, 1.0 + capsule.half_height + capsule.radius, -3.0)
         );
 
         // Provenance distinguishes it from a map-start single-player spawn.

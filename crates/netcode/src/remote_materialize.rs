@@ -378,6 +378,7 @@ mod tests {
             },
         );
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(classname.to_string()),
@@ -509,6 +510,7 @@ mod tests {
             secondary: None,
             resolution: ResolutionMode::Projectile,
             projectile: Some(ProjectileDescriptor {
+                ghost: false,
                 speed: 8.0,
                 radius: 0.1,
                 lifetime_ms: 1_000.0,

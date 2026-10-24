@@ -77,7 +77,7 @@
 }
 {
 "classname" "player_spawn"
-"origin" "100 140 40"
+"origin" "100 140 24"
 "angle" "0"
 }
 {

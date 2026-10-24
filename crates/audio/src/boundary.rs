@@ -6,15 +6,24 @@
 use crate::BusId;
 
 /// Map a boundary bus name to its [`BusId`]. Case-insensitive; the accepted
-/// names mirror the registry collection convention (`sfx`, `music`, `ui`).
-/// Unknown names return `None` so `play` can warn-and-drop.
+/// names mirror the registry collection convention (`sfx`, `music`, `ui`),
+/// plus `ghost` for ghost-link echoes. Unknown names return `None` so `play`
+/// can warn-and-drop.
 pub(crate) fn parse_bus(name: &str) -> Option<BusId> {
     match name.to_ascii_lowercase().as_str() {
         "sfx" => Some(BusId::Sfx),
         "music" => Some(BusId::Music),
         "ui" => Some(BusId::UI),
+        "ghost" => Some(BusId::Ghost),
         _ => None,
     }
+}
+
+/// [`parse_bus`] for a bus a script names. The Ghost bus is engine-only: only
+/// a ghost voice, started beside a real voice, plays on it. A script naming it
+/// reads as an unknown bus.
+pub(crate) fn parse_script_bus(name: &str) -> Option<BusId> {
+    parse_bus(name).filter(|bus| *bus != BusId::Ghost)
 }
 
 /// Failures from audio init or asset loading. Init failure is non-fatal: the
@@ -50,14 +59,15 @@ pub struct ListenerState {
 /// The target bus and sound are named keys resolved inside the subsystem.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SoundRequest {
-    /// Mixer bus to route this sound to (e.g. "sfx", "music", "ui").
+    /// Mixer bus to route this sound to ("sfx", "music", "ui" or "ghost").
     pub bus: String,
     /// Registry key of the sound asset to play.
     pub sound: String,
     /// Whether the sound loops until stopped. Anchored requests are one-shots.
     pub looping: bool,
     /// Where the sound plays from. `None` plays it unpositioned on its bus;
-    /// `Some` spatializes it on the SFX bus (see `audio.md` §5).
+    /// `Some` spatializes it on its bus, which must be SFX or Ghost (see
+    /// `audio.md` §5).
     pub anchor: Option<SoundAnchor>,
 }
 

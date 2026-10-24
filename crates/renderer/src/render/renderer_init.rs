@@ -159,6 +159,7 @@ impl Renderer {
             capture_gpu_timing_state,
             bloom_render_profile: BloomRenderProfile::default(),
             fluid_reflection_style: Default::default(),
+            ghost_transparency: Default::default(),
             // High until the app applies the player's option, which it does
             // before full init.
             reflection_quality: Default::default(),
@@ -275,6 +276,8 @@ impl Renderer {
             bloom_render_profile,
             // Capture loads no manifest: pixel-style reflections.
             fluid_reflection_style: Default::default(),
+            // Capture loads no manifest: blended ghosts.
+            ghost_transparency: Default::default(),
             // Capture has no player: the default tier, high, which the fluid
             // pass was built at.
             reflection_quality: Default::default(),

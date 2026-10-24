@@ -24,6 +24,7 @@ pub use components::deferred_effect::{
     DeferredEffectComponent, DeferredEffectKind, MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
 };
 pub use components::entity_state::EntityStateComponent;
+pub use components::ghost_link::GhostLinkComponent;
 pub use components::kinematic_mover::{
     BlockPolicy, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand,
 };

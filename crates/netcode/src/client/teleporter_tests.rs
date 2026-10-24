@@ -66,6 +66,7 @@ fn snapshot(sequence: u32, server_tick: u32, records: Vec<EntityRecord>) -> Snap
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),
         faction_sentiment_record: None,
+        ghost_audio: None,
         server_script_time: 0.0,
     }
 }
@@ -154,7 +155,7 @@ fn teleport_baseline_that_fails_to_apply_rolls_its_binding_back() {
     assert!(
         !client
             .bindings
-            .teleporter_network_ids
+            .region_network_ids
             .contains_key(&NetworkId(7))
     );
     assert!(armed(&registry, installed));

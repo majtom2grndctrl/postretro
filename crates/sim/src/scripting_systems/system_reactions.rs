@@ -389,6 +389,7 @@ pub fn is_ir_node(value: &serde_json::Value) -> bool {
 /// - Game flow: `loadLevel`, `restartLevel`, `returnToFrontend`
 /// - Slot write: `setState`
 /// - Live faction sentiment writes: `setSentiment`, `adjustSentiment`
+/// - Ghost bus override: `setGhostAudio`
 /// - Presentation-cell write: `cellWrite`
 /// - Text-edit: `appendText`, `backspaceText`, `clearText`
 pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry) {
@@ -663,6 +664,15 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             to: parsed.to,
             delta: parsed.delta,
         });
+        Ok(())
+    });
+    // `setGhostAudio` (from `postretro/audio`) is a host consequence like the
+    // sentiment writes: it drains at frame end from every source and the host
+    // applies it at its next fixed tick. A malformed call drops whole here.
+    registry.register(postretro_foundation::SET_GHOST_AUDIO, |args, queue| {
+        let targets = crate::ghost_audio_command::parse_set_ghost_audio(args)
+            .map_err(|reason| ReactionError::InvalidArgument { reason })?;
+        queue.push(SystemReactionCommand::SetGhostAudio(targets));
         Ok(())
     });
     // `cellWrite` writes a presentation cell at the game-logic stage.

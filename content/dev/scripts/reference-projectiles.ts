@@ -112,6 +112,9 @@ export const referenceRocketEntity = defineEntity({
         speed: 30.0,
         radius: 0.25,
         lifetimeMs: 4000.0,
+        // Rockets ghost through an armed ghost link, whoever fires them
+        // (maps/ghost-links.map). The plasma bolt does not.
+        ghost: true,
         visual: {
           // The rocket-launcher model is the model-body fixture;
           // the trailing smoke makes the separate body + trail forms obvious.

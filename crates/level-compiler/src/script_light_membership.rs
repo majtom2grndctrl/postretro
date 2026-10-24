@@ -4,6 +4,7 @@
 //! the `MapData` mutation that reserves existing animated-bake structures.
 
 use anyhow::{Context as _, Result, bail};
+use postretro_level_format::ghost_links::GHOST_LINK_CLASSNAME;
 use postretro_level_format::light_membership::{
     LightComponentSnapshot, LightMembershipManifest, LightTable, LightTableLight, MapMember,
     MapMemberKind,
@@ -88,16 +89,17 @@ pub(crate) fn light_table_from_lights(
 }
 
 /// Build the non-light member table: exactly the movers, trigger volumes
-/// (switches included), teleporters, spawners and projectile traps the
-/// runtime places, each with the tags and Transform position runtime gives it.
-/// Order is authored order within each kind, the order runtime spawns them and
-/// therefore answers queries in.
+/// (switches included), teleporters, spawners, projectile traps and ghost
+/// links the runtime places, each with the tags and Transform position runtime
+/// gives it. Order is authored order within each kind, the order runtime spawns
+/// them and therefore answers queries in.
 ///
 /// Positions mirror the runtime spawn sites: a mover's packed origin
 /// (`runtime_movers` spawns at the PRL record origin), a trigger volume's AABB
 /// center (`TriggerVolumeBridge::populate_from_level`), a teleporter's entity
-/// origin, a spawner's narrowed entity origin (`entity_spawner::handle`), and a
-/// projectile trap's entity origin (`projectile_trap::handle`).
+/// origin, a spawner's narrowed entity origin (`entity_spawner::handle`), a
+/// projectile trap's entity origin (`projectile_trap::handle`), and a ghost
+/// link's companion origin.
 pub(crate) fn map_members_from_map(
     movers: &[MapKinematicMover],
     triggers: &[MapTriggerVolume],
@@ -149,11 +151,23 @@ pub(crate) fn map_members_from_map(
             position: vec3(entity.origin),
             spawned_tags: Vec::new(),
         });
+    // One companion per link, in link order; runtime install spawns each link
+    // at its companion's origin with its tags.
+    let ghost_links = entities
+        .iter()
+        .filter(|entity| entity.classname == GHOST_LINK_CLASSNAME)
+        .map(|entity| MapMember {
+            kind: MapMemberKind::GhostLink,
+            tags: entity.tags.clone(),
+            position: vec3(entity.origin),
+            spawned_tags: Vec::new(),
+        });
     movers
         .chain(triggers)
         .chain(spawners)
         .chain(teleporters)
         .chain(traps)
+        .chain(ghost_links)
         .collect()
 }
 
@@ -788,6 +802,53 @@ mod tests {
         );
         assert_eq!(json["mapMembers"][3]["spawnedTags"][1], "wave_2");
         assert!(json["mapMembers"][0].get("spawnedTags").is_none());
+    }
+
+    // `getMapEntities("ghostLink")` at build answers real members: each link's
+    // id-29 companion, in map order, with its tags and the origin runtime
+    // install spawns the link at.
+    #[test]
+    fn ghost_link_companions_are_build_time_members_in_map_order() {
+        let link = |tags: &str, x: i32| {
+            format!(
+                "{{\n\"classname\" \"ghost_link\"\n\"landmark\" \"copy_a\"\n\"target\" \"copy_b\"\n\"_tags\" \"{tags}\"\n{}\n}}\n",
+                box_brush([x, 0, 0], [x + 32, 32, 64], "ghost_tex")
+            )
+        };
+        let destination = |name: &str, origin: &str| {
+            format!(
+                "{{\n\"classname\" \"teleport_destination\"\n\"name\" \"{name}\"\n\"origin\" \"{origin}\"\n}}\n"
+            )
+        };
+        let text = format!(
+            "{}{}{}{}{}",
+            worldspawn(),
+            link("vault_echo east", 0),
+            link("vault_echo", 256),
+            destination("copy_a", "0 0 0"),
+            destination("copy_b", "512 0 0"),
+        );
+        let map = parse_inline_map("ghost-links", &text);
+        let members = map_members_from_map(
+            &map.kinematic_movers,
+            &map.trigger_volumes,
+            &map.map_entities,
+        );
+        let companions: Vec<_> = map
+            .map_entities
+            .iter()
+            .filter(|entity| entity.classname == GHOST_LINK_CLASSNAME)
+            .collect();
+        assert_eq!(companions.len(), 2);
+        assert_eq!(members.len(), 2);
+        for (member, companion) in members.iter().zip(&companions) {
+            assert_eq!(member.kind, MapMemberKind::GhostLink);
+            assert_eq!(member.tags, companion.tags);
+            assert_eq!(member.position, vec3(companion.origin));
+        }
+        assert_eq!(members[0].tags, ["vault_echo", "east"], "map order");
+        assert_eq!(members[1].tags, ["vault_echo"]);
+        assert_ne!(members[0].position, members[1].position);
     }
 
     // A map with no movers, triggers or spawners omits `mapMembers`; the

@@ -5,6 +5,7 @@ use std::fs;
 
 use image::{GenericImageView as _, RgbaImage};
 
+mod capture_ghost_controls;
 mod capture_receiver_controls;
 mod capture_support;
 
@@ -1048,5 +1049,638 @@ fn assert_region_reddens(
         red_chroma_delta > 256,
         "{label} must gain visible red chroma under the authored alarm descriptor; \
          same-adapter crop delta was {red_chroma_delta}",
+    );
+}
+
+const GHOST_WIDTH: u32 = 320;
+const GHOST_HEIGHT: u32 = 240;
+/// Copy B sits this many Quake units along +x from copy A
+/// (`content/dev/maps/ghost-links.map`).
+const GHOST_COPY_B_X: f32 = 4096.0;
+/// A pixel the ghost changes by less than this, on every channel, is outside
+/// its footprint: far above PNG noise, well below the ghost's contrast.
+const GHOST_FOOTPRINT_DELTA: i32 = 24;
+/// Per-channel slack for "unchanged" and "equal" pixels.
+const GHOST_PIXEL_SLACK: i32 = 3;
+const ECHO_OPACITY: f32 = 0.45;
+/// Two settings of the copies' animated alcove lamp, the light capture can
+/// vary at run time. Both keep the scene under the bloom threshold, so the
+/// ghost's own pixels and their neighbours carry no bloom from the lamp.
+const LAMP_WARM: [f32; 3] = [2.0, 1.8, 1.6];
+const LAMP_RED: [f32; 3] = [4.0, 0.2, 0.2];
+
+/// The camera in one copy, standing west of centre and looking east at the
+/// doorway, with the low cover wall in front of the doorway's south half.
+fn ghost_camera(copy_x: f32) -> capture_ghost_controls::Camera {
+    capture_ghost_controls::Camera {
+        eye: capture_ghost_controls::quake_point(copy_x - 64.0, 0.0, 56.0),
+        yaw_deg: 0.0,
+        pitch_deg: -4.0,
+        fov_deg: 70.0,
+        width: GHOST_WIDTH,
+        height: GHOST_HEIGHT,
+    }
+}
+
+/// The capture-only stand-in for the dev mod's `echo` style at `opacity`.
+fn echo_style(opacity: f32) -> serde_json::Value {
+    serde_json::json!([
+        { "name": "echo", "tint": [0.6, 0.8, 1.0], "opacity": opacity, "saturation": 0.2 }
+    ])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_ghost_scene(
+    workspace: &std::path::Path,
+    dir: &std::path::Path,
+    label: &str,
+    map: &std::path::Path,
+    camera: capture_ghost_controls::Camera,
+    styles: serde_json::Value,
+    transparency: &str,
+    lamp: [f32; 3],
+) -> Option<RgbaImage> {
+    let scene_path = dir.join(format!("{label}.json"));
+    let output = dir.join(format!("{label}.png"));
+    let scene = serde_json::json!({
+        "map": map.display().to_string(),
+        "camera": camera.scene_json(),
+        "resolution": [camera.width, camera.height],
+        "output": output.display().to_string(),
+        "ghost_styles": styles,
+        "ghost_transparency": transparency,
+        "force_active": [{ "tag": "alcove_lamp", "radiance": lamp }],
+    });
+    fs::write(
+        &scene_path,
+        serde_json::to_vec_pretty(&scene).expect("serialize ghost capture scene"),
+    )
+    .expect("write ghost capture scene");
+    run_capture_or_skip_without_adapter(workspace, &scene_path).then(|| load_capture_rgba(&output))
+}
+
+fn channel_delta(a: [u8; 4], b: [u8; 4]) -> i32 {
+    (0..3)
+        .map(|channel| (i32::from(a[channel]) - i32::from(b[channel])).abs())
+        .max()
+        .unwrap_or(0)
+}
+
+fn pixels(width: u32, height: u32) -> impl Iterator<Item = (u32, u32)> {
+    (0..height).flat_map(move |y| (0..width).map(move |x| (x, y)))
+}
+
+/// Pixels where `with` differs from `without` by at least the footprint delta.
+fn ghost_footprint(with: &RgbaImage, without: &RgbaImage) -> Vec<bool> {
+    pixels(with.width(), with.height())
+        .map(|(x, y)| {
+            channel_delta(with.get_pixel(x, y).0, without.get_pixel(x, y).0)
+                >= GHOST_FOOTPRINT_DELTA
+        })
+        .collect()
+}
+
+/// `mask` grown by `radius` pixels, so a check outside it skips edge pixels.
+fn dilate(mask: &[bool], width: u32, height: u32, radius: i32) -> Vec<bool> {
+    pixels(width, height)
+        .map(|(x, y)| {
+            (-radius..=radius).any(|dy| {
+                (-radius..=radius).any(|dx| {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    nx >= 0
+                        && ny >= 0
+                        && nx < width as i32
+                        && ny < height as i32
+                        && mask[(ny as u32 * width + nx as u32) as usize]
+                })
+            })
+        })
+        .collect()
+}
+
+fn masked(mask: &[bool], width: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
+    mask.iter()
+        .enumerate()
+        .filter(|(_, inside)| **inside)
+        .map(move |(index, _)| (index as u32 % width, index as u32 / width))
+}
+
+/// A blended ghost leaves the geometry behind it visible: across the
+/// footprint, the blended frame sits between the ghost-free frame and the
+/// fully opaque ghost, at about the presented opacity of the way, never at
+/// either end. Returns the median blend fraction.
+fn blended_with_scene_behind(
+    blend: &RgbaImage,
+    scene: &RgbaImage,
+    opaque: &RgbaImage,
+    footprint: &[bool],
+) -> Result<f32, String> {
+    let mut fractions = Vec::new();
+    let mut outside = 0usize;
+    let mut total = 0usize;
+    for (x, y) in masked(footprint, blend.width()) {
+        let (b, s, o) = (
+            blend.get_pixel(x, y).0,
+            scene.get_pixel(x, y).0,
+            opaque.get_pixel(x, y).0,
+        );
+        total += 1;
+        let between = (0..3).all(|c| {
+            let (lo, hi) = (s[c].min(o[c]), s[c].max(o[c]));
+            i32::from(b[c]) >= i32::from(lo) - GHOST_PIXEL_SLACK
+                && i32::from(b[c]) <= i32::from(hi) + GHOST_PIXEL_SLACK
+        });
+        if !between {
+            outside += 1;
+        }
+        // The channel the ghost moves most measures how far toward it the
+        // blend went.
+        let channel = (0..3)
+            .max_by_key(|&c| (i32::from(o[c]) - i32::from(s[c])).abs())
+            .unwrap();
+        let span = f32::from(o[channel]) - f32::from(s[channel]);
+        fractions.push((f32::from(b[channel]) - f32::from(s[channel])) / span);
+    }
+    if total < 500 {
+        return Err(format!("ghost footprint too small: {total} pixels"));
+    }
+    if outside * 20 > total {
+        return Err(format!(
+            "{outside} of {total} footprint pixels fall outside the scene-to-ghost span"
+        ));
+    }
+    fractions.sort_by(f32::total_cmp);
+    let median = fractions[fractions.len() / 2];
+    if !(0.2..=0.8).contains(&median) {
+        return Err(format!(
+            "median blend fraction {median} is not a translucent ghost over visible geometry"
+        ));
+    }
+    Ok(median)
+}
+
+/// A dithered ghost interleaves unblended pixels: each footprint pixel is
+/// either the opaque ghost or the ghost-free scene, and the ghost's share of
+/// the footprint is the presented opacity, within tolerance. Returns it.
+fn dithered_at_opacity(
+    dither: &RgbaImage,
+    scene: &RgbaImage,
+    opaque: &RgbaImage,
+    footprint: &[bool],
+    opacity: f32,
+) -> Result<f32, String> {
+    let (mut ghost, mut background, mut mixed) = (0usize, 0usize, 0usize);
+    for (x, y) in masked(footprint, dither.width()) {
+        let d = dither.get_pixel(x, y).0;
+        if channel_delta(d, opaque.get_pixel(x, y).0) <= GHOST_PIXEL_SLACK {
+            ghost += 1;
+        } else if channel_delta(d, scene.get_pixel(x, y).0) <= GHOST_PIXEL_SLACK {
+            background += 1;
+        } else {
+            mixed += 1;
+        }
+    }
+    let total = ghost + background + mixed;
+    if total < 500 {
+        return Err(format!("ghost footprint too small: {total} pixels"));
+    }
+    if mixed * 10 > total {
+        return Err(format!(
+            "{mixed} of {total} footprint pixels are neither ghost nor scene: blended, not dithered"
+        ));
+    }
+    let coverage = ghost as f32 / (ghost + background) as f32;
+    if (coverage - opacity).abs() > 0.08 {
+        return Err(format!(
+            "dither coverage {coverage} is not the presented opacity {opacity} \
+             ({ghost} ghost, {background} scene, {mixed} mixed)"
+        ));
+    }
+    Ok(coverage)
+}
+
+/// Mean blue minus red across `mask`, 0..=255 units.
+fn mean_blue_minus_red(image: &RgbaImage, mask: &[bool]) -> f32 {
+    let mut sum = 0.0;
+    let mut count = 0.0;
+    for (x, y) in masked(mask, image.width()) {
+        let pixel = image.get_pixel(x, y).0;
+        sum += f32::from(pixel[2]) - f32::from(pixel[0]);
+        count += 1.0;
+    }
+    sum / count
+}
+
+// A headless capture of the dev map's tagged barrier, on the
+// link armed on spawn, at rest. Capture loads no manifest, so the scene file
+// stands in for the dev mod's `echo` style and `render.ghosts`. The ghost
+// presents at full membership and full style opacity (capture is outside the
+// limiter): tinted, blended over visible geometry, casting no shadow, unlit
+// (pixel-identical under two dynamic-light setups) and depth-tested (the part
+// behind the nearer cover wall does not draw). Under dither the same capture
+// interleaves unblended ghost and scene pixels at the presented opacity. Each
+// predicate rejects the ghosts-disabled control.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
+fn ghost_link_capture_draws_the_armed_barrier_tinted_unlit_unshadowed_and_depth_tested() {
+    let workspace = workspace_root();
+    let map_guard = compile_dev_map(&workspace, "ghost-links");
+    let map = map_guard.to_path_buf();
+    let off = capture_ghost_controls::with_links_disarmed(&map);
+
+    let loaded = postretro_level_loader::load_prl(&map.to_string_lossy()).expect("load fixture");
+    let link = &loaded.ghost_links.links[0];
+    assert!(
+        link.enabled_on_spawn && link.ghost_tags == ["vault_barrier"],
+        "echo_a, armed on spawn, ghosts the barrier"
+    );
+    assert_eq!(
+        link.landmark_yaw, link.target_yaw,
+        "the fixture's mapping is a pure translation"
+    );
+    let offset = glam::Vec3::from(link.target_origin) - glam::Vec3::from(link.landmark_origin);
+
+    let temp = tempfile::tempdir().expect("create isolated capture directory");
+    let camera = ghost_camera(GHOST_COPY_B_X);
+    let shot = |label: &str, map: &std::path::Path, styles, transparency, lamp| {
+        capture_ghost_scene(
+            &workspace,
+            temp.path(),
+            label,
+            map,
+            camera,
+            styles,
+            transparency,
+            lamp,
+        )
+    };
+    let Some(blend) = shot("blend", &map, echo_style(ECHO_OPACITY), "blend", LAMP_WARM) else {
+        return;
+    };
+    let scene = shot("scene", &off, echo_style(ECHO_OPACITY), "blend", LAMP_WARM).unwrap();
+    let opaque = shot("opaque", &map, echo_style(1.0), "blend", LAMP_WARM).unwrap();
+    let opaque_relit = shot("opaque-red", &map, echo_style(1.0), "blend", LAMP_RED).unwrap();
+    let scene_relit = shot("scene-red", &off, echo_style(1.0), "blend", LAMP_RED).unwrap();
+    // The floor style's tint and saturation (white, 0), at full opacity.
+    let floor = shot(
+        "floor",
+        &map,
+        serde_json::json!([{ "name": "echo", "opacity": 1.0 }]),
+        "blend",
+        LAMP_WARM,
+    )
+    .unwrap();
+    let dither = shot(
+        "dither",
+        &map,
+        echo_style(ECHO_OPACITY),
+        "dither",
+        LAMP_WARM,
+    )
+    .unwrap();
+
+    let (width, height) = (GHOST_WIDTH, GHOST_HEIGHT);
+    let footprint = ghost_footprint(&opaque, &scene);
+    let footprint_pixels = footprint.iter().filter(|inside| **inside).count();
+    let (barrier, indices) = capture_ghost_controls::mover_triangles(&map, "vault_barrier", offset);
+    let projected = camera.mask(&barrier, &indices);
+    assert!(
+        masked(&footprint, width)
+            .all(|(x, y)| dilate(&projected, width, height, 1)[(y * width + x) as usize]),
+        "the ghost draws only where the barrier's mapped pose projects"
+    );
+
+    // Tinted: the echo tint turns the full-opacity ghost blue; the floor
+    // style's white tint and zero saturation leave it grey.
+    let tinted = mean_blue_minus_red(&opaque, &footprint);
+    let neutral = mean_blue_minus_red(&floor, &footprint);
+    assert!(
+        tinted > 12.0 && neutral.abs() < 4.0,
+        "echo tints the ghost ({tinted}), the floor look stays grey ({neutral})"
+    );
+
+    // Blended, geometry behind still visible, at full membership: the frame
+    // sits about the style's opacity of the way from the scene to the ghost.
+    let fraction = blended_with_scene_behind(&blend, &scene, &opaque, &footprint)
+        .unwrap_or_else(|error| panic!("blend: {error}"));
+    assert!(
+        blended_with_scene_behind(&scene, &scene, &opaque, &footprint).is_err(),
+        "the ghosts-disabled control fails the blend check"
+    );
+
+    // Unlit: turning the lamp red changes the scene around the ghost but not
+    // one ghost pixel.
+    let relit_scene = pixels(width, height)
+        .filter(|&(x, y)| {
+            channel_delta(scene.get_pixel(x, y).0, scene_relit.get_pixel(x, y).0)
+                >= GHOST_FOOTPRINT_DELTA
+        })
+        .count();
+    assert!(
+        relit_scene > 200,
+        "the red lamp visibly relights the scene ({relit_scene} pixels)"
+    );
+    // One 8-bit step of slack: the bloom composite runs after the ghost pass
+    // and sees the relit scene, so a few ghost pixels round differently.
+    let changed_ghost = masked(&footprint, width)
+        .filter(|&(x, y)| {
+            channel_delta(opaque.get_pixel(x, y).0, opaque_relit.get_pixel(x, y).0) > 1
+        })
+        .count();
+    assert_eq!(
+        changed_ghost, 0,
+        "a full-opacity ghost's pixels are identical under both light setups"
+    );
+
+    // No ghost shadow: outside the ghost, the blended frame is the
+    // ghost-free one, the floor the alcove lamp reaches through the doorway
+    // included.
+    let near_ghost = dilate(&projected, width, height, 2);
+    let lit_by_alcove: Vec<(u32, u32)> = pixels(width, height)
+        .filter(|&(x, y)| {
+            !near_ghost[(y * width + x) as usize]
+                && channel_delta(scene.get_pixel(x, y).0, scene_relit.get_pixel(x, y).0)
+                    >= GHOST_FOOTPRINT_DELTA
+        })
+        .collect();
+    assert!(
+        lit_by_alcove.len() > 100,
+        "the alcove lamp reaches pixels outside the ghost ({})",
+        lit_by_alcove.len()
+    );
+    let shadowed = pixels(width, height)
+        .filter(|&(x, y)| {
+            !near_ghost[(y * width + x) as usize]
+                && channel_delta(blend.get_pixel(x, y).0, scene.get_pixel(x, y).0)
+                    > GHOST_PIXEL_SLACK
+        })
+        .count();
+    assert_eq!(shadowed, 0, "the ghost changes nothing outside itself");
+
+    // Depth-tested: the part of the mapped barrier behind copy B's low cover
+    // wall (its west face, Quake x = 112 past copy B's centre, y -64..0,
+    // z 0..48) does not draw.
+    let q = |x: f32, y: f32, z: f32| capture_ghost_controls::quake_point(x, y, z);
+    let wall_x = GHOST_COPY_B_X + 112.0;
+    let (wall, wall_indices) = capture_ghost_controls::quad([
+        q(wall_x, -64.0, 0.0),
+        q(wall_x, 0.0, 0.0),
+        q(wall_x, 0.0, 48.0),
+        q(wall_x, -64.0, 48.0),
+    ]);
+    let wall_mask = camera.mask(&wall, &wall_indices);
+    let hidden: Vec<(u32, u32)> = masked(&projected, width)
+        .filter(|&(x, y)| wall_mask[(y * width + x) as usize])
+        .collect();
+    assert!(
+        hidden.len() > 100,
+        "the cover wall hides part of the ghost ({} pixels)",
+        hidden.len()
+    );
+    let drawn_through = hidden
+        .iter()
+        .filter(|&&(x, y)| {
+            channel_delta(opaque.get_pixel(x, y).0, scene.get_pixel(x, y).0) > GHOST_PIXEL_SLACK
+        })
+        .count();
+    assert_eq!(
+        drawn_through, 0,
+        "no ghost pixel draws over the nearer wall"
+    );
+
+    // Dither: unblended ghost and scene pixels interleave at the presented
+    // opacity.
+    let coverage = dithered_at_opacity(&dither, &scene, &opaque, &footprint, ECHO_OPACITY)
+        .unwrap_or_else(|error| panic!("dither: {error}"));
+    assert!(
+        dithered_at_opacity(&scene, &scene, &opaque, &footprint, ECHO_OPACITY).is_err(),
+        "the ghosts-disabled control fails the dither check"
+    );
+    assert!(
+        dithered_at_opacity(&blend, &scene, &opaque, &footprint, ECHO_OPACITY).is_err(),
+        "a blended ghost is not dithered"
+    );
+    eprintln!(
+        "ghost capture: {footprint_pixels} footprint pixels, blend fraction {fraction}, \
+         dither coverage {coverage}, tint B-R {tinted} vs floor {neutral}, \
+         {} hidden by the wall, {} relit outside the ghost",
+        hidden.len(),
+        lit_by_alcove.len()
+    );
+}
+
+/// How far the doubled barrier's copy sits behind the barrier, in Quake units
+/// along the camera's view (+x): half its 16-unit thickness, so the copy's
+/// front face lies inside the barrier.
+const BARRIER_COPY_PUSH: f32 = 8.0;
+
+/// `mask` shrunk by `radius` pixels, so a check inside it skips edge pixels.
+fn erode(mask: &[bool], width: u32, height: u32, radius: i32) -> Vec<bool> {
+    let outside: Vec<bool> = mask.iter().map(|inside| !inside).collect();
+    dilate(&outside, width, height, radius)
+        .into_iter()
+        .map(|near_outside| !near_outside)
+        .collect()
+}
+
+/// Pixels of `region` where `a` and `b` differ by more than the slack.
+fn differing(a: &RgbaImage, b: &RgbaImage, region: &[(u32, u32)]) -> usize {
+    region
+        .iter()
+        .filter(|&&(x, y)| {
+            channel_delta(a.get_pixel(x, y).0, b.get_pixel(x, y).0) > GHOST_PIXEL_SLACK
+        })
+        .count()
+}
+
+// Ghost self-overlap (the owner playtest's teeth through closed lips): a ghost
+// shows only its nearest surface. The barrier doubled by a retextured copy
+// pushed inside it gives its ghost a farther front face behind the nearer one;
+// where they overlap, the doubled ghost's capture matches the single
+// barrier's, blended and dithered alike, rather than the far face blending in
+// under the near one or a dithered far face drawing over it. The copy alone
+// reads differently there, so each match can fail. And no pixel of the
+// nearer face is lost: blended, each one the ghost visibly changes draws;
+// dithered, each fully covered 4×4 tile keeps the screen door's share. The
+// capture recorder runs the windowed frame's ghost depth seed and ghost pass.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
+fn ghost_link_capture_draws_only_the_ghosts_nearest_surface_in_both_modes() {
+    let workspace = workspace_root();
+    let map_guard = compile_dev_map(&workspace, "ghost-links");
+    let map = map_guard.to_path_buf();
+    let push = capture_ghost_controls::quake_point(BARRIER_COPY_PUSH, 0.0, 0.0);
+    let doubled = capture_ghost_controls::with_mover_doubled(&map, "vault_barrier", push);
+    let copy_alone = capture_ghost_controls::with_mover_copy_alone(&map, "vault_barrier", push);
+    let off = capture_ghost_controls::with_links_disarmed(&map);
+
+    let loaded = postretro_level_loader::load_prl(&map.to_string_lossy()).expect("load fixture");
+    let link = &loaded.ghost_links.links[0];
+    assert!(
+        link.enabled_on_spawn && link.ghost_tags == ["vault_barrier"],
+        "echo_a, armed on spawn, ghosts the barrier"
+    );
+    assert_eq!(
+        link.landmark_yaw, link.target_yaw,
+        "the fixture's mapping is a pure translation"
+    );
+    let offset = glam::Vec3::from(link.target_origin) - glam::Vec3::from(link.landmark_origin);
+
+    let temp = tempfile::tempdir().expect("create isolated capture directory");
+    let camera = ghost_camera(GHOST_COPY_B_X);
+    let styled_shot = |label: &str, map: &std::path::Path, styles, transparency| {
+        capture_ghost_scene(
+            &workspace,
+            temp.path(),
+            label,
+            map,
+            camera,
+            styles,
+            transparency,
+            LAMP_WARM,
+        )
+    };
+    let shot = |label: &str, map: &std::path::Path, transparency| {
+        styled_shot(label, map, echo_style(ECHO_OPACITY), transparency)
+    };
+    let Some(single_blend) = shot("single-blend", &map, "blend") else {
+        return;
+    };
+    let scene = shot("scene", &off, "blend").unwrap();
+    let opaque = styled_shot("opaque", &map, echo_style(1.0), "blend").unwrap();
+    let doubled_blend = shot("doubled-blend", &doubled, "blend").unwrap();
+    let copy_blend = shot("copy-blend", &copy_alone, "blend").unwrap();
+    let single_dither = shot("single-dither", &map, "dither").unwrap();
+    let doubled_dither = shot("doubled-dither", &doubled, "dither").unwrap();
+    let copy_dither = shot("copy-dither", &copy_alone, "dither").unwrap();
+
+    // The copy's front face projects inside the barrier's: compare there, off
+    // the edges and off the part the cover wall hides.
+    let (width, height) = (GHOST_WIDTH, GHOST_HEIGHT);
+    let (copy_triangles, copy_indices) =
+        capture_ghost_controls::mover_triangles(&map, "vault_barrier", offset + push);
+    let (barrier, indices) = capture_ghost_controls::mover_triangles(&map, "vault_barrier", offset);
+    let copy_mask = erode(
+        &camera.mask(&copy_triangles, &copy_indices),
+        width,
+        height,
+        1,
+    );
+    let barrier_mask = camera.mask(&barrier, &indices);
+    let q = |x: f32, y: f32, z: f32| capture_ghost_controls::quake_point(x, y, z);
+    let wall_x = GHOST_COPY_B_X + 112.0;
+    let (wall, wall_indices) = capture_ghost_controls::quad([
+        q(wall_x, -64.0, 0.0),
+        q(wall_x, 0.0, 0.0),
+        q(wall_x, 0.0, 48.0),
+        q(wall_x, -64.0, 48.0),
+    ]);
+    let wall_mask = camera.mask(&wall, &wall_indices);
+    let overlap: Vec<(u32, u32)> = masked(&copy_mask, width)
+        .filter(|&(x, y)| {
+            let index = (y * width + x) as usize;
+            barrier_mask[index] && !wall_mask[index]
+        })
+        .collect();
+    assert!(
+        overlap.len() > 500,
+        "the copy's front face overlaps the barrier's ({} pixels)",
+        overlap.len()
+    );
+
+    // Each check can fail: the farther surface alone reads differently from
+    // the nearer one across the overlap, in both modes.
+    for (mode, single, copy) in [
+        ("blend", &single_blend, &copy_blend),
+        ("dither", &single_dither, &copy_dither),
+    ] {
+        assert!(
+            differing(copy, single, &overlap) * 4 > overlap.len(),
+            "{mode}: the copy's face reads apart from the barrier's ({} of {} pixels)",
+            differing(copy, single, &overlap),
+            overlap.len()
+        );
+    }
+    assert_eq!(
+        differing(&doubled_blend, &single_blend, &overlap),
+        0,
+        "blend: the doubled ghost shows only its nearer face"
+    );
+    assert_eq!(
+        differing(&doubled_dither, &single_dither, &overlap),
+        0,
+        "dither: the doubled ghost shows only its nearer face"
+    );
+
+    // Regression: an `Equal` test that is not exact loses kept pixels, the
+    // same speckle in the single and doubled captures, which the matches
+    // above cannot see. Across the overlap pixels the opaque ghost visibly
+    // changes, every blended pixel draws, and every 4×4 tile the region fully
+    // covers keeps exactly the screen door's share of its pixels.
+    let footprint = ghost_footprint(&opaque, &scene);
+    let visible: Vec<bool> = {
+        let mut mask = vec![false; (width * height) as usize];
+        for &(x, y) in &overlap {
+            let index = (y * width + x) as usize;
+            mask[index] = footprint[index];
+        }
+        mask
+    };
+    let visible_pixels: Vec<(u32, u32)> = masked(&visible, width).collect();
+    assert!(
+        visible_pixels.len() > 500,
+        "the ghost visibly changes the overlap ({} pixels)",
+        visible_pixels.len()
+    );
+    let drawn = |frame: &RgbaImage, x: u32, y: u32| {
+        channel_delta(frame.get_pixel(x, y).0, scene.get_pixel(x, y).0) > GHOST_PIXEL_SLACK
+    };
+    let undrawn_blend = visible_pixels
+        .iter()
+        .filter(|&&(x, y)| !drawn(&single_blend, x, y))
+        .count();
+    assert_eq!(
+        undrawn_blend, 0,
+        "blend: every visible overlap pixel of the nearer face draws"
+    );
+    let tile_side = 4u32;
+    let kept_per_tile = (postretro_render_cpu::ghost_instance::screen_door_coverage(ECHO_OPACITY)
+        * postretro_render_cpu::ghost_instance::SCREEN_DOOR_PIXELS as f32)
+        .round() as usize;
+    let mut full_tiles = 0usize;
+    for tile_y in 0..height / tile_side {
+        for tile_x in 0..width / tile_side {
+            let tile: Vec<(u32, u32)> = (0..tile_side)
+                .flat_map(|dy| {
+                    (0..tile_side).map(move |dx| (tile_x * tile_side + dx, tile_y * tile_side + dy))
+                })
+                .collect();
+            if !tile.iter().all(|&(x, y)| visible[(y * width + x) as usize]) {
+                continue;
+            }
+            full_tiles += 1;
+            let kept = tile
+                .iter()
+                .filter(|&&(x, y)| drawn(&single_dither, x, y))
+                .count();
+            assert_eq!(
+                kept,
+                kept_per_tile,
+                "dither: the tile at ({}, {}) keeps the screen door's share",
+                tile_x * tile_side,
+                tile_y * tile_side
+            );
+        }
+    }
+    assert!(
+        full_tiles >= 16,
+        "the overlap fully covers enough 4×4 tiles ({full_tiles})"
+    );
+    eprintln!(
+        "ghost self-overlap capture: {} overlap pixels match the single barrier in both modes; \
+         {} visible pixels all draw blended, {full_tiles} full tiles keep {kept_per_tile} of 16 \
+         dithered",
+        overlap.len(),
+        visible_pixels.len()
     );
 }

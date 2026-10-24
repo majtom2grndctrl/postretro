@@ -728,6 +728,12 @@ pub struct Renderer {
     pub(super) fluid_reflection_style:
         postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
 
+    /// The mod's ghost transparency (`render.ghosts`), boot state like the
+    /// reflection style so a full-renderer rebuild keeps it. The ghost passes
+    /// read it to pick each batch's pipeline. Offscreen capture never sets it:
+    /// blend, the default.
+    pub(super) ghost_transparency: postretro_render_cpu::ghost_transparency::GhostTransparency,
+
     /// The player's fluid reflection tier. Boot state, like Surface Depth, so
     /// a change before full init or with no level holds until the next full
     /// init and fluid install consult it, and a full-renderer rebuild after
@@ -1019,6 +1025,10 @@ pub(super) struct FullRenderer {
     /// 5's presence in the shared BGL.
     pub(super) cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
     pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
+    /// Mover ghosts (`rendering_pipeline.md` §7.9): their own instance list over
+    /// the mover pass's geometry, refilled each frame via
+    /// `set_kinematic_ghost_draws`; never in shadow depth or occluder bounds.
+    pub(super) kinematic_ghost: kinematic_ghost::KinematicGhostPass,
     /// Translucent fluid surfaces; idle until a level with fluid faces installs.
     pub(super) fluid_surface: fluid_surface::FluidSurfacePass,
     pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
@@ -1071,6 +1081,14 @@ pub(super) struct FullRenderer {
     pub(super) shadow_vs_stride: u32,
 
     pub(super) depth_view: wgpu::TextureView,
+    /// Ghost-only depth (`rendering_pipeline.md` §7.9), at the scene extent and
+    /// rebuilt with `depth_view`. Seeded from scene depth on frames with
+    /// skinned or mover ghosts; each ghost's depth-only draw writes it and
+    /// its colour draw tests it, so scene depth stays the opaque scene's.
+    pub(super) ghost_depth: ghost_depth::GhostDepthTarget,
+    /// This frame's skinned and mover ghosts, farthest first; retained
+    /// scratch rebuilt on frames with such ghosts.
+    pub(super) ghost_order: ghost_order::GhostDrawOrder,
 
     /// Post-scene compositor seam: owns the `scene_color` offscreen target every
     /// gameplay scene/UI pass renders into, plus the resolve pass that blits it
@@ -1217,6 +1235,16 @@ pub(super) struct FullRenderer {
     /// no mesh entity is visible or shadow-relevant. Planned into per-model draw
     /// groups + palette runs each frame by `mesh_instances::plan_mesh_frame`.
     pub(super) mesh_draws: Vec<mesh_instances::MeshInstanceInput>,
+
+    /// Per-frame ghost instances (`rendering_pipeline.md` §7.9): unlit,
+    /// translucent, already culled at their mapped positions and carrying their
+    /// presented look. Refilled each frame via `set_ghost_mesh_draws`; planned
+    /// into `MeshFramePlans::ghost`, which never reaches shadow depth.
+    pub(super) ghost_mesh_draws: Vec<mesh_instances::MeshInstanceInput>,
+
+    /// Projectile billboard ghosts, per sprite collection, refilled each frame
+    /// via `set_billboard_ghost_draws`; always blended.
+    pub(super) billboard_ghost: billboard_ghost::BillboardGhostPass,
 
     /// Reusable bone-palette scratch for per-frame per-instance sampling.
     /// `sample_clip` clears then refills it per instance, so steady-state frames

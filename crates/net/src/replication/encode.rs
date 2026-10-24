@@ -199,6 +199,7 @@ impl ServerReplication {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
         })
     }
 }
@@ -310,9 +311,9 @@ impl MovementAuthority {
             .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
         let carries_finite_transform = entity.components.iter().any(|c| match c {
             ComponentPayload::Transform(t) => t.all_finite(),
-            ComponentPayload::PlayerMovementState(_) | ComponentPayload::TeleporterState(_) => {
-                false
-            }
+            ComponentPayload::PlayerMovementState(_)
+            | ComponentPayload::TeleporterState(_)
+            | ComponentPayload::GhostLinkState(_) => false,
             ComponentPayload::MeshAnimationState(_) => false,
             ComponentPayload::KinematicMoverState(_)
             | ComponentPayload::LightState(_)

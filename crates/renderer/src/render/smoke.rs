@@ -69,7 +69,7 @@ pub fn sprite_specular_exponent_is_valid(spec_exponent: f32) -> bool {
 const STORAGE_DYNAMIC_OFFSET_ALIGNMENT: usize = 256;
 
 /// Round `bytes` up to the next multiple of `STORAGE_DYNAMIC_OFFSET_ALIGNMENT`.
-fn align_up_to_dynamic_offset(bytes: usize) -> usize {
+pub(super) fn align_up_to_dynamic_offset(bytes: usize) -> usize {
     bytes.div_ceil(STORAGE_DYNAMIC_OFFSET_ALIGNMENT) * STORAGE_DYNAMIC_OFFSET_ALIGNMENT
 }
 
@@ -90,7 +90,7 @@ fn align_up_to_dynamic_offset(bytes: usize) -> usize {
 /// guarantees `window <= buffer.size`, `window` is a multiple of the 256-byte
 /// storage alignment, and every collection's offset is `<= buffer.size - window`.
 /// Rebuilt when the buffer object changes (growth) or the window changes.
-fn build_instance_bind_group(
+pub(super) fn build_instance_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     buffer: &wgpu::Buffer,
@@ -1346,6 +1346,18 @@ impl SmokePass {
     /// pass entirely on levels with no emitters.
     pub fn has_any_sheet(&self) -> bool {
         !self.sheets.is_empty()
+    }
+
+    /// The group-1 sprite-sheet layout, shared by the billboard ghost pipeline
+    /// so a collection's one bind group serves both passes.
+    pub(super) fn sheet_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.sheet_bind_group_layout
+    }
+
+    /// Collection `collection`'s group-1 bind group (frame array, sampler and
+    /// draw params), if it registered this level.
+    pub(super) fn sheet_bind_group(&self, collection: &str) -> Option<&wgpu::BindGroup> {
+        self.sheets.get(collection).map(|sheet| &sheet.bind_group)
     }
 
     /// Upload every collection's packed sprite instances into the single shared

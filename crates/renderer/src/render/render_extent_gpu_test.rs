@@ -56,6 +56,13 @@ fn assert_targets(renderer: &Renderer, scene: Extent, surface: Extent, when: &st
         scene,
         "{when}: scene depth"
     );
+    // The ghost depth seeds from scene depth by a whole-texture copy, so the
+    // two must share one extent.
+    assert_eq!(
+        texture_extent(full.ghost_depth.view().texture()),
+        scene,
+        "{when}: ghost depth"
+    );
     assert_eq!(
         texture_extent(full.fluid_surface.scene_inputs().scene_depth().0.texture()),
         scene,

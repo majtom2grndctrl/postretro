@@ -125,6 +125,10 @@ impl App {
         self.fluid_surface_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.teleporter_bindings = Default::default();
+        self.ghost_links = Default::default();
+        self.ghost_render.clear();
+        self.mover_ghost_render.clear();
+        self.billboard_ghost_render.clear();
         self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
@@ -181,10 +185,19 @@ impl App {
                 .pending_teleporter_mutations
                 .borrow_mut()
                 .clear();
+            session
+                .scripting
+                .script_ctx
+                .pending_ghost_link_commands
+                .borrow_mut()
+                .clear();
         }
 
         self.level = None;
         self.pending_teleport_sounds.clear();
+        // `setGhostAudio` fields are level-scoped: the bus returns to the
+        // manifest profile with the level.
+        self.drop_script_ghost_audio();
         self.clear_surface_lifetime_level_state();
         self.nav_graph = None;
         // No volume of this level may resolve after it unloads; the next install

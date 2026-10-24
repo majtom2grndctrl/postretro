@@ -768,6 +768,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 continue;
             }
 
+            // Host-only ghost-link steps queued before this tick apply now,
+            // at its start, in call order.
+            app.apply_pending_ghost_link_commands();
+            app.apply_pending_ghost_audio_commands();
+
             // Inventory liveness is entity lifecycle, not an input event.
             // Normalize every authoritative pawn even when a remote queue
             // produces no command this tick; active changes reuse the
@@ -1109,6 +1114,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &mut app.pending_teleport_sounds,
             );
             app.host_advance_fixed_sim_tick(&mut host_snapshot_due);
+            // Stamp link state with the post-increment tick, as snapshots do.
+            app.record_ghost_link_history();
             // Unconditional per-tick registration sweeps, not gated on "did a spawn
             // happen this tick": they catch runtime enemies and component-driven
             // world-item acquisition/drop changes before post-loop serialization.
@@ -1167,6 +1174,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Audio);
 
+    // Who fired each shot this frame, before impacts are attributed.
+    app.record_ghost_shot_owners(&pending_weapon_script_events, &pending_ai_events);
     // Descriptor sounds for this frame's events, placed at fire time.
     // They play alongside any reaction addressed to the same event.
     // The listener's pawn is named here, before any play this frame,
@@ -1181,9 +1190,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             movers: &mut app.kinematic_mover_render,
         };
         let edges = sound_events::resolve_mover_edges(&pending_mover_events, &mut scene);
-        let mut requests: Vec<postretro_audio::SoundRequest> = edges
+        let mut requests: Vec<crate::ghost_links::LocalSound> = edges
             .iter()
             .filter_map(sound_events::MoverEdge::sound_request)
+            .map(Into::into)
             .collect();
         if let Some(session) = app.session.as_ref() {
             let table = &session.scripting.descriptor_sounds;
@@ -1195,37 +1205,71 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 local: &data_registry.fluids,
             };
             for emission in &pending_movement_events {
-                requests.extend(sound_events::movement_sound(emission, fluids, &mut scene));
+                requests.extend(
+                    sound_events::movement_sound(emission, fluids, &mut scene).map(Into::into),
+                );
             }
             drop(data_registry);
             for emission in &pending_ai_events {
-                requests.extend(sound_events::ai_sounds(table, emission, &mut scene));
+                requests.extend(
+                    sound_events::ai_sounds(table, emission, &mut scene)
+                        .into_iter()
+                        .map(Into::into),
+                );
             }
-            requests.extend(pending_weapon_script_events.iter().filter_map(|emission| {
-                sound_events::weapon_emission_sound(table, emission, &mut scene)
-            }));
+            for emission in &pending_weapon_script_events {
+                if let Some(request) =
+                    sound_events::weapon_emission_sound(table, emission, &mut scene)
+                {
+                    // An impact's ghost voice needs its shot's owner, which
+                    // the contact set does not carry.
+                    let shot_owner = (emission.address == "impact")
+                        .then(|| app.ghost_links.shot_owner(emission.shot_id))
+                        .flatten();
+                    requests.push(crate::ghost_links::LocalSound {
+                        request,
+                        shot_owner,
+                    });
+                }
+            }
         }
         for cue in &app.observer_weapon_cues {
+            let shot_owner = (cue.kind == netcode::weapon_cues::WeaponCueKind::Impact)
+                .then(|| app.ghost_links.shot_owner(Some(cue.shot_id)))
+                .flatten();
             for key in [cue.sound.as_deref(), cue.additional_sound.as_deref()]
                 .into_iter()
                 .flatten()
             {
-                requests.push(sound_events::frozen_sound(key, &cue.emitter, &mut scene));
+                requests.push(crate::ghost_links::LocalSound {
+                    request: sound_events::frozen_sound(key, &cue.emitter, &mut scene),
+                    shot_owner,
+                });
             }
         }
-        requests.append(&mut client_sounds);
-        requests.append(&mut app.pending_teleport_sounds);
+        requests.extend(client_sounds.drain(..).map(Into::into));
+        requests.extend(app.pending_teleport_sounds.drain(..).map(Into::into));
         (edges, requests, listener_attached)
     };
+    // A client's received link states enter link history once, here, so
+    // ghost-voice admission and the membership update later this frame read
+    // the same history. The Ghost bus takes a client's received host fields,
+    // follows its resolved profile (a script ramp re-targets it each frame),
+    // then this frame's ghost voices are judged before any sound
+    // plays: a ghost voice starts only beside a real voice `play` admitted.
+    app.drain_received_ghost_link_state();
+    app.drain_received_ghost_audio();
+    app.present_ghost_bus(std::time::Duration::try_from_secs_f32(frame_dt).unwrap_or_default());
+    let ghost_voices = app.plan_ghost_voices(&descriptor_sounds, frame_result.alpha);
     if let Some(audio) = app
         .session
         .as_mut()
         .and_then(|session| session.audio.as_mut())
     {
         audio.set_listener_attached(listener_attached);
-        for request in descriptor_sounds {
-            audio.play(request);
-        }
+        ghost_voices.play_beside(descriptor_sounds, |request, _| {
+            audio.play(request).is_some()
+        });
     }
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::ScriptDrain);
@@ -1496,6 +1540,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // authoritative tick plus the render sub-tick `alpha`, so the presented
     // pose varies smoothly per render frame instead of stepping at 60 Hz.
     app.host_present_client_pawns(frame_result.alpha, frame_anim_time);
+    // Every presented pose is written: ghost membership reads them, ahead of the
+    // render collectors.
+    app.update_ghost_links(frame_result.alpha, now);
 
     // Advance each reload-endpoint consumer only after it sampled
     // this frame. Catch-up endpoints remain queued in tick order.
@@ -1943,6 +1990,31 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 presentation_tick,
                 Some(&postretro_visibility::extract_frustum_planes(view_proj)),
             );
+            // Projectile billboard ghosts: each at its mapped position, culled
+            // at its mapped cell, through the collections the billboards use.
+            if let Some(world) = app.level.as_ref() {
+                let ghost_links = &app.ghost_links;
+                app.billboard_ghost_render.collect(
+                    &registry,
+                    ghost_links.members(),
+                    &mut session.particle_render,
+                    &crate::scripting_systems::billboard_ghost_render::BillboardGhostFrame {
+                        world,
+                        visible: &visible_cells,
+                        presentation_tick,
+                        limiter: Some(crate::scripting_systems::ghost_render::ghost_limiter_frame(
+                            &script_ctx.slot_table.borrow(),
+                            app.ghost_links.presented_elapsed(),
+                        )),
+                    },
+                );
+                renderer.set_billboard_ghost_draws(
+                    app.billboard_ghost_render
+                        .iter_collections(&session.particle_render),
+                );
+            } else {
+                renderer.set_billboard_ghost_draws(std::iter::empty());
+            }
         }
         app.cpu_timer.nested_mut().extend_from(
             &particle_cpu,
@@ -2090,6 +2162,35 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             }
             renderer.set_mesh_draws(session.mesh_render.instances());
 
+            // Ghosts: each at its mapped pose, culled at its mapped cell, its
+            // presented opacity and tint limited on its one flash window.
+            let ghost_limiter = crate::scripting_systems::ghost_render::ghost_limiter_frame(
+                &script_ctx.slot_table.borrow(),
+                app.ghost_links.presented_elapsed(),
+            );
+            let ghost_links = &app.ghost_links;
+            let hit_zones = &session.hit_zone_store;
+            app.ghost_render.collect(
+                &registry,
+                ghost_links.members(),
+                &crate::scripting_systems::ghost_render::GhostDrawFrame {
+                    world,
+                    visible: &visible_cells,
+                    anim_time: app.anim_time,
+                    camera_pos: render_eye_position,
+                    tables: &session.mesh_clip_tables,
+                    socket_poses: &crate::scripting_systems::attachments::SocketPoseResolver::new(
+                        hit_zones,
+                    ),
+                    force_resample_model: &|handle| {
+                        hit_zones.has_precise_zones(handle) || hit_zones.has_pose_modifiers(handle)
+                    },
+                    limiter: Some(ghost_limiter),
+                    transparency: renderer.ghost_transparency(),
+                },
+            );
+            renderer.set_ghost_mesh_draws(app.ghost_render.instances());
+
             app.kinematic_mover_render.collect(
                 &registry,
                 world,
@@ -2100,6 +2201,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 app.kinematic_mover_render.instances(),
                 app.kinematic_mover_render.shadow_instances(),
             );
+            // Mover ghosts, after the real movers collect: each at its link's
+            // mapped model, culled at its mapped bounds, one per link.
+            app.mover_ghost_render.collect(
+                &registry,
+                ghost_links.members(),
+                &crate::scripting_systems::mover_ghost_render::MoverGhostFrame {
+                    world,
+                    visible: &visible_cells,
+                    movers: &app.kinematic_mover_render,
+                    limiter: Some(ghost_limiter),
+                    transparency: renderer.ghost_transparency(),
+                },
+            );
+            renderer.set_kinematic_ghost_draws(app.mover_ghost_render.instances());
             renderer.set_mover_occluder_aabbs(app.kinematic_mover_render.occluder_aabbs());
             let local = script_ctx.data_registry.borrow();
             renderer.set_fluid_surface_draws(
@@ -2508,6 +2623,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 return;
             }
         };
+        // A frame whose surface acquire failed never consumes its presented
+        // time: the ghost look clamps, run before rendering, return to where
+        // they began and carry its time forward, as the resolve's limiter does.
+        let presented = present_handle.is_some();
+        app.ghost_render.finish_presentation(presented);
+        app.mover_ghost_render.finish_presentation(presented);
+        app.billboard_ghost_render.finish_presentation(presented);
         session.mark_sh_streaming_compose_submitted(compose_submitted);
         // Read back the focus rect list the renderer just exported
         // for the top stack layer (the gameplay render above laid it

@@ -71,6 +71,9 @@ pub struct ScriptCtx {
     pub system_commands: SystemCommandQueue,
     /// Ordered host-only teleporter changes, consumed at the next fixed tick.
     pub pending_teleporter_mutations: Rc<RefCell<Vec<(crate::EntityId, bool)>>>,
+    /// Ordered host-only ghost-link changes, consumed at the next fixed tick.
+    pub pending_ghost_link_commands:
+        Rc<RefCell<Vec<(crate::EntityId, postretro_foundation::GhostLinkCommand)>>>,
     /// Written state is independent of components rewritten by bridge sampling.
     pub presentation_overrides: Rc<RefCell<crate::presentation_overrides::PresentationOverrides>>,
     /// The level-relative clock the bridges will sample in this frame.
@@ -99,6 +102,7 @@ impl ScriptCtx {
             owner_slot_writes_enabled: Rc::new(Cell::new(true)),
             system_commands: SystemCommandQueue::new(),
             pending_teleporter_mutations: Rc::new(RefCell::new(Vec::new())),
+            pending_ghost_link_commands: Rc::new(RefCell::new(Vec::new())),
             presentation_overrides: Rc::new(RefCell::new(Default::default())),
             presentation_script_time: Rc::new(Cell::new(0.0)),
             presentation_networked_predicate: Rc::new(Cell::new(None)),

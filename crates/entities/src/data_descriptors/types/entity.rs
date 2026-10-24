@@ -318,6 +318,12 @@ pub struct EntityTypeDescriptor {
     /// read the resolved candidate fact rather than this storage value.
     pub tolerance: Option<f32>,
     pub canonical_name: Option<String>,
+    /// Whether entities materialized from this descriptor can ghost through an
+    /// armed ghost link. A descriptor attribute, not a component kind: it never
+    /// enters component provenance or the networked-by-default classification,
+    /// and each peer reads it from its own descriptors. Defaults to false for
+    /// every descriptor, a player's included.
+    pub ghost: bool,
     pub inventory: Option<InventoryDescriptor>,
     pub light: Option<LightDescriptor>,
     pub emitter: Option<BillboardEmitterComponent>,

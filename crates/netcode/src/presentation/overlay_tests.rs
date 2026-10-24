@@ -76,6 +76,7 @@ fn authored_client_config(cap: usize, linger_ms: u32, template_id: &str) -> Clie
 
 fn descriptor() -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some(CLASS.to_string()),
@@ -905,6 +906,7 @@ fn synchronized_time_highwater_prevents_stale_snapshot_or_repair_resurrection_af
         state_schema_fingerprint: [0; 32],
         state_records: Vec::new(),
         faction_sentiment_record: None,
+        ghost_audio: None,
     };
     peer.apply_snapshot(&stale, 11.3);
     peer.state.receive(original);

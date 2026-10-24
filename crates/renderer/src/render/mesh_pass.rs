@@ -56,6 +56,7 @@ use postretro_model::mesh::SkinnedMesh;
 use postretro_model::sample_params::{ClipSample, FadeSource, MeshSampleParams, SnapshotTag};
 use postretro_model::skeleton::{AnimationClip, Skeleton};
 use postretro_model::{BonePaletteEntry, ModelHandle};
+use postretro_render_cpu::ghost_instance::GhostInstanceLook;
 use postretro_render_cpu::mesh_instances::{
     MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, MeshPaletteCacheKey,
 };
@@ -75,11 +76,13 @@ const INSTANCE_ENTRY_SIZE: usize = 80;
 
 /// Pack one instance's SSBO bytes (model matrix column-major + base index +
 /// receiver-bias scale). The scale occupies `Instance.base_and_pad.y` as f32
-/// bits, preserving the WGSL record's 80-byte stride.
+/// bits, preserving the WGSL record's 80-byte stride. A ghost's look packs into
+/// the otherwise-zero `zw` lanes (`skinned_ghost.wgsl`).
 fn build_instance_entry(
     model: glam::Mat4,
     base_index: u32,
     shadow_bias_scale: f32,
+    ghost_look: Option<GhostInstanceLook>,
 ) -> [u8; INSTANCE_ENTRY_SIZE] {
     let mut bytes = [0u8; INSTANCE_ENTRY_SIZE];
     let cols = model.to_cols_array();
@@ -87,9 +90,15 @@ fn build_instance_entry(
         let off = i * 4;
         bytes[off..off + 4].copy_from_slice(&v.to_ne_bytes());
     }
-    // Base index at offset 64 (x) and bias scale bits at 68 (y). z/w stay zero.
+    // Base index at offset 64 (x) and bias scale bits at 68 (y). z/w carry a
+    // ghost's look and stay zero otherwise.
     bytes[64..68].copy_from_slice(&base_index.to_ne_bytes());
     bytes[68..72].copy_from_slice(&shadow_bias_scale.to_bits().to_ne_bytes());
+    if let Some(look) = ghost_look {
+        let [z, w] = look.pack();
+        bytes[72..76].copy_from_slice(&z.to_ne_bytes());
+        bytes[76..80].copy_from_slice(&w.to_ne_bytes());
+    }
     bytes
 }
 
@@ -904,6 +913,11 @@ pub struct MeshPass {
     /// every shadow pass that binds group 3.
     pub(super) depth_pipeline: wgpu::RenderPipeline,
 
+    /// Unlit ghost pipelines, a colour and a depth-only one per
+    /// `render.ghosts` mode, over the same palette + instance bind group.
+    /// Built in `mesh_ghost.rs`; the set's shape lives in `ghost_pipeline.rs`.
+    pub(super) ghost_pipelines: super::ghost_pipeline::GhostPipelines,
+
     /// Shared bone-palette storage buffer, sized for `MAX_PALETTE_ENTRIES`
     /// entries. Each instance's contiguous run of joints is written at its
     /// planned base index before the draw is recorded.
@@ -1219,6 +1233,13 @@ impl MeshPass {
             &instance_bind_group_layout,
             shadow_depth_format,
         );
+        let ghost_pipelines = super::mesh_ghost::skinned_ghost_pipelines(
+            device,
+            depth_format,
+            camera_bgl,
+            material_bgl,
+            &instance_bind_group_layout,
+        );
 
         // Shared bone-palette storage buffer, sized for the full per-frame
         // budget. Default-filled to identity (bind pose) below so an
@@ -1290,6 +1311,7 @@ impl MeshPass {
         Self {
             pipeline,
             depth_pipeline,
+            ghost_pipelines,
             palette_buffer,
             instance_buffer,
             instance_bind_group,
@@ -1682,6 +1704,7 @@ impl MeshPass {
                         inst.transform,
                         inst.palette_base,
                         inst.shadow_bias_scale,
+                        inst.ghost_look,
                     );
                     queue.write_buffer(
                         instance_buffer,
@@ -2035,11 +2058,18 @@ mod tests {
         let mesh_body = extract_skin_matrix(SKINNED_MESH_SHADER_SOURCE);
         let depth_body =
             extract_skin_matrix(crate::render::mesh_depth::SKINNED_DEPTH_SHADER_SOURCE);
+        let ghost_body =
+            extract_skin_matrix(crate::render::mesh_ghost::SKINNED_GHOST_SHADER_SOURCE);
 
         assert_eq!(
             mesh_body, depth_body,
             "skin_matrix body in skinned_depth.wgsl must be byte-identical to the copy \
              in skinned_mesh.wgsl — update both when changing the skinning kernel",
+        );
+        assert_eq!(
+            mesh_body, ghost_body,
+            "skin_matrix body in skinned_ghost.wgsl must be byte-identical to the copy \
+             in skinned_mesh.wgsl — a ghost must skin exactly as its real draw",
         );
     }
 
@@ -2055,7 +2085,7 @@ mod tests {
         );
 
         let m = glam::Mat4::from_translation(Vec3::new(4.0, 5.0, 6.0));
-        let bytes = build_instance_entry(m, 7, 2.5);
+        let bytes = build_instance_entry(m, 7, 2.5, None);
         assert_eq!(bytes.len(), 80);
 
         // Model matrix occupies bytes 0..64 (column-major f32x16).
@@ -2086,6 +2116,30 @@ mod tests {
             &[0u8; 8],
             "padding bytes 72..80 must be zero"
         );
+    }
+
+    #[test]
+    fn ghost_instance_entry_packs_look_into_zw_and_keeps_the_stride() {
+        let look = GhostInstanceLook {
+            opacity: 0.45,
+            saturation: 0.2,
+            tint: [0.6, 0.8, 1.0],
+        };
+        let m = glam::Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0));
+        let ghost = build_instance_entry(m, 9, 1.0, Some(look));
+        let real = build_instance_entry(m, 9, 1.0, None);
+        assert_eq!(ghost.len(), INSTANCE_ENTRY_SIZE);
+        assert_eq!(
+            ghost[..72],
+            real[..72],
+            "a ghost's matrix, palette base and bias lanes match its real draw"
+        );
+        let z = u32::from_ne_bytes(ghost[72..76].try_into().unwrap());
+        let w = u32::from_ne_bytes(ghost[76..80].try_into().unwrap());
+        assert_eq!([z, w], look.pack());
+        let decoded = GhostInstanceLook::unpack([z, w]);
+        assert!((decoded.opacity - 0.45).abs() < 1e-4);
+        assert!((decoded.saturation - 0.2).abs() < 1e-4);
     }
 
     // Guard the group-2 params uniform layout contract: `MeshLightParams` is eight

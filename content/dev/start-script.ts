@@ -2,6 +2,7 @@ import {
   becomes,
   defineFaction,
   defineFluid,
+  defineGhostStyle,
   defineMod,
   defineTriggerPool,
   getGameState,
@@ -121,9 +122,18 @@ export default defineMod({
       resolution: "quarter",
       pixelated: false,
     },
+    // Ghost-link ghosts alpha-blend, the engine default, named here so the dev
+    // mod dogfoods the field. The ghost capture test covers "dither" too.
+    ghosts: "blend",
   },
-  // Dogfoods the mod-wide positional attenuation surface (`audio.md` §5).
-  audio: { attenuation: positionalSoundAttenuation },
+  // Dogfoods the mod-wide positional attenuation surface (`audio.md` §5) and
+  // the Ghost bus mix ghost-link echoes play through (maps/ghost-links.map):
+  // band-limited and lightly driven, so the partner's fire reads punchy but
+  // muffled.
+  audio: {
+    attenuation: positionalSoundAttenuation,
+    ghost: { volume: 0.7, highPassHz: 250, lowPassHz: 3000, drive: 0.3 },
+  },
   input: devInput,
   frontend: {
     menuTree: frontendMenu.name,
@@ -187,6 +197,13 @@ export default defineMod({
   ],
   triggerEvents: factionSentimentTriggerEvents,
   stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats],
+  // Ghost styles a map's `ghost_link` names through its `ghost_style` key. The
+  // ghost-link fixture (maps/ghost-links.map) names `echo`, which carries the
+  // partner's sounds through the Ghost bus above.
+  ghostStyles: [
+    defineGhostStyle({ name: "echo", tint: [0.6, 0.8, 1.0], opacity: 0.45, saturation: 0.2,
+      audio: true, impactAudio: false }),
+  ],
   // Fluids a map's `fluid_volume` names through its `fluid` key. The stress
   // fixture (maps/stress-env-volumes.map) and the playtest map
   // (maps/e24-environment-test.map) name both. Sounds reuse existing dev keys.

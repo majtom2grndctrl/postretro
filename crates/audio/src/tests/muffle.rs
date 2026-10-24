@@ -78,9 +78,10 @@ fn world_muffle_reaches_positional_voices_through_the_bus_with_no_per_voice_filt
         rms(&dry)
     );
     // The filter is the bus's one effect: engaging it builds no track or
-    // filter per voice, so the mixer's track tree is the same shape.
+    // filter per voice, so the mixer's track tree is the same shape: the three
+    // top-level buses, and under SFX only the Ghost track and the voice's own.
     for audio in [&dry_audio, &muffled_audio] {
-        assert_eq!(audio.manager.num_sub_tracks(), BusId::ALL.len());
-        assert_eq!(audio.buses.track(BusId::Sfx).num_sub_tracks(), 1);
+        assert_eq!(audio.manager.num_sub_tracks(), BusId::TOP_LEVEL.len());
+        assert_eq!(audio.buses.track(BusId::Sfx).num_sub_tracks(), 2);
     }
 }

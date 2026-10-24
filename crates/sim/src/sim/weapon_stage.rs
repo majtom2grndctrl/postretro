@@ -184,6 +184,7 @@ mod tests {
         let mut component = weapon_component(credit_source);
         component.resolution = ResolutionMode::Projectile;
         component.projectile = Some(ProjectileDescriptor {
+            ghost: false,
             speed: 1.0,
             radius: 0.0,
             lifetime_ms: 5_000.0,
@@ -210,6 +211,7 @@ mod tests {
         placement: WeaponPlacementDescriptor,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(canonical_name.to_string()),
@@ -2082,6 +2084,66 @@ mod tests {
         );
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert!((health.current - 100.0).abs() < f32::EPSILON);
+    }
+
+    // Ghost eligibility reads `projectile.ghost` from the weapon descriptor a
+    // projectile was fired from, so every gameplay projectile names it.
+    #[test]
+    fn local_projectile_fire_records_the_firing_weapon_descriptor() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let pawn = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    weapon,
+                    projectile_weapon_component("weapon.test.projectile"),
+                )
+                .expect("projectile weapon attaches");
+            registry
+                .set_component(
+                    weapon,
+                    postretro_entities::provenance::DescriptorProvenance {
+                        canonical_name: "rocket_launcher".to_string(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path:
+                            postretro_entities::provenance::DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .expect("weapon records its descriptor");
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(weapon);
+            registry
+                .set_component(pawn, inventory)
+                .expect("pawn wields projectile weapon");
+            pawn
+        };
+        let mut ignore_impact = ignore_impact;
+        let result = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            1.0 / 60.0,
+            &mut ignore_impact,
+        );
+        let [projectile] = result.projectile_spawns.as_slice() else {
+            panic!("accepted projectile fire must produce exactly one projectile");
+        };
+        let registry = registry.borrow();
+        let component = registry
+            .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+                *projectile,
+            )
+            .expect("projectile carries gameplay flight state");
+        assert_eq!(component.source_weapon.as_deref(), Some("rocket_launcher"));
     }
 
     #[test]

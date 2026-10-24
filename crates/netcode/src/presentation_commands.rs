@@ -75,6 +75,7 @@ pub fn presentation_command_to_wire(
         | SystemReactionCommand::SetState { .. }
         | SystemReactionCommand::SetSentiment { .. }
         | SystemReactionCommand::AdjustSentiment { .. }
+        | SystemReactionCommand::SetGhostAudio(_)
         | SystemReactionCommand::AddOwnerSlot { .. }
         | SystemReactionCommand::CellWrite { .. }
         | SystemReactionCommand::AppendText { .. }

@@ -5,9 +5,9 @@ use glam::Vec3;
 use postretro_entities::{EntityRegistry, Transform};
 
 /// A reproducible place to begin a windowed run, for measurement probes that
-/// are not the map's `player_spawn`. `position` uses the spawn convention (the
-/// pawn's origin, as `player_spawn` places it); yaw and pitch are engine
-/// radians, so `yaw = 0` faces -Z.
+/// are not the map's `player_spawn`. `position` is the pawn's transform: its
+/// capsule centre, not the feet a `player_spawn` origin names. Yaw and pitch
+/// are engine radians, so `yaw = 0` faces -Z.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct StartPose {
     pub(crate) position: Vec3,

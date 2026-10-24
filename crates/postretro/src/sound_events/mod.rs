@@ -9,7 +9,9 @@ mod client_reload;
 mod descriptors;
 mod movers;
 
-pub(crate) use anchors::{AnchorScene, listener_attached_key};
+#[cfg(test)]
+pub(crate) use anchors::entity_key;
+pub(crate) use anchors::{AnchorScene, entity_from_key, listener_attached_key};
 pub(crate) use client_overheat::{ClientOverheatEdge, OverheatReading, ProjectedHeatWeapon};
 pub(crate) use client_reload::{ClientReloadEdges, ProjectedWeapon, ReloadReading};
 pub(crate) use descriptors::{

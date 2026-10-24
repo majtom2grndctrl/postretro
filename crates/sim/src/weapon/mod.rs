@@ -1366,6 +1366,7 @@ pub(crate) mod tests {
         descriptor.resolution = ResolutionMode::Projectile;
         descriptor.muzzle_offset = muzzle_offset.map(|offset| offset.to_array());
         descriptor.projectile = Some(ProjectileDescriptor {
+            ghost: false,
             speed: 20.0,
             radius: 0.1,
             lifetime_ms: 1_000.0,
@@ -2595,16 +2596,18 @@ pub(crate) mod tests {
     #[test]
     fn player_sized_hitbox_is_targetable_but_owner_fire_skips_it() {
         let mut registry = EntityRegistry::new();
-        // This is the authored player body: its eye-origin is inside y=[0, 1.6].
+        // This is the authored player body around its capsule-centre transform,
+        // standing on y=0: the box spans y=[0, 2.0], and the eye-origin 0.5 m
+        // above the centre lies inside it.
         let player = spawn_hitbox_entity(
             &mut registry,
-            Vec3::new(0.0, 0.8, 0.0),
-            Vec3::new(0.2, 0.8, 0.2),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.2, 1.0, 0.2),
             Vec3::ZERO,
         );
         let target = spawn_hitbox_entity(
             &mut registry,
-            Vec3::new(0.0, 0.8, -5.0),
+            Vec3::new(0.0, 1.5, -5.0),
             Vec3::splat(0.5),
             Vec3::ZERO,
         );
@@ -2614,7 +2617,7 @@ pub(crate) mod tests {
             &registry,
             &zones,
             0.0,
-            Vec3::new(0.0, 0.8, 2.0),
+            Vec3::new(0.0, 1.5, 2.0),
             Vec3::NEG_Z,
             10.0,
             0.0,
@@ -2627,7 +2630,7 @@ pub(crate) mod tests {
                 pressed: true,
                 active: true,
             },
-            aim_origin: Vec3::new(0.0, 0.8, 0.0),
+            aim_origin: Vec3::new(0.0, 1.5, 0.0),
             aim_direction: Vec3::NEG_Z,
             can_fire: true,
         };
@@ -2666,7 +2669,7 @@ pub(crate) mod tests {
                 pressed: true,
                 active: true,
             },
-            Vec3::new(0.0, 0.8, 0.0),
+            Vec3::new(0.0, 1.5, 0.0),
             Vec3::NEG_Z,
             &WeaponPlacementDescriptor::default(),
             None,
@@ -2693,7 +2696,7 @@ pub(crate) mod tests {
                 pressed: true,
                 active: true,
             },
-            Vec3::new(0.0, 0.8, 0.0),
+            Vec3::new(0.0, 1.5, 0.0),
             Vec3::NEG_Z,
             &WeaponPlacementDescriptor::default(),
             Some(Vec3::new(0.5, 0.0, -0.4)),

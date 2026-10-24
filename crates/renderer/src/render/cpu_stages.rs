@@ -47,6 +47,11 @@ pub enum RenderStage {
     Forward,
     KinematicBrush,
     SkinnedMesh,
+    /// Unlit translucent ghost draws (`rendering_pipeline.md` §7.9): the
+    /// ghost depth seed, then one sorted ghost pass (skinned and mover
+    /// ghosts, each a depth-only draw then its colour draw), then the
+    /// billboard ghost pass.
+    GhostMesh,
     FluidSurface,
     Smoke,
     Fog,
@@ -85,6 +90,7 @@ impl StageSet for RenderStage {
         Self::Forward,
         Self::KinematicBrush,
         Self::SkinnedMesh,
+        Self::GhostMesh,
         Self::FluidSurface,
         Self::Smoke,
         Self::Fog,
@@ -123,6 +129,7 @@ impl StageSet for RenderStage {
             Self::Forward => "rec_forward",
             Self::KinematicBrush => "rec_kinematic_brush",
             Self::SkinnedMesh => "rec_skinned_mesh",
+            Self::GhostMesh => "rec_ghost_mesh",
             Self::FluidSurface => "rec_fluid_surface",
             Self::Smoke => "rec_smoke",
             Self::Fog => "rec_fog",

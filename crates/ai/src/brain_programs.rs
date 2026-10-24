@@ -501,6 +501,7 @@ mod tests {
 
     fn projectile_descriptor() -> ProjectileDescriptor {
         ProjectileDescriptor {
+            ghost: false,
             speed: 18.0,
             radius: 0.15,
             lifetime_ms: 1_500.0,
@@ -528,6 +529,7 @@ mod tests {
         cooldown_ms: f32,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(canonical_name.to_string()),

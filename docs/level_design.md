@@ -53,6 +53,36 @@ ignores roll. Lights use `angles` as a direction instead; see their keys below.
 
 ---
 
+## Player Spawns
+
+A `player_spawn` is a place a player can start, not a player by itself. However
+many a map has, one player gets one body.
+
+- **Where the player stands.** Rest the spawn's box on the floor, as
+  TrenchBroom does when you drop it there. The bottom of the box is where the
+  player's feet stand, whatever size your mod makes the player. A box floating
+  above the floor starts the player in the air, and they drop. A box sunk into
+  the floor is an error in the map, not something the engine fixes.
+- **Who starts where.** In single player, and for the host of a co-op game, the
+  player starts at the first `player_spawn` in the map that is not marked
+  `coop_only` and whose `entity_class` is registered. Each player who joins a
+  co-op game takes the first spawn in map order that nobody is using. A spawn
+  whose `entity_class` is not registered is skipped for everyone. When every
+  spawn is taken, joiners share them and the engine logs a warning, so give a
+  co-op map one spawn per player.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `angle` / `angles` | yaw, or pitch yaw roll | `0` | The direction the player looks (see Entity facing). |
+| `coop_only` | 0/1 | `0` | `1` keeps this spawn for co-op joiners: the first player never starts here. If every spawn is marked, the first player takes the first one and the engine logs a warning. |
+| `entity_class` | string | `player` | The registered entity the player is spawned as. |
+
+Spawns appear in the map file in the order you placed them. TrenchBroom keeps
+that order, but if a co-op spawn must never be the first player's, mark it
+`coop_only` rather than relying on its position.
+
+---
+
 ## Lights
 
 ### `light` — Point Light
@@ -437,6 +467,17 @@ relative to a pair of points with their offset, view and momentum kept
 (`seamless`), for shifts between copies of a room. Scripts turn teleporters on
 and off. Keys, room-copy layout, firing rules and scripting are in
 [docs/teleporters.md](teleporters.md).
+
+---
+
+## Ghost Links
+
+A `ghost_link` brush over one copy of a room makes what is inside it — players,
+monsters, projectiles and tagged movers that are allowed to ghost — also draw
+as translucent ghosts at the matching spot in another copy, with their sounds
+echoing there if its style says so. It reuses `teleport_destination` points for
+the mapping. Keys, styles, ghost audio and scripting are in
+[docs/ghost-links.md](ghost-links.md).
 
 ---
 

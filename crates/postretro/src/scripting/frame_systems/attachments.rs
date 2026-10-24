@@ -13,7 +13,9 @@ use postretro_model::anim::{
 };
 use postretro_model::sample_params::{ClipSample, FadeSource, MeshSampleParams};
 use postretro_model::skeleton::AnimationClip;
-use postretro_render_cpu::mesh_instances::{MeshInstanceInput, MeshPaletteCacheKey};
+use postretro_render_cpu::mesh_instances::{
+    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
+};
 
 use super::hit_zones::{HitZoneStore, ModelHitZones};
 
@@ -121,7 +123,7 @@ pub(crate) fn emit_for_holder(
             resample: false,
             forward_visible,
             dynamic_shadow_visible,
-            is_viewmodel: false,
+            presentation: MeshPresentation::World,
         });
     }
 

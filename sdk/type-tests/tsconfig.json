@@ -10,7 +10,8 @@
     "baseUrl": ".",
     "paths": {
       "postretro": ["../types/postretro.d.ts"],
-      "postretro/ui": ["../types/postretro.d.ts"]
+      "postretro/ui": ["../types/postretro.d.ts"],
+      "postretro/audio": ["../types/postretro.d.ts"]
     }
   },
   "include": ["*.ts"]

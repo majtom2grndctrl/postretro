@@ -95,6 +95,24 @@ impl Renderer {
         self.bloom_render_profile
     }
 
+    /// Commit the mod's ghost transparency (`render.ghosts`). CPU-only boot
+    /// state, so it is safe before full init and survives a full-renderer
+    /// rebuild; the ghost passes read it each frame to pick a pipeline per
+    /// batch, so a change needs no rebuild. A renderer never told blends.
+    pub fn set_ghost_transparency(
+        &mut self,
+        mode: postretro_render_cpu::ghost_transparency::GhostTransparency,
+    ) {
+        self.ghost_transparency = mode;
+    }
+
+    /// The ghost transparency the next ghost draws use.
+    pub fn ghost_transparency(
+        &self,
+    ) -> postretro_render_cpu::ghost_transparency::GhostTransparency {
+        self.ghost_transparency
+    }
+
     /// Runtime bloom state. `POSTRETRO_BLOOM=0` seeds this false for the
     /// manual no-bloom observation; dev-tools can then change it live.
     #[cfg(feature = "dev-tools")]

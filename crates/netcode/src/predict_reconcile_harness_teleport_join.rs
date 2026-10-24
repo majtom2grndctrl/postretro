@@ -184,6 +184,7 @@ fn teleport_join_unmerged_refresh_paces_failing_merges_at_the_resend_cadence() {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                ghost_audio: None,
                 server_script_time: 0.0,
             },
         )

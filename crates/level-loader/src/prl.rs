@@ -42,6 +42,8 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::geometry::Vertex as PrlVertex;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::ghost_links::GhostLinksSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::kinematic_geometry::{
     KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
 };
@@ -59,7 +61,6 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::shadowmask_atlas::{FaceOwners, ShadowmaskBlockIndex};
-#[cfg(feature = "load-prl")]
 use postretro_level_format::teleporters::TeleportersSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
@@ -725,6 +726,9 @@ pub struct LevelWorld {
     /// Predictive teleporter regions (id55), empty when absent.
     #[cfg(feature = "load-prl")]
     pub teleporters: TeleportersSection,
+    /// Ghost-link regions (id 56), empty when absent. Presentation only.
+    #[cfg(feature = "load-prl")]
+    pub ghost_links: GhostLinksSection,
     /// Empty when section absent or no `fog_volume` brushes authored.
     #[cfg(feature = "load-prl")]
     pub fog_volumes: Vec<FogVolumeRecord>,
@@ -896,6 +900,8 @@ impl LevelWorld {
             trigger_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
             teleporters: TeleportersSection::default(),
+            #[cfg(feature = "load-prl")]
+            ghost_links: GhostLinksSection::default(),
             #[cfg(feature = "load-prl")]
             fog_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
@@ -2006,6 +2012,8 @@ mod tests {
             trigger_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
             teleporters: TeleportersSection::default(),
+            #[cfg(feature = "load-prl")]
+            ghost_links: GhostLinksSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
@@ -2113,6 +2121,8 @@ mod tests {
             trigger_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
             teleporters: TeleportersSection::default(),
+            #[cfg(feature = "load-prl")]
+            ghost_links: GhostLinksSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
@@ -2174,6 +2184,8 @@ mod tests {
             trigger_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
             teleporters: TeleportersSection::default(),
+            #[cfg(feature = "load-prl")]
+            ghost_links: GhostLinksSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),

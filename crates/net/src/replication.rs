@@ -632,6 +632,18 @@ impl ServerReplication {
 /// the engine glue's `payload_to_raw`; kept here so the tracker is self-contained.
 fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
     match payload {
+        ComponentPayload::GhostLinkState(state) => RawComponentPayload {
+            component_kind: crate::wire::COMPONENT_KIND_GHOST_LINK,
+            ghost_link: Some(*state),
+            teleporter: None,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
+        },
         ComponentPayload::TeleporterState(state) => RawComponentPayload {
             component_kind: crate::wire::COMPONENT_KIND_TELEPORTER,
             teleporter: Some(*state),
@@ -642,6 +654,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         },
         ComponentPayload::Transform(t) => RawComponentPayload {
             teleporter: None,
@@ -653,6 +666,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         },
         ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
             teleporter: None,
@@ -664,6 +678,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         },
         ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
             teleporter: None,
@@ -675,6 +690,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         },
         ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
             teleporter: None,
@@ -686,6 +702,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         },
         ComponentPayload::LightState(state) => RawComponentPayload {
             teleporter: None,
@@ -697,6 +714,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             light: Some(state.clone()),
             emitter: None,
             fog: None,
+            ghost_link: None,
         },
         ComponentPayload::EmitterState(state) => RawComponentPayload {
             teleporter: None,
@@ -708,6 +726,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             light: None,
             emitter: Some(state.clone()),
             fog: None,
+            ghost_link: None,
         },
         ComponentPayload::FogState(state) => RawComponentPayload {
             teleporter: None,
@@ -719,6 +738,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             light: None,
             emitter: None,
             fog: Some(state.clone()),
+            ghost_link: None,
         },
     }
 }

@@ -7,7 +7,8 @@ use crate::collision::moving::CombinedCollisionWorld;
 use crate::collision::{CollisionCapsule, MAP_UNIT_METRES, SKIN_DISTANCE};
 use glam::{Quat, Vec3};
 use postretro_foundation::{
-    GroundRef, MovementState, MovementStateKind, PlayerMovementComponent, wrap_teleport_yaw,
+    GroundRef, MovementState, MovementStateKind, PlayerMovementComponent, SeamlessMapping,
+    wrap_teleport_yaw,
 };
 use postretro_level_format::teleporters::TeleportMode;
 
@@ -59,18 +60,22 @@ pub(super) fn resolve(
         return position;
     };
     let record = &teleporters.records()[index];
-    let yaw_delta = match record.mode {
-        TeleportMode::Classic => record.destination_yaw - input.facing_yaw,
-        TeleportMode::Seamless => record.destination_yaw - record.landmark_yaw,
-    };
-    let rotation = Quat::from_rotation_y(yaw_delta);
-    let arrival = match record.mode {
-        TeleportMode::Classic => Vec3::from(record.destination_origin),
+    let (yaw_delta, arrival) = match record.mode {
+        TeleportMode::Classic => (
+            record.destination_yaw - input.facing_yaw,
+            Vec3::from(record.destination_origin),
+        ),
         TeleportMode::Seamless => {
-            Vec3::from(record.destination_origin)
-                + rotation * (position - Vec3::from(record.landmark_origin))
+            let mapping = SeamlessMapping::new(
+                Vec3::from(record.landmark_origin),
+                record.landmark_yaw,
+                Vec3::from(record.destination_origin),
+                record.destination_yaw,
+            );
+            (mapping.yaw_delta(), mapping.point(position))
         }
     };
+    let rotation = Quat::from_rotation_y(yaw_delta);
     // Installed poses are validated finite, so only a non-finite caller facing
     // or body point lands here. That is not an authored blocked arrival: refuse
     // without spending the teleporter's one blocked-arrival warning.

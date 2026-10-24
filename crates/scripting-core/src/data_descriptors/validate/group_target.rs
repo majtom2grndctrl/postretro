@@ -60,10 +60,10 @@ pub fn is_trap_primitive(primitive: &str) -> bool {
     matches!(primitive, "fireTrap" | "startTrap" | "stopTrap")
 }
 
-/// Reject `spawnFromSpawner` and the trap verbs beside a group `kind`: a
-/// spawner is addressed by `tag` or member id and a trap by member id, so the
-/// `kind` would be silently dropped. Every other primitive passes; the handler
-/// decides what a group applies to.
+/// Reject `spawnFromSpawner`, the trap verbs and the ghost-link member steps
+/// beside a group `kind`: a spawner is addressed by `tag` or member id, and a
+/// trap or a ghost link by member id, so the `kind` would be silently dropped.
+/// Every other primitive passes; the handler decides what a group applies to.
 pub fn validate_group_kind_primitive(
     reaction: &str,
     site: &str,
@@ -77,6 +77,11 @@ pub fn validate_group_kind_primitive(
     if is_trap_primitive(primitive) {
         return Err(format!(
             "reaction `{reaction}` {site}: `{primitive}` addresses one projectile trap member, so it cannot carry a group `kind`"
+        ));
+    }
+    if postretro_foundation::is_ghost_link_primitive(primitive) {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` addresses one ghost link member, so it cannot carry a group `kind`"
         ));
     }
     Ok(())
@@ -192,6 +197,12 @@ pub fn validate_subject_token_primitive(
     }
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
+    if postretro_foundation::is_ghost_link_primitive(primitive) {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` addresses one ghost link member from `getMapEntities(\"ghostLink\")`; no subject token carries it, so it cannot take `{}`",
+            token.as_wire()
+        ));
+    }
     if arms_a_teleporter && token != SubjectToken::FiredTeleporter {
         return Err(format!(
             "reaction `{reaction}` {site}: `{primitive}` takes `@teleporter` (`on.teleporter`), not `{}`",

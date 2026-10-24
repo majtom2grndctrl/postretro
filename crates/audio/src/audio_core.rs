@@ -12,9 +12,10 @@ use kira::{AudioManager, Capacities, Tween};
 
 use crate::assets::SoundRegistry;
 use crate::boundary::{
-    Attenuation, AudioError, ListenerState, SoundAnchor, SoundRequest, parse_bus,
+    Attenuation, AudioError, ListenerState, SoundAnchor, SoundRequest, parse_bus, parse_script_bus,
 };
 use crate::buses::{BusId, BusTree};
+use crate::ghost_bus::GhostBusProfile;
 use crate::mono::{MonoFoldBuilder, MonoFoldHandle};
 use crate::muffle::WorldMuffleHandle;
 use crate::orientation::orientation_from_forward_up;
@@ -64,8 +65,9 @@ pub(crate) struct AudioCore<B: Backend> {
     /// level install and cleared at unload so it follows level lifetime, like
     /// textures (`resource_management.md` §7.2). Consumed by `play`.
     registry: SoundRegistry,
-    /// Master → SFX/Music/UI mixer tree plus the per-bus voice budget. The play
-    /// API routes sounds to a bus and consults its voice counter.
+    /// Master → SFX/Music/UI (Ghost under SFX) mixer tree plus the per-bus
+    /// voice budget. The play API routes sounds to a bus and consults its
+    /// voice counter.
     buses: BusTree,
     /// Live playback handles for unpositioned sounds started via `play`, keyed
     /// by the opaque `SoundHandle`. `stop` looks handles up here; the per-frame
@@ -178,6 +180,18 @@ impl<B: Backend> AudioCore<B> {
         self.muffle.set(amount);
     }
 
+    /// Move the Ghost bus to `profile` over `ramp`. An invalid profile warns
+    /// and leaves the bus as it is; callers resolve and validate first.
+    pub(crate) fn set_ghost_bus_profile(&mut self, profile: GhostBusProfile, ramp: Duration) {
+        if !profile.is_valid() {
+            log::warn!(
+                "[Audio] invalid ghost bus profile {profile:?}; the bus keeps its current mix"
+            );
+            return;
+        }
+        self.buses.set_ghost_profile(profile, ramp);
+    }
+
     /// Reserve a voice slot on `bus`, returning `true` on success (count
     /// incremented) or `false` when the bus is at its cap. `play` calls this
     /// before starting a sound and drops-and-logs on `false`.
@@ -232,8 +246,9 @@ impl<B: Backend> AudioCore<B> {
     /// caller can later pass to [`stop`](Self::stop). Returns `None` — never
     /// panicking — when the request can't be honored:
     ///
-    /// - the bus name is unrecognized, or a positioned request names a bus other
-    ///   than SFX or asks to loop (warns),
+    /// - the bus name is unrecognized, or a positioned request names a bus that
+    ///   hosts no positional voices (anything but SFX and Ghost) or asks to loop
+    ///   (warns),
     /// - the bus is at its voice cap, or kira still holds every slot the request
     ///   would need (warns; refused, never queued),
     /// - the sound key isn't in the registry (warns, and the voice is released),
@@ -245,8 +260,26 @@ impl<B: Backend> AudioCore<B> {
     /// named by [`set_listener_attached`](Self::set_listener_attached) or
     /// `update`) instead starts now, unpositioned. A `looping` request applies
     /// a whole-clip loop region and holds its voice until `stop`.
+    ///
+    /// `Some` is the admission outcome: the request now holds a voice on its
+    /// bus. A positional voice that later fails to start releases that voice at
+    /// the audio step.
     pub(crate) fn play(&mut self, req: SoundRequest) -> Option<SoundHandle> {
-        let bus = match parse_bus(&req.bus) {
+        self.play_on(req, parse_bus)
+    }
+
+    /// [`play`](Self::play) for a script's request: an engine-only bus is an
+    /// unknown bus, warned and dropped.
+    pub(crate) fn play_script(&mut self, req: SoundRequest) -> Option<SoundHandle> {
+        self.play_on(req, parse_script_bus)
+    }
+
+    fn play_on(
+        &mut self,
+        req: SoundRequest,
+        parse: fn(&str) -> Option<BusId>,
+    ) -> Option<SoundHandle> {
+        let bus = match parse(&req.bus) {
             Some(bus) => bus,
             None => {
                 log::warn!(
@@ -257,16 +290,18 @@ impl<B: Backend> AudioCore<B> {
                 return None;
             }
         };
-        if req.anchor.is_some() && (bus != BusId::Sfx || req.looping) {
+        if req.anchor.is_some() && (!bus.hosts_positional() || req.looping) {
             log::warn!(
-                "[Audio] positioned sound '{}' must be a one-shot on the sfx bus — request dropped",
+                "[Audio] positioned sound '{}' must be a one-shot on the sfx or ghost bus — request dropped",
                 req.sound,
             );
             return None;
         }
 
         match req.anchor {
-            Some(anchor) if !self.is_attached(&anchor) => self.admit_positional(&req.sound, anchor),
+            Some(anchor) if !self.is_attached(&anchor) => {
+                self.admit_positional(bus, &req.sound, anchor)
+            }
             anchor => self.play_unpositioned(bus, &req.sound, req.looping, anchor.is_some()),
         }
     }
@@ -315,18 +350,23 @@ impl<B: Backend> AudioCore<B> {
         }
     }
 
-    fn admit_positional(&mut self, sound: &str, anchor: SoundAnchor) -> Option<SoundHandle> {
-        if !self.spatial.has_room(self.buses.track(BusId::Sfx)) {
-            log::warn!("[Audio] sfx has no free kira track slot — '{sound}' dropped");
+    fn admit_positional(
+        &mut self,
+        bus: BusId,
+        sound: &str,
+        anchor: SoundAnchor,
+    ) -> Option<SoundHandle> {
+        if !self.spatial.has_room(bus, self.buses.track(bus)) {
+            log::warn!("[Audio] bus {bus:?} has no free kira track slot — '{sound}' dropped");
             return None;
         }
-        if !self.buses.try_acquire_voice(BusId::Sfx) {
+        if !self.buses.try_acquire_voice(bus) {
             return None;
         }
-        let playable = self.resolve_admitted(BusId::Sfx, sound, false)?;
+        let playable = self.resolve_admitted(bus, sound, false)?;
         let handle = self.voices.mint();
         self.spatial
-            .admit(handle, playable, anchor, self.attenuation);
+            .admit(handle, bus, playable, anchor, self.attenuation);
         Some(handle)
     }
 
@@ -335,10 +375,12 @@ impl<B: Backend> AudioCore<B> {
     /// to fade the audio out. A no-op if `handle` is unknown — already finished
     /// and reclaimed, or never minted by this `Audio`.
     pub(crate) fn stop(&mut self, handle: SoundHandle) {
-        if let Some(bus) = self.voices.remove_and_stop(handle, Tween::default()) {
+        if let Some(bus) = self
+            .voices
+            .remove_and_stop(handle, Tween::default())
+            .or_else(|| self.spatial.stop(handle, Tween::default()))
+        {
             self.buses.release_voice(bus);
-        } else if self.spatial.stop(handle, Tween::default()) {
-            self.buses.release_voice(BusId::Sfx);
         }
     }
 
@@ -351,12 +393,22 @@ impl<B: Backend> AudioCore<B> {
             duration: POSITIONAL_UNLOAD_FADE,
             ..Tween::default()
         };
-        for _ in 0..self.spatial.stop_all(tween) {
-            self.buses.release_voice(BusId::Sfx);
-        }
+        self.spatial.stop_all(tween, &mut self.buses);
         for bus in self.voices.stop_anchored(tween) {
             self.buses.release_voice(bus);
         }
+    }
+
+    /// Fade out every ghost voice and release its slot on the Ghost bus, as
+    /// [`fade_out_positional`](Self::fade_out_positional) does at unload, while
+    /// every real voice plays on. A ghost voice is always positioned at a
+    /// mapped point, never on the listener's pawn, so each is a spatial voice.
+    pub(crate) fn fade_out_ghost_voices(&mut self) {
+        let tween = Tween {
+            duration: POSITIONAL_UNLOAD_FADE,
+            ..Tween::default()
+        };
+        self.spatial.stop_bus(BusId::Ghost, tween, &mut self.buses);
     }
 
     /// Per-frame audio step. Runs third in frame order (Input → Game logic →
@@ -398,20 +450,15 @@ impl<B: Backend> AudioCore<B> {
         for bus in self.voices.reclaim_finished() {
             self.buses.release_voice(bus);
         }
-        for _ in 0..self.spatial.reclaim_finished() {
-            self.buses.release_voice(BusId::Sfx);
-        }
+        self.spatial.reclaim_finished(&mut self.buses);
 
-        let failed = self.spatial.update(
-            self.buses.track_mut(BusId::Sfx),
+        self.spatial.update(
+            &mut self.buses,
             self.listener.id(),
             self.listener_position,
             dt,
             &mut resolve,
         );
-        for _ in 0..failed {
-            self.buses.release_voice(BusId::Sfx);
-        }
     }
 }
 

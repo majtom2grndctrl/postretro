@@ -9,6 +9,7 @@ pub mod brain;
 pub mod deferred_effect;
 pub mod entity_state;
 pub mod fog_volume;
+pub mod ghost_link;
 pub mod grant;
 pub mod health;
 pub mod hit_volume;

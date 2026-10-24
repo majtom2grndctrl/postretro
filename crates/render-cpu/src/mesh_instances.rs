@@ -14,6 +14,8 @@ use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum};
 // the hit-zone facility) — no renderer dependency crosses into game code.
 use postretro_model::sample_params::{CaptureInstruction, MeshSampleParams};
 
+use crate::ghost_instance::GhostInstanceLook;
+
 /// Fixed per-frame bone-palette budget, in `BonePaletteEntry` slots (one slot =
 /// one joint of one instance). Sized from a representative wave: ~64 concurrent
 /// skinned instances at the real per-model joint count (well under `MAX_JOINTS =
@@ -50,16 +52,81 @@ pub enum MeshPaletteCacheKey {
         holder: u32,
         attachment_index: usize,
     },
+    /// A ghost's copy of a holder (`attachment_index` `None`) or of one of its
+    /// attachments, seen through `link` (`rendering_pipeline.md` §7.9). Its own
+    /// namespace: a fading ghost holds its last in-volume pose while the real
+    /// entity moves on, so the two must never share a cached palette run.
+    Ghost {
+        link: u16,
+        holder: u32,
+        attachment_index: Option<usize>,
+    },
 }
 
 impl MeshPaletteCacheKey {
-    /// Stable raw holder group used for atomic frame-budget admission. Plan
-    /// membership completes the group identity because a connected client's
-    /// body and viewmodel may deliberately share this id.
-    fn holder_group(self) -> u32 {
+    /// Stable raw holder group used for atomic frame-budget admission: a
+    /// namespace (0 for real draws, the link plus one for ghosts) and the raw
+    /// holder id. Plan membership completes the group identity because a
+    /// connected client's body and viewmodel may deliberately share this id.
+    /// Within the ghost plan it names one ghost: a holder and its attachments
+    /// seen through one link.
+    pub fn holder_group(self) -> (u32, u32) {
         match self {
-            Self::Entity(entity) => entity,
-            Self::Attachment { holder, .. } => holder,
+            Self::Entity(entity) => (0, entity),
+            Self::Attachment { holder, .. } => (0, holder),
+            Self::Ghost { link, holder, .. } => (u32::from(link) + 1, holder),
+        }
+    }
+
+    /// This real key's ghost twin through `link`. A ghost key maps to itself.
+    pub fn ghost_through(self, link: u16) -> Self {
+        match self {
+            Self::Entity(holder) => Self::Ghost {
+                link,
+                holder,
+                attachment_index: None,
+            },
+            Self::Attachment {
+                holder,
+                attachment_index,
+            } => Self::Ghost {
+                link,
+                holder,
+                attachment_index: Some(attachment_index),
+            },
+            ghost @ Self::Ghost { .. } => ghost,
+        }
+    }
+}
+
+/// Which plan an instance enters. Each plan shares the frame's palette and
+/// instance buffers; only [`MeshPresentation::World`] reaches shadow depth.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MeshPresentation {
+    /// Lit world draw: forward, shadow depth and sampled-SH planning.
+    World,
+    /// First-person weapon: its own pass and projection, never shadow depth.
+    Viewmodel,
+    /// Unlit translucent ghost at a mapped pose (`rendering_pipeline.md` §7.9):
+    /// its own pass, never shadow depth or SH sampling.
+    Ghost(GhostInstanceLook),
+}
+
+impl MeshPresentation {
+    pub fn is_viewmodel(self) -> bool {
+        matches!(self, Self::Viewmodel)
+    }
+
+    pub fn is_ghost(self) -> bool {
+        matches!(self, Self::Ghost(_))
+    }
+
+    /// Plan identity, without the ghost look.
+    fn plan(self) -> u8 {
+        match self {
+            Self::World => 0,
+            Self::Viewmodel => 1,
+            Self::Ghost(_) => 2,
         }
     }
 }
@@ -113,10 +180,10 @@ pub struct MeshInstanceInput {
     /// relevance may retain additional off-PVS meshes that dynamic slots must
     /// not admit.
     pub dynamic_shadow_visible: bool,
-    /// First-person weapon presentation. Viewmodels are planned separately from
-    /// world instances so they use the shared palette/instance buffers without
-    /// ever entering world shadow-depth passes.
-    pub is_viewmodel: bool,
+    /// Which plan the instance enters. Viewmodels and ghosts are planned
+    /// separately from world instances so they use the shared palette/instance
+    /// buffers without ever entering world shadow-depth passes.
+    pub presentation: MeshPresentation,
 }
 
 /// One instance's resolved placement in the frame plan: its world transform, the
@@ -162,6 +229,9 @@ pub struct PlannedInstance {
     /// Dynamic shadow passes filter on this while promoted-static passes may use
     /// every retained planned instance.
     pub dynamic_shadow_visible: bool,
+    /// A ghost instance's presented look, packed into the instance record's
+    /// free lanes; `None` for world and viewmodel instances.
+    pub ghost_look: Option<GhostInstanceLook>,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -194,16 +264,19 @@ pub struct MeshFramePlan {
     pub dropped: u32,
 }
 
-/// The two control-flow plans sharing this frame's palette and instance SSBOs.
+/// The control-flow plans sharing this frame's palette and instance SSBOs.
 ///
-/// Budget admission is global across both plans: all forward-visible groups are
-/// considered before dynamic-shadow-only and promoted-static-only groups. Dense
-/// instance offsets still place the viewmodel after the world plan; neither plan
-/// owns a separate GPU buffer.
+/// Budget admission is global across the plans: all real forward-visible groups
+/// are considered before dynamic-shadow-only and promoted-static-only groups,
+/// within a priority world before viewmodel, and ghosts after every real group,
+/// so an overflow drops ghosts before any real mesh. Dense instance offsets
+/// place the viewmodel after the world plan and ghosts last; no plan owns a
+/// separate GPU buffer. Only `world` reaches shadow depth and SH sampling.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MeshFramePlans {
     pub world: MeshFramePlan,
     pub viewmodel: MeshFramePlan,
+    pub ghost: MeshFramePlan,
 }
 
 /// World-space bounds for forward receivers admitted by the shared mesh-frame
@@ -295,28 +368,41 @@ pub fn plan_mesh_frame(
     plan
 }
 
-/// Partition world and first-person viewmodel instances into plans that share
-/// one dense palette/instance allocation. The structural split means callers
-/// pass only [`MeshFramePlans::world`] into shadow-depth recording; no depth
-/// filter has to recognize a viewmodel group.
+/// Partition world and first-person viewmodel instances, plus the frame's ghost
+/// instances, into plans that share one dense palette/instance allocation. The
+/// structural split means callers pass only [`MeshFramePlans::world`] into
+/// shadow-depth recording; no depth filter has to recognize a viewmodel or
+/// ghost group. `ghosts` holds only [`MeshPresentation::Ghost`] instances, and
+/// `instances` none.
 pub fn plan_mesh_frame_plans(
     instances: &[MeshInstanceInput],
+    ghosts: &[MeshInstanceInput],
     joints: &impl JointCounts,
 ) -> MeshFramePlans {
+    debug_assert!(
+        ghosts.iter().all(|ghost| ghost.presentation.is_ghost())
+            && !instances
+                .iter()
+                .any(|instance| instance.presentation.is_ghost()),
+        "ghost instances plan from their own list"
+    );
     let mut palette_cursor = 0;
     let mut instance_cursor = 0;
     let mut world = MeshFramePlan::default();
     let mut viewmodel = MeshFramePlan::default();
+    let mut ghost = MeshFramePlan::default();
 
     // The collector appends its small viewmodel set after world instances. Find
     // that boundary once so each priority scan visits only its own plan. Keep a
     // filtered fallback because this public CPU contract still accepts mixed
     // input order.
-    let first_viewmodel = instances.iter().position(|instance| instance.is_viewmodel);
+    let first_viewmodel = instances
+        .iter()
+        .position(|instance| instance.presentation.is_viewmodel());
     let viewmodels_are_a_suffix = first_viewmodel.is_none_or(|start| {
         instances[start..]
             .iter()
-            .all(|instance| instance.is_viewmodel)
+            .all(|instance| instance.presentation.is_viewmodel())
     });
     if viewmodels_are_a_suffix {
         let split = first_viewmodel.unwrap_or(instances.len());
@@ -346,7 +432,7 @@ pub fn plan_mesh_frame_plans(
             plan_mesh_priority(
                 instances,
                 joints,
-                &|instance| !instance.is_viewmodel,
+                &|instance| !instance.presentation.is_viewmodel(),
                 visibility_priority,
                 &mut palette_cursor,
                 &mut instance_cursor,
@@ -355,7 +441,7 @@ pub fn plan_mesh_frame_plans(
             plan_mesh_priority(
                 instances,
                 joints,
-                &|instance| instance.is_viewmodel,
+                &|instance| instance.presentation.is_viewmodel(),
                 visibility_priority,
                 &mut palette_cursor,
                 &mut instance_cursor,
@@ -364,10 +450,29 @@ pub fn plan_mesh_frame_plans(
         }
     }
 
+    // Ghosts plan after every real group, shadow-only casters included, so an
+    // overflow drops ghosts before any real mesh.
+    for visibility_priority in 0..3 {
+        plan_mesh_priority(
+            ghosts,
+            joints,
+            &|_| true,
+            visibility_priority,
+            &mut palette_cursor,
+            &mut instance_cursor,
+            &mut ghost,
+        );
+    }
+
     let mut offset_cursor = 0;
     assign_dense_instance_offsets(&mut world, &mut offset_cursor);
     assign_dense_instance_offsets(&mut viewmodel, &mut offset_cursor);
-    MeshFramePlans { world, viewmodel }
+    assign_dense_instance_offsets(&mut ghost, &mut offset_cursor);
+    MeshFramePlans {
+        world,
+        viewmodel,
+        ghost,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -387,11 +492,11 @@ fn plan_mesh_priority(
     let mut group_start = 0;
     while group_start < instances.len() {
         let holder_group = instances[group_start].palette_cache_key.holder_group();
-        let is_viewmodel = instances[group_start].is_viewmodel;
+        let plan_kind = instances[group_start].presentation.plan();
         let mut group_end = group_start + 1;
         while group_end < instances.len()
             && instances[group_end].palette_cache_key.holder_group() == holder_group
-            && instances[group_end].is_viewmodel == is_viewmodel
+            && instances[group_end].presentation.plan() == plan_kind
         {
             group_end += 1;
         }
@@ -402,7 +507,7 @@ fn plan_mesh_priority(
         }
         debug_assert!(
             input_group.iter().all(include),
-            "a holder and its attachments must share the world/viewmodel plan"
+            "a holder and its attachments must share one plan"
         );
         let forward_visible = input_group.iter().any(|instance| instance.forward_visible);
         let dynamic_shadow_visible = input_group
@@ -511,6 +616,10 @@ fn plan_instance_group(
             // forward and shadow draws cannot split malformed mixed inputs.
             forward_visible,
             dynamic_shadow_visible,
+            ghost_look: match instance.presentation {
+                MeshPresentation::Ghost(look) => Some(look),
+                MeshPresentation::World | MeshPresentation::Viewmodel => None,
+            },
         };
 
         if let Some(group) = groups
@@ -591,7 +700,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
-            is_viewmodel: false,
+            presentation: MeshPresentation::World,
         }
     }
 
@@ -727,7 +836,7 @@ mod tests {
             instance("big", 99.0, 3),
         ];
 
-        let plans = plan_mesh_frame_plans(&inputs, &fixed);
+        let plans = plan_mesh_frame_plans(&inputs, &[], &fixed);
         let bounds: Vec<_> = planned_forward_sample_bounds(&plans, true).collect();
 
         assert_eq!(plans.world.dropped, 1);
@@ -745,9 +854,9 @@ mod tests {
         let fixed = joints(&[("world", 1), ("weapon", 1)]);
         let world = instance("world", 1.0, 1);
         let mut viewmodel = instance("weapon", 2.0, 2);
-        viewmodel.is_viewmodel = true;
+        viewmodel.presentation = MeshPresentation::Viewmodel;
         viewmodel.dynamic_shadow_visible = false;
-        let plans = plan_mesh_frame_plans(&[world, viewmodel], &fixed);
+        let plans = plan_mesh_frame_plans(&[world, viewmodel], &[], &fixed);
 
         assert_eq!(planned_forward_sample_bounds(&plans, true).count(), 2);
         assert_eq!(planned_forward_sample_bounds(&plans, false).count(), 1);
@@ -764,7 +873,7 @@ mod tests {
                 max: Vec3::splat(6.0),
             },
         );
-        let plans = plan_mesh_frame_plans(&[instance("animated", 10.0, 1)], &fixed);
+        let plans = plan_mesh_frame_plans(&[instance("animated", 10.0, 1)], &[], &fixed);
 
         let bounds: Vec<_> = planned_forward_sample_bounds(&plans, true).collect();
 
@@ -983,14 +1092,14 @@ mod tests {
     fn plans_partition_world_and_viewmodel_with_shared_buffer_offsets() {
         let joints = joints(&[("world", 3), ("viewmodel", 4)]);
         let mut viewmodel = instance("viewmodel", 0.0, 2);
-        viewmodel.is_viewmodel = true;
+        viewmodel.presentation = MeshPresentation::Viewmodel;
         let instances = [
             instance("world", 1.0, 0),
             instance("world", 2.0, 1),
             viewmodel,
         ];
 
-        let plans = plan_mesh_frame_plans(&instances, &joints);
+        let plans = plan_mesh_frame_plans(&instances, &[], &joints);
 
         assert_eq!(plans.world.instance_count, 2);
         assert_eq!(plans.viewmodel.instance_count, 1);
@@ -1018,7 +1127,7 @@ mod tests {
             ("viewmodel", per),
         ]);
         let mut viewmodel = instance("viewmodel", 4.0, 4);
-        viewmodel.is_viewmodel = true;
+        viewmodel.presentation = MeshPresentation::Viewmodel;
         viewmodel.dynamic_shadow_visible = false;
         let inputs = [
             non_forward_instance("static-only", 1.0, 1),
@@ -1027,7 +1136,7 @@ mod tests {
             viewmodel,
         ];
 
-        let plans = plan_mesh_frame_plans(&inputs, &joints);
+        let plans = plan_mesh_frame_plans(&inputs, &[], &joints);
         let world_models: Vec<_> = plans
             .world
             .groups
@@ -1062,13 +1171,13 @@ mod tests {
         ]);
         let world = instance("world-body", 1.0, holder);
         let mut viewmodel = attachment_instance("viewmodel-weapon", 2.0, holder, usize::MAX);
-        viewmodel.is_viewmodel = true;
+        viewmodel.presentation = MeshPresentation::Viewmodel;
         viewmodel.dynamic_shadow_visible = false;
         // Force the mixed-order fallback so this test exercises plan-aware
         // atomic grouping rather than only the collector's suffix fast path.
         let world_other = instance("world-other", 3.0, 77);
 
-        let plans = plan_mesh_frame_plans(&[world, viewmodel, world_other], &joints);
+        let plans = plan_mesh_frame_plans(&[world, viewmodel, world_other], &[], &joints);
 
         assert_eq!(plans.world.instance_count, 2);
         assert_eq!(plans.viewmodel.instance_count, 1);
@@ -1099,7 +1208,7 @@ mod tests {
             instance("forward", 3.0, 3),
         ];
 
-        let plans = plan_mesh_frame_plans(&inputs, &joints);
+        let plans = plan_mesh_frame_plans(&inputs, &[], &joints);
         let planned_models: Vec<_> = plans
             .world
             .groups
@@ -1118,9 +1227,13 @@ mod tests {
     fn missing_viewmodel_asset_leaves_no_viewmodel_plan_to_draw() {
         let joints = joints(&[("world", 2)]);
         let mut missing_viewmodel = instance("missing-viewmodel", 0.0, 2);
-        missing_viewmodel.is_viewmodel = true;
+        missing_viewmodel.presentation = MeshPresentation::Viewmodel;
 
-        let plans = plan_mesh_frame_plans(&[instance("world", 1.0, 1), missing_viewmodel], &joints);
+        let plans = plan_mesh_frame_plans(
+            &[instance("world", 1.0, 1), missing_viewmodel],
+            &[],
+            &joints,
+        );
 
         assert_eq!(plans.world.instance_count, 1);
         assert!(plans.viewmodel.groups.is_empty());
@@ -1196,6 +1309,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            ghost_look: None,
         };
         assert!(
             instance_casts_into_cone(&inside, &planes),
@@ -1217,6 +1331,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            ghost_look: None,
         };
         assert!(
             !instance_casts_into_cone(&outside, &planes),
@@ -1276,6 +1391,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            ghost_look: None,
         };
         assert!(
             instance_casts_into_cone(&inst, &planes),
@@ -1313,5 +1429,177 @@ mod tests {
             Aabb::default(),
             "a model with no bound entry defaults to the zero box"
         );
+    }
+
+    fn ghost_look(opacity: f32) -> GhostInstanceLook {
+        GhostInstanceLook {
+            opacity,
+            saturation: 0.0,
+            tint: [1.0; 3],
+        }
+    }
+
+    /// `input` seen through `link`: the collector's ghost shape, forward
+    /// visible and never a shadow caster.
+    fn ghost_of(input: MeshInstanceInput, link: u16, opacity: f32) -> MeshInstanceInput {
+        MeshInstanceInput {
+            palette_cache_key: input.palette_cache_key.ghost_through(link),
+            forward_visible: true,
+            dynamic_shadow_visible: false,
+            presentation: MeshPresentation::Ghost(ghost_look(opacity)),
+            ..input
+        }
+    }
+
+    #[test]
+    fn plans_route_ghosts_to_their_own_plan_never_world_or_shadow() {
+        let joints = joints(&[("pawn", 4), ("gun", 1), ("viewmodel", 2)]);
+        let mut viewmodel = instance("viewmodel", 0.0, 3);
+        viewmodel.presentation = MeshPresentation::Viewmodel;
+        viewmodel.dynamic_shadow_visible = false;
+        let instances = [
+            instance("pawn", 1.0, 7),
+            attachment_instance("gun", 1.0, 7, 0),
+            viewmodel,
+        ];
+        // The same pawn and its weapon seen through link 0 and link 1.
+        let ghosts = [
+            ghost_of(instance("pawn", 101.0, 7), 0, 0.5),
+            ghost_of(attachment_instance("gun", 101.0, 7, 0), 0, 0.5),
+            ghost_of(instance("pawn", 201.0, 7), 1, 0.25),
+            ghost_of(attachment_instance("gun", 201.0, 7, 0), 1, 0.25),
+        ];
+
+        let plans = plan_mesh_frame_plans(&instances, &ghosts, &joints);
+
+        // The world plan is the shadow-depth and SH-sampling plan: no ghost key
+        // and no ghost look may reach it.
+        assert_eq!(plans.world.instance_count, 2);
+        for planned in plans.world.groups.iter().flat_map(|group| &group.instances) {
+            assert!(planned.ghost_look.is_none());
+            assert!(!matches!(
+                planned.palette_cache_key,
+                MeshPaletteCacheKey::Ghost { .. }
+            ));
+        }
+        assert_eq!(
+            planned_forward_sample_bounds(&plans, true).count(),
+            3,
+            "SH sample bounds cover world and viewmodel instances, never ghosts"
+        );
+        assert_eq!(plans.viewmodel.instance_count, 1);
+        assert_eq!(plans.ghost.instance_count, 4);
+        assert_eq!(plans.ghost.dropped, 0);
+
+        let ghost_models: Vec<_> = plans
+            .ghost
+            .groups
+            .iter()
+            .map(|group| (group.model.as_str(), group.instances.len()))
+            .collect();
+        assert_eq!(ghost_models, [("pawn", 2), ("gun", 2)]);
+        // Ghost instances follow the world and viewmodel instances in the
+        // shared instance buffer, and their palette runs follow theirs.
+        assert_eq!(plans.ghost.groups[0].instance_offset, 3);
+        assert_eq!(plans.ghost.groups[1].instance_offset, 5);
+        let ghost_bases: Vec<u32> = plans
+            .ghost
+            .groups
+            .iter()
+            .flat_map(|group| group.instances.iter().map(|planned| planned.palette_base))
+            .collect();
+        assert_eq!(ghost_bases, [7, 12, 11, 16], "pawn 0, pawn 1, gun 0, gun 1");
+        let pawn_ghosts = &plans.ghost.groups[0].instances;
+        assert_eq!(pawn_ghosts[0].ghost_look, Some(ghost_look(0.5)));
+        assert_eq!(pawn_ghosts[1].ghost_look, Some(ghost_look(0.25)));
+        assert_eq!(
+            pawn_ghosts[1].palette_cache_key,
+            MeshPaletteCacheKey::Ghost {
+                link: 1,
+                holder: 7,
+                attachment_index: None,
+            }
+        );
+        assert!(
+            pawn_ghosts
+                .iter()
+                .all(|planned| !planned.dynamic_shadow_visible)
+        );
+    }
+
+    #[test]
+    fn plan_drops_ghost_groups_before_real_forward_meshes_and_counts_them() {
+        // The world fills all but three palette slots. The link-0 ghost group
+        // (holder + weapon, 3 slots) fits; the link-1 group of the same pawn is
+        // its own atomic group and drops whole.
+        let joints = joints(&[
+            ("big", MAX_PALETTE_ENTRIES as u32 - 3),
+            ("pawn", 2),
+            ("gun", 1),
+        ]);
+        let ghosts = [
+            ghost_of(instance("pawn", 1.0, 7), 0, 1.0),
+            ghost_of(attachment_instance("gun", 1.0, 7, 0), 0, 1.0),
+            ghost_of(instance("pawn", 2.0, 7), 1, 1.0),
+            ghost_of(attachment_instance("gun", 2.0, 7, 0), 1, 1.0),
+        ];
+
+        let plans = plan_mesh_frame_plans(&[instance("big", 0.0, 1)], &ghosts, &joints);
+
+        assert_eq!(
+            plans.world.instance_count, 1,
+            "the real mesh is admitted first"
+        );
+        assert_eq!(plans.world.dropped, 0);
+        assert_eq!(plans.ghost.instance_count, 2);
+        assert_eq!(
+            plans.ghost.dropped, 2,
+            "the overflowing ghost group drops whole"
+        );
+        assert!(
+            plans
+                .ghost
+                .groups
+                .iter()
+                .flat_map(|group| &group.instances)
+                .all(|planned| matches!(
+                    planned.palette_cache_key,
+                    MeshPaletteCacheKey::Ghost { link: 0, .. }
+                ))
+        );
+    }
+
+    // Regression: ghosts planned inside each visibility priority took the budget
+    // ahead of real dynamic-shadow-only and promoted-static-only meshes.
+    #[test]
+    fn plan_drops_ghosts_before_real_shadow_only_meshes() {
+        // The three real groups fill the palette but for less than one more
+        // group of the same size, so the ghost group cannot fit after them.
+        let per = (MAX_PALETTE_ENTRIES / 3) as u32;
+        let joints = joints(&[
+            ("world-forward", per),
+            ("dynamic", per),
+            ("static-only", per),
+            ("pawn", per),
+        ]);
+        let inputs = [
+            non_forward_instance("static-only", 1.0, 1),
+            dynamic_shadow_instance("dynamic", 2.0, 2),
+            instance("world-forward", 3.0, 3),
+        ];
+        let ghosts = [ghost_of(instance("pawn", 4.0, 7), 0, 1.0)];
+
+        let plans = plan_mesh_frame_plans(&inputs, &ghosts, &joints);
+
+        let world_models: Vec<_> = plans
+            .world
+            .groups
+            .iter()
+            .map(|group| group.model.as_str())
+            .collect();
+        assert_eq!(world_models, ["world-forward", "dynamic", "static-only"]);
+        assert_eq!(plans.world.dropped, 0, "every real shadow-only mesh plans");
+        assert_eq!(plans.ghost.instance_count, 0);
+        assert_eq!(plans.ghost.dropped, 1, "the ghost drops instead");
     }
 }

@@ -305,13 +305,15 @@ impl App {
                 // A reload that declares, drops or reorders fluids re-resolves
                 // the installed level's fluid volumes against the new table.
                 self.refresh_environment_fluids();
+                self.refresh_ghost_styles();
             }
             // Ahead of the UI commit so the first frame that presents the
-            // reloaded UI already renders through the reloaded bloom profile
-            // and reflection style.
+            // reloaded UI already renders through the reloaded bloom profile,
+            // reflection style and ghost transparency.
             if let Some(render_profile) = staged_render_profile(&result, &outcome) {
                 self.apply_mod_bloom_render_profile(render_profile);
                 self.apply_mod_reflection_profile(render_profile);
+                self.apply_mod_ghost_transparency(render_profile);
             }
             if let Some(audio_profile) = staged_audio_profile(&result, &outcome) {
                 self.apply_mod_audio_profile(audio_profile);
@@ -359,6 +361,7 @@ mod tests {
             reflections: postretro_scripting_core::runtime::ModReflectionProfile {
                 style: postretro_scripting_core::runtime::ModReflectionStyle::Smooth,
             },
+            ghosts: postretro_scripting_core::runtime::ModGhostTransparency::Dither,
         }
     }
 
@@ -397,6 +400,7 @@ mod tests {
                 faction_sentiment_decay: 0.0,
                 entity_faction_names: Vec::new(),
                 fluids: Default::default(),
+                ghost_styles: Default::default(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),
@@ -742,8 +746,8 @@ mod tests {
         }
     }
 
-    // Pin P9: a manifest reload that changes attenuation reaches the audio
-    // subsystem only through a successful commit.
+    // A manifest reload that changes attenuation or the ghost bus
+    // profile reaches the audio subsystem only through a successful commit.
     #[test]
     fn staged_audio_profile_commits_only_successful_whole_snapshots() {
         let authored = ModAudioProfile {
@@ -751,6 +755,12 @@ mod tests {
                 min_distance: 4.0,
                 max_distance: 80.0,
                 curve: postretro_scripting_core::runtime::ModAttenuationCurve::Quadratic,
+            },
+            ghost: postretro_scripting_core::runtime::ModGhostAudio {
+                volume: 0.7,
+                high_pass_hz: 250.0,
+                low_pass_hz: 3000.0,
+                drive: 0.3,
             },
         };
         let result = built_result_with(

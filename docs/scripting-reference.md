@@ -53,8 +53,8 @@ the manifest lacks any required field.
 
 **Imports and `require`.**
 
-- TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` and `"postretro/ui"` symbols are stripped (the symbols arrive as runtime globals).
-- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")` and `require("postretro/ui")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
+- TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
+- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -141,15 +141,21 @@ reflects the flat surface: a still mirror. Drift and a declared wave never
 tilt the reflection in either style. How strongly a fluid reflects is its own
 `surfaceReflectivity` (see `defineFluid`).
 
+`ghosts` sets how every ghost-link ghost is made translucent: `"blend"` (the
+default) blends it over the scene, `"dither"` draws it as a fine screen-door
+pattern. An unknown value warns and uses `"blend"`, leaving `bloom` and
+`reflections` as written. See [ghost-links.md](ghost-links.md#blend-or-dither).
+
 Every field — and `render`, `bloom` and `reflections` themselves — is
 optional, and omitting them selects the engine defaults: half-resolution
-smooth bloom and pixel-style reflections. Malformed optional values degrade
-rather than abort: a non-object `render` warns and falls back to the complete
-default profile; a non-object `bloom` or `reflections` warns and falls back to
-that block's default without touching the other; an unrecognized
-`resolution` warns and uses `"half"`, a non-boolean `pixelated` warns and uses
-`false`, and a `style` other than `"pixel"` or `"smooth"` warns and uses
-`"pixel"`. None of these reject an otherwise valid manifest.
+smooth bloom, pixel-style reflections and blended (`"blend"`) ghosts. Malformed
+optional values degrade rather than abort: a non-object `render` warns and
+falls back to the complete default profile; a non-object `bloom` or
+`reflections` warns and falls back to that block's default without touching the
+other; an unrecognized `resolution` warns and uses `"half"`, a non-boolean
+`pixelated` warns and uses `false`, and a `style` other than `"pixel"` or
+`"smooth"` warns and uses `"pixel"`. None of these reject an otherwise valid
+manifest.
 
 The profile is static and mod-wide. It is committed at mod init and reapplied
 by a debug staged reload, so it cannot vary per level, per material, or from a
@@ -376,7 +382,7 @@ defineEntity({
 | `max` | `number` | Hit-point ceiling. Must be finite and `>= 1.0` — otherwise the descriptor is rejected at load with a descriptive error. The component materializes with `current == max` at spawn. |
 | `hitbox` | `{ halfExtents, offset? }` (optional) | One world-aligned direct-impact AABB. **Present ⇒ both hitscan rays and swept projectiles can target it** through the shared hit-zone query (projectile radius expands the tested shape). **Absent ⇒ a zone-bearing skinned model can still be targeted; otherwise it cannot.** Fixed per archetype. |
 | `hitbox.halfExtents` | `[x, y, z]` | Box half-size on each axis, in meters. The engine is Y-up, so the middle component is the vertical half-height. Each element must be finite and `> 0`. |
-| `hitbox.offset` | `[x, y, z]` (optional) | Shifts the box center from the entity's transform origin. Each element must be finite. A common use is lifting the box up by its half-height (e.g. `offset: [0, 0.9, 0]` for a `0.9` vertical half-extent) so it rises from a foot-level origin to span the body. |
+| `hitbox.offset` | `[x, y, z]` (optional) | Shifts the box center. Each element must be finite. A descriptor with `behavior` measures it from the feet, so lifting the box by its half-height (e.g. `offset: [0, 0.9, 0]` for a `0.9` vertical half-extent) makes it span the body. Anything else measures it from the entity's transform position. For a pawn with `components.movement` that is its movement capsule's centre, so a box spanning the standing capsule has `offset: [0, 0, 0]` and a vertical half-extent of `halfHeight + radius`. |
 
 **Why the hitbox is the targetability switch.** Carrying a hitbox is exactly what
 makes an entity shootable. A shooting target declares both `max` and a `hitbox`.
@@ -1901,7 +1907,7 @@ A map names its data script with the `data_script` key on `worldspawn`, a path r
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, lights, fog volumes, emitters, spawners, projectile traps. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
 - **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
 
@@ -1914,6 +1920,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
+| ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
@@ -1941,6 +1948,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
 | `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
+| `"ghostLink"` | `GhostLinkHandle` (`arm`, `disarm`, `setMembers`, `setColorFilter`; see [ghost-links.md](ghost-links.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |
@@ -2675,6 +2683,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
 | `setSentiment(from, to, value)` | `{ primitive: "setSentiment", args: { from, to, value } }` | Sets the live directional `from` → `to` relationship. Negative values degrade it; positive values bond it. |
+| `setGhostAudio({ volume?, highPassHz?, lowPassHz?, drive?, periodMs? })` | `{ primitive: "setGhostAudio", args: { volume?, highPassHz?, lowPassHz?, drive?, periodMs? } }` | Changes the mod-wide Ghost bus mix. Import it from `postretro/audio` (`require("postretro/audio")` in Luau), not from the root module. Names no target, so pass it whole to `defineReaction`. Each named field ramps on its own over `periodMs` (default 0); at least one of `volume`, `highPassHz`, `lowPassHz` or `drive` is required. See [ghost-links.md](ghost-links.md). |
 | `adjustSentiment(from, to, delta)` | `{ primitive: "adjustSentiment", args: { from, to, delta } }` | Adds `delta` to the live directional `from` → `to` relationship, starting from the authored baseline when unchanged. Negative deltas degrade it; positive deltas bond it. |
 | `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes a global slot at the game-logic stage. Per-owner slots reject this legacy path. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |

@@ -43,6 +43,11 @@ const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
         "sdk/lib/entities/teleporters.luau",
     ),
     (
+        "wrapGhostLinkEntity",
+        include_str!("../../../sdk/lib/entities/ghost_links.luau"),
+        "sdk/lib/entities/ghost_links.luau",
+    ),
+    (
         "wrapLightEntity",
         include_str!("../../../sdk/lib/entities/lights.luau"),
         "sdk/lib/entities/lights.luau",
@@ -117,11 +122,12 @@ const UI_TREE_LUAU: &str = include_str!("../../../sdk/lib/ui/tree.luau");
 const UI_PRESENTATION_LUAU: &str = include_str!("../../../sdk/lib/ui/presentation.luau");
 const UI_STATE_LUAU: &str = include_str!("../../../sdk/lib/ui/state.luau");
 const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
+const AUDIO_LUAU: &str = include_str!("../../../sdk/lib/audio.luau");
 
 const MAX_VIRTUAL_MODULE_COPY_DEPTH: usize = 32;
 
 /// First build-side id of a non-light map member (mover, trigger volume,
-/// teleporter, spawner). Map-light ids are their raw `MapData::lights` indexes, so the two
+/// teleporter, spawner, ghost link). Map-light ids are their raw `MapData::lights` indexes, so the two
 /// ranges never meet: a member id cannot resolve to a light, or change which
 /// light a step names. Members answer identity snapshots (`id`, `position`,
 /// `tags`, plus `spawnedTags` on a spawner) so a script that indexes one
@@ -585,6 +591,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineFaction",
     "sentiment",
     "defineFluid",
+    "defineGhostStyle",
     "defineMapCatalog",
     "defineWeaponPlacement",
     "defineTriggerPool",
@@ -667,6 +674,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     let ui_presentation =
         eval_lua_table(lua, UI_PRESENTATION_LUAU, "sdk/lib/ui/presentation.luau")?;
     let ui_state = eval_lua_table(lua, UI_STATE_LUAU, "sdk/lib/ui/state.luau")?;
+    let audio = eval_lua_table(lua, AUDIO_LUAU, "sdk/lib/audio.luau")?;
 
     let runtime: LuaValue = lua
         .load(RUNTIME_LUAU)
@@ -758,6 +766,9 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     copy_lua_fields(&ui, &game_state, &["getGameState"])?;
     copy_lua_fields(&ui, &ui_theme, &["defineTheme", "getDesignTokens"])?;
     let ui = copy_readonly_lua_table(lua, ui, 0)?;
+    let audio_module = lua.create_table()?;
+    copy_lua_fields(&audio_module, &audio, &["setGhostAudio"])?;
+    let audio_module = copy_readonly_lua_table(lua, audio_module, 0)?;
     // Match scripting-core's runtime resolver: relative paths are rooted at
     // the mod, checked lexically for traversal, and evaluated in this state.
     // The ordinary data-script runtime does not enable dependency tracking,
@@ -766,6 +777,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     let require = lua.create_function(move |lua, name: String| match name.as_str() {
         "postretro" => Ok(LuaValue::Table(root.clone())),
         "postretro/ui" => Ok(LuaValue::Table(ui.clone())),
+        "postretro/audio" => Ok(LuaValue::Table(audio_module.clone())),
         _ => evaluate_luau_required_module(lua, &mod_root, &name),
     })?;
     globals.set("require", require)?;
@@ -1043,6 +1055,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "kinematic_mover",
     "trigger_volume",
     "teleporter",
+    "ghost_link",
     "spawner",
     "projectile_trap",
     "particle",
@@ -1307,8 +1320,9 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
     // players resolved at runtime: it is a legal step that reserves no light
     // slot, so it must not make the caller skip the sequence. Mirror the
     // runtime parser's rejections — an unknown kind, an `id` beside `kind`, a
-    // non-string tag, a control primitive, `spawnFromSpawner` and the trap
-    // verbs (spawners and traps are map members, never a group).
+    // non-string tag, a control primitive, `spawnFromSpawner`, the trap verbs
+    // and a ghost-link step (spawners, traps and links are map members, never
+    // a group).
     match step.get("kind") {
         None | Some(JsonValue::Null) => {}
         Some(JsonValue::String(kind)) => {
@@ -1320,7 +1334,8 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
                 )
                 && !control
                 && primitive != "spawnFromSpawner"
-                && !matches!(primitive, "fireTrap" | "startTrap" | "stopTrap");
+                && !matches!(primitive, "fireTrap" | "startTrap" | "stopTrap")
+                && !postretro_foundation::is_ghost_link_primitive(primitive);
         }
         Some(_) => return false,
     }
@@ -1356,6 +1371,10 @@ fn subject_token_carries(target: &str, primitive: &str) -> bool {
     }
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
+    // A ghost-link step addresses one link member; no token carries it.
+    if postretro_foundation::is_ghost_link_primitive(primitive) {
+        return false;
+    }
     match target {
         "@activators" | "@player" => !arms_a_trigger && !arms_a_teleporter,
         "@trigger" => arms_a_trigger,
@@ -2767,6 +2786,87 @@ mod tests {
         );
     }
 
+    // `getMapEntities("ghostLink")` answers real members at build in both
+    // hosts: identity snapshots in map order, `[]` for an absent tag, and every
+    // member verb evaluates, leaving the light records the light step reserves.
+    #[test]
+    fn ghost_link_members_evaluate_at_build_in_both_hosts() {
+        let quickjs = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              const echoes = getMapEntities("ghostLink", { tag: "vault_echo" });
+              if (echoes.length !== 2) throw new Error("both tagged links");
+              if (echoes[0].position.x !== 1 || echoes[1].position.x !== 4) throw new Error("map order");
+              if (echoes[0].id < 2147483648) throw new Error("member id in the light range");
+              if (getMapEntities("ghostLink", { tag: "absent" }).length !== 0) throw new Error("no match");
+              return {
+                reactions: [defineReaction("levelLoad", { sequence: [
+                  { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+                  ...echoes.flatMap((l) => l.arm()),
+                  ...echoes.flatMap((l) => l.setColorFilter({ tint: [1, 0.4, 0.3], opacity: 0.6, periodMs: 1500 })),
+                  ...echoes[0].setMembers({ projectiles: false }),
+                  ...echoes[1].disarm(),
+                ] })],
+              };
+            }
+        "#;
+        let luau = r#"
+            function setupLevel(_)
+              local light = getMapEntities("light", { tag = "wave" })[1]
+              local echoes = getMapEntities("ghostLink", { tag = "vault_echo" })
+              if #echoes ~= 2 then error("both tagged links") end
+              if echoes[1].position.x ~= 1 or echoes[2].position.x ~= 4 then error("map order") end
+              if echoes[1].id < 2147483648 then error("member id in the light range") end
+              if #getMapEntities("ghostLink", { tag = "absent" }) ~= 0 then error("no match") end
+              return {
+                reactions = { defineReaction("levelLoad", { sequence = {
+                  { id = light.id, primitive = "setLightAnimation", args = { startActive = false } },
+                  echoes[1]:arm()[1],
+                  echoes[1]:setColorFilter({ tint = { 1, 0.4, 0.3 }, opacity = 0.6, periodMs = 1500 })[1],
+                  echoes[1]:setMembers({ projectiles = false })[1],
+                  echoes[2]:disarm()[1],
+                } }) },
+              }
+            end
+        "#;
+        let baseline = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: [defineReaction("levelLoad", { sequence: [
+                { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+              ] })] };
+            }
+        "#;
+        let link = |x: f32, tags: &[&str]| MapMember {
+            kind: MapMemberKind::GhostLink,
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            position: [x, 2.0, 3.0],
+            spawned_tags: Vec::new(),
+        };
+        let with_members = table().with_map_members(vec![
+            link(1.0, &["vault_echo", "east"]),
+            link(2.0, &["other"]),
+            link(4.0, &["vault_echo"]),
+        ]);
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &with_members)
+                .unwrap_or_else(|error| panic!("{path} evaluates with ghost links: {error:#}"))
+        };
+        let baseline = evaluate(baseline, "fixture.ts");
+        let quickjs_manifest = evaluate(quickjs, "fixture.ts");
+        let luau_manifest = evaluate(luau, "fixture.luau");
+        assert_eq!(baseline.lights.len(), 1);
+        assert_eq!(quickjs_manifest.lights, baseline.lights);
+        assert_eq!(luau_manifest.lights, baseline.lights);
+        assert!(
+            quickjs_manifest.stubbed_primitives.is_empty()
+                && luau_manifest.stubbed_primitives.is_empty(),
+            "ghost-link members are answered, not stubbed: {:?} / {:?}",
+            quickjs_manifest.stubbed_primitives,
+            luau_manifest.stubbed_primitives,
+        );
+    }
+
     // The shared wire type carries `spawnedTags` on any kind; the evaluator
     // rejects it off a spawner, as the runtime snapshot never carries it there.
     #[test]
@@ -2828,7 +2928,7 @@ mod tests {
 
     // Drift guard: the build-side Luau SDK must expose exactly what the
     // runtime prelude exposes — bare data-script globals and the
-    // `postretro` / `postretro/ui` module tables — or a level script using a
+    // `postretro` / `postretro/ui` / `postretro/audio` module tables — or a level script using a
     // runtime global fails the light pass. Expectations derive from the
     // runtime source, never a second hand-written list.
     #[test]
@@ -2868,6 +2968,11 @@ mod tests {
             keys("postretro/ui"),
             runtime_prelude_list("POSTRETRO_UI_MODULE_EXPORTS"),
             "build-side require(\"postretro/ui\") drifted from the runtime"
+        );
+        assert_eq!(
+            keys("postretro/audio"),
+            runtime_prelude_list("POSTRETRO_AUDIO_MODULE_EXPORTS"),
+            "build-side require(\"postretro/audio\") drifted from the runtime"
         );
     }
 

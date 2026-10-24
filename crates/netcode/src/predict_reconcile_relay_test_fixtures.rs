@@ -582,6 +582,7 @@ impl RelayHarness {
             &self.host_registry,
             &self.host_slot_table,
             &self.host_faction_sentiment,
+            &Default::default(),
             &ReplicatedSlotIdentity::default(),
             &mut self.server,
             &mut self.allocator,

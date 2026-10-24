@@ -19,9 +19,12 @@ use crate::runtime_movers::{
 };
 use crate::scripting::builtins::{ClassnameDispatch, apply_classname_dispatch, register_builtins};
 use crate::scripting::map_entity::MapEntity;
+use crate::scripting_systems::attachments::SocketPoseResolver;
+use crate::scripting_systems::ghost_render::{GhostDrawFrame, GhostRenderCollector};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::mesh_anim::MeshClipTables;
 use crate::scripting_systems::mesh_render::MeshRenderCollector;
+use crate::scripting_systems::mover_ghost_render::{MoverGhostFrame, MoverGhostRenderCollector};
 use crate::session::sh_residency::{ShStreamingSession, require_sync_proof_mode};
 use crate::sh_streaming::controller::SyncReadResult;
 use crate::startup::session::content_root_from_map;
@@ -117,6 +120,9 @@ impl PreparedCapture {
         }
         // Before the fluid install sizes a reflection target from the tier.
         apply_scene_reflection(&mut renderer, scene);
+        if let Some(mode) = scene.ghost_transparency {
+            renderer.set_ghost_transparency(mode.renderer());
+        }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);
@@ -227,6 +233,14 @@ impl PreparedCapture {
         }
         let mut mover_collector = crate::runtime_movers::KinematicMoverRenderCollector::new();
         let mut mesh_collector = crate::scripting_systems::mesh_render::MeshRenderCollector::new();
+        let mut ghost_links = crate::ghost_links::GhostLinks::install(&world, &registry);
+        // Capture loads no manifest: a scene's own style table stands in for
+        // `ghostStyles`. Without one, every link keeps the floor style.
+        if let Some(styles) = scene.ghost_styles.as_deref() {
+            ghost_links.bind_styles(&world, &super::ghosts::ghost_style_registry(styles));
+        }
+        let mut ghost_collector = GhostRenderCollector::new();
+        let mut mover_ghost_collector = MoverGhostRenderCollector::new();
         collect_capture_receiver_draws(
             &registry,
             &world,
@@ -234,11 +248,15 @@ impl PreparedCapture {
             eye,
             &mut mover_collector,
             &mut mesh_collector,
+            &mut ghost_links,
+            &mut ghost_collector,
+            &mut mover_ghost_collector,
         );
         renderer.set_kinematic_mover_draws(
             mover_collector.instances(),
             mover_collector.shadow_instances(),
         );
+        renderer.set_kinematic_ghost_draws(mover_ghost_collector.instances());
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
         // Capture loads no manifest, so every fluid volume draws at the fixed
         // capture opacity, with no fog or wave, reflecting at reflectivity 1
@@ -262,6 +280,7 @@ impl PreparedCapture {
             },
         ));
         renderer.set_mesh_draws(mesh_collector.instances());
+        renderer.set_ghost_mesh_draws(ghost_collector.instances());
         let mover_sample_regions = mover_collector.sh_sample_regions().to_vec();
 
         let mut prepared = Self {
@@ -577,7 +596,11 @@ pub(super) fn capture_mesh_models(registry: &EntityRegistry) -> Result<Vec<Strin
 
 /// Mirror the windowed render-frame collector calls for capture's spawned
 /// receivers. A single-instant capture has no tick history or animation clock:
-/// alpha is therefore 1.0 and animation time is 0.0.
+/// alpha is therefore 1.0 and animation time is 0.0. Ghosts evaluate once at
+/// rest and present each link's style from the scene's own table, or the floor
+/// style without one (capture loads no manifest), never through the flash
+/// clamp.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn collect_capture_receiver_draws(
     registry: &EntityRegistry,
     world: &postretro_level_loader::LevelWorld,
@@ -585,6 +608,9 @@ pub(super) fn collect_capture_receiver_draws(
     eye: Vec3,
     mover_collector: &mut KinematicMoverRenderCollector,
     mesh_collector: &mut MeshRenderCollector,
+    ghost_links: &mut crate::ghost_links::GhostLinks,
+    ghost_collector: &mut GhostRenderCollector,
+    mover_ghost_collector: &mut MoverGhostRenderCollector,
 ) {
     mover_collector.collect(registry, world, visible_cells, 1.0);
 
@@ -599,6 +625,35 @@ pub(super) fn collect_capture_receiver_draws(
         &clip_tables,
         eye,
         &hit_zones,
+    );
+
+    ghost_links.evaluate_for_capture(registry);
+    ghost_collector.collect(
+        registry,
+        ghost_links.members(),
+        &GhostDrawFrame {
+            world,
+            visible: visible_cells,
+            anim_time: 0.0,
+            camera_pos: eye,
+            tables: &clip_tables,
+            socket_poses: &SocketPoseResolver::new(&hit_zones),
+            force_resample_model: &|_| false,
+            limiter: None,
+            // A capture never involves the limiter.
+            transparency: Default::default(),
+        },
+    );
+    mover_ghost_collector.collect(
+        registry,
+        ghost_links.members(),
+        &MoverGhostFrame {
+            world,
+            visible: visible_cells,
+            movers: mover_collector,
+            limiter: None,
+            transparency: Default::default(),
+        },
     );
 }
 

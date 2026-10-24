@@ -496,6 +496,7 @@ fn snapshot_with_state(
         state_schema_fingerprint: fingerprint,
         state_records,
         faction_sentiment_record: None,
+        ghost_audio: None,
         server_script_time: 0.0,
     }
 }
@@ -550,6 +551,7 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
             Vec3::ZERO,
             "enemy.rifle".to_string(),
             ProjectileDescriptor {
+                ghost: false,
                 speed: 4.0,
                 radius: 0.1,
                 lifetime_ms: 2_000.0,
@@ -694,6 +696,7 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
             Vec3::ZERO,
             "enemy.rocket".to_string(),
             ProjectileDescriptor {
+                ghost: false,
                 speed: 4.0,
                 radius: 0.1,
                 lifetime_ms: 2_000.0,

@@ -116,6 +116,31 @@ export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport",
 --- teleport-scoped reaction, or a reaction's name.
 export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string
 
+--- Snapshot of a map-placed ghost link: id, position and tags.
+export type GhostLinkEntity = { id: EntityId, position: Vec3, tags: {string} }
+--- Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state,
+--- member categories and colour filter are host-authoritative and replicated;
+--- each method returns closed command steps that apply on the host at its next
+--- tick, in call order, and do nothing on a connected client. An out-of-range
+--- argument warns and drops that step when it runs; a non-finite argument (NaN
+--- or Infinity) drops the whole reaction when the level loads.
+export type GhostLinkHandle = {
+  id: EntityId, position: Vec3, tags: {string},
+  --- Arm the link: its members draw as ghosts at the mapped pose in the other
+  --- copy.
+  arm: (self: GhostLinkHandle) -> {ArmGhostLinkStep},
+  --- Disarm the link.
+  disarm: (self: GhostLinkHandle) -> {DisarmGhostLinkStep},
+  --- Show or hide member categories; an omitted category keeps its value. A
+  --- category only narrows: it never ghosts what a descriptor's `ghost` or the
+  --- link's `ghost_tags` did not opt in.
+  setMembers: (self: GhostLinkHandle, members: GhostLinkMembersArgs) -> {SetGhostLinkMembersStep},
+  --- Override the link style's tint, opacity and saturation, field by field.
+  --- Each named field ramps on its own over `periodMs` (default 0) in script
+  --- time; an omitted field keeps its value and any ramp in flight.
+  setColorFilter: (self: GhostLinkHandle, filter: GhostColorFilterArgs) -> {SetGhostLinkColorFilterStep},
+}
+
 --- Snapshot of a map-placed spawner: id, position, its own tags, and
 --- `spawnedTags`, the tags each NPC it spawns carries. Its own tags never
 --- pass to its spawns.
@@ -163,7 +188,7 @@ export type TrapEntityHandle = {
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner" | "trap"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -177,6 +202,7 @@ export type MapEntityFilter = { tag: string? }
 declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEntityHandle})
   & ((kind: "trigger", filter: MapEntityFilter?) -> {TriggerVolumeHandle})
   & ((kind: "teleporter", filter: MapEntityFilter?) -> {TeleporterHandle})
+  & ((kind: "ghostLink", filter: MapEntityFilter?) -> {GhostLinkHandle})
   & ((kind: "light", filter: MapEntityFilter?) -> {LightEntityHandle})
   & ((kind: "fog", filter: MapEntityFilter?) -> {FogVolumeHandle})
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
@@ -448,6 +474,26 @@ export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args
 --- Sequence step that disarms one teleporter (`t:disarm()`). Applies on the
 --- host at the start of its next movement tick.
 export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
+--- Member categories a ghost link shows; an omitted category keeps its value.
+export type GhostLinkMembersArgs = { players: boolean?, entities: boolean?, projectiles: boolean?, movers: boolean? }
+--- A ghost link's colour filter. Each named field ramps on its own over
+--- `periodMs` (default 0); an omitted field keeps its value and any ramp in
+--- flight. `tint` is `{ r, g, b }`; `tint` components, `opacity` and
+--- `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming
+--- none of `tint`, `opacity` and `saturation` warns and drops the step.
+export type GhostColorFilterArgs = { tint: {number}?, opacity: number?, saturation: number?, periodMs: number? }
+--- Sequence step that arms one ghost link (`l:arm()`). Applies on the host at
+--- its next tick.
+export type ArmGhostLinkStep = { id: EntityId, primitive: "armGhostLink", args: {} }
+--- Sequence step that disarms one ghost link (`l:disarm()`). Applies on the
+--- host at its next tick.
+export type DisarmGhostLinkStep = { id: EntityId, primitive: "disarmGhostLink", args: {} }
+--- Sequence step that changes one ghost link's member categories
+--- (`l:setMembers(...)`). Applies on the host at its next tick.
+export type SetGhostLinkMembersStep = { id: EntityId, primitive: "setGhostLinkMembers", args: GhostLinkMembersArgs }
+--- Sequence step that sets one ghost link's colour filter
+--- (`l:setColorFilter(...)`). Applies on the host at its next tick.
+export type SetGhostLinkColorFilterStep = { id: EntityId, primitive: "setGhostLinkColorFilter", args: GhostColorFilterArgs }
 --- Sequence step that arms one trigger volume.
 export type ArmTriggerStep = {
   id: EntityId,
@@ -511,7 +557,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Sequence reaction body: ordered member, group, subject-token and control
 --- steps. Steps begin in array order; `fire` queues a named dispatch, while
@@ -954,7 +1000,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
@@ -974,6 +1020,13 @@ declare function sentiment(fromFaction: string, toFaction: string, values: { sen
 --- declaration order assigns its index. A field out of range, or a repeated
 --- name, is rejected with a warning naming the field; the first stands.
 declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
+--- Pure identity builder for a ghost style in `ghostStyles` on the returned
+--- mod manifest. A map's `ghost_link` names it through its `ghost_style` key.
+--- Every field but `name` is optional and takes the floor style's value when
+--- omitted. A malformed field drops the whole style with a warning naming it,
+--- a repeated name is dropped and the first stands, and a link naming no
+--- declared style uses the floor style.
+declare function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -1225,6 +1278,7 @@ export type ModManifestInput = {
   sentiment: {FactionSentimentDescriptor}?,
   factionSentimentDecay: number?,
   fluids: {FluidDescriptor}?,
+  ghostStyles: {GhostStyleDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,

@@ -433,6 +433,7 @@ impl Fixture {
             &receive.ctx.slot_table.borrow(),
             &Default::default(),
             &Default::default(),
+            &Default::default(),
             &mut self.server,
             &mut self.allocator,
             &mut self.replication,

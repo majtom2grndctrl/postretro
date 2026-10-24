@@ -59,6 +59,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
     pub(super) teleporters: &'a TeleportersSection,
+    pub(super) ghost_links: &'a GhostLinksSection,
     pub(super) push_forces: Option<&'a PushForcesSection>,
     pub(super) reflection_probes: Option<&'a ReflectionProbesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
@@ -105,6 +106,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         trigger_volumes,
         environment_volumes,
         teleporters,
+        ghost_links,
         push_forces,
         reflection_probes,
         cell_draw_index,
@@ -427,6 +429,15 @@ pub(super) fn build_finalized_section_plan<'a>(
             1,
             teleporters.byte_len(),
             || Ok(teleporters.to_bytes()),
+        ));
+    }
+    // Absent means no links; an empty section would not decode.
+    if !ghost_links.links.is_empty() {
+        sections.push(PlannedSection::new(
+            SectionId::GhostLinks as u32,
+            1,
+            ghost_links.byte_len(),
+            || Ok(ghost_links.to_bytes()),
         ));
     }
     if let Some(section) = trigger_volumes {

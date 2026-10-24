@@ -1,17 +1,19 @@
-// Mixer bus tree (Master → SFX/Music/UI), per-bus volume, and the per-bus
-// active-voice budget. kira's main track IS Master; the three buses are
-// sub-tracks of it.
-// See: context/lib/audio.md §1 (Mixer bus tree)
+// Mixer bus tree (Master → SFX/Music/UI, Ghost under SFX), per-bus volume,
+// and the per-bus active-voice budget. kira's main track IS Master.
+// See: context/lib/audio.md §1 (Mixer bus tree, Ghost bus)
+
+use std::time::Duration;
 
 use kira::backend::Backend;
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{AudioManager, ResourceLimitReached, Tween};
 
+use crate::ghost_bus::{GhostBusEffects, GhostBusProfile};
 use crate::muffle::{WorldMuffleBuilder, WorldMuffleHandle};
 
-/// The three controllable mixer buses. Master is kira's main track and is
-/// controlled via `Audio::set_main_volume`, so it has no `BusId` variant here —
-/// every routable in-world/UI sound targets one of these.
+/// The routable mixer buses. Master is kira's main track and is controlled via
+/// `Audio::set_main_volume`, so it has no `BusId` variant here — every
+/// routable in-world/UI sound targets one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusId {
     /// In-world sound effects (footsteps, gunshots, impacts).
@@ -20,11 +22,18 @@ pub enum BusId {
     Music,
     /// UI / menu sounds.
     UI,
+    /// Ghost-link echoes: a child of SFX, so SFX volume and world muffle apply
+    /// on top of its own profile.
+    Ghost,
 }
 
 impl BusId {
     /// All buses, in a fixed order. Used to size and iterate the bus arrays.
-    pub(crate) const ALL: [BusId; 3] = [BusId::Sfx, BusId::Music, BusId::UI];
+    pub(crate) const ALL: [BusId; 4] = [BusId::Sfx, BusId::Music, BusId::UI, BusId::Ghost];
+
+    /// The buses hung directly off Master. Ghost hangs off SFX instead.
+    #[cfg(test)]
+    pub(crate) const TOP_LEVEL: [BusId; 3] = [BusId::Sfx, BusId::Music, BusId::UI];
 
     /// Dense index into the per-bus arrays held by `BusTree`.
     pub(crate) fn index(self) -> usize {
@@ -32,6 +41,17 @@ impl BusId {
             BusId::Sfx => 0,
             BusId::Music => 1,
             BusId::UI => 2,
+            BusId::Ghost => 3,
+        }
+    }
+
+    /// Whether positional voices may play on this bus. Each positional voice
+    /// owns a spatial child track, so only buses with child-track room host
+    /// them.
+    pub(crate) fn hosts_positional(self) -> bool {
+        match self {
+            BusId::Sfx | BusId::Ghost => true,
+            BusId::Music | BusId::UI => false,
         }
     }
 
@@ -46,6 +66,9 @@ impl BusId {
             BusId::Sfx => 32,
             BusId::Music => 4,
             BusId::UI => 8,
+            // Half the SFX cap, and its own pool: echoes never crowd out the
+            // sounds a player reacts to.
+            BusId::Ghost => 16,
         }
     }
 
@@ -57,11 +80,14 @@ impl BusId {
         2 * self.voice_cap()
     }
 
-    /// kira child-track capacity for this bus. Only SFX hosts positional voices,
-    /// one spatial child track each, with the same two-cap headroom as sounds.
-    fn track_sub_track_capacity(self) -> usize {
+    /// kira child-track capacity for this bus. SFX and Ghost host positional
+    /// voices, one spatial child track each, with the same two-cap headroom as
+    /// sounds. The Ghost track itself is one more SFX child, so SFX gets a slot
+    /// on top of its two caps.
+    pub(crate) fn track_sub_track_capacity(self) -> usize {
         match self {
-            BusId::Sfx => 2 * self.voice_cap(),
+            BusId::Sfx => 2 * self.voice_cap() + 1,
+            BusId::Ghost => 2 * self.voice_cap(),
             BusId::Music | BusId::UI => 0,
         }
     }
@@ -72,6 +98,7 @@ impl BusId {
             BusId::Sfx => "sfx",
             BusId::Music => "music",
             BusId::UI => "ui",
+            BusId::Ghost => "ghost",
         }
     }
 }
@@ -92,13 +119,16 @@ pub(crate) struct BusTree {
     // per-bus volume.
     tracks: [TrackHandle; BusId::ALL.len()],
     counters: [VoiceCounter; BusId::ALL.len()],
+    /// The Ghost track's profile-driven effect chain.
+    ghost: GhostBusEffects,
 }
 
 impl BusTree {
-    /// Build SFX/Music/UI as sub-tracks of `manager`'s main track (Master).
-    /// The SFX bus carries the world muffle `muffle` controls, so it filters
-    /// that bus's sounds and every positional voice's child track; Music and
-    /// UI carry no effect.
+    /// Build SFX/Music/UI as sub-tracks of `manager`'s main track (Master),
+    /// and Ghost as a child of SFX. The SFX bus carries the world muffle
+    /// `muffle` controls, so it filters that bus's sounds, every positional
+    /// voice's child track and the Ghost bus; Music and UI carry no effect.
+    /// Ghost carries its own profile chain and starts silent.
     ///
     /// Generic over the backend so tests drive it with `MockBackend` while the
     /// engine uses `DefaultBackend`. Each sub-track starts at unity gain (0 dB)
@@ -119,31 +149,37 @@ impl BusTree {
         );
 
         // Build in `BusId::ALL` order so the array lines up with `index()`.
-        let sfx = Self::build_bus(manager, BusId::Sfx, Some(muffle))?;
-        let music = Self::build_bus(manager, BusId::Music, None)?;
-        let ui = Self::build_bus(manager, BusId::UI, None)?;
+        let mut sfx_builder = Self::bus_builder(BusId::Sfx);
+        sfx_builder.add_effect(WorldMuffleBuilder::new(muffle.clone()));
+        let mut sfx = Self::checked(BusId::Sfx, manager.add_sub_track(sfx_builder)?);
+        let music = Self::checked(
+            BusId::Music,
+            manager.add_sub_track(Self::bus_builder(BusId::Music))?,
+        );
+        let ui = Self::checked(
+            BusId::UI,
+            manager.add_sub_track(Self::bus_builder(BusId::UI))?,
+        );
+        let mut ghost_builder = Self::bus_builder(BusId::Ghost);
+        let ghost_effects = GhostBusEffects::attach(&mut ghost_builder);
+        let ghost = Self::checked(BusId::Ghost, sfx.add_sub_track(ghost_builder)?);
 
         Ok(Self {
-            tracks: [sfx, music, ui],
+            tracks: [sfx, music, ui, ghost],
             counters: Default::default(),
+            ghost: ghost_effects,
         })
     }
 
-    fn build_bus<B: Backend>(
-        manager: &mut AudioManager<B>,
-        bus: BusId,
-        muffle: Option<&WorldMuffleHandle>,
-    ) -> Result<TrackHandle, ResourceLimitReached> {
+    fn bus_builder(bus: BusId) -> TrackBuilder {
         // 0 dB == unity gain; volume is set in decibels (kira's `Value<Decibels>`).
-        let mut builder = TrackBuilder::new()
+        TrackBuilder::new()
             .volume(0.0)
             .sound_capacity(bus.track_sound_capacity())
-            .sub_track_capacity(bus.track_sub_track_capacity());
-        if let Some(muffle) = muffle {
-            builder = builder.with_effect(WorldMuffleBuilder::new(muffle.clone()));
-        }
-        let handle = manager.add_sub_track(builder)?;
+            .sub_track_capacity(bus.track_sub_track_capacity())
+    }
 
+    fn checked(bus: BusId, handle: TrackHandle) -> TrackHandle {
         debug_assert!(
             handle.sound_capacity() >= bus.voice_cap(),
             "[Audio] bus {} kira sound capacity {} < voice cap {}",
@@ -151,8 +187,12 @@ impl BusTree {
             handle.sound_capacity(),
             bus.voice_cap(),
         );
+        handle
+    }
 
-        Ok(handle)
+    /// Move the Ghost bus to `profile` over `ramp`. The caller validates it.
+    pub(crate) fn set_ghost_profile(&mut self, profile: GhostBusProfile, ramp: Duration) {
+        self.ghost.apply(profile, ramp);
     }
 
     /// Read access to a bus's kira sub-track, for admission checks against its
@@ -217,7 +257,7 @@ impl BusTree {
         // Advisory self-imposed sanity bound, NOT a kira-derived global limit —
         // the real no-silent-drop guarantee is the per-track `sound_capacity >=
         // voice_cap` invariant. Only checked via `debug_assert`.
-        // Current caps sum to 32 + 4 + 8 = 44.
+        // Current caps sum to 32 + 4 + 8 + 16 = 60.
         const MAX_TOTAL_VOICES: usize = 64;
         let sum: usize = BusId::ALL.iter().map(|bus| bus.voice_cap()).sum();
         sum <= MAX_TOTAL_VOICES
@@ -248,13 +288,14 @@ mod tests {
     }
 
     #[test]
-    fn bus_tree_builds_all_three_buses_under_mock_backend() {
+    fn bus_tree_builds_three_top_level_buses_and_ghost_under_sfx() {
         let mut manager = mock_manager();
         let tree = BusTree::build(&mut manager, &WorldMuffleHandle::default())
             .expect("bus tree builds under mock backend");
 
-        // Three sub-tracks were created off the main track.
-        assert_eq!(manager.num_sub_tracks(), BusId::ALL.len());
+        // SFX, Music and UI hang off the main track; Ghost is SFX's child.
+        assert_eq!(manager.num_sub_tracks(), BusId::TOP_LEVEL.len());
+        assert_eq!(tree.track(BusId::Sfx).num_sub_tracks(), 1);
         // Each bus starts with zero active voices.
         for bus in BusId::ALL {
             assert_eq!(tree.active_voices(bus), 0);

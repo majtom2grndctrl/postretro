@@ -35,6 +35,7 @@ fn movement(with_dash: bool, with_crouch: bool) -> PlayerMovementDescriptor {
 
 fn entity(name: &str) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some(name.to_string()),

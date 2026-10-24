@@ -5,7 +5,7 @@ use super::super::*;
 use rquickjs::object::Filter;
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
-/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, faction?: string, tolerance?: number, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, ghost?: boolean, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, faction?: string, tolerance?: number, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 /// Component sub-objects parse via `serde_json` after a recursive walk through
 /// the existing `js_to_json` helper — matches how `LightAnimation` /
 /// `BillboardEmitterComponent` cross the FFI elsewhere.
@@ -34,6 +34,7 @@ pub fn entity_descriptor_from_js<'js>(
     } else {
         None
     };
+    let ghost = ghost_flag_js(&obj, DESCRIPTOR_GHOST_PATH)?;
     let mut inventory = None;
     let mut light = None;
     let mut emitter = None;
@@ -172,6 +173,7 @@ pub fn entity_descriptor_from_js<'js>(
         faction: None,
         tolerance,
         canonical_name,
+        ghost,
         inventory,
         light,
         emitter,

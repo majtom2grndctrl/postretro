@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::super::data_descriptors::{
-    EntityTypeDescriptor, FluidRegistry, ImpactEventDescriptor, ModThemeTokens,
+    EntityTypeDescriptor, FluidRegistry, GhostStyleRegistry, ImpactEventDescriptor, ModThemeTokens,
     PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
     TriggerPoolDescriptor, WeaponPlacementDescriptor,
 };
@@ -70,6 +70,9 @@ pub struct StagedManifest {
     /// Committed whole; the app re-resolves the installed level's fluid
     /// volumes when the names change.
     pub fluids: FluidRegistry,
+    /// Committed whole; the app re-resolves the installed level's ghost
+    /// links against it.
+    pub ghost_styles: GhostStyleRegistry,
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,
     pub crossings: Vec<ScopedCrossing>,

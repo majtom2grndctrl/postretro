@@ -66,8 +66,9 @@ The margin is measured from the player's capsule as it is when they arrive, so a
 crouching or sliding player reaching a destination set for standing arrives in
 the air and drops the difference.
 
-This is not the rule for `player_spawn`, which the engine places for you. Your
-mod's player script sets the capsule (`movement.capsule` on the `player`
+This is not the rule for `player_spawn`, whose box you rest on the floor (see
+[Player Spawns](level_design.md#player-spawns)). Your mod's player script sets
+the capsule (`movement.capsule` on the `player`
 entity); use its numbers if they differ.
 
 ---
@@ -268,6 +269,10 @@ export function setupLevel() {
   };
 }
 ```
+
+To let players in the two copies see each other while the shift is off — a
+partner's ghost, a barrier opening in the other time — lay a ghost link over
+each copy, reusing the same two points: see [ghost-links.md](ghost-links.md).
 
 `progress` counts a closet monster when it is removed from the level, not the
 moment its health reaches zero. Give the monsters a death policy that removes

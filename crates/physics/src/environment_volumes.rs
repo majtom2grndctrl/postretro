@@ -3,6 +3,7 @@
 
 use glam::Vec3;
 use postretro_collision::{ConvexLeaf, EnvironmentVolume, EnvironmentVolumes, LeafPlane};
+use postretro_level_format::environment_volumes::EnvironmentBrush;
 use postretro_level_loader::LevelWorld;
 
 /// Build the level's environment volume set from its loaded records, keeping
@@ -30,25 +31,28 @@ pub fn environment_volumes_from_level(
             } else {
                 resolve_fluid(&record.fluid)
             },
-            brushes: record
-                .brushes
-                .iter()
-                .map(|brush| ConvexLeaf {
-                    planes: brush
-                        .planes
-                        .iter()
-                        .map(|plane| LeafPlane {
-                            normal: Vec3::from(plane.normal),
-                            distance: plane.distance,
-                        })
-                        .collect(),
-                    aabb_min: Vec3::from(brush.aabb_min),
-                    aabb_max: Vec3::from(brush.aabb_max),
-                })
-                .collect(),
+            brushes: record.brushes.iter().map(convex_leaf).collect(),
         })
         .collect();
     EnvironmentVolumes::build(volumes)
+}
+
+/// One loaded region brush as the collision crate's convex leaf. Every baked
+/// brush region (environment volumes, teleporters, ghost links) shares the id-52
+/// brush encoding and converts through here.
+pub fn convex_leaf(brush: &EnvironmentBrush) -> ConvexLeaf {
+    ConvexLeaf {
+        planes: brush
+            .planes
+            .iter()
+            .map(|plane| LeafPlane {
+                normal: Vec3::from(plane.normal),
+                distance: plane.distance,
+            })
+            .collect(),
+        aabb_min: Vec3::from(brush.aabb_min),
+        aabb_max: Vec3::from(brush.aabb_max),
+    }
 }
 
 #[cfg(test)]

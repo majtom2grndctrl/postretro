@@ -4,9 +4,12 @@
 use std::collections::{HashMap, HashSet};
 
 use glam::Vec3;
+use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
-use postretro_entities::provenance::DescriptorSpawnPath;
-use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
+use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+use postretro_entities::registry::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE;
 use postretro_sim::particle_pool::ParticlePool;
@@ -167,12 +170,7 @@ impl ParticleRenderCollector {
             let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
                 continue;
             };
-            let age = if projectile.flipbook_active {
-                projectile.elapsed_flight_age
-            } else {
-                0.0
-            };
-            self.collect_sprite(transform, visual, age, world);
+            self.collect_sprite(transform, visual, gameplay_sprite_age(projectile), world);
         }
 
         // Provenance restricts this to replicated projectile display copies.
@@ -193,17 +191,18 @@ impl ParticleRenderCollector {
             let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
                 continue;
             };
-            let age = registry
-                .projectile_presentation_age(id)
-                .ok()
-                .filter(|timing| timing.flipbook_active)
-                .map(|timing| {
-                    ((presentation_tick - f64::from(timing.spawn_tick)).max(0.0) as f32)
-                        * crate::frame_timing::TICK_DURATION.as_secs_f32()
-                })
-                .unwrap_or(0.0);
+            let age = presentation_sprite_age(registry, id, presentation_tick);
             self.collect_sprite(transform, visual, age, world);
         }
+    }
+
+    /// The registered collection at `index`, for a draw that buckets by the
+    /// indices [`Self::resolve_collection`] hands out (the billboard ghosts).
+    pub(crate) fn registered_collection_name(&self, index: usize) -> Option<&str> {
+        self.buffers
+            .get(index)
+            .filter(|buffer| buffer.registered)
+            .map(|buffer| buffer.name.as_str())
     }
 
     fn position_visible(&self, position: Vec3, world: Option<&LevelWorld>) -> bool {
@@ -250,6 +249,52 @@ impl Default for ParticleRenderCollector {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A gameplay projectile's flipbook age: its flight age while an authored
+/// cadence advances it, else 0 (a static body).
+fn gameplay_sprite_age(projectile: &ProjectileComponent) -> f32 {
+    if projectile.flipbook_active {
+        projectile.elapsed_flight_age
+    } else {
+        0.0
+    }
+}
+
+/// A projectile display copy's flipbook age at `presentation_tick`, the host
+/// simulation epoch its fixed spawn tick counts from.
+fn presentation_sprite_age(registry: &EntityRegistry, id: EntityId, presentation_tick: f64) -> f32 {
+    registry
+        .projectile_presentation_age(id)
+        .ok()
+        .filter(|timing| timing.flipbook_active)
+        .map(|timing| {
+            ((presentation_tick - f64::from(timing.spawn_tick)).max(0.0) as f32)
+                * crate::frame_timing::TICK_DURATION.as_secs_f32()
+        })
+        .unwrap_or(0.0)
+}
+
+/// A projectile body's billboard and flipbook age, exactly as the billboard
+/// pass draws it: a gameplay projectile's, or a projectile display copy's
+/// (presentation provenance, no gameplay state). `None` for every other
+/// entity, so a bare `SpriteVisual` is never a billboard body.
+pub(crate) fn projectile_sprite_body(
+    registry: &EntityRegistry,
+    id: EntityId,
+    presentation_tick: f64,
+) -> Option<(&SpriteVisual, f32)> {
+    let visual = registry.get_component::<SpriteVisual>(id).ok()?;
+    if let Ok(projectile) = registry.get_component::<ProjectileComponent>(id) {
+        return Some((visual, gameplay_sprite_age(projectile)));
+    }
+    let provenance = registry.get_component::<DescriptorProvenance>(id).ok()?;
+    (provenance.spawn_path == DescriptorSpawnPath::ProjectilePresentation).then(|| {
+        (
+            visual,
+            presentation_sprite_age(registry, id, presentation_tick),
+        )
+    })
 }
 
 /// The shader expands a square with half-side `size / 2` then rotates it in the
@@ -357,6 +402,7 @@ mod tests {
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
             teleporters: Default::default(),
+            ghost_links: Default::default(),
             environment_push_forces: Vec::new(),
             reflection_probes: None,
             fog_cell_masks: None,

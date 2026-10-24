@@ -338,8 +338,33 @@ impl KinematicMoverRenderCollector {
     ) -> Option<Vec3> {
         self.refresh_mover_bounds(world);
         let local = self.mover_bounds.get(&mover_id)?;
-        let center = (local.min + local.max) * 0.5;
-        Some(transform_matrix(pose).transform_point3(center))
+        Some(bounds_center_under((local.min + local.max) * 0.5, pose))
+    }
+
+    /// Whether mover `mover_id` drawn at `model` passes the beauty draw's cull:
+    /// its origin cell or its world bounds against this frame's visible cells.
+    /// A ghost culls here at its mapped model, whatever the real mover's
+    /// visibility. Reads the visible-cell bounds [`Self::collect`] rebuilt this
+    /// frame, so it runs after `collect`. A mover with no geometry draws nothing.
+    pub(crate) fn visible_at(
+        &self,
+        world: &LevelWorld,
+        visible: &VisibleCells,
+        mover_id: u32,
+        model: glam::Mat4,
+    ) -> bool {
+        let Some(local_bounds) = self.mover_bounds.get(&mover_id) else {
+            return false;
+        };
+        let world_aabb = local_bounds.transformed(&model);
+        let origin_cell = world.locate_cell(model.w_axis.truncate()) as u32;
+        mover_visible_against_cell_bounds(
+            visible,
+            origin_cell,
+            world_aabb.min,
+            world_aabb.max,
+            &self.visible_cell_bounds,
+        )
     }
 
     fn refresh_mover_bounds(&mut self, world: &LevelWorld) {
@@ -591,7 +616,19 @@ fn mover_local_bounds(
     Some(postretro_render_data::cone_frustum::Aabb { min, max })
 }
 
-fn transform_matrix(transform: Transform) -> glam::Mat4 {
+/// A loaded mover's local bounds center, in its origin-relative frame: where
+/// it visibly is once posed, for sounds and ghost membership alike. `None` for
+/// a mover with no geometry.
+pub(crate) fn mover_local_bounds_center(mover: &LoadedKinematicMover) -> Option<Vec3> {
+    mover_local_bounds(mover).map(|bounds| (bounds.min + bounds.max) * 0.5)
+}
+
+/// A local bounds center carried to world space by a mover pose.
+pub(crate) fn bounds_center_under(local_center: Vec3, pose: Transform) -> Vec3 {
+    transform_matrix(pose).transform_point3(local_center)
+}
+
+pub(crate) fn transform_matrix(transform: Transform) -> glam::Mat4 {
     glam::Mat4::from_scale_rotation_translation(
         transform.scale,
         transform.rotation,

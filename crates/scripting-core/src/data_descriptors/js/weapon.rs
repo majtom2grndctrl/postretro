@@ -11,7 +11,16 @@ pub(super) fn weapon_descriptor_from_js<'js>(
         validate_optional_projectile_shapes_js(weapon)?;
         validate_activation_shapes(weapon)?;
     }
-    let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+    let mut json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+    // A `null` opt-in reads as omitted, as Luau `nil` does; serde's default
+    // covers only a missing key.
+    if let Some(projectile) = json.get_mut("projectile").and_then(|p| p.as_object_mut())
+        && projectile
+            .get("ghost")
+            .is_some_and(serde_json::Value::is_null)
+    {
+        projectile.remove("ghost");
+    }
     validate_optional_knockback_object(&json, "components.weapon.knockback")?;
     if let Some(splash) = json.get("splash") {
         validate_optional_knockback_object(splash, "components.weapon.splash.knockback")?;
@@ -61,6 +70,7 @@ fn validate_optional_projectile_shapes_js<'js>(
     else {
         return Ok(());
     };
+    ghost_flag_js(&projectile, PROJECTILE_GHOST_PATH)?;
     let Some(visual) = optional_object_field_js(
         &projectile,
         "visual",

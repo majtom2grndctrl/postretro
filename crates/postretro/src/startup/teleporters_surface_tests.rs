@@ -82,8 +82,17 @@ pub(super) fn compile(map: &'static str, out: &Path) -> LevelWorld {
 }
 
 fn run_prl_build(map: &str) -> Vec<u8> {
+    run_prl_build_on(
+        &workspace().join(format!("content/dev/maps/{map}.map")),
+        &[],
+    )
+}
+
+/// Compile `source` with the real `prl-build`, cold, with `extra` arguments
+/// after the defaults, and return the PRL bytes.
+pub(crate) fn run_prl_build_on(source: &Path, extra: &[&str]) -> Vec<u8> {
     let out = tempfile::tempdir().unwrap();
-    let source = workspace().join(format!("content/dev/maps/{map}.map"));
+    let map = source.file_stem().unwrap().to_string_lossy();
     let prl = out.path().join(format!("{map}.prl"));
     let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args([
@@ -95,13 +104,14 @@ fn run_prl_build(map: &str) -> Vec<u8> {
             "prl-build",
             "--",
         ])
-        .arg(&source)
+        .arg(source)
         .arg("-o")
         .arg(&prl)
         .arg("--no-tui")
         .arg("--no-cache")
         .arg("--baked-root")
         .arg(out.path().join("baked"))
+        .args(extra)
         .current_dir(workspace())
         .output()
         .expect("launch prl-build");
@@ -227,7 +237,7 @@ impl Level {
                 |_models, _clips| {
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
-                |_spawns| {},
+                |_first_player| {},
             )
         };
         // The windowed install's post-install wiring (`lifecycle.rs`).

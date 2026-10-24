@@ -1164,3 +1164,65 @@ fn teleport_non_finite_facing_refuses_without_spending_the_blocked_arrival_warni
         "teleporter entity 1 arrival blocked; teleport refused",
     );
 }
+
+mod seamless_mapping_parity {
+    use super::*;
+    use glam::Mat4;
+    use proptest::prelude::*;
+
+    fn finite_yaw() -> impl Strategy<Value = f32> {
+        prop_oneof![
+            Just(0.0),
+            Just(std::f32::consts::FRAC_PI_2),
+            Just(std::f32::consts::PI),
+            -std::f32::consts::PI..std::f32::consts::PI,
+        ]
+    }
+
+    fn origin() -> impl Strategy<Value = Vec3> {
+        (-40.0f32..40.0, -8.0f32..8.0, -40.0f32..40.0).prop_map(|(x, y, z)| Vec3::new(x, y, z))
+    }
+
+    proptest! {
+        // A ghost drawn through a link and a seamless arrival through the same
+        // landmark and target must agree, rotated pairs and vertical offsets
+        // included.
+        #[test]
+        fn seamless_teleport_arrival_is_the_shared_mapping_of_the_body_point(
+            landmark in origin(),
+            landmark_yaw in finite_yaw(),
+            target_offset in origin(),
+            target_yaw in finite_yaw(),
+            body in (-2.5f32..2.5, -2.5f32..2.5, -2.5f32..2.5),
+        ) {
+            // Keep the arrival clear of the source region so it latches nothing.
+            let target = landmark + Vec3::new(100.0, 0.0, 0.0) + target_offset;
+            let mut seamless = record(TeleportMode::Seamless, target, target_yaw);
+            seamless.landmark_origin = landmark.to_array();
+            seamless.landmark_yaw = landmark_yaw;
+            seamless.brushes = vec![brush(landmark - Vec3::splat(3.0), landmark + Vec3::splat(3.0))];
+            let mut world = CollisionWorld::new();
+            install(&mut world, vec![seamless]);
+            let position = landmark + Vec3::new(body.0, body.1, body.2);
+            let mut pawn = pawn();
+            let (arrival, events) = relocate(&world, &mut pawn, position, 0.4);
+
+            let mapping = SeamlessMapping::new(landmark, landmark_yaw, target, target_yaw);
+            let event = events.teleport.expect("a body point inside the region fires");
+            prop_assert_eq!(arrival, mapping.point(position));
+            prop_assert_eq!(event.yaw_delta, mapping.yaw_delta());
+            prop_assert!((arrival.y - (target.y + (position.y - landmark.y))).abs() < 1.0e-4);
+            let by_matrix = mapping.matrix().transform_point3(position);
+            prop_assert!((by_matrix - arrival).length() < 1.0e-3, "{by_matrix:?} != {arrival:?}");
+            // Compare rotated basis vectors: a quaternion angle between nearly
+            // equal rotations is ill-conditioned at this tolerance.
+            let facing = Quat::from_rotation_y(landmark_yaw + 0.3);
+            let ghost = mapping.matrix() * Mat4::from_quat(facing);
+            for axis in [Vec3::X, Vec3::Z] {
+                let by_matrix = ghost.transform_vector3(axis);
+                let by_rotation = mapping.rotation() * facing * axis;
+                prop_assert!((by_matrix - by_rotation).length() < 1.0e-4, "{by_matrix:?} != {by_rotation:?}");
+            }
+        }
+    }
+}

@@ -289,6 +289,67 @@ impl Renderer {
         self.full_mut().mesh_draws.extend_from_slice(instances);
     }
 
+    /// Replace this frame's ghost instances (`rendering_pipeline.md` §7.9):
+    /// each a [`MeshPresentation::Ghost`] input at its mapped transform, culled
+    /// at its mapped position and carrying its presented look. They share the
+    /// skinned palette/instance budget, plan after every real drawable mesh,
+    /// and draw unlit through the mod's `render.ghosts` mode, never into
+    /// shadow depth.
+    ///
+    /// [`MeshPresentation::Ghost`]: postretro_render_cpu::mesh_instances::MeshPresentation::Ghost
+    pub fn set_ghost_mesh_draws(
+        &mut self,
+        instances: &[postretro_render_cpu::mesh_instances::MeshInstanceInput],
+    ) {
+        self.full_mut().ghost_mesh_draws.clear();
+        self.full_mut()
+            .ghost_mesh_draws
+            .extend_from_slice(instances);
+    }
+
+    /// Replace this frame's mover ghosts (`rendering_pipeline.md` §7.9): each a
+    /// mover's geometry at a link's mapped model with its presented look,
+    /// already culled at its mapped bounds. A mover in two links arrives twice
+    /// and draws twice. Drawn unlit through the mod's `render.ghosts` mode, after
+    /// the skinned ghosts; never into shadow depth or occluder bounds.
+    pub fn set_kinematic_ghost_draws(
+        &mut self,
+        instances: &[postretro_render_cpu::ghost_instance::KinematicGhostInstance],
+    ) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.kinematic_ghost
+            .upload(device, queue, instances, &full.kinematic_brush);
+    }
+
+    /// Replace this frame's projectile billboard ghosts, as `(collection,
+    /// packed ghost sprites)` per sprite collection
+    /// (`ghost_instance::pack_ghost_sprite_instance`), already culled at their
+    /// mapped positions. Drawn unlit and additively after the billboards, in
+    /// both `render.ghosts` modes.
+    pub fn set_billboard_ghost_draws<'a>(
+        &mut self,
+        collections: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+    ) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.billboard_ghost.upload(device, queue, collections);
+    }
+
     /// Upload this frame's cull-split kinematic mover instances. The visible
     /// subset feeds beauty draws; every present mover stays in the transform
     /// buffer so shadow depth can cone-cull independently of camera PVS.

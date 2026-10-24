@@ -1,4 +1,5 @@
-// Tests: manifest `audio.attenuation` drains, QuickJS and Luau twins.
+// Tests: manifest `audio.attenuation` and `audio.ghost` drains, QuickJS and
+// Luau twins.
 
 use super::super::*;
 use super::common::*;
@@ -34,6 +35,19 @@ fn attenuation(
             max_distance,
             curve,
         },
+        ghost: ModGhostAudio::FLOOR,
+    }
+}
+
+fn ghost(volume: f32, high_pass_hz: f32, low_pass_hz: f32, drive: f32) -> ModAudioProfile {
+    ModAudioProfile {
+        ghost: ModGhostAudio {
+            volume,
+            high_pass_hz,
+            low_pass_hz,
+            drive,
+        },
+        ..ModAudioProfile::default()
     }
 }
 
@@ -324,4 +338,236 @@ fn audio_profile_several_malformed_fields_each_warn_once_and_use_default() {
     // Malformed fields already chose the default; the ordering check must not
     // pile a second, misleading warning on top.
     capture.assert_not_logged(Level::Warn, "must be less than");
+}
+
+#[test]
+fn audio_profile_default_ghost_is_the_floor_profile_and_applies_no_distortion() {
+    // Plan delegated answer (provisional): volume 0.6, 200 Hz to 4 kHz, drive 0.
+    assert_eq!(ModAudioProfile::default().ghost, ModGhostAudio::FLOOR);
+    assert_eq!(
+        ModGhostAudio::FLOOR,
+        ModGhostAudio {
+            volume: 0.6,
+            high_pass_hz: 200.0,
+            low_pass_hz: 4000.0,
+            drive: 0.0,
+        }
+    );
+    // AC: the floor bus profile applies no distortion. Drive 0 is the audio
+    // bus's no-distortion point (`postretro-audio` ghost bus tests).
+    assert_eq!(ModGhostAudio::FLOOR.drive, 0.0);
+}
+
+#[test]
+fn audio_profile_ghost_block_parses_in_both_runtimes_without_attenuation() {
+    // Regression guard: the drains once returned early when
+    // `audio.attenuation` was absent, which would skip `audio.ghost`.
+    assert_twins_resolve_silently(
+        "{ audio: { ghost: { volume: 0.7, highPassHz: 250, lowPassHz: 3000, drive: 0.3 } } }",
+        "{ audio = { ghost = { volume = 0.7, highPassHz = 250, lowPassHz = 3000, drive = 0.3 } } }",
+        ghost(0.7, 250.0, 3000.0, 0.3),
+    );
+    assert_twins_resolve_silently(
+        "{ audio: { ghost: { volume: 0, highPassHz: 20, lowPassHz: 20000, drive: 1 } } }",
+        "{ audio = { ghost = { volume = 0, highPassHz = 20, lowPassHz = 20000, drive = 1 } } }",
+        ghost(0.0, 20.0, 20000.0, 1.0),
+    );
+}
+
+#[test]
+fn audio_profile_attenuation_and_ghost_blocks_resolve_together() {
+    assert_twins_resolve_silently(
+        "{ audio: { attenuation: { maxDistance: 90 }, ghost: { drive: 0.5 } } }",
+        "{ audio = { attenuation = { maxDistance = 90 }, ghost = { drive = 0.5 } } }",
+        ModAudioProfile {
+            attenuation: attenuation(2.0, 90.0, ModAttenuationCurve::Linear).attenuation,
+            ghost: ModGhostAudio {
+                drive: 0.5,
+                ..ModGhostAudio::FLOOR
+            },
+        },
+    );
+}
+
+#[test]
+fn audio_profile_partial_ghost_block_takes_floor_values_for_missing_fields() {
+    assert_twins_resolve_silently(
+        "{ audio: { ghost: { lowPassHz: 6000 } } }",
+        "{ audio = { ghost = { lowPassHz = 6000 } } }",
+        ghost(0.6, 200.0, 6000.0, 0.0),
+    );
+    assert_twins_resolve_silently(
+        "{ audio: { ghost: { volume: 0.9, drive: null } } }",
+        "{ audio = { ghost = { volume = 0.9 } } }",
+        ghost(0.9, 200.0, 4000.0, 0.0),
+    );
+}
+
+#[test]
+fn audio_profile_omitted_ghost_block_uses_the_floor_silently() {
+    for (js, luau) in [
+        ("{ audio: { ghost: null } }", "{ audio = { ghost = nil } }"),
+        (
+            "{ audio: { ghost: undefined } }",
+            "{ audio = { ghost = nil } }",
+        ),
+        ("{ audio: { ghost: {} } }", "{ audio = { ghost = {} } }"),
+    ] {
+        assert_twins_resolve_silently(js, luau, ModAudioProfile::default());
+    }
+}
+
+/// Drain one malformed `audio.ghost` fixture in each runtime, beside an
+/// authored attenuation: both apply the whole floor profile, keep the
+/// attenuation, and warn exactly once with `warning`.
+fn assert_twins_warn_and_floor(js_ghost: &str, luau_ghost: &str, warning: &str) {
+    let expected = attenuation(2.0, 90.0, ModAttenuationCurve::Linear);
+    let js = format!("{{ audio: {{ attenuation: {{ maxDistance: 90 }}, ghost: {js_ghost} }} }}");
+    let luau =
+        format!("{{ audio = {{ attenuation = {{ maxDistance = 90 }}, ghost = {luau_ghost} }} }}");
+    let capture = LogCapture::start();
+    assert_eq!(drain_js(&js), expected, "QuickJS fixture `{js}`");
+    capture.assert_logged_once(Level::Warn, warning);
+    capture.clear();
+    assert_eq!(drain_lua(&luau), expected, "Luau fixture `{luau}`");
+    capture.assert_logged_once(Level::Warn, warning);
+}
+
+// AC: a malformed `audio.ghost` field applies the whole floor profile and warns
+// naming the field; both runtimes judge alike.
+#[test]
+fn audio_profile_malformed_ghost_field_warns_naming_it_and_applies_the_whole_floor() {
+    let warning = |field: &str, range: &str| {
+        format!(
+            "`audio.ghost.{field}` must be a finite number in {range}; using the floor ghost bus profile"
+        )
+    };
+    for (js, luau, field, range) in [
+        (
+            "{ volume: 1.5, lowPassHz: 6000 }",
+            "{ volume = 1.5, lowPassHz = 6000 }",
+            "volume",
+            "0..=1",
+        ),
+        ("{ volume: -0.1 }", "{ volume = -0.1 }", "volume", "0..=1"),
+        (
+            "{ volume: 1.0000000001 }",
+            "{ volume = 1.0000000001 }",
+            "volume",
+            "0..=1",
+        ),
+        (
+            "{ volume: 'loud' }",
+            "{ volume = 'loud' }",
+            "volume",
+            "0..=1",
+        ),
+        ("{ drive: 2 }", "{ drive = 2 }", "drive", "0..=1"),
+        ("{ drive: true }", "{ drive = true }", "drive", "0..=1"),
+        ("{ drive: NaN }", "{ drive = 0/0 }", "drive", "0..=1"),
+        (
+            "{ highPassHz: 10 }",
+            "{ highPassHz = 10 }",
+            "highPassHz",
+            "20..=20000",
+        ),
+        (
+            "{ highPassHz: Infinity }",
+            "{ highPassHz = math.huge }",
+            "highPassHz",
+            "20..=20000",
+        ),
+        (
+            "{ lowPassHz: 25000 }",
+            "{ lowPassHz = 25000 }",
+            "lowPassHz",
+            "20..=20000",
+        ),
+        (
+            "{ lowPassHz: [3000] }",
+            "{ lowPassHz = { 3000 } }",
+            "lowPassHz",
+            "20..=20000",
+        ),
+    ] {
+        assert_twins_warn_and_floor(js, luau, &warning(field, range));
+    }
+}
+
+#[test]
+fn audio_profile_ghost_high_pass_at_or_above_low_pass_counts_as_malformed() {
+    for (js, luau, high, low) in [
+        (
+            "{ highPassHz: 3000, lowPassHz: 3000 }",
+            "{ highPassHz = 3000, lowPassHz = 3000 }",
+            3000,
+            3000,
+        ),
+        (
+            "{ highPassHz: 5000, lowPassHz: 1000 }",
+            "{ highPassHz = 5000, lowPassHz = 1000 }",
+            5000,
+            1000,
+        ),
+        // Judged after absent fields take the floor: floor lowPassHz is 4000.
+        ("{ highPassHz: 4500 }", "{ highPassHz = 4500 }", 4500, 4000),
+        // Floor highPassHz is 200.
+        ("{ lowPassHz: 150 }", "{ lowPassHz = 150 }", 200, 150),
+    ] {
+        assert_twins_warn_and_floor(
+            js,
+            luau,
+            &format!(
+                "`audio.ghost.highPassHz` ({high}) must be below `audio.ghost.lowPassHz` ({low}); using the floor ghost bus profile"
+            ),
+        );
+    }
+}
+
+#[test]
+fn audio_profile_non_object_ghost_block_warns_and_uses_the_floor() {
+    for (js, luau) in [("'muffled'", "'muffled'"), ("[0.7]", "{ 0.7 }"), ("3", "3")] {
+        let capture = LogCapture::start();
+        let expected = attenuation(2.0, 90.0, ModAttenuationCurve::Linear);
+        assert_eq!(
+            drain_js(&format!(
+                "{{ audio: {{ attenuation: {{ maxDistance: 90 }}, ghost: {js} }} }}"
+            )),
+            expected
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "`audio.ghost` must be an object; using the floor ghost bus profile",
+        );
+        capture.clear();
+        assert_eq!(
+            drain_lua(&format!(
+                "{{ audio = {{ attenuation = {{ maxDistance = 90 }}, ghost = {luau} }} }}"
+            )),
+            expected
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "`audio.ghost` must be a table; using the floor ghost bus profile",
+        );
+    }
+}
+
+#[test]
+fn audio_profile_malformed_attenuation_leaves_an_authored_ghost_block_standing() {
+    let capture = LogCapture::start();
+    let expected = ghost(0.8, 300.0, 5000.0, 0.2);
+    assert_eq!(
+        drain_js(
+            "{ audio: { attenuation: 'far', ghost: { volume: 0.8, highPassHz: 300, lowPassHz: 5000, drive: 0.2 } } }"
+        ),
+        expected
+    );
+    assert_eq!(
+        drain_lua(
+            "{ audio = { attenuation = 'far', ghost = { volume = 0.8, highPassHz = 300, lowPassHz = 5000, drive = 0.2 } } }"
+        ),
+        expected
+    );
+    capture.assert_not_logged(Level::Warn, "audio.ghost");
 }

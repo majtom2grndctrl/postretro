@@ -15,7 +15,7 @@ use crate::chart_raster::{
 };
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
-use crate::texel_footprint::{TexelFrame, TexelSampler, TexelSite};
+use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
 
 use super::{
     Chart, CompositedAtlas, light_texel_contribution, scatter_chart_into_atlas,
@@ -132,6 +132,11 @@ pub(super) fn bake_face_chart(
         .map(|light| TexelSampler::new(light, area_sample_count, penumbra_floor))
         .collect();
     let frame = TexelFrame::for_chart(chart);
+    // Clip reach is light-independent; every light reads the same answers.
+    let clip_reach = samplers
+        .iter()
+        .any(|sampler| matches!(sampler, TexelSampler::Footprint(_)))
+        .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
 
     for ty in 0..interior_h {
         for tx in 0..interior_w {
@@ -144,6 +149,9 @@ pub(super) fn bake_face_chart(
                 normal: surface_normal,
                 seed: chart_texel_seed(chart, tx, ty),
                 frame,
+                may_clip: clip_reach
+                    .as_ref()
+                    .is_none_or(|reach| reach.may_clip(tx, ty)),
             };
 
             let mut irr = Vec3::ZERO;

@@ -256,6 +256,10 @@ pub(crate) struct TexelSite {
     /// `chart_raster::chart_texel_seed`.
     pub(crate) seed: u64,
     pub(crate) frame: TexelFrame,
+    /// Whether any triangle could block this texel's clip segments
+    /// ([`ClipReach::may_clip`]). When none can, every segment is clear and
+    /// the footprint traces none.
+    pub(crate) may_clip: bool,
 }
 
 /// How one `(light, chart)` walk samples a texel's visibility; built once per
@@ -356,7 +360,7 @@ pub(crate) fn footprint_visibility(
             site.world_p
         } else {
             let point = site.world_p + site.frame.offset(footprint.offsets[k], rotation);
-            if !reach(centre_origin, point + lift) {
+            if site.may_clip && !reach(centre_origin, point + lift) {
                 return None;
             }
             point
@@ -407,6 +411,9 @@ pub(crate) fn footprint_visibility(
         early_out: false,
     }
 }
+
+mod clip_reach;
+pub(crate) use clip_reach::ClipReach;
 
 #[cfg(test)]
 mod test_fixtures;

@@ -23,7 +23,7 @@ use crate::lightmap_bake::{
 #[cfg(test)]
 use crate::map_data::LightType;
 use crate::map_data::MapLight;
-use crate::texel_footprint::{TexelFrame, TexelSampler, TexelSite};
+use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
 use glam::DVec3;
 
 mod cache_keys;
@@ -495,6 +495,36 @@ pub(crate) fn bake_light_layer_chart_controlled(
     penumbra_floor: bool,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
+    bake_light_layer_chart_clipped(
+        light,
+        atlas,
+        face_idx,
+        bvh,
+        primitives,
+        geometry,
+        area_sample_count,
+        penumbra_floor,
+        true,
+        control,
+    )
+}
+
+/// [`bake_light_layer_chart_controlled`] with the clip pre-pass optional:
+/// without it every texel traces its clip segments, the reference the
+/// pre-pass must reproduce bit for bit.
+#[allow(clippy::too_many_arguments)]
+fn bake_light_layer_chart_clipped(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    area_sample_count: u32,
+    penumbra_floor: bool,
+    skip_unreachable_clips: bool,
+    control: &BakeControl,
+) -> Vec<LayerTexel> {
     let chart = &atlas.charts[face_idx];
     let capacity = if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
         let (width, height) = chart_interior_dims(chart);
@@ -505,6 +535,8 @@ pub(crate) fn bake_light_layer_chart_controlled(
     let mut texels = Vec::with_capacity(capacity);
     let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor);
     let frame = TexelFrame::for_chart(chart);
+    let clip_reach = (skip_unreachable_clips && matches!(sampler, TexelSampler::Footprint(_)))
+        .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
     // One chart's texels are walked in order on one thread, so the occluder
     // caches stay local to this `(light, chart)` unit. Wall-clip segments keep
     // their own: they run between the light's rays and would otherwise evict
@@ -517,6 +549,9 @@ pub(crate) fn bake_light_layer_chart_controlled(
             normal: sample.surface_normal,
             seed: sample.seed,
             frame,
+            may_clip: clip_reach
+                .as_ref()
+                .is_none_or(|reach| reach.may_clip(sample.tx, sample.ty)),
         };
         if let Some(texel) = bake_sparse_layer_texel(
             sample.idx,
@@ -534,6 +569,34 @@ pub(crate) fn bake_light_layer_chart_controlled(
         }
     });
     texels
+}
+
+/// [`bake_light_layer_chart_controlled`] tracing every texel's clip segments:
+/// the reference the clip pre-pass is checked against.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_light_layer_chart_without_clip_prepass(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> Vec<LayerTexel> {
+    bake_light_layer_chart_clipped(
+        light,
+        atlas,
+        face_idx,
+        bvh,
+        primitives,
+        geometry,
+        area_sample_count,
+        true,
+        false,
+        control,
+    )
 }
 
 /// Walk one `(light, chart)` using the exact lightmap raster path, retaining
@@ -559,6 +622,9 @@ pub(crate) fn visit_light_chart_coverage_controlled(
 #[derive(Clone, Copy)]
 pub(crate) struct ChartWalkSample {
     pub idx: u32,
+    /// Interior texel coordinates within the chart.
+    pub tx: i32,
+    pub ty: i32,
     pub world_p: Vec3,
     pub surface_normal: Vec3,
     pub seed: u64,
@@ -607,6 +673,8 @@ pub(crate) fn for_each_light_layer_chart_texel(
 
             let sample = ChartWalkSample {
                 idx,
+                tx,
+                ty,
                 world_p,
                 surface_normal,
                 seed,

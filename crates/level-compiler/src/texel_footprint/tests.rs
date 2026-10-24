@@ -784,3 +784,237 @@ fn floor_disabled_bakes_centre_point_soft_visibility() {
         }
     }
 }
+
+// --- clip pre-pass ------------------------------------------------------------
+
+/// Every chart of `atlas`, baked for each light with the clip pre-pass and
+/// with every clip segment traced: the layer records must match bit for bit.
+/// Returns how many texels the pre-pass let skip their clip segments.
+fn assert_prepass_matches_full_clip(
+    geometry: &crate::geometry::GeometryResult,
+    atlas: &crate::lightmap_layer::SharedAtlas<'_>,
+    lights: &[MapLight],
+    counts: &[u32],
+) -> (usize, usize) {
+    let (bvh, primitives, _) = crate::bvh_build::build_bvh(geometry).unwrap();
+    let control = crate::bake_control::BakeControl::unrestricted();
+    let (mut skipped, mut total) = (0, 0);
+    for (face, chart) in atlas.charts.iter().enumerate() {
+        if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+            continue;
+        }
+        let reach = ClipReach::rasterized(chart, &bvh, &primitives, geometry);
+        let (w, h) = crate::chart_raster::chart_interior_dims(chart);
+        for ty in 0..h {
+            for tx in 0..w {
+                total += 1;
+                skipped += usize::from(!reach.may_clip(tx, ty));
+            }
+        }
+        for light in lights {
+            for &count in counts {
+                let fast = crate::lightmap_layer::bake_light_layer_chart_controlled(
+                    light,
+                    atlas,
+                    face,
+                    &bvh,
+                    &primitives,
+                    geometry,
+                    count,
+                    true,
+                    &control,
+                );
+                let full = crate::lightmap_layer::bake_light_layer_chart_without_clip_prepass(
+                    light,
+                    atlas,
+                    face,
+                    &bvh,
+                    &primitives,
+                    geometry,
+                    count,
+                    &control,
+                );
+                assert_eq!(
+                    bytemuck::cast_slice::<_, u8>(&fast),
+                    bytemuck::cast_slice::<_, u8>(&full),
+                    "face {face}, {:?} light, count {count}",
+                    light.light_type
+                );
+            }
+        }
+    }
+    (skipped, total)
+}
+
+fn single_chart_atlas<R>(
+    receiver: &Receiver,
+    check: impl FnOnce(&crate::lightmap_layer::SharedAtlas<'_>) -> R,
+) -> R {
+    let charts = [receiver.chart()];
+    let placements = [crate::chart_raster::ChartPlacement {
+        x: 0,
+        y: 0,
+        layer: 0,
+    }];
+    let (w, h) = (charts[0].width_texels, charts[0].height_texels);
+    let layout = crate::lightmap_bake::BlockLayout::whole_layers(w, h, &placements, 2);
+    check(&crate::lightmap_layer::SharedAtlas {
+        charts: &charts,
+        placements: &placements,
+        atlas_width: w,
+        atlas_height: h,
+        layout: &layout,
+    })
+}
+
+#[test]
+fn clip_prepass_reproduces_the_footprint_fixtures_bit_for_bit() {
+    let mut soft_sun = hard_sun([0.3, -1.0, 0.2]);
+    soft_sun.angular_diameter = 2.0;
+    let lights = |anchor: Vec3, yaw: f32| -> Vec<MapLight> {
+        let mut lights: Vec<MapLight> = CONTACT_LIGHTS
+            .iter()
+            .map(|kind| light_beside(kind, anchor, yaw, 0.35))
+            .collect();
+        lights.push(soft_sun.clone());
+        lights
+    };
+    let counts = [SOFT_PROBE_SAMPLES, DEFAULT_AREA_SAMPLE_COUNT];
+    let mut fixtures = Vec::new();
+    let (anchor, yaw) = (Vec3::new(0.013, 0.0, 0.021), 20.0f32.to_radians());
+    fixtures.push((plate_fixture(anchor, yaw, CONTACT_GAP), lights(anchor, yaw)));
+    for bottom in [CONTACT_GAP, 0.03] {
+        let (fixture, axis) = pole_fixture(30.0f32.to_radians(), 0.25, bottom);
+        fixtures.push((fixture, lights(axis, 30.0f32.to_radians())));
+    }
+    for thickness in [0.2, 0.3 * PITCH] {
+        let (mut scene, receiver, wall_x) = wall_fixture(24, thickness, 1.0);
+        let yaw = 30.0f32.to_radians();
+        let anchor = Vec3::new(wall_x, 0.0, -0.1);
+        scene.oriented_box(
+            anchor,
+            yaw,
+            Vec3::new(-4.0, CONTACT_GAP, -2.0),
+            Vec3::new(0.0, CONTACT_GAP + 0.004, 2.0),
+        );
+        let mut wall_lights = lights(anchor, yaw);
+        wall_lights.push(hard_point([-0.5, 2.5, -0.1]));
+        wall_lights.push(hard_point([0.5, 1.0, 0.0]));
+        fixtures.push((Fixture::new(scene, receiver), wall_lights));
+    }
+    for (fixture, lights) in &fixtures {
+        let (skipped, total) = single_chart_atlas(&fixture.receiver, |atlas| {
+            assert_prepass_matches_full_clip(&fixture.geometry, atlas, lights, &counts)
+        });
+        println!("fixture: pre-pass skips {skipped} of {total} texels");
+    }
+}
+
+#[test]
+fn clip_prepass_reproduces_a_room_bake_bit_for_bit() {
+    // A room: floor, four walls, a box and a turned box at contact, a ramp,
+    // a plate just above the floor and a fin thinner than the footprint.
+    let mut scene = SceneBuilder::default();
+    let (lo, hi, top) = (-2.0f32, 2.0f32, 2.0f32);
+    let p = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+    scene.quad(
+        [
+            p(lo, 0.0, lo),
+            p(lo, 0.0, hi),
+            p(hi, 0.0, hi),
+            p(hi, 0.0, lo),
+        ],
+        Vec3::Y,
+    );
+    scene.quad(
+        [
+            p(lo, 0.0, lo),
+            p(hi, 0.0, lo),
+            p(hi, top, lo),
+            p(lo, top, lo),
+        ],
+        Vec3::Z,
+    );
+    scene.quad(
+        [
+            p(lo, 0.0, hi),
+            p(lo, top, hi),
+            p(hi, top, hi),
+            p(hi, 0.0, hi),
+        ],
+        -Vec3::Z,
+    );
+    scene.quad(
+        [
+            p(lo, 0.0, lo),
+            p(lo, top, lo),
+            p(lo, top, hi),
+            p(lo, 0.0, hi),
+        ],
+        Vec3::X,
+    );
+    scene.quad(
+        [
+            p(hi, 0.0, lo),
+            p(hi, 0.0, hi),
+            p(hi, top, hi),
+            p(hi, top, lo),
+        ],
+        -Vec3::X,
+    );
+    scene.aabb(p(-1.2, 0.0, -1.2), p(-0.7, 0.5, -0.7));
+    scene.oriented_box(
+        p(0.6, 0.0, -0.8),
+        0.6,
+        p(-0.25, 0.0, -0.25),
+        p(0.25, 0.3, 0.25),
+    );
+    let ramp_normal = Vec3::new(0.0, 1.0, -0.5).normalize();
+    scene.quad(
+        [
+            p(-0.5, 0.0, 0.5),
+            p(-0.5, 0.5, 1.5),
+            p(0.5, 0.5, 1.5),
+            p(0.5, 0.0, 0.5),
+        ],
+        ramp_normal,
+    );
+    scene.oriented_box(
+        p(1.0, 0.0, 0.8),
+        0.35,
+        p(-0.3, CONTACT_GAP, -0.3),
+        p(0.3, CONTACT_GAP + 0.004, 0.3),
+    );
+    scene.aabb(p(-1.5, 0.0, 0.2), p(-1.5 + 0.3 * PITCH, 0.6, 1.4));
+    let mut geometry = scene.build();
+
+    let mut soft_sun = hard_sun([0.4, -1.0, 0.25]);
+    soft_sun.angular_diameter = 2.0;
+    let lights = vec![
+        hard_point([0.3, 1.8, 0.2]),
+        default_point([-0.6, 1.5, -0.3]),
+        hard_spot([1.2, 1.9, 1.0]),
+        hard_sun([0.3, -1.0, -0.4]),
+        soft_sun,
+    ];
+    let baked = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+    let prepared = crate::lightmap_bake::prepare_atlas(&mut geometry, &baked, PITCH, &[]).unwrap();
+    let atlas = crate::lightmap_layer::SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let (skipped, total) = assert_prepass_matches_full_clip(
+        &geometry,
+        &atlas,
+        &lights,
+        &[SOFT_PROBE_SAMPLES, DEFAULT_AREA_SAMPLE_COUNT],
+    );
+    println!(
+        "room: pre-pass skips {skipped} of {total} texels over {} charts",
+        prepared.charts.len()
+    );
+    assert!(skipped > 0 && skipped < total);
+}

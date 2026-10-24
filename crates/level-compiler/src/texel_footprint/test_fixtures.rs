@@ -326,7 +326,8 @@ impl Fixture {
 
     /// The walk [`Fixture::bake`] runs, replayed texel by texel through the
     /// footprint with each outcome kept: same order, same covered texels,
-    /// same occluder caches. `reach_override` replaces the wall clip.
+    /// same occluder caches, every clip segment traced (no pre-pass).
+    /// `reach_override` replaces the wall clip.
     pub(super) fn footprint_outcomes(
         &self,
         light: &MapLight,
@@ -351,6 +352,7 @@ impl Fixture {
                     normal: chart.normal,
                     seed: chart_texel_seed(&chart, tx, ty),
                     frame,
+                    may_clip: true,
                 };
                 outcomes.push(Some(footprint_visibility(
                     light,

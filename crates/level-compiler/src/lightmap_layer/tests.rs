@@ -637,6 +637,7 @@ fn floor_site(world_p: Vec3) -> TexelSite {
         normal: Vec3::Y,
         seed: 0,
         frame: TexelFrame::new(Vec3::X, Vec3::Z),
+        may_clip: true,
     }
 }
 

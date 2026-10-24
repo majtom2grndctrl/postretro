@@ -18,7 +18,7 @@ use crate::lightmap_bake::{
 };
 use crate::lightmap_layer::SharedAtlas;
 use crate::map_data::{LightType, MapLight};
-use crate::texel_footprint::{TexelFrame, TexelSampler, TexelSite};
+use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
 
 use super::eligibility::EligibleLight;
 use super::fill::quantize_visibility;
@@ -172,6 +172,22 @@ pub(super) fn estimate_cut_owners(
                 .map(move |(l, _)| (c, l))
         })
         .collect();
+    // Clip reach is light-independent: one per sub-face, read by every light.
+    let clip_reaches: Vec<Vec<ClipReach>> = if penumbra_floor {
+        cut_parents
+            .par_iter()
+            .map(|cut| {
+                cut.faces
+                    .clone()
+                    .map(|face| {
+                        ClipReach::for_chart(&shared.charts[face], bvh, primitives, geometry)
+                    })
+                    .collect()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // (lit samples, contribution, traces) per pair, in pair order.
     let results: Vec<(u32, f64, usize)> = pairs
         .par_iter()
@@ -192,6 +208,9 @@ pub(super) fn estimate_cut_owners(
                     normal: chart.normal,
                     seed: chart_texel_seed(chart, tx, ty),
                     frame: TexelFrame::for_chart(chart),
+                    may_clip: clip_reaches.get(c).is_none_or(|reaches| {
+                        reaches[face - cut_parents[c].faces.start].may_clip(tx, ty)
+                    }),
                 };
                 let (_, _, visibility) = light_texel_contribution_and_visibility_with(
                     light,

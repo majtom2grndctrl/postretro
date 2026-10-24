@@ -1,7 +1,7 @@
 # lightmap-penumbra-floor — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: 52d726196 (no `crates/`, `docs/` or `sdk/` change since the brief's a0a2c0239)
 
 ## Block (AC 25 wall-time gate)
@@ -17,6 +17,8 @@ The cheap path now traces nine footprint probes plus eight clip segments per (li
 - A. Pure optimisation, no contract change: clip results depend only on the texel, so compute them once per chart and share across lights, and skip clip segments for texels with no non-coplanar geometry within one pitch. Removes most of the eight clip segments; light rays stay at nine.
 - B. Five probes (centre plus quarter-turn ring at radius ≥ 0.72): light rays 4 → 5 (soft), 1 → 5 (hard). Keeps P3's centre-blocked clause and P16, but the model shows lit gaps on 0.3–0.45-texel lines (0.1–4% of centreline points), so AC 5's "no lit gaps" would need restating.
 - C. Accept the cost: raise the gate.
+
+Owner (2026-10-23): do A, re-measure both maps, and come back if still over 1.5×.
 
 ## Corrections
 

@@ -31,6 +31,8 @@ Still over 1.5× on both. A scratch run with no clip work at all measured the sa
 
 Owner (2026-10-23): accept the ~1.8× / 2.2× lightmap-stage cost (C); raise the gate and carry on with Tasks 2–4. AC 25 now reports the final ratios against the accepted figures and flags any rise above them, with the 5% detector-share stop unchanged.
 
+After the soft-light pairing fix (b301faec5), hallway-mini cold: Lightmap Bake 398.2 s (2.23× the 178.9 s baseline, up from the accepted 1.79×), `TexelSteps` 18.7 s summed over workers (≤ 4.7% of the stage, an upper bound), total 673 s (1.50×), no texel-step warnings (AC 28). Groups-capture is hard-light only and unchanged (~2.2×). Flagged to the owner as a rise above the accepted figure.
+
 ## Corrections
 
 - Path: "the four probes form a designed ring at every count" → a four-point ring cannot meet P3. A strip thinner than half a texel through the texel centre slips between ring points 0.75 texel out, the probes agree, and the texel early-outs to 1.0 with its centre ray blocked. A 2D model (cone kernel, per-texel seeded rotation, angles 0–45°, nine phases, counts 5–64) gave: ring-4 ~300 centre-blocked texels stored 1.0 per sweep; centre + ring-4, none, but bilinear gaps along 0.3–0.45-texel lines (0.1–4% of centreline points); centre + ring-8 at radius ≥ 0.7, no gaps down to 0.4 texel, worst axis-adjacent difference ≤ 0.875 and no texel with exact visibility in (0.1, 0.9) snapped. Planning around it with **nine footprint probes: the centre plus an eight-point ring (radius ≥ 0.6 texel, 45° steps)**. An eight-ring needs only R ≥ 0.52 / cos 22.5° ≈ 0.563 to split every edge within the cone's 10% point (the research's 0.72 is for a four-ring), and at nine samples the cone's E[r²] = 0.3 wants R ≈ 0.58; 0.7 widened the minimum-count ramp past AC 6's bound. Script: `footprint_sim.py` beside this plan (`uv run --with numpy python footprint_sim.py v2`); the Rust tests are the proof.
@@ -82,7 +84,7 @@ Owner (2026-10-23): accept the ~1.8× / 2.2× lightmap-stage cost (C); raise the
 | 25 lightmap stage cold wall time ≤ 1.5×, detector ≤ 5% | timed bakes, hallway-mini + groups-capture | gate raised by owner to the accepted 1.79× / 2.22×; final run reports against them; detector ≤ 5% still stops |
 | 26 capture 2560×1440, floor off vs on, vs `_lightmap_density 0.01` | owner, in-engine | manual |
 | 27 shadowmask specular, no step / no banding rise | owner, in-engine | manual |
-| 28 hallway-mini full compile logs no texel-step warnings | compile + log grep (executor runs it) | achievable as stated |
+| 28 hallway-mini full compile logs no texel-step warnings | compile + log grep (executor runs it) | pass at b301faec5 (0 warnings); re-run at the end |
 
 ## Tasks
 
@@ -94,5 +96,5 @@ Owner (2026-10-23): accept the ~1.8× / 2.2× lightmap-stage cost (C); raise the
 | 4 | Animated weight maps: footprint in the weight-map bake, grid + detector, warnings in the `animated_lm_weight_maps` entry, stage version bump; AC 12 | delegated | 2 | |
 | 5 | Text: docs, FGD, `MapLight` docs, default-size comments, `build_pipeline.md` rows; fixtures relying on exact authored `0`; AC 22–23 | delegated (no cargo) | 1 | author text done (`docs/level_design.md`, FGD, `map_data.rs`, `quake_map.rs`); remaining hits are the sub-texel warning and its tests (Task 3) and `probe_indices`/texel-loop comments in `lightmap_bake.rs`; grep gate at Task 6 |
 | 6 | Byte-identity and measurement: SH/scatter two-PRL compare, switch-off weight maps, BC5/BC6H + owner report, wall time, hallway warnings; capture scene JSONs | integrator | 3, 4 | |
-| 3b | Soft-light emitter pairing fix (Task 3 finding) | delegated | 3 | done; 1806 passed; +~20% soft-map lightmap time, hallway re-time pending |
+| 3b | Soft-light emitter pairing fix (Task 3 finding) | delegated | 3 | done; 1806 passed; hallway-mini lightmap 2.23× (flagged) |
 | 7 | Preflight, review panel, fixes, full gate | integrator | 1–6 | |

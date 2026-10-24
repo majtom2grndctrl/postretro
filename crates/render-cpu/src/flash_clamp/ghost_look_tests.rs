@@ -1689,7 +1689,7 @@ fn ordinary_looks_after_a_drop_present_as_asked_within_the_rate_cap() {
         }
         let rest = vec![None; frames(1.5)];
         let cases = [
-            ("arm and disarm", after_drop(&[arm.clone()])),
+            ("arm and disarm", after_drop(std::slice::from_ref(&arm))),
             ("re-entry twice", after_drop(&[re_entry])),
             ("echo steps", after_drop(&[steps.clone()])),
             (

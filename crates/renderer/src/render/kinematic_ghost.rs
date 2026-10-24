@@ -92,12 +92,48 @@ impl MoverGhostBounds {
     /// point beside a turned box but inside its world-axis enclosure is out.
     /// Never true for a box with no inverse or bounds, or a non-finite point.
     pub(super) fn contains(&self, point: Vec3, margin: f32) -> bool {
+        self.meets_segment(point, point, margin)
+    }
+
+    /// Whether the world segment from `start` to `end` touches the oriented
+    /// box grown by `margin` metres along each of its axes: a slab test in
+    /// the mover's own frame, ends included. A segment of zero length asks
+    /// whether its point lies in the box. Never true for a box with no
+    /// inverse or bounds, or a non-finite end.
+    pub(super) fn meets_segment(&self, start: Vec3, end: Vec3, margin: f32) -> bool {
         let Some(local_from_world) = self.local_from_world else {
             return false;
         };
-        let local = local_from_world.transform_point3(point);
+        let start = local_from_world.transform_point3(start);
+        let end = local_from_world.transform_point3(end);
+        if !(start.is_finite() && end.is_finite()) {
+            return false;
+        }
         let reach = Vec3::splat(margin) / self.metres_per_unit;
-        (local.cmpge(self.local.min - reach) & local.cmple(self.local.max + reach)).all()
+        let low = self.local.min - reach;
+        let high = self.local.max + reach;
+        let step = end - start;
+        // The part of the segment, as a fraction of its length, inside every
+        // slab seen so far.
+        let (mut enter, mut leave) = (0.0_f32, 1.0_f32);
+        for axis in 0..3 {
+            let (from, along) = (start[axis], step[axis]);
+            if along == 0.0 {
+                // Parallel to this slab: inside it everywhere or nowhere.
+                if from < low[axis] || from > high[axis] {
+                    return false;
+                }
+                continue;
+            }
+            let near = (low[axis] - from) / along;
+            let far = (high[axis] - from) / along;
+            enter = enter.max(near.min(far));
+            leave = leave.min(near.max(far));
+            if enter > leave {
+                return false;
+            }
+        }
+        true
     }
 }
 

@@ -12,6 +12,7 @@ use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::SeamlessMapping;
 use postretro_level_loader::{CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld};
+use postretro_render_cpu::flash_clamp::INTENSITY_RATE_PER_SECOND;
 use postretro_render_cpu::flash_limiter::{LimiterFrameInput, pack_limiter_frame};
 use postretro_render_cpu::ghost_instance::{GHOST_SPRITE_INSTANCE_SIZE, GhostInstanceLook};
 use postretro_visibility::VisibleCells;
@@ -490,13 +491,64 @@ fn a_sprite_opacity_strobe_under_a_steady_ghost_look_is_limited() {
     }
 }
 
-// An ordinary sprite fade-out under the limiter is never held: it rides the
-// exempt fall to nothing, drawing as asked on every frame.
+// An ordinary sprite fade-out under the limiter, slower than the rate cap
+// and with the flash budget unspent, is never held: it draws as asked on
+// every frame.
 #[test]
 fn a_sprite_opacity_fade_out_draws_unheld_under_the_limiter() {
     // Steady for a quarter second, then a half-second linear fade to nothing.
     let fade = |n: usize| -> f32 { (1.0 - n.saturating_sub(15) as f32 / 30.0).max(0.0) };
     for &(asked, drawn) in &present_sprite_opacity(Some(true), 60, fade) {
         assert!((drawn - asked).abs() < 1e-4, "{asked} drew {drawn}");
+    }
+}
+
+// A sprite fade-out still presents once a strobe has spent the flash
+// budget. The strobe runs until the limiter holds one of its rises, and the
+// fade starts the next frame. From there the drawn opacity falls toward
+// every lower ask at least at the rate cap, the exempt fall, and reaches
+// nothing within a quarter second of the ask doing so.
+#[test]
+fn a_sprite_opacity_fade_out_presents_after_a_strobe_spends_the_budget() {
+    let dt = 1.0 / 60.0;
+    let cap = INTENSITY_RATE_PER_SECOND * dt;
+    // 6 Hz between 0.9 and 0.6: each swing completes under the rate cap, so
+    // it asks twelve transitions a second against a budget of six.
+    let strobe = |n: usize| -> f32 { if (n / 5).is_multiple_of(2) { 0.9 } else { 0.6 } };
+    let strobed = present_sprite_opacity(Some(true), 120, strobe);
+    // A held rise: the rate cap alone would move it up by `cap`.
+    let held = (1..strobed.len())
+        .find(|&n| {
+            let ((asked, drawn), before) = (strobed[n], strobed[n - 1].1);
+            asked > before + 0.05 && drawn <= before + 1e-4
+        })
+        .expect("the strobe spends the flash budget, so the limiter holds a rise");
+    assert!(strobed[held].1 > 0.5, "held at {:?}", strobed[held]);
+
+    // From the strobe's top to nothing in a tenth of a second.
+    let fade_frames = 6;
+    let fade = |n: usize| -> f32 {
+        if n <= held {
+            strobe(n)
+        } else {
+            0.9 * (1.0 - (n - held) as f32 / fade_frames as f32).max(0.0)
+        }
+    };
+    let asked_nothing = held + fade_frames;
+    let quarter_second = 15;
+    let frames = asked_nothing + quarter_second + 5;
+    let faded = present_sprite_opacity(Some(true), frames, fade);
+    assert_eq!(faded[..=held], strobed[..=held], "the same history");
+    for n in held + 1..frames {
+        let ((asked, drawn), before) = (faded[n], faded[n - 1].1);
+        if asked < before {
+            assert!(
+                drawn <= asked.max(before - cap) + 1e-3,
+                "frame {n}: asked {asked}, drew {drawn} after {before}"
+            );
+        }
+    }
+    for &(_, drawn) in &faded[asked_nothing + quarter_second..] {
+        assert!(drawn < 1e-4, "{faded:?}");
     }
 }

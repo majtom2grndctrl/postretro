@@ -200,9 +200,16 @@ first, so a nearer ghost blends over a farther one.
 
 Ghosts sort as whole objects, not surface by surface. A ghost standing on or
 inside a moving ghost, such as a platform, a lift or a cab, layers correctly
-with it. Two ghosts that pass through each other, or a ghost close beside a
-large moving ghost without standing on it, can hide each other where they
-overlap, as if solid there.
+with it when you see it from the side it stands on: a platform or lift from
+above, a cab from inside. Seen through the moving ghost instead, from under a
+bridge or from outside a closed cab, the moving ghost's near side draws over
+it and the ghost shows through. A ghost jumping on a moving ghost keeps its
+layering through an ordinary jump.
+
+Two ghosts that pass through each other, or a ghost close beside a large
+moving ghost without standing on it, can hide each other where they overlap:
+in `"blend"` as if solid there, in `"dither"` everywhere but the pattern's
+gaps.
 
 Ghosts of projectiles drawn as sprites blend in either mode and sit outside
 that ordering, like any sprite.

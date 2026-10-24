@@ -1,6 +1,6 @@
 // Kinematic ghost shader contract: naga validation, the 80-byte instance layout, the
 // sampling copy pinned to the mover pass's, and the shared look helper. Then a
-// mover ghost's placed bounds: centre and oriented containment.
+// mover ghost's placed bounds: centre, oriented containment and segments.
 // See: context/lib/rendering_pipeline.md §7.9, §8
 
 use super::*;
@@ -183,4 +183,45 @@ fn mover_ghost_bounds_with_no_inverse_or_bad_bounds_contain_nothing() {
     assert!(!nan_transform.contains(Vec3::ZERO, 0.1));
 
     assert!(!MoverGhostBounds::new(Mat4::IDENTITY, slab()).contains(Vec3::NAN, 0.1));
+}
+
+// A segment meets the turned slab where it crosses it, at an end inside it,
+// or within the margin of a face; it misses when it stops short, passes
+// beside, or runs parallel outside a face.
+#[test]
+fn mover_ghost_bounds_meet_a_segment_crossing_the_turned_box() {
+    let transform = Mat4::from_translation(Vec3::new(0.0, 0.0, -4.0))
+        * Mat4::from_rotation_y(std::f32::consts::FRAC_PI_4);
+    let bounds = MoverGhostBounds::new(transform, slab());
+    let local = |x: f32, y: f32, z: f32| transform.transform_point3(Vec3::new(x, y, z));
+
+    assert!(bounds.meets_segment(local(0.0, 0.0, 2.0), local(0.0, 0.0, -2.0), 0.0));
+    assert!(bounds.meets_segment(local(0.2, 0.3, 0.0), local(0.0, 0.0, 5.0), 0.0));
+    assert!(!bounds.meets_segment(local(0.0, 0.0, 2.0), local(0.0, 0.0, 0.5), 0.0));
+    assert!(!bounds.meets_segment(local(1.5, 0.0, 2.0), local(1.5, 0.0, -2.0), 0.0));
+    // Parallel to the face, 0.08 m in front of it.
+    let along_face = (local(-2.0, 0.0, 0.13), local(2.0, 0.0, 0.13));
+    assert!(!bounds.meets_segment(along_face.0, along_face.1, 0.0));
+    assert!(bounds.meets_segment(along_face.0, along_face.1, 0.1));
+    // A point segment asks for containment.
+    assert!(bounds.meets_segment(local(0.5, 0.0, 0.0), local(0.5, 0.0, 0.0), 0.0));
+}
+
+// No segment meets a box with no inverse or bounds, and a segment with a
+// non-finite end meets nothing, without panicking.
+#[test]
+fn mover_ghost_bounds_meet_no_segment_without_a_sound_box_or_finite_ends() {
+    let through = (Vec3::new(0.0, 0.0, 2.0), Vec3::new(0.0, 0.0, -2.0));
+    let flat = MoverGhostBounds::new(Mat4::from_scale(Vec3::new(1.0, 0.0, 1.0)), slab());
+    assert!(!flat.meets_segment(through.0, through.1, 0.1));
+    let inverted = Aabb {
+        min: Vec3::ONE,
+        max: -Vec3::ONE,
+    };
+    let inverted = MoverGhostBounds::new(Mat4::IDENTITY, inverted);
+    assert!(!inverted.meets_segment(through.0, through.1, 0.1));
+    let sound = MoverGhostBounds::new(Mat4::IDENTITY, slab());
+    assert!(sound.meets_segment(through.0, through.1, 0.0));
+    assert!(!sound.meets_segment(Vec3::NAN, through.1, 0.1));
+    assert!(!sound.meets_segment(through.0, Vec3::splat(f32::INFINITY), 0.1));
 }

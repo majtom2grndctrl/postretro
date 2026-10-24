@@ -23,7 +23,7 @@ use postretro_render_cpu::mesh_instances::{
 
 use super::Renderer;
 use super::fluid_surface_frame_test::{
-    SIDE, capture_encode, capture_from, fluid_quad, look_draw, renderer,
+    SIDE, capture_encode, capture_from, capture_through, fluid_quad, look_draw, renderer,
 };
 use super::ghost_order::MOVER_CONTACT_MARGIN;
 use super::kinematic_ghost::MoverGhostBounds;
@@ -36,7 +36,7 @@ const FAR_ONLY: u32 = 3;
 /// Two distinct ghosts' movers, each an outer quad in front of an inner one.
 const NEAR_GHOST: u32 = 4;
 const FAR_GHOST: u32 = 5;
-/// A long platform receding to the right, for a pawn to stand on.
+/// A floor platform seen from above, for a pawn to stand on.
 const PLATFORM: u32 = 6;
 
 /// Skinned twins of the self-overlap movers and of both distinct ghosts, and
@@ -57,13 +57,16 @@ const NEAR_GHOST_OUTER: f32 = 0.2;
 const NEAR_GHOST_INNER: f32 = 0.25;
 const FAR_GHOST_OUTER: f32 = 0.6;
 const FAR_GHOST_INNER: f32 = 0.65;
-/// The platform's depth at its near (left) and far (right) edges, so its
-/// bounds centre sits at 0.5; the pawn's depth, nearer than the platform
-/// across the pawn's columns but behind the platform's centre, its feet in
-/// the platform's bounds.
-const PLATFORM_NEAR_EDGE: f32 = 0.125;
-const PLATFORM_FAR_EDGE: f32 = 0.875;
-const PAWN_DEPTH: f32 = 0.6;
+/// The platform scene, under [`platform_view`]: a 1.5 × 1.5 m floor quad at
+/// y 0 spanning z −0.5 (near) to −2 (far), and a 0.5 × 0.5 m pawn quad
+/// standing upright on its far half. The pawn's model is authored with its
+/// feet at its origin, as every model is, and its holder stands there.
+const PLATFORM_NEAR_Z: f32 = -0.5;
+const PLATFORM_FAR_Z: f32 = -2.0;
+const PAWN_FEET: Vec3 = Vec3::new(0.5, 0.0, -1.6);
+/// The platform scene's eye: above and behind the floor, on the view ray
+/// through the screen centre.
+const PLATFORM_EYE: Vec3 = Vec3::new(0.0, 3.0, 1.75);
 
 /// Texel centres of the 64-texel placeholder checkerboard (8-texel squares,
 /// magenta at the origin): one magenta square, one black.
@@ -83,10 +86,13 @@ const FAR_ONLY_COLUMNS: std::ops::Range<u32> = 10..14;
 const NEAR_COLUMNS: std::ops::Range<u32> = 2..10;
 const FAR_COLUMNS: std::ops::Range<u32> = 6..14;
 const ROWS: std::ops::Range<u32> = 3..13;
-/// Columns the platform (clip x −0.75..0.75) covers, and the pawn on its far
-/// half (0.25..0.75).
+/// Columns and rows the platform (clip x and y −0.75..0.75) covers, and the
+/// pawn on its far half (clip x 0.25..0.75, y 0.35..0.85). Row 0 is the top,
+/// clip y 1.
 const PLATFORM_COLUMNS: std::ops::Range<u32> = 2..14;
+const PLATFORM_ROWS: std::ops::Range<u32> = 2..14;
 const PAWN_COLUMNS: std::ops::Range<u32> = 10..14;
+const PAWN_ROWS: std::ops::Range<u32> = 1..5;
 
 /// How far a region's kept-pixel count may sit from the screen door's share of
 /// its area: the region's edges cut 4×4 tiles, whose partial rows and columns
@@ -110,31 +116,18 @@ const FAR_LOOK: GhostInstanceLook = GhostInstanceLook {
 };
 
 /// A quad facing the identity camera (counter-clockwise in clip space) over
-/// clip x `x0..x1`, y −0.75..0.75, at clip depth `z0` along its `x0` edge and
-/// `z1` along its `x1` edge, with one flat UV.
-fn sloped_quad(x0: f32, x1: f32, z0: f32, z1: f32, uv: [f32; 2]) -> [Vertex; 4] {
-    let vertex = |x: f32, y: f32, z: f32| {
-        Vertex::new(
-            [x, y, z],
-            uv,
-            [0.0, 0.0, -1.0],
-            [1.0, 0.0, 0.0],
-            true,
-            [0.0, 0.0],
-            0,
-        )
-    };
-    [
-        vertex(x0, -0.75, z0),
-        vertex(x1, -0.75, z1),
-        vertex(x1, 0.75, z1),
-        vertex(x0, 0.75, z0),
-    ]
-}
-
-/// A [`sloped_quad`] at one clip depth `z`.
+/// clip x `x0..x1`, y −0.75..0.75, at clip depth `z`, with one flat UV.
 fn quad(x0: f32, x1: f32, z: f32, uv: [f32; 2]) -> [Vertex; 4] {
-    sloped_quad(x0, x1, z, z, uv)
+    world_quad(
+        [
+            Vec3::new(x0, -0.75, z),
+            Vec3::new(x1, -0.75, z),
+            Vec3::new(x1, 0.75, z),
+            Vec3::new(x0, 0.75, z),
+        ],
+        [0.0, 0.0, -1.0],
+        uv,
+    )
 }
 
 fn near_quad() -> [Vertex; 4] {
@@ -162,20 +155,64 @@ fn far_ghost_quads() -> [[Vertex; 4]; 2] {
     ]
 }
 
-/// The platform: magenta, receding from the camera left to right.
+/// The platform scene's camera: orthographic, pitched 45° down and looking
+/// along −z, so the floor recedes up the screen and a point higher up is
+/// nearer. Clip x = x, clip y = y − z − 1.25, depth = 0.1 − (y + z) / 4.
+fn platform_view() -> Mat4 {
+    Mat4::from_cols(
+        glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
+        glam::Vec4::new(0.0, 1.0, -0.25, 0.0),
+        glam::Vec4::new(0.0, -1.0, -0.25, 0.0),
+        glam::Vec4::new(0.0, -1.25, 0.1, 1.0),
+    )
+}
+
+/// A quad over `corners`, counter-clockwise as the camera sees it, with one
+/// flat UV.
+fn world_quad(corners: [Vec3; 4], normal: [f32; 3], uv: [f32; 2]) -> [Vertex; 4] {
+    corners.map(|corner| {
+        Vertex::new(
+            corner.to_array(),
+            uv,
+            normal,
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
+            0,
+        )
+    })
+}
+
+/// The platform: a magenta floor quad, in world space (its mover sits at
+/// the origin). On screen it covers clip x and y −0.75..0.75, its near edge
+/// at the bottom (depth 0.225), its far edge at the top (depth 0.6).
 fn platform_quad() -> [Vertex; 4] {
-    sloped_quad(
-        -0.75,
-        0.75,
-        PLATFORM_NEAR_EDGE,
-        PLATFORM_FAR_EDGE,
+    world_quad(
+        [
+            Vec3::new(-0.75, 0.0, PLATFORM_NEAR_Z),
+            Vec3::new(0.75, 0.0, PLATFORM_NEAR_Z),
+            Vec3::new(0.75, 0.0, PLATFORM_FAR_Z),
+            Vec3::new(-0.75, 0.0, PLATFORM_FAR_Z),
+        ],
+        [0.0, 1.0, 0.0],
         MAGENTA_UV,
     )
 }
 
-/// The pawn: black, upright in front of the platform's far half.
+/// The pawn: a black upright quad about its feet, which sit at its model
+/// origin. Stood at [`PAWN_FEET`] it covers clip x 0.25..0.75, y 0.35..0.85,
+/// nearer than the floor behind it at every pixel.
 fn pawn_quad() -> [Vertex; 4] {
-    quad(0.25, 0.75, PAWN_DEPTH, BLACK_UV)
+    world_quad(
+        [
+            Vec3::new(-0.25, 0.0, 0.0),
+            Vec3::new(0.25, 0.0, 0.0),
+            Vec3::new(0.25, 0.5, 0.0),
+            Vec3::new(-0.25, 0.5, 0.0),
+        ],
+        [0.0, 0.0, 1.0],
+        BLACK_UV,
+    )
 }
 
 /// A mover whose geometry is `quads` in draw order, at the origin.
@@ -638,25 +675,26 @@ fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface
 /// (`column`, `row`) over the white clear: the pawn over the platform where
 /// they overlap.
 fn platform_and_pawn_expected(mode: GhostTransparency, column: u32, row: u32) -> Vec3 {
-    let behind = if PLATFORM_COLUMNS.contains(&column) {
+    let behind = if PLATFORM_COLUMNS.contains(&column) && PLATFORM_ROWS.contains(&row) {
         over(mode, FAR_LOOK, MAGENTA, WHITE, column, row)
     } else {
         WHITE
     };
-    if PAWN_COLUMNS.contains(&column) {
+    if PAWN_COLUMNS.contains(&column) && PAWN_ROWS.contains(&row) {
         over(mode, NEAR_LOOK, BLACK, behind, column, row)
     } else {
         behind
     }
 }
 
-// A ghost pawn standing in front of the far half of a long ghost platform,
-// its bounds centre behind the platform's. The pawn's feet are in the
-// platform's bounds, so the platform draws first and shows through the
-// pawn's silhouette at the expected blend. Keyed by its centre alone it
-// would draw after the pawn and lose the pawn's whole silhouette, a
-// pawn-shaped hole. Blend only: dither keeps the nearest pixel in either
-// order.
+// A ghost pawn standing on the far half of a ghost floor platform, seen from
+// above, its bounds centre behind the platform's. Its feet, its holder's
+// origin, are on the platform and the camera sees it from above, so the
+// platform draws first and shows through the pawn's silhouette at the
+// expected blend. Keyed by its centre alone it would draw after the pawn
+// and lose the pawn's whole silhouette, a pawn-shaped hole. Blend only:
+// dither keeps the nearest pixel in either order. The pawn model has no
+// clips, so its envelope is its tight bounds, as for any clipless model.
 #[test]
 fn a_ghost_platform_shows_through_the_ghost_pawn_on_its_far_half() {
     let Some(mut renderer) = renderer() else {
@@ -664,30 +702,30 @@ fn a_ghost_platform_shows_through_the_ghost_pawn_on_its_far_half() {
     };
     install_movers(&mut renderer);
     install_skinned_models(&mut renderer);
-    // The pawn keys on its bounds centre, behind the platform's (0.5).
-    let pawn_bounds = renderer.skinned_model_local_bounds(SKINNED_PAWN);
-    assert!(((pawn_bounds.min.z + pawn_bounds.max.z) * 0.5 - PAWN_DEPTH).abs() < 1e-6);
-    // Its feet, the bottom centre of its bounds, stand in the platform's.
-    let feet = Vec3::new(
-        (pawn_bounds.min.x + pawn_bounds.max.x) * 0.5,
-        pawn_bounds.min.y,
-        PAWN_DEPTH,
-    );
+    let view_proj = platform_view();
+    let depth = |point: Vec3| view_proj.project_point3(point).z;
     let platform_bounds = renderer
         .full()
         .kinematic_brush
         .mover_bounds(PLATFORM)
         .expect("the platform uploads");
     let platform = MoverGhostBounds::new(Mat4::IDENTITY, platform_bounds);
-    assert!(platform.contains(feet, MOVER_CONTACT_MARGIN));
+    // The pawn keys on its bounds centre, behind the platform's.
+    let pawn_bounds = renderer.skinned_model_local_bounds(SKINNED_PAWN);
+    let pawn_center = PAWN_FEET + (pawn_bounds.min + pawn_bounds.max) * 0.5;
+    assert!(depth(pawn_center) > depth(platform.center()));
+    // Its feet stand on the platform, and the eye sees its body from above.
+    assert!(platform.contains(PAWN_FEET, MOVER_CONTACT_MARGIN));
+    assert!(!platform.meets_segment(PLATFORM_EYE, pawn_center, 0.0));
     let mode = GhostTransparency::Blend;
     renderer.set_ghost_transparency(mode);
-    let frame = frame_with(
-        &mut renderer,
-        &[skinned_ghost(SKINNED_PAWN, 1, NEAR_LOOK)],
-        &[mover_ghost(PLATFORM, FAR_LOOK)],
-    );
-    for row in ROWS {
+    renderer.set_ghost_mesh_draws(&[MeshInstanceInput {
+        transform: Mat4::from_translation(PAWN_FEET),
+        ..skinned_ghost(SKINNED_PAWN, 1, NEAR_LOOK)
+    }]);
+    renderer.set_kinematic_ghost_draws(&[mover_ghost(PLATFORM, FAR_LOOK)]);
+    let frame = capture_through(&mut renderer, view_proj, PLATFORM_EYE);
+    for row in 0..SIDE {
         for column in 0..SIDE {
             let want = capture_encode(platform_and_pawn_expected(mode, column, row));
             let got = pixel(&frame, column, row);

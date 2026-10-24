@@ -913,8 +913,9 @@ pub struct MeshPass {
     /// every shadow pass that binds group 3.
     pub(super) depth_pipeline: wgpu::RenderPipeline,
 
-    /// Unlit ghost pipelines, one per `render.ghosts` mode, over the same
-    /// palette + instance bind group (`mesh_ghost.rs`).
+    /// Unlit ghost pipelines, a colour and a depth-only one per
+    /// `render.ghosts` mode, over the same palette + instance bind group.
+    /// Built in `mesh_ghost.rs`; the set's shape lives in `ghost_pipeline.rs`.
     pub(super) ghost_pipelines: super::ghost_pipeline::GhostPipelines,
 
     /// Shared bone-palette storage buffer, sized for `MAX_PALETTE_ENTRIES`
@@ -1232,7 +1233,7 @@ impl MeshPass {
             &instance_bind_group_layout,
             shadow_depth_format,
         );
-        let ghost_pipelines = super::ghost_pipeline::GhostPipelines::skinned(
+        let ghost_pipelines = super::mesh_ghost::skinned_ghost_pipelines(
             device,
             depth_format,
             camera_bgl,

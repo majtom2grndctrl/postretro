@@ -679,10 +679,13 @@ impl Renderer {
             let mode = self.ghost_transparency();
             {
                 let full = self.full_mut();
+                // The eye `view_proj` was built from, stored with it this frame.
+                let eye = full.last_camera_position;
                 full.ghost_order.build(
                     skinned_ghost_plan,
                     full.kinematic_ghost.draw_bounds(),
                     view_proj,
+                    eye,
                 );
             }
             self.full()

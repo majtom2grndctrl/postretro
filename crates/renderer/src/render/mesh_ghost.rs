@@ -52,77 +52,74 @@ fn skinned_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-impl GhostPipelines {
-    /// The skinned ghost set. Colour layout: group 0 camera, group 1
-    /// material, group 3 the skinned pass's palette + instance data (the same
-    /// bind group, at the same index); group 2 stays empty. The depth-only
-    /// layout drops the material. No light, shadow or SH group, so ghosts add
-    /// nothing to any fragment binding budget. Every pipeline targets the
-    /// scene colour, so both draws of a ghost share one pass; the depth-only
-    /// one writes no colour.
-    pub(super) fn skinned(
-        device: &wgpu::Device,
-        depth_format: wgpu::TextureFormat,
-        camera_bgl: &wgpu::BindGroupLayout,
-        material_bgl: &wgpu::BindGroupLayout,
-        instance_bgl: &wgpu::BindGroupLayout,
-    ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Skinned Ghost Shader"),
-            source: wgpu::ShaderSource::Wgsl(SKINNED_GHOST_SHADER_SOURCE.into()),
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Skinned Ghost Pipeline Layout"),
-            bind_group_layouts: &[
-                Some(camera_bgl),
-                Some(material_bgl),
-                None,
-                Some(instance_bgl),
-            ],
-            immediate_size: 0,
-        });
-        let depth_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Skinned Ghost Depth Pipeline Layout"),
-            bind_group_layouts: &[Some(camera_bgl), None, None, Some(instance_bgl)],
-            immediate_size: 0,
-        });
-        Self::build("Skinned", depth_format, |step, state, label| {
-            let pipeline_layout = match step {
-                GhostDrawStep::Depth => &depth_layout,
-                GhostDrawStep::Colour => &layout,
-            };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[Some(skinned_ghost_vertex_layout())],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: state.cull_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(state.depth),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(state.fragment_entry),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: super::SCENE_COLOR_FORMAT,
-                        blend: state.blend,
-                        write_mask: state.write_mask,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
+/// The skinned ghost pipeline set. Colour layout: group 0 camera, group 1
+/// material, group 3 the skinned pass's palette + instance data (the same
+/// bind group, at the same index); group 2 stays empty. The depth-only layout
+/// drops the material. No light, shadow or SH group, so ghosts add nothing to
+/// any fragment binding budget. Every pipeline targets the scene colour, so
+/// both draws of a ghost share one pass; the depth-only one writes no colour.
+pub(super) fn skinned_ghost_pipelines(
+    device: &wgpu::Device,
+    depth_format: wgpu::TextureFormat,
+    camera_bgl: &wgpu::BindGroupLayout,
+    material_bgl: &wgpu::BindGroupLayout,
+    instance_bgl: &wgpu::BindGroupLayout,
+) -> GhostPipelines {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Skinned Ghost Shader"),
+        source: wgpu::ShaderSource::Wgsl(SKINNED_GHOST_SHADER_SOURCE.into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Skinned Ghost Pipeline Layout"),
+        bind_group_layouts: &[
+            Some(camera_bgl),
+            Some(material_bgl),
+            None,
+            Some(instance_bgl),
+        ],
+        immediate_size: 0,
+    });
+    let depth_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Skinned Ghost Depth Pipeline Layout"),
+        bind_group_layouts: &[Some(camera_bgl), None, None, Some(instance_bgl)],
+        immediate_size: 0,
+    });
+    GhostPipelines::build("Skinned", depth_format, |step, state, label| {
+        let pipeline_layout = match step {
+            GhostDrawStep::Depth => &depth_layout,
+            GhostDrawStep::Colour => &layout,
+        };
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(skinned_ghost_vertex_layout())],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: state.cull_mode,
+                ..Default::default()
+            },
+            depth_stencil: Some(state.depth),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some(state.fragment_entry),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: super::SCENE_COLOR_FORMAT,
+                    blend: state.blend,
+                    write_mask: state.write_mask,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
         })
-    }
+    })
 }
 
 impl MeshPass {

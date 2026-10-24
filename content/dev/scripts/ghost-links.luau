@@ -58,9 +58,13 @@ function setupLevel(_ctx)
 
   -- Battle swap: the pad arms both seamless swap teleporters, so each player
   -- lands in the other copy, facing the monsters only the partner could see.
-  -- The monsters wake, and the links stop ghosting the partner's projectiles.
+  -- The closet doors in both copies sink and the monsters wake; the links stop
+  -- ghosting the partner's projectiles. The monsters' sealed aggro gate
+  -- (enabled_on_spawn 0) ignores everything else, damage included.
   local swap = Postretro.getMapEntities("teleporter", { tag = "echo_swap" })
+  local closets = Postretro.getMapEntities("mover", { tag = "echo_closet_door" })
   local battleSteps = each(swap, function(t) return t:arm() end)
+  append(battleSteps, each(closets, function(door) return door:start() end))
   table.insert(battleSteps, Postretro.npcs({ tag = "echo_monster" }):update({ aggro = true }))
   local battle = Postretro.defineReaction("battle.swap", { sequence = battleSteps })
   -- The first crossing disarms both directions, so walking out and back in

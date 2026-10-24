@@ -6,7 +6,7 @@
 // See: context/lib/entity_model.md §7d · context/lib/scripting.md §12 (Entity addressing)
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 use log::Level as LogLevel;
 use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, EntityId, GhostLinkComponent, KinematicMoverComponent, ReactionDescriptor,
     ScriptCtx, ScriptError, SequenceTarget, TeleporterComponent, Transform, TriggerVolumeComponent,
@@ -27,9 +29,10 @@ use postretro_scripting_core::primitive_adapters::StoreSchemaJson;
 use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
 use postretro_scripting_core::reaction_dispatch::dispatch_deferred_named_events_with_sequences;
 use postretro_scripting_core::runtime::{ModGhostAudio, ModGhostTransparency, ModManifestResult};
-use postretro_sim::ai_host::AiTickResult;
 use postretro_sim::residual_drain::ResidualRegistries;
-use postretro_sim::sim::{PostMovementCommand, SimCommand, TriggerTickContext, simulate_tick};
+use postretro_sim::sim::{
+    PostMovementCommand, SimCommand, TriggerTickContext, simulate_tick_with_presentation_aim,
+};
 use postretro_sim::trigger_system::PlayerId;
 use postretro_test_log_capture::LogCapture;
 use serde_json::Value;
@@ -45,12 +48,16 @@ use crate::startup::teleporters_surface_tests::run_prl_build_on;
 const DT: f32 = 1.0 / 60.0;
 /// Frames that let placed pawns settle onto the floor before they act.
 const SETTLE: usize = 30;
+/// Fixed ticks the battle runs after the swap press: ten seconds.
+const BATTLE_FRAMES: usize = 600;
 /// Metres above the bare floor's standing height that clear a 4-unit floor marker.
 const PAD_CLEARANCE: f32 = 0.2;
 /// Quake units per metre (`build_pipeline.md` §Supported Map Formats).
 const UNITS_PER_METRE: f32 = 39.37;
 /// Copy B sits this far along Quake +x from copy A, which is engine −z.
 const COPY_OFFSET: Vec3 = Vec3::new(0.0, 0.0, -4096.0 / UNITS_PER_METRE);
+/// The closets' open faces, Quake y ±208, on engine x: past it is a closet.
+const CLOSET_LINE: f32 = 208.0 / UNITS_PER_METRE;
 
 /// The dev mod's `echo` style (`content/dev/start-script.ts`).
 const ECHO: GhostStyle = GhostStyle {
@@ -78,12 +85,15 @@ const LUAU_CAPTURE: &str = "\ndo\n  local original = setupLevel\n  setupLevel = 
 /// (`[HitZones]`) and a behavior activity the lint calls unreachable; the
 /// dev maps' debug textures carry no material prefix; and this install's
 /// no-op upload leaves animation caches empty (`[Model]`), which a real
-/// install fills. The teleporter fixture's install logs the same set.
-const UNRELATED_WARNINGS: [&str; 4] = [
+/// install fills, so the AI tick cannot switch a monster's animation state
+/// either (`[AI] enemy animation state`). The teleporter fixture's install
+/// logs the same set.
+const UNRELATED_WARNINGS: [&str; 5] = [
     "[HitZones] archetype",
     "[Model] mesh entity references uncached model",
     "[Material] Unknown prefix 'debug'",
     "components.behavior: activities [startle] are unreachable",
+    "[AI] enemy animation state",
 ];
 
 const LEVEL_REACTIONS: [&str; 8] = [
@@ -160,6 +170,10 @@ struct Level {
     /// The presented-frame clock the ghost update ramps by, one `DT` per frame.
     start: Instant,
     frames: u32,
+    /// The production AI tick's state, so monsters think as in a real session.
+    ai_runtime: postretro_ai::AiRuntime,
+    /// The level's baked navmesh, which the AI tick paths monsters over.
+    nav_graph: Option<crate::nav::NavGraph>,
 }
 
 impl Level {
@@ -310,6 +324,8 @@ impl Level {
             anim_time: 0.0,
             start: Instant::now(),
             frames: 0,
+            ai_runtime: postretro_ai::AiRuntime::new(),
+            nav_graph,
         }
     }
 
@@ -353,6 +369,17 @@ impl Level {
             .borrow()
             .get_component::<TeleporterComponent>(teleporter)
             .unwrap()
+            .clone()
+    }
+
+    /// The descriptor `entity` was spawned from.
+    fn class(&self, entity: EntityId) -> String {
+        self.ctx
+            .registry
+            .borrow()
+            .get_component::<DescriptorProvenance>(entity)
+            .unwrap()
+            .canonical_name
             .clone()
     }
 
@@ -424,8 +451,9 @@ impl Level {
 
     /// One single-player host frame of one fixed tick, in `frame_loop` order:
     /// the frame's script time, the host-only ghost-link and Ghost bus steps at
-    /// the tick's start, the authoritative tick, link history after it, the
-    /// frame-end drains, the system-command drain, then the ghost update.
+    /// the tick's start, the authoritative tick with the AI, link history after
+    /// it, the frame-end drains, the system-command drain, then the ghost
+    /// update.
     fn frame_with(&mut self, use_pressed: bool) -> Vec<(EntityId, TeleportEvent)> {
         self.frames += 1;
         self.app.script_time += f64::from(DT);
@@ -474,19 +502,21 @@ impl Level {
         self.input_tick += 1;
         let auto_close = session.scripting.auto_close_timers.clone();
         let scripting = &mut session.scripting;
-        let tick = simulate_tick(
+        // The production tick's inputs: the real AI tick over the level's
+        // navmesh, the mod's descriptors (an AI attack resolves its weapon from
+        // them) and its factions.
+        let data_registry = ctx.data_registry.borrow();
+        let tick = simulate_tick_with_presentation_aim(
             ctx.registry.clone(),
             &app.collision_world,
             &session.hit_zone_store,
-            None,
+            self.nav_graph.as_ref(),
             postretro_collision::EnvironmentView::level_only(ctx.gravity.get()),
-            None,
+            false,
             self.anim_time,
+            (0.0, 0.0),
             &mut session.progress_tracker,
-            |_, _, _, _| AiTickResult {
-                events: Vec::new(),
-                projectile_spawns: Vec::new(),
-            },
+            postretro_ai::tick_runner!(&mut self.ai_runtime),
             &app.kinematic_mover_colliders,
             &mut app.kinematic_mover_tick_states,
             &[],
@@ -496,6 +526,14 @@ impl Level {
                 aim_direction: Vec3::NEG_Z,
             },
             DT,
+            &mut session.touch_system,
+            &data_registry.entities,
+            data_registry.entity_types_generation(),
+            &data_registry.factions,
+            ctx.faction_sentiment.as_ref(),
+            data_registry.default_weapon_placement.as_ref(),
+            &use_edges,
+            &HashMap::new(),
             Some(TriggerTickContext {
                 teleporters: Some(&app.teleporter_bindings),
                 system: &mut session.trigger_system,
@@ -506,8 +544,11 @@ impl Level {
                 auto_close_timers: Some(auto_close),
                 use_edges: &use_edges,
             }),
+            |_, _| {},
             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
+            postretro_stage_timing::TimingGate::OFF,
         );
+        drop(data_registry);
         self.anim_time += f64::from(DT);
         session
             .scripting
@@ -671,10 +712,12 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
             .unwrap_or_else(|| panic!("dev descriptor `{name}`"))
     };
     assert!(descriptor("player").ghost, "the dev player opts in");
-    assert!(
-        !descriptor("reference_enemy").ghost,
-        "the fixture's monsters do not, so each player sees only their own"
-    );
+    for monster in ["reference_enemy", "limitator"] {
+        assert!(
+            !descriptor(monster).ghost,
+            "the fixture's monsters do not, so each player sees only their own"
+        );
+    }
 
     assert_eq!(ts.wire, luau.wire, "TS and Luau setupLevel wire diverged");
     assert_eq!(
@@ -773,9 +816,11 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
 // so the partner in copy B ghosts into copy A, and both links' colour filters
 // and the Ghost bus ramp. The first purple-pad press splits the player
 // standing on copy A's pad alone into copy B, and runs nothing else. The next
-// press narrows projectiles, rouses the monsters, and swaps that player back
-// into copy A. Monsters, whose descriptor does not opt in, and the viewer's
-// own pawn never ghost.
+// press narrows projectiles, opens the closets, rouses the monsters, and swaps
+// that player back into copy A. Monsters, whose descriptor does not opt in,
+// and the viewer's own pawn never ghost. Under the real AI tick, copy A's
+// knights then walk out and hit the presser, and copy B's limitators shoot
+// the partner.
 #[test]
 fn ghost_link_dev_level_runs_the_barrier_puzzle_and_battle_swap() {
     let out = tempfile::tempdir().unwrap();
@@ -795,7 +840,34 @@ fn run_set_pieces(map: &str, mut level: Level) {
         assert_eq!(level.app.ghost_links.link_style(index), ECHO, "{map}");
     }
     let monsters = level.entities(ComponentKind::Health, "echo_monster");
-    assert_eq!(monsters.len(), 4, "{map}: two monsters per copy");
+    assert_eq!(monsters.len(), 5, "{map}: five closet monsters");
+    let knights = level.entities(ComponentKind::Health, "echo_monster_a");
+    let limitators = level.entities(ComponentKind::Health, "echo_monster_b");
+    assert_eq!(
+        knights
+            .iter()
+            .map(|&npc| level.class(npc))
+            .collect::<Vec<_>>(),
+        ["reference_enemy"; 3],
+        "{map}: three knights wait in copy A"
+    );
+    assert_eq!(
+        limitators
+            .iter()
+            .map(|&npc| level.class(npc))
+            .collect::<Vec<_>>(),
+        ["limitator"; 2],
+        "{map}: two limitators wait in copy B"
+    );
+    for &npc in &monsters {
+        assert!(
+            level.position(npc).x.abs() > CLOSET_LINE,
+            "{map}: every monster starts in a closet, out of the room"
+        );
+    }
+    let doors = level.entities(ComponentKind::KinematicMover, "echo_closet_door");
+    assert_eq!(doors.len(), 4, "{map}: two closet doors per copy");
+    let shut: Vec<Vec3> = doors.iter().map(|&door| level.position(door)).collect();
     level.settle();
     let height = level.position(level.pawn).y;
     // Copy A's spawn: off both purple pads and the blue plate.
@@ -1044,6 +1116,13 @@ fn run_set_pieces(map: &str, mut level: Level) {
             "{map}: the split press does not rouse the monsters"
         );
     }
+    for (&door, closed) in doors.iter().zip(&shut) {
+        assert_eq!(
+            level.position(door),
+            *closed,
+            "{map}: the split press leaves the closets shut"
+        );
+    }
     for (_, link) in level.links() {
         assert_eq!(
             link.members,
@@ -1053,9 +1132,12 @@ fn run_set_pieces(map: &str, mut level: Level) {
     }
 
     // The battle swap: the next press, on copy B's pad where the split landed,
-    // arms both seamless swap teleporters, rouses the monsters and stops
-    // ghosting projectiles; the presser lands back in copy A, and the first
-    // crossing disarms both.
+    // arms both seamless swap teleporters, opens every closet, rouses the
+    // monsters and stops ghosting projectiles; the presser lands back in copy
+    // A, and the first crossing disarms both. The partner stands in copy B's
+    // middle, as the swap leaves a co-op partner: this host moves a slot pawn
+    // only on its owner's input, so it stays where it is put.
+    level.place_pawn(level.partner, Vec3::new(0.0, 0.0, COPY_OFFSET.z), height);
     let before = level.position(level.pawn);
     assert!(
         level.frame_with(true).is_empty(),
@@ -1104,5 +1186,61 @@ fn run_set_pieces(map: &str, mut level: Level) {
             .iter()
             .all(|ghost| ghost.entity != level.pawn && !monsters.contains(&ghost.entity)),
         "{map}: neither the viewer nor a monster ever ghosts: {ghosts:#?}"
+    );
+
+    // The battle: every closet door sinks out of the way, copy A's knights walk
+    // out of their closets and hit the presser, and copy B's limitators shoot
+    // the partner from their closet mouths. The sim runs the real AI tick, so
+    // this is the whole path from the press to a monster's attack.
+    let health = |level: &Level, pawn: EntityId| {
+        level
+            .ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(pawn)
+            .unwrap()
+            .current
+    };
+    let (pawn_full, partner_full) = (health(&level, level.pawn), health(&level, level.partner));
+    let mut left_closet: HashSet<EntityId> = HashSet::new();
+    let mut engaged: HashSet<EntityId> = HashSet::new();
+    for _ in 0..BATTLE_FRAMES {
+        level.frame();
+        for &npc in &monsters {
+            if level.position(npc).x.abs() < CLOSET_LINE {
+                left_closet.insert(npc);
+            }
+            let brain = level
+                .ctx
+                .registry
+                .borrow()
+                .get_component::<BrainComponent>(npc)
+                .unwrap()
+                .clone();
+            if brain.active_path_names().first() == Some(&"engage") {
+                engaged.insert(npc);
+            }
+        }
+    }
+    for (&door, closed) in doors.iter().zip(&shut) {
+        let drop = closed.y - level.position(door).y;
+        assert!(drop > 2.5, "{map}: every closet door sinks open: {drop}");
+    }
+    for &npc in &knights {
+        assert!(
+            left_closet.contains(&npc),
+            "{map}: every knight walks out of its closet"
+        );
+    }
+    for &npc in &monsters {
+        assert!(engaged.contains(&npc), "{map}: every monster engages");
+    }
+    assert!(
+        health(&level, level.pawn) < pawn_full,
+        "{map}: copy A's knights hit the presser"
+    );
+    assert!(
+        health(&level, level.partner) < partner_full,
+        "{map}: copy B's limitators hit the partner"
     );
 }

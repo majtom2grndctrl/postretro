@@ -429,9 +429,13 @@ Copy A has a yellow barrier in its east doorway; copy B has a red button on its
 north wall. The blue plate in either copy reveals the second link and swells
 the echo. The first press of a purple pad sends whoever stands on it alone into
 the other copy, so two players who start in the same copy can split up. Every
-later press swaps both players' copies and wakes the monsters. The split stands
-in for a game condition such as a timer or a health threshold, and it fires only
-once, so press it alone from the middle of the pad. From the bundle root:
+later press swaps both players' copies and starts the battle: the purple
+closet doors in the north and south walls of both copies sink, and the
+monsters behind them wake. Copy A's closets hold three knights and copy B's two
+limitators. Until that press the monsters stay shut away and asleep. The split
+stands in for a game condition such as a timer or a health threshold, and it
+fires only once, so press it alone from the middle of the pad. From the bundle
+root:
 
 ```bash
 bin/prl-build content/dev/maps/ghost-links.map \
@@ -441,7 +445,8 @@ bin/postretro-tool run maps/ghost-links.prl
 ```
 
 Alone, press the purple pad to cross into copy B, press the red button, and
-watch the barrier's ghost sink; press the pad again to return. For two players,
+watch the barrier's ghost sink; press the pad again to return to copy A and
+start the battle, where the knights come out for you. For two players,
 run a host and a client on one machine as in
 [diagnostics.md](diagnostics.md). If both start in the same copy, one of you
 presses the purple pad first to cross over alone.

@@ -44,10 +44,17 @@ export function setupLevel() {
 
   // Battle swap: the pad arms both seamless swap teleporters, so each player
   // lands in the other copy, facing the monsters only the partner could see.
-  // The monsters wake, and the links stop ghosting the partner's projectiles.
+  // The closet doors in both copies sink and the monsters wake; the links stop
+  // ghosting the partner's projectiles. The monsters' sealed aggro gate
+  // (enabled_on_spawn 0) ignores everything else, damage included.
   const swap = getMapEntities("teleporter", { tag: "echo_swap" });
+  const closets = getMapEntities("mover", { tag: "echo_closet_door" });
   const battle = defineReaction("battle.swap", {
-    sequence: [...swap.flatMap((t) => t.arm()), npcs({ tag: "echo_monster" }).update({ aggro: true })],
+    sequence: [
+      ...swap.flatMap((t) => t.arm()),
+      ...closets.flatMap((door) => door.start()),
+      npcs({ tag: "echo_monster" }).update({ aggro: true }),
+    ],
   });
   // The first crossing disarms both directions, so walking out and back in
   // does not swap again.

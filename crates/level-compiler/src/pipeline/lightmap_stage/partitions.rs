@@ -12,6 +12,7 @@ use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedEntry;
 use crate::lightmap_layer::{self, SharedAtlas, chart_texel_bounds, light_may_reach};
+use crate::texel_footprint::EmbeddedEmitters;
 
 #[cfg(test)]
 use super::PartitionHooks;
@@ -125,6 +126,9 @@ pub(super) struct LayerPartitions<'a> {
     items: LayerItems<'a>,
     /// The bake's receiver-footprint switch (`LightmapConfig::penumbra_floor`).
     penumbra_floor: bool,
+    /// Lights whose emitter reaches into geometry, by source index; their
+    /// charts trace every footprint sample.
+    embedded_emitters: &'a EmbeddedEmitters,
     /// The texel-step detector, on the pass that composes the lightmap; the
     /// shadowmask-only pass after a memo hit replays the memo's report.
     steps: Option<&'a StepDetector<'a>>,
@@ -151,6 +155,7 @@ impl<'a> LayerPartitions<'a> {
         layer_prefixes: &'a [blake3::Hasher],
         items: LayerItems<'a>,
         penumbra_floor: bool,
+        embedded_emitters: &'a EmbeddedEmitters,
         steps: Option<&'a StepDetector<'a>>,
         #[cfg_attr(not(test), allow(unused_variables))] window: &PartitionWindow,
     ) -> Self {
@@ -171,6 +176,7 @@ impl<'a> LayerPartitions<'a> {
             layer_prefixes,
             items,
             penumbra_floor,
+            embedded_emitters,
             steps,
             layer_charts,
             chart_bounds,
@@ -274,8 +280,9 @@ impl PartitionSource for LayerPartitions<'_> {
         if let Some(hook) = &self.hooks.before_chart {
             hook(light, _layer, chart);
         }
+        let entry = self.layer_lights[light];
         lightmap_layer::bake_light_layer_chart_controlled(
-            self.layer_lights[light].light,
+            entry.light,
             self.shared,
             chart,
             self.bvh,
@@ -283,6 +290,7 @@ impl PartitionSource for LayerPartitions<'_> {
             self.geometry,
             self.args.soft_shadow_samples,
             self.penumbra_floor,
+            self.embedded_emitters.is_embedded(entry.source_index),
             self.control,
         )
     }

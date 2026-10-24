@@ -434,6 +434,16 @@ fn bake_layered_section_controlled(
 ) -> LightmapSection {
     debug_assert_eq!(charts.len(), placements.len());
 
+    // Once per light, keyed by position in `static_lights`, as the
+    // production stage tests its layer lights.
+    let embedded_emitters = reference::embedded_emitters(
+        bvh,
+        primitives,
+        geometry,
+        static_lights,
+        penumbra_floor,
+        control,
+    );
     let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance);
     for layer in 0..layer_count {
         // Keep the layer's full-resolution f32 buffers scoped to this block:
@@ -451,6 +461,7 @@ fn bake_layered_section_controlled(
             layer,
             area_sample_count,
             penumbra_floor,
+            &embedded_emitters,
             control,
         );
         builder.push_layer(layer, &atlas);
@@ -476,6 +487,7 @@ fn bake_atlas_layer_controlled(
     target_layer: u32,
     area_sample_count: u32,
     penumbra_floor: bool,
+    embedded_emitters: &crate::texel_footprint::EmbeddedEmitters,
     control: &BakeControl,
 ) -> CompositedAtlas {
     // Collect serially from the chart/leaf order emitted by the planner. The
@@ -508,6 +520,7 @@ fn bake_atlas_layer_controlled(
             chart,
             area_sample_count,
             penumbra_floor,
+            embedded_emitters,
         );
 
         // This lock only protects finite row-wise memcpy operations. It never

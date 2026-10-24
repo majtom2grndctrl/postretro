@@ -239,6 +239,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         &geometry,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        false,
         &BakeControl::unrestricted(),
     );
     let mut analytic = Vec::new();
@@ -651,7 +652,7 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
         3,
         &light,
         &floor_site(Vec3::new(20.0, 0.0, 20.0)),
-        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
         |_, _| true,
         |_, _| true,
         |_, _| true,
@@ -665,7 +666,7 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
         3,
         &light,
         &floor_site(world_p),
-        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
         |_, _| false,
         |_, _| false,
         |_, _| true,
@@ -729,7 +730,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
             0,
             &light,
             &floor_site(Vec3::ZERO),
-            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
             |_, _| true,
             |_, _| true,
             |_, _| true
@@ -742,7 +743,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
             0,
             &light,
             &floor_site(Vec3::ZERO),
-            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
             |_, _| true,
             |_, _| true,
             |_, _| true
@@ -753,7 +754,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 
 #[test]
 fn sparse_cache_epochs_are_pinned() {
-    assert_eq!(LAYER_FORMAT_VERSION, 11);
+    assert_eq!(LAYER_FORMAT_VERSION, 12);
     assert_eq!(LIGHTMAP_SECTION_VERSION, 5);
 }
 

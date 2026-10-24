@@ -1362,6 +1362,7 @@ fn per_layer_bake_rebases_nonzero_layer_scatter_to_temporary_plane() {
         1,
         DEFAULT_AREA_SAMPLE_COUNT,
         PENUMBRA_FLOOR_DEFAULT,
+        &crate::texel_footprint::EmbeddedEmitters::default(),
         &BakeControl::unrestricted(),
     );
     let plane = 64usize * 64;
@@ -1430,6 +1431,7 @@ fn per_layer_parallel_scatter_joins_before_dilation() {
                 0,
                 DEFAULT_AREA_SAMPLE_COUNT,
                 PENUMBRA_FLOOR_DEFAULT,
+                &crate::texel_footprint::EmbeddedEmitters::default(),
                 &control,
             )
         });

@@ -32,6 +32,21 @@ pub(super) fn bake_or_load_weight_maps(
     debug_assert_eq!(animated_lights.len(), wm_inputs.lights.len());
     let animated_light_chunks_section = wm_inputs.chunk_section;
     let wm_key = weight_map_cache_key(wm_inputs, final_lightmap_density);
+    // Tested every compile, warm or cold, and warned here once per light:
+    // the flags read only the keyed lights and geometry, so a cached entry
+    // was baked under the same ones.
+    let embedded_emitters =
+        animated_light_weight_maps::embedded_emitters(wm_inputs, animated_weight_control);
+    embedded_emitters.warn(
+        "animated",
+        |light| wm_inputs.lights.get(light),
+        |light| {
+            let entry = animated_lights.entries().get(light)?;
+            light_source_labels
+                .get(entry.source_index)
+                .map(String::as_str)
+        },
+    );
 
     let cached = stage_cache.and_then(|c| c.get(&wm_key)).and_then(|bytes| {
         let sites = CutSites::new(wm_inputs.cut_parents, wm_inputs.face_charts);
@@ -70,8 +85,9 @@ pub(super) fn bake_or_load_weight_maps(
         }
     } else {
         log::info!("[cache] animated_lm_weight_maps miss");
-        let bake = animated_light_weight_maps::bake_animated_light_weight_maps_controlled(
+        let bake = animated_light_weight_maps::bake_animated_light_weight_maps_with(
             wm_inputs,
+            &embedded_emitters,
             animated_weight_control,
         )
         .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;

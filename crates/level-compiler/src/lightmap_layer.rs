@@ -22,7 +22,8 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{LightType, MapLight};
 use crate::texel_footprint::{
-    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, embedded_emitter_fraction,
+    lead_in_clear,
 };
 use glam::DVec3;
 
@@ -56,7 +57,12 @@ pub use cache_keys::{
 /// direction; clear footprint rays test their skipped lead-in; clip segments
 /// are tested from the texel centre itself; the probe ring sits at a fixed
 /// 0.6 texel at every count.
-pub const LAYER_FORMAT_VERSION: u32 = 11;
+///
+/// v12: a point or spot light whose emitter sphere reaches into geometry
+/// (`texel_footprint::embedded_emitter_fraction`) traces every footprint
+/// sample, with no probe early-out; the key's geometry bound holds the
+/// emitter sphere.
+pub const LAYER_FORMAT_VERSION: u32 = 12;
 
 /// Bump when the composite/dilate/`encode_section` pipeline, the memo entry's
 /// layout or `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -363,6 +369,14 @@ impl IncrementalLayerAccumulator {
 /// pitch exceed the padding. `footprint_radius` is the largest footprint
 /// radius among the charts the light reaches; zero (floor off) leaves the
 /// bound unchanged.
+///
+/// Shadow rays end on the emitter sphere, and the embedded-emitter test
+/// (`texel_footprint::embedded_emitter_fraction`) traces segments that stay
+/// within `light_size` of the origin (each starts `RAY_EPSILON` behind it), so
+/// the bound also holds the sphere. Only an emitter larger than
+/// `falloff_range + AABB_PADDING_METERS` widens it, so every other light keeps
+/// its bound. The test is then a function of the keyed light and the keyed
+/// geometry, and the flag needs no key of its own.
 pub fn layer_influence_aabb(
     light: &MapLight,
     world_aabb: (DVec3, DVec3),
@@ -370,11 +384,18 @@ pub fn layer_influence_aabb(
 ) -> (DVec3, DVec3) {
     let (min, max) = light_aabb(light, world_aabb);
     match light.light_type {
-        LightType::Point | LightType::Spot if footprint_radius > 0.0 => {
-            let pad = DVec3::splat(f64::from(footprint_radius));
-            (min - pad, max + pad)
+        LightType::Point | LightType::Spot => {
+            let reach = f64::from((light.falloff_range + AABB_PADDING_METERS).max(0.01));
+            let emitter_beyond_reach = f64::from(light.light_size) - reach;
+            let pad = f64::from(footprint_radius).max(emitter_beyond_reach);
+            if pad > 0.0 {
+                let pad = DVec3::splat(pad);
+                (min - pad, max + pad)
+            } else {
+                (min, max)
+            }
         }
-        _ => (min, max),
+        LightType::Directional => (min, max),
     }
 }
 
@@ -483,6 +504,10 @@ pub fn bake_light_layer_controlled(
     penumbra_floor: bool,
     control: &BakeControl,
 ) -> LightmapLayer {
+    // One light, so its emitter test runs here, as the production stage
+    // runs it once per light before any partition.
+    let embedded_emitter =
+        penumbra_floor && embedded_emitter_fraction(light, bvh, primitives, geometry) > 0.0;
     let face_indices: Vec<usize> = atlas
         .placements
         .iter()
@@ -499,8 +524,50 @@ pub fn bake_light_layer_controlled(
         target_layer,
         area_sample_count,
         penumbra_floor,
+        embedded_emitter,
         control,
     )
+}
+
+/// [`bake_light_layer`] floored with the probe early-out off, as if the
+/// light's emitter were embedded: the full-set reference a measurement holds
+/// the floored bake against.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_light_layer_full_sets(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> Vec<LightmapLayer> {
+    (0..atlas_layer_count(atlas))
+        .map(|target_layer| {
+            let face_indices: Vec<usize> = atlas
+                .placements
+                .iter()
+                .enumerate()
+                .filter_map(|(face_idx, placement)| {
+                    (placement.layer == target_layer).then_some(face_idx)
+                })
+                .collect();
+            bake_light_layer_for_faces(
+                light,
+                atlas,
+                bvh,
+                primitives,
+                geometry,
+                &face_indices,
+                target_layer,
+                area_sample_count,
+                true,
+                true,
+                control,
+            )
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -514,6 +581,7 @@ fn bake_light_layer_for_faces(
     target_layer: u32,
     area_sample_count: u32,
     penumbra_floor: bool,
+    embedded_emitter: bool,
     control: &BakeControl,
 ) -> LightmapLayer {
     let layer_count = atlas_layer_count(atlas);
@@ -533,6 +601,7 @@ fn bake_light_layer_for_faces(
                 geometry,
                 area_sample_count,
                 penumbra_floor,
+                embedded_emitter,
                 control,
             )
         })
@@ -563,6 +632,10 @@ pub fn atlas_layer_count(atlas: &SharedAtlas<'_>) -> u32 {
 /// This is the outermost governed unit for every light-layer bake path. Keeping
 /// admission here lets callers choose a single Rayon level without nesting a
 /// governor entry around the established per-chart work.
+///
+/// `embedded_emitter` is the light's flag from the stage's
+/// [`EmbeddedEmitters`](crate::texel_footprint::EmbeddedEmitters), tested
+/// once per light, never per chart.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_light_layer_chart_controlled(
     light: &MapLight,
@@ -573,6 +646,7 @@ pub(crate) fn bake_light_layer_chart_controlled(
     geometry: &GeometryResult,
     area_sample_count: u32,
     penumbra_floor: bool,
+    embedded_emitter: bool,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
     bake_light_layer_chart_clipped(
@@ -584,6 +658,7 @@ pub(crate) fn bake_light_layer_chart_controlled(
         geometry,
         area_sample_count,
         penumbra_floor,
+        embedded_emitter,
         true,
         control,
     )
@@ -602,6 +677,7 @@ fn bake_light_layer_chart_clipped(
     geometry: &GeometryResult,
     area_sample_count: u32,
     penumbra_floor: bool,
+    embedded_emitter: bool,
     skip_unreachable_clips: bool,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
@@ -616,12 +692,12 @@ fn bake_light_layer_chart_clipped(
         0
     };
     let mut texels = Vec::with_capacity(capacity);
-    let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor);
+    let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor, embedded_emitter);
     let frame = TexelFrame::for_chart(chart);
     let band = ClipBand::for_chart(chart);
     // Light-independent, but partitions bake per light; it costs little
     // beside the light's rays.
-    let clip_reach = (skip_unreachable_clips && matches!(sampler, TexelSampler::Footprint(_)))
+    let clip_reach = (skip_unreachable_clips && sampler.is_footprint())
         .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
     // One chart's texels are walked in order on one thread, so the occluder
     // caches stay local to this `(light, chart)` unit. Wall-clip segments keep
@@ -682,6 +758,7 @@ pub(crate) fn bake_light_layer_chart_without_clip_prepass(
         geometry,
         area_sample_count,
         true,
+        false,
         false,
         control,
     )

@@ -23,6 +23,7 @@ use crate::chart_raster::ChartPlacement;
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{BlockLayout, Chart, CutParent};
 use crate::map_data::MapLight;
+use crate::texel_footprint::EmbeddedEmitters;
 use crate::texel_step_detector::{CutSites, TexelStepReport, merge_chart_steps};
 
 mod face_bake;
@@ -78,6 +79,10 @@ pub(crate) const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// 0.6 texel at every count; the detector's surface test stretches 1 mm past
 /// both centres and a cut pair is owned even beside a missed cut piece.
 ///
+/// v12: a light whose emitter sphere reaches into geometry
+/// (`texel_footprint::embedded_emitter_fraction`) traces every footprint
+/// sample, with no probe early-out.
+///
 /// Bump when the baked weights, the section or entry layout, or the
 /// texel-step detector's verdicts change: the entry stores the detector's
 /// report, and only its threshold is keyed, so a verdict change alone would
@@ -90,7 +95,7 @@ pub(crate) const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
-pub const STAGE_VERSION: u32 = 11;
+pub const STAGE_VERSION: u32 = 12;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -370,8 +375,39 @@ pub(crate) fn bake_animated_light_weight_maps(
     bake_animated_light_weight_maps_controlled(inputs, &BakeControl::unrestricted())
 }
 
+#[cfg(test)]
 pub(crate) fn bake_animated_light_weight_maps_controlled(
     inputs: &WeightMapInputs<'_>,
+    control: &BakeControl,
+) -> Result<WeightMapBake, AnimatedWeightMapBakeError> {
+    bake_animated_light_weight_maps_with(inputs, &embedded_emitters(inputs, control), control)
+}
+
+/// The weight-map lights' emitter tests, keyed by position in
+/// `inputs.lights`, with the floor on; with it off nothing reads the flags.
+/// The test reads only the lights and geometry, which the
+/// `animated_lm_weight_maps` key folds whole, so the flags need no key.
+pub(crate) fn embedded_emitters(
+    inputs: &WeightMapInputs<'_>,
+    control: &BakeControl,
+) -> EmbeddedEmitters {
+    if !inputs.penumbra_floor {
+        return EmbeddedEmitters::default();
+    }
+    EmbeddedEmitters::classify(
+        inputs.lights.iter().enumerate(),
+        inputs.bvh,
+        inputs.primitives,
+        inputs.geometry,
+        control,
+    )
+}
+
+/// [`bake_animated_light_weight_maps_controlled`] with the lights' emitter
+/// flags already tested ([`embedded_emitters`]).
+pub(crate) fn bake_animated_light_weight_maps_with(
+    inputs: &WeightMapInputs<'_>,
+    embedded_emitters: &EmbeddedEmitters,
     control: &BakeControl,
 ) -> Result<WeightMapBake, AnimatedWeightMapBakeError> {
     if inputs.chunk_section.chunks.is_empty() {
@@ -427,7 +463,8 @@ pub(crate) fn bake_animated_light_weight_maps_controlled(
         .par_iter()
         .map(|&(face, light)| {
             let _permit = control.governor().enter();
-            let baked = setups[face].bake_light(inputs, &sites, light);
+            let embedded = embedded_emitters.is_embedded(light as usize);
+            let baked = setups[face].bake_light(inputs, &sites, light, embedded);
             control.advance(1);
             baked
         })

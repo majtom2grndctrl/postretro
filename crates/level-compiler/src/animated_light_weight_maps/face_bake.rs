@@ -210,6 +210,7 @@ impl<'a> FaceSetup<'a> {
         inputs: &WeightMapInputs<'_>,
         sites: &CutSites<'_>,
         light_index: u32,
+        embedded_emitter: bool,
     ) -> LightBake {
         let chart = self.chart;
         let light = &inputs.lights[light_index as usize];
@@ -259,7 +260,12 @@ impl<'a> FaceSetup<'a> {
         let mut grid = vec![f32::NAN; (region.width * region.height) as usize];
         detector += started.elapsed();
 
-        let sampler = TexelSampler::new(light, inputs.area_sample_count, inputs.penumbra_floor);
+        let sampler = TexelSampler::new(
+            light,
+            inputs.area_sample_count,
+            inputs.penumbra_floor,
+            embedded_emitter,
+        );
         let mut entries = Vec::new();
         for (position, chunk) in self.chunks.iter().enumerate() {
             let Some(slot) = chunk.lights.iter().position(|&l| l == light_index) else {

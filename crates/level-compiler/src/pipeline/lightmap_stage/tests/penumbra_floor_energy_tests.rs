@@ -5,7 +5,9 @@
 // BVH → atlas preparation, cut included) on `combat-demo` with the `--release`
 // CLI at `--lightmap-density 0.025`, then bakes every layer light's partitions
 // through the production chart walk twice, floor on and off, over the one
-// prepared atlas. It prints per-light energy, a distance-to-edge histogram of
+// prepared atlas, and once more floored with every texel's full set traced
+// (no probe early-out), the floor's own reference. It prints per-light
+// energy, a distance-to-edge histogram of
 // changed texels, the top energy gains and the composited totals:
 //   cargo test -p postretro-level-compiler --bin prl-build penumbra_floor_energy -- --ignored --nocapture
 // `POSTRETRO_PENUMBRA_ENERGY_MAP` and `POSTRETRO_PENUMBRA_ENERGY_DENSITY`
@@ -24,7 +26,7 @@ use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::lightmap_bake::light_contribution_and_direction;
 use crate::lightmap_layer::{
     IncrementalLayerAccumulator, LightmapLayer, SharedAtlas, bake_light_layer,
-    for_each_light_layer_chart_texel,
+    bake_light_layer_full_sets, for_each_light_layer_chart_texel,
 };
 use crate::map_data::{MapLight, ShadowType};
 use crate::pipeline::atlas_stage::{AtlasStageInputs, prepare_atlas_stage};
@@ -512,7 +514,7 @@ fn penumbra_floor_energy_on_a_real_map() {
 
     let mut partitions: Vec<[Vec<LightmapLayer>; 2]> = Vec::new();
     let mut total = Histogram::default();
-    let (mut total_off, mut total_on) = (0.0f64, 0.0f64);
+    let (mut total_off, mut total_on, mut total_full) = (0.0f64, 0.0f64, 0.0f64);
     let mut gains: Vec<Gain> = Vec::new();
     // (face) -> (changed texels, net dv*lum, normal)
     let mut by_face: BTreeMap<u32, (usize, f64, f64, Vec3)> = BTreeMap::new();
@@ -536,6 +538,19 @@ fn penumbra_floor_energy_on_a_real_map() {
         let off = bake(false);
         let on = bake(true);
         let elapsed = started.elapsed();
+        // Floored with every texel's full set traced: the floor's own
+        // reference, which no probe early-out can bias.
+        let full = bake_light_layer_full_sets(
+            light,
+            &shared,
+            bvh,
+            primitives,
+            geo,
+            args.soft_shadow_samples,
+            &control,
+        );
+        let (full_records, _, _) = join(light, &shared, &grids, &faces, &off, &full);
+        let e_full: f64 = full_records.iter().map(|r| f64::from(r.on * r.lum)).sum();
         let (records, only_off, only_on) = join(light, &shared, &grids, &faces, &off, &on);
         let (distance, border) = edge_distances(&records, &grids);
 
@@ -585,6 +600,7 @@ fn penumbra_floor_energy_on_a_real_map() {
         }
         total_off += e_off;
         total_on += e_on;
+        total_full += e_full;
         let label = map_data
             .light_source_labels
             .get(source_index)
@@ -602,9 +618,10 @@ fn penumbra_floor_energy_on_a_real_map() {
             elapsed.as_secs_f64()
         );
         println!(
-            "  energy off {e_off:.4}, on {e_on:.4}, ratio {:.5} (on - off {:+.4})",
+            "  energy off {e_off:.4}, on {e_on:.4}, ratio {:.5} (on - off {:+.4}); full set {e_full:.4}, on / full {:.5}",
             e_on / e_off.max(1e-30),
-            e_on - e_off
+            e_on - e_off,
+            e_on / e_full.max(1e-30),
         );
         println!(
             "  changed > {CHANGE_EPSILON}: {changed} ({:.3}%), mean |dv| {:.4}, max |dv| {max_abs:.4}; positive {pos} (+{pos_e:.4}), negative {neg} ({neg_e:.4}); only off {only_off}, only on {only_on}",
@@ -616,8 +633,9 @@ fn penumbra_floor_energy_on_a_real_map() {
     }
 
     println!(
-        "\nALL LIGHTS: energy off {total_off:.4}, on {total_on:.4}, ratio {:.5}",
-        total_on / total_off.max(1e-30)
+        "\nALL LIGHTS: energy off {total_off:.4}, on {total_on:.4}, ratio {:.5}; full set {total_full:.4}, on / full {:.5}",
+        total_on / total_off.max(1e-30),
+        total_on / total_full.max(1e-30)
     );
     total.print("all changed texels by distance to a floor-off edge");
     ceiling.print("ceiling (normal.y < -0.5) changed texels by distance to a floor-off edge");

@@ -17,7 +17,7 @@ use crate::chart_raster::{
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
 use crate::texel_footprint::{
-    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+    ClipBand, ClipReach, EmbeddedEmitters, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };
 
 use super::{
@@ -74,6 +74,14 @@ pub(crate) fn bake_monolithic_atlas_controlled(
     control: &BakeControl,
 ) -> CompositedAtlas {
     let atlas = Mutex::new(CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count));
+    let embedded_emitters = embedded_emitters(
+        bvh,
+        primitives,
+        geometry,
+        static_lights,
+        penumbra_floor,
+        control,
+    );
 
     placements
         .par_iter()
@@ -89,6 +97,7 @@ pub(crate) fn bake_monolithic_atlas_controlled(
                 chart,
                 area_sample_count,
                 penumbra_floor,
+                &embedded_emitters,
             );
 
             if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
@@ -107,6 +116,31 @@ pub(crate) fn bake_monolithic_atlas_controlled(
     atlas
 }
 
+/// Each of `static_lights`' emitter tests, keyed by position, with the floor
+/// on; with it off nothing reads the flags.
+pub(super) fn embedded_emitters(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    static_lights: &[&MapLight],
+    penumbra_floor: bool,
+    control: &BakeControl,
+) -> EmbeddedEmitters {
+    if !penumbra_floor {
+        return EmbeddedEmitters::default();
+    }
+    EmbeddedEmitters::classify(
+        static_lights.iter().copied().enumerate(),
+        bvh,
+        primitives,
+        geometry,
+        control,
+    )
+}
+
+/// `embedded_emitters` holds [`embedded_emitters`]' flags for
+/// `static_lights`, keyed by position.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn bake_face_chart(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
@@ -115,6 +149,7 @@ pub(super) fn bake_face_chart(
     chart: &Chart,
     area_sample_count: u32,
     penumbra_floor: bool,
+    embedded_emitters: &EmbeddedEmitters,
 ) -> CompositedAtlas {
     let mut chart_atlas = CompositedAtlas::zeroed(chart.width_texels, chart.height_texels, 1);
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
@@ -132,14 +167,22 @@ pub(super) fn bake_face_chart(
         static_lights.iter().map(|_| Cell::new(None)).collect();
     let samplers: Vec<TexelSampler> = static_lights
         .iter()
-        .map(|light| TexelSampler::new(light, area_sample_count, penumbra_floor))
+        .enumerate()
+        .map(|(position, light)| {
+            TexelSampler::new(
+                light,
+                area_sample_count,
+                penumbra_floor,
+                embedded_emitters.is_embedded(position),
+            )
+        })
         .collect();
     let frame = TexelFrame::for_chart(chart);
     let band = ClipBand::for_chart(chart);
     // Clip reach is light-independent; every light reads the same answers.
     let clip_reach = samplers
         .iter()
-        .any(|sampler| matches!(sampler, TexelSampler::Footprint(_)))
+        .any(TexelSampler::is_footprint)
         .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
 
     for ty in 0..interior_h {

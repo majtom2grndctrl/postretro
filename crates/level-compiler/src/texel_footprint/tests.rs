@@ -1698,6 +1698,7 @@ fn lit_records(
     let control = crate::bake_control::BakeControl::unrestricted();
     let (mut lit, mut checked) = (Vec::new(), 0);
     for (index, light) in lights.iter().enumerate() {
+        let embedded = super::embedded_emitter_fraction(light, &bvh, &primitives, geometry) > 0.0;
         for &count in counts {
             for face in 0..atlas.charts.len() {
                 let texels = crate::lightmap_layer::bake_light_layer_chart_controlled(
@@ -1709,6 +1710,7 @@ fn lit_records(
                     geometry,
                     count,
                     true,
+                    embedded,
                     &control,
                 );
                 checked += texels.len();
@@ -2022,6 +2024,7 @@ fn assert_prepass_matches_full_clip(
                     geometry,
                     count,
                     true,
+                    false,
                     &control,
                 );
                 let full = crate::lightmap_layer::bake_light_layer_chart_without_clip_prepass(
@@ -2325,6 +2328,7 @@ fn a_scaled_face_ramps_over_the_same_texels_in_either_walk_order() {
                         &fixture.geometry,
                         DEFAULT_AREA_SAMPLE_COUNT,
                         true,
+                        false,
                         &BakeControl::unrestricted(),
                     );
                 }

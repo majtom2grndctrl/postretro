@@ -410,6 +410,85 @@ fn production_stage_matches_the_reference_bake_at_each_floor_setting() {
     );
 }
 
+/// A default-size light 0.2 m under the plate of [`mixed_geometry`], so a
+/// tenth of its sphere lies beyond it, beside a hard light that stands
+/// clear. `quad_geometry` winds its quads clockwise seen from above, so the
+/// plate's front, which the emitter test reads, faces down at this light.
+fn embedded_lights() -> Vec<MapLight> {
+    let mut embedded = point_light(DVec3::new(3.0, 0.8, 3.0), [0.3, 1.0, 0.4]);
+    embedded.falloff_range = 8.0;
+    embedded.light_size = DEFAULT_LIGHT_SIZE;
+    let mut hard = point_light(DVec3::new(3.3, 3.0, 2.7), [1.0, 0.9, 0.8]);
+    hard.falloff_range = 8.0;
+    vec![embedded, hard]
+}
+
+// An emitter reaching into geometry traces its full sets on every floored
+// path, so the production stage still equals the reference bake, cold and
+// warm, at one worker and several (P7); the stage warns once per compile,
+// cold or with every memo hit, naming only that light.
+#[test]
+fn an_embedded_emitter_bakes_alike_on_every_path_and_warns_once_per_compile() {
+    let lights = embedded_lights();
+    let geometry = mixed_geometry();
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH must build");
+    let flags: Vec<f32> = lights
+        .iter()
+        .map(|light| {
+            crate::texel_footprint::embedded_emitter_fraction(light, &bvh, &primitives, &geometry)
+        })
+        .collect();
+    assert!(flags[0] > 0.05 && flags[1] == 0.0, "fractions {flags:?}");
+
+    for on in [true, false] {
+        let config = floored(false, on);
+        let reference = reference_lightmap_of(mixed_geometry(), &lights, &config);
+        for workers in [1, 4] {
+            let cold = bake_on(workers, None, &lights, &config, mixed_geometry(), &[]);
+            assert_eq!(cold.0, reference, "floor {on}, {workers} worker(s)");
+        }
+    }
+
+    let config = floored(false, true);
+    let dir = fresh_cache_dir("penumbra_floor_embedded");
+    let cache = StageCache::new(&dir).expect("create embedded-emitter cache");
+    let warnings = |baked: &dyn Fn() -> Baked, memo: &str| {
+        let logs = LogCapture::start();
+        let output = baked();
+        logs.assert_logged_once(Level::Info, memo);
+        let warnings: Vec<String> = logs
+            .records()
+            .iter()
+            .filter(|record| {
+                record.level == Level::Warn && record.message.contains("emitter inside geometry")
+            })
+            .map(|record| record.message.clone())
+            .collect();
+        (output, warnings)
+    };
+    let (cold, cold_warnings) = warnings(
+        &|| bake_here(Some(&cache), &lights, &config, mixed_geometry()),
+        "[cache] lightmap_section miss",
+    );
+    let (warm, warm_warnings) = warnings(
+        &|| bake_here(Some(&cache), &lights, &config, mixed_geometry()),
+        "[cache] lightmap_section hit",
+    );
+    assert_eq!(warm, cold, "a warm bake equals the cold one");
+    assert_eq!(cold_warnings.len(), 1, "{cold_warnings:?}");
+    assert!(
+        cold_warnings[0].contains("static light #0"),
+        "{cold_warnings:?}"
+    );
+    assert_eq!(warm_warnings, cold_warnings, "a memo hit warns as cold did");
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let logs = LogCapture::start();
+    bake_here(None, &lights, &floored(false, false), mixed_geometry());
+    logs.assert_not_logged(Level::Warn, "emitter inside geometry");
+}
+
 // The CLI's defaults configure a floored bake.
 #[test]
 fn default_cli_settings_bake_the_floored_stage() {

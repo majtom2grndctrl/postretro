@@ -487,6 +487,8 @@ fn texel_major_reference(inputs: &WeightMapInputs<'_>) -> Vec<([u32; 4], Vec<Tex
         ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
     };
 
+    let embedded =
+        super::embedded_emitters(inputs, &crate::bake_control::BakeControl::unrestricted());
     let clear = |from, to| segment_clear(inputs.bvh, inputs.primitives, inputs.geometry, from, to);
     inputs
         .chunk_section
@@ -515,6 +517,7 @@ fn texel_major_reference(inputs: &WeightMapInputs<'_>) -> Vec<([u32; 4], Vec<Tex
                         &inputs.lights[light as usize],
                         inputs.area_sample_count,
                         inputs.penumbra_floor,
+                        embedded.is_embedded(light as usize),
                     )
                 })
                 .collect();

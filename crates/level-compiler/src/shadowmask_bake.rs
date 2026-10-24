@@ -201,6 +201,9 @@ pub(crate) struct EstimateScene<'a> {
     pub(crate) area_sample_count: u32,
     /// The walk's receiver-footprint switch (`LightmapConfig::penumbra_floor`).
     pub(crate) penumbra_floor: bool,
+    /// The walk's embedded-emitter flags, by source index, so the estimate
+    /// traces each light's texels as the walk does.
+    pub(crate) embedded_emitters: &'a crate::texel_footprint::EmbeddedEmitters,
 }
 
 /// Probe the whole shadowmask memo and, on a miss, set up the owner fill the
@@ -303,6 +306,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         scene.geometry,
         scene.area_sample_count,
         scene.penumbra_floor,
+        scene.embedded_emitters,
         control,
     );
     let estimate_stats = EstimateStats {

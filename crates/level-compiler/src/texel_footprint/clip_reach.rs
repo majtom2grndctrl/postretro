@@ -74,6 +74,23 @@ pub(crate) fn lead_in_clear(
     from: Vec3,
     to: Vec3,
 ) -> bool {
+    front_faces_clear(bvh, primitives, geometry, from, to, |points| {
+        band.admits(points)
+    })
+}
+
+/// Whether the segment `from → to`, tested over its whole length, enters no
+/// triangle through its front among those `admits` accepts: the tracer behind
+/// [`lead_in_clear`] and the embedded-emitter test
+/// ([`super::embedded_emitter_fraction`]).
+pub(crate) fn front_faces_clear(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    from: Vec3,
+    to: Vec3,
+    admits: impl Fn([Vec3; 3]) -> bool,
+) -> bool {
     let delta = to - from;
     let length = delta.length();
     if length <= 0.0 {
@@ -97,7 +114,7 @@ pub(crate) fn lead_in_clear(
                 .dot(dir)
                 < 0.0;
             if front
-                && band.admits(points)
+                && admits(points)
                 && ray_triangle_hit(from, dir, points[0], points[1], points[2])
                     .is_some_and(|dist| dist < length)
             {

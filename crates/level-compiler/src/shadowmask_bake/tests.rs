@@ -215,6 +215,7 @@ impl NoCutScene {
             geometry: &self.geometry,
             area_sample_count: 4,
             penumbra_floor: crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT,
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         }
     }
 }
@@ -1505,6 +1506,21 @@ fn the_cut_face_estimate_reads_the_visibility_the_walk_bakes() {
 
     let mut contributions = Vec::new();
     for floor in [true, false] {
+        // The walk below tests each light's emitter itself
+        // (`bake_light_layer_controlled`); the estimate takes the stage's set.
+        let embedded = if floor {
+            crate::texel_footprint::EmbeddedEmitters::classify(
+                eligible_lights
+                    .iter()
+                    .map(|light| (light.source_index, light.light)),
+                &bvh,
+                &primitives,
+                &geometry,
+                &BakeControl::unrestricted(),
+            )
+        } else {
+            crate::texel_footprint::EmbeddedEmitters::default()
+        };
         let estimate = estimate::estimate_cut_owners(
             &prepared.cut_parents,
             &eligible_lights,
@@ -1514,6 +1530,7 @@ fn the_cut_face_estimate_reads_the_visibility_the_walk_bakes() {
             &geometry,
             DEFAULT_AREA_SAMPLE_COUNT,
             floor,
+            &embedded,
             &BakeControl::unrestricted(),
         );
         let mut ramp_samples = 0;

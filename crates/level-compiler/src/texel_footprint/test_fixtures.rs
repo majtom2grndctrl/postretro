@@ -315,6 +315,8 @@ impl Fixture {
             atlas_height,
             layout: &layout,
         };
+        // The emitter test the production stage runs once per light.
+        let embedded = floor && self.embedded_emitter_fraction(light) > 0.0;
         let texels = bake_light_layer_chart_controlled(
             light,
             &shared,
@@ -324,6 +326,7 @@ impl Fixture {
             &self.geometry,
             area_sample_count,
             floor,
+            embedded,
             &BakeControl::unrestricted(),
         );
         let mut grid = VisibilityGrid::new(self.receiver.width, self.receiver.height);
@@ -333,6 +336,11 @@ impl Fixture {
             grid.set(x, y, texel.raw_visibility);
         }
         grid
+    }
+
+    /// [`super::embedded_emitter_fraction`] against this fixture.
+    pub(super) fn embedded_emitter_fraction(&self, light: &MapLight) -> f32 {
+        super::embedded_emitter_fraction(light, &self.bvh, &self.primitives, &self.geometry)
     }
 
     /// Bake `light` over the receiver as an animated light through the

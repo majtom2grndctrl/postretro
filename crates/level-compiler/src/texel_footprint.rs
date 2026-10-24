@@ -294,16 +294,38 @@ pub(crate) enum TexelSampler {
     /// Floor disabled: centre-point soft visibility.
     Centre(SoftProbes),
     /// The receiver footprint.
-    Footprint(Arc<TexelFootprint>),
+    Footprint {
+        footprint: Arc<TexelFootprint>,
+        /// Trace every sample, with no probe early-out: the light's emitter
+        /// sphere reaches into geometry ([`embedded_emitter_fraction`]).
+        full_set: bool,
+    },
 }
 
 impl TexelSampler {
-    pub(crate) fn new(light: &MapLight, area_sample_count: u32, penumbra_floor: bool) -> Self {
+    /// `embedded_emitter` is the light's flag from the stage's
+    /// [`EmbeddedEmitters`]; with it the footprint traces every texel's full
+    /// set. The floor-off sampler ignores it, so floor-off bakes keep their
+    /// bytes.
+    pub(crate) fn new(
+        light: &MapLight,
+        area_sample_count: u32,
+        penumbra_floor: bool,
+        embedded_emitter: bool,
+    ) -> Self {
         if penumbra_floor {
-            Self::Footprint(footprint_for(light, area_sample_count))
+            Self::Footprint {
+                footprint: footprint_for(light, area_sample_count),
+                full_set: embedded_emitter,
+            }
         } else {
             Self::Centre(SoftProbes::new(light, area_sample_count))
         }
+    }
+
+    /// Whether this sampler filters over the receiver footprint.
+    pub(crate) fn is_footprint(&self) -> bool {
+        matches!(self, Self::Footprint { .. })
     }
 
     /// The texel's raw visibility in `[0, 1]`. `trace(from, to)`,
@@ -330,8 +352,12 @@ impl TexelSampler {
                 || *probes,
                 trace,
             ),
-            Self::Footprint(footprint) => {
-                footprint_visibility(light, site, footprint, trace, reach, lead_in).visibility
+            Self::Footprint {
+                footprint,
+                full_set,
+            } => {
+                footprint_visibility_with(light, site, footprint, trace, reach, lead_in, !full_set)
+                    .visibility
             }
         }
     }
@@ -387,24 +413,14 @@ fn footprint_rotation(seed: u64) -> (f32, f32) {
 /// needs no lead-in. The centre's ray stays the texel's own, traced as the
 /// floor-off bake traces it.
 ///
-/// The nine probes are traced first. When none is clipped and all agree, the
-/// texel is exactly 0 or 1. A clipped probe breaks the ring, so the texel then
-/// traces its full set even if its survivors agree. A soft emitter's samples
-/// pair with footprint points per texel, so the probes stay a centre and a
-/// ring in every occluder plane ([`TexelFootprint::emitter_pairing`]).
-pub(crate) fn footprint_visibility(
-    light: &MapLight,
-    site: &TexelSite,
-    footprint: &TexelFootprint,
-    trace: impl Fn(Vec3, Vec3) -> bool,
-    reach: impl Fn(Vec3, Vec3) -> bool,
-    lead_in: impl Fn(Vec3, Vec3) -> bool,
-) -> FootprintOutcome {
-    footprint_visibility_with(light, site, footprint, trace, reach, lead_in, true)
-}
-
-/// [`footprint_visibility`] with the probe early-out optional, so tests can
-/// trace every sample for a reference.
+/// The nine probes are traced first. When `early_out` holds, none is clipped
+/// and all agree, the texel is exactly 0 or 1. A clipped probe breaks the
+/// ring, so the texel then traces its full set even if its survivors agree. A
+/// soft emitter's samples pair with footprint points per texel, so the probes
+/// stay a centre and a ring in every occluder plane
+/// ([`TexelFootprint::emitter_pairing`]). Without `early_out` every sample is
+/// traced: a light whose emitter reaches into geometry
+/// ([`embedded_emitter_fraction`]), and the tests' reference.
 fn footprint_visibility_with(
     light: &MapLight,
     site: &TexelSite,
@@ -506,8 +522,12 @@ fn footprint_visibility_with(
 }
 
 mod clip_reach;
+mod embedded_emitter;
 mod pairing;
 pub(crate) use clip_reach::{ClipBand, ClipReach, lead_in_clear};
+#[cfg(test)]
+pub(crate) use embedded_emitter::NO_EMBEDDED_EMITTERS;
+pub(crate) use embedded_emitter::{EmbeddedEmitters, embedded_emitter_fraction};
 use pairing::EmitterPairing;
 
 #[cfg(test)]

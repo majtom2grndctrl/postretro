@@ -620,6 +620,14 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
     );
     let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
     let light_refs: Vec<_> = lights.iter().collect();
+    let embedded = reference::embedded_emitters(
+        &bvh,
+        &primitives,
+        &geometry,
+        &light_refs,
+        PENUMBRA_FLOOR_DEFAULT,
+        &BakeControl::unrestricted(),
+    );
 
     // Irradiance and direction, per sub-chart.
     let baked: Vec<_> = charts
@@ -633,6 +641,7 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
                 chart,
                 DEFAULT_AREA_SAMPLE_COUNT,
                 PENUMBRA_FLOOR_DEFAULT,
+                &embedded,
             )
         })
         .collect();
@@ -925,6 +934,14 @@ fn encoded_cut_seam(floor: bool) -> EncodedCutSeam {
     // BC6H's own absolute error on every interior texel, against the exact
     // pre-encode bake: the noise floor a cut must not exceed.
     let light_refs: Vec<_> = lights.iter().collect();
+    let embedded = super::super::reference::embedded_emitters(
+        &bvh,
+        &primitives,
+        &geometry,
+        &light_refs,
+        floor,
+        &BakeControl::unrestricted(),
+    );
     let mut noise = 0.0f32;
     for (face, chart) in charts.iter().enumerate() {
         let exact = super::super::reference::bake_face_chart(
@@ -935,6 +952,7 @@ fn encoded_cut_seam(floor: bool) -> EncodedCutSeam {
             chart,
             DEFAULT_AREA_SAMPLE_COUNT,
             floor,
+            &embedded,
         );
         for y in 0..chart.height_texels - PADDING {
             for x in 0..chart.width_texels - PADDING {

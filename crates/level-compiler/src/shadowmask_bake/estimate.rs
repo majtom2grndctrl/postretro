@@ -18,7 +18,7 @@ use crate::lightmap_bake::{
 };
 use crate::lightmap_layer::{SharedAtlas, light_may_reach};
 use crate::texel_footprint::{
-    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+    ClipBand, ClipReach, EmbeddedEmitters, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };
 
 use super::eligibility::EligibleLight;
@@ -156,6 +156,7 @@ pub(super) fn estimate_cut_owners(
     geometry: &GeometryResult,
     area_sample_count: u32,
     penumbra_floor: bool,
+    embedded_emitters: &EmbeddedEmitters,
     control: &BakeControl,
 ) -> CutEstimate {
     let samples: Vec<Vec<(usize, i32, i32)>> = cut_parents
@@ -200,7 +201,12 @@ pub(super) fn estimate_cut_owners(
         .map(|&(c, l)| {
             let _permit = control.governor().enter();
             let light = eligible[l].light;
-            let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor);
+            let sampler = TexelSampler::new(
+                light,
+                area_sample_count,
+                penumbra_floor,
+                embedded_emitters.is_embedded(eligible[l].source_index),
+            );
             let last_occluder = Cell::new(None);
             let clip_occluder = Cell::new(None);
             let (mut lit, mut contribution, mut traces) = (0u32, 0f64, 0usize);

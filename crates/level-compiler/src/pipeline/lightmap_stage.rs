@@ -17,6 +17,7 @@ use crate::lightmap_bake::{self, CutParent, LightmapBakeOutput, LightmapConfig, 
 use crate::lightmap_layer::{self, SharedAtlas};
 use crate::map_data::ShadowType;
 use crate::shadowmask_bake;
+use crate::texel_footprint::EmbeddedEmitters;
 use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 
 mod cache;
@@ -209,6 +210,34 @@ pub(crate) fn bake_fused_windowed(
         .iter()
         .filter(|entry| entry.light.shadow_type != ShadowType::Sdf)
         .collect();
+    // Lights whose emitter sphere reaches into geometry trace every
+    // footprint sample. Tested once per light, warm or cold: the test reads
+    // only the light and geometry inside its layer key's bound
+    // (`lightmap_layer::layer_influence_aabb`), so a cached partition was
+    // baked under the same verdict, and the warning never rides a memo.
+    let embedded_emitters = if config.penumbra_floor {
+        EmbeddedEmitters::classify(
+            layer_lights
+                .iter()
+                .map(|entry| (entry.source_index, entry.light)),
+            bvh,
+            primitives,
+            geometry,
+            lightmap_control,
+        )
+    } else {
+        EmbeddedEmitters::default()
+    };
+    embedded_emitters.warn(
+        "static",
+        |source| {
+            layer_lights
+                .iter()
+                .find(|entry| entry.source_index == source)
+                .map(|entry| entry.light)
+        },
+        |source| light_source_labels.get(source).map(String::as_str),
+    );
     // Partition keys feed only the cache, so an uncached bake hashes nothing.
     let layer_prefixes = if stage_cache.is_some() && !prepared.placements.is_empty() {
         layer_key_prefixes(
@@ -254,6 +283,7 @@ pub(crate) fn bake_fused_windowed(
             geometry,
             area_sample_count: args.soft_shadow_samples,
             penumbra_floor: config.penumbra_floor,
+            embedded_emitters: &embedded_emitters,
         },
         stage_cache,
         shadowmask_control,
@@ -413,6 +443,7 @@ pub(crate) fn bake_fused_windowed(
                 &layer_prefixes,
                 items,
                 config.penumbra_floor,
+                &embedded_emitters,
                 Some(&detector),
                 window,
             );
@@ -508,6 +539,7 @@ pub(crate) fn bake_fused_windowed(
             &layer_prefixes,
             items,
             config.penumbra_floor,
+            &embedded_emitters,
             None,
             window,
         );

@@ -1,7 +1,7 @@
 # lightmap-penumbra-floor — plan of record
 
 mode: compact
-status: active
+status: blocked
 read at: 52d726196 (no `crates/`, `docs/` or `sdk/` change since the brief's a0a2c0239)
 
 ## Block (AC 25 wall-time gate)
@@ -19,6 +19,15 @@ The cheap path now traces nine footprint probes plus eight clip segments per (li
 - C. Accept the cost: raise the gate.
 
 Owner (2026-10-23): do A, re-measure both maps, and come back if still over 1.5×.
+
+After A (151ba1f3f: light-independent clip pre-pass, bit-identical output; sharing across lights not built because the skip leaves nothing measurable to share):
+
+| Map | Lightmap Bake base → floor | Ratio | Total compile |
+|---|---|---|---|
+| `shadowmask-groups-capture` | 0.99 / 1.01 / 1.01 s → 2.13 / 2.44 / 2.24 s (medians 1.01 → 2.24) | 2.22× | — |
+| `stress-warren-hallway-inspection-mini` | 178.9 s → 320.7 s | 1.79× | 448 s → 592 s (1.32×) |
+
+Still over 1.5× on both. A scratch run with no clip work at all measured the same as A, so the remaining cost is the nine light rays per lit texel (soft 4 → 9, hard 1 → 9). Remaining levers: B or C.
 
 ## Corrections
 
@@ -66,7 +75,7 @@ Owner (2026-10-23): do A, re-measure both maps, and come back if still over 1.5�
 | 22 default floored; `--help` lists switch; not in `docs/` | CLI test + grep | achievable as stated |
 | 23 sub-texel warning gone; no "0 = hard" text | grep gate | achievable as stated |
 | 24 nothing under `crates/level-format/` or `crates/renderer/src/shaders/` | diff gate | achievable as stated |
-| 25 lightmap stage cold wall time ≤ 1.5×, detector ≤ 5% | timed bakes, hallway-mini + groups-capture | **tripped: 3.11× and 3.66× (see Block)** |
+| 25 lightmap stage cold wall time ≤ 1.5×, detector ≤ 5% | timed bakes, hallway-mini + groups-capture | **tripped: after A, 1.79× (hallway-mini) and 2.22× (groups-capture); see Block** |
 | 26 capture 2560×1440, floor off vs on, vs `_lightmap_density 0.01` | owner, in-engine | manual |
 | 27 shadowmask specular, no step / no banding rise | owner, in-engine | manual |
 | 28 hallway-mini full compile logs no texel-step warnings | compile + log grep (executor runs it) | achievable as stated |

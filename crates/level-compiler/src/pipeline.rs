@@ -17,8 +17,8 @@ use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
 use crate::{
     Args, bake_model_textures, bake_sprite_textures, compile_worldspawn_data_script,
-    map_needs_sdf_atlas, resolve_content_root, resolve_data_script_source,
-    resolve_lightmap_density, resolve_prm_root, resolve_sh_density_fidelity, resolve_texture_root,
+    lightmap_config, map_needs_sdf_atlas, resolve_content_root, resolve_data_script_source,
+    resolve_prm_root, resolve_sh_density_fidelity, resolve_texture_root,
 };
 
 mod animated_atlas_stage;
@@ -730,15 +730,7 @@ fn run_after_parsing(
         .enumerate()
         .filter(|(index, light)| !light.is_dynamic && !buried_lights.is_buried(*index))
         .count();
-    let effective_lightmap_density =
-        resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
-    let lightmap_config = lightmap_bake::LightmapConfig {
-        lightmap_density: effective_lightmap_density,
-        area_sample_count: args.soft_shadow_samples,
-        uncompressed_irradiance: args.uncompressed_irradiance,
-        direction_texel_scale: args.direction_texel_scale,
-        penumbra_floor: crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT,
-    };
+    let lightmap_config = lightmap_config(args, map_data.lightmap_density);
     let sh_config = sh_bake::ShConfig {
         probe_spacing: args.probe_spacing,
     };

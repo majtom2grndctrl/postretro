@@ -134,6 +134,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
         &geometry,
         0.25,
         4,
+        PENUMBRA_FLOOR_DEFAULT,
         2,
         &BakeControl::unrestricted(),
     );
@@ -166,6 +167,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
                 &geometry,
                 0.25,
                 4,
+                PENUMBRA_FLOOR_DEFAULT,
                 layer,
             )
         })

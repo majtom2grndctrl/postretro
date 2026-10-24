@@ -452,6 +452,19 @@ fn fused_cold_warm_and_lightmap_reuse_paths_match_cold_bytes() {
             reference_lightmap(&lights, &config),
             "cold fused lightmap bytes changed"
         );
+        // The reference parity holds with the floor off too; a fixture whose
+        // floor changes the bytes is in `penumbra_floor_tests`.
+        let floor_off = LightmapConfig {
+            penumbra_floor: false,
+            ..self::config(uncompressed)
+        };
+        let (cold_off, ..) =
+            fused_outputs_with_workers(1, &args, None, &lights, &initial_selection, &floor_off);
+        assert_eq!(
+            cold_off.0,
+            reference_lightmap(&lights, &floor_off),
+            "floor-off fused lightmap bytes differ from the reference"
+        );
         assert_eq!(parallel_cold, cold, "id 42 must not depend on worker count");
 
         assert_two_lights_own_a_face_in_block_one(&cold.0, &cold.1);
@@ -1662,3 +1675,5 @@ mod raw_fill_tests;
 mod budget_gate_tests;
 
 mod metadata_tests;
+
+mod penumbra_floor_tests;

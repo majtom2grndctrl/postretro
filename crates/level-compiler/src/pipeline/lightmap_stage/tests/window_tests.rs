@@ -466,6 +466,7 @@ fn cull_bake_matches_unculled(
                     &geometry,
                     config.lightmap_density,
                     args.soft_shadow_samples,
+                    config.penumbra_floor,
                     layer,
                 ),
             );

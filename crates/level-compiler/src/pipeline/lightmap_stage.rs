@@ -24,9 +24,9 @@ mod partitions;
 mod peak;
 mod window;
 
-pub(super) use metadata::MetadataCounts;
 #[cfg(test)]
-use partitions::chart_texel_bounds;
+use crate::lightmap_layer::chart_texel_bounds;
+pub(super) use metadata::MetadataCounts;
 use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
 pub(super) use peak::log_predicted_peak;
 #[cfg(test)]
@@ -195,6 +195,7 @@ pub(crate) fn bake_fused_windowed(
             geometry,
             density,
             args.soft_shadow_samples,
+            config.penumbra_floor,
             window.size,
             lightmap_control,
         )

@@ -242,6 +242,13 @@ impl TexelFrame {
         Self { pitch_u, pitch_v }
     }
 
+    /// World distance no footprint sample reaches from its texel centre: the
+    /// longer texel step. Offsets lie strictly within one texel and the chart
+    /// axes are orthonormal, so every rotated offset is shorter than this.
+    pub(crate) fn radius(&self) -> f32 {
+        self.pitch_u.length().max(self.pitch_v.length())
+    }
+
     /// World offset of texel-unit offset `[x, y]` rotated by `(sin, cos)`.
     fn offset(&self, [x, y]: [f32; 2], (sin, cos): (f32, f32)) -> Vec3 {
         self.pitch_u * (x * cos - y * sin) + self.pitch_v * (x * sin + y * cos)

@@ -675,7 +675,10 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
     }
     assert!(penumbra > 0, "a penumbra or falloff gradient crosses a cut");
 
-    // Raw soft visibility, as the shipping per-light layer walk records it.
+    // Raw floored visibility, as the shipping per-light layer walk records
+    // it, for the soft light and for the same light made hard (P5): both
+    // edges ramp across the cuts, and the footprint's samples come from the
+    // parent grid, so twins match bit for bit.
     let shared = SharedAtlas {
         charts,
         placements: &prepared.placements,
@@ -683,23 +686,6 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
         atlas_height: prepared.atlas_height,
         layout: &prepared.layout,
     };
-    let mut visibility = std::collections::HashMap::new();
-    for layer in 0..prepared.layer_count {
-        let partition = bake_light_layer_controlled(
-            &lights[0],
-            &shared,
-            &bvh,
-            &primitives,
-            &geometry,
-            layer,
-            DEFAULT_AREA_SAMPLE_COUNT,
-            PENUMBRA_FLOOR_DEFAULT,
-            &BakeControl::unrestricted(),
-        );
-        for texel in &partition.texels {
-            visibility.insert((layer, texel.idx), texel.raw_visibility.to_bits());
-        }
-    }
     let atlas_key = |chart: usize, [x, y]: [u32; 2]| {
         let placement = prepared.placements[chart];
         let (ax, ay) = (
@@ -708,16 +694,48 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
         );
         (placement.layer, ay * prepared.atlas_width + ax)
     };
-    let mut compared = 0;
-    for &((a, ta), (b, tb)) in &twins {
-        let (va, vb) = (
-            visibility.get(&atlas_key(a, ta)),
-            visibility.get(&atlas_key(b, tb)),
+    let mut hard = lights[0].clone();
+    hard.light_size = 0.0;
+    for light in [&lights[0], &hard] {
+        let mut visibility = std::collections::HashMap::new();
+        for layer in 0..prepared.layer_count {
+            let partition = bake_light_layer_controlled(
+                light,
+                &shared,
+                &bvh,
+                &primitives,
+                &geometry,
+                layer,
+                DEFAULT_AREA_SAMPLE_COUNT,
+                true,
+                &BakeControl::unrestricted(),
+            );
+            for texel in &partition.texels {
+                visibility.insert((layer, texel.idx), texel.raw_visibility);
+            }
+        }
+        let (mut compared, mut ramping) = (0, 0);
+        for &((a, ta), (b, tb)) in &twins {
+            let (va, vb) = (
+                visibility.get(&atlas_key(a, ta)),
+                visibility.get(&atlas_key(b, tb)),
+            );
+            assert_eq!(
+                va.map(|v| v.to_bits()),
+                vb.map(|v| v.to_bits()),
+                "size {} visibility at {ta:?}/{tb:?}",
+                light.light_size
+            );
+            compared += usize::from(va.is_some());
+            ramping += usize::from(va.is_some_and(|&v| v > 0.0 && v < 1.0));
+        }
+        println!(
+            "size {}: {compared} overlap texels compared, {ramping} on the shadow ramp",
+            light.light_size
         );
-        assert_eq!(va, vb, "visibility at {ta:?}/{tb:?}");
-        compared += usize::from(va.is_some());
+        assert!(compared > 0, "the light reaches the overlaps");
+        assert!(ramping > 0, "a shadow edge crosses a cut");
     }
-    assert!(compared > 0, "the light reaches the overlaps");
 
     // P20: a vertex on a cut maps to the same parent-grid position from both
     // of its sub-faces.

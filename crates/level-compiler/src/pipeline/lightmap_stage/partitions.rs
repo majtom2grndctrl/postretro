@@ -11,9 +11,7 @@ use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedEntry;
-use crate::lightmap_bake;
-use crate::lightmap_layer::{self, SharedAtlas};
-use crate::map_data::{LightType, MapLight};
+use crate::lightmap_layer::{self, SharedAtlas, chart_texel_bounds, light_may_reach};
 
 #[cfg(test)]
 use super::PartitionHooks;
@@ -73,12 +71,18 @@ pub(super) fn layer_key_prefixes(
     geometry: &GeometryResult,
     density: f32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     window: usize,
     control: &BakeControl,
 ) -> Vec<blake3::Hasher> {
     use rayon::prelude::*;
-    let context =
-        lightmap_layer::LayerKeyContext::new(shared, geometry, density, area_sample_count);
+    let context = lightmap_layer::LayerKeyContext::new(
+        shared,
+        geometry,
+        density,
+        area_sample_count,
+        penumbra_floor,
+    );
     let mut prefixes = Vec::with_capacity(layer_lights.len());
     for lights in layer_lights.chunks(window.max(1)) {
         let mut batch: Vec<_> = lights
@@ -103,54 +107,6 @@ pub(super) fn layer_hashes(
         let (layer, light) = items.get(item);
         lightmap_layer::LayerKeyContext::layer_hash(&prefixes[light], layer)
     })
-}
-
-/// World bounds of a chart's texel centres, padded by
-/// `AABB_PADDING_METERS` to absorb `f32` rounding in the texel walk. The pad
-/// (0.5 m, borrowed from `affinity_grid`) is deliberately generous and only
-/// makes the reach cull more conservative; a smaller pad would cull more, and
-/// must still exceed the `f32` rounding error of the texel positions.
-pub(super) fn chart_texel_bounds(chart: &lightmap_bake::Chart) -> Option<(Vec3, Vec3)> {
-    if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
-        return None;
-    }
-    // Texel centres are affine in (tx, ty), so the corner texels bound them.
-    let (width, height) = crate::chart_raster::chart_interior_dims(chart);
-    let corners = [
-        (0, 0),
-        (width - 1, 0),
-        (0, height - 1),
-        (width - 1, height - 1),
-    ]
-    .map(|(tx, ty)| crate::chart_raster::chart_texel_world_position(chart, tx, ty));
-    let pad = Vec3::splat(crate::affinity_grid::AABB_PADDING_METERS);
-    let min = corners
-        .iter()
-        .copied()
-        .fold(Vec3::splat(f32::INFINITY), Vec3::min);
-    let max = corners
-        .iter()
-        .copied()
-        .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
-    Some((min - pad, max + pad))
-}
-
-/// Whether any texel inside `bounds` may receive a direct term from `light`.
-/// Every falloff model is zero beyond `falloff_range`, so a point or spot
-/// light reaches no texel farther than that; a directional light reaches all.
-/// A chart with no texels is never reached.
-pub(super) fn light_may_reach(light: &MapLight, bounds: Option<(Vec3, Vec3)>) -> bool {
-    let Some((min, max)) = bounds else {
-        return false;
-    };
-    match light.light_type {
-        LightType::Directional => true,
-        LightType::Point | LightType::Spot => {
-            let origin = light.origin.as_vec3();
-            let nearest = origin.clamp(min, max);
-            origin.distance(nearest) <= light.falloff_range.max(1.0e-4)
-        }
-    }
 }
 
 /// The fused walk's partitions: one (layer, light) per item, loaded from or

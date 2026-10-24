@@ -1,16 +1,17 @@
 // Per-light layer and composited-section cache keys, plus cached-payload validation.
 // See: context/lib/build_pipeline.md §Build Cache
 
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 
 use super::{
-    LAYER_FORMAT_VERSION, LightmapLayer, SharedAtlas, atlas_layer_count, geometry_world_aabb,
-    layer_influence_aabb,
+    LAYER_FORMAT_VERSION, LightmapLayer, SharedAtlas, atlas_layer_count, chart_texel_bounds,
+    geometry_world_aabb, layer_influence_aabb, light_may_reach,
 };
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::chart_interior_dims;
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
+use crate::texel_footprint::TexelFrame;
 
 /// The atlas layout descriptor folded into a layer's cache key. Captures atlas
 /// dimensions, resolved chart sampling extents/dimensions, per-chart
@@ -108,14 +109,17 @@ pub(crate) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
 ///
 /// Occlusion is local to the influence sphere (any occluder on a light→texel
 /// segment is nearer than the texel, hence inside `falloff_range`), so the
-/// falloff-AABB slice is a sound conservative dependency set.
+/// falloff-AABB slice is a sound conservative dependency set. A footprint
+/// sample's segments start up to `footprint_radius` beside its texel, so the
+/// slice widens by that much.
 pub(super) fn geometry_slice_hash(
     light: &MapLight,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     world_aabb: (DVec3, DVec3),
+    footprint_radius: f32,
 ) -> Vec<u8> {
-    let (inf_min, inf_max) = layer_influence_aabb(light, world_aabb);
+    let (inf_min, inf_max) = layer_influence_aabb(light, world_aabb, footprint_radius);
 
     // Gather overlapping primitives, then sort by canonical `sort_key` so the
     // hash is independent of however the BVH permuted the slice.
@@ -173,6 +177,7 @@ fn bytemuck_f32x3(v: &[f32; 3]) -> Vec<u8> {
 ///   bytemuck codec),
 /// - the influence-bounded geometry slice hash,
 /// - `lightmap_density` + `area_sample_count`,
+/// - the receiver-footprint switch (`--no-penumbra-floor`),
 /// - the atlas layout descriptor (dims + per-chart placements).
 /// - `target_layer`, so partitions with the same light and layout cannot alias.
 ///
@@ -180,6 +185,7 @@ fn bytemuck_f32x3(v: &[f32; 3]) -> Vec<u8> {
 /// LAYER_FORMAT_VERSION, &hash)` so the layer stage owns invalidation. Callers
 /// keying many partitions use [`LayerKeyContext`], which yields the same digest
 /// without rehashing the atlas per partition or the light per layer.
+#[allow(clippy::too_many_arguments)]
 pub fn layer_input_hash(
     light: &MapLight,
     atlas: &SharedAtlas<'_>,
@@ -187,9 +193,16 @@ pub fn layer_input_hash(
     geometry: &GeometryResult,
     lightmap_density: f32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     target_layer: u32,
 ) -> [u8; 32] {
-    let context = LayerKeyContext::new(atlas, geometry, lightmap_density, area_sample_count);
+    let context = LayerKeyContext::new(
+        atlas,
+        geometry,
+        lightmap_density,
+        area_sample_count,
+        penumbra_floor,
+    );
     LayerKeyContext::layer_hash(
         &context.light_prefix(light, primitives, geometry),
         target_layer,
@@ -202,6 +215,10 @@ pub struct LayerKeyContext {
     atlas_fingerprint: Vec<u8>,
     lightmap_density: f32,
     area_sample_count: u32,
+    penumbra_floor: bool,
+    /// With the floor on, each chart's padded texel bounds and footprint
+    /// radius, largest radius first; empty with it off.
+    footprint_reach: Vec<(Option<(Vec3, Vec3)>, f32)>,
 }
 
 impl LayerKeyContext {
@@ -212,13 +229,42 @@ impl LayerKeyContext {
         geometry: &GeometryResult,
         lightmap_density: f32,
         area_sample_count: u32,
+        penumbra_floor: bool,
     ) -> Self {
+        let mut footprint_reach: Vec<_> = if penumbra_floor {
+            atlas
+                .charts
+                .iter()
+                .map(|chart| {
+                    (
+                        chart_texel_bounds(chart),
+                        TexelFrame::for_chart(chart).radius(),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Only the radius is ever read, so ties need no order.
+        footprint_reach.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
         Self {
             world_aabb: geometry_world_aabb(geometry),
             atlas_fingerprint: atlas_layout_fingerprint(atlas),
             lightmap_density,
             area_sample_count,
+            penumbra_floor,
+            footprint_reach,
         }
+    }
+
+    /// The largest footprint radius among the charts `light` may reach, or
+    /// zero with the floor off. Taken per light, not per bake, so one coarse
+    /// region widens only the lights that reach it.
+    pub(super) fn footprint_radius(&self, light: &MapLight) -> f32 {
+        self.footprint_reach
+            .iter()
+            .find(|(bounds, _)| light_may_reach(light, *bounds))
+            .map_or(0.0, |&(_, radius)| radius)
     }
 
     /// Everything in a layer key but the target layer, for one light.
@@ -237,9 +283,11 @@ impl LayerKeyContext {
             primitives,
             geometry,
             self.world_aabb,
+            self.footprint_radius(light),
         ));
         hasher.update(&self.lightmap_density.to_le_bytes());
         hasher.update(&self.area_sample_count.to_le_bytes());
+        hasher.update(&[u8::from(self.penumbra_floor)]);
         hasher.update(&self.atlas_fingerprint);
         hasher
     }
@@ -418,8 +466,9 @@ pub fn validate_cached_lightmap_section(
 /// 3. each light-layer `layer_input_hash` `[u8; 32]`, in the caller's exact
 ///    layer-major then global-static-light order (`ShadowType::Sdf` dropped).
 ///    Folding the input hashes mirrors folding the full cache keys: any
-///    per-light input change (light params, geometry slice, density, atlas
-///    layout, or target layer) flows through here.
+///    per-light input change (light params, geometry slice, density, sample
+///    count, footprint switch, atlas layout, or target layer) flows through
+///    here.
 /// 4. the complete prepared atlas layout fingerprint. This is required even
 ///    when the filtered light set is empty, because the all-Sdf fallback bytes
 ///    still depend on atlas dimensions.

@@ -748,7 +748,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 
 #[test]
 fn sparse_cache_epochs_are_pinned() {
-    assert_eq!(LAYER_FORMAT_VERSION, 9);
+    assert_eq!(LAYER_FORMAT_VERSION, 10);
     assert_eq!(LIGHTMAP_SECTION_VERSION, 4);
 }
 
@@ -897,8 +897,26 @@ fn layer_input_hash_changes_when_light_moves() {
 
     let base = point_light([0.5, 1.0, 0.5], 5.0);
     let moved = point_light([10.0, 1.0, 0.5], 5.0);
-    let h_base = layer_input_hash(&base, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, 0);
-    let h_moved = layer_input_hash(&moved, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, 0);
+    let h_base = layer_input_hash(
+        &base,
+        &shared,
+        &prims,
+        &geo,
+        DENSITY,
+        AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
+        0,
+    );
+    let h_moved = layer_input_hash(
+        &moved,
+        &shared,
+        &prims,
+        &geo,
+        DENSITY,
+        AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
+        0,
+    );
     assert_ne!(
         h_base, h_moved,
         "moving the light must change its layer cache key"
@@ -930,14 +948,16 @@ fn layer_key_context_reproduces_the_layer_input_hash_layout() {
             &prims,
             &geo,
             geometry_world_aabb(&geo),
+            0.0,
         ));
         expected.update(&DENSITY.to_le_bytes());
         expected.update(&AREA_SAMPLES.to_le_bytes());
+        expected.update(&[0]);
         expected.update(&atlas_layout_fingerprint(&shared));
         expected.update(&target_layer.to_le_bytes());
         let expected = *expected.finalize().as_bytes();
 
-        let context = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES);
+        let context = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, false);
         let prefix = context.light_prefix(&light, &prims, &geo);
         assert_eq!(LayerKeyContext::layer_hash(&prefix, target_layer), expected);
         assert_eq!(
@@ -948,6 +968,7 @@ fn layer_key_context_reproduces_the_layer_input_hash_layout() {
                 &geo,
                 DENSITY,
                 AREA_SAMPLES,
+                false,
                 target_layer
             ),
             expected
@@ -1018,6 +1039,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
                 &geo,
                 DENSITY,
                 AREA_SAMPLES,
+                PENUMBRA_FLOOR_DEFAULT,
                 target_layer,
             ),
         )
@@ -1227,7 +1249,7 @@ fn geometry_slice_hash_ignores_faces_outside_influence() {
     // Tight range so the influence AABB covers only the first quad
     // (x in [0,1]) and not the second (x in [3,4]).
     let near = point_light([0.5, 0.5, 0.5], 1.0);
-    let slice_a = geometry_slice_hash(&near, &prims, &geo, world);
+    let slice_a = geometry_slice_hash(&near, &prims, &geo, world, 0.0);
 
     // Move the far quad's vertices; rebuild prims/geo.
     let mut geo2 = two_quad_geometry();
@@ -1236,12 +1258,78 @@ fn geometry_slice_hash_ignores_faces_outside_influence() {
     }
     let (_, prims2, _) = build_bvh(&geo2).unwrap();
     let world2 = geometry_world_aabb(&geo2);
-    let slice_b = geometry_slice_hash(&near, &prims2, &geo2, world2);
+    let slice_b = geometry_slice_hash(&near, &prims2, &geo2, world2, 0.0);
 
     assert_eq!(
         slice_a, slice_b,
         "editing geometry outside the influence AABB must not change the slice hash"
     );
+}
+
+// The receiver-footprint switch is part of every layer key, so the section
+// key, which folds the layer hashes, moves with it too.
+#[test]
+fn layer_and_section_keys_fold_the_penumbra_floor_switch() {
+    let mut geo = two_quad_geometry();
+    let light = point_light([0.5, 1.0, 0.5], 5.0);
+    let static_lights =
+        crate::light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+    let (_, prims, _) = build_bvh(&geo).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let hash =
+        |on: bool| layer_input_hash(&light, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, on, 0);
+    assert_ne!(hash(true), hash(false));
+    let section = |on: bool| section_input_hash([hash(on)].into_iter(), &shared, DENSITY, false, 1);
+    assert_ne!(section(true), section(false));
+}
+
+// P10: with the floor on, a light's key bound widens by the largest footprint
+// radius among the charts it reaches, so one coarse region widens only the
+// lights that reach it; with the floor off nothing widens.
+#[test]
+fn footprint_padding_follows_the_charts_each_light_reaches() {
+    let mut geo = two_quad_geometry();
+    // Coarsen the second quad (x in [3, 4]) to 0.5 m texels.
+    let coarse = crate::map_data::MapLightmapScaleRegion {
+        min: [2.5, -1.0, -1.0],
+        max: [5.0, 1.0, 2.0],
+        planes: Vec::new(),
+        scale: 0.5,
+    };
+    let fine_only = point_light([0.5, 0.5, 0.5], 1.0);
+    let coarse_only = point_light([3.5, 0.5, 0.5], 1.0);
+    let both = point_light([2.0, 0.5, 0.5], 3.0);
+    let lights = vec![fine_only.clone(), coarse_only.clone(), both.clone()];
+    let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[coarse]).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let radius = |face: usize| {
+        crate::texel_footprint::TexelFrame::for_chart(&prepared.charts[face]).radius()
+    };
+    assert_eq!(radius(0), DENSITY);
+    assert_eq!(radius(1), 2.0 * DENSITY);
+
+    let on = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, true);
+    assert_eq!(on.footprint_radius(&fine_only), radius(0));
+    assert_eq!(on.footprint_radius(&coarse_only), radius(1));
+    assert_eq!(on.footprint_radius(&both), radius(1));
+    let off = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, false);
+    for light in &lights {
+        assert_eq!(off.footprint_radius(light), 0.0);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -1270,7 +1358,16 @@ fn layer_key(
     prims: &[BvhPrimitive],
     geo: &GeometryResult,
 ) -> CacheKey {
-    let h = layer_input_hash(light, shared, prims, geo, DENSITY, AREA_SAMPLES, 0);
+    let h = layer_input_hash(
+        light,
+        shared,
+        prims,
+        geo,
+        DENSITY,
+        AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
+        0,
+    );
     CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &h)
 }
 
@@ -1931,6 +2028,7 @@ fn layer_input_hashes(
                     geo,
                     DENSITY,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     target_layer,
                 )
             })
@@ -2299,6 +2397,7 @@ fn section_key_changes_on_add_remove_and_reorder() {
         &geo,
         DENSITY,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         0,
     ));
     assert_ne!(
@@ -2353,11 +2452,33 @@ fn section_key_changes_when_soft_shadow_samples_change() {
     let samples_b = 32u32;
     let hashes_a: Vec<[u8; 32]> = light_refs
         .iter()
-        .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_a, 0))
+        .map(|l| {
+            layer_input_hash(
+                l,
+                &shared,
+                &prims,
+                &geo,
+                DENSITY,
+                samples_a,
+                PENUMBRA_FLOOR_DEFAULT,
+                0,
+            )
+        })
         .collect();
     let hashes_b: Vec<[u8; 32]> = light_refs
         .iter()
-        .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_b, 0))
+        .map(|l| {
+            layer_input_hash(
+                l,
+                &shared,
+                &prims,
+                &geo,
+                DENSITY,
+                samples_b,
+                PENUMBRA_FLOOR_DEFAULT,
+                0,
+            )
+        })
         .collect();
 
     assert_ne!(

@@ -20,9 +20,7 @@ use crate::lightmap_bake::{
     BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction,
     light_texel_contribution_and_visibility_with, segment_clear_remembering,
 };
-#[cfg(test)]
-use crate::map_data::LightType;
-use crate::map_data::MapLight;
+use crate::map_data::{LightType, MapLight};
 use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
 use glam::DVec3;
 
@@ -48,7 +46,10 @@ pub use cache_keys::{
 /// v9: shadow rays test the chart walk's last occluding triangle first, which
 /// also catches a hit the box test misses by rounding where the triangle meets
 /// its box's boundary.
-pub const LAYER_FORMAT_VERSION: u32 = 9;
+///
+/// v10: texel visibility is filtered over a one-texel receiver footprint
+/// (`texel_footprint`) unless `--no-penumbra-floor`.
+pub const LAYER_FORMAT_VERSION: u32 = 10;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -339,11 +340,76 @@ impl IncrementalLayerAccumulator {
 }
 
 /// Influence AABB used to bound the geometry slice folded into a light's cache
-/// key. Point/Spot → `falloff_range
-/// + AABB_PADDING_METERS` cube; Directional → the whole-world AABB. Delegates to
-/// the authoritative `affinity_grid::light_aabb` (the f32-falloff copy).
-pub fn layer_influence_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DVec3, DVec3) {
-    light_aabb(light, world_aabb)
+/// key. Point/Spot → `falloff_range + AABB_PADDING_METERS` cube, widened by
+/// `footprint_radius`; Directional → the whole-world AABB. Delegates to the
+/// authoritative `affinity_grid::light_aabb` (the f32-falloff copy).
+///
+/// A reached texel lies within `falloff_range`, but a footprint sample's ray
+/// leaves from up to one texel pitch beside it, and `_lightmap_scale` lets a
+/// pitch exceed the padding. `footprint_radius` is the largest footprint
+/// radius among the charts the light reaches; zero (floor off) leaves the
+/// bound unchanged.
+pub fn layer_influence_aabb(
+    light: &MapLight,
+    world_aabb: (DVec3, DVec3),
+    footprint_radius: f32,
+) -> (DVec3, DVec3) {
+    let (min, max) = light_aabb(light, world_aabb);
+    match light.light_type {
+        LightType::Point | LightType::Spot if footprint_radius > 0.0 => {
+            let pad = DVec3::splat(f64::from(footprint_radius));
+            (min - pad, max + pad)
+        }
+        _ => (min, max),
+    }
+}
+
+/// World bounds of a chart's texel centres, padded by
+/// `AABB_PADDING_METERS` to absorb `f32` rounding in the texel walk. The pad
+/// (0.5 m, borrowed from `affinity_grid`) is deliberately generous and only
+/// makes a reach test more conservative; a smaller pad would cull more, and
+/// must still exceed the `f32` rounding error of the texel positions.
+pub(crate) fn chart_texel_bounds(chart: &Chart) -> Option<(Vec3, Vec3)> {
+    if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+        return None;
+    }
+    // Texel centres are affine in (tx, ty), so the corner texels bound them.
+    let (width, height) = chart_interior_dims(chart);
+    let corners = [
+        (0, 0),
+        (width - 1, 0),
+        (0, height - 1),
+        (width - 1, height - 1),
+    ]
+    .map(|(tx, ty)| chart_texel_world_position(chart, tx, ty));
+    let pad = Vec3::splat(AABB_PADDING_METERS);
+    let min = corners
+        .iter()
+        .copied()
+        .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+    let max = corners
+        .iter()
+        .copied()
+        .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+    Some((min - pad, max + pad))
+}
+
+/// Whether any texel inside `bounds` may receive a direct term from `light`.
+/// Every falloff model is zero beyond `falloff_range`, so a point or spot
+/// light reaches no texel farther than that; a directional light reaches all.
+/// A chart with no texels is never reached.
+pub(crate) fn light_may_reach(light: &MapLight, bounds: Option<(Vec3, Vec3)>) -> bool {
+    let Some((min, max)) = bounds else {
+        return false;
+    };
+    match light.light_type {
+        LightType::Directional => true,
+        LightType::Point | LightType::Spot => {
+            let origin = light.origin.as_vec3();
+            let nearest = origin.clamp(min, max);
+            origin.distance(nearest) <= light.falloff_range.max(1.0e-4)
+        }
+    }
 }
 
 /// Bake one light's contribution layer across the shared atlas.

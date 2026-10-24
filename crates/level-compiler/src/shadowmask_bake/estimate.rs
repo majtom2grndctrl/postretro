@@ -91,7 +91,7 @@ fn axis_samples(segment: &Range<u32>) -> Vec<u32> {
 /// emitted sub-face whose own segment holds it. Own segments are disjoint, so
 /// no parent-grid texel is sampled twice. A piece the polygon missed has no
 /// sub-face and no sample.
-fn sample_points(cut: &CutParent, shared: &SharedAtlas<'_>) -> Vec<(usize, i32, i32)> {
+pub(super) fn sample_points(cut: &CutParent, shared: &SharedAtlas<'_>) -> Vec<(usize, i32, i32)> {
     let mut points = Vec::new();
     for (k, [u, v]) in cut.own.iter().enumerate() {
         let face = cut.faces.start + k;

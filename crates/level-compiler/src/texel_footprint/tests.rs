@@ -1018,3 +1018,181 @@ fn clip_prepass_reproduces_a_room_bake_bit_for_bit() {
     );
     assert!(skipped > 0 && skipped < total);
 }
+
+// --- AC 9: a `_lightmap_scale` face ------------------------------------------
+
+/// A `_lightmap_scale` region changes only a chart's texel pitch; this face's
+/// is four times the default.
+const SCALED_PITCH: f32 = 4.0 * PITCH;
+
+/// A 48×48-texel floor at `pitch`, centred on `(cx, 0, 0)`.
+fn receiver_at(cx: f32, pitch: f32) -> Receiver {
+    Receiver {
+        x0: cx - 24.0 * pitch,
+        z0: -24.0 * pitch,
+        width: 48,
+        height: 48,
+        pitch,
+    }
+}
+
+// P14: one hard light over an unscaled face and a face four times coarser,
+// each with a contact plate, baked on one worker in both walk orders so one
+// thread's footprint memo is built on one face's pitch and read on the
+// other's. Each face's contact ramp is within 0.2 texels of the floor width,
+// so both span the same texel count and the world width scales with the
+// pitch; every layer record is byte-identical across the two orders.
+#[test]
+fn a_scaled_face_ramps_over_the_same_texels_in_either_walk_order() {
+    use crate::bake_control::BakeControl;
+    use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
+    use crate::lightmap_bake::BlockLayout;
+    use crate::lightmap_layer::{LayerTexel, SharedAtlas, bake_light_layer_chart_controlled};
+
+    let faces = [
+        (receiver_at(-1.5, PITCH), 20.0f32),
+        (receiver_at(5.0, SCALED_PITCH), 200.0),
+    ];
+    let light = hard_point([0.0, 2.0, 0.0]);
+    let mut scene = SceneBuilder::default();
+    let mut edges = Vec::new();
+    for (receiver, yaw_deg) in &faces {
+        receiver.add_floor(&mut scene);
+        // The plate scales with the face, and its edge crosses both faces at
+        // the same sub-texel phase, lit side toward the light.
+        let s = receiver.pitch / PITCH;
+        let yaw = yaw_deg.to_radians();
+        let anchor = Vec3::new(
+            receiver.x0 + 24.3 * receiver.pitch,
+            0.0,
+            receiver.z0 + 24.6 * receiver.pitch,
+        );
+        scene.oriented_box(
+            anchor,
+            yaw,
+            Vec3::new(-4.0 * s, CONTACT_GAP, -2.0 * s),
+            Vec3::new(0.0, CONTACT_GAP + 0.004, 2.0 * s),
+        );
+        edges.push(plate_shadow_edge(
+            receiver,
+            &light,
+            anchor,
+            yaw,
+            CONTACT_GAP,
+        ));
+    }
+    let fixture = Fixture::new(scene, faces[0].0);
+
+    let charts = [faces[0].0.chart(), faces[1].0.chart()];
+    let placements = [
+        ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        },
+        ChartPlacement {
+            x: charts[0].width_texels,
+            y: 0,
+            layer: 0,
+        },
+    ];
+    let atlas_width = charts[0].width_texels + charts[1].width_texels;
+    let atlas_height = charts[0].height_texels.max(charts[1].height_texels);
+    let layout = BlockLayout::whole_layers(atlas_width, atlas_height, &placements, 2);
+    let shared = SharedAtlas {
+        charts: &charts,
+        placements: &placements,
+        atlas_width,
+        atlas_height,
+        layout: &layout,
+    };
+    // A fresh one-thread pool per order, so its footprint memo starts empty
+    // and the first face walked builds it.
+    let bake_in = |order: [usize; 2]| -> [Vec<LayerTexel>; 2] {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("one-worker pool")
+            .install(|| {
+                let mut records: [Vec<LayerTexel>; 2] = Default::default();
+                for face in order {
+                    records[face] = bake_light_layer_chart_controlled(
+                        &light,
+                        &shared,
+                        face,
+                        &fixture.bvh,
+                        &fixture.primitives,
+                        &fixture.geometry,
+                        DEFAULT_AREA_SAMPLE_COUNT,
+                        true,
+                        &BakeControl::unrestricted(),
+                    );
+                }
+                records
+            })
+    };
+    let (forward, backward) = (bake_in([0, 1]), bake_in([1, 0]));
+
+    let mut ramps = Vec::new();
+    for (face, ((receiver, _), edge)) in faces.iter().zip(&edges).enumerate() {
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&forward[face]),
+            bytemuck::cast_slice::<_, u8>(&backward[face]),
+            "face {face}: layer records depend on walk order"
+        );
+        let mut grid = VisibilityGrid::new(receiver.width, receiver.height);
+        for texel in &forward[face] {
+            let x = texel.idx % atlas_width - placements[face].x - CHART_PADDING_TEXELS;
+            let y = texel.idx / atlas_width - CHART_PADDING_TEXELS;
+            grid.set(x, y, texel.raw_visibility);
+        }
+        let exact = exact_edge_grid(receiver, edge);
+        let (baked, profiles) = mean_ramp_width(&grid, edge, (-30.0, 30.0), 3.0);
+        let (floor, floor_profiles) = mean_ramp_width(&exact, edge, (-30.0, 30.0), 3.0);
+        println!(
+            "face {face} at {} m pitch: ramp {baked:.3} vs floor {floor:.3} texels over \
+             {profiles} profiles; {:.4} m in the world",
+            receiver.pitch,
+            baked * f64::from(receiver.pitch)
+        );
+        assert_eq!(
+            profiles, floor_profiles,
+            "both grids cover the same profiles"
+        );
+        assert!(profiles > 100, "face {face}: the edge crosses the grid");
+        assert_eq!(
+            zero_one_jumps(&grid),
+            0,
+            "face {face}: single-texel 0→1 jump"
+        );
+        assert!(
+            (baked - floor).abs() <= 0.2,
+            "face {face}: mean ramp {baked} vs floor width {floor}"
+        );
+        ramps.push((baked, floor, f64::from(receiver.pitch)));
+    }
+    // The same edge phase and angle give both faces one floor width, so the
+    // two ramps span the same texels and their world widths differ by the
+    // pitch ratio.
+    let [
+        (unscaled, floor, pitch),
+        (scaled, scaled_floor, scaled_pitch),
+    ] = ramps[..]
+    else {
+        unreachable!("two faces");
+    };
+    assert!(
+        (floor - scaled_floor).abs() < 0.01,
+        "{floor} vs {scaled_floor}"
+    );
+    assert!(
+        (unscaled - scaled).abs() <= 0.4,
+        "{unscaled} vs {scaled} texels"
+    );
+    let world_ratio = (scaled * scaled_pitch) / (unscaled * pitch);
+    let pitch_ratio = scaled_pitch / pitch;
+    assert!(
+        (world_ratio / pitch_ratio - 1.0).abs() <= 0.4 / unscaled,
+        "world ramp ratio {world_ratio} vs pitch ratio {pitch_ratio}"
+    );
+}

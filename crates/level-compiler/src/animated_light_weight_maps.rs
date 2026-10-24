@@ -23,7 +23,7 @@ use crate::chart_raster::ChartPlacement;
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{BlockLayout, Chart, CutParent};
 use crate::map_data::MapLight;
-use crate::texel_footprint::EmbeddedEmitters;
+use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut};
 use crate::texel_step_detector::{CutSites, TexelStepReport, merge_chart_steps};
 
 mod face_bake;
@@ -415,6 +415,34 @@ pub(crate) fn bake_animated_light_weight_maps_with(
     embedded_emitters: &EmbeddedEmitters,
     control: &BakeControl,
 ) -> Result<WeightMapBake, AnimatedWeightMapBakeError> {
+    bake_weight_maps_on(
+        inputs,
+        |light| ProbeEarlyOut::for_light(embedded_emitters.is_embedded(light)),
+        control,
+    )
+}
+
+/// The weight maps floored with the probe early-out off
+/// ([`ProbeEarlyOut::Off`]) for every light: the full-set reference a
+/// measurement holds the floored bake against, as
+/// [`bake_light_layer_full_sets`](crate::lightmap_layer::bake_light_layer_full_sets)
+/// is for the static layers.
+#[cfg(test)]
+pub(crate) fn bake_animated_light_weight_maps_full_sets(
+    inputs: &WeightMapInputs<'_>,
+    control: &BakeControl,
+) -> Result<WeightMapBake, AnimatedWeightMapBakeError> {
+    assert!(inputs.penumbra_floor, "the full set is a floored bake");
+    bake_weight_maps_on(inputs, |_| ProbeEarlyOut::Off, control)
+}
+
+/// The bake, with each light's footprint early-out (by position in
+/// `inputs.lights`) chosen by `early_out`; the floor-off sampler ignores it.
+fn bake_weight_maps_on(
+    inputs: &WeightMapInputs<'_>,
+    early_out: impl Fn(usize) -> ProbeEarlyOut + Sync,
+    control: &BakeControl,
+) -> Result<WeightMapBake, AnimatedWeightMapBakeError> {
     if inputs.chunk_section.chunks.is_empty() {
         return Ok(WeightMapBake {
             section: AnimatedLightWeightMapsSection::empty(),
@@ -468,8 +496,7 @@ pub(crate) fn bake_animated_light_weight_maps_with(
         .par_iter()
         .map(|&(face, light)| {
             let _permit = control.governor().enter();
-            let embedded = embedded_emitters.is_embedded(light as usize);
-            let baked = setups[face].bake_light(inputs, &sites, light, embedded);
+            let baked = setups[face].bake_light(inputs, &sites, light, early_out(light as usize));
             control.advance(1);
             baked
         })

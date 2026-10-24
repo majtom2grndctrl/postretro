@@ -16,7 +16,7 @@ use crate::chart_raster::{
 use crate::lightmap_bake::{Chart, light_contribution_and_direction, segment_clear};
 use crate::map_data::ShadowType;
 use crate::texel_footprint::{
-    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+    ClipBand, ClipReach, ProbeEarlyOut, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };
 use crate::texel_step_detector::{ChartSteps, CutSites, TexelRect, scan_chart};
 
@@ -198,7 +198,8 @@ impl<'a> FaceSetup<'a> {
     }
 
     /// Bake `light_index` over every chunk of the face that lists it, then
-    /// scan its visibility for texel steps.
+    /// scan its visibility for texel steps. `early_out` is the light's
+    /// footprint early-out, from its embedded-emitter flag in production.
     ///
     /// The grid holds the light's raw visibility before weighting over the
     /// texels those chunks cover, absent where it contributes no weight. The
@@ -210,7 +211,7 @@ impl<'a> FaceSetup<'a> {
         inputs: &WeightMapInputs<'_>,
         sites: &CutSites<'_>,
         light_index: u32,
-        embedded_emitter: bool,
+        early_out: ProbeEarlyOut,
     ) -> LightBake {
         let chart = self.chart;
         let light = &inputs.lights[light_index as usize];
@@ -260,11 +261,11 @@ impl<'a> FaceSetup<'a> {
         let mut grid = vec![f32::NAN; (region.width * region.height) as usize];
         detector += started.elapsed();
 
-        let sampler = TexelSampler::new(
+        let sampler = TexelSampler::with_early_out(
             light,
             inputs.area_sample_count,
             inputs.penumbra_floor,
-            embedded_emitter,
+            early_out,
         );
         let mut entries = Vec::new();
         for (position, chunk) in self.chunks.iter().enumerate() {

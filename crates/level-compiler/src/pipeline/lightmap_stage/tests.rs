@@ -1680,4 +1680,6 @@ mod penumbra_floor_tests;
 
 mod penumbra_floor_energy_tests;
 
+mod penumbra_floor_animated_energy_tests;
+
 mod texel_step_tests;

@@ -33,12 +33,12 @@ use crate::pipeline::atlas_stage::{AtlasStageInputs, prepare_atlas_stage};
 use crate::{geometry, parse, partition, portals, visibility};
 
 /// A changed texel moved by more than this.
-const CHANGE_EPSILON: f32 = 1.0e-4;
+pub(super) const CHANGE_EPSILON: f32 = 1.0e-4;
 /// An edge texel has an axis neighbour on its parent grid whose floor-off
 /// visibility differs by more than this.
 const EDGE_DIFFERENCE: f32 = 0.05;
-const BUCKETS: [&str; 7] = ["0", "1", "2", "3", "4-8", ">8", "no edge"];
-const PRLS_ENV: &str = "POSTRETRO_PENUMBRA_ENERGY_PRLS";
+pub(super) const BUCKETS: [&str; 7] = ["0", "1", "2", "3", "4-8", ">8", "no edge"];
+pub(super) const PRLS_ENV: &str = "POSTRETRO_PENUMBRA_ENERGY_PRLS";
 
 /// `r + g + b` summed over every stored id-22 texel of a PRL (BC6H decoded),
 /// and the texel count.
@@ -84,35 +84,35 @@ fn prl_irradiance(path: &str) -> (f64, usize) {
 
 /// One covered texel of one light, both settings.
 #[derive(Clone, Copy)]
-struct Record {
-    face: u32,
-    parent: u32,
+pub(super) struct Record {
+    pub(super) face: u32,
+    pub(super) parent: u32,
     /// Parent-grid texel.
-    px: u32,
-    py: u32,
-    off: f32,
-    on: f32,
+    pub(super) px: u32,
+    pub(super) py: u32,
+    pub(super) off: f32,
+    pub(super) on: f32,
     /// Unshadowed contribution, `r + g + b` (the bake's luminance).
-    lum: f32,
-    world: Vec3,
-    normal: Vec3,
+    pub(super) lum: f32,
+    pub(super) world: Vec3,
+    pub(super) normal: Vec3,
 }
 
 impl Record {
-    fn delta(&self) -> f32 {
+    pub(super) fn delta(&self) -> f32 {
         self.on - self.off
     }
 }
 
 /// Each face's parent grid: a dense id, the face's origin on it, its size.
 #[derive(Clone, Copy)]
-struct FaceGrid {
-    parent: u32,
-    origin: [u32; 2],
+pub(super) struct FaceGrid {
+    pub(super) parent: u32,
+    pub(super) origin: [u32; 2],
     dims: [u32; 2],
 }
 
-fn face_grids(
+pub(super) fn face_grids(
     shared: &SharedAtlas<'_>,
     cut_parents: &[crate::lightmap_bake::CutParent],
 ) -> Vec<FaceGrid> {
@@ -231,7 +231,10 @@ fn join(
 /// Per record, its 4-connected distance in texels to the nearest floor-off
 /// edge texel on its parent grid (`None`: no edge on that grid), and to the
 /// grid's border. Computed only for grids holding a changed texel.
-fn edge_distances(records: &[Record], grids: &[FaceGrid]) -> (Vec<Option<u32>>, Vec<u32>) {
+pub(super) fn edge_distances(
+    records: &[Record],
+    grids: &[FaceGrid],
+) -> (Vec<Option<u32>>, Vec<u32>) {
     let mut by_parent: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     for (k, r) in records.iter().enumerate() {
         by_parent.entry(r.parent).or_default().push(k);
@@ -334,7 +337,7 @@ fn class(v: f32) -> usize {
 }
 
 #[derive(Default, Clone, Copy)]
-struct Histogram {
+pub(super) struct Histogram {
     count: [usize; 7],
     abs_energy: [f64; 7],
     net_energy: [f64; 7],
@@ -343,7 +346,7 @@ struct Histogram {
 }
 
 impl Histogram {
-    fn add(&mut self, r: &Record, distance: Option<u32>) {
+    pub(super) fn add(&mut self, r: &Record, distance: Option<u32>) {
         let b = bucket(distance);
         self.count[b] += 1;
         self.abs_energy[b] += f64::from(r.delta().abs() * r.lum);
@@ -351,7 +354,7 @@ impl Histogram {
         self.by_class[b][class(r.off)] += 1;
     }
 
-    fn print(&self, title: &str) {
+    pub(super) fn print(&self, title: &str) {
         println!("  {title}");
         println!(
             "    {:>8} {:>9} {:>14} {:>14}   off=0 / frac / off=1",
@@ -380,23 +383,27 @@ struct Gain {
 }
 
 /// The production front end's products up to the lightmap stage.
-struct Front {
-    args: crate::Args,
-    map_data: crate::map_data::MapData,
-    config: crate::lightmap_bake::LightmapConfig,
-    geo: crate::geometry::GeometryResult,
-    bvh: bvh::bvh::Bvh<f32, 3>,
-    primitives: Vec<crate::bvh_build::BvhPrimitive>,
-    prepared: crate::lightmap_bake::PreparedAtlas,
+pub(super) struct Front {
+    pub(super) args: crate::Args,
+    pub(super) map_data: crate::map_data::MapData,
+    pub(super) config: crate::lightmap_bake::LightmapConfig,
+    pub(super) geo: crate::geometry::GeometryResult,
+    pub(super) bvh: bvh::bvh::Bvh<f32, 3>,
+    pub(super) primitives: Vec<crate::bvh_build::BvhPrimitive>,
+    /// Over the cut geometry when a face was cut, as the chunk builder reads it.
+    pub(super) bvh_section: postretro_level_format::bvh::BvhSection,
+    pub(super) prepared: crate::lightmap_bake::PreparedAtlas,
     /// Source indices of the lights the stage bakes layers for, in its order.
-    layer_lights: Vec<usize>,
+    pub(super) layer_lights: Vec<usize>,
+    /// The namespaces leave these out.
+    pub(super) buried: BuriedLights,
 }
 
 /// Parse `map` with the `--release` CLI at `density` and run the front end
 /// as `pipeline::run_after_parsing` runs it up to the lightmap stage.
 /// combat-demo's data script names no light, so its membership manifest
 /// leaves the light set alone and is skipped.
-fn front_end(map: &str, density: &str, baked: &std::path::Path) -> Front {
+pub(super) fn front_end(map: &str, density: &str, baked: &std::path::Path) -> Front {
     let map_path = crate::fixture_pipeline::fixture_path(map);
     let args = crate::parse_args_from(
         [
@@ -421,7 +428,7 @@ fn front_end(map: &str, density: &str, baked: &std::path::Path) -> Front {
     let mut vis_result = visibility::encode_vis(&result.tree, &exterior_leaves);
     let (mut geo, mut face_brushes) =
         geometry::extract_geometry_with_brushes(&result.faces, &result.tree, &exterior_leaves);
-    let (mut bvh, mut primitives, bvh_section) =
+    let (mut bvh, mut primitives, mut bvh_section) =
         crate::bvh_build::build_bvh(&geo).expect("BVH builds");
     let control = BakeControl::unrestricted();
     let atlas = prepare_atlas_stage(
@@ -444,6 +451,7 @@ fn front_end(map: &str, density: &str, baked: &std::path::Path) -> Front {
     if let Some(rebuilt) = atlas.rebuilt {
         bvh = rebuilt.bvh;
         primitives = rebuilt.primitives;
+        bvh_section = rebuilt.bvh_section;
     }
     let layer_lights = static_lights
         .entries()
@@ -459,8 +467,10 @@ fn front_end(map: &str, density: &str, baked: &std::path::Path) -> Front {
         geo,
         bvh,
         primitives,
+        bvh_section,
         prepared: atlas.prepared,
         layer_lights,
+        buried,
     }
 }
 
@@ -484,6 +494,7 @@ fn penumbra_floor_energy_on_a_real_map() {
         primitives,
         prepared,
         layer_lights,
+        ..
     } = &front;
     let layer_lights: Vec<(usize, &MapLight)> = layer_lights
         .iter()

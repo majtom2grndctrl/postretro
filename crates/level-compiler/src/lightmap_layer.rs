@@ -65,8 +65,9 @@ pub const LAYER_FORMAT_VERSION: u32 = 10;
 /// invalidates every section entry — `section_input_hash` folds
 /// `LAYER_FORMAT_VERSION` directly, so the section key changes with it.
 /// Bump `LIGHTMAP_SECTION_VERSION` only when the composite/dilate/encode
-/// pipeline, the entry layout or `LightmapSection::to_bytes` format changes
-/// independently.
+/// pipeline, the entry layout, `LightmapSection::to_bytes` format or the
+/// texel-step detector's verdicts change independently (the entry stores its
+/// report; only the threshold is keyed).
 ///
 /// v4: id 22 v3, per-cell blocks sliced from each encoded bake layer.
 ///
@@ -88,7 +89,8 @@ pub struct LayerTexel {
     /// layer is carried by `LightmapLayer.target_layer`, so this index is NOT a
     /// global index across layers.
     pub idx: u32,
-    /// Raw soft visibility for this light at this analytically covered texel.
+    /// Raw per-light visibility at this analytically covered texel, filtered
+    /// over the receiver footprint unless `--no-penumbra-floor`.
     pub raw_visibility: f32,
 }
 

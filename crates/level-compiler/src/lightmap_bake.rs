@@ -188,7 +188,7 @@ pub struct LightmapConfig {
     pub direction_texel_scale: u32,
     /// Receiver footprint floor (`texel_footprint`): each texel's per-light
     /// visibility is filtered over a one-texel cone footprint so no baked edge
-    /// steps between texels. Off bakes today's centre-point visibility.
+    /// steps between texels. Off bakes centre-point visibility.
     /// Default [`crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT`].
     pub penumbra_floor: bool,
 }
@@ -215,8 +215,9 @@ pub struct LightmapBakeOutput {
 /// edge dilation, before any irradiance/direction byte encoding.
 ///
 /// This is the **byte-identity comparison seam** for the incremental-bake cache:
-/// both the frozen monolithic oracle ([`reference::bake_monolithic_atlas`])
-/// and the per-light layer compositor ([`crate::lightmap_layer::composite_layers`]) yield a
+/// both the monolithic oracle ([`reference::bake_monolithic_atlas`], the
+/// uncached, unlayered walk over the shared texel sampler) and the per-light
+/// layer compositor ([`crate::lightmap_layer::composite_layers`]) yield a
 /// `CompositedAtlas`, and the cache's exactness gate asserts the two are equal
 /// here — before the lossy BC6H encode. Equality at this seam means the warm
 /// composite reproduces the cold bake bit-for-bit.
@@ -659,10 +660,10 @@ pub(crate) fn light_texel_is_covered(
 
 /// One light's contribution to a single atlas texel: the shadowed irradiance
 /// (RGB) and the unnormalized weighted direction (`to_light * luminance`),
-/// the exact two terms the frozen monolithic reference accumulates per light
+/// the exact two terms the monolithic oracle accumulates per light
 /// before the per-texel `irr` sum and `weighted_dir.normalize()`.
 ///
-/// Factored out so the frozen reference and generic per-light consumers share
+/// Factored out so the monolithic oracle and generic per-light consumers share
 /// byte-identical math — the cache's bit-for-bit composite gate depends on both
 /// paths producing the same float terms in the same order.
 ///
@@ -687,7 +688,7 @@ pub(crate) fn light_texel_contribution(
     (irr, weighted_dir)
 }
 
-/// [`light_texel_contribution_and_visibility_with`] fed today's centre-point
+/// [`light_texel_contribution_and_visibility_with`] fed the centre-point
 /// `soft_visibility`: the floor-disabled texel path at one texel, without a
 /// chart frame.
 #[cfg(test)]
@@ -785,10 +786,10 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-// `soft_visibility` and its sampling helpers are the Task-2 deliverable of
-// `baked-soft-lightmap-shadows`. The static lightmap bake (Task 3) calls
-// `soft_visibility` in the per-texel loop above; the animated weight-map and SH
-// bounce bakers (Tasks 4/4b) wrap their own `segment_clear` as the trace closure.
+// `soft_visibility` and `soft_visibility_with` are the centre-point sampler.
+// `TexelSampler::Centre` (floor off) and the probe-point bakers (SH bounce,
+// direct SH, scatter) call them, each wrapping its own `segment_clear` as the
+// trace closure. The floored texel path is `texel_footprint`.
 
 /// Probe samples traced before escalating. Tracing this many first lets the
 /// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;

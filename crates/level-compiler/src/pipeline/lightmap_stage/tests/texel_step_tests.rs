@@ -117,7 +117,7 @@ fn floor(size: f32) -> GeometryResult {
     geometry
 }
 
-/// A 6 m floor, face 0, under a 2 m plate resting 2 mm above it, face 1.
+/// A 6 m floor, face 0, under a 2 m plate resting 5 mm above it, face 1.
 fn contact_geometry() -> GeometryResult {
     let mut geometry = floor(6.0);
     push_quad(&mut geometry, 2.0, 2.0, 2.0, PLATE_HEIGHT, 0);

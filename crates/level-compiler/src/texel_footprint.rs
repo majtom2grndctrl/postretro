@@ -14,7 +14,8 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{LightType, MapLight};
 
-/// Whether a bake floors texel visibility when nothing says otherwise.
+/// Whether a bake floors texel visibility when nothing says otherwise. The CLI
+/// only offers `--no-penumbra-floor`, so this must stay `true`.
 pub(crate) const PENUMBRA_FLOOR_DEFAULT: bool = true;
 
 /// Footprint samples traced before escalating: the texel centre plus an

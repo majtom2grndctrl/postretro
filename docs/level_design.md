@@ -29,7 +29,7 @@ bin/prl-build <content-root>/maps/input.map \
 | `-o <PATH>` | same as input, `.prl` extension | Where to write the compiled file |
 | `--baked-root <DIR>` | derived from the map's location | The directory that **contains** `materials/` — where the compiled texture sidecars go. Point it at your project's `baked/`. See below. |
 | `--cache-dir <DIR>` | `.build-caches/prl-cache` beside the map | Disposable compiler scratch. Name it, or it lands among your `.map` sources. |
-| `--lightmap-density <METERS>` | `0.04` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. |
+| `--lightmap-density <METERS>` | `0.04` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. The worldspawn key `_lightmap_density` (meters per texel, smaller = finer) sets the same thing per map; the flag overrides it. |
 | `--sh-probe-spacing <METERS>` | `1.0` | How dense the indirect lighting probes are. `2.0` is fine for large open areas. |
 | `-v`, `--verbose` | off | Prints each compilation step — useful when something goes wrong |
 
@@ -64,7 +64,7 @@ Radiates light in all directions from a single point.
 | `light` | integer | `300` | Brightness |
 | `_color` | RGB | `255 255 255` | Light color |
 | `_falloff_range` | integer | **required** | How far the light reaches, in map units. The compiler will error if this is missing. |
-| `_light_size` | float | `~9.84` (≈0.25 m) | Emitter radius in map units (inches), like `_falloff_range`, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default (~0.25 m). `0` gives the crispest edge the lightmap allows: a shadow edge always ramps over about one lightmap texel, so it never shows texel stair-steps. For crisper contact shadows, set a smaller worldspawn `_lightmap_density` (finer texels). Point/spot only — ignored on `light_sun`. Bake-only (not stored at runtime). |
+| `_light_size` | float | `~9.84` (≈0.25 m) | Emitter radius in map units (inches), like `_falloff_range`, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default (~0.25 m). `0` gives the crispest edge the lightmap allows: a baked (lightmap) shadow edge ramps over about one lightmap texel, so it never shows texel stair-steps. For crisper contact shadows, use a finer lightmap density (worldspawn `_lightmap_density`, or `--lightmap-density`). Point/spot only — ignored on `light_sun`. Bake-only (not stored at runtime). |
 | `delay` | 0/1/2 | `0` | Falloff shape: `0` = linear, `1` = inverse (1/x), `2` = inverse squared (1/x²) |
 | `style` | integer | `0` | Preset flicker/pulse animation — see the style table below |
 | `_phase` | float | `0.0` | Shifts the animation cycle (0.0–1.0). Set different values on nearby lights sharing the same style so they don't all pulse together. |
@@ -77,7 +77,7 @@ Radiates light in all directions from a single point.
 | `_dynamic` | 0/1 | `0` | `1` = dynamic light (runs at runtime, not baked). Use for lights that change during gameplay. |
 | `_bake_only` | 0/1 | `0` | `1` = contributes to the baked lightmap and SH volume only; no runtime presence. Good for ambient fill that doesn't need to affect gameplay. |
 
-**Static vs. dynamic:** By default, lights are baked into the lightmap and indirect lighting volume at compile time — they're essentially free at runtime and cast soft baked shadows (penumbra width controlled by `_light_size`/`_angular_diameter`; `0` gives the crispest edge the lightmap allows, about one texel wide, and a smaller worldspawn `_lightmap_density` (finer texels) makes it crisper still). Set `_dynamic 1` if you need a light to move, change intensity during play, or be spawned by a script.
+**Static vs. dynamic:** By default, lights are baked into the lightmap and indirect lighting volume at compile time — they're essentially free at runtime and cast soft baked shadows (penumbra width controlled by `_light_size`/`_angular_diameter`; `0` gives the crispest edge the lightmap allows, about one texel wide, and a finer lightmap density (worldspawn `_lightmap_density`, or `--lightmap-density`) makes it crisper still). Set `_dynamic 1` if you need a light to move, change intensity during play, or be spawned by a script.
 
 **Keep static lights out of solid.** A static `light` or `light_spot` whose origin sits inside a brush is dropped at compile time, and the compiler warns, naming the entity. It lights nothing, has no runtime presence, and won't match `getMapEntities("light", …)`. A light flush against a brush face is fine. If you see the warning, move the light into open space. Dynamic lights and `light_sun` are never dropped this way.
 
@@ -102,7 +102,7 @@ A single directional light that hits everything from the same angle, like sunlig
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `angles` | angles | `"-90 0 0"` | Direction as `"pitch yaw roll"` in degrees |
-| `_angular_diameter` | float | `0.5` | Angular size of the sun disc in degrees, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default. `0` gives parallel rays and the crispest edge the lightmap allows: a shadow edge always ramps over about one lightmap texel, so it never shows texel stair-steps. For crisper contact shadows, set a smaller worldspawn `_lightmap_density` (finer texels). `_light_size` does not apply to directional lights. Bake-only. |
+| `_angular_diameter` | float | `0.5` | Angular size of the sun disc in degrees, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default. `0` gives parallel rays and the crispest edge the lightmap allows: a baked (lightmap) shadow edge ramps over about one lightmap texel, so it never shows texel stair-steps. For crisper contact shadows, use a finer lightmap density (worldspawn `_lightmap_density`, or `--lightmap-density`). `_light_size` does not apply to directional lights. Bake-only. |
 
 All shared `light` keys (`light`, `_color`, `_falloff_range`, `delay`, `style`, `_phase`, `brightness_curve`, `color_curve`, `direction_curve`, `period_ms`, `_curve_phase`, `_start_inactive`, `_dynamic`, `_bake_only`, `_animated`) apply. (`_falloff_range` and `_light_size` aside, `light_sun` ignores distance falloff and emitter radius.)
 

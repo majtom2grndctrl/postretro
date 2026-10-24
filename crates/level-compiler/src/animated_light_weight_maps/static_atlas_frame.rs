@@ -147,7 +147,8 @@ pub(super) fn chunk_atlas_rect(
 
     // Clamp before `f32 as u32`: a misplaced chart can put coordinates below 0,
     // and `(-n as u32)` saturates to 0 (wrong). Clamping pins rogue rects to
-    // the atlas edge; the interior-check loop in `bake_one_chunk` skips out-of-range texels.
+    // the atlas edge; `bake_face` clamps each chunk's span to the chart interior,
+    // so out-of-range texels stay empty.
     let atlas_w_f = atlas_width as f32;
     let atlas_h_f = atlas_height as f32;
     let fx_min = fx_min_unclamped.clamp(0.0, atlas_w_f);

@@ -744,10 +744,11 @@ pub struct Args {
     /// triggering a re-bake/rebuild of each affected stage. Default
     /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     soft_shadow_samples: u32,
-    /// Receiver footprint floor on static lightmap texels
-    /// (`LightmapConfig::penumbra_floor`). On unless `--no-penumbra-floor`,
-    /// which bakes centre-point visibility for before/after comparison.
-    /// Folds into every lightmap-layer key, so toggling it re-bakes.
+    /// Receiver footprint floor on static lightmap texels and on the animated
+    /// weight maps (`LightmapConfig::penumbra_floor`). On unless
+    /// `--no-penumbra-floor`, which bakes centre-point visibility for
+    /// before/after comparison. Folds into every lightmap-layer key and the
+    /// `animated_lm_weight_maps` key, so toggling it re-bakes both.
     penumbra_floor: bool,
     /// SDF occluder-atlas voxel edge length in meters. Overrides
     /// `sdf_bake::DEFAULT_VOXEL_SIZE_METERS` for this run.

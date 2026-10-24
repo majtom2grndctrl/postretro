@@ -1619,7 +1619,8 @@ fn run_after_parsing(
         fused_elapsed.saturating_sub(shadowmask_elapsed),
     ));
     // A sub-line of the lightmap bake, not a stage: the texel-step detector's
-    // time summed over workers, which bounds its share of the line above.
+    // CPU time summed over workers, so it can exceed the wall time of the line
+    // above.
     timings.push(("  TexelSteps", texel_step_elapsed));
     if !static_baked_lights.is_empty() && !face_placements.is_empty() {
         reporter.finish_stage(StageId::LightmapBake);
@@ -1735,8 +1736,8 @@ fn run_after_parsing(
         stage_start,
         animated_light_weight_maps_section.is_some(),
     );
-    // As under the lightmap bake: the weight-map detector's time summed over
-    // workers, bounding its share of the line above.
+    // As under the lightmap bake: the weight-map detector's CPU time summed
+    // over workers, so it can exceed the wall time of the line above.
     timings.push(("  TexelSteps", weight_map_step_elapsed));
 
     // Drop chunks the bake found unlit before sizing the animated atlas: the

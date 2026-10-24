@@ -181,7 +181,8 @@ pub fn translate_light(
     // absent KVP takes it directly (NOT through `map_scale`); an authored value is
     // `authored × map_scale`. The "absent → nonzero default, authored 0 → keep 0"
     // distinction is preserved — an authored `0 × map_scale` is still `0`, so the
-    // zero-size emitter (single ray) path still fires.
+    // zero-size (point) emitter path still fires: it traces one target per
+    // footprint point, even with the penumbra floor on.
     let (light_size, angular_diameter) = match light_type {
         LightType::Point | LightType::Spot => (
             parse_optional_distance(props, "_light_size", DEFAULT_LIGHT_SIZE, map_scale)?,

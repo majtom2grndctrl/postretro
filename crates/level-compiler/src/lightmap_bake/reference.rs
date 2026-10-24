@@ -1,4 +1,5 @@
-// Frozen monolithic lightmap oracle used by byte-identity tests.
+// Monolithic (uncached, unlayered) lightmap walk over the shared texel sampler: the oracle for
+// composite and cache byte-identity tests, not an independent pin of the sampler itself.
 // See: context/lib/build_pipeline.md §Build Cache
 
 use std::cell::Cell;
@@ -24,8 +25,8 @@ use super::{
     segment_clear_remembering,
 };
 
-/// Bake the full static-light atlas and dilate — the independent monolithic
-/// side of the byte-identity comparison seam.
+/// Bake the full static-light atlas and dilate — the monolithic side of the
+/// byte-identity comparison seam.
 #[allow(clippy::too_many_arguments)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn bake_monolithic_atlas(

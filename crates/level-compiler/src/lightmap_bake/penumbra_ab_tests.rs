@@ -1,8 +1,11 @@
 // On-demand proof that the lightmap penumbra floor leaves probe-side sections alone, and its encode cost.
 // See: context/lib/build_pipeline.md §PRL section IDs
 //
-// Compile the same map `--no-cache` with a pre-change `prl-build` and with this
-// one (floored, or `--no-penumbra-floor`), then:
+// Compile the same map `--no-cache` with a baseline `prl-build` and with this
+// one (floored, or `--no-penumbra-floor`). The baseline is a `prl-build` built
+// from the commit before the receiver footprint floor (`texel_footprint`) landed;
+// find it with `git log --diff-filter=A -- crates/level-compiler/src/texel_footprint.rs`.
+// Then:
 //   POSTRETRO_PENUMBRA_BASELINE_PRL=<before.prl> POSTRETRO_PENUMBRA_AFTER_PRL=<after.prl> \
 //   cargo test -p postretro-level-compiler --bin prl-build penumbra_floor_baseline_probe -- --ignored --nocapture
 // asserts the probe sections byte-identical (either floor setting). With

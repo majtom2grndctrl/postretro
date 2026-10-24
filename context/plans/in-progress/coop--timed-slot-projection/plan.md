@@ -45,7 +45,7 @@ read at: 545c5c2f3
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Extend loss harness with independent host/client clocks, production timers, newest gate and conditioned time sync; commit failing stepped-reload reproduction | integrating executor / bounded harness worker | — | pending |
+| 1 | Extend loss harness with independent host/client clocks, production timers, newest gate and conditioned time sync; commit failing stepped-reload reproduction | integrating executor / bounded harness worker | — | done: `conditioned_reload_target_advances_between_samples` failed as intended (0 pass / 1 fail); all 248 eligible non-sample frames held. Setup assertions passed; 869-test target compiled. |
 | 2 | Add accepted sample intake, four-slot agreed-slope projection and bounded slew timeline; resets and deterministic seam tests | integrating executor | 1 | pending |
 | 3 | Integrate projection before every UI snapshot for connected clients; heat HUD and SDK documentation; UI/isolation proof | bounded UI worker / integrating executor | 2 contract | pending |
 | 4 | Extend conditioned harness across ramps, jumps, loss, clocks, caps, resets and raw readers; map every acceptance result | integrating executor / bounded harness worker | 2, 3 | pending |

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use rayon::prelude::*;
@@ -894,11 +894,12 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
 }
 
 /// Un-rotated (seed == 0) sample direction for index `i` of `count`, using the
-/// emitter's per-light-type lattice mapping. Used only to pick probe subsets
-/// (`probe_indices`, and the texel footprint's probes); the live sampling
-/// re-derives targets through `area_sample_target` with the real seed. The
-/// Point/Spot arm must stay light-independent: `SoftProbes::new` and the
-/// footprint memo key their snaps by count alone.
+/// emitter's per-light-type lattice mapping. Used only to pick emitter samples
+/// (`probe_indices`, and the texel footprint's per-texel pairing, which turns
+/// it by [`emitter_lattice_spin`]); the live sampling re-derives targets
+/// through `area_sample_target` with the real seed. The Point/Spot arm must
+/// stay light-independent: `SoftProbes::new` and the footprint memo key their
+/// lattices by count alone.
 pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),
@@ -1117,12 +1118,35 @@ pub(crate) fn area_sample_target(
     }
 }
 
+/// The fraction of a full turn `seed` rotates an emitter lattice by.
+fn lattice_seed_turn(seed: u64) -> f32 {
+    ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32
+}
+
+/// The rotation `seed` applies to an emitter's whole lattice: the direction
+/// [`area_sample_target`] uses for sample `i` is this rotation of
+/// [`probe_sample_direction`]`(light, i, count)`. The sphere lattice turns
+/// about +Y and a sun's cone about its axis, each by the azimuth between this
+/// seed's turn and seed 0's (which the lattice offset makes non-zero).
+pub(crate) fn emitter_lattice_spin(light: &MapLight, seed: u64) -> Quat {
+    let angle = (lattice_seed_turn(seed) - lattice_seed_turn(0)) * std::f32::consts::TAU;
+    match light.light_type {
+        // `fibonacci_sphere_sample` adds the angle to an azimuth that runs
+        // from +X toward +Z: a negative turn about +Y.
+        LightType::Point | LightType::Spot => Quat::from_rotation_y(-angle),
+        LightType::Directional => {
+            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
+            Quat::from_axis_angle((-aim).normalize_or_zero(), angle)
+        }
+    }
+}
+
 /// Sample `i` of `count` on the unit sphere via the Fibonacci lattice, rotated by
 /// `seed`. Mirrors `sh_bake.rs::sphere_directions` so both bakers share the same
 /// low-discrepancy, RNG-free convention.
 fn fibonacci_sphere_sample(i: u32, count: u32, seed: u64) -> Vec3 {
     let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
-    let seed_offset = ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32;
+    let seed_offset = lattice_seed_turn(seed);
     let t = (i as f32 + 0.5) / count as f32;
     let y = 1.0 - 2.0 * t;
     let radius = (1.0 - y * y).max(0.0).sqrt();
@@ -1135,7 +1159,7 @@ fn fibonacci_sphere_sample(i: u32, count: u32, seed: u64) -> Vec3 {
 /// rotated by `seed`. Same RNG-free convention as `fibonacci_sphere_sample`.
 fn cone_jittered_direction(axis: Vec3, half_angle: f32, i: u32, count: u32, seed: u64) -> Vec3 {
     let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
-    let seed_offset = ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32;
+    let seed_offset = lattice_seed_turn(seed);
     let t = (i as f32 + 0.5) / count as f32;
     // Equal-area cap mapping: cos(theta) ramps linearly from the rim to the axis.
     let cos_theta = 1.0 - t * (1.0 - half_angle.cos());

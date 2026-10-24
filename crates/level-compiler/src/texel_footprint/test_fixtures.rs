@@ -9,7 +9,7 @@ use glam::{DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
-use super::{FootprintOutcome, TexelFrame, TexelSite, footprint_for, footprint_visibility};
+use super::{FootprintOutcome, TexelFrame, TexelSite, footprint_for, footprint_visibility_with};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::{BvhPrimitive, build_bvh};
 use crate::chart_raster::{
@@ -334,6 +334,41 @@ impl Fixture {
         area_sample_count: u32,
         reach_override: Option<bool>,
     ) -> Vec<Option<FootprintOutcome>> {
+        self.replay(light, area_sample_count, reach_override, true, |_, _| true)
+    }
+
+    /// The footprint's visibility at the texels `include` selects, every
+    /// sample traced (no probe early-out): the reference an early-out bake
+    /// must not snap to 0 or 1 where it is a fraction.
+    pub(super) fn footprint_reference(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+        include: impl Fn(u32, u32) -> bool,
+    ) -> VisibilityGrid {
+        let outcomes = self.replay(light, area_sample_count, None, false, include);
+        let mut grid = VisibilityGrid::new(self.receiver.width, self.receiver.height);
+        for (i, outcome) in outcomes.iter().enumerate() {
+            if let Some(outcome) = outcome {
+                let i = i as u32;
+                grid.set(
+                    i % self.receiver.width,
+                    i / self.receiver.width,
+                    outcome.visibility,
+                );
+            }
+        }
+        grid
+    }
+
+    fn replay(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+        reach_override: Option<bool>,
+        early_out: bool,
+        include: impl Fn(u32, u32) -> bool,
+    ) -> Vec<Option<FootprintOutcome>> {
         let chart = self.receiver.chart();
         let footprint = footprint_for(light, area_sample_count);
         let frame = TexelFrame::for_chart(&chart);
@@ -343,7 +378,9 @@ impl Fixture {
         for ty in 0..self.receiver.height as i32 {
             for tx in 0..self.receiver.width as i32 {
                 let world_p = chart_texel_world_position(&chart, tx, ty);
-                if !light_texel_is_covered(light, world_p, chart.normal) {
+                if !include(tx as u32, ty as u32)
+                    || !light_texel_is_covered(light, world_p, chart.normal)
+                {
                     outcomes.push(None);
                     continue;
                 }
@@ -354,7 +391,7 @@ impl Fixture {
                     frame,
                     may_clip: true,
                 };
-                outcomes.push(Some(footprint_visibility(
+                outcomes.push(Some(footprint_visibility_with(
                     light,
                     &site,
                     &footprint,
@@ -363,6 +400,7 @@ impl Fixture {
                         reach_override
                             .unwrap_or_else(|| self.clear_remembering(from, to, &clip_occluder))
                     },
+                    early_out,
                 )));
             }
         }

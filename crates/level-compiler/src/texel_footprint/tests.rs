@@ -1,7 +1,7 @@
 // Receiver footprint tests: kernel layout, contact ramps, thin poles, sample-count sweeps, walls.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 use super::test_fixtures::*;
 use super::*;
@@ -137,32 +137,140 @@ fn footprint_probes_are_the_centre_and_a_ring_within_reach() {
     }
 }
 
+// Per texel, each ring probe pairs with the emitter sample reaching farthest
+// within its 45° sector of the receiver plane, each counter-ring stratum with
+// the unclaimed sample reaching farthest against its own offset, and the
+// centre's ray to the emitter's centre stands in for the sample nearest it.
+// Emitter offsets come from the live sampler at the texel's seed, carried onto
+// the receiver along the light, so this also pins the lattice spin and the
+// projection the search folds into two vectors.
 #[test]
-fn footprint_emitter_pairing_uses_every_sample_once_and_spreads_the_probes() {
-    let point = default_point([0.0, 2.0, 0.0]);
+fn footprint_samples_pair_with_emitter_samples_along_or_against_their_offsets() {
+    use crate::lightmap_bake::{
+        RAY_EPSILON, area_sample_target, emitter_lattice_spin, hard_ray_target,
+        probe_sample_direction,
+    };
+    let point = default_point([0.4, 2.0, -0.3]);
     let mut sun = hard_sun([0.3, -1.0, 0.2]);
     sun.angular_diameter = 4.0;
+    // A wall-like receiver too, lit obliquely.
+    let floor = (Vec3::Y, TexelFrame::new(Vec3::X * PITCH, Vec3::Z * PITCH));
+    let wall = (-Vec3::X, TexelFrame::new(Vec3::Z * PITCH, Vec3::Y * (1.5 * PITCH)));
+    let sector_slack = 0.05f32.to_radians().cos();
     for light in [&point, &sun] {
         for count in [9, 16, DEFAULT_AREA_SAMPLE_COUNT, 64] {
             let footprint = TexelFootprint::build(light, count);
-            let mut emitter = footprint.emitter().to_vec();
-            emitter.sort_unstable();
-            assert_eq!(
-                emitter,
-                (0..count).collect::<Vec<_>>(),
-                "{:?} at {count}: each emitter sample pairs with one footprint sample",
+            let (mut worst_angle, mut empty_sectors) = (0.0f32, 0);
+            for texel in 0..64u64 {
+                let (normal, frame) = if texel % 2 == 0 { floor } else { wall };
+                let world_p = Vec3::new(texel as f32 * 0.07 - 2.0, 0.1, (texel % 7) as f32 * 0.3);
+                let site = TexelSite {
+                    world_p,
+                    normal,
+                    seed: texel.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                    frame,
+                    may_clip: false,
+                };
+                let axis = toward_light(light, world_p + normal * RAY_EPSILON);
+                if normal.dot(axis) < 0.05 {
+                    continue;
+                }
+                let centre = hard_ray_target(world_p, light);
+                let live = |i: u32| area_sample_target(world_p, light, site.seed, i, count);
+                let spin = emitter_lattice_spin(light, site.seed);
+                for i in 0..count {
+                    let turned = spin * probe_sample_direction(light, i, count);
+                    let live = match light.light_type {
+                        LightType::Directional => (live(i) - world_p).normalize(),
+                        LightType::Point | LightType::Spot => (live(i) - centre).normalize(),
+                    };
+                    assert!(
+                        turned.distance(live) < 1.0e-4,
+                        "{:?} sample {i}: spun lattice {turned} vs live {live}",
+                        light.light_type
+                    );
+                }
+                // Sample `i`'s emitter offset carried onto the receiver along
+                // the light, in the footprint's unrotated texel frame.
+                let (sin, cos) = footprint_rotation(site.seed);
+                let position = |i: u32| {
+                    let offset = live(i) - centre;
+                    let on_receiver = offset - axis * (normal.dot(offset) / normal.dot(axis));
+                    let texels = |pitch: Vec3| on_receiver.dot(pitch) / pitch.length_squared();
+                    let (u, v) = (texels(frame.pitch_u), texels(frame.pitch_v));
+                    Vec2::new(u * cos + v * sin, v * cos - u * sin)
+                };
+
+                let indices = footprint.emitter_indices(light, &site);
+                let mut sorted = indices.clone();
+                sorted.sort_unstable();
+                assert_eq!(
+                    sorted,
+                    (0..count).collect::<Vec<_>>(),
+                    "{:?} at {count}: each emitter sample pairs with one footprint sample",
+                    light.light_type
+                );
+                let scale = (0..count).map(|i| position(i).length()).fold(0.0, f32::max);
+                let tolerance = 1.0e-3 * scale;
+                let nearest = (0..count)
+                    .map(|i| position(i).length())
+                    .fold(f32::INFINITY, f32::min);
+                assert!(
+                    position(indices[0]).length() <= nearest + tolerance,
+                    "{:?} at {count}: the centre stands in for a sample other than the nearest",
+                    light.light_type
+                );
+                for k in 1..FOOTPRINT_PROBES {
+                    let sector = (k - 1) * RING_POSITION_STRIDE % RING_SAMPLES;
+                    let way = Vec2::from(RING_DIRECTIONS[sector]);
+                    let inside = |i: u32| {
+                        let p = position(i);
+                        i != indices[0] && p.dot(way) >= p.length() * (22.5f32.to_radians().cos() * sector_slack)
+                    };
+                    let well_inside = |i: u32| {
+                        let p = position(i);
+                        i != indices[0] && p.dot(way) * sector_slack >= p.length() * 22.5f32.to_radians().cos()
+                    };
+                    let best = (0..count)
+                        .filter(|&i| well_inside(i))
+                        .map(|i| position(i).dot(way))
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    if best == f32::NEG_INFINITY {
+                        empty_sectors += 1;
+                        continue;
+                    }
+                    assert!(
+                        inside(indices[k]) && position(indices[k]).dot(way) >= best - tolerance,
+                        "{:?} at {count}: ring probe {k} does not take its sector's farthest sample",
+                        light.light_type
+                    );
+                    worst_angle = worst_angle.max(position(indices[k]).angle_to(way).abs().to_degrees());
+                }
+                // The counter ring, from the largest stratum inward, takes the
+                // unclaimed sample reaching farthest against each offset.
+                let len = indices.len();
+                let mut claimed = indices[..FOOTPRINT_PROBES].to_vec();
+                for j in 0..(len - FOOTPRINT_PROBES).min(8) {
+                    let k = len - 1 - j;
+                    let against = -Vec2::from(footprint.offsets()[k]).normalize();
+                    let reach = |i: u32| position(i).dot(against);
+                    let best = (0..count)
+                        .filter(|i| !claimed.contains(i))
+                        .map(reach)
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    assert!(
+                        reach(indices[k]) >= best - tolerance,
+                        "{:?} at {count}: counter-ring stratum {k} does not take the farthest \
+                         unclaimed sample against its offset",
+                        light.light_type
+                    );
+                    claimed.push(indices[k]);
+                }
+            }
+            println!(
+                "{:?} at {count}: worst ring-probe emitter offset {worst_angle:.1}° off its \
+                 direction; {empty_sectors} empty sectors",
                 light.light_type
-            );
-            // The probes span the emitter's polar range: some near each pole.
-            let polar: Vec<f32> = footprint.emitter()[..FOOTPRINT_PROBES]
-                .iter()
-                .map(|&i| (i as f32 + 0.5) / count as f32)
-                .collect();
-            assert!(
-                polar.iter().any(|&t| t < 0.2) && polar.iter().any(|&t| t > 0.8),
-                "{:?} at {count}: probe emitter samples {:?}",
-                light.light_type,
-                &footprint.emitter()[..FOOTPRINT_PROBES]
             );
         }
     }
@@ -207,7 +315,11 @@ fn footprint_memo_matches_a_fresh_build_for_interleaved_lights() {
 /// `yaw` about +Y, whose one edge in view passes through `anchor`. The plate
 /// lies on the edge's −x side (local frame).
 fn plate_fixture(anchor: Vec3, yaw: f32, height: f32) -> Fixture {
-    let receiver = Receiver::centred(48, 48);
+    plate_fixture_on(Receiver::centred(48, 48), anchor, yaw, height)
+}
+
+/// [`plate_fixture`] over `receiver`.
+fn plate_fixture_on(receiver: Receiver, anchor: Vec3, yaw: f32, height: f32) -> Fixture {
     let mut scene = SceneBuilder::default();
     receiver.add_floor(&mut scene);
     scene.oriented_box(
@@ -574,6 +686,127 @@ fn mid_phase_contact_edge_never_snaps_at_any_sample_count() {
             assert_eq!(snapped, 0, "{yaw_deg}° @{count}");
         }
     }
+}
+
+// --- AC 7 for soft lights: the early-out across penumbra widths ------------
+
+/// Penumbra widths at the receiver, in texels: under, about and over the
+/// footprint's own one-texel radius.
+const SOFT_PENUMBRA_TEXELS: [f32; 3] = [0.3, 1.0, 3.0];
+
+/// The plate's height above the floor for each soft light.
+fn soft_plate_height(kind: &str) -> f32 {
+    match kind {
+        "soft point" => 0.15,
+        "soft sun" => 0.5,
+        _ => unreachable!("{kind}"),
+    }
+}
+
+/// A soft light on the plate edge's lit side, 0.3 m out and 2 m up (the sun
+/// shines from there), sized so its penumbra across an edge `height` above the
+/// floor spans about `width` texels at the receiver: a sphere of radius `ρ`
+/// at height `D` spreads it over `2ρ·h / (D − h)`, a sun of angular diameter
+/// `α` over `h·α`.
+fn soft_light_beside(kind: &str, anchor: Vec3, yaw: f32, height: f32, width: f32) -> MapLight {
+    let (_, lit) = edge_axes(yaw);
+    let floor = Vec3::new(anchor.x, 0.0, anchor.z);
+    let at = floor + lit * 0.3 + Vec3::Y * 2.0;
+    let spread = width * PITCH;
+    match kind {
+        "soft point" => point_light(
+            at.as_dvec3().to_array(),
+            spread * (at.y - height) / (2.0 * height),
+        ),
+        "soft sun" => {
+            let mut sun = hard_sun((floor - at).to_array());
+            sun.angular_diameter = (spread / height).to_degrees();
+            sun
+        }
+        _ => unreachable!("{kind}"),
+    }
+}
+
+// The probe early-out on soft lights: a ray from footprint point `p + δ` to
+// emitter point `L + ε` crosses an occluder a fraction `t` of the way to the
+// light displaced by `(1 − t)·δ + t·ε` from the centre ray, so the probes
+// split on an edge only if they form a ring in that crossing plane too.
+// Straight plate edges, swept in angle and phase, under soft point lights and
+// suns whose penumbrae span about 0.3, 1 and 3 texels. The reference is the
+// same footprint at 256 samples with every sample traced.
+#[test]
+fn soft_light_penumbra_edges_never_snap_at_any_sample_count() {
+    const COUNTS: [u32; 5] = [SOFT_PROBE_SAMPLES, 8, 16, DEFAULT_AREA_SAMPLE_COUNT, 64];
+    const REFERENCE_SAMPLES: u32 = 256;
+    let receiver = Receiver::centred(32, 32);
+    let mut failures = Vec::new();
+    for kind in ["soft point", "soft sun"] {
+        let height = soft_plate_height(kind);
+        for width in SOFT_PENUMBRA_TEXELS {
+            let mut snapped = [0usize; COUNTS.len()];
+            let mut pairs = [0usize; COUNTS.len()];
+            let mut worst = [0.0f32; COUNTS.len()];
+            let mut fractional = 0usize;
+            for yaw_deg in [0.0f32, 15.0, 30.0, 45.0] {
+                for phase in [0.0f32, 0.25, 0.5, 0.75] {
+                    let yaw = yaw_deg.to_radians();
+                    let (_, lit) = edge_axes(yaw);
+                    let anchor = Vec3::new(0.013, 0.0, 0.021) + lit * (phase * PITCH);
+                    let fixture = plate_fixture_on(receiver, anchor, yaw, height);
+                    let light = soft_light_beside(kind, anchor, yaw, height, width);
+                    let edge = plate_shadow_edge(&receiver, &light, anchor, yaw, height);
+                    // Beyond the penumbra plus the footprint's reach no
+                    // sample can split, so the reference skips those texels.
+                    let band = f64::from(width) + 2.0;
+                    let reference = fixture.footprint_reference(&light, REFERENCE_SAMPLES, |x, y| {
+                        edge.signed_distance([f64::from(x) + 0.5, f64::from(y) + 0.5])
+                            .abs()
+                            < band
+                    });
+                    let in_penumbra =
+                        |x, y| matches!(reference.get(x, y), Some(v) if v > 0.1 && v < 0.9);
+                    let mut config_fractional = 0;
+                    for y in 0..receiver.height {
+                        for x in 0..receiver.width {
+                            config_fractional += usize::from(in_penumbra(x, y));
+                        }
+                    }
+                    assert!(
+                        config_fractional > 20,
+                        "{kind} {width} {yaw_deg}° phase {phase}: {config_fractional} fractional texels"
+                    );
+                    fractional += config_fractional;
+                    for (c, &count) in COUNTS.iter().enumerate() {
+                        let grid = fixture.bake(&light, count, true);
+                        for y in 0..grid.height() {
+                            for x in 0..grid.width() {
+                                if in_penumbra(x, y)
+                                    && matches!(grid.get(x, y), Some(v) if v == 0.0 || v == 1.0)
+                                {
+                                    snapped[c] += 1;
+                                }
+                            }
+                        }
+                        let steps = texel_steps(&grid, TEXEL_STEP_THRESHOLD);
+                        pairs[c] += steps.pairs;
+                        worst[c] = worst[c].max(steps.worst_difference);
+                    }
+                }
+            }
+            for (c, &count) in COUNTS.iter().enumerate() {
+                let line = format!(
+                    "{kind}, {width}-texel penumbra @{count}: {} of {fractional} fractional \
+                     texels snapped; {} step pairs, worst pair {:.3}",
+                    snapped[c], pairs[c], worst[c]
+                );
+                println!("{line}");
+                if snapped[c] > 0 || pairs[c] > 0 {
+                    failures.push(line);
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }
 
 // --- AC 8, 10: walls ---------------------------------------------------------
@@ -1196,3 +1429,5 @@ fn a_scaled_face_ramps_over_the_same_texels_in_either_walk_order() {
         "world ramp ratio {world_ratio} vs pitch ratio {pitch_ratio}"
     );
 }
+
+

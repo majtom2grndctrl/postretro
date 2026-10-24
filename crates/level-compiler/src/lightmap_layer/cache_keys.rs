@@ -112,7 +112,9 @@ pub(crate) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
 /// segment is nearer than the texel, hence inside `falloff_range`), so the
 /// falloff-AABB slice is a sound conservative dependency set. A footprint
 /// sample's segments start up to `footprint_radius` beside its texel, so the
-/// slice widens by that much.
+/// slice widens by that much. It also holds the emitter sphere: shadow rays end
+/// on it, and the embedded-emitter test reads geometry within `light_size` of
+/// the origin (see [`layer_influence_aabb`]).
 pub(super) fn geometry_slice_hash(
     light: &MapLight,
     primitives: &[BvhPrimitive],

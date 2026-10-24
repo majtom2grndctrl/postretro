@@ -403,7 +403,7 @@ pub(crate) fn embedded_emitters(
     )
 }
 
-/// [`bake_animated_light_weight_maps_controlled`] with the lights' emitter
+/// `bake_animated_light_weight_maps_controlled` with the lights' emitter
 /// flags already tested ([`embedded_emitters`]).
 pub(crate) fn bake_animated_light_weight_maps_with(
     inputs: &WeightMapInputs<'_>,

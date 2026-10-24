@@ -911,11 +911,14 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
 
 /// Un-rotated (seed == 0) sample direction for index `i` of `count`, using the
 /// emitter's per-light-type lattice mapping. Used only to pick emitter samples
-/// (`probe_indices`, and the texel footprint's per-texel pairing, which turns
-/// it by [`emitter_lattice_spin`]); the live sampling re-derives targets
-/// through `area_sample_target` with the real seed. The Point/Spot arm must
-/// stay light-independent: `SoftProbes::new` and the footprint memo key their
-/// lattices by count alone.
+/// (`probe_indices`, the texel footprint's per-texel pairing, which turns it by
+/// [`emitter_lattice_spin`], and the embedded-emitter test
+/// `texel_footprint::embedded_emitter_fraction`, which casts the seed-0
+/// lattice as ray directions from the light centre); the live sampling
+/// re-derives targets through `area_sample_target` with the real seed. The
+/// Point/Spot arm must stay light-independent: `SoftProbes::new` and the
+/// footprint memo key their lattices by count alone, and the emitter test
+/// relies on it too.
 pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),

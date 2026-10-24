@@ -1,4 +1,5 @@
 // Footprint clip pre-pass: which texels of a chart some triangle could clip at all.
+// Also owns the front-face segment test the embedded-emitter test shares.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use bvh::aabb::Aabb;
@@ -58,14 +59,8 @@ impl ClipBand {
 /// Whether the segment `from → to` enters no triangle `band` admits, tested
 /// over its whole length: unlike `segment_clear`, it starts at `from`, not
 /// `RAY_EPSILON` along the segment. The footprint tests the stretch a shadow
-/// ray's trace skips with it ([`super::footprint_visibility`]).
-///
-/// Only a triangle's front counts. Geometry extraction fans each face
-/// counter-clockwise about its normal, which points out of its brush, so a
-/// segment enters a wall through a front and leaves one through a back. A
-/// segment that crosses a face from behind is leaving solid, toward the side
-/// the face looks at; counting it would drop samples beside a wall whose rays
-/// head away from it.
+/// ray's trace skips with it ([`super::footprint_visibility`]). A wrapper over
+/// [`front_faces_clear`] with the band as the triangle filter.
 pub(crate) fn lead_in_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
@@ -83,6 +78,13 @@ pub(crate) fn lead_in_clear(
 /// triangle through its front among those `admits` accepts: the tracer behind
 /// [`lead_in_clear`] and the embedded-emitter test
 /// ([`super::embedded_emitter_fraction`]).
+///
+/// Only a triangle's front counts. Geometry extraction fans each face
+/// counter-clockwise about its normal, which points out of its brush, so a
+/// segment enters a wall through a front and leaves one through a back. A
+/// segment that crosses a face from behind is leaving solid, toward the side
+/// the face looks at; counting it would drop samples beside a wall whose rays
+/// head away from it.
 pub(crate) fn front_faces_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],

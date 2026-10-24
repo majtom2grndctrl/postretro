@@ -22,7 +22,8 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{LightType, MapLight};
 use crate::texel_footprint::{
-    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, has_embedded_emitter, lead_in_clear,
+    ClipBand, ClipReach, ProbeEarlyOut, TexelFrame, TexelSampler, TexelSite, has_embedded_emitter,
+    lead_in_clear,
 };
 use glam::DVec3;
 
@@ -61,7 +62,12 @@ pub use cache_keys::{
 /// (`texel_footprint::embedded_emitter_fraction`) traces every footprint
 /// sample, with no probe early-out; the key's geometry bound holds the
 /// emitter sphere.
-pub const LAYER_FORMAT_VERSION: u32 = 12;
+///
+/// v13: such a light is flagged only when at least
+/// `EMBEDDED_EMITTER_MIN_DIRECTIONS` of the test's directions are embedded,
+/// and a flagged light keeps the all-blocked probe early-out (stores 0),
+/// skipping only the all-clear one.
+pub const LAYER_FORMAT_VERSION: u32 = 13;
 
 /// Bump when the composite/dilate/`encode_section` pipeline, the memo entry's
 /// layout or `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -483,7 +489,7 @@ pub fn bake_light_layer(
                 target_layer,
                 area_sample_count,
                 penumbra_floor,
-                embedded_emitter,
+                ProbeEarlyOut::for_light(embedded_emitter),
                 control,
             )
         })
@@ -532,13 +538,13 @@ pub fn bake_light_layer_controlled(
         target_layer,
         area_sample_count,
         penumbra_floor,
-        embedded_emitter,
+        ProbeEarlyOut::for_light(embedded_emitter),
         control,
     )
 }
 
-/// [`bake_light_layer_controlled`] with the light's emitter flag already
-/// tested ([`embedded_emitter_flag`]).
+/// [`bake_light_layer_controlled`] with the light's footprint early-out
+/// already chosen from its emitter flag ([`embedded_emitter_flag`]).
 #[allow(clippy::too_many_arguments)]
 fn bake_light_layer_on(
     light: &MapLight,
@@ -549,7 +555,7 @@ fn bake_light_layer_on(
     target_layer: u32,
     area_sample_count: u32,
     penumbra_floor: bool,
-    embedded_emitter: bool,
+    early_out: ProbeEarlyOut,
     control: &BakeControl,
 ) -> LightmapLayer {
     let face_indices: Vec<usize> = atlas
@@ -568,14 +574,14 @@ fn bake_light_layer_on(
         target_layer,
         area_sample_count,
         penumbra_floor,
-        embedded_emitter,
+        early_out,
         control,
     )
 }
 
-/// [`bake_light_layer`] floored with the probe early-out off, as if the
-/// light's emitter were embedded: the full-set reference a measurement holds
-/// the floored bake against.
+/// [`bake_light_layer`] floored with the probe early-out off
+/// ([`ProbeEarlyOut::Off`]): the full-set reference a measurement holds the
+/// floored bake against.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_light_layer_full_sets(
@@ -598,7 +604,7 @@ pub(crate) fn bake_light_layer_full_sets(
                 target_layer,
                 area_sample_count,
                 true,
-                true,
+                ProbeEarlyOut::Off,
                 control,
             )
         })
@@ -616,7 +622,7 @@ fn bake_light_layer_for_faces(
     target_layer: u32,
     area_sample_count: u32,
     penumbra_floor: bool,
-    embedded_emitter: bool,
+    early_out: ProbeEarlyOut,
     control: &BakeControl,
 ) -> LightmapLayer {
     let layer_count = atlas_layer_count(atlas);
@@ -627,7 +633,7 @@ fn bake_light_layer_for_faces(
     let per_chart_texels: Vec<Vec<LayerTexel>> = face_indices
         .par_iter()
         .map(|&face_idx| {
-            bake_light_layer_chart_controlled(
+            bake_light_layer_chart_clipped(
                 light,
                 atlas,
                 face_idx,
@@ -636,7 +642,8 @@ fn bake_light_layer_for_faces(
                 geometry,
                 area_sample_count,
                 penumbra_floor,
-                embedded_emitter,
+                early_out,
+                true,
                 control,
             )
         })
@@ -693,7 +700,7 @@ pub(crate) fn bake_light_layer_chart_controlled(
         geometry,
         area_sample_count,
         penumbra_floor,
-        embedded_emitter,
+        ProbeEarlyOut::for_light(embedded_emitter),
         true,
         control,
     )
@@ -712,7 +719,7 @@ fn bake_light_layer_chart_clipped(
     geometry: &GeometryResult,
     area_sample_count: u32,
     penumbra_floor: bool,
-    embedded_emitter: bool,
+    early_out: ProbeEarlyOut,
     skip_unreachable_clips: bool,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
@@ -727,7 +734,7 @@ fn bake_light_layer_chart_clipped(
         0
     };
     let mut texels = Vec::with_capacity(capacity);
-    let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor, embedded_emitter);
+    let sampler = TexelSampler::with_early_out(light, area_sample_count, penumbra_floor, early_out);
     let frame = TexelFrame::for_chart(chart);
     let band = ClipBand::for_chart(chart);
     // Light-independent, but partitions bake per light; it costs little
@@ -795,7 +802,7 @@ pub(crate) fn bake_light_layer_chart_without_clip_prepass(
         geometry,
         area_sample_count,
         true,
-        embedded_emitter,
+        ProbeEarlyOut::for_light(embedded_emitter),
         false,
         control,
     )

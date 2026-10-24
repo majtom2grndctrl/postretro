@@ -441,8 +441,8 @@ fn embedded_lights() -> Vec<MapLight> {
     vec![embedded, hard]
 }
 
-// An emitter reaching into geometry traces its full sets on every floored
-// path, so the production stage still equals the reference bake, cold and
+// An emitter reaching into geometry skips the all-clear probe early-out on
+// every floored path, so the production stage still equals the reference bake, cold and
 // warm, at one worker and several (P7); the stage warns once per compile,
 // cold or with every memo hit, naming only that light.
 #[test]

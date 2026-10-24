@@ -127,7 +127,7 @@ pub(super) struct LayerPartitions<'a> {
     /// The bake's receiver-footprint switch (`LightmapConfig::penumbra_floor`).
     penumbra_floor: bool,
     /// Lights whose emitter reaches into geometry, by source index; their
-    /// charts trace every footprint sample.
+    /// charts skip the all-clear probe early-out.
     embedded_emitters: &'a EmbeddedEmitters,
     /// The texel-step detector, on the pass that composes the lightmap; the
     /// shadowmask-only pass after a memo hit replays the memo's report.

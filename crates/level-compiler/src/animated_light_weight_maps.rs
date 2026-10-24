@@ -83,6 +83,11 @@ pub(crate) const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// (`texel_footprint::embedded_emitter_fraction`) traces every footprint
 /// sample, with no probe early-out.
 ///
+/// v13: such a light is flagged only when at least
+/// `EMBEDDED_EMITTER_MIN_DIRECTIONS` of the test's directions are embedded,
+/// and a flagged light keeps the all-blocked probe early-out, skipping only
+/// the all-clear one.
+///
 /// Bump when the baked weights, the section or entry layout, or the
 /// texel-step detector's verdicts change: the entry stores the detector's
 /// report, and only its threshold is keyed, so a verdict change alone would
@@ -95,7 +100,7 @@ pub(crate) const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
-pub const STAGE_VERSION: u32 = 12;
+pub const STAGE_VERSION: u32 = 13;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,

@@ -10,8 +10,8 @@ use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::{
-    ClipBand, FootprintOutcome, TexelFrame, TexelSite, footprint_for, footprint_visibility,
-    lead_in_clear,
+    ClipBand, FootprintOutcome, ProbeEarlyOut, TexelFrame, TexelSite, footprint_for,
+    footprint_visibility, lead_in_clear,
 };
 use crate::bake_control::BakeControl;
 use crate::bvh_build::{BvhPrimitive, build_bvh};
@@ -440,22 +440,40 @@ impl Fixture {
         grid
     }
 
-    /// The walk [`Fixture::bake`] runs, replayed texel by texel through the
-    /// footprint with each outcome kept: same order, same covered texels,
-    /// same occluder caches, every clip segment traced (no pre-pass).
-    /// `reach_override` replaces the wall clip and the lead-in alike.
+    /// The walk [`Fixture::bake`] runs for an unflagged light, replayed
+    /// texel by texel through the footprint with each outcome kept: same
+    /// order, same covered texels, same occluder caches, every clip segment
+    /// traced (no pre-pass). `reach_override` replaces the wall clip and the
+    /// lead-in alike.
     pub(super) fn footprint_outcomes(
         &self,
         light: &MapLight,
         area_sample_count: u32,
         reach_override: Option<bool>,
     ) -> Vec<Option<FootprintOutcome>> {
+        self.footprint_outcomes_with(
+            light,
+            area_sample_count,
+            reach_override,
+            ProbeEarlyOut::Agreed,
+        )
+    }
+
+    /// [`Fixture::footprint_outcomes`] under the given early-out: a flagged
+    /// light's walk takes [`ProbeEarlyOut::Blocked`].
+    pub(super) fn footprint_outcomes_with(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+        reach_override: Option<bool>,
+        early_out: ProbeEarlyOut,
+    ) -> Vec<Option<FootprintOutcome>> {
         self.replay(
             light,
             area_sample_count,
             reach_override,
             reach_override,
-            true,
+            early_out,
             |_, _| true,
         )
     }
@@ -467,9 +485,14 @@ impl Fixture {
         light: &MapLight,
         area_sample_count: u32,
     ) -> Vec<Option<FootprintOutcome>> {
-        self.replay(light, area_sample_count, None, Some(true), true, |_, _| {
-            true
-        })
+        self.replay(
+            light,
+            area_sample_count,
+            None,
+            Some(true),
+            ProbeEarlyOut::Agreed,
+            |_, _| true,
+        )
     }
 
     /// The footprint's visibility at the texels `include` selects, every
@@ -481,7 +504,14 @@ impl Fixture {
         area_sample_count: u32,
         include: impl Fn(u32, u32) -> bool,
     ) -> VisibilityGrid {
-        let outcomes = self.replay(light, area_sample_count, None, None, false, include);
+        let outcomes = self.replay(
+            light,
+            area_sample_count,
+            None,
+            None,
+            ProbeEarlyOut::Off,
+            include,
+        );
         let mut grid = VisibilityGrid::new(self.receiver.width, self.receiver.height);
         for (i, outcome) in outcomes.iter().enumerate() {
             if let Some(outcome) = outcome {
@@ -502,7 +532,7 @@ impl Fixture {
         area_sample_count: u32,
         reach_override: Option<bool>,
         lead_in_override: Option<bool>,
-        early_out: bool,
+        early_out: ProbeEarlyOut,
         include: impl Fn(u32, u32) -> bool,
     ) -> Vec<Option<FootprintOutcome>> {
         let chart = self.receiver.chart();

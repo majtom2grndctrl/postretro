@@ -228,8 +228,8 @@ pub(crate) fn bake_fused_windowed(
         .iter()
         .filter(|entry| entry.light.shadow_type != ShadowType::Sdf)
         .collect();
-    // Lights whose emitter sphere reaches into geometry trace every
-    // footprint sample. Tested once per light, warm or cold: the test reads
+    // Lights whose emitter sphere reaches into geometry skip the all-clear
+    // probe early-out. Tested once per light, warm or cold: the test reads
     // only the light and geometry inside its layer key's bound
     // (`lightmap_layer::layer_influence_aabb`), so a cached partition was
     // baked under the same verdict, and the warning never rides a memo.

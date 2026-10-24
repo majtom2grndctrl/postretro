@@ -296,27 +296,83 @@ pub(crate) enum TexelSampler {
     /// The receiver footprint.
     Footprint {
         footprint: Arc<TexelFootprint>,
-        /// Trace every sample, with no probe early-out: the light's emitter
-        /// sphere reaches into geometry ([`has_embedded_emitter`]).
-        full_set: bool,
+        /// Which probe agreements end a texel early.
+        early_out: ProbeEarlyOut,
     },
+}
+
+/// Which agreements of the nine footprint probes end a texel's footprint
+/// without tracing the rest of its set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProbeEarlyOut {
+    /// All blocked stores 0, all clear stores 1: an ordinary light.
+    Agreed,
+    /// All blocked stores 0; any clear probe traces the full set. A light
+    /// whose emitter sphere reaches into geometry ([`has_embedded_emitter`]):
+    /// its embedded cap can hide from every probe, so nine clear probes do
+    /// not mean an open texel. The cap can only lower visibility, though,
+    /// and the centre probe aims at the emitter's centre, in open air: with
+    /// it and the ring all blocked, a real occluder stands in the way, and
+    /// the texel stores 0 as an ordinary light's does.
+    Blocked,
+    /// None: every sample traced, the full-set reference.
+    #[cfg(test)]
+    Off,
+}
+
+impl ProbeEarlyOut {
+    /// The early-out a light takes in production, from its
+    /// [`EmbeddedEmitters`] flag.
+    pub(crate) fn for_light(embedded_emitter: bool) -> Self {
+        if embedded_emitter {
+            Self::Blocked
+        } else {
+            Self::Agreed
+        }
+    }
+
+    /// Whether the probes' `clear` count of `surviving` ends the texel; only
+    /// asked when no probe was clipped.
+    fn ends(self, clear: u32, surviving: u32) -> bool {
+        match self {
+            Self::Agreed => clear == 0 || clear == surviving,
+            Self::Blocked => clear == 0,
+            #[cfg(test)]
+            Self::Off => false,
+        }
+    }
 }
 
 impl TexelSampler {
     /// `embedded_emitter` is the light's flag from the stage's
-    /// [`EmbeddedEmitters`]; with it the footprint traces every texel's full
-    /// set. The floor-off sampler ignores it, so floor-off bakes keep their
-    /// bytes.
+    /// [`EmbeddedEmitters`]; with it the footprint keeps only the all-blocked
+    /// early-out ([`ProbeEarlyOut::Blocked`]). The floor-off sampler ignores
+    /// it, so floor-off bakes keep their bytes.
     pub(crate) fn new(
         light: &MapLight,
         area_sample_count: u32,
         penumbra_floor: bool,
         embedded_emitter: bool,
     ) -> Self {
+        Self::with_early_out(
+            light,
+            area_sample_count,
+            penumbra_floor,
+            ProbeEarlyOut::for_light(embedded_emitter),
+        )
+    }
+
+    /// [`TexelSampler::new`] with the footprint's early-out given outright.
+    pub(crate) fn with_early_out(
+        light: &MapLight,
+        area_sample_count: u32,
+        penumbra_floor: bool,
+        early_out: ProbeEarlyOut,
+    ) -> Self {
         if penumbra_floor {
             Self::Footprint {
                 footprint: footprint_for(light, area_sample_count),
-                full_set: embedded_emitter,
+                early_out,
             }
         } else {
             Self::Centre(SoftProbes::new(light, area_sample_count))
@@ -354,9 +410,9 @@ impl TexelSampler {
             ),
             Self::Footprint {
                 footprint,
-                full_set,
+                early_out,
             } => {
-                footprint_visibility(light, site, footprint, trace, reach, lead_in, !full_set)
+                footprint_visibility(light, site, footprint, trace, reach, lead_in, *early_out)
                     .visibility
             }
         }
@@ -371,7 +427,8 @@ pub(crate) struct FootprintOutcome {
     /// its shadow ray's lead-in met one.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) clipped_probe: bool,
-    /// The probes agreed and the rest of the set went untraced.
+    /// The probes agreed under the walk's [`ProbeEarlyOut`] and the rest of
+    /// the set went untraced.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) early_out: bool,
 }
@@ -413,14 +470,15 @@ fn footprint_rotation(seed: u64) -> (f32, f32) {
 /// needs no lead-in. The centre's ray stays the texel's own, traced as the
 /// floor-off bake traces it.
 ///
-/// The nine probes are traced first. When `early_out` holds, none is clipped
-/// and all agree, the texel is exactly 0 or 1. A clipped probe breaks the
-/// ring, so the texel then traces its full set even if its survivors agree. A
-/// soft emitter's samples pair with footprint points per texel, so the probes
-/// stay a centre and a ring in every occluder plane
-/// ([`TexelFootprint::emitter_pairing`]). Without `early_out` every sample is
-/// traced: a light whose emitter reaches into geometry
-/// ([`has_embedded_emitter`]), and the tests' reference.
+/// The nine probes are traced first. When none is clipped and they agree as
+/// `early_out` asks, the texel is exactly 0 or 1: all blocked or all clear
+/// for an ordinary light, all blocked only for one whose emitter reaches into
+/// geometry ([`has_embedded_emitter`]). A clipped probe breaks the ring, so
+/// the texel then traces its full set even if its survivors agree. A soft
+/// emitter's samples pair with footprint points per texel, so the probes stay
+/// a centre and a ring in every occluder plane
+/// ([`TexelFootprint::emitter_pairing`]). `ProbeEarlyOut::Off` traces every
+/// sample: the tests' reference.
 fn footprint_visibility(
     light: &MapLight,
     site: &TexelSite,
@@ -428,7 +486,7 @@ fn footprint_visibility(
     trace: impl Fn(Vec3, Vec3) -> bool,
     reach: impl Fn(Vec3, Vec3) -> bool,
     lead_in: impl Fn(Vec3, Vec3) -> bool,
-    early_out: bool,
+    early_out: ProbeEarlyOut,
 ) -> FootprintOutcome {
     let lift = site.normal * RAY_EPSILON;
     let centre_origin = site.world_p + lift;
@@ -498,7 +556,7 @@ fn footprint_visibility(
         }
     }
     // The centre is never clipped, so `surviving >= 1`.
-    if early_out && !clipped_probe && (clear == 0 || clear == surviving) {
+    if !clipped_probe && early_out.ends(clear, surviving) {
         return FootprintOutcome {
             visibility: clear as f32 / surviving as f32,
             clipped_probe,

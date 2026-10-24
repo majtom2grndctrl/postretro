@@ -1,0 +1,18 @@
+{
+  "map": "../lpf-bin/capture/content/dev/maps/combat-demo.floor.prl",
+  "camera": {
+    "position": [
+      -6.35,
+      1.6256,
+      -19.304
+    ],
+    "yaw_deg": 33.4,
+    "pitch_deg": 11.5,
+    "fov_deg": 90.0
+  },
+  "resolution": [
+    2560,
+    1440
+  ],
+  "output": "../lpf-bin/capture/png/cd-ceiling-wide.floor.png"
+}

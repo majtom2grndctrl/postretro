@@ -1,0 +1,18 @@
+{
+  "map": "../lpf-bin/capture/content/dev/maps/combat-demo.fix.prl",
+  "camera": {
+    "position": [
+      -10.7696,
+      1.778,
+      -22.86
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": 23.5,
+    "fov_deg": 80.0
+  },
+  "resolution": [
+    2560,
+    1440
+  ],
+  "output": "../lpf-bin/capture/png/cd-ceiling-seam.fix.png"
+}

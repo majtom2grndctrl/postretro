@@ -42,7 +42,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | Weapon | Descriptor-authored actions and tuning plus one live resource, shared recovery, reload, charging/execution, and input-edge state |
 | AmmoReserve | Pawn-owned ammunition balances pooled by authored ammo type; reloads transfer from this reserve into the active weapon magazine |
 | MeshComponent | Model handle (`model: String`) for rigid/static or skinned models, plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component. Optional descriptor-authored `attachments` mount prop model handles at the model's named sockets (`resource_management.md` §7), rendered at a skinned holder's posed joint or a rigid holder's resolved rest matrix/socket transform — presentation-only (no collision, hit-zone, or gameplay-query participation; no netcode wire change), one authoring shape for skinned and rigid holders. Descriptor `shadowOnly` applies to the owning local-player view; peer viewers render that player avatar forward. |
-| Health | Hit points (`max`, `current`) plus optional direct-impact hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Health-bearing entities are damage targets. Hitscan rays and swept projectiles share target shapes from an authored AABB or zone-bearing skinned model (§7). |
+| Health | Hit points (`max`, `current`) plus optional direct-impact hitbox (one world-aligned AABB, fixed per archetype; its offset measures from the feet for a descriptor with `behavior`, else from the transform position, a movement pawn's capsule centre, §7b); declared via the `components.health` descriptor block. Health-bearing entities are damage targets. Hitscan rays and swept projectiles share target shapes from an authored AABB or zone-bearing skinned model (§7). |
 | KinematicMover | Engine-owned deterministic translating/spinning mover driver seeded from PRL `KinematicGeometry`; addressed as `getMapEntities("mover")` members, whose SDK handle builds declarative mover-command reactions. Also carries the mover's authored transition event addresses and sound keys for the app drain; the sound keys are presentation-only. |
 | TriggerVolume | Engine-owned, serializable host-authoritative touch/use state for an invisible level-authored AABB. Named `on_fire` / `on_exit` reactions fan out effects; an exit fires only after that player's activation fired. Tracks occupancy; arming reopens Touch activation for already-standing players, while Use remains press-driven. |
 | Touchable | Host-authoritative touch mode and sphere radius for a world item. Presence identifies the entity as a touchable world item. |
@@ -295,7 +295,7 @@ Graph evaluation is host-only. Clients consume replicated animation state and ne
 
 ---
 
-## 7d. Ghost Links (decided, not yet built)
+## 7d. Ghost Links
 
 Timelines are separate physical room copies joined by seamless teleporters. A **ghost link** lets a copy perceive the other: while armed, its members draw as translucent ghosts at the mapped pose in the other copy, and their sounds can play there. Room copies keep collision, hits, splash, AI perception and triggers isolated without any interaction filter. Ghosts are presentation only: they never collide, block, take hits or touch triggers.
 
@@ -305,13 +305,13 @@ Timelines are separate physical room copies joined by seamless teleporters. A **
   - A weapon's projectile block carries its own `ghost`, resolved from the firing weapon on every peer, a monster's projectiles included.
   - Movers have no descriptor: a link's `ghost_tags` names them by tag, per link.
   - Each link shows four member categories: players, non-player descriptor entities, projectiles and movers. A category never ghosts what the descriptor or tag did not opt in. The map sets a link's starting categories; scripts change them.
-  - An impact belongs to a link when its shot's owner is a member.
+  - An impact belongs to a link when its shot's owner is a member, resolved from the shot id normalized as observer cues normalize it. An impact without a shot id belongs to no link.
   - The viewing player's own pawn, projectiles and sounds never ghost on that viewer's machine.
-- **Resolved locally.** Each peer reads `ghost` from its own descriptors by the class each entity was materialized from, and resolves `ghost_tags` against its own movers. No membership fact rides the wire, and peers whose content differs see different ghosts. Per-instance tags on descriptor placements are unusable here: a connected client's copies of them carry no tags or map identity.
-- **Per frame, from presented state.** An eligible entity is a member while its link is armed, its category is shown, and its presented point is inside the volume. The ghost draws at the mapped presented pose, so aim, pose modifiers and teleport cuts carry over. A ghost whose membership ends, despawn included, fades out at its last in-volume mapped pose, so a swap never draws a ghost between copies. An entity inside two armed links ghosts through each.
-- **Not built in this design:** flipping `ghost` on one entity at runtime, and widening a link past its opt-ins.
+- **Resolved locally.** Each peer reads `ghost` from its own descriptors by the class each entity was materialized from, and resolves `ghost_tags` against its own movers, at install and on each committed reload, which re-resolves membership through the membership ramp. A level with links while no loaded descriptor sets `ghost` warns once at install. No membership fact rides the wire, and peers whose content differs see different ghosts. Per-instance tags on descriptor placements are unusable here: a connected client's copies of them carry no tags or map identity.
+- **Per frame, from presented state.** An eligible entity is a member while its link is armed, its category is shown, and its presented point is inside the volume: the body point for a pawn, the origin for a projectile, the current bounds centre for a mover. The ghost draws at the mapped presented pose, so aim, pose modifiers and teleport cuts carry over. A ghost whose membership ends, despawn included, fades out at its last in-volume mapped pose, so a swap never draws a ghost between copies. An entity inside two armed links ghosts through each, one transform per link; a mover matching several of one link's tags ghosts once through it.
+- **Not supported:** flipping `ghost` on one entity at runtime, and widening a link past its opt-ins.
 
-Draw, limiter and audio contracts: `rendering_pipeline.md` §7.9, §7.8, `audio.md` §1. Replication: `networking.md` §Current contract. Script surface: `scripting.md` §2, §12.
+Draw, limiter and audio contracts: `rendering_pipeline.md` §7.9, §7.8, `audio.md` §1. Replication: `networking.md` §Current contract. Script surface: `scripting.md` §2, §12. Author guide: `docs/ghost-links.md`.
 
 ---
 

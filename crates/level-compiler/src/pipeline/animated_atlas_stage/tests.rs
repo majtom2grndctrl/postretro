@@ -246,6 +246,9 @@ fn with_placing_light(mut lights: Vec<MapLight>) -> Vec<MapLight> {
 
 // --- the stage --------------------------------------------------------------
 
+/// A rewrite of a cache entry's bytes.
+type Corrupt = fn(&[u8]) -> Vec<u8>;
+
 /// How one weight-map stage run goes. It runs on the calling thread, so log
 /// capture reads its warnings; `permits` is the `-j` worker count.
 #[derive(Clone, Copy)]
@@ -257,6 +260,8 @@ struct Run<'a> {
     samples: u32,
     /// A small pool edge cuts large faces; `None` keeps the production edge.
     pool_edge: Option<u32>,
+    /// Rewrites the cached entry before the stage reads it.
+    corrupt: Option<Corrupt>,
 }
 
 impl Default for Run<'_> {
@@ -268,6 +273,7 @@ impl Default for Run<'_> {
             threshold: TEXEL_STEP_THRESHOLD,
             samples: 4,
             pool_edge: None,
+            corrupt: None,
         }
     }
 }
@@ -341,11 +347,28 @@ fn compile(mut geometry: GeometryResult, lights: &[MapLight], run: Run) -> Compi
         penumbra_floor: run.floor,
         step_threshold: run.threshold,
     };
+    if let (Some(corrupt), Some(cache)) = (run.corrupt, run.cache) {
+        let key = weight_map_cache_key(&inputs, DENSITY);
+        let entry = cache.get(&key).expect("an entry to corrupt");
+        cache.put(&key, &corrupt(&entry));
+    }
     let progress = StageProgress::indeterminate();
     let control = BakeControl::new(Arc::new(Governor::new(run.permits, false)), &progress);
+    // Entity `10 + i` for light `i`, so a warning that names an
+    // animated-list index instead shows.
+    let labels: Vec<String> = (0..lights.len())
+        .map(|i| format!("entity {} 'light'", 10 + i))
+        .collect();
     let logs = LogCapture::start();
-    let bake = bake_or_load_weight_maps(&inputs, DENSITY, run.cache, &control)
-        .expect("a stepped bake still compiles");
+    let bake = bake_or_load_weight_maps(
+        &inputs,
+        DENSITY,
+        run.cache,
+        &control,
+        &animated_lights,
+        &labels,
+    )
+    .expect("a stepped bake still compiles");
     let records = logs.records();
     let warnings = records
         .iter()
@@ -363,17 +386,19 @@ fn compile(mut geometry: GeometryResult, lights: &[MapLight], run: Run) -> Compi
 // --- AC 18: the weight-map stage reports to the caller (P1, P17) -------------
 
 // P1: a hard animated light's contact edge steps with the floor disabled; the
-// weight-map stage warns once, on the caller's thread, naming the light and
-// the face. With the floor on, nothing warns and the compile succeeds.
+// weight-map stage warns once, on the caller's thread, naming the light by its
+// source label and the face. The static light ahead of it is no animated
+// light, so the label is looked up through the animated entry's source index.
+// With the floor on, nothing warns and the compile succeeds.
 #[test]
 fn a_hard_animated_contact_edge_warns_from_the_weight_map_stage_only_with_the_floor_disabled() {
-    let lights = with_placing_light(vec![animated([3.3, 3.0, 2.7], 8.0)]);
+    let lights = vec![placing_light(), animated([3.3, 3.0, 2.7], 8.0)];
     let off = compile(contact_geometry(), &lights, floor_off());
     assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
     let warning = &off.warnings[0];
     assert!(
         warning.starts_with(
-            "[Lightmap] texel step: animated light #0 at (3.30, 3.00, 2.70) on face 0 near ("
+            "[Lightmap] texel step: animated light entity 11 'light' on face 0 near ("
         ),
         "{warning}"
     );
@@ -552,6 +577,75 @@ fn a_weight_map_cache_hit_replays_the_cold_warnings_and_a_threshold_change_misse
         1
     );
     assert_eq!(back.warnings, cold.warnings);
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The entry's report prefix with a count past its records.
+fn malformed_report(entry: &[u8]) -> Vec<u8> {
+    [&u32::MAX.to_le_bytes()[..], &entry[4..]].concat()
+}
+
+/// The entry's valid report prefix, then bytes no section decodes from.
+fn undecodable_section(entry: &[u8]) -> Vec<u8> {
+    // Ten little-endian words a record, after the count.
+    let count = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+    [&entry[..4 + count * 40], b"not a section"].concat()
+}
+
+// A corrupt entry is a miss, never a panic or a wrong log: a malformed report
+// prefix, or a valid prefix before a section that does not decode, warns
+// once, re-bakes, logs the cold warnings once and re-puts the entry, which
+// the next build hits.
+#[test]
+fn a_corrupt_weight_map_entry_warns_re_bakes_and_replays_nothing_stale() {
+    let (geometry, lights) = stepped_scene();
+    let cold = compile(geometry.clone(), &lights, floor_off());
+    assert!(cold.warnings.len() >= 2, "{:?}", cold.warnings);
+    let dir = fresh_cache_dir("corrupt");
+    let cache = StageCache::new(&dir).expect("create corrupt-entry cache");
+    let warm = |corrupt: Option<Corrupt>| {
+        compile(
+            geometry.clone(),
+            &lights,
+            Run {
+                cache: Some(&cache),
+                corrupt,
+                ..floor_off()
+            },
+        )
+    };
+    let written = warm(None);
+    assert_eq!(written.warnings, cold.warnings);
+    let corrupt_entry = "[cache] corrupt animated_lm_weight_maps entry, re-baking";
+    let report_warning = "re-baking: malformed texel-step report";
+    for (corrupt, malformed) in [
+        (malformed_report as Corrupt, true),
+        (undecodable_section, false),
+    ] {
+        let rebaked = warm(Some(corrupt));
+        assert_eq!(rebaked.logged(Level::Warn, corrupt_entry), 1, "{malformed}");
+        assert_eq!(
+            rebaked.logged(Level::Warn, report_warning),
+            usize::from(malformed)
+        );
+        assert_eq!(
+            rebaked.logged(Level::Info, "[cache] animated_lm_weight_maps miss"),
+            1
+        );
+        assert_eq!(rebaked.section, cold.section);
+        assert_eq!(rebaked.report, cold.report);
+        assert_eq!(rebaked.warnings, cold.warnings, "each warning once");
+
+        let hit = warm(None);
+        assert_eq!(
+            hit.logged(Level::Info, "[cache] animated_lm_weight_maps hit"),
+            1,
+            "the re-bake re-put the entry"
+        );
+        assert_eq!(hit.logged(Level::Warn, corrupt_entry), 0);
+        assert_eq!(hit.warnings, cold.warnings);
+    }
     drop(cache);
     let _ = std::fs::remove_dir_all(&dir);
 }

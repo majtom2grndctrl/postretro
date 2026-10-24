@@ -338,13 +338,29 @@ where
     let section = bake_animated_light_weight_maps_controlled(&inputs, &control)
         .expect("fixture charts stay inside their cell blocks")
         .section;
-    let chunks = scene.chunk_section.chunks.len();
-    if chunks == 0 {
+    // Progress counts one item per (face, non-`sdf` light) its chunks list.
+    let section_chunks = &scene.chunk_section;
+    let mut face_lights: Vec<(u32, u32)> = section_chunks
+        .chunks
+        .iter()
+        .flat_map(|chunk| {
+            let start = chunk.index_offset as usize;
+            section_chunks.light_indices[start..start + chunk.index_count as usize]
+                .iter()
+                .map(move |&light| (chunk.face_index, light))
+        })
+        .filter(|&(_, light)| {
+            scene.lights[light as usize].shadow_type != crate::map_data::ShadowType::Sdf
+        })
+        .collect();
+    face_lights.sort_unstable();
+    face_lights.dedup();
+    if section_chunks.chunks.is_empty() {
         assert_eq!(progress.total(), None);
         assert_eq!(progress.completed(), 0);
     } else {
-        assert_eq!(progress.total(), Some(chunks));
-        assert_eq!(progress.completed(), chunks);
+        assert_eq!(progress.total(), Some(face_lights.len()));
+        assert_eq!(progress.completed(), face_lights.len());
     }
     section
 }

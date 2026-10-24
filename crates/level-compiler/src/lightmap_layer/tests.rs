@@ -7,7 +7,7 @@ use crate::bake_control::BakeControl;
 use crate::bvh_build::build_bvh;
 use crate::governor::Governor;
 use crate::lightmap_bake::{
-    BlockLayout, bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
+    BlockLayout, CutParent, bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
 };
 use crate::map_data::{FalloffModel, ShadowType};
 use crate::reporter::StageProgress;
@@ -1299,9 +1299,81 @@ fn layer_and_section_keys_fold_the_penumbra_floor_switch() {
             false,
             1,
             TEXEL_STEP_THRESHOLD,
+            &[],
         )
     };
     assert_ne!(section(true), section(false));
+}
+
+// Regression: the cut-face estimate let a zero-range light reach every box,
+// while the static bake's falloff reads that range as 1e-4 m and lights
+// nothing past it. Both now share this cull, which agrees with `falloff` at
+// every model.
+#[test]
+fn a_zero_range_light_reaches_only_where_its_falloff_lights() {
+    let near = Some((Vec3::new(-1.0, 1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)));
+    let far = Some((Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 0.0, 1.0)));
+    for model in [
+        FalloffModel::Linear,
+        FalloffModel::InverseDistance,
+        FalloffModel::InverseSquared,
+    ] {
+        let mut light = point_light([0.0, 1.0, 0.0], 0.0);
+        light.falloff_model = model;
+        assert!(light_may_reach(&light, near), "{model:?}");
+        assert!(!light_may_reach(&light, far), "{model:?}");
+        assert_eq!(crate::lightmap_bake::falloff(&light, 1.0), 0.0, "{model:?}");
+    }
+}
+
+// The section memo stores the texel-step report, which names a cut face by
+// its pre-cut index and counts a pair in the sub-face that owns it, so every
+// part of the cut map re-keys the section; no cut keys like an empty map.
+#[test]
+fn section_key_folds_the_cut_map() {
+    let mut geo = two_quad_geometry();
+    let light = point_light([0.5, 1.0, 0.5], 5.0);
+    let static_lights =
+        crate::light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let section = |cut_parents: &[CutParent]| {
+        section_input_hash(
+            [[0x5a; 32]].into_iter(),
+            &shared,
+            DENSITY,
+            false,
+            1,
+            TEXEL_STEP_THRESHOLD,
+            cut_parents,
+        )
+    };
+    let cut = CutParent {
+        parent: 0,
+        faces: 0..2,
+        own: vec![[0..4, 0..8], [4..8, 0..8]],
+    };
+    let mut keys = vec![section(&[]), section(std::slice::from_ref(&cut))];
+    let mut parent = cut.clone();
+    parent.parent = 1;
+    let mut faces = cut.clone();
+    faces.faces = 1..3;
+    let mut own = cut.clone();
+    own.own[1][0] = 5..8;
+    for changed in [parent, faces, own] {
+        keys.push(section(&[changed]));
+    }
+    for (i, a) in keys.iter().enumerate() {
+        for b in &keys[i + 1..] {
+            assert_ne!(a, b, "every cut-map edit re-keys the section");
+        }
+    }
 }
 
 // P10: with the floor on, a light's key bound widens by the largest footprint
@@ -1847,6 +1919,7 @@ fn section_key(
         uncompressed_irradiance,
         crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
         TEXEL_STEP_THRESHOLD,
+        &[],
     );
     CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
 }
@@ -1892,6 +1965,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             true,
             2,
             TEXEL_STEP_THRESHOLD,
+            &[],
         ),
     );
     let at_scale_one = CacheKey::new(
@@ -1904,6 +1978,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             true,
             1,
             TEXEL_STEP_THRESHOLD,
+            &[],
         ),
     );
     assert_ne!(

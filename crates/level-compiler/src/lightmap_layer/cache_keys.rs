@@ -10,6 +10,7 @@ use super::{
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::chart_interior_dims;
 use crate::geometry::GeometryResult;
+use crate::lightmap_bake::{CutParent, cut_map_key_bytes};
 use crate::map_data::MapLight;
 use crate::texel_footprint::TexelFrame;
 
@@ -455,8 +456,8 @@ pub fn validate_cached_lightmap_section(
 /// memo that lets a no-edit rebuild skip the per-light layer reads, composite,
 /// dilate, and BC6H encode and instead decode the section bytes directly.
 ///
-/// The fold covers every input that determines the section bytes, under a fixed
-/// unambiguous byte layout:
+/// The entry holds the texel-step report, then the section. The fold covers
+/// every input that determines either, under a fixed unambiguous byte layout:
 /// 1. `LAYER_FORMAT_VERSION` (u32 LE) — couples this key to the per-light layer
 ///    format the same way the private per-light `CacheKey.digest`s would; a
 ///    layer-format bump invalidates the section without reading the layer keys.
@@ -484,6 +485,9 @@ pub fn validate_cached_lightmap_section(
 ///    The entry stores the detector's report beside the section, so a new
 ///    threshold must not replay warnings found under the old one. Layer keys
 ///    leave it out: their partitions do not depend on it.
+/// 9. the cut map ([`cut_map_key_bytes`]) — the report names a cut face by its
+///    pre-cut index and counts each pair in the sub-face that owns it, which
+///    the cut geometry in the layer hashes does not pin.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.
@@ -494,6 +498,7 @@ pub fn section_input_hash(
     uncompressed_irradiance: bool,
     direction_texel_scale: u32,
     step_threshold: f32,
+    cut_parents: &[CutParent],
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
@@ -506,5 +511,6 @@ pub fn section_input_hash(
     hasher.update(&[u8::from(uncompressed_irradiance)]);
     hasher.update(&direction_texel_scale.to_le_bytes());
     hasher.update(&step_threshold.to_bits().to_le_bytes());
+    hasher.update(&cut_map_key_bytes(cut_parents));
     *hasher.finalize().as_bytes()
 }

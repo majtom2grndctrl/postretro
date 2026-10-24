@@ -1722,6 +1722,8 @@ fn run_after_parsing(
             final_lightmap_density,
             stage_cache.as_ref(),
             &animated_weight_control,
+            &animated_baked_lights,
+            &map_data.light_source_labels,
         )?)
     };
     let weight_map_step_elapsed = animated_light_weight_maps_section

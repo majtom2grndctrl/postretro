@@ -130,6 +130,14 @@ fn hard(origin: [f64; 3], range: f32) -> MapLight {
     light
 }
 
+/// The source labels a fixture's lights carry: entity `10 + i` for light
+/// `i`, so a warning that names a layer-list index instead shows.
+fn source_labels(lights: &[MapLight]) -> Vec<String> {
+    (0..lights.len())
+        .map(|i| format!("entity {} 'light'", 10 + i))
+        .collect()
+}
+
 fn floor_config(penumbra_floor: bool) -> LightmapConfig {
     LightmapConfig {
         penumbra_floor,
@@ -215,6 +223,7 @@ fn bake(
         step_threshold: run.threshold,
         ..PartitionWindow::default()
     };
+    let labels = source_labels(lights);
     let logs = LogCapture::start();
     let output = bake_fused_windowed(
         &args,
@@ -225,7 +234,7 @@ fn bake(
         &static_lights,
         &alpha_lights,
         run.selection,
-        &[],
+        &labels,
         &bvh,
         &primitives,
         config,
@@ -293,11 +302,15 @@ fn stored_grid(
 // --- AC 18: the production stage reports to the caller (P1, P17) ----------
 
 // P1: a hard light's contact edge steps with the floor disabled; the stage
-// warns once, on the caller's thread, naming the light and the face. With the
-// floor on, nothing warns and the compile succeeds either way.
+// warns once, on the caller's thread, naming the light by its source label
+// and the face. An `sdf` light ahead of it takes no layer, so the label is
+// looked up through the layer light's source index. With the floor on,
+// nothing warns and the compile succeeds either way.
 #[test]
 fn a_hard_contact_edge_warns_from_the_stage_only_with_the_floor_disabled() {
-    let lights = [hard([3.3, 3.0, 2.7], 8.0)];
+    let mut sdf = hard([20.0, 3.0, 20.0], 1.0);
+    sdf.shadow_type = ShadowType::Sdf;
+    let lights = [sdf, hard([3.3, 3.0, 2.7], 8.0)];
     let off = bake(
         contact_geometry(),
         &lights,
@@ -307,9 +320,8 @@ fn a_hard_contact_edge_warns_from_the_stage_only_with_the_floor_disabled() {
     assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
     let warning = &off.warnings[0];
     assert!(
-        warning.starts_with(
-            "[Lightmap] texel step: static light #0 at (3.30, 3.00, 2.70) on face 0 near ("
-        ),
+        warning
+            .starts_with("[Lightmap] texel step: static light entity 11 'light' on face 0 near ("),
         "{warning}"
     );
     assert!(
@@ -380,7 +392,7 @@ fn a_short_stepped_edge_warns_on_a_face_whose_other_edges_ramp() {
     let off = bake(geometry, &lights, &floor_config(false), run);
     assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
     assert!(
-        off.warnings[0].contains("static light #1 at (1.00, 0.60, 1.00) on face 0 near"),
+        off.warnings[0].contains("static light entity 11 'light' on face 0 near"),
         "{}",
         off.warnings[0]
     );
@@ -447,6 +459,86 @@ fn a_stepped_edge_across_a_face_cut_warns_once_for_the_parent_face() {
         },
     );
     assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+}
+
+/// A 36 m floor whose corner the polygon cuts off along x + z = 31, so a
+/// 64-texel pool edge cuts it 3 × 3 at 12 m and 24 m and its first piece,
+/// x and z under 12 m, has no polygon and emits no sub-face. A contact plate
+/// covers that piece, its edges on the two cut lines bounding it.
+fn missed_piece_geometry() -> GeometryResult {
+    let v = |x: f32, z: f32| Vec3::new(x, 0.0, z);
+    let mut geometry = empty_geometry();
+    push_polygon(
+        &mut geometry,
+        &[
+            v(31.0, 0.0),
+            v(36.0, 0.0),
+            v(36.0, 36.0),
+            v(0.0, 36.0),
+            v(0.0, 31.0),
+        ],
+        Vec3::Y,
+    );
+    push_quad(&mut geometry, -4.0, -4.0, 16.0, PLATE_HEIGHT, 0);
+    geometry
+}
+
+// Regression: a sub-face owned a pair only by its start texel, so a pair
+// starting in a piece the polygon missed, its other texel in a sub-face's
+// own segment, was never checked though the uncut face checks it. The plate's
+// shadow edges run exactly along such pairs; cut and uncut bakes report alike.
+#[test]
+fn a_stepped_edge_beside_a_missed_cut_piece_reports_as_on_the_uncut_face() {
+    let lights = [hard([14.0, 3.0, 14.0], 40.0)];
+    let config = floor_config(false);
+    let cut = bake(
+        missed_piece_geometry(),
+        &lights,
+        &config,
+        Run {
+            pool_edge: Some(CUT_POOL_EDGE),
+            ..Run::default()
+        },
+    );
+    let uncut = bake(missed_piece_geometry(), &lights, &config, Run::default());
+    let floor_steps = |baked: &Baked| {
+        baked
+            .report
+            .warnings
+            .iter()
+            .copied()
+            .find(|w| {
+                matches!(
+                    w.site,
+                    StepSite::Face(0) | StepSite::CutFace { parent: 0, .. }
+                )
+            })
+            .expect("the plate's edge steps on the floor")
+    };
+    let (cut_step, uncut_step) = (floor_steps(&cut), floor_steps(&uncut));
+    let StepSite::CutFace {
+        first_face,
+        last_face,
+        ..
+    } = cut_step.site
+    else {
+        panic!("the floor is cut: {:?}", cut_step.site);
+    };
+    assert_eq!(
+        last_face - first_face + 1,
+        8,
+        "nine pieces, one missed: {:?}",
+        cut_step.site
+    );
+    assert_eq!(uncut_step.site, StepSite::Face(0));
+    assert!(
+        uncut_step.pairs >= 90,
+        "both edges step: {}",
+        uncut_step.pairs
+    );
+    assert_eq!(cut_step.pairs, uncut_step.pairs, "every pair counts once");
+    assert_eq!(cut_step.position, uncut_step.position);
+    assert_eq!(cut_step.worst_difference, uncut_step.worst_difference);
 }
 
 // --- AC 19: a warm compile replays the cold compile's warnings -------------

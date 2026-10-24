@@ -1,4 +1,4 @@
-//! Persist the encoded lightmap blocks without a second section-sized buffer.
+//! Persist the `lightmap_section` entry, texel-step report first, without a second section-sized buffer.
 //! See: context/lib/development_guide.md §1.4 (resource lifetime).
 
 use postretro_level_format::lightmap::LightmapSection;

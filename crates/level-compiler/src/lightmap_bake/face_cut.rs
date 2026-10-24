@@ -173,6 +173,27 @@ pub struct CutParent {
     pub own: Vec<[Range<u32>; 2]>,
 }
 
+/// The cut map as key bytes: the count, then each cut's parent, sub-face
+/// range and own segments. A cached texel-step report names a cut face by
+/// its pre-cut index and counts a pair in the sub-face that owns it, so a
+/// key over such a report folds this; the cut geometry alone does not pin it.
+pub(crate) fn cut_map_key_bytes(cut_parents: &[CutParent]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(cut_parents.len() as u32).to_le_bytes());
+    for cut in cut_parents {
+        out.extend_from_slice(&cut.parent.to_le_bytes());
+        for bound in [cut.faces.start, cut.faces.end] {
+            out.extend_from_slice(&(bound as u32).to_le_bytes());
+        }
+        for [u, v] in &cut.own {
+            for bound in [u.start, u.end, v.start, v.end] {
+                out.extend_from_slice(&bound.to_le_bytes());
+            }
+        }
+    }
+    out
+}
+
 /// Replace each cut face in `geometry` and `charts` with its sub-faces, at
 /// its own slot, in window order. Every face owns its vertices afterwards;
 /// uncut faces keep their triangles and attributes. A no-op without cuts.

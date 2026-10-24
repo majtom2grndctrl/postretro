@@ -25,8 +25,9 @@ pub(crate) const TEXEL_STEP_THRESHOLD: f32 = 0.78 + 0.17;
 /// Whether a surface separates two texels of `chart`'s grid, given as
 /// interior texel coordinates of `chart`: whether `clear(from, to)` finds the
 /// segment between their ray origins (texel centres lifted `RAY_EPSILON`
-/// along the normal) blocked, each end stretched past its texel so a surface
-/// through a texel centre still counts.
+/// along the normal) blocked, tested from `RAY_EPSILON` before one origin to
+/// `RAY_EPSILON` past the other, so a surface through a texel centre still
+/// counts and the test is the same read from either texel.
 ///
 /// Such a pair is no lattice step but a break in the receiver: a texel whose
 /// centre lies under a solid resting on it (a chart's rectangle reaches past
@@ -45,16 +46,18 @@ pub(crate) fn surface_separates(
     let lift = chart.normal * RAY_EPSILON;
     let from = chart_texel_world_position(chart, a[0], a[1]) + lift;
     let to = chart_texel_world_position(chart, b[0], b[1]) + lift;
-    // Shadow-ray clears skip their first `RAY_EPSILON`; stretching both ends
-    // by two tests from one before `from` to two past `to`.
-    let reach = (to - from).normalize_or_zero() * (2.0 * RAY_EPSILON);
-    !clear(from - reach, to + reach)
+    // Shadow-ray clears skip their first `RAY_EPSILON` and test to the end,
+    // so the start moves back by two and the end on by one.
+    let dir = (to - from).normalize_or_zero();
+    !clear(from - dir * (2.0 * RAY_EPSILON), to + dir * RAY_EPSILON)
 }
 
-/// One light's stored visibility over one parent face's texel grid.
-/// Sub-charts of a cut face write into their parent's grid, so pairs across a
-/// cut are checked. A texel with no record for the light, or a padding texel,
-/// stays absent and never pairs.
+/// One light's stored visibility over a whole texel grid: the detector's
+/// test-only form, which fixtures fill and read back. Production streams
+/// each chart's rows through [`scan_chart`] and never holds a whole grid. A
+/// texel with no record for the light, or a padding texel, stays absent and
+/// never pairs.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VisibilityGrid {
     width: u32,
@@ -62,6 +65,7 @@ pub(crate) struct VisibilityGrid {
     texels: Vec<Option<f32>>,
 }
 
+#[cfg(test)]
 impl VisibilityGrid {
     /// A `width × height` grid with every texel absent.
     pub(crate) fn new(width: u32, height: u32) -> Self {
@@ -114,9 +118,9 @@ pub(crate) struct TexelSteps {
 }
 
 /// Count the axis-adjacent texel pairs on `grid` whose stored visibilities
-/// differ by more than `threshold` (production callers pass
-/// [`TEXEL_STEP_THRESHOLD`]). Reads stored values only, so it traces nothing.
-/// A pair needs both texels present; a NaN never counts.
+/// differ by more than `threshold`. Reads stored values only, so it traces
+/// nothing. A pair needs both texels present; a NaN never counts.
+#[cfg(test)]
 pub(crate) fn texel_steps(grid: &VisibilityGrid, threshold: f32) -> TexelSteps {
     scan_texel_steps(
         grid.width,
@@ -132,21 +136,24 @@ pub(crate) fn texel_steps(grid: &VisibilityGrid, threshold: f32) -> TexelSteps {
     )
 }
 
-/// [`texel_steps`] over a `width × height` grid streamed a row at a time,
-/// for callers whose visibility lives in sparse records rather than a grid.
+/// Count the axis-adjacent texel pairs of a `width × height` grid, streamed
+/// a row at a time, whose stored visibilities differ by more than
+/// `threshold` (production callers pass [`TEXEL_STEP_THRESHOLD`]). Reads
+/// stored values only, so it traces nothing. A pair needs both texels
+/// present; a NaN never counts.
 ///
 /// `fill_row(y, row)` writes row `y` (every slot, absent ones `None`); rows
-/// arrive in ascending order and only two are live. `owns(x, y)` says
-/// whether the pairs that begin at texel `(x, y)` belong to this scan: a
-/// sub-chart overlapping its neighbours checks only the pairs its own segment
-/// begins, so a cut face counts each pair once. `separated(a, b)` is asked
-/// only for an owned pair above the threshold; a separated pair is no step
-/// and adds nothing, not even to the worst difference.
+/// arrive in ascending order and only two are live. `owns(a, b)` says
+/// whether the pair from texel `a` to its right or lower neighbour `b`
+/// belongs to this scan: sub-charts overlap their neighbours, so a cut face
+/// counts each pair in one of them. `separated(a, b)` is asked only for an
+/// owned pair above the threshold; a separated pair is no step and adds
+/// nothing, not even to the worst difference.
 pub(crate) fn scan_texel_steps(
     width: u32,
     height: u32,
     mut fill_row: impl FnMut(u32, &mut [Option<f32>]),
-    owns: impl Fn(u32, u32) -> bool,
+    owns: impl Fn([u32; 2], [u32; 2]) -> bool,
     mut separated: impl FnMut([u32; 2], [u32; 2]) -> bool,
     threshold: f32,
 ) -> TexelSteps {
@@ -155,7 +162,7 @@ pub(crate) fn scan_texel_steps(
         let (Some(va), Some(vb)) = (va, vb) else {
             return;
         };
-        if !owns(a[0], a[1]) {
+        if !owns(a, b) {
             return;
         }
         let difference = (va - vb).abs();
@@ -276,7 +283,7 @@ mod tests {
             4,
             3,
             fill,
-            |_, y| y != 1,
+            |a, _| a[1] != 1,
             |_, _| false,
             TEXEL_STEP_THRESHOLD,
         );
@@ -315,5 +322,95 @@ mod tests {
         let steps = texel_steps(&grid, TEXEL_STEP_THRESHOLD);
         assert_eq!(steps.pairs, 1);
         assert_eq!(steps.worst_difference, 1.0);
+    }
+
+    /// A 4 × 1 floor chart of 1 m texels, its first texel centred at x = 0.5.
+    fn floor_chart() -> Chart {
+        let padding = 2 * crate::chart_raster::CHART_PADDING_TEXELS;
+        Chart {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [4.0, 1.0],
+            normal: Vec3::Y,
+            width_texels: 4 + padding,
+            height_texels: 1 + padding,
+            leaf_index: 0,
+            window: None,
+        }
+    }
+
+    /// One wall facing −X, standing across the floor at `x`.
+    fn wall_at(x: f32) -> crate::geometry::GeometryResult {
+        use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+        let corners = [
+            Vec3::new(x, -1.0, -1.0),
+            Vec3::new(x, -1.0, 2.0),
+            Vec3::new(x, 1.0, 2.0),
+            Vec3::new(x, 1.0, -1.0),
+        ];
+        let vertices = corners
+            .iter()
+            .map(|corner| {
+                Vertex::new(
+                    corner.to_array(),
+                    [0.0, 0.0],
+                    [-1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    true,
+                    [0.0, 0.0],
+                    0,
+                )
+            })
+            .collect();
+        crate::geometry::GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices: vec![0, 1, 2, 0, 2, 3],
+                faces: vec![FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                }],
+            },
+            texture_names: postretro_level_format::texture_names::TextureNamesSection {
+                names: Vec::new(),
+            },
+            face_index_ranges: vec![crate::geometry::FaceIndexRange {
+                index_offset: 0,
+                index_count: 6,
+            }],
+        }
+    }
+
+    // Regression: the separation segment ran from 1 mm before one texel
+    // centre to 2 mm past the other, so a wall 1.5 mm beyond texel `b`
+    // suppressed a real step while its mirror beyond `a` did not.
+    #[test]
+    fn a_surface_separates_texels_within_a_millimetre_of_either_centre_alike() {
+        let chart = floor_chart();
+        let (a, b) = ([0, 0], [1, 0]);
+        let separates = |x: f32| {
+            let geometry = wall_at(x);
+            let (bvh, primitives, _) =
+                crate::bvh_build::build_bvh(&geometry).expect("wall BVH builds");
+            let clear = |from, to| {
+                crate::lightmap_bake::segment_clear(&bvh, &primitives, &geometry, from, to)
+            };
+            (
+                surface_separates(&chart, a, b, clear),
+                surface_separates(&chart, b, a, clear),
+            )
+        };
+        // Texel centres sit at x = 0.5 (a) and x = 1.5 (b).
+        for (x, expected) in [
+            (1.0, true),
+            (0.5 - 0.0005, true),
+            (1.5 + 0.0005, true),
+            (0.5 - 0.0015, false),
+            (1.5 + 0.0015, false),
+        ] {
+            assert_eq!(separates(x), (expected, expected), "wall at x = {x}");
+        }
     }
 }

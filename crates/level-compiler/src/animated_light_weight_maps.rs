@@ -75,7 +75,13 @@ pub(crate) const WEIGHT_EPSILON: f32 = 1.0e-6;
 ///
 /// v11: clear footprint rays test their skipped lead-in, clip segments are
 /// tested from the texel centre itself, and the probe ring sits at a fixed
-/// 0.6 texel at every count.
+/// 0.6 texel at every count; the detector's surface test stretches 1 mm past
+/// both centres and a cut pair is owned even beside a missed cut piece.
+///
+/// Bump when the baked weights, the section or entry layout, or the
+/// texel-step detector's verdicts change: the entry stores the detector's
+/// report, and only its threshold is keyed, so a verdict change alone would
+/// replay stale warnings.
 ///
 /// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
 /// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
@@ -388,36 +394,63 @@ pub(crate) fn bake_animated_light_weight_maps_controlled(
         inputs.layout,
     )?;
 
-    control.publish_total(chunks.len());
-
-    // One task per face, its chunks in section order: a light's visibility
-    // grid spans every chunk of the face that lists it, so pairs across a
-    // chunk split are checked.
+    // A face's chunks in section order: a light's visibility grid spans
+    // every chunk of the face that lists it, so pairs across a chunk split
+    // are checked.
     let mut by_face: Vec<usize> = (0..chunks.len()).collect();
     by_face.sort_by_key(|&index| chunks[index].face_index);
     let faces: Vec<&[usize]> = by_face
         .chunk_by(|&a, &b| chunks[a].face_index == chunks[b].face_index)
         .collect();
-    let sites = CutSites::new(inputs.cut_parents, inputs.face_charts.len());
-    let face_bakes: Vec<face_bake::FaceBake> = faces
+    let sites = CutSites::new(inputs.cut_parents, inputs.face_charts);
+    // One governed item per face for its light-independent setup, whose clip
+    // pre-pass every light on the face then reads.
+    let setups: Vec<face_bake::FaceSetup<'_>> = faces
         .par_iter()
         .map(|chunk_indices| {
             let _permit = control.governor().enter();
-            let baked = face_bake::bake_face(inputs, &sites, chunk_indices);
-            control.advance(chunk_indices.len());
-            baked
+            face_bake::FaceSetup::new(inputs, chunk_indices)
         })
         .collect();
+    // Then one governed item per (face, light). A face lists more lights
+    // than a chunk holds only by splitting into many chunks, so the faces
+    // with the most lights cost the most; split by light, they spread over
+    // every worker instead of serializing on one. Each light's grid and
+    // entries depend on nothing else on the face.
+    let tasks: Vec<(usize, u32)> = setups
+        .iter()
+        .enumerate()
+        .flat_map(|(face, setup)| setup.lights.iter().map(move |&light| (face, light)))
+        .collect();
+    control.publish_total(tasks.len());
+    let mut light_bakes = tasks
+        .par_iter()
+        .map(|&(face, light)| {
+            let _permit = control.governor().enter();
+            let baked = setups[face].bake_light(inputs, &sites, light);
+            control.advance(1);
+            baked
+        })
+        .collect::<Vec<_>>()
+        .into_iter();
 
+    // Merged in (face, light) order, so section bytes and the report never
+    // depend on which worker baked what.
     let mut per_chunk: Vec<Option<ChunkBakeResult>> = (0..chunks.len()).map(|_| None).collect();
     let mut found = Vec::new();
     let mut texel_step_elapsed = Duration::ZERO;
-    for (chunk_indices, baked) in faces.iter().zip(face_bakes) {
-        for (&index, result) in chunk_indices.iter().zip(baked.chunks) {
+    for (chunk_indices, setup) in faces.iter().zip(setups) {
+        let face_bakes: Vec<face_bake::LightBake> =
+            light_bakes.by_ref().take(setup.lights.len()).collect();
+        for (&light, bake) in setup.lights.iter().zip(&face_bakes) {
+            if let Some(steps) = bake.steps {
+                found.push((light as usize, steps));
+            }
+            texel_step_elapsed += bake.detector;
+        }
+        for (&index, result) in chunk_indices.iter().zip(setup.into_chunks(face_bakes)) {
             per_chunk[index] = Some(result);
         }
-        found.extend(baked.steps);
-        texel_step_elapsed += baked.detector;
     }
     let per_chunk: Vec<ChunkBakeResult> = per_chunk
         .into_iter()

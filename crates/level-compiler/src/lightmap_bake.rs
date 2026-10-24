@@ -47,6 +47,7 @@ pub(crate) use cell_blocks::{
 pub use charts::{Chart, ChartWindow};
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
 pub use face_cut::CutParent;
+pub(crate) use face_cut::cut_map_key_bytes;
 #[cfg(test)]
 pub(crate) use face_cut::{plan_face_cuts, planned_chart_area};
 #[cfg(test)]

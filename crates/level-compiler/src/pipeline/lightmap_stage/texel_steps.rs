@@ -1,5 +1,4 @@
-//! Texel-step detection over the fused walk's partitions; the report it
-//! builds is stored in the `lightmap_section` memo so a warm build repeats it.
+//! Texel-step detection over the fused walk's partitions, for the `lightmap_section` memo's report.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use std::sync::Mutex;
@@ -55,7 +54,7 @@ impl<'a> StepDetector<'a> {
             bvh,
             primitives,
             geometry,
-            sites: CutSites::new(cut_parents, shared.charts.len()),
+            sites: CutSites::new(cut_parents, shared.charts),
             found: Mutex::new(Vec::new()),
             nanos: AtomicU64::new(0),
         }

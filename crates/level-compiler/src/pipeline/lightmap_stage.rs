@@ -30,7 +30,7 @@ mod window;
 use crate::lightmap_layer::chart_texel_bounds;
 #[cfg(test)]
 use crate::texel_step_detector::StepSite;
-use crate::texel_step_detector::TexelStepReport;
+use crate::texel_step_detector::{CutSites, TexelStepReport};
 pub(super) use metadata::MetadataCounts;
 use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
 pub(super) use peak::log_predicted_peak;
@@ -300,6 +300,7 @@ pub(crate) fn bake_fused_windowed(
             config.uncompressed_irradiance,
             config.direction_texel_scale,
             step_threshold,
+            &prepared.cut_parents,
         );
         CacheKey::new(
             "lightmap_section",
@@ -311,11 +312,12 @@ pub(crate) fn bake_fused_windowed(
         .zip(section_key.as_ref())
         .and_then(|(cache, key)| cache.get(key))
         .and_then(|bytes| {
+            let sites = CutSites::new(&prepared.cut_parents, &prepared.charts);
             let Some((report, section_bytes)) =
-                TexelStepReport::parse(&bytes, layer_lights.len(), prepared.charts.len())
+                TexelStepReport::parse(&bytes, layer_lights.len(), &sites)
             else {
                 log::warn!(
-                    "[Compiler] corrupt lightmap section, recomposing: memo entry has no texel-step report"
+                    "[Compiler] corrupt lightmap section, recomposing: malformed texel-step report"
                 );
                 return None;
             };
@@ -475,7 +477,12 @@ pub(crate) fn bake_fused_windowed(
     };
     // Cold, warm or replayed, the same report logs once, here, on the
     // caller's thread.
-    texel_steps.log("static", |light| layer_lights[light as usize].light.origin);
+    texel_steps.log("static", |light| {
+        let entry = layer_lights.get(light as usize)?;
+        light_source_labels
+            .get(entry.source_index)
+            .map(String::as_str)
+    });
 
     // If the lightmap memo hit but the shadowmask memo missed, consume only the
     // owner-eligible partitions. They are read/baked once here and never by a later

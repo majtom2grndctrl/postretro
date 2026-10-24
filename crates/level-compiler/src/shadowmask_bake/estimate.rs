@@ -16,8 +16,7 @@ use crate::lightmap_bake::{
     CutParent, light_contribution_and_direction, light_texel_contribution_and_visibility_with,
     segment_clear_remembering,
 };
-use crate::lightmap_layer::SharedAtlas;
-use crate::map_data::{LightType, MapLight};
+use crate::lightmap_layer::{SharedAtlas, light_may_reach};
 use crate::texel_footprint::{
     ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };
@@ -134,16 +133,6 @@ fn parent_bounds(cut: &CutParent, shared: &SharedAtlas<'_>) -> (Vec3, Vec3) {
     (min, max)
 }
 
-/// Whether `light`'s falloff can reach the box at all: a cheap cull before any
-/// per-sample analytic test. Directional and unranged lights always may.
-fn light_may_reach_box(light: &MapLight, (min, max): (Vec3, Vec3)) -> bool {
-    if light.light_type == LightType::Directional || light.falloff_range <= 0.0 {
-        return true;
-    }
-    let origin = light.origin.as_vec3();
-    origin.clamp(min, max).distance(origin) <= light.falloff_range
-}
-
 /// One sub-face's light-independent sampling setup, read by every light.
 struct SubFaceSampling {
     frame: TexelFrame,
@@ -181,7 +170,9 @@ pub(super) fn estimate_cut_owners(
             eligible
                 .iter()
                 .enumerate()
-                .filter(move |(_, light)| light_may_reach_box(light.light, bounds))
+                // The static bake's own reach cull, so a light the walk
+                // never reaches is never traced here either.
+                .filter(move |(_, light)| light_may_reach(light.light, Some(bounds)))
                 .map(move |(l, _)| (c, l))
         })
         .collect();

@@ -5,99 +5,41 @@ use std::time::Duration;
 
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 
-use crate::animated_light_weight_maps::WeightMapBake;
+use crate::animated_light_weight_maps::{WeightMapBake, WeightMapInputs};
 use crate::bake_control::BakeControl;
-use crate::lightmap_bake::BlockLayout;
+use crate::light_namespaces::AnimatedBakedLights;
+use crate::lightmap_bake::{BlockLayout, cut_map_key_bytes};
 use crate::lightmap_layer::{SharedAtlas, atlas_layout_fingerprint};
-use crate::texel_step_detector::TexelStepReport;
+use crate::texel_step_detector::{CutSites, TexelStepReport};
 use crate::{
     animated_atlas_layout, animated_block_ids, animated_light_weight_maps, cache, geometry,
 };
 
 /// Load the animated-light weight maps from the stage cache, or bake them and
 /// store the result with the texel-step report the bake found. Either way the
-/// report logs once, here, on the caller's thread. Fails when an animated
-/// face's chart leaves its lightmap cell block.
+/// report logs once, here, on the caller's thread, naming each light by its
+/// source label: `animated_lights` is the list `wm_inputs.lights` was taken
+/// from, in order. Fails when an animated face's chart leaves its lightmap
+/// cell block.
 pub(super) fn bake_or_load_weight_maps(
-    wm_inputs: &animated_light_weight_maps::WeightMapInputs<'_>,
+    wm_inputs: &WeightMapInputs<'_>,
     final_lightmap_density: f32,
     stage_cache: Option<&cache::StageCache>,
     animated_weight_control: &BakeControl,
+    animated_lights: &AnimatedBakedLights<'_>,
+    light_source_labels: &[String],
 ) -> anyhow::Result<WeightMapBake> {
-    let animated_chunk_lights = wm_inputs.lights;
-    let geo_result = wm_inputs.geometry;
-    let atlas_width = wm_inputs.atlas_width;
-    let atlas_height = wm_inputs.atlas_height;
-    let static_atlas_layer_count = wm_inputs.static_atlas_layer_count;
+    debug_assert_eq!(animated_lights.len(), wm_inputs.lights.len());
     let animated_light_chunks_section = wm_inputs.chunk_section;
-    let soft_shadow_samples = wm_inputs.area_sample_count;
-
-    // Build the input hash from owned/serializable data. Charts, placements,
-    // and the chunk section don't derive `Serialize`, so the hash folds
-    // `animated_light_chunks_section.to_bytes()` as a proxy. That proxy is a
-    // valid fingerprint for charts AND placements because
-    // `build_animated_light_chunks` (and the upstream chart/placement
-    // construction) are deterministic given geometry + lights + density — the
-    // section bytes faithfully capture those derived inputs.
-    //
-    // Weight maps run after atlas preparation and consume `geo_result` with
-    // split vertices and assigned atlas UVs. Hash that same prepared geometry
-    // so the cache key matches the bake inputs. The chunk-section proxy does
-    // not see where charts landed, and the cached blocks carry cell-block
-    // keys and block-local texels, so the layout fingerprint (placements and
-    // the cell-block table) is folded too. The stored report names a cut face
-    // by its pre-cut index and owns pairs by cut segment, which the cut
-    // geometry alone does not pin, so the cut map is folded as well.
-    let layout_fingerprint = atlas_layout_fingerprint(&SharedAtlas {
-        charts: wm_inputs.face_charts,
-        placements: wm_inputs.face_placements,
-        atlas_width,
-        atlas_height,
-        layout: wm_inputs.layout,
-    });
-    let wm_input_hash = {
-        let mut buf = postcard::to_allocvec(&animated_chunk_lights)
-            .expect("postcard serialize animated_chunk_lights");
-        buf.extend_from_slice(
-            &postcard::to_allocvec(&geo_result).expect("postcard serialize geo_result"),
-        );
-        buf.extend_from_slice(&final_lightmap_density.to_le_bytes());
-        buf.extend_from_slice(&atlas_width.to_le_bytes());
-        buf.extend_from_slice(&atlas_height.to_le_bytes());
-        buf.extend_from_slice(&static_atlas_layer_count.to_le_bytes());
-        buf.extend_from_slice(&animated_light_chunks_section.to_bytes());
-        buf.extend_from_slice(&soft_shadow_samples.to_le_bytes());
-        buf.extend_from_slice(&layout_fingerprint);
-        buf.push(u8::from(wm_inputs.penumbra_floor));
-        buf.extend_from_slice(&wm_inputs.step_threshold.to_bits().to_le_bytes());
-        buf.extend_from_slice(&(wm_inputs.cut_parents.len() as u32).to_le_bytes());
-        for cut in wm_inputs.cut_parents {
-            buf.extend_from_slice(&cut.parent.to_le_bytes());
-            for bound in [cut.faces.start, cut.faces.end] {
-                buf.extend_from_slice(&(bound as u32).to_le_bytes());
-            }
-            for [u, v] in &cut.own {
-                for bound in [u.start, u.end, v.start, v.end] {
-                    buf.extend_from_slice(&bound.to_le_bytes());
-                }
-            }
-        }
-        *blake3::hash(&buf).as_bytes()
-    };
-    let wm_key = cache::CacheKey::new(
-        "animated_lm_weight_maps",
-        animated_light_weight_maps::STAGE_VERSION,
-        &wm_input_hash,
-    );
+    let wm_key = weight_map_cache_key(wm_inputs, final_lightmap_density);
 
     let cached = stage_cache.and_then(|c| c.get(&wm_key)).and_then(|bytes| {
-        let Some((report, section_bytes)) = TexelStepReport::parse(
-            &bytes,
-            animated_chunk_lights.len(),
-            wm_inputs.face_charts.len(),
-        ) else {
+        let sites = CutSites::new(wm_inputs.cut_parents, wm_inputs.face_charts);
+        let Some((report, section_bytes)) =
+            TexelStepReport::parse(&bytes, wm_inputs.lights.len(), &sites)
+        else {
             log::warn!(
-                "[cache] corrupt animated_lm_weight_maps entry, re-baking: no texel-step report"
+                "[cache] corrupt animated_lm_weight_maps entry, re-baking: malformed texel-step report"
             );
             return None;
         };
@@ -144,9 +86,63 @@ pub(super) fn bake_or_load_weight_maps(
         bake
     };
     bake.texel_steps.log("animated", |light| {
-        animated_chunk_lights[light as usize].origin
+        let entry = animated_lights.entries().get(light as usize)?;
+        light_source_labels
+            .get(entry.source_index)
+            .map(String::as_str)
     });
     Ok(bake)
+}
+
+/// The `animated_lm_weight_maps` cache key.
+///
+/// Build the input hash from owned/serializable data. Charts, placements,
+/// and the chunk section don't derive `Serialize`, so the hash folds
+/// `chunk_section.to_bytes()` as a proxy. That proxy is a valid fingerprint
+/// for charts AND placements because `build_animated_light_chunks` (and the
+/// upstream chart/placement construction) are deterministic given geometry +
+/// lights + density — the section bytes faithfully capture those derived
+/// inputs.
+///
+/// Weight maps run after atlas preparation and consume the geometry with
+/// split vertices and assigned atlas UVs. Hash that same prepared geometry so
+/// the cache key matches the bake inputs. The chunk-section proxy does not
+/// see where charts landed, and the cached blocks carry cell-block keys and
+/// block-local texels, so the layout fingerprint (placements and the
+/// cell-block table) is folded too. The stored report names a cut face by its
+/// pre-cut index and owns pairs by cut segment, so the cut map is folded as
+/// well.
+fn weight_map_cache_key(
+    wm_inputs: &WeightMapInputs<'_>,
+    final_lightmap_density: f32,
+) -> cache::CacheKey {
+    let layout_fingerprint = atlas_layout_fingerprint(&SharedAtlas {
+        charts: wm_inputs.face_charts,
+        placements: wm_inputs.face_placements,
+        atlas_width: wm_inputs.atlas_width,
+        atlas_height: wm_inputs.atlas_height,
+        layout: wm_inputs.layout,
+    });
+    let mut buf =
+        postcard::to_allocvec(&wm_inputs.lights).expect("postcard serialize animated_chunk_lights");
+    buf.extend_from_slice(
+        &postcard::to_allocvec(&wm_inputs.geometry).expect("postcard serialize geo_result"),
+    );
+    buf.extend_from_slice(&final_lightmap_density.to_le_bytes());
+    buf.extend_from_slice(&wm_inputs.atlas_width.to_le_bytes());
+    buf.extend_from_slice(&wm_inputs.atlas_height.to_le_bytes());
+    buf.extend_from_slice(&wm_inputs.static_atlas_layer_count.to_le_bytes());
+    buf.extend_from_slice(&wm_inputs.chunk_section.to_bytes());
+    buf.extend_from_slice(&wm_inputs.area_sample_count.to_le_bytes());
+    buf.extend_from_slice(&layout_fingerprint);
+    buf.push(u8::from(wm_inputs.penumbra_floor));
+    buf.extend_from_slice(&wm_inputs.step_threshold.to_bits().to_le_bytes());
+    buf.extend_from_slice(&cut_map_key_bytes(wm_inputs.cut_parents));
+    cache::CacheKey::new(
+        "animated_lm_weight_maps",
+        animated_light_weight_maps::STAGE_VERSION,
+        blake3::hash(&buf).as_bytes(),
+    )
 }
 
 /// Repack the culled animated atlas into its compact layout and enforce what

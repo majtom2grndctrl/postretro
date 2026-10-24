@@ -681,6 +681,20 @@ impl SeatTable {
         Some(placement)
     }
 
+    /// The `player_spawn` a participating joiner's pawn materializes at: its
+    /// seat's earlier assignment, else the next spawn no live pawn or held seat
+    /// occupies. Occupancy reads durable pawn associations, so the host's own
+    /// pawn keeps its spawn after movement carries it away.
+    pub fn assign_joiner_placement(
+        &mut self,
+        registry: &EntityRegistry,
+        seat: Seat,
+        placement_count: usize,
+    ) -> Option<usize> {
+        let live = self.occupied_live_placements(registry, placement_count);
+        self.assign_placement(seat, placement_count, live)
+    }
+
     #[cfg(test)]
     fn carried_state_for_test(&self, seat: Seat) -> Option<&CarriedState> {
         self.carried_state(seat)
@@ -1822,6 +1836,38 @@ mod tests {
             seats.assign_placement(post_level_admission, 3, [0, 1]),
             Some(2),
             "a post-level admission scans live pawn occupancy before assigning a spawn"
+        );
+    }
+
+    // The host's install-time pawn holds only its own spawn: the first joiner
+    // takes the next one, the second the one after, and a joiner beyond the
+    // spawn count shares one.
+    #[test]
+    fn joiners_take_the_spawns_the_host_pawn_leaves_free() {
+        let mut seats = SeatTable::from_test_session_id([14; 16]);
+        let mut registry = EntityRegistry::new();
+        let host = registry.spawn(Transform::default());
+        seats.bind_level_spawn_placement(host, 0);
+        let joiners: Vec<Seat> = (51..=53)
+            .map(|client| seats.admit_or_reclaim(client, None, false).unwrap().seat)
+            .collect();
+
+        assert_eq!(
+            seats.assign_joiner_placement(&registry, joiners[0], 3),
+            Some(1)
+        );
+        let first = registry.spawn(Transform::default());
+        seats.bind_pawn(&mut registry, joiners[0], first);
+        assert_eq!(
+            seats.assign_joiner_placement(&registry, joiners[1], 3),
+            Some(2)
+        );
+        let second = registry.spawn(Transform::default());
+        seats.bind_pawn(&mut registry, joiners[1], second);
+        assert_eq!(
+            seats.assign_joiner_placement(&registry, joiners[2], 3),
+            Some(0),
+            "every spawn taken: the joiner shares one"
         );
     }
 

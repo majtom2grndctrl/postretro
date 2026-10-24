@@ -902,20 +902,12 @@ impl App {
             handles,
             &mut self.level_timings,
             upload_mesh_models,
-            |spawn_points| {
-                let Some(seats) = session.seat_table.as_mut() else {
-                    return;
-                };
-                let local_pawn = {
-                    let registry = script_ctx.registry.borrow();
-                    crate::capture_player_spawn_placements(&registry, spawn_points, seats);
-                    registry.local_player_pawn()
-                };
-                if let Some(pawn) = local_pawn {
-                    seats.bind_pawn(
+            |first_player| {
+                if let Some(seats) = session.seat_table.as_mut() {
+                    bind_installed_first_player(
+                        seats,
                         &mut script_ctx.registry.borrow_mut(),
-                        postretro_foundation::Seat(0),
-                        pawn,
+                        first_player,
                     );
                 }
             },
@@ -1559,6 +1551,22 @@ pub(crate) struct WorldInstallProducts {
     /// The map's `player_spawn` placements, retained by the windowed host for the
     /// runtime net-slot accept path.
     pub(crate) spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
+}
+
+/// Bind the installed first player to the host's seat (seat 0) and record the
+/// `player_spawn` it took, before movement moves its pawn, so joiners are
+/// assigned the spawns left free.
+pub(crate) fn bind_installed_first_player(
+    seats: &mut crate::netcode::SeatTable,
+    registry: &mut postretro_entities::EntityRegistry,
+    first_player: Option<crate::scripting::builtins::PlayerSpawned>,
+) {
+    if let Some(spawned) = first_player {
+        seats.bind_level_spawn_placement(spawned.pawn, spawned.placement);
+    }
+    if let Some(pawn) = registry.local_player_pawn() {
+        seats.bind_pawn(registry, postretro_foundation::Seat(0), pawn);
+    }
 }
 
 /// Why a delivered level payload was refused before any install mutation.

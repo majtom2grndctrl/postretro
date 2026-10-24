@@ -48,6 +48,7 @@ The rule is not "avoid Quake artifacts." Quake-shaped authoring is fine and expe
 | Radiosity intensity reference (mapper-authored `light 300`) | Linear intensity |
 | Texture projection dialects (Standard, Valve 220) | Resolved UV axes |
 | Classnames and FGD property names | Canonical archetypes and typed fields |
+| FGD point-entity boxes (`player_spawn`'s origin sits 24 units above its box bottom) | The canonical point: a `player_spawn` origin is the feet (`format/quake_map/entity_origin.rs`) |
 | Editor-only containers and keys (`func_group`, `_tb_*`) | Flattened into the world or dropped, before shared logic |
 | Text-format quoting and escaping quirks | Decoded values |
 

@@ -154,8 +154,9 @@ fn close(a: f32, b: f32, epsilon: f32) -> bool {
     (a - b).abs() <= epsilon
 }
 
-/// One installed ghost-link level on a single-player host, plus a partner pawn
-/// standing in copy B (a network-slot pawn, as a host materializes a client's).
+/// One installed ghost-link level on a co-op host, plus a partner pawn standing
+/// in copy B: a joiner's network-slot pawn at the spawn the host's seat table
+/// assigns it, as the host materializes a client's.
 struct Level {
     app: crate::App,
     ctx: ScriptCtx,
@@ -165,6 +166,10 @@ struct Level {
     wire: String,
     pawn: EntityId,
     partner: EntityId,
+    /// Player pawns before the partner joined: the boot spawn alone.
+    boot_players: usize,
+    /// The `player_spawn` index the host's seat table assigned the partner.
+    partner_placement: usize,
     input_tick: u32,
     anim_time: f64,
     /// The presented-frame clock the ghost update ramps by, one `DT` per frame.
@@ -218,6 +223,7 @@ impl Level {
 
         let content_root = workspace().join("content/dev");
         let nav_graph = crate::startup::lifecycle::install_world_gravity_and_nav(&world, &ctx);
+        let mut seats = crate::netcode::SeatTable::local_only();
         let products = {
             let session = app.session.as_mut().unwrap();
             session.light_bridge.populate_from_level(
@@ -259,7 +265,14 @@ impl Level {
                 |_models, _clips| {
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
-                |_spawns| {},
+                // The windowed host's seat binding (`lifecycle.rs`).
+                |first_player| {
+                    crate::startup::lifecycle::bind_installed_first_player(
+                        &mut seats,
+                        &mut ctx.registry.borrow_mut(),
+                        first_player,
+                    )
+                },
             )
         };
         // The windowed install's post-install wiring (`lifecycle.rs`).
@@ -294,18 +307,31 @@ impl Level {
             .borrow()
             .local_player_pawn()
             .expect("the boot pawn spawned at player_spawn");
-        // The partner: the level's second `player_spawn`, in copy B, through the
-        // host's network-slot materialization.
-        let placement = world
-            .map_entities
-            .iter()
-            .filter(|entity| entity.classname == "player_spawn")
-            .nth(1)
-            .cloned()
-            .expect("a second player_spawn, in copy B");
+        let boot_players = ctx
+            .registry
+            .borrow()
+            .iter_with_kind(ComponentKind::PlayerMovement)
+            .count();
+        // The partner joins: the host's seat table assigns its spawn, as the
+        // participating-slot path in `main.rs` does, and the network-slot
+        // materialization spawns it there.
+        let seat = seats
+            .admit_or_reclaim(
+                7,
+                Some(postretro_net::wire::ConnectClaim {
+                    player_id: postretro_net::wire::PlayerClaimId([7; 16]),
+                    display_name: "Partner".to_string(),
+                }),
+                false,
+            )
+            .expect("the partner is admitted to a seat")
+            .seat;
+        let partner_placement = seats
+            .assign_joiner_placement(&ctx.registry.borrow(), seat, products.spawn_points.len())
+            .expect("the partner is assigned a player_spawn");
         let partner =
             postretro_sim::scripting::builtins::net_descriptor::spawn_net_slot_pawn_with_carried_loadout(
-                &crate::scripting::map_entity::MapEntity::from(placement),
+                &products.spawn_points[partner_placement],
                 &manifest.entities,
                 &mut ctx.registry.borrow_mut(),
                 None,
@@ -320,6 +346,8 @@ impl Level {
             wire,
             pawn,
             partner,
+            boot_players,
+            partner_placement,
             input_tick: 0,
             anim_time: 0.0,
             start: Instant::now(),
@@ -805,6 +833,36 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
         assert_eq!(
             swell.args,
             serde_json::json!({ "volume": 0.9, "lowPassHz": 5000, "periodMs": 1500 })
+        );
+    }
+}
+
+// Each copy holds a `player_spawn`, copy B's marked `coop_only`. The host gets
+// one pawn, at copy A's spawn; copy B's spawn stands empty until a joiner
+// takes it through the host's seat table, resting on copy B's floor.
+#[test]
+fn ghost_link_spawns_one_host_pawn_and_seats_the_joiner_in_copy_b() {
+    let out = tempfile::tempdir().unwrap();
+    for map in ["ghost-links", "ghost-links-luau"] {
+        let level = Level::install(compile(map, out.path()));
+        assert_eq!(level.boot_players, 1, "{map}: two spawns, one host pawn");
+        assert_eq!(
+            level.partner_placement, 1,
+            "{map}: the joiner takes the free spawn"
+        );
+        let (pawn, partner) = (level.position(level.pawn), level.position(level.partner));
+        assert!(
+            pawn.z > COPY_OFFSET.z * 0.5,
+            "{map}: the host starts in copy A: {pawn}"
+        );
+        assert!(
+            partner.z < COPY_OFFSET.z * 0.5,
+            "{map}: the joiner starts in copy B: {partner}"
+        );
+        // Both copies' floors sit at the same height: the pawns stand level.
+        assert!(
+            close(pawn.y, partner.y, 1e-4),
+            "{map}: both stand on the floor: {pawn} vs {partner}"
         );
     }
 }

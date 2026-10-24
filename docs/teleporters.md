@@ -66,8 +66,9 @@ The margin is measured from the player's capsule as it is when they arrive, so a
 crouching or sliding player reaching a destination set for standing arrives in
 the air and drops the difference.
 
-This is not the rule for `player_spawn`, which the engine places for you. Your
-mod's player script sets the capsule (`movement.capsule` on the `player`
+This is not the rule for `player_spawn`, whose box you rest on the floor (see
+[Player Spawns](level_design.md#player-spawns)). Your mod's player script sets
+the capsule (`movement.capsule` on the `player`
 entity); use its numbers if they differ.
 
 ---

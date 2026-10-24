@@ -323,9 +323,11 @@
     model(string) : "Model path (relative to content root, e.g. models/x/scene.gltf)" : ""
 ]
 
-// Player spawn point. At level load the engine spawns one entity per
-// `player_spawn` placement, using `entity_class` to pick the registered
-// classname (defaults to `"player"`).
+// Player spawn point: a place a player can start, not a pawn by itself. The
+// first player (single player, or a co-op host) starts at the first spawn in
+// map order not marked `coop_only`; each co-op joiner takes the next free one.
+// Rest the box on the floor: its bottom is where the player's feet stand.
+// `entity_class` picks the registered classname (defaults to `"player"`).
 @PointClass base(EntitySpawn)
     color(0 220 0)
     size(-16 -16 -24, 16 16 32)
@@ -333,6 +335,11 @@
 [
     angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
     entity_class(string) : "Registered classname to spawn" : "player"
+    coop_only(choices) : "Co-op joiners only" : 0 =
+    [
+        0 : "No"
+        1 : "Yes (never the first player's start)"
+    ]
 ]
 
 // Stateless enemy spawn point. The named archetype is resolved at level load;

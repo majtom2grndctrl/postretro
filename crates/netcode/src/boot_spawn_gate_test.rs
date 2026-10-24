@@ -133,7 +133,10 @@ fn pre_fix_boot_spawn_would_create_a_second_pawn_and_steal_the_marker() {
     // registry exactly as `spawn_from_player_starts` does at level install.
     let starts = [player_start()];
     let result = spawn_from_player_starts(&starts, &descriptors, &mut h.client_registry, None);
-    assert_eq!(result.spawned, 1, "the boot spawn materialized a pawn");
+    assert!(
+        result.spawned.is_some(),
+        "the boot spawn materialized a pawn"
+    );
 
     // The boot pawn is a PlayerMovement pawn and it grabbed the local-player marker.
     assert_eq!(

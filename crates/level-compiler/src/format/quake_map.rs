@@ -17,6 +17,9 @@ use crate::map_format::MapFormat;
 // this adapter.
 pub mod angles;
 pub use angles::{quake_to_engine_angles, try_quake_to_engine_angles};
+// Point-entity origin translation, a child module for the same reason.
+pub mod entity_origin;
+pub use entity_origin::canonical_entity_origin;
 
 /// Every classname the FGD defines as a light entity. Baked-tier
 /// (`light`/`light_spot`/`light_sun`) and dynamic-tier

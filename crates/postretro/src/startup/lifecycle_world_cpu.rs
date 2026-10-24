@@ -4,6 +4,7 @@ use super::lifecycle_model_sweep::{ParsedSweepModel, install_hit_zones, parse_sw
 use super::*;
 
 use crate::scripting::builtins::data_archetype::projectile_presentation_assets;
+use crate::scripting::builtins::player_spawn::{first_player_spawn_order, standing_position};
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
     filter_out_client_host_replicated_placements, movement_descriptor_mesh_models,
@@ -57,8 +58,9 @@ pub(crate) fn start_installed_presentation_animations(
 /// warnings. Stage durations record into
 /// `timings`, matching the windowed log-line-C labels. The caller-owned
 /// `before_level_load` hook runs after player-pawn materialization and before
-/// the event fire, so session state may bind a local pawn without making this
-/// installer depend on the seat table. Static collision is not built here: each
+/// the event fire, with the first player's pawn and the `player_spawn` it took,
+/// so session state may bind a local pawn and its placement without making
+/// this installer depend on the seat table. Static collision is not built here: each
 /// caller builds it with `CollisionWorld::from_level` (fallible, before any
 /// install mutation) and commits it before this call.
 pub(crate) fn install_world_cpu(
@@ -69,7 +71,7 @@ pub(crate) fn install_world_cpu(
         &mut crate::scripting_systems::mesh_anim::MeshClipTables,
     )
         -> crate::scripting_systems::hit_zones::ModelLoadWarningOwner,
-    mut before_level_load: impl FnMut(&[crate::scripting::map_entity::MapEntity]),
+    mut before_level_load: impl FnMut(Option<crate::scripting::builtins::PlayerSpawned>),
 ) -> WorldInstallProducts {
     let WorldInstallHandles {
         world,
@@ -337,7 +339,7 @@ pub(crate) fn install_world_cpu(
     // but drop restores that descriptor mesh during gameplay. Preload the world
     // holder and attachments now; model upload remains renderer-owned.
     let touchable_wieldable_world_models = touchable_wieldable_world_models(&descriptors);
-    let first_spawn = {
+    let (first_spawn, first_player) = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
         if suppress_host_replicated {
@@ -370,28 +372,42 @@ pub(crate) fn install_world_cpu(
             );
         }
 
-        // Camera pose is seeded from the first spawn regardless of spawn success
-        // (a connected client holds it until the net baseline arms its pawn).
-        let first_spawn: Option<(Vec3, Vec3)> = spawn_points.first().map(|e| (e.origin, e.angles));
-
         // A connected client must NOT spawn a boot pawn (its authoritative pawn
         // arrives as a host-replicated baseline); single-player and the listen host
-        // keep spawning theirs.
-        if suppress_boot_pawn {
+        // spawn exactly one, the first player's: a spawn point is a place, not a
+        // pawn, and the host gives joiners the free ones.
+        let first_player = if suppress_boot_pawn {
             log::info!("[Loader] connected client: deferring player spawn to host baseline");
+            None
         } else if !spawn_points.is_empty() {
-            let _ = spawn_from_player_starts_with_carried_loadout(
+            spawn_from_player_starts_with_carried_loadout(
                 &spawn_points,
                 &descriptors,
                 &mut registry,
                 agent_params,
                 local_carried_loadout.as_ref(),
-            );
+            )
+            .spawned
         } else {
             log::info!("[Loader] no player_spawn in map; skipping player spawn");
-        }
+            None
+        };
 
-        first_spawn
+        // Camera pose: where a pawn stands at the first player's spawn, seeded
+        // regardless of spawn success (a connected client holds it until the
+        // net baseline arms its pawn).
+        let camera_spawn = first_player
+            .map(|spawned| spawned.placement)
+            .or_else(|| first_player_spawn_order(&spawn_points).first().copied());
+        let first_spawn: Option<(Vec3, Vec3)> = camera_spawn.map(|index| {
+            let spawn = &spawn_points[index];
+            (
+                standing_position(spawn, &descriptors, agent_params),
+                spawn.angles,
+            )
+        });
+
+        (first_spawn, first_player)
     };
     let spawner_diagnostics = {
         let mut registry = script_ctx.registry.borrow_mut();
@@ -508,7 +524,7 @@ pub(crate) fn install_world_cpu(
 
     // Bind caller-owned session state after the archetype sweep has created
     // player pawns but before `levelLoad` can address their owner association.
-    before_level_load(&spawn_points);
+    before_level_load(first_player);
 
     // PROGRESS MEMBERSHIP INSTALL ORDER: a `progress` counts the map-placed
     // entities carrying its tag at install. Descriptor NPCs materialize in the

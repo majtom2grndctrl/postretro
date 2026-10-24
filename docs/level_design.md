@@ -53,6 +53,34 @@ ignores roll. Lights use `angles` as a direction instead; see their keys below.
 
 ---
 
+## Player Spawns
+
+A `player_spawn` is a place a player can start, not a player by itself. However
+many a map has, one player gets one body.
+
+- **Where the player stands.** Rest the spawn's box on the floor, as
+  TrenchBroom does when you drop it there. The bottom of the box is where the
+  player's feet stand, whatever size your mod makes the player. A box floating
+  above the floor starts the player in the air, and they drop. A box sunk into
+  the floor is an error in the map, not something the engine fixes.
+- **Who starts where.** In single player, and for the host of a co-op game, the
+  player starts at the first `player_spawn` in the map that is not marked
+  `coop_only`. Each player who joins a co-op game takes the next spawn nobody is
+  using, in map order. When every spawn is taken, a joiner shares one and the
+  engine logs a warning, so give a co-op map one spawn per player.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `angle` / `angles` | yaw, or pitch yaw roll | `0` | The direction the player looks (see Entity facing). |
+| `coop_only` | 0/1 | `0` | `1` keeps this spawn for co-op joiners: the first player never starts here. If every spawn is marked, the first player takes the first one and the engine logs a warning. |
+| `entity_class` | string | `player` | The registered entity the player is spawned as. |
+
+Spawns appear in the map file in the order you placed them. TrenchBroom keeps
+that order, but if a co-op spawn must never be the first player's, mark it
+`coop_only` rather than relying on its position.
+
+---
+
 ## Lights
 
 ### `light` — Point Light

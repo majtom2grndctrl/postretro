@@ -260,6 +260,8 @@ Movement design intent — the custom-kinematic foundation, the declarative auth
 
 A player pawn is present only when a `player_spawn` entity in the level resolves to a movement descriptor. When no pawn exists, the engine falls back to a fly-camera so maps are navigable without a player descriptor.
 
+**Player spawn points.** A `player_spawn` is a place, never a pawn by itself. Single player and a co-op host materialize exactly one pawn at install, at the first spawn in map order without `coop_only 1` whose `entity_class` resolves (co-op-only spawns are a warned fallback); the host assigns each joiner a free spawn in map order through the seat table (`networking.md` §Slot lifecycle). The selection and the origin shift live in `crates/sim/src/scripting/builtins/player_spawn.rs`. A spawn's canonical origin is the **feet**: the `.map` front end moves `player_spawn` 24 units down to the bottom of its FGD box (Quake's player hull, `size(-16 -16 -24, 16 16 32)`), and spawn raises a movement pawn's transform by `halfHeight + radius` to the capsule centre, as AI placements already rise from feet. Nothing snaps or depenetrates a pawn at spawn, so a box sunk into the floor starts embedded. A `.prl` baked before this convention must be rebaked: un-rebaked spawns sit 24 units deeper and start in the floor.
+
 ---
 
 ## 7c. Enemy Brain Component

@@ -2809,14 +2809,15 @@ mod tests {
         let id = spawn_net_slot_pawn(&placement, &descriptors, &mut reg, None)
             .expect("net-slot pawn spawns from a player descriptor");
 
-        // It is a movement pawn at the placement origin.
+        // It is a movement pawn standing on the placement origin: its feet.
         assert!(matches!(
             reg.has_component_kind(id, ComponentKind::PlayerMovement),
             Ok(true)
         ));
+        let capsule = &descriptors[0].movement.as_ref().unwrap().capsule;
         assert_eq!(
             reg.get_component::<Transform>(id).unwrap().position,
-            Vec3::new(2.0, 1.0, -3.0)
+            Vec3::new(2.0, 1.0 + capsule.half_height + capsule.radius, -3.0)
         );
 
         // Provenance distinguishes it from a map-start single-player spawn.

@@ -178,10 +178,10 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 // tests. Test-only: the boot path calls it through `startup::session`.
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
+#[cfg(test)]
+use postretro_entities::Transform;
 use postretro_entities::components::inventory::Inventory;
-use postretro_entities::{
-    ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand, Transform,
-};
+use postretro_entities::{ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand};
 #[cfg(test)]
 use postretro_foundation::LEGACY_WEAPON_PLACEMENT;
 #[cfg(test)]
@@ -4138,21 +4138,12 @@ impl App {
                                     );
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
-                                    let live_placements = seat_table
-                                        .as_deref()
-                                        .map(|seats| {
-                                            seats.occupied_live_placements(
-                                                &registry,
-                                                host_spawn_points.len(),
-                                            )
-                                        })
-                                        .unwrap_or_default();
                                     let Some(placement_index) =
                                         seat_table.as_deref_mut().and_then(|seats| {
-                                            seats.assign_placement(
+                                            seats.assign_joiner_placement(
+                                                &registry,
                                                 seat,
                                                 host_spawn_points.len(),
-                                                live_placements,
                                             )
                                         })
                                     else {
@@ -6032,28 +6023,6 @@ impl App {
                 log::warn!("[dev-tools] chase agent attach failed: {err:?}");
             }
         }
-    }
-}
-
-/// Capture placement provenance while newly materialized pawns still have their
-/// authored transforms. Later occupancy reads this durable association after
-/// movement changes those transforms.
-fn capture_player_spawn_placements(
-    registry: &postretro_entities::EntityRegistry,
-    spawn_points: &[crate::scripting::map_entity::MapEntity],
-    seats: &mut netcode::SeatTable,
-) {
-    for (pawn, _) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
-        let Ok(transform) = registry.get_component::<Transform>(pawn) else {
-            continue;
-        };
-        let Some(placement) = spawn_points
-            .iter()
-            .position(|placement| placement.origin == transform.position)
-        else {
-            continue;
-        };
-        seats.bind_level_spawn_placement(pawn, placement);
     }
 }
 

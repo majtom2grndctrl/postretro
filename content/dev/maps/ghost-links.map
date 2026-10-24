@@ -483,13 +483,14 @@
 }
 {
 "classname" "player_spawn"
-"origin" "-128 0 40"
+"origin" "-128 0 24"
 "angles" "0 0 0"
 }
 {
 "classname" "player_spawn"
-"origin" "3968 0 40"
+"origin" "3968 0 24"
 "angles" "0 0 0"
+"coop_only" "1"
 }
 {
 "classname" "kinematic_mover"

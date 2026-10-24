@@ -48,6 +48,7 @@ use postretro_scripting_core::data_descriptors::{EntityTypeDescriptor, LightDesc
 
 pub use super::host_replicated::ai_capsule_center_from_feet_offset;
 use super::host_replicated::descriptor_carries_brain;
+use super::player_spawn;
 
 pub(super) use super::wieldable_inventory::compose_wieldable_inventory;
 pub(crate) use super::wieldable_inventory::compose_wieldable_inventory_from_slots;
@@ -727,7 +728,7 @@ pub(super) fn spawn_descriptor_instance(
     spawn_path: DescriptorSpawnPath,
     agent_params: Option<NavAgentParams>,
 ) -> Option<EntityId> {
-    let origin_shift = ai_capsule_center_from_feet_offset(descriptor, agent_params);
+    let origin_shift = player_spawn::spawn_origin_shift(descriptor, agent_params);
     let transform = Transform {
         position: entity.origin + origin_shift,
         rotation: descriptor_spawn_rotation(entity, spawn_path),
@@ -866,17 +867,32 @@ pub fn apply_data_archetype_dispatch(
 /// dispatch sweeps and processed by [`spawn_from_player_starts`].
 pub const PLAYER_START_CLASSNAME: &str = "player_spawn";
 
-/// Spawn one entity per `player_spawn` placement, using each placement's
-/// `entity_class` KVP (default `"player"`) to look up an
-/// [`EntityTypeDescriptor`]. Component attachment uses the same descriptor
-/// materialization helper as the data-archetype sweep, while
-/// `components.inventory.loadout` spawns sibling wieldable instances only when
-/// the target descriptors declare weapon components. The per-placement KVP bag is forwarded with
-/// `entity_class` stripped so it is not confused with an `initial_*` override.
-/// Tags from the `player_spawn` placement are passed directly to `try_spawn`.
+/// Materialize the first player at one `player_spawn`. A spawn point is a place
+/// a player can be put, never a pawn by itself: single player and a co-op host
+/// get exactly one pawn here, and the host gives each joiner a free spawn later
+/// (`postretro-netcode` seat placement).
+///
+/// Spawns are tried in [`player_spawn::first_player_spawn_order`]: map order,
+/// `coop_only` spawns last. The first whose `entity_class` KVP (default
+/// `"player"`) names a registered [`EntityTypeDescriptor`] spawns; an
+/// unregistered class warns and the next spawn is tried. A pawn carrying
+/// `PlayerMovement` becomes the local player pawn. Component attachment uses the
+/// same descriptor materialization helper as the data-archetype sweep, and
+/// `components.inventory.loadout` spawns sibling wieldable instances. The
+/// placement's KVP bag is forwarded with `entity_class` stripped, and its tags
+/// pass directly to `try_spawn`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlayerSpawnResult {
-    pub spawned: usize,
+    /// The first player's pawn and the spawn it took; `None` when no spawn
+    /// resolved or the registry is exhausted.
+    pub spawned: Option<PlayerSpawned>,
+}
+
+/// One materialized player pawn and the index of the `player_spawn` it took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerSpawned {
+    pub pawn: EntityId,
+    pub placement: usize,
 }
 
 pub fn spawn_from_player_starts(
@@ -894,9 +910,9 @@ pub fn spawn_from_player_starts(
     )
 }
 
-/// Player-start materialization with an optional carried record for the first
-/// local movement pawn. The caller owns seat lookup; this descriptor layer
-/// deliberately receives only the already-resolved record.
+/// First-player materialization with an optional carried record for its pawn.
+/// The caller owns seat lookup; this descriptor layer deliberately receives
+/// only the already-resolved record.
 pub fn spawn_from_player_starts_with_carried_loadout(
     spawn_points: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
@@ -904,9 +920,8 @@ pub fn spawn_from_player_starts_with_carried_loadout(
     agent_params: Option<NavAgentParams>,
     carried_loadout: Option<&CarriedState>,
 ) -> PlayerSpawnResult {
-    let mut spawned = 0usize;
-
-    for entity in spawn_points {
+    for placement in player_spawn::first_player_spawn_order(spawn_points) {
+        let entity = &spawn_points[placement];
         let entity_class = entity
             .key_values
             .get("entity_class")
@@ -933,15 +948,15 @@ pub fn spawn_from_player_starts_with_carried_loadout(
                 "[Loader] {origin}: entity registry exhausted; dropping player spawn `{entity_class}`",
                 origin = entity.diagnostic_origin(),
             );
-            continue;
+            return PlayerSpawnResult::default();
         };
 
-        let is_first_local_pawn = registry.local_player_pawn().is_none()
+        let is_local_pawn = registry.local_player_pawn().is_none()
             && matches!(
                 registry.has_component_kind(id, ComponentKind::PlayerMovement),
                 Ok(true)
             );
-        if is_first_local_pawn {
+        if is_local_pawn {
             let _ = registry.mark_local_player_pawn(id);
             restore_carried_health(carried_loadout, registry, id);
         }
@@ -959,20 +974,33 @@ pub fn spawn_from_player_starts_with_carried_loadout(
             descriptor,
             entity,
             descriptors,
-            is_first_local_pawn.then_some(carried_loadout).flatten(),
+            is_local_pawn.then_some(carried_loadout).flatten(),
         );
 
-        spawned += 1;
+        if player_spawn::is_coop_only(entity) {
+            log::warn!(
+                "[Loader] no player_spawn without `coop_only` resolved; the first player takes {origin}",
+                origin = entity.diagnostic_origin(),
+            );
+        }
+        log::info!(
+            "[Loader] first player spawned at player_spawn {placement} of {total}",
+            total = spawn_points.len(),
+        );
+        return PlayerSpawnResult {
+            spawned: Some(PlayerSpawned {
+                pawn: id,
+                placement,
+            }),
+        };
     }
 
     if !spawn_points.is_empty() {
-        log::info!(
-            "[Loader] spawned {spawned} player(s) from {total} player_spawn entries",
-            total = spawn_points.len(),
+        log::warn!(
+            "[Loader] no player_spawn resolved a registered entity_class; no player spawned"
         );
     }
-
-    PlayerSpawnResult { spawned }
+    PlayerSpawnResult::default()
 }
 
 #[cfg(test)]
@@ -2341,7 +2369,7 @@ mod tests {
     }
 
     #[test]
-    fn carried_health_restores_only_the_first_local_player_start() {
+    fn carried_health_restores_on_the_first_player_pawn() {
         use postretro_scripting_core::data_descriptors::HealthDescriptor;
 
         let mut player = player_with_movement("player");
@@ -2378,20 +2406,10 @@ mod tests {
             (local_health - 36.0).abs() <= 1.0e-6,
             "expected carried health 36.0, got {local_health}"
         );
-        let other_health: Vec<f32> = registry
-            .iter_with_kind(ComponentKind::Health)
-            .filter_map(|(id, _)| (id != local).then_some(id))
-            .map(|id| {
-                registry
-                    .get_component::<HealthComponent>(id)
-                    .unwrap()
-                    .current
-            })
-            .collect();
-        assert_eq!(other_health.len(), 1);
-        assert!(
-            (other_health[0] - 100.0).abs() <= 1.0e-6,
-            "the second player start must retain descriptor health"
+        assert_eq!(
+            registry.iter_with_kind(ComponentKind::Health).count(),
+            1,
+            "the second player start is a place, not a pawn"
         );
     }
 
@@ -2460,13 +2478,13 @@ mod tests {
         let local = reg
             .local_player_pawn()
             .expect("player_spawn should mark the selected local pawn");
-        assert!(
-            reg.get_component::<PlayerMovementComponent>(local).is_ok(),
-            "marked local pawn should carry PlayerMovement"
-        );
+        let movement = reg
+            .get_component::<PlayerMovementComponent>(local)
+            .expect("marked local pawn should carry PlayerMovement");
+        // The spawn origin is the feet; the capsule centre stands above it.
         assert_eq!(
             reg.get_component::<Transform>(local).unwrap().position,
-            origin
+            origin + Vec3::Y * (movement.capsule.half_height + movement.capsule.radius)
         );
     }
 
@@ -2495,67 +2513,116 @@ mod tests {
         );
     }
 
+    // A spawn point is a place, not a pawn: N spawns and one player is one pawn.
     #[test]
-    fn multiple_spawn_points_spawn_one_entity_each() {
+    fn multiple_spawn_points_spawn_only_the_first_player() {
         let mut reg = EntityRegistry::new();
-        let descriptors = vec![stub_descriptor("player")];
-        let points = vec![spawn_point(&[]), spawn_point(&[]), spawn_point(&[])];
+        let descriptors = vec![player_with_movement("player")];
+        let points = vec![
+            spawn_point_at(Vec3::new(-3.0, 0.0, 0.0), Vec3::ZERO, &[]),
+            spawn_point_at(Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO, &[]),
+            spawn_point_at(Vec3::new(9.0, 0.0, 0.0), Vec3::ZERO, &[]),
+        ];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        assert_eq!(live_count(&reg), 3);
+        assert_eq!(
+            reg.iter_with_kind(ComponentKind::PlayerMovement).count(),
+            1,
+            "exactly one player pawn"
+        );
+        let spawned = result.spawned.expect("the first player spawns");
+        assert_eq!(spawned.placement, 0);
+        assert_eq!(reg.local_player_pawn(), Some(spawned.pawn));
     }
 
     #[test]
-    fn multiple_spawn_points_mark_first_loaded_movement_pawn_in_placement_order() {
-        fn marked_position(points: Vec<MapEntity>) -> Vec3 {
+    fn first_player_follows_spawn_point_placement_order() {
+        fn spawned_x(points: Vec<MapEntity>) -> f32 {
             let mut reg = EntityRegistry::new();
             let descriptors = vec![player_with_movement("player")];
             spawn_from_player_starts(&points, &descriptors, &mut reg, None);
             let local = reg
                 .local_player_pawn()
                 .expect("one spawned pawn should be marked local");
-            reg.get_component::<Transform>(local).unwrap().position
+            reg.get_component::<Transform>(local).unwrap().position.x
         }
 
         let alpha = spawn_point_at(Vec3::new(-3.0, 0.0, 0.0), Vec3::ZERO, &[]);
         let beta = spawn_point_at(Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO, &[]);
 
+        assert_eq!(spawned_x(vec![alpha.clone(), beta.clone()]), -3.0);
         assert_eq!(
-            marked_position(vec![alpha.clone(), beta.clone()]),
-            Vec3::new(-3.0, 0.0, 0.0)
-        );
-        assert_eq!(
-            marked_position(vec![beta, alpha]),
-            Vec3::new(3.0, 0.0, 0.0),
-            "the selected local pawn follows spawn-point placement order"
+            spawned_x(vec![beta, alpha]),
+            3.0,
+            "the first player follows spawn-point placement order"
         );
     }
 
     #[test]
-    fn player_spawn_marks_first_successful_movement_pawn_when_earlier_spawn_has_no_movement() {
+    fn first_player_skips_a_coop_only_spawn() {
         let mut reg = EntityRegistry::new();
-        let descriptors = vec![stub_descriptor("prop"), player_with_movement("player")];
-        let prop_origin = Vec3::new(-3.0, 0.0, 0.0);
+        let descriptors = vec![player_with_movement("player")];
+        let points = vec![
+            spawn_point_at(Vec3::new(-3.0, 0.0, 0.0), Vec3::ZERO, &[("coop_only", "1")]),
+            spawn_point_at(Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO, &[]),
+        ];
+
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+
+        assert_eq!(result.spawned.expect("a player spawns").placement, 1);
+        assert_eq!(reg.iter_with_kind(ComponentKind::PlayerMovement).count(), 1);
+    }
+
+    #[test]
+    fn first_player_takes_a_coop_only_spawn_when_every_spawn_is_coop_only() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![player_with_movement("player")];
+        let points = vec![
+            spawn_point_at(Vec3::new(-3.0, 0.0, 0.0), Vec3::ZERO, &[("coop_only", "1")]),
+            spawn_point_at(Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO, &[("coop_only", "1")]),
+        ];
+
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+
+        assert_eq!(result.spawned.expect("a player still spawns").placement, 0);
+        assert!(
+            capture
+                .records()
+                .iter()
+                .any(|record| record.level == log::Level::Warn
+                    && record.message.contains("without `coop_only` resolved")),
+            "the fallback warns"
+        );
+    }
+
+    #[test]
+    fn unregistered_spawn_class_falls_through_to_the_next_spawn() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![player_with_movement("player")];
         let player_origin = Vec3::new(3.0, 0.0, 0.0);
         let points = vec![
-            spawn_point_at(prop_origin, Vec3::ZERO, &[("entity_class", "prop")]),
+            spawn_point_at(
+                Vec3::new(-3.0, 0.0, 0.0),
+                Vec3::ZERO,
+                &[("entity_class", "ghost")],
+            ),
             spawn_point_at(player_origin, Vec3::ZERO, &[("entity_class", "player")]),
         ];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        assert_eq!(live_count(&reg), 2);
-        let local = reg
-            .local_player_pawn()
-            .expect("later movement pawn should be marked local");
-        assert!(
-            reg.get_component::<PlayerMovementComponent>(local).is_ok(),
-            "marked local pawn should carry PlayerMovement"
-        );
+        assert_eq!(live_count(&reg), 1);
+        let spawned = result.spawned.expect("the later spawn resolves");
+        assert_eq!(spawned.placement, 1);
+        assert_eq!(reg.local_player_pawn(), Some(spawned.pawn));
         assert_eq!(
-            reg.get_component::<Transform>(local).unwrap().position,
-            player_origin
+            reg.get_component::<Transform>(spawned.pawn)
+                .unwrap()
+                .position
+                .x,
+            player_origin.x
         );
     }
 
@@ -2581,7 +2648,7 @@ mod tests {
 
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        assert_eq!(result.spawned, 1);
+        assert!(result.spawned.is_some());
         let pawn = reg
             .iter_with_kind(ComponentKind::Inventory)
             .next()
@@ -2666,7 +2733,7 @@ mod tests {
 
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        assert_eq!(result.spawned, 1);
+        assert!(result.spawned.is_some());
         let pawn = reg
             .iter_with_kind(ComponentKind::Inventory)
             .next()
@@ -2696,31 +2763,20 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![stub_descriptor("player"), stub_descriptor("spectator")];
         let points = vec![
-            spawn_point(&[("entity_class", "player")]),
             spawn_point(&[("entity_class", "spectator")]),
+            spawn_point(&[("entity_class", "player")]),
         ];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
-        // Both spawn — exactly one per spawn point regardless of routing.
-        assert_eq!(live_count(&reg), 2);
-    }
-
-    #[test]
-    fn unknown_entity_class_is_skipped() {
-        let mut reg = EntityRegistry::new();
-        let descriptors = vec![stub_descriptor("player")];
-        let points = vec![
-            spawn_point(&[("entity_class", "ghost")]),
-            spawn_point(&[]), // defaults to "player" — should still spawn
-        ];
-
-        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
-
+        assert_eq!(live_count(&reg), 1);
+        let pawn = result.spawned.expect("the first spawn resolves").pawn;
         assert_eq!(
-            live_count(&reg),
-            1,
-            "only the spawn point with a registered entity_class should land",
+            reg.get_component::<DescriptorProvenance>(pawn)
+                .unwrap()
+                .canonical_name,
+            "spectator",
+            "the first spawn's entity_class picks the descriptor"
         );
     }
 

@@ -14,6 +14,7 @@ pub(crate) mod entity_spawner;
 pub mod entity_spawner;
 pub mod host_replicated;
 pub mod net_descriptor;
+pub mod player_spawn;
 pub(crate) mod projectile_trap;
 pub(crate) mod prop_mesh;
 #[cfg(test)]
@@ -32,7 +33,8 @@ pub mod data_archetype_test_fixtures;
 pub use data_archetype::apply_data_archetype_dispatch;
 #[allow(unused_imports)]
 pub use data_archetype::{
-    PLAYER_START_CLASSNAME, spawn_from_player_starts, spawn_from_player_starts_with_carried_loadout,
+    PLAYER_START_CLASSNAME, PlayerSpawnResult, PlayerSpawned, spawn_from_player_starts,
+    spawn_from_player_starts_with_carried_loadout,
 };
 // Connected-client host-authoritative map-placement suppression. `gen-script-types`
 // pulls in the scripting tree but never installs a level, so the import is unused there.

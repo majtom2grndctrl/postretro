@@ -523,7 +523,7 @@
 }
 {
 "classname" "player_spawn"
-"origin" "-176 -176 40"
+"origin" "-176 -176 24"
 "angles" "0 0 0"
 }
 {

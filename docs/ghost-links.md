@@ -209,10 +209,13 @@ ghost's near side draws over the ghost and the ghost shows through. A ghost
 jumping on a moving ghost keeps its layering through an ordinary jump.
 
 What remains is the whole-object sort itself. Two ghosts that pass through
-each other, or a ghost partly in front of and partly behind a moving ghost,
-such as one close behind the near end of a long ghost wall seen along its
-length, can hide each other where they overlap: in `"blend"` as if solid
-there, in `"dither"` everywhere but the pattern's gaps.
+each other, a ghost partly in front of and partly behind a moving ghost (one
+close behind the near end of a long ghost wall seen along its length), or a
+ghost close behind a much lower one (a waist-high moving barrier, a small
+creature) seen looking steeply down, can hide each other where they overlap:
+in `"blend"` as if solid there, in `"dither"` everywhere but the pattern's
+gaps. A thin post crossing your line of sight to a rider can flip its layering
+while it does.
 
 Ghosts of projectiles drawn as sprites blend in either mode and sit outside
 that ordering, like any sprite.

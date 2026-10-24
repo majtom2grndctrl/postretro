@@ -79,12 +79,14 @@ struct Footing {
 /// order is wrong for a pair at some pixel, the ghost nearer there hides the
 /// one drawn after it instead of blending over it: wholly in blend, all but
 /// the pixels the screen door drops in dither. A rider and the mover carrying
-/// it layer by what of the mover lies between the eye and the rider, so
-/// railings, posts and open decks are fine. What remains is whole-object
-/// sorting itself: two ghosts that pass through each other, or one partly in
+/// it layer by what of the mover lies on the eye's line to the rider's body,
+/// so railings, posts and open decks beside that line are fine; a thin post
+/// crossing it flips the order while it does. What remains is whole-object
+/// sorting itself: two ghosts that pass through each other, one partly in
 /// front of and partly behind a mover ghost (just behind the near end of a
-/// long ghost wall seen along its length), can hide each other where they
-/// overlap. Per-pixel ordering is the fix, and would replace this order
+/// long ghost wall seen along its length), or one close behind a much lower
+/// ghost (a waist-high barrier, a small creature) seen looking steeply down,
+/// can hide each other where they overlap. Per-pixel ordering is the fix, and would replace this order
 /// behind [`Self::build`] and [`Self::record`].
 #[derive(Default)]
 pub(super) struct GhostDrawOrder {

@@ -595,7 +595,7 @@ impl KinematicBrushPass {
             );
             self.mover_bounds.push(Aabb { min, max });
             let first = self.mover_triangles.len();
-            for corners in mover.indices.chunks_exact(3) {
+            for corners in mover.indices.as_chunks::<3>().0 {
                 if let Some(triangle) = triangle_positions(&mover.vertices, corners) {
                     self.mover_triangles.push(triangle);
                 }

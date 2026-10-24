@@ -1,24 +1,29 @@
 // Animated lightmap atlas stage: weight-map bake or cache load, compact layout, block stamping.
 // See: context/lib/build_pipeline.md §Build Cache
 
+use std::time::Duration;
+
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 
+use crate::animated_light_weight_maps::WeightMapBake;
 use crate::bake_control::BakeControl;
 use crate::lightmap_bake::BlockLayout;
 use crate::lightmap_layer::{SharedAtlas, atlas_layout_fingerprint};
+use crate::texel_step_detector::TexelStepReport;
 use crate::{
     animated_atlas_layout, animated_block_ids, animated_light_weight_maps, cache, geometry,
 };
 
 /// Load the animated-light weight maps from the stage cache, or bake them and
-/// store the result. Fails when an animated face's chart leaves its lightmap
-/// cell block.
+/// store the result with the texel-step report the bake found. Either way the
+/// report logs once, here, on the caller's thread. Fails when an animated
+/// face's chart leaves its lightmap cell block.
 pub(super) fn bake_or_load_weight_maps(
     wm_inputs: &animated_light_weight_maps::WeightMapInputs<'_>,
     final_lightmap_density: f32,
     stage_cache: Option<&cache::StageCache>,
     animated_weight_control: &BakeControl,
-) -> anyhow::Result<AnimatedLightWeightMapsSection> {
+) -> anyhow::Result<WeightMapBake> {
     let animated_chunk_lights = wm_inputs.lights;
     let geo_result = wm_inputs.geometry;
     let atlas_width = wm_inputs.atlas_width;
@@ -40,7 +45,9 @@ pub(super) fn bake_or_load_weight_maps(
     // so the cache key matches the bake inputs. The chunk-section proxy does
     // not see where charts landed, and the cached blocks carry cell-block
     // keys and block-local texels, so the layout fingerprint (placements and
-    // the cell-block table) is folded too.
+    // the cell-block table) is folded too. The stored report names a cut face
+    // by its pre-cut index and owns pairs by cut segment, which the cut
+    // geometry alone does not pin, so the cut map is folded as well.
     let layout_fingerprint = atlas_layout_fingerprint(&SharedAtlas {
         charts: wm_inputs.face_charts,
         placements: wm_inputs.face_placements,
@@ -61,6 +68,20 @@ pub(super) fn bake_or_load_weight_maps(
         buf.extend_from_slice(&animated_light_chunks_section.to_bytes());
         buf.extend_from_slice(&soft_shadow_samples.to_le_bytes());
         buf.extend_from_slice(&layout_fingerprint);
+        buf.push(u8::from(wm_inputs.penumbra_floor));
+        buf.extend_from_slice(&wm_inputs.step_threshold.to_bits().to_le_bytes());
+        buf.extend_from_slice(&(wm_inputs.cut_parents.len() as u32).to_le_bytes());
+        for cut in wm_inputs.cut_parents {
+            buf.extend_from_slice(&cut.parent.to_le_bytes());
+            for bound in [cut.faces.start, cut.faces.end] {
+                buf.extend_from_slice(&(bound as u32).to_le_bytes());
+            }
+            for [u, v] in &cut.own {
+                for bound in [u.start, u.end, v.start, v.end] {
+                    buf.extend_from_slice(&bound.to_le_bytes());
+                }
+            }
+        }
         *blake3::hash(&buf).as_bytes()
     };
     let wm_key = cache::CacheKey::new(
@@ -69,9 +90,18 @@ pub(super) fn bake_or_load_weight_maps(
         &wm_input_hash,
     );
 
-    let cached = stage_cache.and_then(|c| c.get(&wm_key));
-    let cached_wm_section = cached.and_then(|bytes| {
-        postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection::from_bytes(&bytes)
+    let cached = stage_cache.and_then(|c| c.get(&wm_key)).and_then(|bytes| {
+        let Some((report, section_bytes)) = TexelStepReport::parse(
+            &bytes,
+            animated_chunk_lights.len(),
+            wm_inputs.face_charts.len(),
+        ) else {
+            log::warn!(
+                "[cache] corrupt animated_lm_weight_maps entry, re-baking: no texel-step report"
+            );
+            return None;
+        };
+        AnimatedLightWeightMapsSection::from_bytes(section_bytes)
             .map_err(|e| e.to_string())
             .and_then(|section| match section.consistency_error() {
                 None => Ok(section),
@@ -81,28 +111,42 @@ pub(super) fn bake_or_load_weight_maps(
                 log::warn!("[cache] corrupt animated_lm_weight_maps entry, re-baking: {e}")
             })
             .ok()
+            .map(|section| (section, report))
     });
 
-    if let Some(section) = cached_wm_section {
+    let bake = if let Some((section, texel_steps)) = cached {
         log::info!("[cache] animated_lm_weight_maps hit");
         animated_weight_control.publish_total(animated_light_chunks_section.chunks.len());
         // Cache-hit fast-advance on the orchestrator thread: honor pause only,
         // no permit (the parallel bake path is what needs a permit).
         animated_weight_control.governor().checkpoint();
         animated_weight_control.advance(animated_light_chunks_section.chunks.len());
-        Ok(section)
+        WeightMapBake {
+            section,
+            texel_steps,
+            texel_step_elapsed: Duration::ZERO,
+        }
     } else {
         log::info!("[cache] animated_lm_weight_maps miss");
-        let section = animated_light_weight_maps::bake_animated_light_weight_maps_controlled(
+        let bake = animated_light_weight_maps::bake_animated_light_weight_maps_controlled(
             wm_inputs,
             animated_weight_control,
         )
         .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
         if let Some(c) = stage_cache {
-            c.put(&wm_key, &section.to_bytes());
+            // The report leads the entry, so a hit never has the section
+            // without the warnings its bake found.
+            c.put(
+                &wm_key,
+                &[bake.texel_steps.to_bytes(), bake.section.to_bytes()].concat(),
+            );
         }
-        Ok(section)
-    }
+        bake
+    };
+    bake.texel_steps.log("animated", |light| {
+        animated_chunk_lights[light as usize].origin
+    });
+    Ok(bake)
 }
 
 /// Repack the culled animated atlas into its compact layout and enforce what
@@ -183,3 +227,6 @@ pub(super) fn stamp_animated_blocks(
         );
     }
 }
+
+#[cfg(test)]
+mod tests;

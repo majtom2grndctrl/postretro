@@ -6,6 +6,13 @@ use glam::Vec3;
 use crate::chart_raster::chart_texel_world_position;
 use crate::lightmap_bake::{Chart, RAY_EPSILON};
 
+mod report;
+#[cfg(test)]
+pub(crate) use report::StepSite;
+pub(crate) use report::{
+    ChartSteps, CutSites, TexelRect, TexelStepReport, merge_chart_steps, scan_chart,
+};
+
 /// Largest stored per-light visibility difference two axis-adjacent texels
 /// may show before they count as a step. 0.78 is the one-texel cone kernel's
 /// largest axis-adjacent difference: a mid-phase axis-aligned edge filters its

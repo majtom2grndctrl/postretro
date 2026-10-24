@@ -13,7 +13,7 @@ use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
-use crate::lightmap_bake::{self, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
+use crate::lightmap_bake::{self, CutParent, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
 use crate::lightmap_layer::{self, SharedAtlas};
 use crate::map_data::ShadowType;
 use crate::shadowmask_bake;
@@ -28,14 +28,15 @@ mod window;
 
 #[cfg(test)]
 use crate::lightmap_layer::chart_texel_bounds;
+#[cfg(test)]
+use crate::texel_step_detector::StepSite;
+use crate::texel_step_detector::TexelStepReport;
 pub(super) use metadata::MetadataCounts;
 use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
 pub(super) use peak::log_predicted_peak;
 #[cfg(test)]
 pub(super) use peak::predicted_peak;
-#[cfg(test)]
-use texel_steps::StepSite;
-use texel_steps::{StepDetector, TexelStepReport};
+use texel_steps::StepDetector;
 use window::LIGHTMAP_PARTITION_WINDOW;
 #[cfg(test)]
 pub(crate) use window::WindowProbe;
@@ -50,6 +51,8 @@ pub(crate) struct FusedLightingOutput {
     pub texel_steps: TexelStepReport,
     /// Detector time summed over workers; zero on a memo hit. Never keyed.
     pub texel_step_elapsed: Duration,
+    /// The atlas's cut faces, for the weight-map bake's texel-step detector.
+    pub cut_parents: Vec<CutParent>,
 }
 
 /// How the fused walk windows its (layer, light) partitions. Production uses
@@ -190,6 +193,7 @@ pub(crate) fn bake_fused_windowed(
             #[cfg(test)]
             texel_steps: TexelStepReport::default(),
             texel_step_elapsed: Duration::ZERO,
+            cut_parents: prepared.cut_parents,
         });
     }
     let density = config.lightmap_density;
@@ -471,7 +475,7 @@ pub(crate) fn bake_fused_windowed(
     };
     // Cold, warm or replayed, the same report logs once, here, on the
     // caller's thread.
-    texel_steps.log(&layer_lights);
+    texel_steps.log("static", |light| layer_lights[light as usize].light.origin);
 
     // If the lightmap memo hit but the shadowmask memo missed, consume only the
     // owner-eligible partitions. They are read/baked once here and never by a later
@@ -554,6 +558,7 @@ pub(crate) fn bake_fused_windowed(
         #[cfg(test)]
         texel_steps,
         texel_step_elapsed,
+        cut_parents: prepared.cut_parents,
     })
 }
 

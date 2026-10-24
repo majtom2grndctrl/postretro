@@ -113,7 +113,16 @@ impl EmitterPairing {
 /// footprint's unrotated texel frame.
 const RING_DIRECTIONS: [[f32; 2]; RING_SAMPLES] = {
     use std::f32::consts::FRAC_1_SQRT_2 as D;
-    [[1.0, 0.0], [D, D], [0.0, 1.0], [-D, D], [-1.0, 0.0], [-D, -D], [0.0, -1.0], [D, -D]]
+    [
+        [1.0, 0.0],
+        [D, D],
+        [0.0, 1.0],
+        [-D, D],
+        [-1.0, 0.0],
+        [-D, -D],
+        [0.0, -1.0],
+        [D, -D],
+    ]
 };
 
 /// The ring sector of a point in the footprint's unrotated texel frame, the
@@ -206,10 +215,9 @@ impl TexelFootprint {
         rotation: (f32, f32),
     ) -> EmitterPairing {
         let axis = match light.light_type {
-            LightType::Point | LightType::Spot => {
-                (light.origin.as_vec3() - (site.world_p + site.normal * RAY_EPSILON))
-                    .normalize_or_zero()
-            }
+            LightType::Point | LightType::Spot => (light.origin.as_vec3()
+                - (site.world_p + site.normal * RAY_EPSILON))
+                .normalize_or_zero(),
             LightType::Directional => sun_axis(light),
         };
         // A world offset `w` projects onto the receiver along `axis` as
@@ -229,7 +237,10 @@ impl TexelFootprint {
             let along = pitch / pitch.length_squared();
             along - normal * lean.dot(along)
         };
-        let (u, v) = (texel_axis(site.frame.pitch_u), texel_axis(site.frame.pitch_v));
+        let (u, v) = (
+            texel_axis(site.frame.pitch_u),
+            texel_axis(site.frame.pitch_v),
+        );
         let (sin, cos) = rotation;
         let unspin = emitter_lattice_spin(light, site.seed).inverse();
         let mut pairing = EmitterPairing {

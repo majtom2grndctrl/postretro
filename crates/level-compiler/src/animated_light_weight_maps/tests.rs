@@ -1,12 +1,14 @@
 // Animated-light weight-map tests: chunk rects, soft weights, culling, budget, and cache keys.
 // See: context/lib/build_pipeline.md §Build Cache
 
+use super::static_atlas_frame::chunk_atlas_rect;
 use super::*;
 use crate::bvh_build::build_bvh;
 use crate::geometry::FaceIndexRange;
 use crate::lightmap_bake::{BlockLayout, pack_layers};
 use crate::map_data::{FalloffModel, LightAnimation, LightType};
 use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
+use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 use glam::DVec3;
 use log::Level;
 use postretro_level_format::animated_light_chunks::{
@@ -298,7 +300,7 @@ where
 }
 
 fn bake_with_sample_count<F>(
-    mut geo: GeometryResult,
+    geo: GeometryResult,
     lights: Vec<MapLight>,
     area_sample_count: u32,
     build_chunks: F,
@@ -306,63 +308,339 @@ fn bake_with_sample_count<F>(
 where
     F: FnOnce(&[Chart]) -> AnimatedLightChunksSection,
 {
-    let (bvh, prims, _) = build_bvh(&geo).unwrap();
-    // Animated weights need the static blocks the renderer composes them onto.
-    let statics = [MapLight {
-        animation: None,
-        ..animated_point_light_above()
-    }];
-    let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&statics);
-    let mut lm_ctx = crate::lightmap_bake::LightmapBakeCtx {
-        bvh: &bvh,
-        primitives: &prims,
-        geometry: &mut geo,
-        lights: &static_lights,
-        scale_regions: &[],
-    };
-    let lm_output = crate::lightmap_bake::bake_lightmap(
-        &mut lm_ctx,
-        &crate::lightmap_bake::LightmapConfig {
-            lightmap_density: 0.25,
-            area_sample_count: crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
-            direction_texel_scale: crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
-            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
-            uncompressed_irradiance: false,
-        },
-    )
-    .unwrap();
-
-    let chunk_section = build_chunks(&lm_output.charts);
-
-    let inputs = WeightMapInputs {
-        bvh: &bvh,
-        primitives: &prims,
-        geometry: &geo,
-        chunk_section: &chunk_section,
-        lights: &lights,
-        face_charts: &lm_output.charts,
-        face_placements: &lm_output.placements,
-        layout: &lm_output.layout,
-        atlas_width: lm_output.atlas_width,
-        atlas_height: lm_output.atlas_height,
-        static_atlas_layer_count: lm_output.layer_count,
+    bake_with_floor(
+        geo,
+        lights,
         area_sample_count,
-    };
+        PENUMBRA_FLOOR_DEFAULT,
+        build_chunks,
+    )
+}
+
+/// [`bake_with_sample_count`] with the penumbra floor set.
+fn bake_with_floor<F>(
+    geo: GeometryResult,
+    lights: Vec<MapLight>,
+    area_sample_count: u32,
+    penumbra_floor: bool,
+    build_chunks: F,
+) -> AnimatedLightWeightMapsSection
+where
+    F: FnOnce(&[Chart]) -> AnimatedLightChunksSection,
+{
+    let scene = Scene::new(geo, lights, 0.25, build_chunks);
+    let inputs = scene.inputs(area_sample_count, penumbra_floor);
     let progress = crate::reporter::StageProgress::indeterminate();
     let control = BakeControl::new(
         std::sync::Arc::new(crate::governor::Governor::new(2, false)),
         &progress,
     );
     let section = bake_animated_light_weight_maps_controlled(&inputs, &control)
-        .expect("fixture charts stay inside their cell blocks");
-    if chunk_section.chunks.is_empty() {
+        .expect("fixture charts stay inside their cell blocks")
+        .section;
+    let chunks = scene.chunk_section.chunks.len();
+    if chunks == 0 {
         assert_eq!(progress.total(), None);
         assert_eq!(progress.completed(), 0);
     } else {
-        assert_eq!(progress.total(), Some(chunk_section.chunks.len()));
-        assert_eq!(progress.completed(), chunk_section.chunks.len());
+        assert_eq!(progress.total(), Some(chunks));
+        assert_eq!(progress.completed(), chunks);
     }
     section
+}
+
+/// A fixture's geometry and BVH, the static atlas its weight maps sit on,
+/// its animated lights and the chunks over its charts.
+struct Scene {
+    geo: GeometryResult,
+    bvh: Bvh<f32, 3>,
+    prims: Vec<BvhPrimitive>,
+    lm_output: crate::lightmap_bake::LightmapBakeOutput,
+    chunk_section: AnimatedLightChunksSection,
+    lights: Vec<MapLight>,
+}
+
+impl Scene {
+    fn new<F>(mut geo: GeometryResult, lights: Vec<MapLight>, density: f32, build_chunks: F) -> Self
+    where
+        F: FnOnce(&[Chart]) -> AnimatedLightChunksSection,
+    {
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // Animated weights need the static blocks the renderer composes them onto.
+        let statics = [MapLight {
+            animation: None,
+            ..animated_point_light_above()
+        }];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&statics);
+        let mut lm_ctx = crate::lightmap_bake::LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &mut geo,
+            lights: &static_lights,
+            scale_regions: &[],
+        };
+        let lm_output = crate::lightmap_bake::bake_lightmap(
+            &mut lm_ctx,
+            &crate::lightmap_bake::LightmapConfig {
+                lightmap_density: density,
+                area_sample_count: crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+                penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
+                uncompressed_irradiance: false,
+            },
+        )
+        .unwrap();
+        let chunk_section = build_chunks(&lm_output.charts);
+        Self {
+            geo,
+            bvh,
+            prims,
+            lm_output,
+            chunk_section,
+            lights,
+        }
+    }
+
+    fn inputs(&self, area_sample_count: u32, penumbra_floor: bool) -> WeightMapInputs<'_> {
+        WeightMapInputs {
+            bvh: &self.bvh,
+            primitives: &self.prims,
+            geometry: &self.geo,
+            chunk_section: &self.chunk_section,
+            lights: &self.lights,
+            face_charts: &self.lm_output.charts,
+            face_placements: &self.lm_output.placements,
+            layout: &self.lm_output.layout,
+            atlas_width: self.lm_output.atlas_width,
+            atlas_height: self.lm_output.atlas_height,
+            static_atlas_layer_count: self.lm_output.layer_count,
+            area_sample_count,
+            cut_parents: &[],
+            penumbra_floor,
+            step_threshold: TEXEL_STEP_THRESHOLD,
+        }
+    }
+}
+
+/// One texel's entries as bits: light, weight, direction.
+type TexelBits = Vec<(u32, u32, [u16; 2])>;
+
+fn entry_bits(light: &TexelLight) -> (u32, u32, [u16; 2]) {
+    (
+        light.light_index,
+        light.weight.to_bits(),
+        light.direction_oct,
+    )
+}
+
+/// Each chunk's rect and its texels' entries, in rect order.
+fn chunk_texel_bits(section: &AnimatedLightWeightMapsSection) -> Vec<([u32; 4], Vec<TexelBits>)> {
+    section
+        .chunk_rects
+        .iter()
+        .map(|rect| {
+            let start = rect.texel_offset as usize;
+            let texels = section.offset_counts[start..start + (rect.width * rect.height) as usize]
+                .iter()
+                .map(|entry| {
+                    let first = entry.offset as usize;
+                    section.texel_lights[first..first + entry.count as usize]
+                        .iter()
+                        .map(entry_bits)
+                        .collect()
+                })
+                .collect();
+            (
+                [rect.compact_x, rect.compact_y, rect.width, rect.height],
+                texels,
+            )
+        })
+        .collect()
+}
+
+/// The texel-major walk the light-major face bake must reproduce: per chunk,
+/// texels in rect order, each texel's lights in the chunk's list order. With
+/// the floor off, visibility is the centre-point `soft_visibility` the bake
+/// called before the footprint existed; with it on, the footprint sampler.
+fn texel_major_reference(inputs: &WeightMapInputs<'_>) -> Vec<([u32; 4], Vec<TexelBits>)> {
+    use crate::chart_raster::{
+        CHART_PADDING_TEXELS, chart_interior_dims, chart_texel_seed, chart_texel_world_position,
+    };
+    use crate::lightmap_bake::{light_contribution_and_direction, segment_clear, soft_visibility};
+    use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
+
+    let clear = |from, to| segment_clear(inputs.bvh, inputs.primitives, inputs.geometry, from, to);
+    inputs
+        .chunk_section
+        .chunks
+        .iter()
+        .map(|chunk| {
+            let face = chunk.face_index as usize;
+            let chart = &inputs.face_charts[face];
+            let placement = inputs.face_placements[face];
+            let (interior_w, interior_h) = chart_interior_dims(chart);
+            let (x, y, width, height) = chunk_atlas_rect(
+                chart,
+                placement,
+                chunk.uv_min,
+                chunk.uv_max,
+                inputs.atlas_width,
+                inputs.atlas_height,
+            );
+            let start = chunk.index_offset as usize;
+            let lights =
+                &inputs.chunk_section.light_indices[start..start + chunk.index_count as usize];
+            let samplers: Vec<TexelSampler> = lights
+                .iter()
+                .map(|&light| {
+                    TexelSampler::new(
+                        &inputs.lights[light as usize],
+                        inputs.area_sample_count,
+                        inputs.penumbra_floor,
+                    )
+                })
+                .collect();
+            let reach =
+                ClipReach::rasterized(chart, inputs.bvh, inputs.primitives, inputs.geometry);
+            let frame = TexelFrame::for_chart(chart);
+            let padding = CHART_PADDING_TEXELS as i32;
+            let mut texels = Vec::new();
+            for ty in 0..height {
+                for tx in 0..width {
+                    let ix = (x + tx) as i32 - placement.x as i32 - padding;
+                    let iy = (y + ty) as i32 - placement.y as i32 - padding;
+                    let mut entries = Vec::new();
+                    if (0..interior_w).contains(&ix) && (0..interior_h).contains(&iy) {
+                        let world_p = chart_texel_world_position(chart, ix, iy);
+                        let seed = chart_texel_seed(chart, ix, iy);
+                        for (slot, &light_index) in lights.iter().enumerate() {
+                            let light = &inputs.lights[light_index as usize];
+                            if light.shadow_type == crate::map_data::ShadowType::Sdf {
+                                continue;
+                            }
+                            let (contribution, dir) =
+                                light_contribution_and_direction(light, world_p, chart.normal);
+                            let weight =
+                                contribution_to_weight(contribution, light.color, light.intensity);
+                            if weight <= WEIGHT_EPSILON {
+                                continue;
+                            }
+                            let v = if inputs.penumbra_floor {
+                                let site = TexelSite {
+                                    world_p,
+                                    normal: chart.normal,
+                                    seed,
+                                    frame,
+                                    may_clip: reach.may_clip(ix, iy),
+                                };
+                                samplers[slot].visibility(light, &site, clear, clear)
+                            } else {
+                                soft_visibility(
+                                    world_p,
+                                    chart.normal,
+                                    light,
+                                    seed,
+                                    inputs.area_sample_count,
+                                    clear,
+                                )
+                            };
+                            if v <= 0.0 {
+                                continue;
+                            }
+                            entries.push((
+                                light_index,
+                                (weight * v).to_bits(),
+                                postretro_level_format::octahedral::encode(dir.x, dir.y, dir.z),
+                            ));
+                        }
+                    }
+                    texels.push(entries);
+                }
+            }
+            ([x, y, width, height], texels)
+        })
+        .collect()
+}
+
+/// A 1 m floor under a partial blocker at 5 cm texels, split into two
+/// chunks at a texel edge: the left, under the blocker, lists only a soft
+/// light; the right lists a hard light, the soft light and an `sdf` light,
+/// so the face bake meets a light some chunks lack and one it must skip.
+fn split_face_scene() -> Scene {
+    let mut soft = soft_animated_point_light_above();
+    soft.origin = DVec3::new(0.6, 1.0, 0.4);
+    let mut sdf = soft_animated_point_light_above();
+    sdf.shadow_type = crate::map_data::ShadowType::Sdf;
+    let lights = vec![animated_point_light_above(), soft, sdf];
+    Scene::new(
+        floor_plus_partial_blocker_geometry(),
+        lights,
+        0.05,
+        |charts| {
+            let chart = &charts[0];
+            let (interior_w, _) = crate::chart_raster::chart_interior_dims(chart);
+            let pitch = chart.uv_extent[0] / interior_w as f32;
+            let split = chart.uv_min[0] + (interior_w / 2) as f32 * pitch;
+            let uv_max = [
+                chart.uv_min[0] + chart.uv_extent[0],
+                chart.uv_min[1] + chart.uv_extent[1],
+            ];
+            let chunk = |uv_min: [f32; 2], uv_max: [f32; 2], index_offset, index_count| {
+                AnimatedLightChunk {
+                    aabb_min: [0.0, 0.0, 0.0],
+                    face_index: 0,
+                    aabb_max: [1.0, 0.0, 1.0],
+                    index_offset,
+                    uv_min,
+                    uv_max,
+                    index_count,
+                    _padding: 0,
+                }
+            };
+            AnimatedLightChunksSection {
+                chunks: vec![
+                    chunk(chart.uv_min, [split, uv_max[1]], 0, 1),
+                    chunk([split, chart.uv_min[1]], uv_max, 1, 3),
+                ],
+                light_indices: vec![1, 0, 1, 2],
+            }
+        },
+    )
+}
+
+// AC 14 (P6): with the floor off, the weight maps are the centre-point bake
+// bit for bit; with it on, the light-major face bake reproduces a
+// texel-major walk of the same sampler. Both hold over a face split into
+// chunks that list different lights.
+#[test]
+fn face_bake_matches_the_texel_major_walk_and_the_centre_point_bake() {
+    let scene = split_face_scene();
+    for floor in [false, true] {
+        for count in [4, crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT] {
+            let inputs = scene.inputs(count, floor);
+            let section = bake_animated_light_weight_maps(&inputs)
+                .expect("the split face bakes")
+                .section;
+            let baked = chunk_texel_bits(&section);
+            let reference = texel_major_reference(&inputs);
+            assert_eq!(baked.len(), 2);
+            assert_eq!(baked, reference, "floor {floor}, {count} samples");
+            let lights_seen: Vec<u32> = {
+                let mut seen: Vec<u32> =
+                    section.texel_lights.iter().map(|l| l.light_index).collect();
+                seen.sort_unstable();
+                seen.dedup();
+                seen
+            };
+            assert_eq!(lights_seen, vec![0, 1], "the sdf light bakes nothing");
+            let soft_entries = section
+                .texel_lights
+                .iter()
+                .filter(|l| l.light_index == 1)
+                .count();
+            assert!(soft_entries > 50, "the soft light lights both chunks");
+        }
+    }
 }
 
 fn full_face_chunk(
@@ -480,9 +758,14 @@ fn bake_real_multi_layer_fixture(
         atlas_height: pack.atlas_height,
         static_atlas_layer_count: pack.layer_count,
         area_sample_count: 1,
+        cut_parents: &[],
+        penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
+        step_threshold: TEXEL_STEP_THRESHOLD,
     };
 
-    let section = bake_animated_light_weight_maps(&inputs).expect("fixture rects fit their blocks");
+    let section = bake_animated_light_weight_maps(&inputs)
+        .expect("fixture rects fit their blocks")
+        .section;
     (chunk_section, section, layout)
 }
 
@@ -1001,13 +1284,18 @@ fn parallel_plate_occluder_zeros_shadowed_texels() {
 /// penumbra texels, not just the old binary 0/1 include. At least one covered
 /// texel must carry a weight strictly between the noise floor and the fully-
 /// lit value, and that fractional texel must be a covered (emitted) entry.
+/// The penumbra floor is off: the claim is about the emitter's area samples,
+/// and the floor alone would give a hard light fractions too.
 #[test]
 fn soft_light_partial_occluder_emits_fractional_weight() {
     // Hard reference: a zero-size light over the same partial blocker bakes a
-    // crisp 0/1 mask. Its maximum (fully-lit) weight bounds "fully lit".
-    let hard = bake_with_geometry_and_chunks(
+    // crisp 0/1 mask with the floor off. Its maximum (fully-lit) weight
+    // bounds "fully lit".
+    let hard = bake_with_floor(
         floor_plus_partial_blocker_geometry(),
         vec![animated_point_light_above()],
+        crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+        false,
         |charts| full_face_chunk(charts, 0, vec![0]),
     );
     let hard_max = hard
@@ -1017,9 +1305,11 @@ fn soft_light_partial_occluder_emits_fractional_weight() {
         .fold(0.0_f32, f32::max);
     assert!(hard_max > 0.0, "hard reference produced no lit texels");
 
-    let soft = bake_with_geometry_and_chunks(
+    let soft = bake_with_floor(
         floor_plus_partial_blocker_geometry(),
         vec![soft_animated_point_light_above()],
+        crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+        false,
         |charts| full_face_chunk(charts, 0, vec![0]),
     );
     assert!(soft.is_consistent());
@@ -1682,8 +1972,12 @@ fn two_cell_block_fixture() -> (
         atlas_height: prepared.atlas_height,
         static_atlas_layer_count: prepared.layer_count,
         area_sample_count: 1,
+        cut_parents: &prepared.cut_parents,
+        penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
+        step_threshold: TEXEL_STEP_THRESHOLD,
     })
-    .expect("charts stay inside their cell blocks");
+    .expect("charts stay inside their cell blocks")
+    .section;
     (geo, prepared, chunk_section, section)
 }
 

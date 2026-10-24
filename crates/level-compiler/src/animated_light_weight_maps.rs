@@ -1,6 +1,8 @@
 // Animated-light weight-map baker.
 // See: context/lib/build_pipeline.md §Build Cache
 
+use std::time::Duration;
+
 use bvh::bvh::Bvh;
 use glam::Vec3;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
@@ -17,29 +19,24 @@ use crate::animated_atlas_layout::apply_identity_layout;
 use crate::bake_control::BakeControl;
 
 use crate::bvh_build::BvhPrimitive;
-use crate::chart_raster::{
-    CHART_PADDING_TEXELS, ChartPlacement, chart_interior_dims, chart_texel_seed,
-    chart_texel_world_position,
-};
+use crate::chart_raster::ChartPlacement;
 use crate::geometry::GeometryResult;
-use crate::lightmap_bake::{
-    BlockLayout, Chart, light_contribution_and_direction, segment_clear, soft_visibility,
-};
+use crate::lightmap_bake::{BlockLayout, Chart, CutParent};
 use crate::map_data::MapLight;
+use crate::texel_step_detector::{CutSites, TexelStepReport, merge_chart_steps};
 
+mod face_bake;
 mod static_atlas_frame;
 
 #[cfg(test)]
 use static_atlas_frame::layer_rects_may_overlap;
 #[cfg(test)]
 pub(crate) use static_atlas_frame::rebase_to_cell_block;
-use static_atlas_frame::{
-    assert_no_overlapping_rects_per_layer, chunk_atlas_rect, static_frame_blocks,
-};
+use static_atlas_frame::{assert_no_overlapping_rects_per_layer, static_frame_blocks};
 
 /// Dropped as numerical noise; prevents per-texel lists from inflating on
 /// contributions too dim to matter.
-const WEIGHT_EPSILON: f32 = 1.0e-6;
+pub(crate) const WEIGHT_EPSILON: f32 = 1.0e-6;
 
 /// Cache stage version for the animated-light weight-map bake. Bumped to 2 on
 /// the sdf-static-occluder-shadows branch when the bake started retaining the
@@ -72,6 +69,10 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// v9: soft-visibility seeds key on the chart's frame and texel
 /// (`chart_raster::chart_texel_seed`), not bake-layer coordinates.
 ///
+/// v10: visibility is filtered over the static bake's receiver footprint
+/// unless the penumbra floor is off, and the entry stores the texel-step
+/// report ahead of the section.
+///
 /// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
 /// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
 /// per-stage version-constant pattern every cached stage uses. Bumping this
@@ -79,7 +80,7 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
-pub const STAGE_VERSION: u32 = 9;
+pub const STAGE_VERSION: u32 = 10;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -106,6 +107,24 @@ pub struct WeightMapInputs<'a> {
     /// key's input hash, so changing it produces a cache miss and full re-bake.
     /// Defaults to `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     pub area_sample_count: u32,
+    /// Cut faces' parents, so the texel-step detector checks pairs across a
+    /// cut once and names the face the author drew.
+    pub cut_parents: &'a [CutParent],
+    /// Filter visibility over the receiver footprint (`--no-penumbra-floor`
+    /// turns it off); keyed.
+    pub penumbra_floor: bool,
+    /// Largest stored visibility difference between axis-adjacent texels
+    /// that is no step: `TEXEL_STEP_THRESHOLD` outside tests; keyed.
+    pub step_threshold: f32,
+}
+
+/// The weight maps and what the texel-step detector found while baking them.
+pub(crate) struct WeightMapBake {
+    pub(crate) section: AnimatedLightWeightMapsSection,
+    /// Every stepped (animated light, face), not yet logged.
+    pub(crate) texel_steps: TexelStepReport,
+    /// Detector time summed over workers. Never keyed.
+    pub(crate) texel_step_elapsed: Duration,
 }
 
 /// Failure from the animated-light weight-map bake.
@@ -330,21 +349,27 @@ pub fn cull_unlit_chunks(
 }
 
 /// Bake per-texel animated-light weights for every chunk, in the identity
-/// layout. The atlas budget is not checked here: it depends on the page count
-/// the compact repack reaches after [`cull_unlit_chunks`]. Rejects an animated
-/// face whose chart leaves its lightmap cell block.
-pub fn bake_animated_light_weight_maps(
+/// layout, and check each (light, face) for texel steps. The atlas budget is
+/// not checked here: it depends on the page count the compact repack reaches
+/// after [`cull_unlit_chunks`]. Rejects an animated face whose chart leaves
+/// its lightmap cell block.
+#[cfg(test)]
+pub(crate) fn bake_animated_light_weight_maps(
     inputs: &WeightMapInputs<'_>,
-) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
+) -> Result<WeightMapBake, AnimatedWeightMapBakeError> {
     bake_animated_light_weight_maps_controlled(inputs, &BakeControl::unrestricted())
 }
 
-pub fn bake_animated_light_weight_maps_controlled(
+pub(crate) fn bake_animated_light_weight_maps_controlled(
     inputs: &WeightMapInputs<'_>,
     control: &BakeControl,
-) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
+) -> Result<WeightMapBake, AnimatedWeightMapBakeError> {
     if inputs.chunk_section.chunks.is_empty() {
-        return Ok(AnimatedLightWeightMapsSection::empty());
+        return Ok(WeightMapBake {
+            section: AnimatedLightWeightMapsSection::empty(),
+            texel_steps: TexelStepReport::default(),
+            texel_step_elapsed: Duration::ZERO,
+        });
     }
 
     let chunks = &inputs.chunk_section.chunks;
@@ -360,17 +385,43 @@ pub fn bake_animated_light_weight_maps_controlled(
     )?;
 
     control.publish_total(chunks.len());
-    let light_indices_pool = &inputs.chunk_section.light_indices;
 
-    let per_chunk: Vec<ChunkBakeResult> = chunks
+    // One task per face, its chunks in section order: a light's visibility
+    // grid spans every chunk of the face that lists it, so pairs across a
+    // chunk split are checked.
+    let mut by_face: Vec<usize> = (0..chunks.len()).collect();
+    by_face.sort_by_key(|&index| chunks[index].face_index);
+    let faces: Vec<&[usize]> = by_face
+        .chunk_by(|&a, &b| chunks[a].face_index == chunks[b].face_index)
+        .collect();
+    let sites = CutSites::new(inputs.cut_parents, inputs.face_charts.len());
+    let face_bakes: Vec<face_bake::FaceBake> = faces
         .par_iter()
-        .map(|chunk| {
+        .map(|chunk_indices| {
             let _permit = control.governor().enter();
-            let result = bake_one_chunk(inputs, chunk, light_indices_pool);
-            control.advance(1);
-            result
+            let baked = face_bake::bake_face(inputs, &sites, chunk_indices);
+            control.advance(chunk_indices.len());
+            baked
         })
         .collect();
+
+    let mut per_chunk: Vec<Option<ChunkBakeResult>> = (0..chunks.len()).map(|_| None).collect();
+    let mut found = Vec::new();
+    let mut texel_step_elapsed = Duration::ZERO;
+    for (chunk_indices, baked) in faces.iter().zip(face_bakes) {
+        for (&index, result) in chunk_indices.iter().zip(baked.chunks) {
+            per_chunk[index] = Some(result);
+        }
+        found.extend(baked.steps);
+        texel_step_elapsed += baked.detector;
+    }
+    let per_chunk: Vec<ChunkBakeResult> = per_chunk
+        .into_iter()
+        .map(|result| result.expect("every chunk belongs to one face"))
+        .collect();
+    let started = std::time::Instant::now();
+    let texel_steps = merge_chart_steps(found, &sites);
+    texel_step_elapsed += started.elapsed();
 
     assert_no_overlapping_rects_per_layer(chunks, &per_chunk);
 
@@ -444,163 +495,17 @@ pub fn bake_animated_light_weight_maps_controlled(
         peak_texels_per_chunk,
     );
 
-    Ok(section)
-}
-
-fn bake_one_chunk(
-    inputs: &WeightMapInputs<'_>,
-    chunk: &postretro_level_format::animated_light_chunks::AnimatedLightChunk,
-    light_indices_pool: &[u32],
-) -> ChunkBakeResult {
-    let face_index = chunk.face_index as usize;
-    let chart = &inputs.face_charts[face_index];
-    let placement = inputs.face_placements[face_index];
-
-    let (interior_w, interior_h) = chart_interior_dims(chart);
-
-    let (atlas_x, atlas_y, width, height) = chunk_atlas_rect(
-        chart,
-        placement,
-        chunk.uv_min,
-        chunk.uv_max,
-        inputs.atlas_width,
-        inputs.atlas_height,
-    );
-
-    let list_start = chunk.index_offset as usize;
-    let list_end = list_start + chunk.index_count as usize;
-    let chunk_light_indices: &[u32] = &light_indices_pool[list_start..list_end];
-
-    let rect = ChunkAtlasRect {
-        compact_x: atlas_x,
-        compact_y: atlas_y,
-        width,
-        height,
-        texel_offset: 0, // filled by caller
-        block: 0,        // filled by caller
-    };
-
-    let texel_count = (width * height) as usize;
-    let mut offset_counts: Vec<TexelLightEntry> = Vec::with_capacity(texel_count);
-    let mut texel_lights: Vec<TexelLight> = Vec::new();
-
-    let padding = CHART_PADDING_TEXELS as i32;
-
-    let chart_usable = chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0;
-
-    // Row-major to match section encoding: chunk_rect.texel_offset + ty * width + tx.
-    for ty in 0..height {
-        for tx in 0..width {
-            let ax = atlas_x + tx;
-            let ay = atlas_y + ty;
-            // Map back into the chart's interior coordinate space.
-            let tx_interior = ax as i32 - placement.x as i32 - padding;
-            let ty_interior = ay as i32 - placement.y as i32 - padding;
-
-            // Texels outside the chart (artifact of outward rounding): zero-count entry.
-            if !chart_usable
-                || tx_interior < 0
-                || ty_interior < 0
-                || tx_interior >= interior_w
-                || ty_interior >= interior_h
-            {
-                offset_counts.push(TexelLightEntry {
-                    offset: texel_lights.len() as u32,
-                    count: 0,
-                });
-                continue;
-            }
-
-            let world_p = chart_texel_world_position(chart, tx_interior, ty_interior);
-            let surface_normal = chart.normal;
-
-            // The static bake's seed for this chart texel, so the animated
-            // weights and the static lightmap draw the same samples there.
-            let texel_seed = chart_texel_seed(chart, tx_interior, ty_interior);
-
-            let offset_start = texel_lights.len() as u32;
-            let mut count: u32 = 0;
-            for &light_index in chunk_light_indices {
-                let light = &inputs.lights[light_index as usize];
-                // Disjoint-direct exclusion at the direct weight-map consumer:
-                // `sdf`-typed lights resolve their direct term at runtime, so
-                // they contribute no baked `lm_anim` weight. They stay in
-                // `inputs.lights` (index alignment with the chunk section /
-                // delta-SH bake) but emit zero weight here. Dynamic-tier lights
-                // are already absent — the `AnimatedBakedLights` namespace keys
-                // on `!is_dynamic`. The soft-visibility multiply below composes
-                // *after* this filter, so sdf-typed lights stay fully skipped.
-                if light.shadow_type == crate::map_data::ShadowType::Sdf {
-                    continue;
-                }
-                let (contribution, dir) =
-                    light_contribution_and_direction(light, world_p, surface_normal);
-                let weight = contribution_to_weight(contribution, light.color, light.intensity);
-                if weight <= WEIGHT_EPSILON {
-                    continue;
-                }
-                // Soft area-light visibility replaces the old binary
-                // `shadow_visible` gate (baked-soft-lightmap-shadows Task 4): the
-                // `[0, 1]` unoccluded fraction scales the emitted weight, so
-                // penumbra texels carry a fractional weight rather than a hard
-                // include/exclude. Fully occluded (`v <= 0`) emits no entry, same
-                // sparsity as before. Because `weight` is a continuous multiplier
-                // consumed by the compose pre-pass (no thresholding there), the
-                // shadow *shape* stays fixed as the light's intensity animates —
-                // intensity is a separate per-frame scalar. Wraps this module's
-                // `segment_clear` as the trace closure (the helper is
-                // trace-context-agnostic per Task 2).
-                let v = soft_visibility(
-                    world_p,
-                    surface_normal,
-                    light,
-                    texel_seed,
-                    inputs.area_sample_count,
-                    |from, to| {
-                        segment_clear(inputs.bvh, inputs.primitives, inputs.geometry, from, to)
-                    },
-                );
-                if v <= 0.0 {
-                    continue;
-                }
-                let weight = weight * v;
-                // Retain the per-light per-texel incoming direction the
-                // contribution calculation already computed (Task 2b of
-                // sdf-static-occluder-shadows). The light's geometry is
-                // static, so this direction is bakeable; the compose pass
-                // weights it by the light's per-frame radiance to fuse a
-                // runtime dominant-direction atlas the SDF traces toward.
-                // `light_contribution_and_direction` returns `Vec3::Y` for
-                // degenerate (zero-distance) cases — `weight > EPSILON`
-                // already gates those out, so `dir` here is meaningful.
-                let direction_oct = postretro_level_format::octahedral::encode(dir.x, dir.y, dir.z);
-                texel_lights.push(TexelLight {
-                    light_index,
-                    weight,
-                    direction_oct,
-                });
-                count += 1;
-            }
-
-            offset_counts.push(TexelLightEntry {
-                offset: offset_start,
-                count,
-            });
-        }
-    }
-
-    ChunkBakeResult {
-        rect,
-        layer: placement.layer,
-        offset_counts,
-        texel_lights,
-    }
+    Ok(WeightMapBake {
+        section,
+        texel_steps,
+        texel_step_elapsed,
+    })
 }
 
 /// Strips base color and intensity so the weight is a neutral Lambert × falloff
 /// × cone scalar; runtime compose re-applies color/intensity from the descriptor.
 /// Picks the dominant color channel to avoid divide-by-near-zero on weak channels.
-fn contribution_to_weight(contribution: Vec3, color: [f32; 3], intensity: f32) -> f32 {
+pub(crate) fn contribution_to_weight(contribution: Vec3, color: [f32; 3], intensity: f32) -> f32 {
     let (c_contrib, c_color) = if color[0] >= color[1] && color[0] >= color[2] {
         (contribution.x, color[0])
     } else if color[1] >= color[2] {

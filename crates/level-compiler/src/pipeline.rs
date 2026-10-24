@@ -1601,6 +1601,7 @@ fn run_after_parsing(
         shadowmask: shadowmask_atlas_section,
         shadowmask_elapsed,
         texel_step_elapsed,
+        cut_parents,
         ..
     } = fused_lighting;
     let lightmap_bake::LightmapBakeOutput {
@@ -1710,6 +1711,9 @@ fn run_after_parsing(
             atlas_height,
             static_atlas_layer_count,
             area_sample_count: args.soft_shadow_samples,
+            cut_parents: &cut_parents,
+            penumbra_floor: lightmap_config.penumbra_floor,
+            step_threshold: crate::texel_step_detector::TEXEL_STEP_THRESHOLD,
         };
 
         Some(animated_atlas_stage::bake_or_load_weight_maps(
@@ -1719,6 +1723,11 @@ fn run_after_parsing(
             &animated_weight_control,
         )?)
     };
+    let weight_map_step_elapsed = animated_light_weight_maps_section
+        .as_ref()
+        .map_or(Duration::ZERO, |bake| bake.texel_step_elapsed);
+    let animated_light_weight_maps_section =
+        animated_light_weight_maps_section.map(|bake| bake.section);
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -1726,6 +1735,9 @@ fn run_after_parsing(
         stage_start,
         animated_light_weight_maps_section.is_some(),
     );
+    // As under the lightmap bake: the weight-map detector's time summed over
+    // workers, bounding its share of the line above.
+    timings.push(("  TexelSteps", weight_map_step_elapsed));
 
     // Drop chunks the bake found unlit before sizing the animated atlas: the
     // influence-sphere chunk selection over-includes occluded and back-facing

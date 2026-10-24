@@ -324,6 +324,98 @@ impl Fixture {
         grid
     }
 
+    /// Bake `light` over the receiver as an animated light through the
+    /// weight-map bake, one chunk spanning the receiver, and read each
+    /// texel's visibility back from its stored weight over the unshadowed
+    /// weight. A texel with no entry but a weight above the bake's epsilon
+    /// is 0; one below it is absent, as the bake leaves it.
+    pub(super) fn bake_weight_map(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+        floor: bool,
+    ) -> VisibilityGrid {
+        use crate::animated_light_weight_maps::{
+            WEIGHT_EPSILON, WeightMapInputs, bake_animated_light_weight_maps,
+            contribution_to_weight,
+        };
+        use postretro_level_format::animated_light_chunks::{
+            AnimatedLightChunk, AnimatedLightChunksSection,
+        };
+
+        let charts = [self.receiver.chart()];
+        let chart = &charts[0];
+        let placements = [ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let (atlas_width, atlas_height) = (chart.width_texels, chart.height_texels);
+        let layout = BlockLayout::whole_layers(atlas_width, atlas_height, &placements, 2);
+        let chunks = AnimatedLightChunksSection {
+            chunks: vec![AnimatedLightChunk {
+                aabb_min: [0.0; 3],
+                face_index: 0,
+                aabb_max: [0.0; 3],
+                index_offset: 0,
+                uv_min: chart.uv_min,
+                uv_max: [
+                    chart.uv_min[0] + chart.uv_extent[0],
+                    chart.uv_min[1] + chart.uv_extent[1],
+                ],
+                index_count: 1,
+                _padding: 0,
+            }],
+            light_indices: vec![0],
+        };
+        let lights = [light.clone()];
+        let section = bake_animated_light_weight_maps(&WeightMapInputs {
+            bvh: &self.bvh,
+            primitives: &self.primitives,
+            geometry: &self.geometry,
+            chunk_section: &chunks,
+            lights: &lights,
+            face_charts: &charts,
+            face_placements: &placements,
+            layout: &layout,
+            atlas_width,
+            atlas_height,
+            static_atlas_layer_count: 1,
+            area_sample_count,
+            cut_parents: &[],
+            penumbra_floor: floor,
+            step_threshold: crate::texel_step_detector::TEXEL_STEP_THRESHOLD,
+        })
+        .expect("the receiver's chart fits its block")
+        .section;
+        let rect = section.chunk_rects[0];
+        let mut grid = VisibilityGrid::new(self.receiver.width, self.receiver.height);
+        for ty in 0..self.receiver.height {
+            for tx in 0..self.receiver.width {
+                let world_p = chart_texel_world_position(chart, tx as i32, ty as i32);
+                let (contribution, _) = crate::lightmap_bake::light_contribution_and_direction(
+                    light,
+                    world_p,
+                    chart.normal,
+                );
+                let unshadowed = contribution_to_weight(contribution, light.color, light.intensity);
+                if unshadowed <= WEIGHT_EPSILON {
+                    continue;
+                }
+                let x = tx + CHART_PADDING_TEXELS - rect.compact_x;
+                let y = ty + CHART_PADDING_TEXELS - rect.compact_y;
+                let entry =
+                    section.offset_counts[(rect.texel_offset + y * rect.width + x) as usize];
+                let visibility = match entry.count {
+                    0 => 0.0,
+                    _ => section.texel_lights[entry.offset as usize].weight / unshadowed,
+                };
+                grid.set(tx, ty, visibility);
+            }
+        }
+        grid
+    }
+
     /// The walk [`Fixture::bake`] runs, replayed texel by texel through the
     /// footprint with each outcome kept: same order, same covered texels,
     /// same occluder caches, every clip segment traced (no pre-pass).

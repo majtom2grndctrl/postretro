@@ -66,7 +66,7 @@ pub mod shadowmask_bake;
 pub mod size_options;
 pub mod streaming_hints;
 pub mod texel_footprint;
-// Called only from tests until a bake stage reports texel steps.
+// Its whole-grid form serves only tests.
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod texel_step_detector;
 pub mod texture_mips;

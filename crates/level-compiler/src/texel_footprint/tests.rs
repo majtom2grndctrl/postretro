@@ -155,7 +155,10 @@ fn footprint_samples_pair_with_emitter_samples_along_or_against_their_offsets() 
     sun.angular_diameter = 4.0;
     // A wall-like receiver too, lit obliquely.
     let floor = (Vec3::Y, TexelFrame::new(Vec3::X * PITCH, Vec3::Z * PITCH));
-    let wall = (-Vec3::X, TexelFrame::new(Vec3::Z * PITCH, Vec3::Y * (1.5 * PITCH)));
+    let wall = (
+        -Vec3::X,
+        TexelFrame::new(Vec3::Z * PITCH, Vec3::Y * (1.5 * PITCH)),
+    );
     let sector_slack = 0.05f32.to_radians().cos();
     for light in [&point, &sun] {
         for count in [9, 16, DEFAULT_AREA_SAMPLE_COUNT, 64] {
@@ -225,11 +228,14 @@ fn footprint_samples_pair_with_emitter_samples_along_or_against_their_offsets() 
                     let way = Vec2::from(RING_DIRECTIONS[sector]);
                     let inside = |i: u32| {
                         let p = position(i);
-                        i != indices[0] && p.dot(way) >= p.length() * (22.5f32.to_radians().cos() * sector_slack)
+                        i != indices[0]
+                            && p.dot(way)
+                                >= p.length() * (22.5f32.to_radians().cos() * sector_slack)
                     };
                     let well_inside = |i: u32| {
                         let p = position(i);
-                        i != indices[0] && p.dot(way) * sector_slack >= p.length() * 22.5f32.to_radians().cos()
+                        i != indices[0]
+                            && p.dot(way) * sector_slack >= p.length() * 22.5f32.to_radians().cos()
                     };
                     let best = (0..count)
                         .filter(|&i| well_inside(i))
@@ -244,7 +250,8 @@ fn footprint_samples_pair_with_emitter_samples_along_or_against_their_offsets() 
                         "{:?} at {count}: ring probe {k} does not take its sector's farthest sample",
                         light.light_type
                     );
-                    worst_angle = worst_angle.max(position(indices[k]).angle_to(way).abs().to_degrees());
+                    worst_angle =
+                        worst_angle.max(position(indices[k]).angle_to(way).abs().to_degrees());
                 }
                 // The counter ring, from the largest stratum inward, takes the
                 // unclaimed sample reaching farthest against each offset.
@@ -479,6 +486,60 @@ fn clear_standing_occluder_ramp_changes_under_one_texel_with_the_floor() {
         "the penumbra spans several texels already ({off})"
     );
     assert!((on - off).abs() < 1.0, "ramp moved {} texels", on - off);
+}
+
+// --- AC 12: one light baked static and animated ----------------------------
+
+// The same light over the contact plate, baked as a static layer and as an
+// animated weight map: both ramp over the floor width, and their tracers
+// differ only on box-boundary hits, so they agree per texel within one
+// shadow-sample fraction. Weight maps never hold a sun (the chunk builder
+// skips directional lights).
+#[test]
+fn a_light_baked_static_and_animated_ramps_over_the_floor_width_alike() {
+    let (anchor, yaw) = (Vec3::new(0.013, 0.0, 0.021), 20.0f32.to_radians());
+    let fixture = plate_fixture(anchor, yaw, CONTACT_GAP);
+    for kind in ["hard point", "hard spot", "default point"] {
+        let light = light_beside(kind, anchor, yaw, 0.35);
+        let edge = plate_shadow_edge(&fixture.receiver, &light, anchor, yaw, CONTACT_GAP);
+        let layer = fixture.bake(&light, DEFAULT_AREA_SAMPLE_COUNT, true);
+        let weights = fixture.bake_weight_map(&light, DEFAULT_AREA_SAMPLE_COUNT, true);
+        let (layer_ramp, floor, profiles) = ramp_against_floor(&fixture, &layer, &edge);
+        let (weight_ramp, _, weight_profiles) = ramp_against_floor(&fixture, &weights, &edge);
+        let fraction = 1.0 / DEFAULT_AREA_SAMPLE_COUNT.max(FOOTPRINT_PROBES as u32) as f32;
+        let (mut compared, mut differing, mut worst) = (0, 0, 0.0f32);
+        for y in 0..layer.height() {
+            for x in 0..layer.width() {
+                let (Some(a), Some(b)) = (layer.get(x, y), weights.get(x, y)) else {
+                    continue;
+                };
+                compared += 1;
+                differing += usize::from(a != b);
+                worst = worst.max((a - b).abs());
+            }
+        }
+        println!(
+            "{kind}: layer ramp {layer_ramp:.3}, weight-map ramp {weight_ramp:.3}, floor \
+             {floor:.3} over {profiles} profiles; {differing} of {compared} texels differ, \
+             worst {worst:.4}"
+        );
+        assert!(profiles > 100 && profiles == weight_profiles, "{kind}");
+        assert!(
+            (layer_ramp - floor).abs() <= 0.2,
+            "{kind}: layer ramp {layer_ramp}"
+        );
+        assert!(
+            (weight_ramp - floor).abs() <= 0.2,
+            "{kind}: weight-map ramp {weight_ramp}"
+        );
+        assert!(compared > 1000, "{kind}: {compared} texels in common");
+        // A rounding of the weight division, far under a sample fraction.
+        assert!(
+            worst <= fraction + 1.0e-5,
+            "{kind}: worst per-texel difference {worst}"
+        );
+        assert_eq!(zero_one_jumps(&weights), 0, "{kind}");
+    }
 }
 
 // --- AC 5, 6: thin pole -----------------------------------------------------
@@ -758,11 +819,12 @@ fn soft_light_penumbra_edges_never_snap_at_any_sample_count() {
                     // Beyond the penumbra plus the footprint's reach no
                     // sample can split, so the reference skips those texels.
                     let band = f64::from(width) + 2.0;
-                    let reference = fixture.footprint_reference(&light, REFERENCE_SAMPLES, |x, y| {
-                        edge.signed_distance([f64::from(x) + 0.5, f64::from(y) + 0.5])
-                            .abs()
-                            < band
-                    });
+                    let reference =
+                        fixture.footprint_reference(&light, REFERENCE_SAMPLES, |x, y| {
+                            edge.signed_distance([f64::from(x) + 0.5, f64::from(y) + 0.5])
+                                .abs()
+                                < band
+                        });
                     let in_penumbra =
                         |x, y| matches!(reference.get(x, y), Some(v) if v > 0.1 && v < 0.9);
                     let mut config_fractional = 0;
@@ -1429,5 +1491,3 @@ fn a_scaled_face_ramps_over_the_same_texels_in_either_walk_order() {
         "world ramp ratio {world_ratio} vs pitch ratio {pitch_ratio}"
     );
 }
-
-

@@ -8,12 +8,23 @@ Brief grounded at d6f3471; 76 commits since. Every Decision and Path symbol was 
 
 Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time only). It touches `parse.rs`, `map_data.rs` and the FGD, but none of the runtime renderer, capture, limiter or netcode files this plan builds on, and not the pre-BSP peel path `ghost_link` shares with teleporters. No Correction changes.
 
-## Resume point (2026-10-23)
-- HEAD `3a965ff94`, local and not pushed (the last push is `b45767212`). It has ghost limiter v2 and the per-ghost depth order.
-- Verified: the workspace compiles clean. Focused tests pass: render-cpu 569, renderer ghost 27 and uploads 12, binary ghost 155. Both `ghost_link` GPU capture tests pass on Metal.
-- Review round 4 is done. Round 5 is in progress, covering limiter v2 and the depth order, and its fix pass follows.
-- Then: merge main (context-only commits), the full gate, the AC results, and the manual rows (45–47 and the self-overlap fix). Also check the DX12 depth copy on the owner's Windows box. Push only when the owner says so.
-- Round 1–5 review reports and the limiter prototypes live in the session scratchpad only. Their findings are captured here.
+## Resume point (2026-10-23, paused after review round 6)
+- HEAD `a8c22bc1d`, local and not pushed (the last push is `b45767212`). It holds `744b375dd` (round-5 fixes: limiter rules F and R, the onward guard, container-first mover sort keys, shared ghost pipelines), `c3d56efd7` (a dropped ghost reappears with unknown history) and a merge of `origin/main` that touched only `context/`.
+- Verified at `c3d56efd7`, before the merge: render-cpu 583, binary ghost 155, and both `ghost_link` GPU capture tests on Metal. The full gate has not run since `d6ccf08b2`.
+- Review round 6 ran three lenses. The reports are in the session scratchpad (`scratchpad/reviews/round6-*.md`), which may not survive; their findings are summarized here.
+  - **Owner call: mover sort key.** The farthest-corner key mis-sorts a ghost close behind a mover seen at an angle (a pawn 0.5 m behind a 2 m door yawed 45°, 4 m ahead) or just outside a ghost cab the camera is inside. The mover draws first and hides the ghost. Round 5 sorted both correctly. Option (a): document it as a limit. Option (b), recommended: key movers by centre again, and raise a mover's key to just past a skinned ghost's only when that ghost's feet are inside the mover's oriented local bounds (about 0.1 m margin). Add both cases as `ghost_order` regressions.
+  - **Owner call: index Decision on reuse.** It says E23 reuses the per-ghost clamp, but under v2 that clamp is ghost-only. Proposed wording: E23 reuses `KeyClamp` and `ValueClamp`.
+  - **Not yet settled: sprite opacity.** `billboard_ghost_render.rs:113` multiplies by the sprite's own opacity after the clamp, so animating a sprite's opacity is never limited. Check whether the brief means to cover it.
+  - **Limiter, still open.** A hidden fall after an unknown tracker's tiny first move and its R count can complete on a frame that touches no slot. This is documented hole 1, and the port shows a transition no slot counts (60 fps, blend, swing 0.07, black tint, (a,B) = (0.75, 0.05) and 53 other grid points). It has not been amplified to a 7th transition; the best so far is 6. Next: a strobe aimed at the naked point at 144 and 240 fps, with a 0.6–0.9 s gap. The Rust targeted test is weak here, because the rate cap flattens its strobe (worst 2). Also check whether tints that draw luminance exactly k/16 (for example (12, 105, 249) at 0.375) trip the debug assert at `ghost_window.rs:248`. The reviewer's f32 port (`scratchpad/r6review/port.py`) matches the Rust frame for frame. The earlier `r6/unknown.py` holds `LUMA`, `BLACKL` and `THETA` in f64.
+  - **Mechanical fixes queued:**
+    - Move `GhostPipelines`, `ghost_pipeline_state`, `GhostPipelineState`, `GhostDrawStep` and `SkinnedGhostSpan` into a leaf `render/ghost_pipeline.rs`, and move `mover_ghost_corners` into `kinematic_ghost.rs`. This breaks the `ghost_order` cycles.
+    - Split `ghost_look.rs` into the per-ghost judge and the `GhostLookClamp` frame container.
+    - Put the pawn at z −12 in `ghost_order_tests.rs:217`, so the test fails under the old centre key.
+    - Docs and brief: state the whole-object sort limit (`docs/ghost-links.md:194-200` and `index.md:43`, including the reflow and the "unknown value warns" wording). Record the sort key.
+    - `plan.md`: mark the round-5 "re-count after aging out" bullet superseded. Add an as-implemented line to the Bound note: two drop cases are left to search, and redness has no unknown start. Restate AC rows 23 and 24a to v2 wording.
+    - Nits: round labels in test comments, a "re-tenanted key" example (keys are generation-checked), a half-covering test name, `use` for `Aabb` in `kinematic_brush.rs`, a doc for the `UNKNOWN_HISTORY` sentinel, a tautological `EDGE_THRESHOLD` assert.
+  - **DX12 depth copy:** legal from the code. On the Windows box, watch the D3D12 debug layer for warnings on the scene-depth to ghost-depth copy.
+- Then: the fix pass, a re-review only while new findings appear, the full gate, the AC results, and the manual rows (45–47 and the self-overlap fix). Push only when the owner says so.
 
 ## Corrections
 - `WIRE_VERSION` 32 → 33 (Wire format) → it is already 33 (`crates/net/src/handshake.rs:43`, PRLC Input-lane bump ae87ca368). This brief bumps **33 → 34**; `SNAPSHOT_VERSION` 21 → 22 stands (`crates/net/src/wire.rs:357`). AC "handshake across the old and new wire versions is refused" keeps its meaning.
@@ -106,6 +117,10 @@ Merged `main` at 08f8813f9 (reflection-probe-capture-exclusion, compile-time onl
     - write down the between-sample argument.
   - Both attack sequences become regressions, plus a targeted search.
   - **Ghost sort:** mover ghosts are keyed by the farthest corner of their bounds, so containers such as platforms and bridges draw before the actors on them. Remaining mis-sorts are a documented limit.
+- Owner decisions, 2026-10-23, round 6:
+  - **Ghost sort is contact-based** (supersedes the farthest-corner key above). Mover ghosts sort by their centre. A mover draws just before a skinned ghost only when that ghost's feet are inside the mover's oriented local bounds: on a platform, on a lift, or in a cab. The farthest-corner key hid a ghost standing close behind a door seen at an angle.
+  - **E23 reuse** (index Decision reworded): E23 reuses `KeyClamp` and `ValueClamp`. Under v2 the per-ghost look clamp is ghost-only.
+  - **Sprite opacity is limited.** A projectile sprite ghost's own opacity folds into the look the limiter judges, so the capped value is the one that draws.
 - Round 4, depth pre-pass: one shared pre-pass let a nearer translucent ghost hide farther ghosts in blend mode, against Task 16's "each ghost's nearest surface". The fix: draw ghosts back to front in one render pass, each a depth-only draw (no colour writes) then its colour draw (Equal). Tighten the GPU controls to catch Equal dropout (every overlap pixel in blend; kept-pixel count in dither). The DX12 depth copy is unverified until the owner runs on Windows.
 - Review clarifications that keep the meaning:
   - "Keeps its hue" (Decision; row 24): the hue angle is kept. A saturated tint whose brightest scale cannot reach the held luminance mixes toward white, so the drawn value never passes the one the limiter judged (placed on the 8-bit grid on the safe side). A single white→red change therefore ramps through a lighter red over about 200 ms.

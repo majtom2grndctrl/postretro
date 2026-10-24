@@ -467,7 +467,9 @@ fn texel_major_reference(inputs: &WeightMapInputs<'_>) -> Vec<([u32; 4], Vec<Tex
         CHART_PADDING_TEXELS, chart_interior_dims, chart_texel_seed, chart_texel_world_position,
     };
     use crate::lightmap_bake::{light_contribution_and_direction, segment_clear, soft_visibility};
-    use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
+    use crate::texel_footprint::{
+        ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+    };
 
     let clear = |from, to| segment_clear(inputs.bvh, inputs.primitives, inputs.geometry, from, to);
     inputs
@@ -503,6 +505,17 @@ fn texel_major_reference(inputs: &WeightMapInputs<'_>) -> Vec<([u32; 4], Vec<Tex
             let reach =
                 ClipReach::rasterized(chart, inputs.bvh, inputs.primitives, inputs.geometry);
             let frame = TexelFrame::for_chart(chart);
+            let band = ClipBand::for_chart(chart);
+            let lead_in = |from, to| {
+                lead_in_clear(
+                    inputs.bvh,
+                    inputs.primitives,
+                    inputs.geometry,
+                    &band,
+                    from,
+                    to,
+                )
+            };
             let padding = CHART_PADDING_TEXELS as i32;
             let mut texels = Vec::new();
             for ty in 0..height {
@@ -533,7 +546,7 @@ fn texel_major_reference(inputs: &WeightMapInputs<'_>) -> Vec<([u32; 4], Vec<Tex
                                     frame,
                                     may_clip: reach.may_clip(ix, iy),
                                 };
-                                samplers[slot].visibility(light, &site, clear, clear)
+                                samplers[slot].visibility(light, &site, clear, clear, lead_in)
                             } else {
                                 soft_visibility(
                                     world_p,

@@ -9,7 +9,10 @@ use glam::{DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
-use super::{FootprintOutcome, TexelFrame, TexelSite, footprint_for, footprint_visibility_with};
+use super::{
+    ClipBand, FootprintOutcome, TexelFrame, TexelSite, footprint_for, footprint_visibility_with,
+    lead_in_clear,
+};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::{BvhPrimitive, build_bvh};
 use crate::chart_raster::{
@@ -419,14 +422,33 @@ impl Fixture {
     /// The walk [`Fixture::bake`] runs, replayed texel by texel through the
     /// footprint with each outcome kept: same order, same covered texels,
     /// same occluder caches, every clip segment traced (no pre-pass).
-    /// `reach_override` replaces the wall clip.
+    /// `reach_override` replaces the wall clip and the lead-in alike.
     pub(super) fn footprint_outcomes(
         &self,
         light: &MapLight,
         area_sample_count: u32,
         reach_override: Option<bool>,
     ) -> Vec<Option<FootprintOutcome>> {
-        self.replay(light, area_sample_count, reach_override, true, |_, _| true)
+        self.replay(
+            light,
+            area_sample_count,
+            reach_override,
+            reach_override,
+            true,
+            |_, _| true,
+        )
+    }
+
+    /// [`Fixture::footprint_outcomes`] with the wall clip traced and every
+    /// lead-in taken as clear.
+    pub(super) fn footprint_outcomes_without_lead_in(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+    ) -> Vec<Option<FootprintOutcome>> {
+        self.replay(light, area_sample_count, None, Some(true), true, |_, _| {
+            true
+        })
     }
 
     /// The footprint's visibility at the texels `include` selects, every
@@ -438,7 +460,7 @@ impl Fixture {
         area_sample_count: u32,
         include: impl Fn(u32, u32) -> bool,
     ) -> VisibilityGrid {
-        let outcomes = self.replay(light, area_sample_count, None, false, include);
+        let outcomes = self.replay(light, area_sample_count, None, None, false, include);
         let mut grid = VisibilityGrid::new(self.receiver.width, self.receiver.height);
         for (i, outcome) in outcomes.iter().enumerate() {
             if let Some(outcome) = outcome {
@@ -458,12 +480,14 @@ impl Fixture {
         light: &MapLight,
         area_sample_count: u32,
         reach_override: Option<bool>,
+        lead_in_override: Option<bool>,
         early_out: bool,
         include: impl Fn(u32, u32) -> bool,
     ) -> Vec<Option<FootprintOutcome>> {
         let chart = self.receiver.chart();
         let footprint = footprint_for(light, area_sample_count);
         let frame = TexelFrame::for_chart(&chart);
+        let band = ClipBand::for_chart(&chart);
         let last_occluder = Cell::new(None);
         let clip_occluder = Cell::new(None);
         let mut outcomes = Vec::new();
@@ -491,6 +515,18 @@ impl Fixture {
                     |from, to| {
                         reach_override
                             .unwrap_or_else(|| self.clear_remembering(from, to, &clip_occluder))
+                    },
+                    |from, to| {
+                        lead_in_override.unwrap_or_else(|| {
+                            lead_in_clear(
+                                &self.bvh,
+                                &self.primitives,
+                                &self.geometry,
+                                &band,
+                                from,
+                                to,
+                            )
+                        })
                     },
                     early_out,
                 )));

@@ -1265,6 +1265,351 @@ fn thin_wall_keeps_its_shadowed_floor_exactly_dark() {
     assert!(checked > 0);
 }
 
+// --- sealed rooms: no light from outside -------------------------------------
+
+/// The faces a compile keeps of a sealed room built from six brushes with
+/// real thickness, spanning `lo..hi` inside: floor, ceiling and four walls,
+/// each meeting its neighbours at a shared edge, as `gate-heavily-lit`'s
+/// corridor does. Only each brush's side facing the room survives; its sides
+/// in solid and in the void are culled, so a ray that gets inside a brush
+/// meets no face on its way out.
+fn sealed_room(scene: &mut SceneBuilder, lo: Vec3, hi: Vec3) {
+    let p = Vec3::new;
+    scene.quad(
+        [
+            p(lo.x, lo.y, lo.z),
+            p(lo.x, lo.y, hi.z),
+            p(hi.x, lo.y, hi.z),
+            p(hi.x, lo.y, lo.z),
+        ],
+        Vec3::Y,
+    );
+    scene.quad(
+        [
+            p(lo.x, hi.y, lo.z),
+            p(hi.x, hi.y, lo.z),
+            p(hi.x, hi.y, hi.z),
+            p(lo.x, hi.y, hi.z),
+        ],
+        -Vec3::Y,
+    );
+    scene.quad(
+        [
+            p(lo.x, lo.y, lo.z),
+            p(hi.x, lo.y, lo.z),
+            p(hi.x, hi.y, lo.z),
+            p(lo.x, hi.y, lo.z),
+        ],
+        Vec3::Z,
+    );
+    scene.quad(
+        [
+            p(lo.x, lo.y, hi.z),
+            p(lo.x, hi.y, hi.z),
+            p(hi.x, hi.y, hi.z),
+            p(hi.x, lo.y, hi.z),
+        ],
+        -Vec3::Z,
+    );
+    scene.quad(
+        [
+            p(lo.x, lo.y, lo.z),
+            p(lo.x, hi.y, lo.z),
+            p(lo.x, hi.y, hi.z),
+            p(lo.x, lo.y, hi.z),
+        ],
+        Vec3::X,
+    );
+    scene.quad(
+        [
+            p(hi.x, lo.y, lo.z),
+            p(hi.x, lo.y, hi.z),
+            p(hi.x, hi.y, hi.z),
+            p(hi.x, hi.y, lo.z),
+        ],
+        -Vec3::X,
+    );
+}
+
+/// A hard sun and one at the default angular diameter, toward each of
+/// `azimuths` (degrees about +Y from +X) at each of `elevations`.
+fn suns_toward(azimuths: &[f32], elevations: &[f32]) -> Vec<MapLight> {
+    let mut suns = Vec::new();
+    for &elevation_deg in elevations {
+        for &azimuth_deg in azimuths {
+            let (e, a) = (elevation_deg.to_radians(), azimuth_deg.to_radians());
+            let to_light = Vec3::new(e.cos() * a.cos(), e.sin(), e.cos() * a.sin());
+            let hard = hard_sun((-to_light).to_array());
+            let mut soft = hard.clone();
+            soft.angular_diameter = crate::map_data::DEFAULT_ANGULAR_DIAMETER_DEG;
+            suns.extend([hard, soft]);
+        }
+    }
+    suns
+}
+
+/// Bakes every chart of `geometry` for each light through the production
+/// layer walk, floor on, and returns every texel record whose visibility is
+/// not exactly 0 (light index, face, raw visibility), with the number of
+/// records checked.
+fn lit_records(
+    geometry: &mut crate::geometry::GeometryResult,
+    lights: &[MapLight],
+    counts: &[u32],
+) -> (Vec<(usize, usize, f32)>, usize) {
+    let baked = crate::light_namespaces::StaticBakedLights::from_lights(lights);
+    let prepared = crate::lightmap_bake::prepare_atlas(geometry, &baked, PITCH, &[]).unwrap();
+    let (bvh, primitives, _) = crate::bvh_build::build_bvh(geometry).unwrap();
+    let atlas = crate::lightmap_layer::SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let control = crate::bake_control::BakeControl::unrestricted();
+    let (mut lit, mut checked) = (Vec::new(), 0);
+    for (index, light) in lights.iter().enumerate() {
+        for &count in counts {
+            for face in 0..atlas.charts.len() {
+                let texels = crate::lightmap_layer::bake_light_layer_chart_controlled(
+                    light,
+                    &atlas,
+                    face,
+                    &bvh,
+                    &primitives,
+                    geometry,
+                    count,
+                    true,
+                    &control,
+                );
+                checked += texels.len();
+                lit.extend(
+                    texels
+                        .iter()
+                        .filter(|texel| texel.raw_visibility != 0.0)
+                        .map(|texel| (index, face, texel.raw_visibility)),
+                );
+            }
+        }
+    }
+    (lit, checked)
+}
+
+#[test]
+fn a_sealed_room_takes_no_light_from_outside() {
+    // Off the origin, at the corridor's distance, so positions round as they
+    // do there.
+    let (lo, hi) = (Vec3::new(-3.6, 0.0, -41.3), Vec3::new(-2.0, 1.2, -40.3));
+    let mut scene = SceneBuilder::default();
+    sealed_room(&mut scene, lo, hi);
+    let mut geometry = scene.build();
+    // Suns from every side; the room's own walls stand between each and
+    // every texel.
+    let mut lights = suns_toward(&[15.0, 45.0, 70.0, 135.0, 225.0, 300.0], &[30.0, 60.0]);
+    // Point lights beside and above the room, outside its walls.
+    let mid = (lo + hi) * 0.5;
+    for outside in [
+        Vec3::new(hi.x + 0.5, mid.y, mid.z),
+        Vec3::new(mid.x, hi.y + 0.4, mid.z),
+    ] {
+        let origin = outside.as_dvec3().to_array();
+        lights.extend([hard_point(origin), default_point(origin)]);
+    }
+    let (lit, checked) = lit_records(
+        &mut geometry,
+        &lights,
+        &[SOFT_PROBE_SAMPLES, DEFAULT_AREA_SAMPLE_COUNT],
+    );
+    println!("sealed room: {checked} records checked, {} lit", lit.len());
+    assert!(checked > 0);
+    assert!(
+        lit.is_empty(),
+        "{} records take light from outside the room, e.g. {:?}",
+        lit.len(),
+        &lit[..lit.len().min(8)]
+    );
+}
+
+#[test]
+fn lead_ins_enter_only_front_faces_in_the_band_from_their_first_point() {
+    use crate::lightmap_bake::{RAY_EPSILON, segment_clear};
+    // A floor, a wall standing on it at x = 0 facing −x, and a plate three
+    // lifts up facing down: wholly above the band.
+    let receiver = Receiver::centred(8, 8);
+    let mut scene = SceneBuilder::default();
+    receiver.add_floor(&mut scene);
+    scene.quad(
+        [
+            Vec3::new(0.0, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.0, 1.0, 1.0),
+            Vec3::new(0.0, 1.0, -1.0),
+        ],
+        -Vec3::X,
+    );
+    let plate = 3.0 * RAY_EPSILON;
+    scene.quad(
+        [
+            Vec3::new(-0.15, plate, -0.05),
+            Vec3::new(-0.05, plate, -0.05),
+            Vec3::new(-0.05, plate, 0.05),
+            Vec3::new(-0.15, plate, 0.05),
+        ],
+        -Vec3::Y,
+    );
+    let fixture = Fixture::new(scene, receiver);
+    let band = ClipBand::for_chart(&receiver.chart());
+    let lead_in = |from, to| {
+        lead_in_clear(
+            &fixture.bvh,
+            &fixture.primitives,
+            &fixture.geometry,
+            &band,
+            from,
+            to,
+        )
+    };
+    let (near, past) = (
+        Vec3::new(-1.0e-4, RAY_EPSILON, 0.0),
+        Vec3::new(5.0e-4, RAY_EPSILON, 0.0),
+    );
+    // Into the wall's front a tenth of a millimetre on: a trace skips it.
+    assert!(segment_clear(
+        &fixture.bvh,
+        &fixture.primitives,
+        &fixture.geometry,
+        near,
+        past
+    ));
+    assert!(!lead_in(near, past));
+    // Out through its back: leaving solid, clear.
+    assert!(lead_in(past, near));
+    // Into the plate above the band, and down onto the receiver below it.
+    let open = Vec3::new(-0.1, RAY_EPSILON, 0.0);
+    assert!(lead_in(open, open + Vec3::Y * 3.0 * RAY_EPSILON));
+    assert!(lead_in(open, open - Vec3::Y * 2.0 * RAY_EPSILON));
+}
+
+/// A floor ending at the foot of a wall `height` tall, of which only the side
+/// facing the floor survives the compile, as at the corridor's seams.
+fn culled_wall_fixture(pitch: f32, height: f32) -> Fixture {
+    let mut receiver = Receiver::centred(24, 64);
+    receiver.pitch = pitch;
+    receiver.x0 = -24.0 * pitch;
+    receiver.z0 = -32.0 * pitch;
+    let mut scene = SceneBuilder::default();
+    receiver.add_floor(&mut scene);
+    scene.quad(
+        [
+            Vec3::new(0.0, 0.0, -4.0),
+            Vec3::new(0.0, 0.0, 4.0),
+            Vec3::new(0.0, height, 4.0),
+            Vec3::new(0.0, height, -4.0),
+        ],
+        -Vec3::X,
+    );
+    Fixture::new(scene, receiver)
+}
+
+/// Lights behind [`culled_wall_fixture`]'s wall: suns low enough that the
+/// wall shades the floor's last texels, and points beyond it.
+fn lights_behind_the_culled_wall() -> Vec<MapLight> {
+    let mut lights = suns_toward(&[-50.0, -20.0, 0.0, 25.0, 45.0], &[30.0, 50.0]);
+    for origin in [[0.5, 0.6, 0.0], [0.3, 1.2, 0.4]] {
+        lights.extend([hard_point(origin), default_point(origin)]);
+    }
+    lights
+}
+
+#[test]
+fn floor_at_a_culled_wall_foot_takes_no_light_through_the_wall() {
+    let (mut lit, mut checked) = (Vec::new(), 0);
+    // Pitches off the default too, so samples land at other distances from
+    // the wall.
+    for pitch in [PITCH, PITCH * 1.013, PITCH * 0.987] {
+        let fixture = culled_wall_fixture(pitch, 3.0);
+        let receiver = fixture.receiver;
+        for light in &lights_behind_the_culled_wall() {
+            for count in [SOFT_PROBE_SAMPLES, DEFAULT_AREA_SAMPLE_COUNT] {
+                let grid = fixture.bake(light, count, true);
+                // The last two columns: the wall blocks their centre rays
+                // and every footprint sample's.
+                for y in 0..receiver.height {
+                    for x in receiver.width - 2..receiver.width {
+                        let Some(visibility) = grid.get(x, y) else {
+                            continue;
+                        };
+                        assert!(fixture.centre_ray_blocked(light, x, y));
+                        checked += 1;
+                        if visibility != 0.0 {
+                            lit.push((pitch, x, y, visibility));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "culled wall foot: {checked} texels checked, {} lit",
+        lit.len()
+    );
+    assert!(checked > 0);
+    assert!(
+        lit.is_empty(),
+        "{} wall-foot texels take light through the wall, e.g. {:?}",
+        lit.len(),
+        &lit[..lit.len().min(8)]
+    );
+
+    // Control: with every lead-in taken as clear, samples within the ray
+    // lift of the wall start past it and light the wall's foot.
+    let fixture = culled_wall_fixture(PITCH, 3.0);
+    let leaked: usize = lights_behind_the_culled_wall()
+        .iter()
+        .map(|light| {
+            fixture
+                .footprint_outcomes_without_lead_in(light, DEFAULT_AREA_SAMPLE_COUNT)
+                .into_iter()
+                .flatten()
+                .filter(|outcome| outcome.visibility > 0.0)
+                .count()
+        })
+        .sum();
+    println!("culled wall foot: without the lead-in, {leaked} texels take light");
+    assert!(leaked > 0);
+}
+
+#[test]
+fn clip_prepass_reproduces_a_sealed_room_bake_bit_for_bit() {
+    // Where lead-ins meet walls, the pre-pass still skips only texels whose
+    // clip segments and lead-ins are all clear.
+    let (lo, hi) = (Vec3::new(-3.6, 0.0, -41.3), Vec3::new(-2.0, 1.2, -40.3));
+    let mut scene = SceneBuilder::default();
+    sealed_room(&mut scene, lo, hi);
+    let mut geometry = scene.build();
+    let mut lights = suns_toward(&[45.0, 225.0], &[30.0]);
+    let origin = Vec3::new(hi.x + 0.5, 0.6, -40.8).as_dvec3().to_array();
+    lights.extend([hard_point(origin), default_point(origin)]);
+    let baked = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+    let prepared = crate::lightmap_bake::prepare_atlas(&mut geometry, &baked, PITCH, &[]).unwrap();
+    let atlas = crate::lightmap_layer::SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let (skipped, total) = assert_prepass_matches_full_clip(
+        &geometry,
+        &atlas,
+        &lights,
+        &[SOFT_PROBE_SAMPLES, DEFAULT_AREA_SAMPLE_COUNT],
+    );
+    println!("sealed room: pre-pass skips {skipped} of {total} texels");
+    assert!(skipped > 0 && skipped < total);
+}
+
 // --- switch -----------------------------------------------------------------
 
 #[test]

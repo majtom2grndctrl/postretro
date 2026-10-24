@@ -3,30 +3,127 @@
 
 use bvh::aabb::Aabb;
 use bvh::bvh::Bvh;
+use bvh::ray::Ray;
 use glam::Vec3;
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
 
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{chart_grid, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
-use crate::lightmap_bake::{Chart, RAY_EPSILON};
+use crate::lightmap_bake::{Chart, RAY_EPSILON, ray_triangle_hit};
+use crate::ray_traversal::BoundedRay;
 
 /// Footprint reach covered by the pre-pass, in texels: every sample offset is
 /// under one texel from the centre at any count.
 const FOOTPRINT_REACH_TEXELS: f32 = 1.0;
 
-/// The texels of one chart whose clip segments some triangle could block.
+/// The slab about a chart's raised plane, the receiver's plane lifted
+/// `RAY_EPSILON` along its normal, that a triangle must reach to block a
+/// footprint's clip segments or lead-ins: it has corners on both sides of the
+/// raised plane, within a tolerance far above rounding. The receiver and its
+/// coplanar neighbours lie wholly below it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ClipBand {
+    normal: Vec3,
+    origin: Vec3,
+    height: f32,
+    tolerance: f32,
+}
+
+impl ClipBand {
+    pub(crate) fn for_chart(chart: &Chart) -> Self {
+        let mut normal = chart.u_axis.cross(chart.v_axis).normalize_or_zero();
+        if normal.dot(chart.normal) < 0.0 {
+            normal = -normal;
+        }
+        Self {
+            normal,
+            origin: chart.origin,
+            height: RAY_EPSILON * normal.dot(chart.normal),
+            tolerance: 0.5 * RAY_EPSILON,
+        }
+    }
+
+    /// Whether the triangle with these corners reaches the band.
+    pub(crate) fn admits(&self, points: [Vec3; 3]) -> bool {
+        let heights = points.map(|p| self.normal.dot(p - self.origin));
+        let (h_min, h_max) = (
+            heights.iter().copied().fold(f32::INFINITY, f32::min),
+            heights.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+        );
+        !(h_min > self.height + self.tolerance || h_max < self.height - self.tolerance)
+    }
+}
+
+/// Whether the segment `from → to` enters no triangle `band` admits, tested
+/// over its whole length: unlike `segment_clear`, it starts at `from`, not
+/// `RAY_EPSILON` along the segment. The footprint tests the stretch a shadow
+/// ray's trace skips with it ([`super::footprint_visibility`]).
+///
+/// Only a triangle's front counts. Geometry extraction fans each face
+/// counter-clockwise about its normal, which points out of its brush, so a
+/// segment enters a wall through a front and leaves one through a back. A
+/// segment that crosses a face from behind is leaving solid, toward the side
+/// the face looks at; counting it would drop samples beside a wall whose rays
+/// head away from it.
+pub(crate) fn lead_in_clear(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    band: &ClipBand,
+    from: Vec3,
+    to: Vec3,
+) -> bool {
+    let delta = to - from;
+    let length = delta.length();
+    if length <= 0.0 {
+        return true;
+    }
+    let dir = delta / length;
+    let ray = Ray::new(
+        Point3::new(from.x, from.y, from.z),
+        Vector3::new(dir.x, dir.y, dir.z),
+    );
+    let query = BoundedRay::new(&ray, length);
+    let geom = &geometry.geometry;
+    for prim in bvh.traverse_iterator(&query, primitives) {
+        let start = prim.index_offset as usize;
+        let end = start + prim.index_count as usize;
+        for tri in (start..end).step_by(3).take_while(|&tri| tri + 3 <= end) {
+            let points = [0, 1, 2]
+                .map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
+            let front = (points[1] - points[0])
+                .cross(points[2] - points[0])
+                .dot(dir)
+                < 0.0;
+            if front
+                && band.admits(points)
+                && ray_triangle_hit(from, dir, points[0], points[1], points[2])
+                    .is_some_and(|dist| dist < length)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The texels of one chart whose clip segments or lead-ins some triangle
+/// could block.
 ///
 /// A clip segment runs from the texel centre to a sample point, both lifted
 /// `RAY_EPSILON` along the normal, so every segment lies in the receiver's
 /// plane raised by the lift and within one texel of the centre. A triangle can
-/// block one only if it reaches that raised plane there: it has vertices on
-/// both sides of it (within a tolerance far above rounding) and its projection
-/// onto the chart comes within a texel. Triangles wholly below the raised
-/// plane, the receiver and its coplanar neighbours among them, or wholly above
-/// it, cannot. Every other texel's clip segments are all clear, so the walk
-/// skips them; the answers, and the occluder cache a skipped texel would have
-/// probed and left untouched, are those the segments give.
+/// block one only if it reaches that raised plane there: it reaches the
+/// [`ClipBand`] and its projection onto the chart comes within a texel.
+/// Triangles wholly below the raised plane, the receiver and its coplanar
+/// neighbours among them, or wholly above it, cannot. A lead-in leaves the
+/// raised plane, but it counts only triangles the band admits, and it ends
+/// under `2 · RAY_EPSILON` from its sample point, inside the pad on the
+/// texel's reach. Every other texel's clip segments and lead-ins are all
+/// clear, so the walk skips them; the answers, and the occluder cache a
+/// skipped texel would have probed and left untouched, are those the segments
+/// give.
 ///
 /// Light-independent: it depends on the chart, its grid and the geometry.
 pub(crate) struct ClipReach {
@@ -69,13 +166,7 @@ impl ClipReach {
             FOOTPRINT_REACH_TEXELS * step[1] + pad,
         ];
 
-        // The chart's plane and the raised plane its clip segments lie in.
-        let mut plane_normal = chart.u_axis.cross(chart.v_axis).normalize_or_zero();
-        if plane_normal.dot(chart.normal) < 0.0 {
-            plane_normal = -plane_normal;
-        }
-        let segment_height = RAY_EPSILON * plane_normal.dot(chart.normal);
-        let tolerance = 0.5 * RAY_EPSILON;
+        let band = ClipBand::for_chart(chart);
 
         // Candidate primitives: the chart's texel centres, padded by the reach.
         let corners = [
@@ -106,12 +197,7 @@ impl ClipReach {
             for tri in (start..end).step_by(3).take_while(|&tri| tri + 3 <= end) {
                 let points = [0, 1, 2]
                     .map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
-                let heights = points.map(|p| plane_normal.dot(p - chart.origin));
-                let (h_min, h_max) = (
-                    heights.iter().copied().fold(f32::INFINITY, f32::min),
-                    heights.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-                );
-                if h_min > segment_height + tolerance || h_max < segment_height - tolerance {
+                if !band.admits(points) {
                     continue;
                 }
                 let local = points.map(|p| {

@@ -15,7 +15,9 @@ use crate::chart_raster::{
 };
 use crate::lightmap_bake::{light_contribution_and_direction, segment_clear};
 use crate::map_data::ShadowType;
-use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
+use crate::texel_footprint::{
+    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+};
 use crate::texel_step_detector::{ChartSteps, CutSites, TexelRect, scan_chart};
 
 /// One face's bake: its chunks' results, parallel to the chunk indices it
@@ -167,6 +169,17 @@ pub(super) fn bake_face(
     let clip_reach = (inputs.penumbra_floor && chart_usable && !face_lights.is_empty())
         .then(|| ClipReach::rasterized(chart, inputs.bvh, inputs.primitives, inputs.geometry));
     let clear = |from, to| segment_clear(inputs.bvh, inputs.primitives, inputs.geometry, from, to);
+    let band = ClipBand::for_chart(chart);
+    let lead_in = |from, to| {
+        lead_in_clear(
+            inputs.bvh,
+            inputs.primitives,
+            inputs.geometry,
+            &band,
+            from,
+            to,
+        )
+    };
 
     let mut grid: Vec<f32> = Vec::new();
     let mut steps = Vec::new();
@@ -232,7 +245,7 @@ pub(super) fn bake_face(
                             .as_ref()
                             .is_none_or(|reach| reach.may_clip(tx, ty)),
                     };
-                    let visibility = sampler.visibility(light, &site, clear, clear);
+                    let visibility = sampler.visibility(light, &site, clear, clear, lead_in);
                     let cell = (ty as u32 - region.y) * region.width + (tx as u32 - region.x);
                     grid[cell as usize] = visibility;
                     // The visibility fraction scales the weight, so a

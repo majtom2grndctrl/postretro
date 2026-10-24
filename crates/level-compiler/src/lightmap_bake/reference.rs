@@ -15,7 +15,9 @@ use crate::chart_raster::{
 };
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
-use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
+use crate::texel_footprint::{
+    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+};
 
 use super::{
     Chart, CompositedAtlas, light_texel_contribution, scatter_chart_into_atlas,
@@ -132,6 +134,7 @@ pub(super) fn bake_face_chart(
         .map(|light| TexelSampler::new(light, area_sample_count, penumbra_floor))
         .collect();
     let frame = TexelFrame::for_chart(chart);
+    let band = ClipBand::for_chart(chart);
     // Clip reach is light-independent; every light reads the same answers.
     let clip_reach = samplers
         .iter()
@@ -186,6 +189,7 @@ pub(super) fn bake_face_chart(
                             clip_occluder,
                         )
                     },
+                    |from, to| lead_in_clear(bvh, primitives, geometry, &band, from, to),
                 );
                 irr += irr_contrib;
                 weighted_dir += dir_contrib;

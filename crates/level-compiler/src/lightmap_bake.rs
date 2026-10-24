@@ -667,8 +667,8 @@ pub(crate) fn light_texel_is_covered(
 /// paths producing the same float terms in the same order.
 ///
 /// `trace(from, to)` is the segment-clear closure the caller wraps around its
-/// own `segment_clear`, and `reach` the footprint's wall-clip test (see
-/// [`TexelSampler::visibility`]); it returns `(Vec3::ZERO, Vec3::ZERO)` when
+/// own `segment_clear`, and `reach` and `lead_in` the footprint's wall tests
+/// (see [`TexelSampler::visibility`]); it returns `(Vec3::ZERO, Vec3::ZERO)` when
 /// the light contributes nothing (below the irradiance floor or fully
 /// occluded), so an out-of-range light adds exactly `0.0` — the property that
 /// makes per-light layers sum back to the monolithic result.
@@ -678,10 +678,11 @@ pub(crate) fn light_texel_contribution(
     sampler: &TexelSampler,
     trace: impl Fn(Vec3, Vec3) -> bool,
     reach: impl Fn(Vec3, Vec3) -> bool,
+    lead_in: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3) {
     let (irr, weighted_dir, _) =
         light_texel_contribution_and_visibility_with(light, site.world_p, site.normal, || {
-            sampler.visibility(light, site, trace, reach)
+            sampler.visibility(light, site, trace, reach, lead_in)
         });
     (irr, weighted_dir)
 }
@@ -1298,7 +1299,7 @@ pub(crate) fn segment_clear_full_scan(
 }
 
 /// Double-sided Möller-Trumbore intersection.
-fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+pub(crate) fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let edge1 = b - a;
     let edge2 = c - a;
     let h = dir.cross(edge2);

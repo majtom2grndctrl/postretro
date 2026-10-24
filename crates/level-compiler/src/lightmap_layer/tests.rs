@@ -654,6 +654,7 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
         &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
         |_, _| true,
         |_, _| true,
+        |_, _| true,
     );
     assert!(
         unreached.is_none(),
@@ -667,6 +668,7 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
         &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
         |_, _| false,
         |_, _| false,
+        |_, _| true,
     )
     .expect("analytic coverage survives full occlusion");
     assert_eq!(occluded.raw_visibility.to_bits(), 0.0f32.to_bits());
@@ -729,6 +731,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
             &floor_site(Vec3::ZERO),
             &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
             |_, _| true,
+            |_, _| true,
             |_, _| true
         )
         .is_none()
@@ -740,6 +743,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
             &light,
             &floor_site(Vec3::ZERO),
             &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT),
+            |_, _| true,
             |_, _| true,
             |_, _| true
         )

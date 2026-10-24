@@ -61,6 +61,14 @@ const COUNTER_RING_SAMPLES: usize = RING_SAMPLES;
 /// straight down, so a grazing ray cannot blow them up.
 const MIN_PROJECTION_COSINE: f32 = 1.0e-3;
 
+/// How far a footprint sample's lead-in test runs past each end of the
+/// stretch its trace skips: back from the sample point, where its clip
+/// segment ends, and on past the point the trace starts from. A wall through
+/// either point is then entered inside the test, whichever side of it
+/// rounding puts the point. Far above `f32` rounding at map scale, far below
+/// a texel.
+const LEAD_IN_OVERLAP: f32 = 0.25 * RAY_EPSILON;
+
 /// One light's footprint sample set at one sample count: an offset in texels
 /// per sample, in trace order, and the emitter lattice they pair with. Which
 /// emitter sample each offset traces is chosen per texel
@@ -561,9 +569,9 @@ pub(crate) struct TexelSite {
     /// `chart_raster::chart_texel_seed`.
     pub(crate) seed: u64,
     pub(crate) frame: TexelFrame,
-    /// Whether any triangle could block this texel's clip segments
-    /// ([`ClipReach::may_clip`]). When none can, every segment is clear and
-    /// the footprint traces none.
+    /// Whether any triangle could block this texel's clip segments or
+    /// lead-ins ([`ClipReach::may_clip`]). When none can, every one is clear
+    /// and the footprint traces none.
     pub(crate) may_clip: bool,
 }
 
@@ -586,15 +594,18 @@ impl TexelSampler {
         }
     }
 
-    /// The texel's raw visibility in `[0, 1]`. `trace(from, to)` and
-    /// `reach(from, to)` both return true for a clear segment; `reach` tests
-    /// the footprint's wall clip and should keep its own occluder cache.
+    /// The texel's raw visibility in `[0, 1]`. `trace(from, to)`,
+    /// `reach(from, to)` and `lead_in(from, to)` all return true for a clear
+    /// segment. `reach` tests the footprint's wall clip and should keep its
+    /// own occluder cache; `lead_in` is [`lead_in_clear`] against the chart's
+    /// [`ClipBand`].
     pub(crate) fn visibility(
         &self,
         light: &MapLight,
         site: &TexelSite,
         trace: impl Fn(Vec3, Vec3) -> bool,
         reach: impl Fn(Vec3, Vec3) -> bool,
+        lead_in: impl Fn(Vec3, Vec3) -> bool,
     ) -> f32 {
         match self {
             Self::Centre(probes) => soft_visibility_with(
@@ -606,7 +617,7 @@ impl TexelSampler {
                 trace,
             ),
             Self::Footprint(footprint) => {
-                footprint_visibility(light, site, footprint, trace, reach).visibility
+                footprint_visibility(light, site, footprint, trace, reach, lead_in).visibility
             }
         }
     }
@@ -616,7 +627,8 @@ impl TexelSampler {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FootprintOutcome {
     pub(crate) visibility: f32,
-    /// A probe's origin lay behind a wall from the centre and was dropped.
+    /// A probe was dropped: its origin lay behind a wall from the centre, or
+    /// its shadow ray's lead-in met one.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) clipped_probe: bool,
     /// The probes agreed and the rest of the set went untraced.
@@ -642,6 +654,17 @@ fn footprint_rotation(seed: u64) -> (f32, f32) {
 /// thinner than the footprint) is dropped and the fraction renormalizes over
 /// the survivors. Clip results depend on the texel alone.
 ///
+/// The trace starts each ray `RAY_EPSILON` along it, clear of the receiver,
+/// and tests nothing before that. A footprint point, unlike a texel centre
+/// half a texel in from its face's edge, can lie within that distance of a
+/// wall. A ray from it heading into the wall would start past the wall's
+/// face, inside a brush whose other sides a compile culls, and escape to a
+/// light the wall hides. So a clear ray from a footprint point counts only if
+/// its lead-in, the skipped stretch overlapped by [`LEAD_IN_OVERLAP`] at each
+/// end, enters no wall (`lead_in`); otherwise the sample is dropped, as a
+/// clipped one is. A blocked ray takes no light, so it needs no lead-in, and
+/// the centre's ray stays the texel's own.
+///
 /// The nine probes are traced first. When none is clipped and all agree, the
 /// texel is exactly 0 or 1. A clipped probe breaks the ring, so the texel then
 /// traces its full set even if its survivors agree. A soft emitter's samples
@@ -653,8 +676,9 @@ pub(crate) fn footprint_visibility(
     footprint: &TexelFootprint,
     trace: impl Fn(Vec3, Vec3) -> bool,
     reach: impl Fn(Vec3, Vec3) -> bool,
+    lead_in: impl Fn(Vec3, Vec3) -> bool,
 ) -> FootprintOutcome {
-    footprint_visibility_with(light, site, footprint, trace, reach, true)
+    footprint_visibility_with(light, site, footprint, trace, reach, lead_in, true)
 }
 
 /// [`footprint_visibility`] with the probe early-out optional, so tests can
@@ -665,6 +689,7 @@ fn footprint_visibility_with(
     footprint: &TexelFootprint,
     trace: impl Fn(Vec3, Vec3) -> bool,
     reach: impl Fn(Vec3, Vec3) -> bool,
+    lead_in: impl Fn(Vec3, Vec3) -> bool,
     early_out: bool,
 ) -> FootprintOutcome {
     let lift = site.normal * RAY_EPSILON;
@@ -698,7 +723,19 @@ fn footprint_visibility_with(
             ),
             _ => hard_ray_target(point, light),
         };
-        Some(trace(point + lift, target))
+        let origin = point + lift;
+        let clear = trace(origin, target);
+        if clear && k > 0 && site.may_clip {
+            let along = (target - origin).normalize_or_zero();
+            let lead_in_clear = lead_in(
+                origin - along * LEAD_IN_OVERLAP,
+                origin + along * (RAY_EPSILON + LEAD_IN_OVERLAP),
+            );
+            if !lead_in_clear {
+                return None;
+            }
+        }
+        Some(clear)
     };
 
     let mut clear = 0u32;
@@ -738,7 +775,7 @@ fn footprint_visibility_with(
 }
 
 mod clip_reach;
-pub(crate) use clip_reach::ClipReach;
+pub(crate) use clip_reach::{ClipBand, ClipReach, lead_in_clear};
 
 #[cfg(test)]
 mod test_fixtures;

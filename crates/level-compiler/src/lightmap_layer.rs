@@ -21,7 +21,9 @@ use crate::lightmap_bake::{
     light_texel_contribution_and_visibility_with, segment_clear_remembering,
 };
 use crate::map_data::{LightType, MapLight};
-use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
+use crate::texel_footprint::{
+    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+};
 use glam::DVec3;
 
 mod cache_keys;
@@ -104,10 +106,11 @@ fn bake_sparse_layer_texel(
     sampler: &TexelSampler,
     trace: impl Fn(Vec3, Vec3) -> bool,
     reach: impl Fn(Vec3, Vec3) -> bool,
+    lead_in: impl Fn(Vec3, Vec3) -> bool,
 ) -> Option<LayerTexel> {
     let (_, _, raw_visibility) =
         light_texel_contribution_and_visibility_with(light, site.world_p, site.normal, || {
-            sampler.visibility(light, site, trace, reach)
+            sampler.visibility(light, site, trace, reach, lead_in)
         });
     sparse_layer_texel(idx, raw_visibility)
 }
@@ -605,6 +608,7 @@ fn bake_light_layer_chart_clipped(
     let mut texels = Vec::with_capacity(capacity);
     let sampler = TexelSampler::new(light, area_sample_count, penumbra_floor);
     let frame = TexelFrame::for_chart(chart);
+    let band = ClipBand::for_chart(chart);
     let clip_reach = (skip_unreachable_clips && matches!(sampler, TexelSampler::Footprint(_)))
         .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
     // One chart's texels are walked in order on one thread, so the occluder
@@ -634,6 +638,7 @@ fn bake_light_layer_chart_clipped(
             |from, to| {
                 segment_clear_remembering(bvh, primitives, geometry, from, to, &clip_occluder)
             },
+            |from, to| lead_in_clear(bvh, primitives, geometry, &band, from, to),
         ) {
             texels.push(texel);
         }

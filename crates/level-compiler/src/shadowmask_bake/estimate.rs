@@ -18,7 +18,9 @@ use crate::lightmap_bake::{
 };
 use crate::lightmap_layer::SharedAtlas;
 use crate::map_data::{LightType, MapLight};
-use crate::texel_footprint::{ClipReach, TexelFrame, TexelSampler, TexelSite};
+use crate::texel_footprint::{
+    ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+};
 
 use super::eligibility::EligibleLight;
 use super::fill::quantize_visibility;
@@ -200,6 +202,7 @@ pub(super) fn estimate_cut_owners(
             let (mut lit, mut contribution, mut traces) = (0u32, 0f64, 0usize);
             for &(face, tx, ty) in &samples[c] {
                 let chart = &shared.charts[face];
+                let band = ClipBand::for_chart(chart);
                 let world_p = chart_texel_world_position(chart, tx, ty);
                 // A sub-chart's frame is its parent grid's, so every sample of
                 // one cut face draws the walk's own footprint offsets.
@@ -240,6 +243,7 @@ pub(super) fn estimate_cut_owners(
                                     &clip_occluder,
                                 )
                             },
+                            |from, to| lead_in_clear(bvh, primitives, geometry, &band, from, to),
                         )
                     },
                 );

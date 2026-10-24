@@ -366,8 +366,10 @@ impl App {
                 .collect();
         session.presentation_cells.reconcile(&retained);
         let cell_values = session.presentation_cells.snapshot();
-        let slot_values =
-            Self::build_ui_slot_snapshot(&session.scripting.script_ctx.slot_table.borrow());
+        let slot_values = Self::build_ui_display_slot_snapshot(
+            &session.scripting.script_ctx.slot_table.borrow(),
+            session.net_endpoint.as_ref(),
+        );
         let reduce_motion = crate::options::reduce_motion_from_slots(&slot_values);
         let mut snapshot = postretro_ui::UiReadSnapshot::with_trees(
             vec![entry],

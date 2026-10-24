@@ -3007,6 +3007,17 @@ if production outruns a consumer's bounded backlog, older samples may be dropped
 so stale feedback does not replay indefinitely. Ammo always publishes the latest
 authoritative count.
 
+On connected co-op clients, UI reads of `player.reloadProgress`,
+`player.weaponCooldownMs`, `player.heat`, and `player.cell` use display targets
+that ramp smoothly between host samples: reload progress and cell charge rise,
+while cooldown and heat fall. Existing HUD bindings need no changes. The engine
+derives the rate from agreeing host samples and holds after a bounded gap.
+Reload wraps, cancellation, and weapon switches retarget to the host's new sample.
+Bindings, visibility predicates, and a Bar's state-bound `max` read the same
+target. An authored tween eases toward that target; reduce motion shows it
+directly. Script reads and state-crossing reactions still see host samples.
+Host and single-player HUDs keep their existing values.
+
 ### The readonly weapon-resource slots
 
 `player.weaponCharging` is a local readonly boolean for the active weapon's

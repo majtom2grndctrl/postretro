@@ -1,0 +1,18 @@
+{
+  "map": "../lpf-bin/capture/content/dev/maps/shadowmask-groups-capture.d001.prl",
+  "camera": {
+    "position": [
+      -11.7348,
+      1.143,
+      -14.605
+    ],
+    "yaw_deg": 139.3,
+    "pitch_deg": -26.6,
+    "fov_deg": 70.0
+  },
+  "resolution": [
+    2560,
+    1440
+  ],
+  "output": "../lpf-bin/capture/png/smg-wall-tip.d001.png"
+}

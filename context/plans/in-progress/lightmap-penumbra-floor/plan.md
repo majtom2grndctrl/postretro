@@ -67,36 +67,38 @@ After the branch-free pairing (ac9015fb3; claim 518 → 281 ns at 32 samples, by
 
 ## AC-to-proof
 
-| AC | Proof | Status |
+Results at c7a15045a. Test names are in the bin target `prl-build` unless noted; on-demand A/B checks are `lightmap_bake/penumbra_ab_tests.rs` (bakes in `lpf-bin/final/ab/`).
+
+| AC | Proof | Result |
 |---|---|---|
-| 1 hard point/spot/sun + default-size contact ramps within 0.2 of floor width | `penumbra_floor` contact-ramp tests vs analytic cone-kernel ramp at same phase/angle | achievable as stated |
-| 2 footprint offsets within one pitch; radial distribution matches cone kernel; wider/square fails | layout unit test (KS vs `3r²−2r³` at default and 64) + negative controls | achievable as stated |
-| 3 clear-standing occluder: ramp change < 1 texel on vs off | fixture bake, floor on vs off | achievable as stated |
-| 4 texels beyond one texel of any edge keep exact 0.0 / 1.0 | contact fixture assertion | achievable as stated |
-| 5 thin pole (P3): centre-blocked < 1.0, no lit gaps, hard + default-size | thin-pole fixture, angle/phase sweep | achievable as stated (nine-probe ring; see Corrections) |
-| 6 minimum count (P13): ramp, pole, detector silent | same fixtures at `--soft-shadow-samples 4` | achievable as stated |
-| 7 P16 count sweep, no snap of (0.1, 0.9) texels | mid-phase hard contact edge at 4–8, 12, 16, 24, 32, 64 | achievable as stated |
-| 8 inside-corner sweep (P18) | wall-foot fixture, min + default counts | achievable as stated |
-| 9 `_lightmap_scale` region ramp (P14), both walk orders, one worker | two-face fixture, single-thread pool, both orders | achievable as stated |
-| 10 inside corner / thin wall (P4) | wall-foot and thin-wall fixtures | achievable as stated |
-| 11 face cuts bit-identical; estimate reads floored visibility (P5) | face-cut fixture + `shadowmask_bake/estimate.rs` test | achievable as stated |
-| 12 static layer vs animated weight map agree | contact fixture baked both ways | achievable as stated |
-| 13 SH/bounce/delta/direct SH/scatter byte-identical to pre-change | two-PRL compare against a pre-change `prl-build` | pass: `penumbra_floor_baseline_probe` (ids 27, 34, 35, 41, 45, 47, 48, 50) identical on soft_shadow_test, groups-capture, gate-heavily-lit, closet-reveal, animated-layer-spill; also `--release` |
-| 14 switch off = centre-point; weight maps = pre-change; toggling re-keys memos (P6) | unit + two-PRL compare + warm-cache log test | pass: `--no-penumbra-floor` PRLs byte-identical to the pre-change bake on seven maps (`cmp`), ids 24/25 via `penumbra_floor_baseline_weight_maps` on closet-reveal; stage tests from Tasks 2 and 4 |
-| 15 determinism across workers (P9), warm = cold, version bumps | repeat-bake tests + diff gate on `LAYER_FORMAT_VERSION` and weight-map stage version | achievable as stated |
-| 16 production stage = reference bake, both settings (P7) | existing stage-vs-reference test extended | achievable as stated |
-| 17 footprint-only occluder past padding re-bakes (P10) | `_lightmap_scale` cache-key test | achievable as stated |
-| 18 detector reaches caller thread from production stage + weight maps; short edge, cut edge (P1, P17) | stage tests with `test-log-capture` / returned report | achievable as stated |
-| 19 warm compile replays exactly (P2, P11, P12, P15, weight-map hit) | stage cache tests | achievable as stated |
-| 20 floor on: no false warnings (P8) | border/terminator/cone/reach/corner/thin-wall fixture | achievable as stated |
-| 21 BC5 / BC6H error + owner report before vs after | measurement run on three maps | measured (pre-change re-measured like for like; see Results) |
-| 22 default floored; `--help` lists switch; not in `docs/` | CLI test + grep | achievable as stated |
-| 23 sub-texel warning gone; no "0 = hard" text | grep gate | achievable as stated |
-| 24 nothing under `crates/level-format/` or `crates/renderer/src/shaders/` | diff gate | achievable as stated |
-| 25 lightmap stage cold wall time ≤ 1.5×, detector ≤ 5% | timed bakes, hallway-mini + groups-capture | gate raised by owner to the accepted 1.79× / 2.22×; final run reports against them; detector ≤ 5% still stops |
-| 26 capture 2560×1440, floor off vs on, vs `_lightmap_density 0.01` | owner, in-engine | manual |
-| 27 shadowmask specular, no step / no banding rise | owner, in-engine | manual |
-| 28 hallway-mini full compile logs no texel-step warnings | compile + log grep (executor runs it) | pass at b301faec5 (0 warnings); re-run at the end |
+| 1 hard point/spot/sun + default-size contact ramps within 0.2 of floor width | `contact_edges_ramp_over_the_floor_width_for_hard_and_default_lights` | pass: 20° 1.437 vs 1.469, 37° 1.421 vs 1.466; no 0→1 jump |
+| 2 offsets within one pitch; radial distribution matches the cone; wider/square fails | `footprint_offsets_lie_within_one_pitch_and_follow_the_cone_kernel` | pass: KS 0.133 @32, 0.070 @64 (bound 4/N + 1/(2N)); controls 0.38–0.46 |
+| 3 clear-standing occluder: ramp change < 1 texel | `clear_standing_occluder_*` | pass: 3.553 vs 3.006 (0.547) |
+| 4 exact 0/1 beyond one texel | `texels_beyond_the_footprint_keep_exact_zero_and_one` | pass |
+| 5 thin pole (P3) | `thin_pole_shadow_survives_the_probe_early_out` | pass: 1442 centre-blocked texels none lit, 0 gaps; strips < 0.4 texel can still snap off-centre (Corrections) |
+| 6 minimum count (P13) | `minimum_sample_count_*`, `the_floored_stage_is_silent_at_the_minimum_sample_count` | pass: ramp 1.534 vs 1.469 |
+| 7 P16 sweep, no snap | `mid_phase_contact_edge_never_snaps_at_any_sample_count`, `soft_light_penumbra_edges_never_snap_at_any_sample_count`, `off_centre_strips_and_discs_never_snap_where_the_ring_reaches_them` | pass: worst pair ≤ 0.875, 0 snapped |
+| 8 inside corner (P18) | `inside_corner_edges_trace_full_sets_where_clipped` | pass |
+| 9 `_lightmap_scale` face (P14) | `a_scaled_face_ramps_over_the_same_texels_in_either_walk_order` | pass: 1.428 / 1.436 texels, records identical across orders |
+| 10 inside corner / thin wall (P4) | `inside_corner_floor_gains_no_shadow_from_inside_the_wall`, `thin_wall_keeps_its_shadowed_floor_exactly_dark`, `samples_across_a_wall_within_a_millimetre_of_their_centre_never_count`, `a_sealed_room_takes_no_light_from_outside`, `floor_at_a_culled_wall_foot_takes_no_light_through_the_wall` | pass |
+| 11 face cuts bit-identical; estimate reads floored visibility (P5) | `overlap_texels_bake_bit_identical_across_every_cut`, `the_cut_face_estimate_reads_the_visibility_the_walk_bakes` | pass (estimate exact barring the occluder cache's rounding catch) |
+| 12 static vs animated agree | `a_light_baked_static_and_animated_ramps_over_the_floor_width_alike` | pass: both 1.437 vs 1.469; suns have no weight maps |
+| 13 probe sections byte-identical | `penumbra_floor_baseline_probe` | pass on closet-reveal, soft_shadow_test, groups-capture, gate-heavily-lit |
+| 14 switch off = pre-change; toggling re-keys (P6) | `cmp` base vs `--no-penumbra-floor` (4 maps), `penumbra_floor_baseline_weight_maps`, `toggling_the_penumbra_floor_rekeys_every_memo_and_layer`, `toggling_the_floor_misses_the_weight_map_entry_*` | pass: whole PRLs identical |
+| 15 determinism, warm = cold, version bumps | `mixed_light_bakes_are_byte_identical_across_workers_*`, `texel_step_warnings_keep_their_order_across_worker_counts`, `weight_maps_and_their_warnings_match_across_worker_counts`; diff gate | pass: `LAYER_FORMAT_VERSION` 9 → 11, weight-map `STAGE_VERSION` 9 → 11 |
+| 16 production = reference (P7) | `production_stage_matches_the_reference_bake_at_each_floor_setting` | pass |
+| 17 footprint-only occluder re-keys (P10) | `an_occluder_only_a_footprint_reaches_rekeys_the_layer_past_the_padding` | pass (charted-face moves re-key every layer anyway) |
+| 18 detector reaches the caller from both stages; short and cut edges (P1, P17) | `a_hard_contact_edge_warns_from_the_stage_only_with_the_floor_disabled`, `a_short_stepped_edge_*`, `a_stepped_edge_across_a_face_cut_*`, `a_hard_animated_contact_edge_warns_*`, `a_stepped_animated_edge_across_a_face_cut_*` | pass |
+| 19 warm replay (P2, P11, P12, P15, weight-map hit) | `warm_compiles_replay_the_cold_warnings_on_every_cache_path`, `a_weight_map_cache_hit_replays_the_cold_warnings_*`, `a_corrupt_weight_map_entry_*` | pass |
+| 20 no false warnings (P8) | `the_floored_stage_warns_about_no_border_terminator_cone_reach_corner_or_wall`, `the_floored_weight_map_stage_warns_about_no_contact_corner_wall_or_open_floor` | pass; floored bakes of 4 maps and hallway-mini log 0 |
+| 21 BC5 / BC6H error + owner report | `penumbra_floor_bc5`, `penumbra_floor_bc6h` | measured. BC5 max/mean (/255) off → on: groups 13 → 21 / 0.000035 → 0.000598; soft 21 → 22 / 0.00089 → 0.00142; gate 18 → 23 / 0.00072 → 0.00110. BC6H abs max unchanged, abs mean within 1.3%. Owners lost/gained 0; peak demand and drops unchanged (4, 6/38, 9/43) |
+| 22 default floored; `--help`; not in `docs/` | `penumbra_floor_is_on_by_default_and_the_switch_disables_it`; grep | pass |
+| 23 sub-texel warning gone; no "0 = hard" text | grep | pass in code, `docs/`, `sdk/`; `build_pipeline.md` step 12 rewritten at landing |
+| 24 nothing under `crates/level-format/` or `crates/renderer/src/shaders/` | diff gate | pass |
+| 25 lightmap stage cold wall time (owner-raised gate), detector share | timed bakes | hallway-mini 178.1 → 385.2 s (2.16×; accepted 2.2×), full compile 1.49×; groups-capture 0.96 → ~2.2 s (~2.3×). `TexelSteps` 22.3 s CPU summed over 5 workers = 5.8% of the stage as an upper bound, ~1.2% of wall time — owner to read |
+| 26 capture floor off / on / 0.01 density | owner, in-engine | outstanding: 12 PNGs at `lpf-bin/capture/png/` (`sst-fan-*`, `smg-wall-*`, `.off/.floor/.d001`); scenes in `measurements/lightmap-penumbra-floor/` |
+| 27 shadowmask specular across the edge | owner, in-engine | outstanding: `spec-wall-edge[-specular-only].{base,off,floor}.png` |
+| 28 hallway-mini logs no texel-step warnings | full compile + grep | pass (0) |
 
 ## Tasks
 
@@ -110,4 +112,12 @@ After the branch-free pairing (ac9015fb3; claim 518 → 281 ns at 32 samples, by
 | 6 | Byte-identity and measurement: SH/scatter two-PRL compare, switch-off weight maps, BC5/BC6H + owner report, wall time, hallway warnings; capture scene JSONs | delegated | 3, 4 | compares and measurements done (`lightmap_bake/penumbra_ab_tests.rs`); found sun leak (below); AC 21 re-measure after the fix; captures pending |
 | 3b | Soft-light emitter pairing fix (Task 3 finding) | delegated | 3 | done; 1806 passed; hallway-mini lightmap 2.23× (flagged) |
 | 4b | Branch-free emitter pairing, bytes unchanged; re-time hallway-mini | delegated | 4 | done (ac9015fb3): reference-equivalence tests, four maps `cmp`-identical; hallway-mini lightmap 2.08× |
-| 7 | Preflight, review panel, fixes, full gate | integrator | 1–6 | |
+| 7 | Preflight, review panel, fixes, full gate | integrator | 1–6 | done: preflight (fmt, clippy, release, crate graph pass; `cargo test --workspace --exclude postretro` 10,370 passed — `postretro`'s test target fails to compile on main too, `TriggerVolumeBridge::name` is `dev-tools`-gated); 9-lens review, 2 🔴 + 8 🟡 fixed; level-compiler 1830 passed; `--ignored` suite passes except two env-var measurement helpers |
+
+## Trial notes
+- mode: compact
+- sessions used: 1
+- delegated implementation slices: 12 (Tasks 1–4, clip pre-pass, soft-light pairing, pairing speed, leak fix, Task 6, O1, O2, drift)
+- review-panel findings: ~40 (2 🔴, 9 🟡 acted on; most 🟢 drift acted on)
+- Decision premises found false: 0
+- Path claims corrected: 4 (four-probe ring → nine; ring radius; emitter pairing for soft lights; clip/lead-in tracer skip)

@@ -1,6 +1,7 @@
 //! Atlas pack → loader-backed id 51 → runtime floor → fused memo/bake proofs.
 //! No SH or texture bake is needed to exercise these adjacent compiler stages.
 
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use glam::DVec3;
 use log::Level;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -192,6 +193,7 @@ fn compile_adjacent_stages(
         area_sample_count: 4,
         uncompressed_irradiance: true,
         direction_texel_scale: lightmap_bake::DIRECTION_TEXEL_SCALE,
+        penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
     };
     let (bvh, primitives, _) = build_bvh(&geometry)?;
     bake_fused_prepared(

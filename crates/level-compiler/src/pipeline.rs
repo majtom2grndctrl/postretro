@@ -17,8 +17,8 @@ use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
 use crate::{
     Args, bake_model_textures, bake_sprite_textures, compile_worldspawn_data_script,
-    map_needs_sdf_atlas, resolve_content_root, resolve_data_script_source,
-    resolve_lightmap_density, resolve_prm_root, resolve_sh_density_fidelity, resolve_texture_root,
+    lightmap_config, map_needs_sdf_atlas, resolve_content_root, resolve_data_script_source,
+    resolve_prm_root, resolve_sh_density_fidelity, resolve_texture_root,
 };
 
 mod animated_atlas_stage;
@@ -730,14 +730,7 @@ fn run_after_parsing(
         .enumerate()
         .filter(|(index, light)| !light.is_dynamic && !buried_lights.is_buried(*index))
         .count();
-    let effective_lightmap_density =
-        resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
-    let lightmap_config = lightmap_bake::LightmapConfig {
-        lightmap_density: effective_lightmap_density,
-        area_sample_count: args.soft_shadow_samples,
-        uncompressed_irradiance: args.uncompressed_irradiance,
-        direction_texel_scale: args.direction_texel_scale,
-    };
+    let lightmap_config = lightmap_config(args, map_data.lightmap_density);
     let sh_config = sh_bake::ShConfig {
         probe_spacing: args.probe_spacing,
     };
@@ -1607,6 +1600,9 @@ fn run_after_parsing(
         lightmap: lightmap_bake_output,
         shadowmask: shadowmask_atlas_section,
         shadowmask_elapsed,
+        texel_step_elapsed,
+        cut_parents,
+        ..
     } = fused_lighting;
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
@@ -1622,6 +1618,10 @@ fn run_after_parsing(
         StageId::LightmapBake.label(),
         fused_elapsed.saturating_sub(shadowmask_elapsed),
     ));
+    // A sub-line of the lightmap bake, not a stage: the texel-step detector's
+    // CPU time summed over workers, so it can exceed the wall time of the line
+    // above.
+    timings.push(("  TexelSteps", texel_step_elapsed));
     if !static_baked_lights.is_empty() && !face_placements.is_empty() {
         reporter.finish_stage(StageId::LightmapBake);
     } else {
@@ -1712,6 +1712,9 @@ fn run_after_parsing(
             atlas_height,
             static_atlas_layer_count,
             area_sample_count: args.soft_shadow_samples,
+            cut_parents: &cut_parents,
+            penumbra_floor: lightmap_config.penumbra_floor,
+            step_threshold: crate::texel_step_detector::TEXEL_STEP_THRESHOLD,
         };
 
         Some(animated_atlas_stage::bake_or_load_weight_maps(
@@ -1719,8 +1722,15 @@ fn run_after_parsing(
             final_lightmap_density,
             stage_cache.as_ref(),
             &animated_weight_control,
+            &animated_baked_lights,
+            &map_data.light_source_labels,
         )?)
     };
+    let weight_map_step_elapsed = animated_light_weight_maps_section
+        .as_ref()
+        .map_or(Duration::ZERO, |bake| bake.texel_step_elapsed);
+    let animated_light_weight_maps_section =
+        animated_light_weight_maps_section.map(|bake| bake.section);
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -1728,6 +1738,9 @@ fn run_after_parsing(
         stage_start,
         animated_light_weight_maps_section.is_some(),
     );
+    // As under the lightmap bake: the weight-map detector's CPU time summed
+    // over workers, so it can exceed the wall time of the line above.
+    timings.push(("  TexelSteps", weight_map_step_elapsed));
 
     // Drop chunks the bake found unlit before sizing the animated atlas: the
     // influence-sphere chunk selection over-includes occluded and back-facing

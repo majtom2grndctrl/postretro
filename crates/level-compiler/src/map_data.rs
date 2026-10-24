@@ -382,12 +382,14 @@ pub fn animated_light_placeholder(start_active: bool) -> LightAnimation {
 
 /// Default emitter radius (world units / meters) applied when `_light_size` is
 /// absent, so existing maps gain soft shadows on recompile. An explicit `0`
-/// authored value is preserved (hard shadow). See `MapLight::light_size`.
+/// authored value is preserved (a point emitter, whose baked edge is as crisp as
+/// the lightmap lattice allows). See `MapLight::light_size`.
 pub const DEFAULT_LIGHT_SIZE: f32 = 0.25;
 
 /// Default directional angular diameter (degrees) applied when
-/// `_angular_diameter` is absent. An explicit `0` is preserved (hard shadow).
-/// See `MapLight::angular_diameter`.
+/// `_angular_diameter` is absent. An explicit `0` is preserved (parallel rays,
+/// whose baked edge is as crisp as the lightmap lattice allows). See
+/// `MapLight::angular_diameter`.
 pub const DEFAULT_ANGULAR_DIAMETER_DEG: f32 = 0.5;
 
 pub const DEFAULT_ENTITY_SHADOW_MIN_INTENSITY_RATIO: f32 = 0.5;
@@ -423,17 +425,21 @@ pub struct MapLight {
 
     /// World-unit (meter) radius of the emitter, driving bake-time area-light
     /// soft shadows for Point and Spot lights. Authored FGD `_light_size`;
-    /// absent → [`DEFAULT_LIGHT_SIZE`], an authored `0` is preserved (hard
-    /// 1-texel shadow). Clamped non-negative. Bake-only — consumed by the
+    /// absent → [`DEFAULT_LIGHT_SIZE`], an authored `0` is preserved (a point
+    /// emitter). The baked edge ramps over a one-texel footprint at the face's
+    /// texel pitch, so `0` is the crispest edge the lattice shows without
+    /// stair-steps, not a hard step. Clamped non-negative. Bake-only — consumed by the
     /// lightmap baker, never serialized to a runtime PRL section. Unused for
     /// Directional (which uses `angular_diameter`).
     pub light_size: f32,
 
     /// Angular diameter in **degrees** of a Directional (sun) source, driving
     /// bake-time soft shadows. Authored FGD `_angular_diameter`; absent →
-    /// [`DEFAULT_ANGULAR_DIAMETER_DEG`], an authored `0` is preserved (hard
-    /// shadow). Clamped non-negative. Bake-only. Unused for Point/Spot (which
-    /// use `light_size`).
+    /// [`DEFAULT_ANGULAR_DIAMETER_DEG`], an authored `0` is preserved (parallel
+    /// rays). The baked edge ramps over a one-texel footprint at the face's
+    /// texel pitch, so `0` is the crispest edge the lattice shows without
+    /// stair-steps, not a hard step. Clamped non-negative. Bake-only. Unused for
+    /// Point/Spot (which use `light_size`).
     pub angular_diameter: f32,
 
     /// Inner cone half-angle in radians. `Some` only for Spot lights.

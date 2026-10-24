@@ -65,6 +65,8 @@ pub mod sh_runtime_envelope;
 pub mod shadowmask_bake;
 pub mod size_options;
 pub mod streaming_hints;
+pub mod texel_footprint;
+pub mod texel_step_detector;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod trigger_volumes;
@@ -389,6 +391,18 @@ fn map_needs_sdf_atlas(lights: &[map_data::MapLight]) -> bool {
 fn resolve_lightmap_density(cli: Option<f32>, kvp: Option<f32>) -> f32 {
     cli.or(kvp)
         .unwrap_or(lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS)
+}
+
+/// The static lightmap bake's configuration: the CLI's settings over the
+/// worldspawn `_lightmap_density` KVP.
+fn lightmap_config(args: &Args, kvp_density: Option<f32>) -> lightmap_bake::LightmapConfig {
+    lightmap_bake::LightmapConfig {
+        lightmap_density: resolve_lightmap_density(args.lightmap_density, kvp_density),
+        area_sample_count: args.soft_shadow_samples,
+        uncompressed_irradiance: args.uncompressed_irradiance,
+        direction_texel_scale: args.direction_texel_scale,
+        penumbra_floor: args.penumbra_floor,
+    }
 }
 
 /// Resolve the base-SH classifier fidelity multiplier from its CLI override,
@@ -728,6 +742,12 @@ pub struct Args {
     /// triggering a re-bake/rebuild of each affected stage. Default
     /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     soft_shadow_samples: u32,
+    /// Receiver footprint floor on static lightmap texels and on the animated
+    /// weight maps (`LightmapConfig::penumbra_floor`). On unless
+    /// `--no-penumbra-floor`, which bakes centre-point visibility for
+    /// before/after comparison. Folds into every lightmap-layer key and the
+    /// `animated_lm_weight_maps` key, so toggling it re-bakes both.
+    penumbra_floor: bool,
     /// SDF occluder-atlas voxel edge length in meters. Overrides
     /// `sdf_bake::DEFAULT_VOXEL_SIZE_METERS` for this run.
     voxel_size: f32,
@@ -821,6 +841,7 @@ fn help_text() -> String {
          --lightmap-density <METERS> Fixed lightmap texel size in meters, > 0 (default: {density})\n    \
          --sh-density-fidelity <MULTIPLIER> Base SH density fidelity multiplier, > 0 (default: {sh_density_fidelity})\n    \
          --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= {probe_floor} (default: {samples})\n    \
+         --no-penumbra-floor        Bake lightmap shadow visibility at texel centres instead of over the one-texel receiver footprint, so sharp edges show texel steps; for comparison (default: off, floored)\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
          --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \
@@ -891,6 +912,7 @@ where
     let mut lightmap_density: Option<f32> = None;
     let mut sh_density_fidelity: Option<f32> = None;
     let mut soft_shadow_samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
+    let mut penumbra_floor = texel_footprint::PENUMBRA_FLOOR_DEFAULT;
     let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
     let mut baked_root: Option<PathBuf> = None;
@@ -996,6 +1018,9 @@ where
                     );
                 }
                 soft_shadow_samples = parsed;
+            }
+            "--no-penumbra-floor" => {
+                penumbra_floor = false;
             }
             "--sdf-voxel-size" => {
                 quality_flag_supplied = true;
@@ -1129,6 +1154,7 @@ where
         lightmap_density,
         sh_density_fidelity,
         soft_shadow_samples,
+        penumbra_floor,
         voxel_size,
         cache_dir,
         baked_root,
@@ -3041,6 +3067,26 @@ mod tests {
                 "--soft-shadow-samples {below} should be rejected (below probe floor {floor})"
             );
         }
+    }
+
+    // With no flag the bake is floored; the switch reaches the lightmap
+    // config and `--help` lists it.
+    #[test]
+    fn penumbra_floor_is_on_by_default_and_the_switch_disables_it() {
+        let default = parse_args_from(["input.map"].into_iter().map(str::to_owned)).unwrap();
+        assert!(default.penumbra_floor);
+        assert!(lightmap_config(&default, None).penumbra_floor);
+
+        let disabled = parse_args_from(
+            ["input.map", "--no-penumbra-floor"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(!disabled.penumbra_floor);
+        assert!(!lightmap_config(&disabled, None).penumbra_floor);
+
+        assert!(help_text().contains("--no-penumbra-floor"));
     }
 
     #[test]

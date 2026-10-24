@@ -17,6 +17,8 @@ pub(crate) const LIGHTMAP_PARTITION_WINDOW: usize = 8;
 /// Where an item's partition comes from. Every method runs on a Rayon worker.
 pub(super) trait PartitionSource: Sync {
     /// Cache read for `item`, outside any permit. `Some` skips the chart bake.
+    /// A hit may then take a permit for texel-step detection, which runs before
+    /// the window marks the partition resident.
     fn load(&self, item: usize) -> Option<LightmapLayer>;
     /// Charts `item` bakes, in the order their texels are concatenated. Charts
     /// the source skips count as complete progress here.
@@ -24,7 +26,9 @@ pub(super) trait PartitionSource: Sync {
     /// One governed (light, chart) work unit: enters the governor exactly once.
     fn bake_chart(&self, item: usize, chart: usize) -> Vec<LayerTexel>;
     /// Assemble the concatenated chart texels into a partition and write it to
-    /// the cache, outside any permit.
+    /// the cache, outside any permit. Texel-step detection follows the cache
+    /// write and takes a permit; on this path the window has already marked the
+    /// partition resident.
     fn finish(&self, item: usize, texels: Vec<LayerTexel>) -> LightmapLayer;
 }
 

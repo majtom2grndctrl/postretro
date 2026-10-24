@@ -452,10 +452,14 @@ fn cut_face_lit_by_an_animated_light_passes_the_guards_with_matching_overlap_wei
             atlas_height: prepared.atlas_height,
             static_atlas_layer_count: prepared.layer_count,
             area_sample_count: 8,
+            cut_parents: &prepared.cut_parents,
+            penumbra_floor: crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT,
+            step_threshold: crate::texel_step_detector::TEXEL_STEP_THRESHOLD,
         },
         &BakeControl::unrestricted(),
     )
-    .expect("the animated weights bake");
+    .expect("the animated weights bake")
+    .section;
 
     // Every texel's weights, keyed by its face's parent-grid texel.
     type TexelWeights = Vec<(u32, u32, [u16; 2])>;
@@ -611,10 +615,14 @@ fn chunks_split_far_inside_a_cut_face_own_every_texel_once() {
             atlas_height: prepared.atlas_height,
             static_atlas_layer_count: prepared.layer_count,
             area_sample_count: 1,
+            cut_parents: &prepared.cut_parents,
+            penumbra_floor: crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT,
+            step_threshold: crate::texel_step_detector::TEXEL_STEP_THRESHOLD,
         },
         &BakeControl::unrestricted(),
     )
-    .expect("sibling chunk rects do not overlap");
+    .expect("sibling chunk rects do not overlap")
+    .section;
 
     for (chunk, rect) in chunks.chunks.iter().zip(&weight_maps.chunk_rects) {
         let chart = &prepared.charts[chunk.face_index as usize];

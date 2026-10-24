@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use rayon::prelude::*;
@@ -47,6 +47,7 @@ pub(crate) use cell_blocks::{
 pub use charts::{Chart, ChartWindow};
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
 pub use face_cut::CutParent;
+pub(crate) use face_cut::cut_map_key_bytes;
 #[cfg(test)]
 pub(crate) use face_cut::{plan_face_cuts, planned_chart_area};
 #[cfg(test)]
@@ -58,6 +59,7 @@ use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
 use crate::map_data::{FalloffModel, LightType, MapLight, MapLightmapScaleRegion};
 use crate::ray_traversal::BoundedRay;
+use crate::texel_footprint::{TexelSampler, TexelSite};
 
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
@@ -185,6 +187,11 @@ pub struct LightmapConfig {
     /// are normalized before encoding so no zero-sized direction atlas can be
     /// emitted.
     pub direction_texel_scale: u32,
+    /// Receiver footprint floor (`texel_footprint`): each texel's per-light
+    /// visibility is filtered over a one-texel cone footprint so no baked edge
+    /// steps between texels. Off bakes centre-point visibility.
+    /// Default [`crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT`].
+    pub penumbra_floor: bool,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -209,8 +216,9 @@ pub struct LightmapBakeOutput {
 /// edge dilation, before any irradiance/direction byte encoding.
 ///
 /// This is the **byte-identity comparison seam** for the incremental-bake cache:
-/// both the frozen monolithic oracle ([`reference::bake_monolithic_atlas`])
-/// and the per-light layer compositor ([`crate::lightmap_layer::composite_layers`]) yield a
+/// both the monolithic oracle ([`reference::bake_monolithic_atlas`], the
+/// uncached, unlayered walk over the shared texel sampler) and the per-light
+/// layer compositor ([`crate::lightmap_layer::composite_layers`]) yield a
 /// `CompositedAtlas`, and the cache's exactness gate asserts the two are equal
 /// here — before the lossy BC6H encode. Equality at this seam means the warm
 /// composite reproduces the cold bake bit-for-bit.
@@ -332,7 +340,6 @@ pub fn bake_prepared_lightmap_controlled(
     prepared: PreparedAtlas,
     control: &BakeControl,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
-    let texel_density = config.lightmap_density;
     let area_sample_count = config.area_sample_count;
 
     // No static lights, or atlas prep produced no placements → emit a section with no blocks
@@ -364,10 +371,6 @@ pub fn bake_prepared_lightmap_controlled(
         .filter(|l| l.shadow_type != crate::map_data::ShadowType::Sdf)
         .collect();
 
-    // Author hint: flag any light whose emitter is too small to soften at this
-    // atlas density before baking (Task 6). Output-only — never alters the bake.
-    warn_sub_texel_penumbra_lights(&static_lights, texel_density);
-
     let charts = prepared.charts;
     let placements = prepared.placements;
     let atlas_w = prepared.atlas_width;
@@ -388,6 +391,7 @@ pub fn bake_prepared_lightmap_controlled(
         atlas_h,
         layer_count,
         area_sample_count,
+        config.penumbra_floor,
         config.uncompressed_irradiance,
         control,
     );
@@ -424,11 +428,22 @@ fn bake_layered_section_controlled(
     atlas_h: u32,
     layer_count: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     uncompressed_irradiance: bool,
     control: &BakeControl,
 ) -> LightmapSection {
     debug_assert_eq!(charts.len(), placements.len());
 
+    // Once per light, keyed by position in `static_lights`, as the
+    // production stage tests its layer lights.
+    let embedded_emitters = reference::embedded_emitters(
+        bvh,
+        primitives,
+        geometry,
+        static_lights,
+        penumbra_floor,
+        control,
+    );
     let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance);
     for layer in 0..layer_count {
         // Keep the layer's full-resolution f32 buffers scoped to this block:
@@ -445,6 +460,8 @@ fn bake_layered_section_controlled(
             atlas_h,
             layer,
             area_sample_count,
+            penumbra_floor,
+            &embedded_emitters,
             control,
         );
         builder.push_layer(layer, &atlas);
@@ -469,6 +486,8 @@ fn bake_atlas_layer_controlled(
     atlas_h: u32,
     target_layer: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
+    embedded_emitters: &crate::texel_footprint::EmbeddedEmitters,
     control: &BakeControl,
 ) -> CompositedAtlas {
     // Collect serially from the chart/leaf order emitted by the planner. The
@@ -500,6 +519,8 @@ fn bake_atlas_layer_controlled(
             static_lights,
             chart,
             area_sample_count,
+            penumbra_floor,
+            embedded_emitters,
         );
 
         // This lock only protects finite row-wise memcpy operations. It never
@@ -653,44 +674,38 @@ pub(crate) fn light_texel_is_covered(
 
 /// One light's contribution to a single atlas texel: the shadowed irradiance
 /// (RGB) and the unnormalized weighted direction (`to_light * luminance`),
-/// the exact two terms the frozen monolithic reference accumulates per light
+/// the exact two terms the monolithic oracle accumulates per light
 /// before the per-texel `irr` sum and `weighted_dir.normalize()`.
 ///
-/// Factored out so the frozen reference and generic per-light consumers share
+/// Factored out so the monolithic oracle and generic per-light consumers share
 /// byte-identical math — the cache's bit-for-bit composite gate depends on both
 /// paths producing the same float terms in the same order.
 ///
 /// `trace(from, to)` is the segment-clear closure the caller wraps around its
-/// own `segment_clear`; it returns `(Vec3::ZERO, Vec3::ZERO)` when the light
-/// contributes nothing (below the irradiance floor or fully occluded), so an
-/// out-of-range light adds exactly `0.0` — the property that makes per-light
-/// layers sum back to the monolithic result.
+/// own `segment_clear`, and `reach` and `lead_in` the footprint's wall tests
+/// (see [`TexelSampler::visibility`]); it returns `(Vec3::ZERO, Vec3::ZERO)` when
+/// the light contributes nothing (below the irradiance floor or fully
+/// occluded), so an out-of-range light adds exactly `0.0` — the property that
+/// makes per-light layers sum back to the monolithic result.
 pub(crate) fn light_texel_contribution(
     light: &MapLight,
-    world_p: Vec3,
-    surface_normal: Vec3,
-    seed: u64,
-    area_sample_count: u32,
+    site: &TexelSite,
+    sampler: &TexelSampler,
     trace: impl Fn(Vec3, Vec3) -> bool,
+    reach: impl Fn(Vec3, Vec3) -> bool,
+    lead_in: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3) {
-    let (irr, weighted_dir, _) = light_texel_contribution_and_visibility(
-        light,
-        world_p,
-        surface_normal,
-        seed,
-        area_sample_count,
-        trace,
-    );
+    let (irr, weighted_dir, _) =
+        light_texel_contribution_and_visibility_with(light, site.world_p, site.normal, || {
+            sampler.visibility(light, site, trace, reach, lead_in)
+        });
     (irr, weighted_dir)
 }
 
-/// Single-light texel bake plus the raw soft visibility used by ShadowmaskAtlas.
-///
-/// The returned visibility is `None` when the light has no direct term at this
-/// texel (out of range, backfacing, outside spot cone, etc.). Otherwise it is
-/// exactly the raw `soft_visibility` value that the irradiance path multiplies
-/// into the unshadowed direct term, including `Some(0.0)` for fully occluded
-/// but otherwise contributing texels.
+/// [`light_texel_contribution_and_visibility_with`] fed the centre-point
+/// `soft_visibility`: the floor-disabled texel path at one texel, without a
+/// chart frame.
+#[cfg(test)]
 pub(crate) fn light_texel_contribution_and_visibility(
     light: &MapLight,
     world_p: Vec3,
@@ -699,38 +714,43 @@ pub(crate) fn light_texel_contribution_and_visibility(
     area_sample_count: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3, Option<f32>) {
-    light_texel_contribution_and_visibility_with(
-        light,
-        world_p,
-        surface_normal,
-        seed,
-        || SoftProbes::new(light, area_sample_count),
-        trace,
-    )
+    light_texel_contribution_and_visibility_with(light, world_p, surface_normal, || {
+        soft_visibility(
+            world_p,
+            surface_normal,
+            light,
+            seed,
+            area_sample_count,
+            trace,
+        )
+    })
 }
 
-/// [`light_texel_contribution_and_visibility`] with the light's probe set
-/// supplied by the caller, so a chart walk computes it once rather than per
-/// texel. `probes` runs only for a soft (non-zero-radius) emitter.
+/// Single-light texel bake plus the raw visibility used by ShadowmaskAtlas.
+///
+/// The returned visibility is `None` when the light has no direct term at this
+/// texel (out of range, backfacing, outside spot cone, etc.). Otherwise it is
+/// exactly the raw value `visibility` returns, which the irradiance path
+/// multiplies into the unshadowed direct term, including `Some(0.0)` for fully
+/// occluded but otherwise contributing texels. `visibility` runs only for a
+/// covered texel, so an unreached texel traces nothing.
 pub(crate) fn light_texel_contribution_and_visibility_with(
     light: &MapLight,
     world_p: Vec3,
     surface_normal: Vec3,
-    seed: u64,
-    probes: impl FnOnce() -> SoftProbes,
-    trace: impl Fn(Vec3, Vec3) -> bool,
+    visibility: impl FnOnce() -> f32,
 ) -> (Vec3, Vec3, Option<f32>) {
     let (contribution, to_light) = light_contribution_and_direction(light, world_p, surface_normal);
     if !contribution_covers_shadowmask(contribution.length_squared()) {
         return (Vec3::ZERO, Vec3::ZERO, None);
     }
     // Lightmaps always bake shadowed: an occluded texel goes dark so a
-    // `static_light_map` light's static shadow lives in the atlas.
-    // `soft_visibility` returns the `[0,1]` unoccluded fraction over an area
-    // sample of the emitter — a multi-texel penumbra instead of a hard 1-texel
-    // step. `sdf` lights are filtered out of the static set upstream (their
-    // direct shadow resolves at runtime), so no double-shadow.
-    let v = soft_visibility_with(world_p, surface_normal, light, seed, probes, trace);
+    // `static_light_map` light's static shadow lives in the atlas. The
+    // visibility is the `[0,1]` unoccluded fraction over the texel's receiver
+    // footprint and an area sample of the emitter. `sdf` lights are filtered
+    // out of the static set upstream (their direct shadow resolves at
+    // runtime), so no double-shadow.
+    let v = visibility();
     if v <= 0.0 {
         return (Vec3::ZERO, Vec3::ZERO, Some(0.0));
     }
@@ -780,73 +800,10 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-// `soft_visibility` and its sampling helpers are the Task-2 deliverable of
-// `baked-soft-lightmap-shadows`. The static lightmap bake (Task 3) calls
-// `soft_visibility` in the per-texel loop above; the animated weight-map and SH
-// bounce bakers (Tasks 4/4b) wrap their own `segment_clear` as the trace closure.
-
-/// Sub-texel-penumbra warning threshold, in atlas texels (Task 6). An emitter
-/// whose estimated penumbra spans fewer than this many texels can't produce a
-/// visibly-soft edge — the area samples collapse into one texel and the result
-/// reads as a hard step. Diagnostic-only: this constant never feeds bake output,
-/// so it is exempt from the determinism fixed-constant rule (it only gates a
-/// `log::warn!`). One texel is the floor below which softening is wasted.
-const SUB_TEXEL_PENUMBRA_THRESHOLD: f32 = 1.0;
-
-/// Coarse estimate of an emitter's penumbra width in **atlas texels**, used by
-/// the sub-texel-penumbra author hint (Task 6). Deliberately uses only the
-/// emitter size (`_light_size` / `_angular_diameter`), its `_falloff_range`
-/// reach, and the atlas texel world-size (`texel_density`) — **no
-/// distance-to-occluder term**, matching the no-occluder-distance design of
-/// `soft_visibility`. It is an author hint, not an exact penumbra width.
-///
-/// Point/Spot: the emitter subtends `2·atan(light_size / falloff_range)` from the
-/// receiver at the falloff reach; projected back over that reach the world-space
-/// penumbra is `angular · falloff_range` (≈ `2·light_size` at small angles).
-/// Directional: the angular diameter is given directly; projected over the
-/// falloff reach as the characteristic scale. Dividing by `texel_density` yields
-/// the span in texels.
-fn penumbra_span_texels(light: &MapLight, texel_density: f32) -> f32 {
-    let texel = texel_density.max(1.0e-4);
-    let reach = light.falloff_range.max(1.0e-4);
-    let angular = match light.light_type {
-        LightType::Point | LightType::Spot => 2.0 * (light.light_size.max(0.0) / reach).atan(),
-        LightType::Directional => light.angular_diameter.max(0.0).to_radians(),
-    };
-    let world_width = angular * reach;
-    world_width / texel
-}
-
-/// Whether `light`'s estimated penumbra is narrower than one atlas texel — the
-/// pure predicate behind the sub-texel-penumbra warning. A hard-authored light
-/// (`light_size`/`angular_diameter == 0`, i.e. zero span) is intentionally *not*
-/// flagged: the author opted into a hard edge, so a "too soft to see" hint would
-/// be noise. Factored out of the logging path so it is unit-testable without
-/// capturing `log` output.
-fn penumbra_below_one_texel(light: &MapLight, texel_density: f32) -> bool {
-    let span = penumbra_span_texels(light, texel_density);
-    span > 0.0 && span < SUB_TEXEL_PENUMBRA_THRESHOLD
-}
-
-/// Emit one `log::warn!` per `static_light_map` light whose estimated penumbra is
-/// narrower than one atlas texel (Task 6 author hint). Names the light's index
-/// and origin so the author can locate the offending emitter. Lights at or above
-/// the threshold — and explicitly-hard lights (zero size) — warn not at all.
-pub(crate) fn warn_sub_texel_penumbra_lights(lights: &[&MapLight], texel_density: f32) {
-    for (index, light) in lights.iter().enumerate() {
-        if penumbra_below_one_texel(light, texel_density) {
-            log::warn!(
-                "[Lightmap] static light #{index} at ({:.2}, {:.2}, {:.2}) subtends a sub-texel \
-                 penumbra (~{:.2} texel at {texel_density} m/texel) — its soft shadow will read \
-                 as a hard edge; raise `_light_size`/`_angular_diameter` or `_falloff_range`",
-                light.origin.x,
-                light.origin.y,
-                light.origin.z,
-                penumbra_span_texels(light, texel_density),
-            );
-        }
-    }
-}
+// `soft_visibility` and `soft_visibility_with` are the centre-point sampler.
+// `TexelSampler::Centre` (floor off) and the probe-point bakers (SH bounce,
+// direct SH, scatter) call them, each wrapping its own `segment_clear` as the
+// trace closure. The floored texel path is `texel_footprint`.
 
 /// Probe samples traced before escalating. Tracing this many first lets the
 /// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;
@@ -877,8 +834,7 @@ pub(crate) const DEFAULT_AREA_SAMPLE_COUNT: u32 = 32;
 /// pole / hug the cone axis — they spread in azimuth but not in polar angle. An
 /// occluder edge crossing the *lower* hemisphere of the emitter then leaves all
 /// four contiguous probes in agreement, early-outs to a hard 0/1, and silently
-/// drops the penumbra — re-introducing the hard 1-texel edge for occluders facing
-/// away from the pole.
+/// drops the penumbra for occluders facing away from the pole.
 ///
 /// Why not a plain index stride (`k·full/N`): on this lattice azimuth is linear in
 /// the index (`golden_angle·i`), so any arithmetic stride aliases the azimuth into
@@ -954,11 +910,16 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
 }
 
 /// Un-rotated (seed == 0) sample direction for index `i` of `count`, using the
-/// emitter's per-light-type lattice mapping. Used only to pick the probe subset
-/// (`probe_indices`); the live sampling re-derives targets through
-/// `area_sample_target` with the real seed. The Point/Spot arm must stay
-/// light-independent: `SoftProbes::new` memoizes its snap keyed by count alone.
-fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
+/// emitter's per-light-type lattice mapping. Used only to pick emitter samples
+/// (`probe_indices`, the texel footprint's per-texel pairing, which turns it by
+/// [`emitter_lattice_spin`], and the embedded-emitter test
+/// `texel_footprint::embedded_emitter_fraction`, which casts the seed-0
+/// lattice as ray directions from the light centre); the live sampling
+/// re-derives targets through `area_sample_target` with the real seed. The
+/// Point/Spot arm must stay light-independent: `SoftProbes::new` and the
+/// footprint memo key their lattices by count alone, and the emitter test
+/// relies on it too.
+pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),
         LightType::Directional => {
@@ -1128,7 +1089,7 @@ pub(crate) fn soft_visibility_with(
 /// Single hard-ray target for the `radius <= 0` hard edge (see the note in
 /// `soft_visibility` on the removed `shadow_visible`): the light origin for
 /// Point/Spot, or a far point along `-cone_direction` for Directional.
-fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
+pub(crate) fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => Vec3::new(
             light.origin.x as f32,
@@ -1150,7 +1111,7 @@ fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
 /// half-angle `angular_diameter/2` about `-cone_direction`, at the shared far
 /// distance (`DIRECTIONAL_LIGHT_RAY_LENGTH_METERS`, same for every directional
 /// sample). The lattice is rotated by `seed` so adjacent texels decorrelate.
-fn area_sample_target(
+pub(crate) fn area_sample_target(
     surface_point: Vec3,
     light: &MapLight,
     seed: u64,
@@ -1176,12 +1137,35 @@ fn area_sample_target(
     }
 }
 
+/// The fraction of a full turn `seed` rotates an emitter lattice by.
+fn lattice_seed_turn(seed: u64) -> f32 {
+    ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32
+}
+
+/// The rotation `seed` applies to an emitter's whole lattice: the direction
+/// [`area_sample_target`] uses for sample `i` is this rotation of
+/// [`probe_sample_direction`]`(light, i, count)`. The sphere lattice turns
+/// about +Y and a sun's cone about its axis, each by the azimuth between this
+/// seed's turn and seed 0's (which the lattice offset makes non-zero).
+pub(crate) fn emitter_lattice_spin(light: &MapLight, seed: u64) -> Quat {
+    let angle = (lattice_seed_turn(seed) - lattice_seed_turn(0)) * std::f32::consts::TAU;
+    match light.light_type {
+        // `fibonacci_sphere_sample` adds the angle to an azimuth that runs
+        // from +X toward +Z: a negative turn about +Y.
+        LightType::Point | LightType::Spot => Quat::from_rotation_y(-angle),
+        LightType::Directional => {
+            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
+            Quat::from_axis_angle((-aim).normalize_or_zero(), angle)
+        }
+    }
+}
+
 /// Sample `i` of `count` on the unit sphere via the Fibonacci lattice, rotated by
 /// `seed`. Mirrors `sh_bake.rs::sphere_directions` so both bakers share the same
 /// low-discrepancy, RNG-free convention.
 fn fibonacci_sphere_sample(i: u32, count: u32, seed: u64) -> Vec3 {
     let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
-    let seed_offset = ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32;
+    let seed_offset = lattice_seed_turn(seed);
     let t = (i as f32 + 0.5) / count as f32;
     let y = 1.0 - 2.0 * t;
     let radius = (1.0 - y * y).max(0.0).sqrt();
@@ -1194,7 +1178,7 @@ fn fibonacci_sphere_sample(i: u32, count: u32, seed: u64) -> Vec3 {
 /// rotated by `seed`. Same RNG-free convention as `fibonacci_sphere_sample`.
 fn cone_jittered_direction(axis: Vec3, half_angle: f32, i: u32, count: u32, seed: u64) -> Vec3 {
     let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
-    let seed_offset = ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32;
+    let seed_offset = lattice_seed_turn(seed);
     let t = (i as f32 + 0.5) / count as f32;
     // Equal-area cap mapping: cos(theta) ramps linearly from the rim to the axis.
     let cos_theta = 1.0 - t * (1.0 - half_angle.cos());
@@ -1333,7 +1317,7 @@ pub(crate) fn segment_clear_full_scan(
 }
 
 /// Double-sided Möller-Trumbore intersection.
-fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+pub(crate) fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let edge1 = b - a;
     let edge2 = c - a;
     let h = dir.cross(edge2);
@@ -1419,6 +1403,8 @@ fn dilate_edges(
     }
 }
 
+#[cfg(test)]
+mod penumbra_ab_tests;
 #[cfg(test)]
 mod reseed_baseline_tests;
 #[cfg(test)]

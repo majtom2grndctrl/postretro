@@ -13,24 +13,31 @@ use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
-use crate::lightmap_bake::{self, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
+use crate::lightmap_bake::{self, CutParent, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
 use crate::lightmap_layer::{self, SharedAtlas};
 use crate::map_data::ShadowType;
 use crate::shadowmask_bake;
+use crate::texel_footprint::EmbeddedEmitters;
+use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 
 mod cache;
 mod metadata;
 mod partitions;
 mod peak;
+mod texel_steps;
 mod window;
 
-pub(super) use metadata::MetadataCounts;
 #[cfg(test)]
-use partitions::chart_texel_bounds;
+use crate::lightmap_layer::chart_texel_bounds;
+#[cfg(test)]
+use crate::texel_step_detector::StepSite;
+use crate::texel_step_detector::{CutSites, TexelStepReport};
+pub(super) use metadata::MetadataCounts;
 use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
 pub(super) use peak::log_predicted_peak;
 #[cfg(test)]
 pub(super) use peak::predicted_peak;
+use texel_steps::StepDetector;
 use window::LIGHTMAP_PARTITION_WINDOW;
 #[cfg(test)]
 pub(crate) use window::WindowProbe;
@@ -39,6 +46,14 @@ pub(crate) struct FusedLightingOutput {
     pub lightmap: LightmapBakeOutput,
     pub shadowmask: Option<ShadowmaskAtlasSection>,
     pub shadowmask_elapsed: Duration,
+    /// Every stepped (light, face) the texel-step detector found, already
+    /// logged; replayed from the `lightmap_section` memo on a hit.
+    #[cfg(test)]
+    pub texel_steps: TexelStepReport,
+    /// Detector time summed over workers; zero on a memo hit. Never keyed.
+    pub texel_step_elapsed: Duration,
+    /// The atlas's cut faces, for the weight-map bake's texel-step detector.
+    pub cut_parents: Vec<CutParent>,
 }
 
 /// How the fused walk windows its (layer, light) partitions. Production uses
@@ -52,6 +67,14 @@ pub(crate) struct PartitionWindow {
     pub(crate) hooks: PartitionHooks,
     #[cfg(test)]
     pub(crate) raw_fill_probe: Option<shadowmask_bake::RawFillProbe>,
+    /// Replaces [`TEXEL_STEP_THRESHOLD`] in the detector and the section key.
+    #[cfg(test)]
+    pub(crate) step_threshold: Option<f32>,
+    /// Skips the embedded-emitter test, so every light keeps the probe
+    /// early-out, to show a fixture's bytes depend on the flags. No key
+    /// holds this; run it without a cache.
+    #[cfg(test)]
+    pub(crate) ignore_embedded_emitters: bool,
 }
 
 impl Default for PartitionWindow {
@@ -64,7 +87,22 @@ impl Default for PartitionWindow {
             hooks: PartitionHooks::default(),
             #[cfg(test)]
             raw_fill_probe: None,
+            #[cfg(test)]
+            step_threshold: None,
+            #[cfg(test)]
+            ignore_embedded_emitters: false,
         }
+    }
+}
+
+impl PartitionWindow {
+    /// Whether the stage tests its lights' emitters: always, outside tests.
+    fn tests_embedded_emitters(&self) -> bool {
+        #[cfg(test)]
+        if self.ignore_embedded_emitters {
+            return false;
+        }
+        true
     }
 }
 
@@ -171,6 +209,10 @@ pub(crate) fn bake_fused_windowed(
             },
             shadowmask: None,
             shadowmask_elapsed: Duration::ZERO,
+            #[cfg(test)]
+            texel_steps: TexelStepReport::default(),
+            texel_step_elapsed: Duration::ZERO,
+            cut_parents: prepared.cut_parents,
         });
     }
     let density = config.lightmap_density;
@@ -186,6 +228,34 @@ pub(crate) fn bake_fused_windowed(
         .iter()
         .filter(|entry| entry.light.shadow_type != ShadowType::Sdf)
         .collect();
+    // Lights whose emitter sphere reaches into geometry skip the all-clear
+    // probe early-out. Tested once per light, warm or cold: the test reads
+    // only the light and geometry inside its layer key's bound
+    // (`lightmap_layer::layer_influence_aabb`), so a cached partition was
+    // baked under the same verdict, and the warning never rides a memo.
+    let embedded_emitters = if config.penumbra_floor && window.tests_embedded_emitters() {
+        EmbeddedEmitters::classify(
+            layer_lights
+                .iter()
+                .map(|entry| (entry.source_index, entry.light)),
+            bvh,
+            primitives,
+            geometry,
+            lightmap_control,
+        )
+    } else {
+        EmbeddedEmitters::default()
+    };
+    embedded_emitters.warn(
+        "static",
+        |source| {
+            layer_lights
+                .iter()
+                .find(|entry| entry.source_index == source)
+                .map(|entry| entry.light)
+        },
+        |source| light_source_labels.get(source).map(String::as_str),
+    );
     // Partition keys feed only the cache, so an uncached bake hashes nothing.
     let layer_prefixes = if stage_cache.is_some() && !prepared.placements.is_empty() {
         layer_key_prefixes(
@@ -195,6 +265,7 @@ pub(crate) fn bake_fused_windowed(
             geometry,
             density,
             args.soft_shadow_samples,
+            config.penumbra_floor,
             window.size,
             lightmap_control,
         )
@@ -229,6 +300,8 @@ pub(crate) fn bake_fused_windowed(
             primitives,
             geometry,
             area_sample_count: args.soft_shadow_samples,
+            penumbra_floor: config.penumbra_floor,
+            embedded_emitters: &embedded_emitters,
         },
         stage_cache,
         shadowmask_control,
@@ -263,6 +336,10 @@ pub(crate) fn bake_fused_windowed(
     let total = prepared.placements.len().saturating_mul(layer_lights.len());
     lightmap_control.publish_total(total);
 
+    #[cfg(not(test))]
+    let step_threshold = TEXEL_STEP_THRESHOLD;
+    #[cfg(test)]
+    let step_threshold = window.step_threshold.unwrap_or(TEXEL_STEP_THRESHOLD);
     let section_key = stage_cache.map(|_| {
         let input_hash = lightmap_layer::section_input_hash(
             layer_hashes(&layer_prefixes, prepared.layer_count),
@@ -270,6 +347,8 @@ pub(crate) fn bake_fused_windowed(
             density,
             config.uncompressed_irradiance,
             config.direction_texel_scale,
+            step_threshold,
+            &prepared.cut_parents,
         );
         CacheKey::new(
             "lightmap_section",
@@ -281,13 +360,22 @@ pub(crate) fn bake_fused_windowed(
         .zip(section_key.as_ref())
         .and_then(|(cache, key)| cache.get(key))
         .and_then(|bytes| {
-            match postretro_level_format::lightmap::LightmapSection::from_bytes(&bytes) {
+            let sites = CutSites::new(&prepared.cut_parents, &prepared.charts);
+            let Some((report, section_bytes)) =
+                TexelStepReport::parse(&bytes, layer_lights.len(), &sites)
+            else {
+                log::warn!(
+                    "[Compiler] corrupt lightmap section, recomposing: malformed texel-step report"
+                );
+                return None;
+            };
+            match postretro_level_format::lightmap::LightmapSection::from_bytes(section_bytes) {
                 Ok(section) => match lightmap_layer::validate_cached_lightmap_section(
                     &section,
                     &shared,
                     config.uncompressed_irradiance,
                 ) {
-                    Ok(()) => Some(section),
+                    Ok(()) => Some((section, report)),
                     Err(reason) => {
                         log::warn!(
                             "[Compiler] lightmap_section cache entry does not match current atlas ({reason}), recomposing"
@@ -320,8 +408,9 @@ pub(crate) fn bake_fused_windowed(
         }
     }
 
-    let section = if let Some(section) = cached_section {
-        section
+    let mut texel_step_elapsed = Duration::ZERO;
+    let (section, texel_steps) = if let Some(cached) = cached_section {
+        cached
     } else {
         // Every bake layer is folded, dilated, encoded, and sliced into its
         // blocks before the next layer's first partition is folded (that
@@ -333,6 +422,7 @@ pub(crate) fn bake_fused_windowed(
             &prepared.layout,
             config.uncompressed_irradiance,
         );
+        let mut texel_steps = TexelStepReport::default();
         if layer_lights.is_empty() {
             for target_layer in 0..prepared.layer_count {
                 // Dilate and whole-layer encode are CPU work bounded by `-j`,
@@ -349,6 +439,16 @@ pub(crate) fn bake_fused_windowed(
             // plane is live: the consumer closes a layer when the first item of
             // the next one arrives.
             let items = LayerItems::all(prepared.layer_count, layer_lights.len());
+            // Every partition this pass bakes or loads is checked, so a layer
+            // cache hit reports what its bake found.
+            let detector = StepDetector::new(
+                step_threshold,
+                &shared,
+                bvh,
+                primitives,
+                geometry,
+                &prepared.cut_parents,
+            );
             let source = LayerPartitions::new(
                 args,
                 stage_cache,
@@ -360,6 +460,9 @@ pub(crate) fn bake_fused_windowed(
                 &layer_lights,
                 &layer_prefixes,
                 items,
+                config.penumbra_floor,
+                &embedded_emitters,
+                Some(&detector),
                 window,
             );
             let mut open: Option<(u32, lightmap_layer::IncrementalLayerAccumulator)> = None;
@@ -416,9 +519,19 @@ pub(crate) fn bake_fused_windowed(
                 let _permit = lightmap_control.governor().enter();
                 close_layer(done);
             }
+            drop(source);
+            (texel_steps, texel_step_elapsed) = detector.finish();
         }
-        builder.finish()
+        (builder.finish(), texel_steps)
     };
+    // Cold, warm or replayed, the same report logs once, here, on the
+    // caller's thread.
+    texel_steps.log("static", |light| {
+        let entry = layer_lights.get(light as usize)?;
+        light_source_labels
+            .get(entry.source_index)
+            .map(String::as_str)
+    });
 
     // If the lightmap memo hit but the shadowmask memo missed, consume only the
     // owner-eligible partitions. They are read/baked once here and never by a later
@@ -443,6 +556,9 @@ pub(crate) fn bake_fused_windowed(
             &layer_lights,
             &layer_prefixes,
             items,
+            config.penumbra_floor,
+            &embedded_emitters,
+            None,
             window,
         );
         let completed_work = prepared.placements.len().saturating_mul(selected.len());
@@ -475,7 +591,7 @@ pub(crate) fn bake_fused_windowed(
         #[cfg(test)]
         RAW_FILL_AT_LIGHTMAP_CACHE_WRITE
             .with(|sample| sample.set(Some(shadowmask.raw_fill_live_bytes())));
-        cache::cache_lightmap_section(cache, key, &section);
+        cache::cache_lightmap_section(cache, key, &section, &texel_steps);
     }
     let shadowmask_bake::FusedShadowmaskOutput {
         section: shadowmask,
@@ -496,6 +612,10 @@ pub(crate) fn bake_fused_windowed(
         },
         shadowmask,
         shadowmask_elapsed,
+        #[cfg(test)]
+        texel_steps,
+        texel_step_elapsed,
+        cut_parents: prepared.cut_parents,
     })
 }
 

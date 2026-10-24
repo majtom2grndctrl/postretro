@@ -10,6 +10,7 @@ use crate::bvh_build::build_bvh;
 use crate::geometry::FaceIndexRange;
 use crate::governor::Governor;
 use crate::reporter::StageProgress;
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use glam::DVec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::lightmap::{LightmapBlock, encode_direction_oct};
@@ -189,6 +190,7 @@ fn bake_scale_region_fixture(regions: &[MapLightmapScaleRegion]) -> Vec<u8> {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -225,6 +227,7 @@ fn empty_geometry_bakes_no_blocks() {
             lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -252,6 +255,7 @@ fn no_static_lights_bakes_no_blocks() {
             lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -371,6 +375,7 @@ fn single_static_light_produces_nonzero_irradiance() {
             // request the uncompressed debug bypass so the byte layout stays
             // readable without re-implementing the GPU's BC6H decode here.
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: true,
         },
     )
@@ -436,6 +441,7 @@ fn sdf_typed_light_excluded_from_direct_lightmap() {
             // requests the RGBA16F debug bypass rather than the default
             // BC6H production layout.
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: true,
         },
     )
@@ -481,6 +487,7 @@ fn is_dynamic_lights_skipped_by_bake() {
             lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -513,6 +520,7 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -541,6 +549,7 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -576,6 +585,7 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -604,6 +614,7 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -746,6 +757,7 @@ fn warm_and_cold_atlas_preparation_share_scale_regions() {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -1125,6 +1137,7 @@ fn bake_monolithic_with_workers(worker_count: usize) -> CompositedAtlas {
                 prepared.atlas_height,
                 prepared.layer_count,
                 DEFAULT_AREA_SAMPLE_COUNT,
+                PENUMBRA_FLOOR_DEFAULT,
                 &control,
             )
         });
@@ -1177,6 +1190,7 @@ fn single_layer_reference_section(uncompressed_irradiance: bool) -> LightmapSect
         prepared.atlas_height,
         prepared.layer_count,
         DEFAULT_AREA_SAMPLE_COUNT,
+        PENUMBRA_FLOOR_DEFAULT,
     )
     .encode_section(&prepared.layout, uncompressed_irradiance)
 }
@@ -1200,6 +1214,7 @@ fn single_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance,
         },
         &BakeControl::unrestricted(),
@@ -1238,6 +1253,7 @@ fn multi_layer_reference_section(uncompressed_irradiance: bool) -> LightmapSecti
         prepared.atlas_height,
         prepared.layer_count,
         DEFAULT_AREA_SAMPLE_COUNT,
+        PENUMBRA_FLOOR_DEFAULT,
     )
     .encode_section(&prepared.layout, uncompressed_irradiance)
 }
@@ -1264,6 +1280,7 @@ fn multi_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance,
         },
         &BakeControl::unrestricted(),
@@ -1331,6 +1348,7 @@ fn per_layer_bake_rebases_nonzero_layer_scatter_to_temporary_plane() {
         64,
         2,
         DEFAULT_AREA_SAMPLE_COUNT,
+        PENUMBRA_FLOOR_DEFAULT,
     );
     let layer = bake_atlas_layer_controlled(
         &bvh,
@@ -1343,6 +1361,8 @@ fn per_layer_bake_rebases_nonzero_layer_scatter_to_temporary_plane() {
         64,
         1,
         DEFAULT_AREA_SAMPLE_COUNT,
+        PENUMBRA_FLOOR_DEFAULT,
+        &crate::texel_footprint::EmbeddedEmitters::default(),
         &BakeControl::unrestricted(),
     );
     let plane = 64usize * 64;
@@ -1390,6 +1410,7 @@ fn per_layer_parallel_scatter_joins_before_dilation() {
         64,
         1,
         DEFAULT_AREA_SAMPLE_COUNT,
+        PENUMBRA_FLOOR_DEFAULT,
     );
     let progress = StageProgress::with_total(placements.len());
     let control = BakeControl::new(Arc::new(Governor::new(2, false)), &progress);
@@ -1409,6 +1430,8 @@ fn per_layer_parallel_scatter_joins_before_dilation() {
                 64,
                 0,
                 DEFAULT_AREA_SAMPLE_COUNT,
+                PENUMBRA_FLOOR_DEFAULT,
+                &crate::texel_footprint::EmbeddedEmitters::default(),
                 &control,
             )
         });
@@ -1453,6 +1476,7 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
         64,
         2,
         DEFAULT_AREA_SAMPLE_COUNT,
+        PENUMBRA_FLOOR_DEFAULT,
         true,
         &BakeControl::unrestricted(),
     );
@@ -1467,6 +1491,7 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
         64,
         2,
         DEFAULT_AREA_SAMPLE_COUNT,
+        PENUMBRA_FLOOR_DEFAULT,
     )
     .encode_section(&layout, true);
 
@@ -1509,6 +1534,7 @@ fn monolithic_atlas_counts_degenerate_chart_progress_without_scatter() {
         MIN_ATLAS_DIMENSION,
         1,
         DEFAULT_AREA_SAMPLE_COUNT,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     );
 
@@ -1570,6 +1596,7 @@ fn monolithic_bake_paused_before_permit_release_starts_no_chart() {
                     prepared.atlas_height,
                     prepared.layer_count,
                     DEFAULT_AREA_SAMPLE_COUNT,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &control,
                 )
             });
@@ -1628,6 +1655,7 @@ fn lightmap_bake_produces_byte_identical_output_on_repeated_runs() {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 direction_texel_scale: DIRECTION_TEXEL_SCALE,
+                penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
                 uncompressed_irradiance: false,
             },
         )
@@ -1682,6 +1710,7 @@ fn two_bakes_decode_within_frozen_tolerance() {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 direction_texel_scale: DIRECTION_TEXEL_SCALE,
+                penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
                 uncompressed_irradiance: false,
             },
         )
@@ -1847,6 +1876,7 @@ fn lightmap_uvs_in_zero_one_range_after_bake() {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -2018,6 +2048,7 @@ fn occluder_produces_dark_texel() {
             // Reads per-texel bytes — request the RGBA16F debug bypass
             // so the 8-byte stride matches what this loop expects.
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: true,
         },
     )
@@ -2214,6 +2245,7 @@ fn shared_world_vertex_produces_two_distinct_records() {
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: false,
         },
     )
@@ -2559,90 +2591,6 @@ fn soft_visibility_default_sizes_softpath_disagreeing_probes_escalate() {
     );
 }
 
-// --- Task 6: sub-texel-penumbra author hint --------------------------
-//
-// Test the pure predicate `penumbra_below_one_texel` (and the
-// `warn_sub_texel_penumbra_lights` count via it), not the `log::warn!`
-// macro — the warning is gated entirely by this predicate, so its branch
-// is the testable seam.
-
-#[test]
-fn penumbra_below_one_texel_flags_tiny_point_emitter() {
-    // A near-zero (but nonzero) emitter over a long reach subtends a
-    // sub-texel penumbra at the default atlas density → flagged.
-    let mut light = soft_point_light(0.001);
-    light.falloff_range = 5.0;
-    assert!(
-        penumbra_below_one_texel(&light, DEFAULT_TEXEL_DENSITY_METERS),
-        "tiny emitter should be flagged sub-texel"
-    );
-}
-
-#[test]
-fn penumbra_below_one_texel_passes_default_sized_point_emitter() {
-    // The documented default `_light_size` is sized to span ~multiple
-    // texels at the default density → not flagged.
-    let mut light = soft_point_light(DEFAULT_LIGHT_SIZE);
-    light.falloff_range = 5.0;
-    assert!(
-        !penumbra_below_one_texel(&light, DEFAULT_TEXEL_DENSITY_METERS),
-        "default-sized emitter must not be flagged"
-    );
-}
-
-#[test]
-fn penumbra_below_one_texel_does_not_flag_explicit_hard_light() {
-    // An explicitly-authored hard light (size 0) opted into a hard edge —
-    // a "too soft" hint would be noise, so it is never flagged.
-    let mut light = soft_point_light(0.0);
-    light.falloff_range = 5.0;
-    assert!(
-        !penumbra_below_one_texel(&light, DEFAULT_TEXEL_DENSITY_METERS),
-        "explicit hard light (size 0) must not be flagged"
-    );
-    let dir = soft_directional_light(0.0);
-    assert!(
-        !penumbra_below_one_texel(&dir, DEFAULT_TEXEL_DENSITY_METERS),
-        "explicit hard directional (angular 0) must not be flagged"
-    );
-}
-
-#[test]
-fn penumbra_below_one_texel_flags_narrow_directional() {
-    // A 0.001° sun over a unit reach is well below one texel → flagged;
-    // a wide 5° sun is not.
-    let mut narrow = soft_directional_light(0.001);
-    narrow.falloff_range = 1.0;
-    assert!(
-        penumbra_below_one_texel(&narrow, DEFAULT_TEXEL_DENSITY_METERS),
-        "narrow directional should be flagged sub-texel"
-    );
-    let mut wide = soft_directional_light(5.0);
-    wide.falloff_range = 1.0;
-    assert!(
-        !penumbra_below_one_texel(&wide, DEFAULT_TEXEL_DENSITY_METERS),
-        "wide directional must not be flagged"
-    );
-}
-
-#[test]
-fn warn_sub_texel_penumbra_counts_only_below_threshold_lights() {
-    // Mixed set: one flagged (tiny), one not (default). The predicate that
-    // gates the per-light `log::warn!` must fire for exactly one of them.
-    let mut tiny = soft_point_light(0.001);
-    tiny.falloff_range = 5.0;
-    let mut ok = soft_point_light(DEFAULT_LIGHT_SIZE);
-    ok.falloff_range = 5.0;
-    let lights = [&tiny, &ok];
-    let flagged = lights
-        .iter()
-        .filter(|l| penumbra_below_one_texel(l, DEFAULT_TEXEL_DENSITY_METERS))
-        .count();
-    assert_eq!(flagged, 1, "exactly one light should warn");
-    // Smoke: the warning emitter runs without panicking on the same set.
-    warn_sub_texel_penumbra_lights(&lights, DEFAULT_TEXEL_DENSITY_METERS);
-}
-
 // --- Task 6: area-sample-count knob ----------------------------------
 
 #[test]
@@ -2835,6 +2783,7 @@ fn soft_sum_bakes_penumbra_gradient_not_hard_step() {
             // irradiance blob — request the RGBA16F debug bypass so the
             // 8-byte stride stays valid.
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: true,
         },
     )
@@ -2885,6 +2834,7 @@ fn soft_sum_bake_is_byte_identical_on_repeat() {
                 lightmap_density: 0.05,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 direction_texel_scale: DIRECTION_TEXEL_SCALE,
+                penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
                 uncompressed_irradiance: false,
             },
         )
@@ -3095,6 +3045,7 @@ fn penumbra_cell_bake(far_quad: bool) -> LightmapBakeOutput {
             lightmap_density: 0.1,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
             uncompressed_irradiance: true,
         },
         &BakeControl::unrestricted(),

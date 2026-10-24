@@ -77,8 +77,10 @@
     // Map-unit (inch) radius of the emitter used for bake-time area-light soft
     // shadows (penumbra width scales with this), authored in map units like
     // _falloff_range. Absent → ~9.84 in (≈0.25 m, the soft default); an authored 0
-    // keeps the hard 1-texel shadow step. Bake-only; never serialized to a runtime
-    // PRL section.
+    // gives the crispest edge the lightmap allows (a baked (lightmap) shadow edge
+    // ramps over about one lightmap texel, never a texel stair-step). For crisper
+    // contact, set a smaller worldspawn _lightmap_density (finer texels). Bake-only;
+    // never serialized to a runtime PRL section.
     _light_size(string) : "Light Size (map-unit radius; bake-only soft shadows)" : ""
     delay(choices) : "Falloff Model" : 0 =
     [
@@ -212,8 +214,11 @@
     angles(angles) : "Direction (pitch yaw roll, degrees)" : "-90 0 0"
     // Angular diameter (degrees) of the parallel source used for bake-time soft
     // shadows — wider angle, softer penumbra. Absent → 0.5 (soft default); an
-    // authored 0 keeps the hard 1-texel shadow step. `_light_size` (inherited
-    // from Light) does not apply to directional sources. Bake-only.
+    // authored 0 gives parallel rays and the crispest edge the lightmap allows (a
+    // baked (lightmap) shadow edge ramps over about one lightmap texel, never a
+    // texel stair-step). For crisper contact, set a smaller worldspawn
+    // _lightmap_density (finer texels). `_light_size` (inherited from Light) does not apply to
+    // directional sources. Bake-only.
     _angular_diameter(string) : "Angular Diameter (degrees; bake-only soft shadows)" : ""
 ]
 

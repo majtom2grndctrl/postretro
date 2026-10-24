@@ -214,6 +214,8 @@ impl NoCutScene {
             primitives: &[],
             geometry: &self.geometry,
             area_sample_count: 4,
+            penumbra_floor: crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT,
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         }
     }
 }
@@ -1410,3 +1412,204 @@ fn estimate_parameters_carry_stride_mode_and_cut_map() {
 }
 
 mod layer_budget_regression;
+
+/// A 9 m floor under a 2 m quad raised 1 m, one face each in cell 0, as
+/// horizontal up-facing quads `(x, z, size, y)`.
+fn floor_under_raised_quad() -> crate::geometry::GeometryResult {
+    use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+    let mut geometry = crate::geometry::GeometryResult {
+        geometry: GeometrySection {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            faces: Vec::new(),
+        },
+        texture_names: postretro_level_format::texture_names::TextureNamesSection {
+            names: Vec::new(),
+        },
+        face_index_ranges: Vec::new(),
+    };
+    for (x, z, size, y) in [(0.0f32, 0.0f32, 9.0f32, 0.0f32), (3.5, 3.5, 2.0, 1.0)] {
+        let base = geometry.geometry.vertices.len() as u32;
+        for [dx, dz] in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] {
+            geometry.geometry.vertices.push(Vertex::new(
+                [x + dx * size, y, z + dz * size],
+                [dx, dz],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+                0,
+            ));
+        }
+        geometry
+            .face_index_ranges
+            .push(crate::geometry::FaceIndexRange {
+                index_offset: geometry.geometry.indices.len() as u32,
+                index_count: 6,
+            });
+        geometry
+            .geometry
+            .indices
+            .extend([0, 1, 2, 0, 2, 3].map(|corner| base + corner));
+        geometry.geometry.faces.push(FaceMeta {
+            leaf_index: 0,
+            texture_index: 0,
+        });
+    }
+    geometry
+}
+
+// P5: every cut-face estimate sample reads the visibility the walk bakes at
+// that texel, floored with the floor on, for a hard light and a soft one: the
+// estimate's candidates equal the ones its sample texels' walk records give,
+// at each switch setting.
+#[test]
+fn the_cut_face_estimate_reads_the_visibility_the_walk_bakes() {
+    use crate::bvh_build::build_bvh;
+    use crate::chart_raster::chart_texel_world_position;
+    use crate::lightmap_bake::{BlockOrdering, DEFAULT_AREA_SAMPLE_COUNT};
+
+    let mut soft = light_over(0, 1.0);
+    soft.origin = DVec3::new(4.2, 3.0, 4.7);
+    soft.falloff_range = 9.0;
+    soft.light_size = 1.0;
+    let mut hard = soft.clone();
+    hard.origin = DVec3::new(4.9, 2.6, 4.1);
+    hard.light_size = 0.0;
+    let lights = vec![soft, hard];
+    let mut geometry = floor_under_raised_quad();
+    let prepared = lightmap_bake::prepare_atlas_within(
+        &mut geometry,
+        &StaticBakedLights::from_lights(&lights),
+        0.1,
+        &[],
+        BlockOrdering::by_cell_id(2),
+        64,
+        &BakeControl::unrestricted(),
+    )
+    .expect("the cut floor prepares");
+    assert!(!prepared.cut_parents.is_empty(), "the floor is cut");
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let eligible_lights: Vec<_> = lights
+        .iter()
+        .enumerate()
+        .map(|(index, light)| eligible(light, index as u16, false))
+        .collect();
+    let area = f64::from(estimate::ESTIMATE_STRIDE.pow(2));
+
+    let mut contributions = Vec::new();
+    for floor in [true, false] {
+        // The walk below tests each light's emitter itself
+        // (`bake_light_layer_controlled`); the estimate takes the stage's set.
+        let embedded = if floor {
+            crate::texel_footprint::EmbeddedEmitters::classify(
+                eligible_lights
+                    .iter()
+                    .map(|light| (light.source_index, light.light)),
+                &bvh,
+                &primitives,
+                &geometry,
+                &BakeControl::unrestricted(),
+            )
+        } else {
+            crate::texel_footprint::EmbeddedEmitters::default()
+        };
+        let estimate = estimate::estimate_cut_owners(
+            &prepared.cut_parents,
+            &eligible_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            floor,
+            &embedded,
+            &BakeControl::unrestricted(),
+        );
+        let mut ramp_samples = 0;
+        for light in &eligible_lights {
+            let mut walk = HashMap::new();
+            for layer in 0..prepared.layer_count {
+                let partition = lightmap_layer::bake_light_layer_controlled(
+                    light.light,
+                    &shared,
+                    &bvh,
+                    &primitives,
+                    &geometry,
+                    layer,
+                    DEFAULT_AREA_SAMPLE_COUNT,
+                    floor,
+                    &BakeControl::unrestricted(),
+                );
+                for texel in partition.texels {
+                    walk.insert((layer, texel.idx), texel.raw_visibility);
+                }
+            }
+            for (c, cut) in prepared.cut_parents.iter().enumerate() {
+                let (mut lit, mut contribution) = (0u32, 0f64);
+                for (face, tx, ty) in estimate::sample_points(cut, &shared) {
+                    let placement = shared.placements[face];
+                    let idx = (placement.y + PAD + ty as u32) * shared.atlas_width
+                        + placement.x
+                        + PAD
+                        + tx as u32;
+                    let Some(&visibility) = walk.get(&(placement.layer, idx)) else {
+                        continue;
+                    };
+                    ramp_samples += usize::from(visibility > 0.0 && visibility < 1.0);
+                    let Some(quantized) = fill::quantize_visibility(visibility).filter(|&q| q != 0)
+                    else {
+                        continue;
+                    };
+                    let chart = &shared.charts[face];
+                    let (unshadowed, _) = lightmap_bake::light_contribution_and_direction(
+                        light.light,
+                        chart_texel_world_position(chart, tx, ty),
+                        chart.normal,
+                    );
+                    lit += 1;
+                    contribution += f64::from(unshadowed.x + unshadowed.y + unshadowed.z)
+                        * f64::from(quantized)
+                        / 255.0;
+                }
+                let owners = &estimate.owners[c];
+                let candidate = owners
+                    .channel_of(light.spec_index)
+                    .and_then(|channel| owners.owner(channel));
+                if lit == 0 {
+                    assert!(candidate.is_none());
+                    continue;
+                }
+                let candidate = candidate.expect("a lit light is a candidate");
+                assert_eq!(candidate.lit_texels, lit * estimate::ESTIMATE_STRIDE.pow(2));
+                assert_eq!(
+                    candidate.contribution.to_bits(),
+                    (contribution * area).to_bits(),
+                    "floor {floor}, light {}, cut {c}",
+                    light.spec_index
+                );
+                contributions.push((floor, light.spec_index, c, candidate.contribution));
+            }
+        }
+        assert!(
+            ramp_samples > 0,
+            "floor {floor}: a sample lies on a shadow ramp"
+        );
+    }
+    // The estimate follows the switch: the floor moves some candidate.
+    let at = |floor: bool| -> Vec<_> {
+        contributions
+            .iter()
+            .filter(|entry| entry.0 == floor)
+            .map(|&(_, light, cut, value)| (light, cut, value.to_bits()))
+            .collect()
+    };
+    assert_ne!(at(true), at(false));
+}

@@ -64,8 +64,11 @@ fn layer_budget_sections_match_pre_change_cold_and_warm() {
         let fx = load_fixture(name);
         let dir = fresh_cache_dir(name);
         let cache = StageCache::new(&dir).unwrap();
+        // The digests guard the layer budget, not the lighting; floor-off
+        // bakes the pre-change bytes they were recorded from.
         let cfg = LightmapConfig {
             lightmap_density: lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
+            penumbra_floor: false,
             ..config(false)
         };
         let bake = || {

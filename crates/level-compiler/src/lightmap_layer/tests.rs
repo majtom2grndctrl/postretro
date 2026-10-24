@@ -7,10 +7,12 @@ use crate::bake_control::BakeControl;
 use crate::bvh_build::build_bvh;
 use crate::governor::Governor;
 use crate::lightmap_bake::{
-    BlockLayout, bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
+    BlockLayout, CutParent, bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
 };
 use crate::map_data::{FalloffModel, ShadowType};
 use crate::reporter::StageProgress;
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
+use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 use glam::DVec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -124,6 +126,7 @@ fn bake_layer_for_test(
         geometry,
         0,
         area_sample_count,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     )
 }
@@ -235,6 +238,8 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         &primitives,
         &geometry,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
+        false,
         &BakeControl::unrestricted(),
     );
     let mut analytic = Vec::new();
@@ -293,6 +298,7 @@ fn incremental_layer_fold_matches_monolithic_section_bytes() {
         mono_prepared.atlas_height,
         mono_prepared.layer_count,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &mono_control,
     );
     assert_eq!(mono_progress.completed(), mono_prepared.placements.len());
@@ -369,6 +375,7 @@ fn layer_bake_preserves_chart_order_and_bytes_across_thread_counts() {
             &geo,
             0,
             AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
             &single_control,
         )
     });
@@ -388,6 +395,7 @@ fn layer_bake_preserves_chart_order_and_bytes_across_thread_counts() {
             &geo,
             0,
             AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
             &multi_control,
         )
     });
@@ -462,6 +470,7 @@ fn layer_bake_degenerate_chart_advances_progress_and_keeps_ordered_empty_slot() 
             &geo,
             0,
             AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
             &control,
         )
     });
@@ -528,6 +537,7 @@ fn layer_bake_paused_before_permit_release_starts_no_chart() {
                     &geo,
                     0,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &control,
                 )
             });
@@ -621,6 +631,18 @@ fn sparse_codec_preserves_zero_and_nan_visibility_bits() {
     assert_eq!(decoded.texels[1].raw_visibility.to_bits(), nan.to_bits());
 }
 
+/// A floor texel at `world_p` on a unit-pitch frame, for the single-texel
+/// sparse-writer tests, whose mock traces stand for every footprint ray.
+fn floor_site(world_p: Vec3) -> TexelSite {
+    TexelSite {
+        world_p,
+        normal: Vec3::Y,
+        seed: 0,
+        frame: TexelFrame::new(Vec3::X, Vec3::Z),
+        may_clip: true,
+    }
+}
+
 #[test]
 fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
     let light = point_light([0.5, 1.0, 0.5], 5.0);
@@ -629,10 +651,10 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
     let unreached = bake_sparse_layer_texel(
         3,
         &light,
-        Vec3::new(20.0, 0.0, 20.0),
-        Vec3::Y,
-        0,
-        &SoftProbes::new(&light, 1),
+        &floor_site(Vec3::new(20.0, 0.0, 20.0)),
+        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
+        |_, _| true,
+        |_, _| true,
         |_, _| true,
     );
     assert!(
@@ -643,11 +665,11 @@ fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
     let occluded = bake_sparse_layer_texel(
         3,
         &light,
-        world_p,
-        Vec3::Y,
-        0,
-        &SoftProbes::new(&light, 1),
+        &floor_site(world_p),
+        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
         |_, _| false,
+        |_, _| false,
+        |_, _| true,
     )
     .expect("analytic coverage survives full occlusion");
     assert_eq!(occluded.raw_visibility.to_bits(), 0.0f32.to_bits());
@@ -707,10 +729,10 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
         bake_sparse_layer_texel(
             0,
             &light,
-            Vec3::ZERO,
-            Vec3::Y,
-            0,
-            &SoftProbes::new(&light, 1),
+            &floor_site(Vec3::ZERO),
+            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
+            |_, _| true,
+            |_, _| true,
             |_, _| true
         )
         .is_none()
@@ -720,10 +742,10 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
         bake_sparse_layer_texel(
             0,
             &light,
-            Vec3::ZERO,
-            Vec3::Y,
-            0,
-            &SoftProbes::new(&light, 1),
+            &floor_site(Vec3::ZERO),
+            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
+            |_, _| true,
+            |_, _| true,
             |_, _| true
         )
         .is_some()
@@ -732,8 +754,8 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 
 #[test]
 fn sparse_cache_epochs_are_pinned() {
-    assert_eq!(LAYER_FORMAT_VERSION, 9);
-    assert_eq!(LIGHTMAP_SECTION_VERSION, 4);
+    assert_eq!(LAYER_FORMAT_VERSION, 13);
+    assert_eq!(LIGHTMAP_SECTION_VERSION, 5);
 }
 
 #[test]
@@ -774,6 +796,7 @@ fn empty_sparse_partition_roundtrips_and_has_no_fold_effect() {
         &geo,
         0,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &BakeControl::unrestricted(),
     );
     assert!(partition.texels.is_empty());
@@ -820,6 +843,7 @@ fn sparse_multilayer_payload_is_below_one_tenth_dense_bytes() {
         &prims,
         &geo,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &BakeControl::unrestricted(),
     );
     assert_eq!(partitions.len(), 2, "named fixture must remain multi-layer");
@@ -879,8 +903,26 @@ fn layer_input_hash_changes_when_light_moves() {
 
     let base = point_light([0.5, 1.0, 0.5], 5.0);
     let moved = point_light([10.0, 1.0, 0.5], 5.0);
-    let h_base = layer_input_hash(&base, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, 0);
-    let h_moved = layer_input_hash(&moved, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, 0);
+    let h_base = layer_input_hash(
+        &base,
+        &shared,
+        &prims,
+        &geo,
+        DENSITY,
+        AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
+        0,
+    );
+    let h_moved = layer_input_hash(
+        &moved,
+        &shared,
+        &prims,
+        &geo,
+        DENSITY,
+        AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
+        0,
+    );
     assert_ne!(
         h_base, h_moved,
         "moving the light must change its layer cache key"
@@ -912,14 +954,16 @@ fn layer_key_context_reproduces_the_layer_input_hash_layout() {
             &prims,
             &geo,
             geometry_world_aabb(&geo),
+            0.0,
         ));
         expected.update(&DENSITY.to_le_bytes());
         expected.update(&AREA_SAMPLES.to_le_bytes());
+        expected.update(&[0]);
         expected.update(&atlas_layout_fingerprint(&shared));
         expected.update(&target_layer.to_le_bytes());
         let expected = *expected.finalize().as_bytes();
 
-        let context = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES);
+        let context = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, false);
         let prefix = context.light_prefix(&light, &prims, &geo);
         assert_eq!(LayerKeyContext::layer_hash(&prefix, target_layer), expected);
         assert_eq!(
@@ -930,6 +974,7 @@ fn layer_key_context_reproduces_the_layer_input_hash_layout() {
                 &geo,
                 DENSITY,
                 AREA_SAMPLES,
+                false,
                 target_layer
             ),
             expected
@@ -964,6 +1009,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
         &geo,
         0,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     );
     let second = bake_light_layer_controlled(
@@ -974,6 +1020,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
         &geo,
         1,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     );
 
@@ -998,6 +1045,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
                 &geo,
                 DENSITY,
                 AREA_SAMPLES,
+                PENUMBRA_FLOOR_DEFAULT,
                 target_layer,
             ),
         )
@@ -1032,6 +1080,7 @@ fn validate_layer_partition_accepts_sparse_and_rejects_invalid_records() {
         &geo,
         0,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &BakeControl::unrestricted(),
     );
     assert!(original.texels.len() > 1, "fixture needs multiple texels");
@@ -1206,7 +1255,7 @@ fn geometry_slice_hash_ignores_faces_outside_influence() {
     // Tight range so the influence AABB covers only the first quad
     // (x in [0,1]) and not the second (x in [3,4]).
     let near = point_light([0.5, 0.5, 0.5], 1.0);
-    let slice_a = geometry_slice_hash(&near, &prims, &geo, world);
+    let slice_a = geometry_slice_hash(&near, &prims, &geo, world, 0.0);
 
     // Move the far quad's vertices; rebuild prims/geo.
     let mut geo2 = two_quad_geometry();
@@ -1215,12 +1264,225 @@ fn geometry_slice_hash_ignores_faces_outside_influence() {
     }
     let (_, prims2, _) = build_bvh(&geo2).unwrap();
     let world2 = geometry_world_aabb(&geo2);
-    let slice_b = geometry_slice_hash(&near, &prims2, &geo2, world2);
+    let slice_b = geometry_slice_hash(&near, &prims2, &geo2, world2, 0.0);
 
     assert_eq!(
         slice_a, slice_b,
         "editing geometry outside the influence AABB must not change the slice hash"
     );
+}
+
+// The influence bound's emitter branch widens only a sphere that overhangs
+// the light's reach. Every other point or spot light keeps the bound the
+// footprint pad alone gave it, and at radius 0 the unpadded cube, so its
+// layer keys are unchanged; an overhanging sphere's bound holds the sphere,
+// or the footprint pad when that is wider; a sun ignores both.
+#[test]
+fn the_influence_bound_widens_only_for_an_emitter_past_the_reach() {
+    let world = (DVec3::splat(-100.0), DVec3::splat(100.0));
+    let unwidened = |light: &MapLight, radius: f32| {
+        let (min, max) = light_aabb(light, world);
+        if radius > 0.0 {
+            let pad = DVec3::splat(f64::from(radius));
+            (min - pad, max + pad)
+        } else {
+            (min, max)
+        }
+    };
+    let radii = [0.0, 0.1, 0.75];
+    let mut checked = 0;
+    for light_type in [LightType::Point, LightType::Spot] {
+        for range in [0.4f32, 3.0, 12.0] {
+            let reach = (range + AABB_PADDING_METERS).max(0.01);
+            for size in [0.0, crate::map_data::DEFAULT_LIGHT_SIZE, 0.5 * reach, reach] {
+                let mut light = point_light([1.5, 2.0, -0.5], range);
+                light.light_type = light_type;
+                light.light_size = size;
+                for radius in radii {
+                    assert_eq!(
+                        layer_influence_aabb(&light, world, radius),
+                        unwidened(&light, radius),
+                        "{light_type:?}, range {range}, size {size}, radius {radius}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 2 * 3 * 4 * radii.len());
+
+    // Range 0.4 reaches 0.9 m; a 1.5 m sphere overhangs it by 0.6 m.
+    let mut oversized = point_light([1.5, 2.0, -0.5], 0.4);
+    oversized.light_size = 1.5;
+    let origin = oversized.origin;
+    let (min, max) = layer_influence_aabb(&oversized, world, 0.0);
+    for (corner, expected) in [(min, origin - 1.5), (max, origin + 1.5)] {
+        assert!(
+            (corner - expected).abs().max_element() < 1.0e-6,
+            "{corner} vs {expected}"
+        );
+    }
+    assert_eq!(
+        layer_influence_aabb(&oversized, world, 0.4),
+        layer_influence_aabb(&oversized, world, 0.0),
+        "a footprint pad under the overhang adds nothing"
+    );
+    assert_eq!(
+        layer_influence_aabb(&oversized, world, 0.75),
+        unwidened(&oversized, 0.75),
+        "a footprint pad over the overhang is the bound"
+    );
+
+    let mut sun = directional_light();
+    sun.light_size = 50.0;
+    assert_eq!(layer_influence_aabb(&sun, world, 0.75), world);
+}
+
+// The receiver-footprint switch is part of every layer key, so the section
+// key, which folds the layer hashes, moves with it too.
+#[test]
+fn layer_and_section_keys_fold_the_penumbra_floor_switch() {
+    let mut geo = two_quad_geometry();
+    let light = point_light([0.5, 1.0, 0.5], 5.0);
+    let static_lights =
+        crate::light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+    let (_, prims, _) = build_bvh(&geo).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let hash =
+        |on: bool| layer_input_hash(&light, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, on, 0);
+    assert_ne!(hash(true), hash(false));
+    let section = |on: bool| {
+        section_input_hash(
+            [hash(on)].into_iter(),
+            &shared,
+            DENSITY,
+            false,
+            1,
+            TEXEL_STEP_THRESHOLD,
+            &[],
+        )
+    };
+    assert_ne!(section(true), section(false));
+}
+
+// Regression: the cut-face estimate let a zero-range light reach every box,
+// while the static bake's falloff reads that range as 1e-4 m and lights
+// nothing past it. Both now share this cull, which agrees with `falloff` at
+// every model.
+#[test]
+fn a_zero_range_light_reaches_only_where_its_falloff_lights() {
+    let near = Some((Vec3::new(-1.0, 1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)));
+    let far = Some((Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 0.0, 1.0)));
+    for model in [
+        FalloffModel::Linear,
+        FalloffModel::InverseDistance,
+        FalloffModel::InverseSquared,
+    ] {
+        let mut light = point_light([0.0, 1.0, 0.0], 0.0);
+        light.falloff_model = model;
+        assert!(light_may_reach(&light, near), "{model:?}");
+        assert!(!light_may_reach(&light, far), "{model:?}");
+        assert_eq!(crate::lightmap_bake::falloff(&light, 1.0), 0.0, "{model:?}");
+    }
+}
+
+// The section memo stores the texel-step report, which names a cut face by
+// its pre-cut index and counts a pair in the sub-face that owns it, so every
+// part of the cut map re-keys the section; no cut keys like an empty map.
+#[test]
+fn section_key_folds_the_cut_map() {
+    let mut geo = two_quad_geometry();
+    let light = point_light([0.5, 1.0, 0.5], 5.0);
+    let static_lights =
+        crate::light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let section = |cut_parents: &[CutParent]| {
+        section_input_hash(
+            [[0x5a; 32]].into_iter(),
+            &shared,
+            DENSITY,
+            false,
+            1,
+            TEXEL_STEP_THRESHOLD,
+            cut_parents,
+        )
+    };
+    let cut = CutParent {
+        parent: 0,
+        faces: 0..2,
+        own: vec![[0..4, 0..8], [4..8, 0..8]],
+    };
+    let mut keys = vec![section(&[]), section(std::slice::from_ref(&cut))];
+    let mut parent = cut.clone();
+    parent.parent = 1;
+    let mut faces = cut.clone();
+    faces.faces = 1..3;
+    let mut own = cut.clone();
+    own.own[1][0] = 5..8;
+    for changed in [parent, faces, own] {
+        keys.push(section(&[changed]));
+    }
+    for (i, a) in keys.iter().enumerate() {
+        for b in &keys[i + 1..] {
+            assert_ne!(a, b, "every cut-map edit re-keys the section");
+        }
+    }
+}
+
+// P10: with the floor on, a light's key bound widens by the largest footprint
+// radius among the charts it reaches, so one coarse region widens only the
+// lights that reach it; with the floor off nothing widens.
+#[test]
+fn footprint_padding_follows_the_charts_each_light_reaches() {
+    let mut geo = two_quad_geometry();
+    // Coarsen the second quad (x in [3, 4]) to 0.5 m texels.
+    let coarse = crate::map_data::MapLightmapScaleRegion {
+        min: [2.5, -1.0, -1.0],
+        max: [5.0, 1.0, 2.0],
+        planes: Vec::new(),
+        scale: 0.5,
+    };
+    let fine_only = point_light([0.5, 0.5, 0.5], 1.0);
+    let coarse_only = point_light([3.5, 0.5, 0.5], 1.0);
+    let both = point_light([2.0, 0.5, 0.5], 3.0);
+    let lights = vec![fine_only.clone(), coarse_only.clone(), both.clone()];
+    let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[coarse]).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let radius = |face: usize| {
+        crate::texel_footprint::TexelFrame::for_chart(&prepared.charts[face]).radius()
+    };
+    assert_eq!(radius(0), DENSITY);
+    assert_eq!(radius(1), 2.0 * DENSITY);
+
+    let on = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, true);
+    assert_eq!(on.footprint_radius(&fine_only), radius(0));
+    assert_eq!(on.footprint_radius(&coarse_only), radius(1));
+    assert_eq!(on.footprint_radius(&both), radius(1));
+    let off = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, false);
+    for light in &lights {
+        assert_eq!(off.footprint_radius(light), 0.0);
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -1249,7 +1511,16 @@ fn layer_key(
     prims: &[BvhPrimitive],
     geo: &GeometryResult,
 ) -> CacheKey {
-    let h = layer_input_hash(light, shared, prims, geo, DENSITY, AREA_SAMPLES, 0);
+    let h = layer_input_hash(
+        light,
+        shared,
+        prims,
+        geo,
+        DENSITY,
+        AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
+        0,
+    );
     CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &h)
 }
 
@@ -1502,6 +1773,7 @@ fn malformed_partition_cache_hits_soft_miss_before_warm_fold() {
         &geo,
         0,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         &control,
     );
     assert!(expected.texels.len() > 1, "fixture needs multiple texels");
@@ -1544,6 +1816,7 @@ fn malformed_partition_cache_hits_soft_miss_before_warm_fold() {
                     &geo,
                     0,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &control,
                 )
             });
@@ -1643,6 +1916,7 @@ fn lightmap_composite_equals_monolithic_on_fixtures() {
             mono_prepared.atlas_height,
             mono_prepared.layer_count,
             AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
         );
 
         let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, density, &[]).unwrap();
@@ -1664,6 +1938,7 @@ fn lightmap_composite_equals_monolithic_on_fixtures() {
                     &layer_prims,
                     &layer_geo,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &BakeControl::unrestricted(),
                 )
             })
@@ -1710,6 +1985,8 @@ fn section_key(
         density,
         uncompressed_irradiance,
         crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+        TEXEL_STEP_THRESHOLD,
+        &[],
     );
     CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
 }
@@ -1754,6 +2031,8 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             DENSITY,
             true,
             2,
+            TEXEL_STEP_THRESHOLD,
+            &[],
         ),
     );
     let at_scale_one = CacheKey::new(
@@ -1765,6 +2044,8 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             DENSITY,
             true,
             1,
+            TEXEL_STEP_THRESHOLD,
+            &[],
         ),
     );
     assert_ne!(
@@ -1873,6 +2154,7 @@ fn compose_section_with_format(
                     geo,
                     target_layer,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     &control,
                 );
                 accumulator.fold_partition(light, &partition, shared);
@@ -1905,6 +2187,7 @@ fn layer_input_hashes(
                     geo,
                     DENSITY,
                     AREA_SAMPLES,
+                    PENUMBRA_FLOOR_DEFAULT,
                     target_layer,
                 )
             })
@@ -2273,6 +2556,7 @@ fn section_key_changes_on_add_remove_and_reorder() {
         &geo,
         DENSITY,
         AREA_SAMPLES,
+        PENUMBRA_FLOOR_DEFAULT,
         0,
     ));
     assert_ne!(
@@ -2327,11 +2611,33 @@ fn section_key_changes_when_soft_shadow_samples_change() {
     let samples_b = 32u32;
     let hashes_a: Vec<[u8; 32]> = light_refs
         .iter()
-        .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_a, 0))
+        .map(|l| {
+            layer_input_hash(
+                l,
+                &shared,
+                &prims,
+                &geo,
+                DENSITY,
+                samples_a,
+                PENUMBRA_FLOOR_DEFAULT,
+                0,
+            )
+        })
         .collect();
     let hashes_b: Vec<[u8; 32]> = light_refs
         .iter()
-        .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_b, 0))
+        .map(|l| {
+            layer_input_hash(
+                l,
+                &shared,
+                &prims,
+                &geo,
+                DENSITY,
+                samples_b,
+                PENUMBRA_FLOOR_DEFAULT,
+                0,
+            )
+        })
         .collect();
 
     assert_ne!(

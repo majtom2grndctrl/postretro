@@ -11,13 +11,13 @@ use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedEntry;
-use crate::lightmap_bake;
-use crate::lightmap_layer::{self, SharedAtlas};
-use crate::map_data::{LightType, MapLight};
+use crate::lightmap_layer::{self, SharedAtlas, chart_texel_bounds, light_may_reach};
+use crate::texel_footprint::EmbeddedEmitters;
 
 #[cfg(test)]
 use super::PartitionHooks;
 use super::PartitionWindow;
+use super::texel_steps::StepDetector;
 use super::window::PartitionSource;
 
 /// Layer-major Cartesian work, indexed without a layer-by-light allocation.
@@ -73,12 +73,18 @@ pub(super) fn layer_key_prefixes(
     geometry: &GeometryResult,
     density: f32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     window: usize,
     control: &BakeControl,
 ) -> Vec<blake3::Hasher> {
     use rayon::prelude::*;
-    let context =
-        lightmap_layer::LayerKeyContext::new(shared, geometry, density, area_sample_count);
+    let context = lightmap_layer::LayerKeyContext::new(
+        shared,
+        geometry,
+        density,
+        area_sample_count,
+        penumbra_floor,
+    );
     let mut prefixes = Vec::with_capacity(layer_lights.len());
     for lights in layer_lights.chunks(window.max(1)) {
         let mut batch: Vec<_> = lights
@@ -105,54 +111,6 @@ pub(super) fn layer_hashes(
     })
 }
 
-/// World bounds of a chart's texel centres, padded by
-/// `AABB_PADDING_METERS` to absorb `f32` rounding in the texel walk. The pad
-/// (0.5 m, borrowed from `affinity_grid`) is deliberately generous and only
-/// makes the reach cull more conservative; a smaller pad would cull more, and
-/// must still exceed the `f32` rounding error of the texel positions.
-pub(super) fn chart_texel_bounds(chart: &lightmap_bake::Chart) -> Option<(Vec3, Vec3)> {
-    if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
-        return None;
-    }
-    // Texel centres are affine in (tx, ty), so the corner texels bound them.
-    let (width, height) = crate::chart_raster::chart_interior_dims(chart);
-    let corners = [
-        (0, 0),
-        (width - 1, 0),
-        (0, height - 1),
-        (width - 1, height - 1),
-    ]
-    .map(|(tx, ty)| crate::chart_raster::chart_texel_world_position(chart, tx, ty));
-    let pad = Vec3::splat(crate::affinity_grid::AABB_PADDING_METERS);
-    let min = corners
-        .iter()
-        .copied()
-        .fold(Vec3::splat(f32::INFINITY), Vec3::min);
-    let max = corners
-        .iter()
-        .copied()
-        .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
-    Some((min - pad, max + pad))
-}
-
-/// Whether any texel inside `bounds` may receive a direct term from `light`.
-/// Every falloff model is zero beyond `falloff_range`, so a point or spot
-/// light reaches no texel farther than that; a directional light reaches all.
-/// A chart with no texels is never reached.
-pub(super) fn light_may_reach(light: &MapLight, bounds: Option<(Vec3, Vec3)>) -> bool {
-    let Some((min, max)) = bounds else {
-        return false;
-    };
-    match light.light_type {
-        LightType::Directional => true,
-        LightType::Point | LightType::Spot => {
-            let origin = light.origin.as_vec3();
-            let nearest = origin.clamp(min, max);
-            origin.distance(nearest) <= light.falloff_range.max(1.0e-4)
-        }
-    }
-}
-
 /// The fused walk's partitions: one (layer, light) per item, loaded from or
 /// written to the per-light layer cache.
 pub(super) struct LayerPartitions<'a> {
@@ -166,6 +124,14 @@ pub(super) struct LayerPartitions<'a> {
     layer_lights: &'a [&'a StaticBakedEntry<'a>],
     layer_prefixes: &'a [blake3::Hasher],
     items: LayerItems<'a>,
+    /// The bake's receiver-footprint switch (`LightmapConfig::penumbra_floor`).
+    penumbra_floor: bool,
+    /// Lights whose emitter reaches into geometry, by source index; their
+    /// charts skip the all-clear probe early-out.
+    embedded_emitters: &'a EmbeddedEmitters,
+    /// The texel-step detector, on the pass that composes the lightmap; the
+    /// shadowmask-only pass after a memo hit replays the memo's report.
+    steps: Option<&'a StepDetector<'a>>,
     /// Each bake layer's charts in placement order, built once.
     pub(super) layer_charts: Vec<Vec<usize>>,
     /// Padded world bounds of each chart's texels; `None` for a chart with no
@@ -188,6 +154,9 @@ impl<'a> LayerPartitions<'a> {
         layer_lights: &'a [&'a StaticBakedEntry<'a>],
         layer_prefixes: &'a [blake3::Hasher],
         items: LayerItems<'a>,
+        penumbra_floor: bool,
+        embedded_emitters: &'a EmbeddedEmitters,
+        steps: Option<&'a StepDetector<'a>>,
         #[cfg_attr(not(test), allow(unused_variables))] window: &PartitionWindow,
     ) -> Self {
         let mut layer_charts = vec![Vec::new(); lightmap_layer::atlas_layer_count(shared) as usize];
@@ -206,6 +175,9 @@ impl<'a> LayerPartitions<'a> {
             layer_lights,
             layer_prefixes,
             items,
+            penumbra_floor,
+            embedded_emitters,
+            steps,
             layer_charts,
             chart_bounds,
             #[cfg(test)]
@@ -221,6 +193,30 @@ impl<'a> LayerPartitions<'a> {
             lightmap_layer::LAYER_FORMAT_VERSION,
             &hash,
         )
+    }
+
+    /// Run the step detector over a baked or loaded partition: the same
+    /// check either way, so a cache hit reports what the bake did. Segment
+    /// traces make it ray work, so it holds a permit.
+    fn detect_steps(&self, item: usize, partition: &lightmap_layer::LightmapLayer) {
+        let Some(steps) = self.steps else {
+            return;
+        };
+        if partition.texels.is_empty() {
+            return;
+        }
+        let (layer, light) = self.items.get(item);
+        let map_light = self.layer_lights[light].light;
+        let _permit = self.control.governor().enter();
+        steps.detect(
+            item,
+            light,
+            partition,
+            self.layer_charts[layer as usize]
+                .iter()
+                .copied()
+                .filter(|&chart| light_may_reach(map_light, self.chart_bounds[chart])),
+        );
     }
 }
 
@@ -256,9 +252,10 @@ impl PartitionSource for LayerPartitions<'_> {
                 if partition.is_some() { "hit" } else { "miss" }
             );
         }
-        if partition.is_some() {
+        if let Some(partition) = &partition {
             self.control
                 .advance(self.layer_charts[target_layer as usize].len());
+            self.detect_steps(item, partition);
         }
         partition
     }
@@ -283,14 +280,17 @@ impl PartitionSource for LayerPartitions<'_> {
         if let Some(hook) = &self.hooks.before_chart {
             hook(light, _layer, chart);
         }
+        let entry = self.layer_lights[light];
         lightmap_layer::bake_light_layer_chart_controlled(
-            self.layer_lights[light].light,
+            entry.light,
             self.shared,
             chart,
             self.bvh,
             self.primitives,
             self.geometry,
             self.args.soft_shadow_samples,
+            self.penumbra_floor,
+            self.embedded_emitters.is_embedded(entry.source_index),
             self.control,
         )
     }
@@ -316,6 +316,7 @@ impl PartitionSource for LayerPartitions<'_> {
             }
             cache.put(&self.key(item), &partition.to_bytes());
         }
+        self.detect_steps(item, &partition);
         partition
     }
 }

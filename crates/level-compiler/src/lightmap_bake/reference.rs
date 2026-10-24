@@ -1,4 +1,5 @@
-// Frozen monolithic lightmap oracle used by byte-identity tests.
+// Monolithic (uncached, unlayered) lightmap walk over the shared texel sampler: the oracle for
+// composite and cache byte-identity tests, not an independent pin of the sampler itself.
 // See: context/lib/build_pipeline.md §Build Cache
 
 use std::cell::Cell;
@@ -15,14 +16,17 @@ use crate::chart_raster::{
 };
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
+use crate::texel_footprint::{
+    ClipBand, ClipReach, EmbeddedEmitters, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+};
 
 use super::{
     Chart, CompositedAtlas, light_texel_contribution, scatter_chart_into_atlas,
     segment_clear_remembering,
 };
 
-/// Bake the full static-light atlas and dilate — the independent monolithic
-/// side of the byte-identity comparison seam.
+/// Bake the full static-light atlas and dilate — the monolithic side of the
+/// byte-identity comparison seam.
 #[allow(clippy::too_many_arguments)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn bake_monolithic_atlas(
@@ -36,6 +40,7 @@ pub(crate) fn bake_monolithic_atlas(
     atlas_h: u32,
     layer_count: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
 ) -> CompositedAtlas {
     bake_monolithic_atlas_controlled(
         bvh,
@@ -48,6 +53,7 @@ pub(crate) fn bake_monolithic_atlas(
         atlas_h,
         layer_count,
         area_sample_count,
+        penumbra_floor,
         &BakeControl::unrestricted(),
     )
 }
@@ -64,9 +70,18 @@ pub(crate) fn bake_monolithic_atlas_controlled(
     atlas_h: u32,
     layer_count: u32,
     area_sample_count: u32,
+    penumbra_floor: bool,
     control: &BakeControl,
 ) -> CompositedAtlas {
     let atlas = Mutex::new(CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count));
+    let embedded_emitters = embedded_emitters(
+        bvh,
+        primitives,
+        geometry,
+        static_lights,
+        penumbra_floor,
+        control,
+    );
 
     placements
         .par_iter()
@@ -81,6 +96,8 @@ pub(crate) fn bake_monolithic_atlas_controlled(
                 static_lights,
                 chart,
                 area_sample_count,
+                penumbra_floor,
+                &embedded_emitters,
             );
 
             if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
@@ -99,6 +116,31 @@ pub(crate) fn bake_monolithic_atlas_controlled(
     atlas
 }
 
+/// Each of `static_lights`' emitter tests, keyed by position, with the floor
+/// on; with it off nothing reads the flags.
+pub(super) fn embedded_emitters(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    static_lights: &[&MapLight],
+    penumbra_floor: bool,
+    control: &BakeControl,
+) -> EmbeddedEmitters {
+    if !penumbra_floor {
+        return EmbeddedEmitters::default();
+    }
+    EmbeddedEmitters::classify(
+        static_lights.iter().copied().enumerate(),
+        bvh,
+        primitives,
+        geometry,
+        control,
+    )
+}
+
+/// `embedded_emitters` holds [`embedded_emitters`]' flags for
+/// `static_lights`, keyed by position.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn bake_face_chart(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
@@ -106,6 +148,8 @@ pub(super) fn bake_face_chart(
     static_lights: &[&MapLight],
     chart: &Chart,
     area_sample_count: u32,
+    penumbra_floor: bool,
+    embedded_emitters: &EmbeddedEmitters,
 ) -> CompositedAtlas {
     let mut chart_atlas = CompositedAtlas::zeroed(chart.width_texels, chart.height_texels, 1);
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
@@ -115,28 +159,60 @@ pub(super) fn bake_face_chart(
     let (interior_w, interior_h) = crate::chart_raster::chart_interior_dims(chart);
     // One occluder cache per light, walked in texel order: each light sees the
     // ray sequence its `(light, chart)` layer bake traces, so the cache answers
-    // match and the composite stays bit-for-bit.
+    // match and the composite stays bit-for-bit. The footprint's wall-clip
+    // segments keep their own per-light cache for the same reason.
     let last_occluders: Vec<Cell<Option<usize>>> =
         static_lights.iter().map(|_| Cell::new(None)).collect();
+    let clip_occluders: Vec<Cell<Option<usize>>> =
+        static_lights.iter().map(|_| Cell::new(None)).collect();
+    let samplers: Vec<TexelSampler> = static_lights
+        .iter()
+        .enumerate()
+        .map(|(position, light)| {
+            TexelSampler::new(
+                light,
+                area_sample_count,
+                penumbra_floor,
+                embedded_emitters.is_embedded(position),
+            )
+        })
+        .collect();
+    let frame = TexelFrame::for_chart(chart);
+    let band = ClipBand::for_chart(chart);
+    // Clip reach is light-independent; every light reads the same answers.
+    let clip_reach = samplers
+        .iter()
+        .any(TexelSampler::is_footprint)
+        .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
 
     for ty in 0..interior_h {
         for tx in 0..interior_w {
             let local_x = padding + tx;
             let local_y = padding + ty;
             let idx = (local_y as u32 * chart.width_texels + local_x as u32) as usize;
-            let world_p = chart_texel_world_position(chart, tx, ty);
             let surface_normal = chart.normal;
-            let seed = chart_texel_seed(chart, tx, ty);
+            let site = TexelSite {
+                world_p: chart_texel_world_position(chart, tx, ty),
+                normal: surface_normal,
+                seed: chart_texel_seed(chart, tx, ty),
+                frame,
+                may_clip: clip_reach
+                    .as_ref()
+                    .is_none_or(|reach| reach.may_clip(tx, ty)),
+            };
 
             let mut irr = Vec3::ZERO;
             let mut weighted_dir = Vec3::ZERO;
-            for (light, last_occluder) in static_lights.iter().zip(&last_occluders) {
+            for (((light, sampler), last_occluder), clip_occluder) in static_lights
+                .iter()
+                .zip(&samplers)
+                .zip(&last_occluders)
+                .zip(&clip_occluders)
+            {
                 let (irr_contrib, dir_contrib) = light_texel_contribution(
                     light,
-                    world_p,
-                    surface_normal,
-                    seed,
-                    area_sample_count,
+                    &site,
+                    sampler,
                     |from, to| {
                         segment_clear_remembering(
                             bvh,
@@ -147,6 +223,17 @@ pub(super) fn bake_face_chart(
                             last_occluder,
                         )
                     },
+                    |from, to| {
+                        segment_clear_remembering(
+                            bvh,
+                            primitives,
+                            geometry,
+                            from,
+                            to,
+                            clip_occluder,
+                        )
+                    },
+                    |from, to| lead_in_clear(bvh, primitives, geometry, &band, from, to),
                 );
                 irr += irr_contrib;
                 weighted_dir += dir_contrib;

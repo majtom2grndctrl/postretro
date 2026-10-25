@@ -1,7 +1,7 @@
 # portal-walk-bounded-regions — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: d23959def
 
 Branch: `portal-walk-bounded-regions`, cut from the claim commit d23959def. No `crates/`

@@ -21,6 +21,7 @@ use std::time::Instant;
 use glam::Vec3;
 
 use super::oracle::{OracleWalk, oracle_from_camera};
+use super::real_map_orientation::report_orientation;
 use super::test_fixtures::camera_view_proj;
 use super::tests::unclassified_misses;
 use super::{MAX_PORTAL_WALK_STEPS, PortalWalkScratch, WalkView, WalkWorld, walk_from_camera};
@@ -33,7 +34,7 @@ use postretro_level_loader::{
     CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld, PortalData, load_prl,
 };
 
-const SWEEP_ENV: &str = "POSTRETRO_WALK_SWEEP_PRL";
+pub(super) const SWEEP_ENV: &str = "POSTRETRO_WALK_SWEEP_PRL";
 const EYE_HEIGHT: f32 = 1.6;
 const YAWS: usize = 8;
 const PITCHES_DEG: [f32; 3] = [0.0, 45.0, -45.0];
@@ -410,9 +411,10 @@ fn drawable_count(world: &LevelWorld, cells: impl Iterator<Item = usize>) -> i64
     cells.filter(|&c| world.cells[c].is_drawable).count() as i64
 }
 
-fn sweep_map(path: &str) -> MapResult {
-    let started = Instant::now();
-    let (world, full_load) = match load_prl(path) {
+/// The full loader, or the visibility-only one when the full loader rejects
+/// the PRL; the flag says which ran.
+pub(super) fn load_world(path: &str) -> (LevelWorld, bool) {
+    match load_prl(path) {
         Ok(world) => (world, true),
         Err(e) => {
             eprintln!(
@@ -421,12 +423,21 @@ fn sweep_map(path: &str) -> MapResult {
             );
             (load_visibility_only(path), false)
         }
-    };
-    let load_time = started.elapsed();
-    let name = Path::new(path)
+    }
+}
+
+pub(super) fn map_name(path: &str) -> String {
+    Path::new(path)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string());
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn sweep_map(path: &str) -> MapResult {
+    let started = Instant::now();
+    let (world, full_load) = load_world(path);
+    let load_time = started.elapsed();
+    let name = map_name(path);
     let hallway = name.starts_with("stress-warren-hallway");
     let unoriented = world.portal_planes().iter().filter(|p| !p.oriented).count();
     let consumers = ConsumerData::new(&world);
@@ -442,6 +453,7 @@ fn sweep_map(path: &str) -> MapResult {
         poses.len(),
         MAX_PORTAL_WALK_STEPS,
     );
+    report_orientation(&name, &world);
 
     let input = WalkWorld {
         world: &world,
@@ -606,6 +618,20 @@ fn sweep_map(path: &str) -> MapResult {
     }
 }
 
+/// The `.prl` paths `SWEEP_ENV` names, resolved. Panics when it names none.
+pub(super) fn sweep_paths() -> Vec<String> {
+    let paths = std::env::var(SWEEP_ENV)
+        .unwrap_or_else(|_| panic!("set {SWEEP_ENV} to one .prl path or a comma-separated list"));
+    let paths: Vec<String> = paths
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(resolve)
+        .collect();
+    assert!(!paths.is_empty(), "{SWEEP_ENV} names no .prl");
+    paths
+}
+
 /// Cargo runs tests from the crate directory; relative paths name files from
 /// the workspace root.
 fn resolve(path: &str) -> String {
@@ -623,19 +649,12 @@ fn resolve(path: &str) -> String {
 #[test]
 #[ignore = "manual R1 sweep over baked PRLs named in POSTRETRO_WALK_SWEEP_PRL"]
 fn real_map_sweep() {
-    let paths = std::env::var(SWEEP_ENV)
-        .unwrap_or_else(|_| panic!("set {SWEEP_ENV} to one .prl path or a comma-separated list"));
-    let paths: Vec<&str> = paths
-        .split(',')
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
-    assert!(!paths.is_empty(), "{SWEEP_ENV} names no .prl");
+    let paths = sweep_paths();
     let mut worst_tests = 0;
     let mut trips = 0;
     let mut misses = 0;
     for path in &paths {
-        let result = sweep_map(&resolve(path));
+        let result = sweep_map(path);
         worst_tests = worst_tests.max(result.worst_tests);
         trips += result.failures.iter().filter(|f| f.tripped).count();
         misses += result

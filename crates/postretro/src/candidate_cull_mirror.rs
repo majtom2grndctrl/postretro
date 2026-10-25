@@ -838,8 +838,8 @@ mod tests {
     // Regression: the portal step-limit fallback ran the single-invocation
     // tree walk. It now drives the candidate cull with its frustum-culled
     // visible set, which includes cells the walk's own visible set would
-    // have occluded. The candidate path must submit every leaf the tree walk submits
-    // for that set, so the wider set can only over-draw.
+    // have occluded. The candidate path must submit every leaf the tree walk
+    // submits for that set, so the wider set can only over-draw.
     #[test]
     fn step_limit_fallback_superset_candidate_matches_tree_walk_without_under_draw() {
         assert!(postretro_renderer::visibility_path_uses_candidate_cull(

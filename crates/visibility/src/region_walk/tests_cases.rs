@@ -326,6 +326,44 @@ fn region_walk_classifies_misses_through_distant_portal_on_eye_plane() {
 }
 
 #[test]
+fn region_walk_crosses_distant_floor_portal_from_half_a_millimetre_above_it() {
+    // Pins the facing tolerance below 1 mm. The oracle shares
+    // `crosses_from_source_side`, so the superset sweep cannot catch a
+    // tolerance that grows to 1e-3; only a fixed pose can.
+    // Upper room A = cell 0; lower room B = cell 1 under a 4 m floor opening
+    // on y = 4, 6 m ahead of the eye.
+    let floor = 4.0;
+    let world = boxes_world(
+        &[
+            (Vec3::new(0.0, floor, 0.0), Vec3::new(16.0, 8.0, 4.0)),
+            (Vec3::new(8.0, 0.0, 0.0), Vec3::new(12.0, floor, 4.0)),
+        ],
+        vec![portal(axis_rect(1, floor, [8.0, 0.0], [12.0, 4.0]), 0, 1)],
+        (
+            CellLocatorChild::Node(0),
+            vec![axis_node(
+                1,
+                floor,
+                CellLocatorChild::Cell(0),
+                CellLocatorChild::Cell(1),
+            )],
+        ),
+    );
+    let eye = Vec3::new(2.0, floor + 5e-4, 2.0);
+    assert_eq!(world.locate_cell(eye), 0);
+    let plane = world.portal_planes()[0];
+    assert!(plane.oriented);
+    let source_side = plane.signed_distance(eye);
+    assert!(source_side > 0.0 && source_side < 1e-3, "{source_side}");
+    let view_proj = look_at_view_proj(eye, Vec3::new(10.0, floor, 2.0));
+
+    let mut scratch = PortalWalkScratch::new();
+    let stats = view_walk(&world, &[], eye, view_proj, 0, &mut scratch);
+    assert_eq!(stats.bypassed, 0);
+    assert!(scratch.is_reached(1));
+}
+
+#[test]
 fn region_walk_reaches_cell_past_two_portals_within_render_near_distance() {
     // O9: the slid near plane clips every cell's portals, not just the first.
     let grid = GridWorld::new(
@@ -934,8 +972,9 @@ fn region_walk_survives_a_view_projection_with_a_nan_row() {
 
 #[test]
 fn region_walk_counts_a_portal_ref_past_the_portal_list_as_invalid() {
-    // Validation rejects a dangling ref at construction, so point A's ref
-    // past the list afterwards, before the portal planes are first built.
+    // Validation rejects a dangling ref at construction, so the test points
+    // A's ref past the list afterwards, before the portal planes are first
+    // built.
     let mut world = window_world();
     let start = world.cells[0].portal_ref_start as usize;
     world.cell_portal_refs[start] = world.portals.len() as u32 + 7;

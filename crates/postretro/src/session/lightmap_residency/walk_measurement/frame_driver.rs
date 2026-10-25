@@ -1,4 +1,5 @@
-//! Owns one measured frame of streamed lightmap residency: drains, the pool mirror, and why each drawn block is missing.
+//! Owns one measured frame of streamed lightmap residency: drains, the pool
+//! mirror, and why each drawn block is missing.
 //! See: context/lib/rendering_pipeline.md §4
 
 use std::ops::Range;
@@ -21,7 +22,8 @@ use crate::session::sh_residency::ShStreamingSession;
 /// and issues this frame's, and drain 1 admits the ones drain 0 issued (O17).
 /// Reads held back by the permit cap or the in-hand byte cap are issued in
 /// drain 1 and land next frame, or are dropped if their block left demand.
-/// More drains would hide the per-drain install budget's own misses, which both builds share.
+/// More drains would hide the per-drain install budget's own misses, which
+/// both builds share.
 pub(super) const COMPLETED_READS_DRAINS: u32 = 2;
 
 impl ReadsMode {

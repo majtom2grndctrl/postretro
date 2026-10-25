@@ -10,6 +10,8 @@ mod trace;
 #[cfg(test)]
 mod oracle;
 #[cfg(test)]
+mod real_map_orientation;
+#[cfg(test)]
 mod real_map_sweep;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
@@ -392,9 +394,11 @@ fn expand_cell(
                 .fold(f32::MAX, f32::min)
                 .sqrt();
             // No usable bounds (the polygon touches the eye plane, or the
-            // projection is degenerate), or bounds that float slop pushed
-            // just outside the rect: hand on the source rect, which is
-            // conservative.
+            // projection is degenerate), or bounds that miss the rect (rare
+            // near-eye boundary cases): hand on the whole source rect. That
+            // only over-includes, and is not monotone in the source rect,
+            // but the walk still terminates: the contribution never leaves
+            // the source rect.
             let contribution = ScreenRect::bound_points(clipped, &view.rows)
                 .and_then(|bounds| bounds.intersect(&rect))
                 .unwrap_or(rect);

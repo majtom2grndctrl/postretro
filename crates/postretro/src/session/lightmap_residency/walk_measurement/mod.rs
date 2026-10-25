@@ -557,8 +557,11 @@ fn lightmap_residency_walks_from_prl() {
                     .ok_or_else(|| format!("{file} holds no run labelled {:?}", own.label))
                     .and_then(|run| {
                         println!("   recorded run read: {}", run.bake);
-                        let token = |bake| bake_token(bake, "id51");
-                        if token(&run.bake) == token(&own.bake)
+                        // Only a real id-51 hash both runs share proves the
+                        // same bake; two `id51=none` runs prove nothing.
+                        let id51 = bake_token(&run.bake, "id51").filter(|id| *id != "none");
+                        if id51.is_some()
+                            && id51 == bake_token(&own.bake, "id51")
                             && bake_token(&run.bake, "walk_epoch")
                                 != bake_token(&own.bake, "walk_epoch")
                         {

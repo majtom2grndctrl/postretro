@@ -83,7 +83,11 @@ pub enum VisibilityPath {
     /// with its near plane slid to the eye and its side planes pushed out by
     /// the walk's clip pad (half a snap step), so no separate AABB cull runs
     /// on this path; a cell lying wholly in that sliver beside a screen edge
-    /// draws nothing on screen. The set is a conservative
+    /// draws nothing on screen. One exception: a portal within the bypass
+    /// distance of the eye hands its neighbour the source cell's rect
+    /// unclipped, so that neighbour can lie behind or beside the eye. That
+    /// is why the step-limit fallback's fog set also keeps every cell within
+    /// the bypass distance. The set is a conservative
     /// superset of the cells a point camera can see through the portals
     /// (`rendering_pipeline.md` §2); never read a cell in it as proof of line
     /// of sight.

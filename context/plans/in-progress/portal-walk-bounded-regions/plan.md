@@ -22,7 +22,7 @@ symbol reads as the assessment recorded it (`portal_vis.rs` `flood` :281,
   to the existing portal validation. Every fixture builds through `new_visibility_only`,
   so fixtures get it too. The evidence is geometric, not the locator. Cells are convex BSP
   leaves, so a cell's other off-plane portal centroids lie on its side. The fallbacks are
-  the opposite cell's evidence, reversed, and then the cell bounds centre. A portal with
+  the opposite cell's evidence, reversed, and then a cell box lying wholly on one side. A portal with
   no evidence is unoriented: the facing filter skips it, which is superset-safe and still
   terminates. This is the prototype's locator-probe failure (O1), avoided. The traversal
   itself stays in the visibility crate.
@@ -55,8 +55,8 @@ symbol reads as the assessment recorded it (`portal_vis.rs` `flood` :281,
   over-inclusion, then clip normally. The fallback's keep test only has to add cells
   touching the eye.
 - **Facing sign rule.** A walk crosses portal P out of cell C only when the eye's signed
-  distance to P's plane, positive on C's side, exceeds `APEX_ON_PORTAL_PLANE_EPSILON`
-  (1e-3). The superset check classifies backward crossings with this same predicate (O36).
+  distance to P's plane, positive on C's side, exceeds `FACING_EPSILON` (1e-4 since
+  review round 1; first set at 1e-3). The superset check classifies backward crossings with this same predicate (O36).
   Unoriented portals skip it.
 - **Order of rejection tests.** Per outbound portal:
   1. count it (O11);
@@ -95,7 +95,10 @@ symbol reads as the assessment recorded it (`portal_vis.rs` `flood` :281,
   test now uses the walk's own padded clip planes, so it holds cells the walk reaches
   through the half-step clip pad at the screen edge. R1 and the R2/R3 gate ran at
   `006c79512` (epoch 2); the round-1 changes alter only sub-millimetre and degenerate
-  cases, and R1 reruns at the final commit.
+  cases, and R1 reruns at the final commit. Round 2 checked the orientation premise on
+  every gate and sweep map (`real_map_portal_orientation_report`): the means tier orients
+  all 8,228 portals, so the old and new bounds rules differ on none, and every oriented
+  portal agrees with locator probes.
 - **Portal planes build lazily.** Correction 1 said the constructors build them; they
   build on first `portal_planes()` call through a `OnceLock`, which works for the
   struct-literal construction sites. `determine_visible_cells` touches them before its
@@ -170,7 +173,7 @@ fixture has its own locator.
 | 7 | Rebake the swept and measured maps after the bump: hallway, lake, occlusion-test, movement-feel, campaign-test. Check the id-51 bake reports no step-limit walks. | integrating executor | 6 | |
 | 8 | Sweep instrument as an ignored test, then run R1 on the hallway, lake and occlusion-test, plus straight up and down at the shaft poses. Finalize the cap (2× rule) and recheck k. | integrating executor, instrument delegated | 6, 7 | done (R1 below). Cap stays 5,000: worst 2,021 (occlusion-test), 2.47×. k = 2 holds on the fixtures (worst 1.56); real maps reach 3.77 tests per summed degree (hallway), which the fixture row does not bound. Worst expansions per cell 18 (≤ 32). CPU µs taken under load (a bake and a measurement run concurrently); quiet rerun pending. |
 | 9 | Measurements: the residency gate R2 and R3 on both builds, SH reach, and Settle R4. A failed gate stops for an owner decision. | integrating executor | 5, 7 | |
-| 10 | Preflight, then review-panel → fix → retest loop | integrating executor | 8, 9 | round 1 done: preflight green (12,780 / 12,883 with dev-tools; one unreproduced `reflection_probe_exclusion_compile` failure under a concurrent bake, 3/3 on rerun). Panel of 9 (3 slices + seam), 0 must-fix; fixes in the next commit, gate 13/13 green. |
+| 10 | Preflight, then review-panel → fix → retest loop | integrating executor | 8, 9 | round 1 done: preflight green (12,780 / 12,883 with dev-tools; one unreproduced `reflection_probe_exclusion_compile` failure under a concurrent bake, 3/3 on rerun). Panel of 9 (3 slices + seam), 0 must-fix; fixes in `59118db28`, gate 13/13 green. Round 2 (adversarial + hygiene on the fix commit): 0 must-fix; orientation premise checked on real maps, facing-tolerance regression test, fallback keep slack, comment wraps. Loop closed: round 3 changes are covered by focused tests. |
 | 11 | Owner: Live and Visual rows | owner | 10 | manual |
 
 Hot-path constraints carried into Task 6: no per-frame allocation once the scratch has

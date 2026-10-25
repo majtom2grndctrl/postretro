@@ -26,8 +26,8 @@ pub(super) fn visible_cells_frustum_all(cells: &[CellData], frustum: &Frustum, o
 
 /// Fog/light reach for the portal step-limit fallback: every non-solid,
 /// non-exterior cell whose AABB passes `clip_planes` within `CLIP_EPSILON`,
-/// or lies within `PORTAL_BYPASS_DISTANCE` of `eye`, plus the camera cell.
-/// Ascending.
+/// or lies within `PORTAL_BYPASS_DISTANCE` of `eye` (with the slack
+/// `within_bypass_distance` documents), plus the camera cell. Ascending.
 ///
 /// It must hold every cell the walk could reach, so it bounds the walk from
 /// above in two ways. `clip_planes` is the walk's own outermost clip region
@@ -72,9 +72,15 @@ pub(super) fn fog_reachable_frustum_fallback(
 }
 
 /// Eye-to-box distance, without `clamp`'s ordered-bounds precondition.
+///
+/// The keep allows `CLIP_EPSILON` of slack over `PORTAL_BYPASS_DISTANCE`.
+/// The walk measures eye-to-polygon distance through the portal plane, and on
+/// a slanted portal float error can put that distance just inside the bypass
+/// while the eye-to-box distance of the far cell lands just outside it. The
+/// slack keeps every cell the walk can bypass into; it only over-includes.
 fn within_bypass_distance(eye: Vec3, cell: &CellData) -> bool {
     let outside = (cell.bounds_min - eye)
         .max(eye - cell.bounds_max)
         .max(Vec3::ZERO);
-    outside.length() <= PORTAL_BYPASS_DISTANCE
+    outside.length() <= PORTAL_BYPASS_DISTANCE + CLIP_EPSILON
 }

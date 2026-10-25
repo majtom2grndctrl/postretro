@@ -13,7 +13,7 @@
 // Run:     cargo run -p postretro-tool -- run --install-root . maps/reflection-lake-test.prl
 // ----
 // LAYOUT, one hall, interior x 0 to 3840, y 0 to 3840, 97.5 m square:
-//   Shore     floor z 0, ceiling z 768, 19.5 m. Walls yellow west, red east, green north, stone south.
+//   Shore     floor z 0, ceiling z 2112, 53.6 m. Walls yellow west, red east, green north, stone south.
 //             The shore is 832 u, 21 m, wide from each wall to the water.
 //   Lake      x 832 to 3008, y 832 to 3008, 2176 u = 55.27 m square, surface z -48, bed z -160.
 //   Quay      the shore walls, 16 thick, bed to z 0, ring the lake.
@@ -31,6 +31,8 @@
 //             Every falloff range is under half the distance to the nearest other light, so
 //             no two pools overlap. Lamps hang at z 160 to 224; the roof stays dark. Only the
 //             centre lamp, the north shore lamp and the boathouse light are runtime lights.
+//             A blue spot at z 752 points straight down over the centre lamp, range 5000,
+//             cone 10 to 80, and is the one light whose reach is not a pool.
 // ----
 // AT W 55.2 m the size threshold t is about 17.2 m, 677 u, and the thin floor f
 // about 0.41 m, 16 u. Each brush comment below names its expected class.
@@ -49,21 +51,21 @@
 ( 3856 3856 -176 ) ( -16 3856 -160 ) ( -16 3856 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 3856 -16 -176 ) ( 3856 3856 -160 ) ( 3856 3856 -176 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
-// roof, ceiling at z 768
+// roof, ceiling at z 2112
 {
-( -16 3856 768 ) ( -16 -16 784 ) ( -16 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 -16 768 ) ( 3856 -16 784 ) ( 3856 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 -16 768 ) ( 3856 3856 768 ) ( -16 3856 768 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
-( -16 3856 784 ) ( 3856 -16 784 ) ( -16 -16 784 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 3856 3856 768 ) ( -16 3856 784 ) ( -16 3856 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 3856 -16 768 ) ( 3856 3856 784 ) ( 3856 3856 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 3856 2112 ) ( -16 -16 2128 ) ( -16 -16 2112 ) 50-free-textures/concrete_pavement_036 0 320 0 1 1
+( -16 -16 2112 ) ( 3856 -16 2128 ) ( 3856 -16 2112 ) 50-free-textures/concrete_pavement_036 0 320 0 1 1
+( -16 -16 2112 ) ( 3856 3856 2112 ) ( -16 3856 2112 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( -16 3856 2128 ) ( 3856 -16 2128 ) ( -16 -16 2128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3856 3856 2112 ) ( -16 3856 2128 ) ( -16 3856 2112 ) 50-free-textures/concrete_pavement_036 0 320 0 1 1
+( 3856 -16 2112 ) ( 3856 3856 2128 ) ( 3856 3856 2112 ) 50-free-textures/concrete_pavement_036 0 320 0 1 1
 }
 // west wall, yellow inside
 {
 ( -16 3856 -160 ) ( -16 -16 768 ) ( -16 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( -16 -16 -160 ) ( 0 -16 768 ) ( 0 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( -16 -16 -160 ) ( 0 3856 -160 ) ( -16 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( -16 3856 768 ) ( 0 -16 768 ) ( -16 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 3856 2112 ) ( 0 -16 2112 ) ( -16 -16 2112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 0 3856 -160 ) ( -16 3856 768 ) ( -16 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 0 -16 -160 ) ( 0 3856 768 ) ( 0 3856 -160 ) DebugTextures/debug_wall_yellow 0 0 0 1 1
 }
@@ -72,7 +74,7 @@
 ( 3840 3856 -160 ) ( 3840 -16 768 ) ( 3840 -16 -160 ) DebugTextures/debug_wall_red 0 0 0 1 1
 ( 3840 -16 -160 ) ( 3856 -16 768 ) ( 3856 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 3840 -16 -160 ) ( 3856 3856 -160 ) ( 3840 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 3840 3856 768 ) ( 3856 -16 768 ) ( 3840 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 3840 3856 2112 ) ( 3856 -16 2112 ) ( 3840 -16 2112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 3856 3856 -160 ) ( 3840 3856 768 ) ( 3840 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 3856 -16 -160 ) ( 3856 3856 768 ) ( 3856 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
@@ -81,7 +83,7 @@
 ( 0 0 -160 ) ( 0 -16 768 ) ( 0 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 0 -16 -160 ) ( 3840 -16 768 ) ( 3840 -16 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 0 -16 -160 ) ( 3840 0 -160 ) ( 0 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 0 768 ) ( 3840 -16 768 ) ( 0 -16 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 2112 ) ( 3840 -16 2112 ) ( 0 -16 2112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 3840 0 -160 ) ( 0 0 768 ) ( 0 0 -160 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
 ( 3840 -16 -160 ) ( 3840 0 768 ) ( 3840 0 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
@@ -90,7 +92,7 @@
 ( 0 3856 -160 ) ( 0 3840 768 ) ( 0 3840 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 0 3840 -160 ) ( 3840 3840 768 ) ( 3840 3840 -160 ) DebugTextures/debug_wall_green 0 0 0 1 1
 ( 0 3840 -160 ) ( 3840 3856 -160 ) ( 0 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 0 3856 768 ) ( 3840 3840 768 ) ( 0 3840 768 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 3856 2112 ) ( 3840 3840 2112 ) ( 0 3840 2112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 3840 3856 -160 ) ( 0 3856 768 ) ( 0 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 3840 3840 -160 ) ( 3840 3856 768 ) ( 3840 3856 -160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
@@ -674,4 +676,16 @@
 "_color" "255 190 120"
 "_falloff_range" "448"
 "delay" "0"
+}
+// blue spot, straight down over the centre lamp, runtime
+{
+"classname" "light_spot"
+"origin" "1824 2208 752"
+"light" "60"
+"_color" "0 126 255"
+"_falloff_range" "5000"
+"delay" "0"
+"angles" "-90 0 0"
+"_cone" "10"
+"_cone2" "80"
 }

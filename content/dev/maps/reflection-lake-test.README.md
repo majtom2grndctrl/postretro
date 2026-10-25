@@ -18,7 +18,7 @@ folder (`content/dev`). The `.prl` is a local build artifact; do not commit it.
 Units: 1 map unit = 0.0254 m. The hall is 3840 u (97.5 m) square, and the
 shore runs 832 u (21 m) from each wall to the water. The shore is at z 0, the
 water surface at z −48 (1.2 m below the shore), the lake bed at z −160 and the
-ceiling at z 768 (19.5 m). Worldspawn sets `_lightmap_density` 0.125 to keep
+ceiling at z 2112 (53.6 m). Worldspawn sets `_lightmap_density` 0.125 to keep
 the bake of the hall quick: about 2 minutes cold, 10 seconds warm, with the
 debug `prl-build`.
 
@@ -34,6 +34,11 @@ nearest other light, so no two pools overlap; the tightest pair, the south lake
 and south quay lamps, stands 781 u apart with ranges 384 and 352. Falloff is
 linear (`delay` 0). No light reaches the roof, so the probe sees a dark ceiling
 over the lake.
+
+One runtime blue spot (`light_spot`, colour 0 126 255, `light` 60) hangs at
+1824 2208 752, over the centre lamp, pointing straight down with a 10°/80°
+cone and a 5000 u range. It is the exception to the pools: its cone reaches
+the water and shore below it.
 
 | Lamp | Origin | Range | `light` | Runtime | Lights |
 |---|---|---|---|---|---|

@@ -3,7 +3,8 @@
 
 // The real `LightmapPoolModel` plans every batch as the renderer's lightmap
 // stream drain does, and the outcome is built the same way. Texture work is
-// not executed; its size is counted from the plan.
+// not executed; its size is counted from the plan. The model has no device
+// layer limit, so every deferral waits behind a retiring generation (O18).
 
 use std::time::Instant;
 
@@ -14,10 +15,20 @@ use postretro_level_format::shadowmask_atlas::group_plane_len;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest};
 use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
 
-/// Drains a grown-out generation stays alive before its submitted work is
+/// Ticks a grown-out generation stays alive before its submitted work is
 /// reported done. The renderer polls an `on_submitted_work_done` flag at
 /// drain start; two frames in flight is the stand-in.
-const RETIRE_AFTER_DRAINS: u32 = 2;
+const RETIRE_AFTER_TICKS: u32 = 2;
+
+/// What advances a retiring generation toward release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RetireClock {
+    /// Each drain call, at its start: the real-time mode's one drain a frame.
+    Drains,
+    /// Each frame, at [`PoolMirror::begin_frame`], however many drains the
+    /// frame runs (O17): a second drain never brings release forward.
+    Frames,
+}
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct PoolStats {
@@ -48,21 +59,39 @@ pub(super) struct PoolStats {
     pub(super) preload_install_bytes: u64,
 }
 
-pub(super) struct PoolMirror {
-    model: LightmapPoolModel,
+/// The level's real texel layout, which every planned upload's payload must
+/// fill.
+#[derive(Debug, Clone, Copy)]
+struct PayloadLayout {
     header: LightmapHeader,
     with_shadowmask: bool,
+}
+
+pub(super) struct PoolMirror {
+    model: LightmapPoolModel,
+    /// `None` for a test source, whose payloads carry no texel layout.
+    layout: Option<PayloadLayout>,
     content_tag: [u8; 32],
     /// Bytes of one array layer across the irradiance, direction and (when
     /// kept) shadowmask planes.
     layer_bytes: u64,
-    /// Array layers of the retiring generation and drains until release.
+    clock: RetireClock,
+    /// Array layers of the retiring generation and ticks until release.
     retiring: Option<(u32, u32)>,
+    /// Frames begun; 0 before the first, so a preload drain marks nothing.
+    frame: u64,
+    /// Per block: the frame whose latest drain carrying it deferred it, else
+    /// 0. A later drain that carries it and places it clears the mark.
+    deferred_on: Vec<u64>,
     pub(super) stats: PoolStats,
 }
 
 impl PoolMirror {
-    pub(super) fn new(manifest: &LightmapStreamManifest, cap_layers: u32) -> Self {
+    pub(super) fn new(
+        manifest: &LightmapStreamManifest,
+        cap_layers: u32,
+        clock: RetireClock,
+    ) -> Self {
         let index = manifest.lightmap_index();
         let header = index.header;
         let extents = index
@@ -86,14 +115,57 @@ impl PoolMirror {
             } else {
                 0
             };
-        let first_layers = model.layers();
-        let mut mirror = Self {
-            model,
+        let layout = PayloadLayout {
             header,
             with_shadowmask,
-            content_tag: manifest.content_tag(),
+        };
+        Self::with_model(
+            model,
+            Some(layout),
+            manifest.content_tag(),
             layer_bytes,
+            clock,
+        )
+    }
+
+    /// A mirror over a test source's blocks in layers of `edge`² texels.
+    /// Payloads are not checked against a texel layout.
+    #[cfg(test)]
+    pub(super) fn for_test_source(
+        source: &dyn crate::lightmap_streaming::source::LightmapBlockSource,
+        edge: u32,
+        cap_layers: u32,
+        clock: RetireClock,
+    ) -> Self {
+        let extents = (0..source.block_count())
+            .map(|block| {
+                let summary = source.block_summary(block).expect("block in range");
+                (u32::from(summary.width), u32::from(summary.height))
+            })
+            .collect();
+        let model = LightmapPoolModel::new(extents, source.block_alignment(), edge, cap_layers)
+            .expect("test blocks fit a layer");
+        Self::with_model(model, None, source.content_tag(), 0, clock)
+    }
+
+    fn with_model(
+        model: LightmapPoolModel,
+        layout: Option<PayloadLayout>,
+        content_tag: [u8; 32],
+        layer_bytes: u64,
+        clock: RetireClock,
+    ) -> Self {
+        let first_layers = model.layers();
+        let blocks = model.block_count() as usize;
+        let mut mirror = Self {
+            model,
+            layout,
+            content_tag,
+            layer_bytes,
+            clock,
             retiring: None,
+            frame: 0,
+            deferred_on: vec![0; blocks],
             stats: PoolStats {
                 first_layers,
                 peak_layers: first_layers,
@@ -131,10 +203,27 @@ impl PoolMirror {
         s.drain_install_bytes.clear();
     }
 
-    pub(super) fn drain(&mut self, batch: LightmapDrainBatch) -> LightmapDrainOutcome {
-        batch
-            .validate_contract(self.model.block_count(), self.content_tag)
-            .expect("the controller's batch honours the drain contract");
+    /// Starts a frame: under [`RetireClock::Frames`], advances the retiring
+    /// generation once. Deferral marks from earlier frames lapse.
+    pub(super) fn begin_frame(&mut self) {
+        self.frame += 1;
+        if self.clock == RetireClock::Frames {
+            self.tick_retirement();
+        }
+    }
+
+    /// Whether a grown-out generation is still retiring, so a pair that needs
+    /// growth defers.
+    pub(super) fn retiring(&self) -> bool {
+        self.retiring.is_some()
+    }
+
+    /// Whether this frame's latest drain carrying `block` deferred it.
+    pub(super) fn deferred_this_frame(&self, block: u32) -> bool {
+        self.frame != 0 && self.deferred_on[block as usize] == self.frame
+    }
+
+    fn tick_retirement(&mut self) {
         if let Some((layers, left)) = self.retiring {
             if left == 0 {
                 self.model.release_retirement();
@@ -142,6 +231,15 @@ impl PoolMirror {
             } else {
                 self.retiring = Some((layers, left - 1));
             }
+        }
+    }
+
+    pub(super) fn drain(&mut self, batch: LightmapDrainBatch) -> LightmapDrainOutcome {
+        batch
+            .validate_contract(self.model.block_count(), self.content_tag)
+            .expect("the controller's batch honours the drain contract");
+        if self.clock == RetireClock::Drains {
+            self.tick_retirement();
         }
 
         let started = Instant::now();
@@ -165,6 +263,16 @@ impl PoolMirror {
         let plan_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
 
         let plan = self.model.plan();
+        debug_assert!(
+            !plan.device_limited,
+            "the mirror's model has no device layer limit"
+        );
+        for prepared in &batch.ready {
+            self.deferred_on[prepared.block as usize] = 0;
+        }
+        for &block in &plan.deferred {
+            self.deferred_on[block as usize] = self.frame;
+        }
         let submitted = plan.growth.is_some()
             || !plan.copies.is_empty()
             || !plan.uploads.is_empty()
@@ -197,7 +305,7 @@ impl PoolMirror {
         s.peak_layers = s.peak_layers.max(self.model.layers());
         if let Some(growth) = growth {
             s.growths += 1;
-            self.retiring = Some((growth.from_layers + 1, RETIRE_AFTER_DRAINS));
+            self.retiring = Some((growth.from_layers + 1, RETIRE_AFTER_TICKS));
         }
         let retiring_bytes = self
             .retiring
@@ -212,13 +320,16 @@ impl PoolMirror {
     }
 
     fn payload_fits(&self, (width, height): (u32, u32), payload: &LightmapBlockPayload) -> bool {
-        let header = &self.header;
+        let Some(layout) = &self.layout else {
+            return true;
+        };
+        let header = &layout.header;
         if header.irradiance_len(width, height) != Some(payload.irradiance.len() as u64)
             || header.direction_len(width, height) != Some(payload.direction.len() as u64)
         {
             return false;
         }
-        if !self.with_shadowmask {
+        if !layout.with_shadowmask {
             return true;
         }
         let expected = group_plane_len(width, height);

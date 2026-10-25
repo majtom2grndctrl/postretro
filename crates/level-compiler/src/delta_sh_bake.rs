@@ -51,14 +51,17 @@ use crate::affinity_grid::{
 };
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::StageCache;
-use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
+use crate::delta_sh_cache::{
+    DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks, encoded_key_light,
+};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::{LightType, MapLight};
 use crate::partition::BspTree;
 use crate::portals::Portal;
 use crate::sh_bake::{
-    RaytracingCtx, bake_probe_indirect_rgb, pack_octahedral_irradiance_tile, probe_is_valid_pub,
+    BounceVisibility, RaytracingCtx, bake_probe_indirect_rgb, pack_octahedral_irradiance_tile,
+    probe_is_valid_pub,
 };
 
 // The compiler-side affinity factor (cell geometry) and the format-side
@@ -84,7 +87,8 @@ const DIRECTIONAL_FALLBACK_RANGE_METERS: f64 = 100.0;
 pub(crate) const INDIRECT_DELTA_SH_STAGE_ID: &str = "indirect_delta_sh_subblock";
 
 /// Bump when the indirect-delta sub-block computation or its key inputs change.
-pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 3;
+/// v4: the bounce traces one stratified emitter sample per (hit, soft light).
+pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 4;
 
 /// Inputs for the delta SH bake. Mirrors `sh_bake::ShBakeCtx` (same BVH,
 /// same geometry, same BSP tree) plus the animated-light envelope and the
@@ -130,6 +134,25 @@ pub(crate) fn bake_delta_sh_volumes_controlled_with_tally(
     config: &crate::sh_bake::ShConfig,
     cache: Option<&StageCache>,
     control: &BakeControl,
+) -> (Option<DeltaShVolumesSection>, DeltaShCacheTally) {
+    bake_delta_sh_volumes_with_visibility(
+        inputs,
+        config,
+        cache,
+        control,
+        BounceVisibility::OneSample,
+    )
+}
+
+/// The delta bake with the bounce's soft-light visibility chosen; production
+/// passes [`BounceVisibility::OneSample`]. The mode is not keyed: only that
+/// mode ever reaches the cache.
+pub(crate) fn bake_delta_sh_volumes_with_visibility(
+    inputs: &DeltaBakeInputs<'_>,
+    config: &crate::sh_bake::ShConfig,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+    visibility: BounceVisibility,
 ) -> (Option<DeltaShVolumesSection>, DeltaShCacheTally) {
     if inputs.animated_lights.is_empty() {
         return (None, DeltaShCacheTally::default());
@@ -200,9 +223,10 @@ pub(crate) fn bake_delta_sh_volumes_controlled_with_tally(
         .iter()
         .map(|entry| unit_radiance_light(entry.light))
         .collect();
-    // Indirect soft-visibility is seeded from stable cell/probe coordinates,
-    // already folded in the entry key. Unlike the two direct-delta bakes it has
-    // no light-global seed axis to add.
+    let light_axes: Vec<u64> = keyed_lights.iter().map(indirect_light_axis).collect();
+    // Indirect soft-visibility is seeded from stable cell/probe coordinates and
+    // each light's content axis, all already folded in the entry key. Unlike the
+    // two direct-delta bakes it has no light-global seed axis to add.
     let light_seed_axes = vec![0; keyed_lights.len()];
     let cached_subblocks = bake_or_load_delta_subblocks(
         &DeltaShCacheInputs {
@@ -224,10 +248,12 @@ pub(crate) fn bake_delta_sh_volumes_controlled_with_tally(
             bake_subblock(
                 inputs,
                 &keyed_lights[light_index as usize],
+                light_axes[light_index as usize],
                 cell,
                 affinity_dims,
                 base_origin,
                 probe_spacing,
+                visibility,
             )
         },
     );
@@ -288,13 +314,18 @@ pub fn log_stats(section: &DeltaShVolumesSection) {
 /// same gate the dense bake used). Probes outside the AABB or in an invalid leaf
 /// are written all-zero. The portal-reachability clip stays cell-granular and
 /// uses the affinity-cell centroid rather than per-probe portal tests.
+// Each argument is a distinct input to the sub-block: the bake context, the
+// keyed light and its seed axis, the cell and grid frame, and the bounce mode.
+#[allow(clippy::too_many_arguments)]
 fn bake_subblock(
     inputs: &DeltaBakeInputs<'_>,
     unit_light: &MapLight,
+    light_axis: u64,
     cell: u32,
     affinity_dims: [u32; 3],
     base_origin: DVec3,
     base_spacing: f32,
+    visibility: BounceVisibility,
 ) -> Vec<u16> {
     let (light_min, light_max) = light_aabb(unit_light, world_aabb_for_directional(inputs));
 
@@ -323,7 +354,6 @@ fn bake_subblock(
         }
 
         let pos = Vec3::new(pos_d.x as f32, pos_d.y as f32, pos_d.z as f32);
-        let lights_slice: [&MapLight; 1] = [unit_light];
         // Indirect-only: the same bounce math as the base bake. The animated
         // light's DIRECT contribution lives in `lm_anim` (occlusion-tested),
         // so baking it here too would double-count. Delta irradiance is indirect-only.
@@ -335,7 +365,8 @@ fn bake_subblock(
         // two are never combined — a shared seed just reuses the same lattice
         // rotation, never mixing values between the bakes.
         let probe_index = cell as u64 * PROBES_PER_CELL as u64 + local as u64;
-        let indirect = bake_probe_indirect_rgb(&ctx, pos, &lights_slice, probe_index);
+        let indirect =
+            bake_probe_indirect_rgb(&ctx, pos, unit_light, light_axis, probe_index, visibility);
         let tile = pack_octahedral_irradiance_tile(
             &indirect,
             true,
@@ -352,6 +383,19 @@ fn bake_subblock(
     }
 
     out
+}
+
+/// Soft-visibility seed axis for one keyed unit light: the first eight bytes
+/// of a digest of the bytes its cache key folds. Animated lights sharing a cell
+/// would otherwise share one axis, and so the same stratification offsets and
+/// lattice rotations, correlating their one-sample noise when deltas compose. A
+/// list position would decorrelate them too, but would change bytes under an
+/// unchanged key whenever lights reorder.
+fn indirect_light_axis(unit_light: &MapLight) -> u64 {
+    let digest = blake3::hash(&encoded_key_light(unit_light));
+    let mut axis = [0u8; 8];
+    axis.copy_from_slice(&digest.as_bytes()[..8]);
+    u64::from_le_bytes(axis)
 }
 
 /// Normalize a delta's single light to unit radiance. The runtime descriptor
@@ -530,6 +574,7 @@ mod tests {
     use crate::geometry::FaceIndexRange;
     use crate::map_data::{FalloffModel, LightAnimation, LightType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
+    use crate::sh_bake::bounce_sample_index;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
 
@@ -743,7 +788,14 @@ mod tests {
         let mut unit_light = lights[0].clone();
         unit_light.color = [1.0; 3];
         unit_light.intensity = 1.0;
-        let indirect = bake_probe_indirect_rgb(&ctx, pos, &[&unit_light], 0);
+        let indirect = bake_probe_indirect_rgb(
+            &ctx,
+            pos,
+            &unit_light,
+            indirect_light_axis(&unit_light),
+            (cell * PROBES_PER_CELL + local) as u64,
+            BounceVisibility::OneSample,
+        );
         let expected_tile = pack_octahedral_irradiance_tile(
             &indirect,
             true,
@@ -760,6 +812,230 @@ mod tests {
             &expected[..],
             "delta sub-block must store unit-radiance indirect transport, not authored radiance or direct light",
         );
+    }
+
+    /// A hard animated light traces its one hard ray under either bounce mode,
+    /// so its delta sub-blocks are byte-identical one-sample and full-set.
+    #[test]
+    fn hard_light_delta_subblocks_match_full_set_bit_identically() {
+        let geo = cube_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![animated_point_light(DVec3::new(-7.0, -7.0, -7.0), 1.5)];
+        assert_eq!(lights[0].light_size, 0.0, "fixture light must be hard");
+        let envelope = AnimatedBakedLights::from_lights(&lights);
+        let inputs = DeltaBakeInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            animated_lights: &envelope,
+        };
+        let config = crate::sh_bake::ShConfig { probe_spacing: 1.0 };
+        let bake = |visibility| {
+            bake_delta_sh_volumes_with_visibility(
+                &inputs,
+                &config,
+                None,
+                &BakeControl::unrestricted(),
+                visibility,
+            )
+            .0
+            .expect("expected a section")
+        };
+        let one = bake(BounceVisibility::OneSample);
+        let full = bake(BounceVisibility::FullSet);
+        assert!(
+            one.delta_subblocks.iter().any(|&h| h != 0),
+            "the fixture must bake a nonzero bounce"
+        );
+        assert_eq!(one.to_bytes(), full.to_bytes());
+    }
+
+    /// Floor at y = 0 with a half-plane occluder at y = 2.5 over +X: a soft
+    /// light overhead throws a penumbra across the floor the probes bounce off.
+    fn occluded_floor_geometry() -> GeometryResult {
+        let triangles: [[[f32; 3]; 3]; 4] = [
+            [[-8.0, 0.0, -8.0], [8.0, 0.0, -8.0], [8.0, 0.0, 8.0]],
+            [[-8.0, 0.0, -8.0], [8.0, 0.0, 8.0], [-8.0, 0.0, 8.0]],
+            [[0.0, 2.5, -4.0], [4.0, 2.5, -4.0], [4.0, 2.5, 4.0]],
+            [[0.0, 2.5, -4.0], [4.0, 2.5, 4.0], [0.0, 2.5, 4.0]],
+        ];
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices: triangles.iter().flatten().map(|&p| tri_vertex(p)).collect(),
+                indices: (0..triangles.len() as u32 * 3).collect(),
+                faces: triangles
+                    .iter()
+                    .map(|_| FaceMeta {
+                        leaf_index: 0,
+                        texture_index: 0,
+                    })
+                    .collect(),
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: (0..triangles.len() as u32)
+                .map(|face| FaceIndexRange {
+                    index_offset: face * 3,
+                    index_count: 3,
+                })
+                .collect(),
+        }
+    }
+
+    fn soft_animated_light(origin: DVec3) -> MapLight {
+        let mut light = animated_point_light(origin, 6.0);
+        light.light_size = 1.5;
+        light
+    }
+
+    /// Bakes `lights` over [`occluded_floor_geometry`] with no cache, then hands
+    /// the inputs and section to `check`.
+    fn with_occluded_floor_bake<R>(
+        lights: &[MapLight],
+        visibility: BounceVisibility,
+        check: impl FnOnce(&DeltaBakeInputs<'_>, DeltaShVolumesSection) -> R,
+    ) -> R {
+        let geo = occluded_floor_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let envelope = AnimatedBakedLights::from_lights(lights);
+        let inputs = DeltaBakeInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            animated_lights: &envelope,
+        };
+        let section = bake_delta_sh_volumes_with_visibility(
+            &inputs,
+            &crate::sh_bake::ShConfig { probe_spacing: 1.0 },
+            None,
+            &BakeControl::unrestricted(),
+            visibility,
+        )
+        .0
+        .expect("expected a section");
+        check(&inputs, section)
+    }
+
+    /// Each dense sub-block keyed by `(cell, animated light index)`.
+    fn subblocks_by_cell_and_light(
+        section: &DeltaShVolumesSection,
+    ) -> std::collections::BTreeMap<(u32, u32), &[u16]> {
+        let block = PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE;
+        let mut blocks = std::collections::BTreeMap::new();
+        for (cell, range) in section.affinity_offsets.windows(2).enumerate() {
+            for entry in range[0] as usize..range[1] as usize {
+                let light = section.affinity_lights[entry];
+                let payload = &section.delta_subblocks[entry * block..(entry + 1) * block];
+                blocks.insert((cell as u32, light), payload);
+            }
+        }
+        blocks
+    }
+
+    /// Two soft animated lights reaching one cell bake on different seed axes,
+    /// so their one-sample bounces start each probe's stratified pass at
+    /// unrelated lattice samples instead of sharing one noise pattern that
+    /// adds linearly when the deltas compose.
+    #[test]
+    fn indirect_delta_lights_sharing_a_cell_sample_independently() {
+        let lights = [
+            soft_animated_light(DVec3::new(-1.0, 4.0, 0.0)),
+            soft_animated_light(DVec3::new(1.0, 4.5, 0.5)),
+        ];
+        let axes = lights
+            .each_ref()
+            .map(|l| indirect_light_axis(&unit_radiance_light(l)));
+        assert_ne!(axes[0], axes[1]);
+        with_occluded_floor_bake(&lights, BounceVisibility::OneSample, |inputs, section| {
+            let blocks = subblocks_by_cell_and_light(&section);
+            let shared: Vec<u32> = blocks
+                .keys()
+                .filter(|&&(cell, light)| light == 0 && blocks.contains_key(&(cell, 1)))
+                .map(|&(cell, _)| cell)
+                .collect();
+            assert!(!shared.is_empty(), "the lights must share a cell");
+            for &cell in &shared {
+                // The bake traces each light on its own content axis.
+                for (light, &axis) in axes.iter().enumerate() {
+                    let rebaked = bake_subblock(
+                        inputs,
+                        &unit_radiance_light(&lights[light]),
+                        axis,
+                        cell,
+                        section.affinity_dims,
+                        world_aabb_min(inputs),
+                        1.0,
+                        BounceVisibility::OneSample,
+                    );
+                    assert_eq!(blocks[&(cell, light as u32)], &rebaked[..]);
+                }
+                let lattice = crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
+                let differing = (0..PROBES_PER_CELL)
+                    .filter(|&local| {
+                        let probe = cell as u64 * PROBES_PER_CELL as u64 + local as u64;
+                        let pass = |axis| {
+                            (0..u64::from(lattice))
+                                .map(move |ray| bounce_sample_index(probe, ray, axis, lattice))
+                        };
+                        pass(axes[0]).ne(pass(axes[1]))
+                    })
+                    .count();
+                assert!(
+                    differing > PROBES_PER_CELL * 3 / 4,
+                    "cell {cell}: only {differing} of {PROBES_PER_CELL} probes differ"
+                );
+            }
+        });
+    }
+
+    /// A light's sub-blocks depend on the light, not its position in the
+    /// animated-light list, so reordering lights never changes bytes under an
+    /// unchanged per-entry cache key; a re-bake is byte-identical.
+    #[test]
+    fn indirect_delta_subblocks_follow_the_light_not_its_list_position() {
+        let a = soft_animated_light(DVec3::new(-1.0, 4.0, 0.0));
+        let b = soft_animated_light(DVec3::new(1.0, 4.5, 0.5));
+        let bake = |lights: &[MapLight], visibility| {
+            with_occluded_floor_bake(lights, visibility, |_, section| section)
+        };
+        let ab = bake(&[a.clone(), b.clone()], BounceVisibility::OneSample);
+        assert!(
+            ab.delta_subblocks.iter().any(|&h| h != 0),
+            "the fixture must bake a nonzero bounce"
+        );
+        assert_ne!(
+            ab.to_bytes(),
+            bake(&[a.clone(), b.clone()], BounceVisibility::FullSet).to_bytes(),
+            "the fixture's soft samples must matter"
+        );
+        assert_eq!(
+            ab.to_bytes(),
+            bake(&[a.clone(), b.clone()], BounceVisibility::OneSample).to_bytes(),
+            "a re-bake must be byte-identical"
+        );
+
+        let ba = bake(&[b, a], BounceVisibility::OneSample);
+        let (ab_blocks, ba_blocks) = (
+            subblocks_by_cell_and_light(&ab),
+            subblocks_by_cell_and_light(&ba),
+        );
+        assert_eq!(ab_blocks.len(), ba_blocks.len());
+        for (&(cell, light), block) in &ab_blocks {
+            assert_eq!(
+                *block,
+                ba_blocks[&(cell, 1 - light)],
+                "cell {cell}: light {light} changed bytes when the list reordered"
+            );
+        }
     }
 
     #[test]

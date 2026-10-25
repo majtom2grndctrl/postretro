@@ -801,9 +801,10 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 }
 
 // `soft_visibility` and `soft_visibility_with` are the centre-point sampler.
-// `TexelSampler::Centre` (floor off) and the probe-point bakers (SH bounce,
-// direct SH, scatter) call them, each wrapping its own `segment_clear` as the
-// trace closure. The floored texel path is `texel_footprint`.
+// `TexelSampler::Centre` (floor off) and the probe-point bakers (direct SH,
+// scatter) call them, each wrapping its own `segment_clear` as the trace
+// closure. The SH bounce traces one sample of the same lattice per hit
+// (`soft_visibility_one_sample`). The floored texel path is `texel_footprint`.
 
 /// Probe samples traced before escalating. Tracing this many first lets the
 /// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;
@@ -819,8 +820,9 @@ pub(crate) const SOFT_PROBE_SAMPLES: u32 = 4;
 
 /// Default full stratified sample count once a penumbra is detected. The
 /// area-sample-count bake knob (Task 6) overrides this per call via
-/// `soft_visibility`'s `full_samples` argument; callers without a knob
-/// (e.g. the SH bounce baker, where bounce is low-frequency) pass this default.
+/// `soft_visibility`'s `full_samples` argument; callers without a knob pass
+/// this default, and the SH bounce, where bounce is low-frequency, uses it as
+/// the lattice its one sample per hit draws from.
 /// The probe set is a spread **subset** of `full_samples` (not a prefix), so a
 /// penumbra's returned fraction is still `clear / full_samples`.
 pub(crate) const DEFAULT_AREA_SAMPLE_COUNT: u32 = 32;
@@ -938,9 +940,11 @@ pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Ve
 /// so no distance-to-occluder input is needed.
 ///
 /// `trace(from, to)` returns true when the segment is clear; the max-distance clamp
-/// lives inside the closure. This keeps the helper trace-context-agnostic so all three
-/// callers (static lightmap, animated weight-map, SH bounce) wrap their own
-/// `segment_clear` — each with a different signature — as the closure.
+/// lives inside the closure. This keeps the helper trace-context-agnostic so its
+/// callers (the static lightmap and animated weight-map texels, direct SH,
+/// scatter) and the SH bounce's one-sample twin, [`soft_visibility_one_sample`],
+/// wrap their own `segment_clear` — each with a different signature — as the
+/// closure.
 ///
 /// Determinism: the sample pattern is a fixed Fibonacci lattice (mirroring
 /// `sh_bake.rs`'s convention) rotated by `seed`. No RNG, no hash-order dependence —
@@ -991,9 +995,9 @@ impl SoftProbes {
         let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
         let probes = match light.light_type {
             // Point and spot probe sets snap on the unrotated sphere lattice,
-            // which depends on the count alone, so per-call callers (the SH
-            // bounce, delta and scatter bakes) reuse one snap per thread
-            // instead of re-deriving it for every receiver and light.
+            // which depends on the count alone, so per-call callers (direct SH
+            // and its deltas, scatter) reuse one snap per thread instead of
+            // re-deriving it for every receiver and light.
             LightType::Point | LightType::Spot => SPHERE_PROBE_INDICES.with(|memo| {
                 if let Some((count, probes)) = memo.get()
                     && count == full_samples
@@ -1036,11 +1040,7 @@ pub(crate) fn soft_visibility_with(
     // the result is 1.0 clear / 0.0 occluded. (`shadow_visible` was the prior
     // hard-gate function, removed when soft visibility subsumed it; its behavior is
     // preserved here in the `radius <= 0` hard-ray branch.)
-    let radius = match light.light_type {
-        LightType::Point | LightType::Spot => light.light_size,
-        LightType::Directional => light.angular_diameter,
-    };
-    if radius <= 0.0 {
+    if emitter_radius(light) <= 0.0 {
         let target = hard_ray_target(surface_point, light);
         return if trace(origin, target) { 1.0 } else { 0.0 };
     }
@@ -1084,6 +1084,47 @@ pub(crate) fn soft_visibility_with(
         }
     }
     clear as f32 / full_samples as f32
+}
+
+/// One-ray twin of [`soft_visibility`] for an estimator that averages many
+/// receivers, such as the SH bounce over a probe's gather rays: returns 1.0
+/// when its single shadow ray is clear, 0.0 when occluded. A hard emitter
+/// (`radius <= 0`) traces exactly the ray `soft_visibility` traces, so the
+/// result matches it bit for bit, and `sample_index` is never called. A soft
+/// emitter traces one sample of the same `full_samples` lattice, rotated by the
+/// same `seed`, that `soft_visibility`'s escalated set traces: the one
+/// `sample_index` picks, given the lattice size and reduced modulo it. The
+/// mean over every index is the whole lattice's clear fraction, which
+/// `soft_visibility` returns whenever it escalates; its 4-probe early-out can
+/// differ. Choosing the index is the caller's stratification.
+pub(crate) fn soft_visibility_one_sample(
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    light: &MapLight,
+    seed: u64,
+    sample_index: impl FnOnce(u32) -> u32,
+    full_samples: u32,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> f32 {
+    let origin = surface_point + surface_normal * RAY_EPSILON;
+    let target = if emitter_radius(light) <= 0.0 {
+        hard_ray_target(surface_point, light)
+    } else {
+        // Same clamp as `SoftProbes::new`, so the lattice matches the full set's.
+        let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+        let index = sample_index(full_samples) % full_samples;
+        area_sample_target(surface_point, light, seed, index, full_samples)
+    };
+    if trace(origin, target) { 1.0 } else { 0.0 }
+}
+
+/// The emitter extent soft visibility samples: the sphere radius of a point or
+/// spot light, the angular diameter of a sun. `<= 0` is an authored hard edge.
+fn emitter_radius(light: &MapLight) -> f32 {
+    match light.light_type {
+        LightType::Point | LightType::Spot => light.light_size,
+        LightType::Directional => light.angular_diameter,
+    }
 }
 
 /// Single hard-ray target for the `radius <= 0` hard edge (see the note in

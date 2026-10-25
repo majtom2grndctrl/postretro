@@ -2,6 +2,8 @@
 // layer walk traces from a tile of texels toward a point or spot emitter.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
+use std::cell::{Cell, OnceCell};
+
 use bvh::aabb::Aabb;
 use bvh::bvh::Bvh;
 use glam::{DVec3, Vec3};
@@ -15,7 +17,7 @@ use crate::lightmap_bake::{Chart, RAY_EPSILON};
 use crate::map_data::{LightType, MapLight};
 use crate::texel_footprint::{TexelFrame, TexelSampler};
 pub(crate) use margin::ShaftScene;
-use margin::{Candidate, Hull, HullBounds};
+use margin::{Candidate, Hull, HullAxis, HullBounds};
 
 /// Edge of a shaft-cull tile, in texels. Tiles anchor at the (sub-)chart's
 /// first interior texel, so a chart's last tile on each axis may be narrower.
@@ -68,6 +70,9 @@ pub(crate) struct ShaftCull<'a> {
     /// near-orthonormal frame and an emitter clear of the slab. Without it
     /// every tile tests blocked.
     contained: bool,
+    /// The first index of the triangle that blocked this walk's last blocked
+    /// tile. One thread walks the chart, so it needs no synchronisation.
+    last_blocker: Cell<Option<usize>>,
     scene: &'a ShaftScene,
     bvh: &'a Bvh<f32, 3>,
     primitives: &'a [BvhPrimitive],
@@ -146,6 +151,7 @@ impl<'a> ShaftCull<'a> {
             centre,
             radius,
             contained,
+            last_blocker: Cell::new(None),
             scene,
             bvh,
             primitives,
@@ -183,23 +189,39 @@ impl<'a> ShaftCull<'a> {
             self.normal,
             self.centre - slab_centre,
         ];
+        // Built on the first candidate its own normal leaves unseparated.
+        let hull_axes = OnceCell::new();
+        let hull_axes = || {
+            hull_axes
+                .get_or_init(|| self.hull_axes(&bounds, &hull))
+                .as_slice()
+        };
         let geom = &self.geometry.geometry;
+        let blocks = |tri: usize| {
+            let points = [0, 1, 2]
+                .map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
+            let tri_lo = points[0].min(points[1]).min(points[2]).as_dvec3();
+            let tri_hi = points[0].max(points[1]).max(points[2]).as_dvec3();
+            if tri_hi.cmplt(lo).any() || tri_lo.cmpgt(hi).any() {
+                // Farther than the growth: separated whether tested or not.
+                return false;
+            }
+            Candidate::of(points)
+                .is_none_or(|candidate| !bounds.separates(&candidate, hull_axes, &frame_axes))
+        };
+        // The triangle that blocked the last blocked tile goes first: across a
+        // shadow it usually blocks the next tile too, and then no query runs.
+        // A clear verdict still needs every candidate separated, so the order
+        // changes only how soon a blocked tile is found.
+        if self.last_blocker.get().is_some_and(blocks) {
+            return false;
+        }
         for prim in self.bvh.traverse_iterator(&query, self.primitives) {
             let start = prim.index_offset as usize;
             let end = start + prim.index_count as usize;
             for tri in (start..end).step_by(3).take_while(|&tri| tri + 3 <= end) {
-                let points = [0, 1, 2]
-                    .map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
-                let tri_lo = points[0].min(points[1]).min(points[2]).as_dvec3();
-                let tri_hi = points[0].max(points[1]).max(points[2]).as_dvec3();
-                if tri_hi.cmplt(lo).any() || tri_lo.cmpgt(hi).any() {
-                    // Farther than the growth: separated whether tested or not.
-                    continue;
-                }
-                let Some(candidate) = Candidate::of(points) else {
-                    return false;
-                };
-                if !bounds.separates(&candidate, self.normal, &frame_axes) {
+                if blocks(tri) {
+                    self.last_blocker.set(Some(tri));
                     return false;
                 }
             }
@@ -236,6 +258,54 @@ impl<'a> ShaftCull<'a> {
         }
     }
 
+    /// The axes every candidate of one tile tests after its own normal, read
+    /// from the hull alone: the receiver normal, then the hull's own faces
+    /// ([`Hull::tangent_plane`]) through each side of the padded rectangle,
+    /// at both slab heights, and planes through each rectangle corner across
+    /// its outward diagonal, each tangent to the emitter. Any unit axis is a
+    /// certificate at its own margin; these are the ones a candidate beside
+    /// the shaft most often clears on.
+    fn hull_axes(&self, bounds: &HullBounds, hull: &Hull) -> [Option<HullAxis>; HULL_AXES] {
+        let mut axes = [None; HULL_AXES];
+        axes[0] = bounds.hull_axis(self.normal);
+        let mut next = 1;
+        for height in [0, 4] {
+            // Sides: (first corner on the side, run along it, outward).
+            let sides = [
+                (0, self.v_axis, -self.u_axis),
+                (1, self.v_axis, self.u_axis),
+                (0, self.u_axis, -self.v_axis),
+                (2, self.u_axis, self.v_axis),
+            ];
+            for (corner, run, outward) in sides {
+                axes[next] = hull
+                    .tangent_plane(hull.corners[height + corner], run, outward)
+                    .and_then(|axis| bounds.hull_axis(axis));
+                next += 1;
+            }
+            for corner in 0..4 {
+                let outward = if corner & 1 == 0 {
+                    -self.u_axis
+                } else {
+                    self.u_axis
+                } + if corner & 2 == 0 {
+                    -self.v_axis
+                } else {
+                    self.v_axis
+                };
+                axes[next] = hull
+                    .tangent_plane(
+                        hull.corners[height + corner],
+                        self.normal.cross(outward),
+                        outward,
+                    )
+                    .and_then(|axis| bounds.hull_axis(axis));
+                next += 1;
+            }
+        }
+        axes
+    }
+
     /// The candidate certificates [`Self::tile_clear`] would read for one
     /// triangle against tile `(tile_x, tile_y)`: (gap, margin) along its own
     /// normal and along `axis`.
@@ -267,6 +337,9 @@ impl<'a> ShaftCull<'a> {
             .query_growth(&HullBounds::new(self.tile_hull(tile.0, tile.1)))
     }
 }
+
+/// Axes [`ShaftCull::hull_axes`] builds per tile.
+const HULL_AXES: usize = 17;
 
 /// The largest `f32` at or below `x`.
 fn f32_below(x: f64) -> f32 {

@@ -321,3 +321,51 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
         "growth {growth} stays far below the hull's size"
     );
 }
+
+// The hull-face axes: the plane through a slab edge tangent to the emitter
+// touches the sphere and supports the whole hull at that edge, so a triangle
+// just beyond the face is separated on it by the full gap.
+#[test]
+fn shaft_tangent_plane_through_a_slab_edge_is_a_face_of_the_hull() {
+    let corners = [0.0005, 0.0025].map(|y| {
+        [
+            DVec3::new(0.0, y, 0.0),
+            DVec3::new(0.3, y, 0.0),
+            DVec3::new(0.0, y, 0.3),
+            DVec3::new(0.3, y, 0.3),
+        ]
+    });
+    for (centre, radius) in [
+        (DVec3::new(0.15, 2.0, 0.15), 0.751),
+        (DVec3::new(0.2, 1.0, 0.1), 0.0),
+    ] {
+        let hull = Hull {
+            corners: [corners[0], corners[1]].concat().try_into().unwrap(),
+            centre,
+            radius,
+            terms: DVec3::splat(0.3),
+        };
+        // The side at x = 0, run along z, outward -x: through the lower edge
+        // when the face leans out over a wide sphere, the upper one otherwise.
+        let edge = if radius > 0.0 {
+            hull.corners[0]
+        } else {
+            hull.corners[4]
+        };
+        let normal = hull
+            .tangent_plane(edge, DVec3::Z, -DVec3::X)
+            .expect("the edge's line misses the sphere");
+        assert!((normal.length() - 1.0).abs() < 1e-12, "{normal}");
+        assert!(normal.x < 0.0, "outward: {normal}");
+        let offset = normal.dot(edge);
+        assert!(
+            (normal.dot(centre) + radius - offset).abs() < 1e-12,
+            "touches the emitter"
+        );
+        let (_, hi) = hull.range(normal);
+        assert!(
+            (hi - offset).abs() < 1e-12,
+            "supports the hull: {hi} vs {offset}"
+        );
+    }
+}

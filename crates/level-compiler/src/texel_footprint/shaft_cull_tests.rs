@@ -115,8 +115,10 @@ fn moved(light: &MapLight, by: Vec3) -> MapLight {
 }
 
 // An open floor under a soft point light clears every tile; with a plate
-// shadowing one quadrant, tiles away from it still clear and the rest trace,
-// and both bake the unculled records at each floor setting (verify on).
+// shadowing one quadrant, every tile whose texels all bake fully lit still
+// clears (the hull's own faces separate the plate beside its shaft) and the
+// rest trace, and both bake the unculled records at each floor setting
+// (verify on).
 #[test]
 fn shaft_cull_clears_an_open_floor_and_matches_the_unculled_walk_beside_an_occluder() {
     let centred = Receiver::centred(32, 32);
@@ -151,6 +153,16 @@ fn shaft_cull_clears_an_open_floor_and_matches_the_unculled_walk_beside_an_occlu
             (0..32).any(|y| (0..32).any(|x| grid.get(x, y).is_some_and(|v| v < 1.0))),
             "the plate shadows part of the chart"
         );
+        for (index, tile) in chart.tiles.iter().enumerate() {
+            let [x0, x1, y0, y1] = chart.tile_texels(index);
+            let lit = (y0..=y1)
+                .all(|y| (x0..=x1).all(|x| grid.get(x as u32, y as u32).is_some_and(|v| v == 1.0)));
+            assert!(
+                !lit || tile.clear == Some(true),
+                "floor {floor}: fully lit tile {index} clears: {:?}",
+                chart.tiles
+            );
+        }
     }
 }
 

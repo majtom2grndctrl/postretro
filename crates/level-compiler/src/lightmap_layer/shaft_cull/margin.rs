@@ -120,6 +120,39 @@ impl Hull {
         let reach = self.radius * axis.length();
         (lo.min(centre - reach), hi.max(centre + reach))
     }
+
+    /// The normal of the plane through `point` along `run` that touches the
+    /// emitter sphere (passes through its centre, for a hard light) with the
+    /// sphere below it, on the side `outward` points to. For a slab edge it
+    /// is a face of the hull. `None` when the line meets the sphere.
+    pub(super) fn tangent_plane(&self, point: DVec3, run: DVec3, outward: DVec3) -> Option<DVec3> {
+        let run = run.normalize_or_zero();
+        let to_centre = self.centre - point;
+        let across = to_centre - run * run.dot(to_centre);
+        let distance = across.length();
+        if !(distance > self.radius && distance.is_finite()) {
+            return None;
+        }
+        let across = across / distance;
+        let mut side = run.cross(across);
+        if side.dot(outward) < 0.0 {
+            side = -side;
+        }
+        let ratio = self.radius / distance;
+        Some(side * (1.0 - ratio * ratio).sqrt() - across * ratio)
+    }
+
+    /// The hull face a candidate edge along `run` would meet: the plane
+    /// along `run` tangent to the emitter through the slab corner that
+    /// plane, first drawn through `from`, puts highest toward `outward`.
+    fn edge_plane(&self, from: DVec3, run: DVec3, outward: DVec3) -> Option<DVec3> {
+        let first = self.tangent_plane(from, run, outward)?;
+        let corner = self
+            .corners
+            .into_iter()
+            .max_by(|a, b| first.dot(*a).total_cmp(&first.dot(*b)))?;
+        self.tangent_plane(corner, run, outward)
+    }
 }
 
 /// A hull and what every candidate's margins read from it.
@@ -157,6 +190,28 @@ impl HullBounds {
         }
     }
 
+    /// Whether `tri` meets the segment from the slab's centre to the
+    /// emitter's centre, which lies inside the hull. A shadowing triangle
+    /// usually does, and then the axes need not run. A wrong `true` costs
+    /// only speed.
+    fn meets_spine(&self, tri: &Candidate) -> bool {
+        let from = self.hull.corners.iter().copied().sum::<DVec3>() / 8.0;
+        let run = self.hull.centre - from;
+        let [a, b, c] = tri.corners;
+        let (e1, e2) = (b - a, c - a);
+        let p = run.cross(e2);
+        let det = e1.dot(p);
+        if det == 0.0 || !det.is_finite() {
+            return false;
+        }
+        let s = from - a;
+        let u = s.dot(p) / det;
+        let q = s.cross(e1);
+        let v = run.dot(q) / det;
+        let t = e2.dot(q) / det;
+        u >= 0.0 && v >= 0.0 && u + v <= 1.0 && (0.0..=1.0).contains(&t)
+    }
+
     /// e_H(a) for a unit axis.
     fn spread(&self, axis: DVec3) -> f64 {
         axis.abs().dot(self.sampler_error)
@@ -187,39 +242,49 @@ impl HullBounds {
     /// (g_a, m_A) along `axis`, normalized here; `None` for a zero or
     /// non-finite axis, which certifies nothing. The margin holds for rays at
     /// or above the angle floor against the triangle's plane.
+    #[cfg(test)]
     pub(super) fn axis_certificate(&self, tri: &Candidate, axis: DVec3) -> Option<(f64, f64)> {
+        let axis = self.hull_axis(axis)?;
+        axis.certificate(tri, self.axis_margin_base(tri))
+    }
+
+    /// `axis`, normalized, with the hull's range and e_H along it: what every
+    /// candidate's certificate on that axis reads from the hull. `None` for a
+    /// zero or non-finite axis.
+    pub(super) fn hull_axis(&self, axis: DVec3) -> Option<HullAxis> {
         let length = axis.length();
         if !(length > 0.0 && length.is_finite()) {
             return None;
         }
         let axis = axis / length;
-        let along = tri.corners.map(|corner| axis.dot(corner));
-        let (t_lo, t_hi) = (
-            along[0].min(along[1]).min(along[2]),
-            along[0].max(along[1]).max(along[2]),
-        );
         let (lo, hi) = self.hull.range(axis);
-        let gap = (t_lo - hi).max(lo - t_hi);
+        Some(HullAxis {
+            axis,
+            lo,
+            hi,
+            spread: self.spread(axis),
+        })
+    }
+
+    /// m_A(T, a) less its e_H(a) term, which alone depends on the axis.
+    pub(super) fn axis_margin_base(&self, tri: &Candidate) -> f64 {
         let reach = self.reach_from(tri.corners[0]);
-        let margin = KAPPA
-            * (HIT_TEST_ULPS
-                * UNIT_ROUNDOFF
-                * tri.shape
-                * (3.0 * reach + self.diag + tri.edge_sum)
-                / SIN_ANGLE_FLOOR
-                + UNIT_ROUNDOFF * (reach + 5.0 * tri.longest_edge)
-                + self.spread(axis));
-        (gap.is_finite() && margin.is_finite()).then_some((gap, margin))
+        HIT_TEST_ULPS * UNIT_ROUNDOFF * tri.shape * (3.0 * reach + self.diag + tri.edge_sum)
+            / SIN_ANGLE_FLOOR
+            + UNIT_ROUNDOFF * (reach + 5.0 * tri.longest_edge)
     }
 
     /// Whether some tested axis separates `tri` from the hull by at least
-    /// its margin: the triangle's own normal, then the receiver normal and
-    /// each triangle edge crossed with the chart axes, the normal and the
-    /// shaft direction (`frame_axes`).
-    pub(super) fn separates(
+    /// its margin: the triangle's own normal at m_N, then at m_A the tile's
+    /// `hull_axes` (the receiver normal and the hull's faces, built on first
+    /// use), the plane along each triangle edge tangent to the emitter
+    /// ([`Hull::edge_plane`]), and each triangle edge crossed with the chart
+    /// axes, the normal and the shaft direction (`frame_axes`). Cheap and
+    /// likely axes go first; the order changes no verdict.
+    pub(super) fn separates<'h>(
         &self,
         tri: &Candidate,
-        receiver_normal: DVec3,
+        hull_axes: impl FnOnce() -> &'h [Option<HullAxis>],
         frame_axes: &[DVec3; 4],
     ) -> bool {
         if tri.shape > SHAPE_CAP {
@@ -229,17 +294,60 @@ impl HullBounds {
         if gap >= margin {
             return true;
         }
-        let certified = |axis: DVec3| {
-            self.axis_certificate(tri, axis)
+        if self.meets_spine(tri) {
+            // It crosses the hull, so no axis separates it.
+            return false;
+        }
+        let base = self.axis_margin_base(tri);
+        let certified = |axis: &HullAxis| {
+            axis.certificate(tri, base)
                 .is_some_and(|(gap, margin)| gap >= margin)
         };
-        if certified(receiver_normal) {
+        if hull_axes().iter().flatten().any(certified) {
             return true;
         }
         let [a, b, c] = tri.corners;
-        [b - a, c - a, c - b]
-            .into_iter()
-            .any(|edge| frame_axes.iter().any(|&axis| certified(edge.cross(axis))))
+        let slab_centre = self.hull.corners.iter().copied().sum::<DVec3>() / 8.0;
+        let toward = (a + b + c) / 3.0 - slab_centre;
+        let edge_planed = [b - a, c - a, c - b].into_iter().any(|edge| {
+            self.hull
+                .edge_plane(slab_centre, edge, toward)
+                .and_then(|axis| self.hull_axis(axis))
+                .is_some_and(|axis| certified(&axis))
+        });
+        if edge_planed {
+            return true;
+        }
+        [b - a, c - a, c - b].into_iter().any(|edge| {
+            frame_axes.iter().any(|&axis| {
+                self.hull_axis(edge.cross(axis))
+                    .is_some_and(|axis| certified(&axis))
+            })
+        })
+    }
+}
+
+/// One unit separating axis with the hull's range and e_H along it. The
+/// hull's own faces are built once per tile and read by every candidate.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct HullAxis {
+    axis: DVec3,
+    lo: f64,
+    hi: f64,
+    spread: f64,
+}
+
+impl HullAxis {
+    /// (g_a, m_A) for `tri`, with `base` its [`HullBounds::axis_margin_base`].
+    pub(super) fn certificate(&self, tri: &Candidate, base: f64) -> Option<(f64, f64)> {
+        let along = tri.corners.map(|corner| self.axis.dot(corner));
+        let (t_lo, t_hi) = (
+            along[0].min(along[1]).min(along[2]),
+            along[0].max(along[1]).max(along[2]),
+        );
+        let gap = (t_lo - self.hi).max(self.lo - t_hi);
+        let margin = KAPPA * (base + self.spread);
+        (gap.is_finite() && margin.is_finite()).then_some((gap, margin))
     }
 }
 

@@ -359,9 +359,13 @@ sampling walks step-limited, pre-change 1,641). Logs: scratchpad `846ad593…/pl
     the cull-status wireframe shows the pillars rendered (green) behind the big retaining
     wall, returning to not submitted (cyan, outside the CPU-visible cells) and recovering
     frame rate nearer the wall.
-    Consistent with R1's occlusion-test over-inclusion (extra cells p95 20, max 182): one
-    rect per cell unions openings across the wall. The pillars are an intentional
-    portal-renderer stress case.
+    Consistent with R1's occlusion-test over-inclusion (extra cells p95 20, max 182). The
+    owner's portal overlay shows the slowdown begins as the pillar cells' portals come into
+    view: tall sliver portals that run from the floor up past the top of the retaining
+    wall, so the pillar cells are seen over the wall. Start by separating how much is rect
+    looseness and how much is cell granularity (the brief's detail-brush / cell-merging
+    non-goal); the exact oracle at the overlay's pose answers it. The pillars are an
+    intentional portal-renderer stress case.
   - reflection-lake-test: slowdown standing on top of structures and looking across the
     lake (GPU-bound windows above).
   - Compiler portal area cut (`MIN_PORTAL_AREA_M2`), from the capture A/B section.

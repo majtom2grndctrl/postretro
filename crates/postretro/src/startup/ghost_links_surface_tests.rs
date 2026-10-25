@@ -15,15 +15,13 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 use log::Level as LogLevel;
 use postretro_entities::components::brain::BrainComponent;
-use postretro_entities::components::health::{
-    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
-};
+use postretro_entities::components::health::HealthComponent;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, EntityId, GhostLinkComponent, KinematicMoverComponent, ReactionDescriptor,
     ScriptCtx, ScriptError, SequenceTarget, TeleporterComponent, Transform, TriggerVolumeComponent,
 };
-use postretro_foundation::{DamagePayload, GhostStyle, PlayerMovementComponent};
+use postretro_foundation::{GhostStyle, PlayerMovementComponent};
 use postretro_level_format::ghost_links::GhostMembers;
 use postretro_level_loader::LevelWorld;
 use postretro_physics::movement::{MovementInput, TeleportEvent};
@@ -76,10 +74,10 @@ const LIMITATOR_BEAT_SECS: f64 = 3.0;
 const WAVE_BEAT_SECS: f64 = 3.0;
 /// Slack around a beat's end: a few ticks either side of it.
 const WAVE_BEAT_SLACK: f64 = 0.1;
-/// Frames that carry a removal to `progress` and its fired reaction.
-const PROGRESS_FRAMES: usize = 5;
 /// Frames a pedestal takes to rise its 56 units at 1 m/s, with margin.
 const RISE_FRAMES: usize = 120;
+/// The return pedestal's half height: its brush is 48 Quake units tall.
+const PEDESTAL_HALF_HEIGHT: f32 = 24.0 / UNITS_PER_METRE;
 /// Where the players stand for the final wave: in room A just inside the
 /// doorway, east of the cover wall, in sight of the final closet. From farther
 /// back in room A the baked navmesh offers the closet's knights no route (a
@@ -136,7 +134,7 @@ const UNRELATED_WARNINGS: [&str; 5] = [
     "[AI] enemy animation state",
 ];
 
-const LEVEL_REACTIONS: [&str; 17] = [
+const LEVEL_REACTIONS: [&str; 16] = [
     "echo.reveal",
     "echo.swell",
     "echo.fight",
@@ -151,7 +149,6 @@ const LEVEL_REACTIONS: [&str; 17] = [
     "swap.settle",
     "wave.start",
     "return.rise",
-    "clear.b",
     "return.arm",
     "return.settle",
 ];
@@ -564,19 +561,13 @@ impl Level {
     }
 
     fn frame_with(&mut self, use_pressed: bool) -> Vec<(EntityId, TeleportEvent)> {
-        self.frame_full(use_pressed, false, &[])
+        self.frame_full(use_pressed, false)
     }
 
     /// One frame in which the live partner presses use.
     fn partner_frame_with_use(&mut self) -> Vec<(EntityId, TeleportEvent)> {
         assert!(self.partner_live, "only a live partner presses");
-        self.frame_full(false, true, &[])
-    }
-
-    /// One frame that first deals each of `kill` lethal damage, as a shot
-    /// would, before the tick.
-    fn frame_killing(&mut self, kill: &[EntityId]) -> Vec<(EntityId, TeleportEvent)> {
-        self.frame_full(false, false, kill)
+        self.frame_full(false, true)
     }
 
     /// One host frame of one fixed tick, in `frame_loop` order: the frame's
@@ -589,7 +580,6 @@ impl Level {
         &mut self,
         use_pressed: bool,
         partner_use: bool,
-        kill: &[EntityId],
     ) -> Vec<(EntityId, TeleportEvent)> {
         self.frames += 1;
         self.app.script_time += f64::from(DT);
@@ -603,25 +593,6 @@ impl Level {
         let session = app.session.as_mut().unwrap();
         session.scripting.scheduler.begin_frame();
         let mut deaths = std::mem::take(&mut session.pending_death_events);
-        if !kill.is_empty() {
-            let mut registry = ctx.registry.borrow_mut();
-            for &target in kill {
-                let mut context = DamageContext::new("ghost-links-fixture", DamageProducer::InTick);
-                context.attacker = Some(pawn);
-                apply_damage_with_context(
-                    &mut registry,
-                    target,
-                    &DamagePayload {
-                        amount: 10_000.0,
-                        impulse: Vec3::ZERO,
-                    },
-                    context,
-                );
-                session
-                    .scripting
-                    .evaluate_pending_in_tick_impacts(&mut registry);
-            }
-        }
         let mut use_edges: HashMap<PlayerId, bool> = HashMap::new();
         if use_pressed {
             use_edges.insert(PlayerId::Local(pawn), true);
@@ -1710,6 +1681,7 @@ fn run_north_timer(map: &str, mut level: Level) {
     ] {
         assert_closet(map, &level, doors, monsters, false, "waits for a split");
     }
+    hidden_return(map, &level, "while nobody presses the barrier button");
 }
 
 /// The north closet's door sinks open and both its knights walk out and
@@ -1804,6 +1776,7 @@ fn run_barrier_approach(map: &str, mut level: Level) {
     ] {
         assert_closet(map, &level, doors, monsters, false, "waits for a split");
     }
+    hidden_return(map, &level, "while nobody presses the barrier button");
 }
 
 /// The final wave's closet door and monsters, checked as the level installs:
@@ -1866,32 +1839,34 @@ fn split_then_flip_back(map: &str, level: &mut Level, height: f32) -> f64 {
     crossed_at
 }
 
-/// Kill every monster tagged `monsters`; the dev mod's death policy removes
-/// them, `progress` fires, and the pedestal tagged `pedestal` rises out of the
-/// floor while its pad arms.
-fn clear_and_raise(map: &str, level: &mut Level, monsters: &str, pedestal: &str, pad: &str) {
-    let pedestal = only(map, level, ComponentKind::KinematicMover, pedestal);
-    let pad = only(map, level, ComponentKind::TriggerVolume, pad);
+/// Back room B's return pedestal and its pad, while the pedestal is hidden:
+/// not started, its top below the floor, its pad disarmed. Returns both.
+fn hidden_return(map: &str, level: &Level, why: &str) -> (EntityId, EntityId) {
+    let pedestal = only(map, level, ComponentKind::KinematicMover, "return_pedestal");
+    let pad = only(map, level, ComponentKind::TriggerVolume, "return_pad");
+    let top = level.position(pedestal).y + PEDESTAL_HALF_HEIGHT;
     assert!(
-        !level.started(pedestal) && !level.trigger_armed(pad),
-        "{map}: the button waits for its copy's clear"
+        !level.started(pedestal) && top < 0.0,
+        "{map}: the return pedestal stays below the floor {why}: top at {top}"
     );
-    let sunk = level.position(pedestal).y;
-    let residents = level.entities(ComponentKind::Health, monsters);
-    assert!(!residents.is_empty(), "{map}: `{monsters}` placed");
-    level.frame_killing(&residents);
-    for _ in 0..PROGRESS_FRAMES {
-        level.frame();
-    }
     assert!(
-        level.entities(ComponentKind::Health, monsters).is_empty(),
-        "{map}: the death policy removed every `{monsters}`"
+        !level.trigger_armed(pad),
+        "{map}: the return pad stays off {why}"
     );
+    (pedestal, pad)
+}
+
+/// The barrier button's press raised the pedestal tagged `return_pedestal`
+/// and armed its pad at once; the pedestal then stands out of the floor.
+fn assert_return_rises(map: &str, level: &mut Level, pedestal: EntityId, pad: EntityId, sunk: f32) {
     assert!(
         level.started(pedestal),
-        "{map}: the clear raises the pedestal"
+        "{map}: the barrier press raises the return pedestal"
     );
-    assert!(level.trigger_armed(pad), "{map}: the clear arms its pad");
+    assert!(
+        level.trigger_armed(pad),
+        "{map}: the barrier press arms the return pad"
+    );
     for _ in 0..RISE_FRAMES {
         level.frame();
     }
@@ -1899,6 +1874,10 @@ fn clear_and_raise(map: &str, level: &mut Level, monsters: &str, pedestal: &str,
     assert!(
         close(rise, 56.0 / UNITS_PER_METRE, 0.02),
         "{map}: the pedestal stands out of the floor: {rise}"
+    );
+    assert!(
+        level.position(pedestal).y - PEDESTAL_HALF_HEIGHT > -1e-3,
+        "{map}: the risen pedestal sits on the floor"
     );
 }
 
@@ -2037,10 +2016,12 @@ fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monster
 }
 
 // Co-op, the whole run: the host starts in copy A and the partner, a connected
-// client's pawn, in copy B. The partner's press in back room B drops copy A's
-// barrier. The host splits into copy B and flips back alone, since the partner
-// stands outside the swap; copy B's limitators wake three seconds after the
-// split. Copy B cleared raises the return pedestal; its press sends only the
+// client's pawn, in back room B. Until the partner presses the button there,
+// the return pedestal stays hidden below the floor and its pad off. The press
+// drops copy A's barrier and at once raises the pedestal and arms its pad. The
+// host splits into copy B and flips back alone, since the partner stands
+// outside the swap; copy B's limitators wake three seconds after the split.
+// With the limitators still alive, the return pad's press sends only the
 // partner to room A. The arrival reunites the players: the flip turns off for
 // good, and three seconds later back room A's closet opens and the final wave
 // engages. A press of copy A's purple pad afterwards flips nobody.
@@ -2066,12 +2047,15 @@ fn run_coop_return(map: &str, mut level: Level) {
     for _ in 0..SETTLE {
         assert!(level.frame().is_empty());
     }
+    let (pedestal, pad) = hidden_return(map, &level, "before the barrier press");
+    let sunk = level.position(pedestal).y;
     level.partner_frame_with_use();
     level.frame();
     assert!(
         level.started(barrier),
         "{map}: the button in back room B drops copy A's barrier"
     );
+    assert_return_rises(map, &mut level, pedestal, pad, sunk);
     let crossed_at = split_then_flip_back(map, &mut level, height);
     while level.app.script_time < crossed_at + LIMITATOR_BEAT_SECS + WAVE_BEAT_SLACK {
         level.frame();
@@ -2085,12 +2069,11 @@ fn run_coop_return(map: &str, mut level: Level) {
         "opens three seconds after the split",
     );
     level.place(quake(HOST_STAND.0, HOST_STAND.1, 0.0), height);
-    clear_and_raise(
-        map,
-        &mut level,
-        "echo_monster_b",
-        "return_pedestal",
-        "return_pad",
+    assert!(
+        !level
+            .entities(ComponentKind::Health, "echo_monster_b")
+            .is_empty(),
+        "{map}: the return does not wait for copy B's clear"
     );
     for &door in &doors {
         assert!(!level.started(door), "{map}: the wave waits for a return");

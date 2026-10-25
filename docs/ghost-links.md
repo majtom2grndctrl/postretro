@@ -447,10 +447,11 @@ copy B's. Until its cue, each closet stays shut and its monsters asleep.
 - **The flip:** once the split lands, every press of a purple pad swaps
   everyone standing in either room into the other copy. Press it again to
   swap back, as often as you like, until you reunite.
-- **The return:** clearing copy B raises a green button against the east wall
-  of back room B, with a purple pad in front of it. Pressing it sends only
-  you, not anyone else in copy B, back to room A. Your arrival reunites you:
-  the purple pads stop flipping, copy A's barrier drops if it is still up,
+- **The return:** the red button that drops copy A's barrier also raises a
+  green button out of the floor against the east wall of back room B, with a
+  purple pad in front of it. It stays hidden until that press, and copy B
+  need not be clear. Pressing it sends only you, not anyone else in copy B,
+  back to room A. Your arrival reunites you: the purple pads stop flipping,
   and after a three-second beat the purple door in back room A's east wall
   sinks and two knights and two limitators come out. A second arrival starts
   nothing again.
@@ -466,10 +467,11 @@ Run a host and a client on one machine as in
 [diagnostics.md](diagnostics.md). Both start in copy A; the client takes the
 second spawn, which is `coop_only`. A good first run: the client presses copy
 A's purple pad to split into copy B, walks into back room B, presses the red
-button and watches the barrier's ghost sink in copy B's doorway. Each of you
-clears your own copy, flipping whenever you want to trade fights. The client
-clears copy B and returns by the return button, and three seconds after the
-arrival the final wave comes out on both of you in copy A.
+button and watches the barrier's ghost sink in copy B's doorway, while the
+return button rises beside them. Each of you fights your own copy, flipping
+whenever you want to trade fights. The client returns by the return button,
+and three seconds after the arrival the final wave comes out on both of you
+in copy A.
 
 ```bash
 # Terminal 1

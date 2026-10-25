@@ -25,6 +25,7 @@ export function setupLevel() {
 
   // Barrier puzzle: the button in back room B drops the barrier in copy A.
   // Link echo_a lists the barrier's tag, so the player in copy B watches it drop.
+  // The same press raises the return button (below).
   const barrier = getMapEntities("mover", { tag: "vault_barrier" });
   const open = defineReaction("barrier.open", { sequence: barrier.flatMap((door) => door.start()) });
 
@@ -87,29 +88,29 @@ export function setupLevel() {
   const flip = defineReaction("swap.arm", { sequence: swap.flatMap((t) => t.arm()) });
   const flipSettle = defineReaction("swap.settle", { sequence: swap.flatMap((t) => t.disarm()) });
 
-  // Final wave: the barrier drops if it still stands, and after a three-second
-  // beat the closet in back room A opens and its monsters wake.
+  // Final wave: after a three-second beat the closet in back room A opens and
+  // its monsters wake. The barrier is already down: the press that raised the
+  // return button dropped it.
   const finalDoors = getMapEntities("mover", { tag: "final_closet_door" });
   const wave = defineReaction("wave.start", {
     sequence: [
-      ...barrier.flatMap((door) => door.start()),
       ...wait(3000),
       ...finalDoors.flatMap((door) => door.start()),
       npcs({ tag: "final_wave" }).update({ aggro: true }),
     ],
   });
 
-  // Return: copy B cleared raises a pedestal in back room B and arms its pad. A
-  // press arms the classic teleporter over the pad, so only whoever stands
-  // there goes to room A. The arrival reunites the players: it disarms the
-  // return, turns the flip off for good and starts the wave.
+  // Return: the barrier button raises a pedestal out of back room B's floor at
+  // once and arms its pad, whether or not copy B is clear. A press arms the
+  // classic teleporter over the pad, so only whoever stands there goes to room
+  // A. The arrival reunites the players: it disarms the return, turns the flip
+  // off for good and starts the wave.
   const returnPedestal = getMapEntities("mover", { tag: "return_pedestal" });
   const returnPads = getMapEntities("trigger", { tag: "return_pad" });
   const returnGate = getMapEntities("teleporter", { tag: "echo_return" });
   const rise = defineReaction("return.rise", {
     sequence: [...returnPedestal.flatMap((m) => m.start()), ...returnPads.flatMap((p) => p.arm())],
   });
-  const clearB = defineReaction("clear.b", { progress: { tag: "echo_monster_b", at: 1.0, fire: "return.rise" } });
   const returnArm = defineReaction("return.arm", { sequence: returnGate.flatMap((t) => t.arm()) });
   const returnSettle = defineReaction("return.settle", {
     sequence: [
@@ -122,11 +123,11 @@ export function setupLevel() {
   return {
     reactions: [
       reveal, swell, fight, open, northCloset, northTimer, splitArm, splitSettle,
-      southCloset, limitators, flip, flipSettle, wave, rise, clearB, returnArm, returnSettle,
+      southCloset, limitators, flip, flipSettle, wave, rise, returnArm, returnSettle,
     ],
     triggerEvents: [
       ...getMapEntities("trigger", { tag: "echo_plate" }).map((t) => t.on("enter", [reveal, swell])),
-      ...getMapEntities("trigger", { tag: "vault_button" }).map((t) => t.on("enter", [open])),
+      ...getMapEntities("trigger", { tag: "vault_button" }).map((t) => t.on("enter", [open, rise])),
       ...getMapEntities("trigger", { tag: "barrier_approach" }).map((t) => t.on("enter", [northCloset])),
       ...splitPads.map((t) => t.on("enter", [splitArm])),
       ...swapPads.map((t) => t.on("enter", [flip, fight])),

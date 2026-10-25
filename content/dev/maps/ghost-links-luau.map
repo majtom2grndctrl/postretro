@@ -11,7 +11,8 @@
 // monster must path through are 128 units wide: the baked navmesh routes
 // nothing through a 64 unit gap.
 // Back room B holds the red button switch on its north wall and the green
-// return pedestal, a mover sunk below its floor by the east wall. Back room A
+// return pedestal, a mover sunk wholly below its floor by the east wall, well
+// clear of a player standing at the button. Back room A
 // opens on the final-wave closet in its east wall, x 448 to 544, y -64 to 64,
 // in line with the doorway so its monsters see into room A once its door
 // sinks.
@@ -21,7 +22,8 @@
 // reveal. Each link volume reaches below the floor so the sinking barrier
 // stays a member until it is out of sight.
 // Barrier puzzle: press the red button in back room B. The barrier in copy A
-// drops into the floor, and its ghost drops in copy B doorway.
+// drops into the floor, and its ghost drops in copy B doorway. The same press
+// raises the return pedestal.
 // Monster closets: each copy hides monsters in two closets sealed by purple
 // doors. The north closet opens x 32 to 160 and the south closet x -64 to 64
 // in copy A, plus 4096 in copy B. Each is 96 units deep and full room height,
@@ -47,12 +49,13 @@
 // swap teleporters, so everyone standing in either room lands in the other
 // copy. The first teleport through either swap teleporter disarms both, and
 // the next press arms them again.
-// Return: once copy B monsters are cleared the return pedestal rises and its
-// purple use pad arms. A press arms the classic teleporter over the pad, which
-// sends whoever stands there alone to return_a in room A, then disarms. The
-// arrival turns the purple swap pads off for good and starts the final wave:
-// the barrier drops if it still stands, and three seconds later the final
-// closet door sinks and two knights and two limitators wake. A second arrival
+// Return: the red button press raises the return pedestal out of the floor
+// at once and arms its purple use pad, whether or not copy B monsters are
+// cleared. A press arms the classic teleporter over the pad, which sends
+// whoever stands there alone to return_a in room A, then disarms. The arrival
+// turns the purple swap pads off for good and starts the final wave: three
+// seconds later the final closet door sinks and two knights and two
+// limitators wake. A second arrival
 // starts nothing again. No placed monster opts into ghosting.
 // The blue touch plate in either copy runs echo.reveal and echo.swell.
 // Both players start in copy A main room, west of the room centre, clear of

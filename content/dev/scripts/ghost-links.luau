@@ -37,6 +37,7 @@ function setupLevel(_ctx)
 
   -- Barrier puzzle: the button in back room B drops the barrier in copy A.
   -- Link echo_a lists the barrier's tag, so the player in copy B watches it drop.
+  -- The same press raises the return button (below).
   local barrier = Postretro.getMapEntities("mover", { tag = "vault_barrier" })
   local open = Postretro.defineReaction("barrier.open", {
     sequence = each(barrier, function(door) return door:start() end),
@@ -104,26 +105,26 @@ function setupLevel(_ctx)
     sequence = each(swap, function(t) return t:disarm() end),
   })
 
-  -- Final wave: the barrier drops if it still stands, and after a three-second
-  -- beat the closet in back room A opens and its monsters wake.
+  -- Final wave: after a three-second beat the closet in back room A opens and
+  -- its monsters wake. The barrier is already down: the press that raised the
+  -- return button dropped it.
   local finalDoors = Postretro.getMapEntities("mover", { tag = "final_closet_door" })
-  local waveSteps = each(barrier, function(door) return door:start() end)
-  append(waveSteps, Postretro.wait(3000))
+  local waveSteps = Postretro.wait(3000)
   append(waveSteps, each(finalDoors, function(door) return door:start() end))
   table.insert(waveSteps, Postretro.npcs({ tag = "final_wave" }):update({ aggro = true }))
   local wave = Postretro.defineReaction("wave.start", { sequence = waveSteps })
 
-  -- Return: copy B cleared raises a pedestal in back room B and arms its pad. A
-  -- press arms the classic teleporter over the pad, so only whoever stands
-  -- there goes to room A. The arrival reunites the players: it disarms the
-  -- return, turns the flip off for good and starts the wave.
+  -- Return: the barrier button raises a pedestal out of back room B's floor at
+  -- once and arms its pad, whether or not copy B is clear. A press arms the
+  -- classic teleporter over the pad, so only whoever stands there goes to room
+  -- A. The arrival reunites the players: it disarms the return, turns the flip
+  -- off for good and starts the wave.
   local returnPedestal = Postretro.getMapEntities("mover", { tag = "return_pedestal" })
   local returnPads = Postretro.getMapEntities("trigger", { tag = "return_pad" })
   local returnGate = Postretro.getMapEntities("teleporter", { tag = "echo_return" })
   local riseSteps = each(returnPedestal, function(m) return m:start() end)
   append(riseSteps, each(returnPads, function(p) return p:arm() end))
   local rise = Postretro.defineReaction("return.rise", { sequence = riseSteps })
-  local clearB = Postretro.defineReaction("clear.b", { progress = { tag = "echo_monster_b", at = 1.0, fire = "return.rise" } })
   local returnArm = Postretro.defineReaction("return.arm", {
     sequence = each(returnGate, function(t) return t:arm() end),
   })
@@ -134,7 +135,7 @@ function setupLevel(_ctx)
 
   local triggerEvents = {}
   bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "echo_plate" }), "enter", { reveal, swell })
-  bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "vault_button" }), "enter", { open })
+  bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "vault_button" }), "enter", { open, rise })
   bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "barrier_approach" }), "enter", { northCloset })
   bind(triggerEvents, splitPads, "enter", { splitArm })
   bind(triggerEvents, swapPads, "enter", { flip, fight })
@@ -147,7 +148,7 @@ function setupLevel(_ctx)
   return {
     reactions = {
       reveal, swell, fight, open, northCloset, northTimer, splitArm, splitSettle,
-      southCloset, limitators, flip, flipSettle, wave, rise, clearB, returnArm, returnSettle,
+      southCloset, limitators, flip, flipSettle, wave, rise, returnArm, returnSettle,
     },
     triggerEvents = triggerEvents,
     teleportEvents = teleportEvents,

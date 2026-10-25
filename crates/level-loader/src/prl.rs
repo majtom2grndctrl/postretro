@@ -61,6 +61,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::shadowmask_atlas::{FaceOwners, ShadowmaskBlockIndex};
+#[cfg(feature = "load-prl")]
 use postretro_level_format::teleporters::TeleportersSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;

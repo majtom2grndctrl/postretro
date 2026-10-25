@@ -116,7 +116,10 @@ pub(super) fn bake_light_layer_chart_clipped(
     let clip_reach = (skip_unreachable_clips && sampler.is_footprint())
         .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
     // `ShaftCull::new` declines a sun; checking first keeps a sun's walk
-    // from building the map-wide scene it would never read.
+    // from building the map-wide scene it would never read. Other workers
+    // wait on this init while holding their permits, which is safe only
+    // because `ShaftScene::new` is serial and takes no lock or permit: keep
+    // it that way.
     let shaft = if exact_skips.shaft_cull && light.light_type != LightType::Directional {
         let scene = shaft_scene.get_or_init(|| ShaftScene::new(primitives, geometry));
         ShaftCull::new(

@@ -312,7 +312,7 @@ pub(crate) enum ProbeEarlyOut {
     /// All blocked stores 0, all clear stores 1: an ordinary light.
     Agreed,
     /// All blocked stores 0; any clear probe traces the full set. A light
-    /// whose emitter sphere reaches into geometry ([`has_embedded_emitter`]):
+    /// whose emitter sphere reaches into geometry ([`EmbeddedEmitters`]):
     /// its embedded cap can hide from every probe, so nine clear probes do
     /// not mean an open texel. The cap can only lower visibility, though,
     /// and the centre probe aims at the emitter's centre, in open air: with
@@ -485,7 +485,7 @@ fn footprint_rotation(seed: u64) -> (f32, f32) {
 /// The nine probes are traced first. When none is clipped and they agree as
 /// `early_out` asks, the texel is exactly 0 or 1: all blocked or all clear
 /// for an ordinary light, all blocked only for one whose emitter reaches into
-/// geometry ([`has_embedded_emitter`]). A clipped probe breaks the ring, so
+/// geometry ([`EmbeddedEmitters`]). A clipped probe breaks the ring, so
 /// the texel then traces its full set even if its survivors agree. A soft
 /// emitter's samples pair with footprint points per texel, so the probes stay
 /// a centre and a ring in every occluder plane

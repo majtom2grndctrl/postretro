@@ -838,6 +838,7 @@ impl NetEndpoint {
         let Self::Client {
             replication,
             time_sync,
+            state_slots,
             interpolation_delay,
             prediction,
             tuning,
@@ -856,6 +857,7 @@ impl NetEndpoint {
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
         time_sync.clear_retired_input_facts();
+        state_slots.reset_timed_slot_targets();
     }
 
     /// The host's level state (level gravity and fluid table) from this
@@ -1229,6 +1231,107 @@ mod tests {
             state_slots.is_reset(),
             "old client schema and held baselines cannot survive level unload"
         );
+    }
+
+    #[test]
+    fn timed_slot_history_clears_at_level_manifest_and_demotion_boundaries() {
+        for boundary in 0..4 {
+            let mut endpoint = NetEndpoint::from_role(
+                &NetRole::Connect {
+                    addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            let mut table = SlotTable::new();
+            let identity = state_slots::ReplicatedSlotIdentity::default();
+            let schema = state_slots::ReplicatedSlotSchema::build(&table, &identity);
+            let slot_id = schema.id_for("player.reloadProgress").unwrap();
+            let fingerprint = *schema.fingerprint();
+            let NetEndpoint::Client { state_slots, .. } = &mut endpoint else {
+                unreachable!()
+            };
+            let mut detector = postretro_scripting_core::state_crossings::CrossingDetector::new();
+            let mut data = postretro_entities::DataRegistry::new();
+            data.populate_level(
+                Vec::new(),
+                vec![postretro_entities::CrossingDescriptor {
+                    slot: Some("player.reloadProgress".to_string()),
+                    condition: postretro_entities::CrossingCondition::Above { threshold: 0.1 },
+                    max: 1.0,
+                    edge: None,
+                    fire: vec!["stale".to_string()],
+                }],
+                &[],
+            );
+            detector.initialize(&data, &table, &postretro_entities::ScriptCtx::new());
+            state_slots.advance_timed_slot_targets(Some(100.0), 0.0);
+            for tick in [100, 102, 104] {
+                let record = postretro_net::state_slots::RawStateSlotRecord {
+                    slot_id: slot_id.0,
+                    kind: postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE,
+                    has_baseline_ref: false,
+                    baseline_ref: 0,
+                    baseline_id: tick,
+                    value: postretro_net::state_slots::WireSlotValue::Array(vec![
+                        0.0,
+                        (tick - 100) as f32 / 16.0,
+                    ]),
+                };
+                let outcome = state_slots.apply_snapshot_state(
+                    &mut table,
+                    &identity,
+                    tick,
+                    &fingerprint,
+                    &[record],
+                );
+                state_slots.accept_timed_slot_sample(tick, &table, &outcome);
+                state_slots.advance_timed_slot_targets(
+                    Some(f64::from(tick)),
+                    if tick == 100 { 0.0 } else { 2.0 / 60.0 },
+                );
+            }
+            assert!(
+                state_slots.timed_slot_debug().slots[0]
+                    .agreed_slope
+                    .is_some()
+            );
+            match boundary {
+                0 => endpoint.reset_level_scoped_client_state(),
+                1 => endpoint.reset_state_slot_schema(),
+                2 => endpoint.demote_client_state(&mut EntityRegistry::new()),
+                _ => {
+                    endpoint = NetEndpoint::from_role(
+                        &NetRole::Connect {
+                            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+                        },
+                        None,
+                    )
+                    .unwrap()
+                    .unwrap()
+                }
+            }
+            let NetEndpoint::Client { state_slots, .. } = &mut endpoint else {
+                unreachable!()
+            };
+            assert!(
+                state_slots
+                    .detect_state_crossings(&mut detector, &table)
+                    .is_empty(),
+                "pending raw crossings cannot survive lifecycle boundary {boundary}"
+            );
+            let cleared = state_slots.timed_slot_debug();
+            assert!(cleared.playback_tick.is_none(), "boundary {boundary}");
+            assert!(
+                cleared
+                    .slots
+                    .iter()
+                    .all(|r| r.newest_tick.is_none() && r.target.is_none())
+            );
+            state_slots.advance_timed_slot_targets(Some(2.0), 1.0 / 60.0);
+            assert_eq!(state_slots.timed_slot_debug().playback_tick, Some(2.0));
+        }
     }
 
     #[test]

@@ -157,6 +157,8 @@ mod boot_spawn_gate_test;
 // `StateBaselineRefresh` without reconnect.
 #[cfg(test)]
 mod state_slot_loss_harness_test;
+#[cfg(test)]
+mod timed_slot_receive_test;
 // Test-only co-op harness covers trigger-state replication through client presentation.
 // It shares production ordering; trigger events remain local and never cross the wire.
 #[cfg(test)]
@@ -947,8 +949,10 @@ pub fn client_receive_and_apply(
         // a new highest-sequence snapshot. A late first entity baseline can produce
         // an additive ack, but its superseded state/faction batch must stay skipped.
         // Applied BEFORE the UI read snapshot is built (the receive path runs in
-        // the Game-logic stage, well before render), so the UI sees the authoritative
-        // value next frame. The state acks ride back in the SAME `AckMessage` as the
+        // the Game-logic stage, well before render). Raw readers see the final host
+        // sample this frame; the UI substitutes display-only timer targets. Ordered
+        // raw timer observations reach crossings after local game logic settles.
+        // The state acks ride back in the SAME `AckMessage` as the
         // entity acks (one ack per snapshot); refresh requests go out as their own
         // `ClientMessage::StateBaselineRefresh`.
         if outcome.accepted_newest_snapshot {
@@ -959,6 +963,7 @@ pub fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
+            state_slots.accept_timed_slot_sample(snapshot.server_tick, slot_table, &state_outcome);
             let faction_sentiment_baseline = state_slots.apply_faction_sentiment(
                 factions,
                 faction_sentiment,

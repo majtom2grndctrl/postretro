@@ -2549,6 +2549,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             &session.modal_stack,
             &mut session.presentation_cells,
             &script_ctx.slot_table.borrow(),
+            session.net_endpoint.as_ref(),
             app.script_time,
             session.ui_input_mode,
             app.ui_focused_id.clone(),

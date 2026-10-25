@@ -51,6 +51,8 @@ Robustness, not perf — profile peak memory before it blocks a real map.
 
 ## 3. The cold lightmap iterates every static light per texel
 
+**Superseded** by `context/plans/drafts/lightmap-stage-sizing/findings.md`. The production layer walk culls per light at chart level by falloff range; `bake_face_chart` now runs only as the test oracle. The waste left is loose chart culling: 84% of kept (light, chart) pairs cover no texel. A chart coverage cull removes most of it (roadmap "lightmap exact skips").
+
 **[confirmed] in source and measured.**
 
 `bake_face_chart` runs `for light in static_lights` per texel (`lightmap_bake.rs`). The

@@ -431,29 +431,30 @@ on the north wall of back room B drops copy A's barrier, whose ghost sinks in
 copy B's doorway. The blue plate in either copy reveals the second link and
 swells the echo.
 
-The first press of a purple pad is the split: it sends whoever stands on that
-pad alone into the other copy. The pads arm for the swap only once that
-crossing lands. Every later press swaps everyone standing in either room into
-the other copy and starts the battle: the purple closet doors in the north and
-south walls of both copies sink, and the monsters behind them wake. Copy A's
-closets hold three knights and copy B's two limitators. Until that press the
-monsters stay shut away and asleep. The split stands in for a game condition
-such as a timer or a health threshold, and it fires only once, so press it
-alone from the middle of the pad.
+It is a two-player set-piece, and both players start side by side in copy A.
+Each copy hides monsters behind purple doors in the north and south walls of
+its room: two knights in each of copy A's closets, and a limitator in each of
+copy B's. Until its cue, each closet stays shut and its monsters asleep.
 
-Clearing a copy raises a green button out of its floor, with a purple pad in
-front of it:
-
-- **Copy A cleared:** the ready button rises at the back of copy A's north
-  closet, where the knights came from. Pressing it starts the final wave.
-- **Copy B cleared:** the return button rises against the east wall of back
-  room B. Pressing it sends only you, not anyone else in copy B, back to room
-  A, and your arrival starts the final wave. Press it once for each player.
-
-The final wave starts once, from whichever comes first. Copy A's barrier
-drops if it is still up, and after a three-second beat the purple door in back
-room A's east wall sinks and two knights and two limitators come out. The other
-button, pressed later, starts nothing again.
+- **Copy A's north closet** opens fifteen seconds after the level loads, or
+  as soon as a player walks up to the barrier, whichever comes first. The
+  count starts at load, so a host still waiting for a partner may meet these
+  knights alone.
+- **The split** is the first press of copy A's purple pad. It sends whoever
+  stands on that pad alone into copy B. The crossing opens copy A's south
+  closet at once, and copy B's closets three seconds later. The split fires
+  only once, so press it alone from the middle of the pad.
+- **The flip:** once the split lands, every press of a purple pad swaps
+  everyone standing in either room into the other copy. Press it again to
+  swap back, as often as you like, until you reunite.
+- **The return:** the red button that drops copy A's barrier also raises a
+  green button out of the floor against the east wall of back room B, with a
+  purple pad in front of it. It stays hidden until that press, and copy B
+  need not be clear. Pressing it sends only you, not anyone else in copy B,
+  back to room A. Your arrival reunites you: the purple pads stop flipping,
+  and after a three-second beat the purple door in back room A's east wall
+  sinks and two knights and two limitators come out. A second arrival starts
+  nothing again.
 
 ```bash
 bin/prl-build content/dev/maps/ghost-links.map \
@@ -462,23 +463,15 @@ bin/prl-build content/dev/maps/ghost-links.map \
 bin/postretro-tool run maps/ghost-links.prl
 ```
 
-Alone, press the purple pad to cross into copy B, walk into back room B and
-press the red button, and watch the barrier's ghost sink. Press the pad again
-to return to copy A and start the battle; the knights come out for you. Copy
-B's limitators wake too, but nobody is there to fight them, so the ready button
-is your way on: clear the knights, press the ready button in the north closet,
-and three seconds later the final wave comes out of back room A.
-
-For two players, run a host and a client on one machine as in
-[diagnostics.md](diagnostics.md). The host starts in copy A and the client in
-copy B, whose spawn is `coop_only`. To fight on both sides at once, have the
-client stand in back room B, out of the swap, while the host presses copy A's
-pad to split into copy B and then presses copy B's pad to swap back alone.
-Each of you then clears your own copy. The client clears copy B and returns
-by the return button, and the arrival starts the final wave: three seconds
-later its closet opens on both of you in copy A. The host may press the ready button first, once
-copy A is clear, and start the wave without the client; the client's return
-then just brings them home.
+Run a host and a client on one machine as in
+[diagnostics.md](diagnostics.md). Both start in copy A; the client takes the
+second spawn, which is `coop_only`. A good first run: the client presses copy
+A's purple pad to split into copy B, walks into back room B, presses the red
+button and watches the barrier's ghost sink in copy B's doorway, while the
+return button rises beside them. Each of you fights your own copy, flipping
+whenever you want to trade fights. The client returns by the return button,
+and three seconds after the arrival the final wave comes out on both of you
+in copy A.
 
 ```bash
 # Terminal 1

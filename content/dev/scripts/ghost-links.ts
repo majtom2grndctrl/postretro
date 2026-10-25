@@ -1,10 +1,12 @@
 // Ghost-link acceptance fixture (maps/ghost-links.map). Luau twin: ghost-links.luau.
-// The first block is the brief's level-script example verbatim; the barrier
-// puzzle, the split, the battle swap, the return and the final wave follow. The
-// first press of a purple pad sends whoever stands on it alone into the other
-// copy; every later press swaps both players. Explicit names and member-ordered
-// lists keep the two runtimes' installed manifests equal.
-import { defineReaction, getMapEntities, npcs, wait } from "postretro";
+// A two-player co-op set-piece: both players start in copy A. The first block
+// is the brief's level-script example verbatim; the barrier puzzle, the timed
+// north closet, the split, the flip, the return and the final wave follow. The
+// first press of copy A's purple pad sends whoever stands on it alone into
+// copy B; every later press flips both players between the copies until the
+// return reunites them. Explicit names and member-ordered lists keep the two
+// runtimes' installed manifests equal.
+import { defineReaction, fire, getMapEntities, npcs, wait } from "postretro";
 import { setGhostAudio } from "postretro/audio";
 
 export function setupLevel() {
@@ -23,16 +25,34 @@ export function setupLevel() {
 
   // Barrier puzzle: the button in back room B drops the barrier in copy A.
   // Link echo_a lists the barrier's tag, so the player in copy B watches it drop.
+  // The same press raises the return button (below).
   const barrier = getMapEntities("mover", { tag: "vault_barrier" });
   const open = defineReaction("barrier.open", { sequence: barrier.flatMap((door) => door.start()) });
 
+  // North closet, copy A: its door sinks and its two knights wake. The monsters'
+  // sealed aggro gate (enabled_on_spawn 0) ignores everything else, damage
+  // included. Fifteen seconds after level load, or the first player to walk up
+  // to the barrier, whichever comes first. A start on a mover already moving
+  // or open does nothing and waking a woken monster changes nothing, so the
+  // second path opens nothing again.
+  const northDoor = getMapEntities("mover", { tag: "echo_closet_a1" });
+  const northCloset = defineReaction("closet.a1", {
+    sequence: [...northDoor.flatMap((door) => door.start()), npcs({ tag: "echo_monster_a1" }).update({ aggro: true })],
+  });
+  // The timer counts from level load, so a host still waiting for a partner
+  // may meet the knights alone. The fire step keeps the group wake out of the
+  // levelLoad body itself.
+  const northTimer = defineReaction("levelLoad", { sequence: [...wait(15000), ...fire(northCloset)] });
+
   // Split: the first pad press arms both split teleporters, one over each pad,
-  // so only whoever stands on a pad crosses, and turns the split pads off. The
-  // pad press stands in for a game condition (a timer, a health threshold) and
-  // splits once: press it alone from the pad's centre.
+  // so only whoever stands on a pad crosses, and turns the split pads off. Both
+  // players start in copy A, so the crossing is always copy A's, tagged
+  // split_to_b. The pad press stands in for a game condition (a timer, a health
+  // threshold) and splits once: press it alone from the pad's centre.
   const splitPads = getMapEntities("trigger", { tag: "split_pad" });
   const swapPads = getMapEntities("trigger", { tag: "swap_pad" });
   const split = getMapEntities("teleporter", { tag: "echo_split" });
+  const splitToB = getMapEntities("teleporter", { tag: "split_to_b" });
   const splitArm = defineReaction("split.arm", {
     sequence: [...split.flatMap((t) => t.arm()), ...splitPads.flatMap((p) => p.disarm())],
   });
@@ -42,77 +62,81 @@ export function setupLevel() {
     sequence: [...split.flatMap((t) => t.disarm()), ...swapPads.flatMap((p) => p.arm())],
   });
 
-  // Battle swap: the pad arms both seamless swap teleporters, so each player
-  // lands in the other copy, facing the monsters only the partner could see.
-  // The closet doors in both copies sink and the monsters wake; the links stop
-  // ghosting the partner's projectiles. The monsters' sealed aggro gate
-  // (enabled_on_spawn 0) ignores everything else, damage included.
-  const swap = getMapEntities("teleporter", { tag: "echo_swap" });
-  const closets = getMapEntities("mover", { tag: "echo_closet_door" });
-  const battle = defineReaction("battle.swap", {
+  // The crossing into copy B starts both fights. Copy A's south closet opens at
+  // once, so its two knights wait for whoever is left in or flips back to
+  // copy A.
+  const southDoor = getMapEntities("mover", { tag: "echo_closet_a2" });
+  const southCloset = defineReaction("closet.a2", {
+    sequence: [...southDoor.flatMap((door) => door.start()), npcs({ tag: "echo_monster_a2" }).update({ aggro: true })],
+  });
+  // Copy B's closets open three seconds after the crossing lands, so the
+  // arrival gets a beat to look around before the limitators wake.
+  const closetsB = getMapEntities("mover", { tag: "echo_closet_b" });
+  const limitators = defineReaction("closet.b", {
     sequence: [
-      ...swap.flatMap((t) => t.arm()),
-      ...closets.flatMap((door) => door.start()),
-      npcs({ tag: "echo_monster" }).update({ aggro: true }),
+      ...wait(3000),
+      ...closetsB.flatMap((door) => door.start()),
+      npcs({ tag: "echo_monster_b" }).update({ aggro: true }),
     ],
   });
-  // The first crossing disarms both directions, so walking out and back in
-  // does not swap again.
-  const settle = defineReaction("battle.settle", { sequence: swap.flatMap((t) => t.disarm()) });
 
-  // Final wave: the barrier drops, and after a three-second beat the closet in
-  // back room A opens and its monsters wake. It turns the ready button off. A
-  // start on a mover already moving or open does nothing, so whichever path
-  // fires it second starts nothing again.
-  const readyPads = getMapEntities("trigger", { tag: "ready_pad" });
+  // Flip: every swap pad press arms both seamless swap teleporters, so each
+  // player in a room lands in the other copy; the links stop ghosting the
+  // partner's projectiles. The first crossing disarms both directions, and
+  // the next press arms them again. The return turns the swap pads off.
+  const swap = getMapEntities("teleporter", { tag: "echo_swap" });
+  const flip = defineReaction("swap.arm", { sequence: swap.flatMap((t) => t.arm()) });
+  const flipSettle = defineReaction("swap.settle", { sequence: swap.flatMap((t) => t.disarm()) });
+
+  // Final wave: after a three-second beat the closet in back room A opens and
+  // its monsters wake. The barrier is already down: the press that raised the
+  // return button dropped it.
   const finalDoors = getMapEntities("mover", { tag: "final_closet_door" });
   const wave = defineReaction("wave.start", {
     sequence: [
-      ...readyPads.flatMap((p) => p.disarm()),
-      ...barrier.flatMap((door) => door.start()),
       ...wait(3000),
       ...finalDoors.flatMap((door) => door.start()),
       npcs({ tag: "final_wave" }).update({ aggro: true }),
     ],
   });
 
-  // Ready button: copy A cleared raises a pedestal in the north closet the
-  // knights came from and arms its pad. A press starts the wave.
-  const readyPedestal = getMapEntities("mover", { tag: "ready_pedestal" });
-  const ready = defineReaction("ready.rise", {
-    sequence: [...readyPedestal.flatMap((m) => m.start()), ...readyPads.flatMap((p) => p.arm())],
-  });
-  const clearA = defineReaction("clear.a", { progress: { tag: "echo_monster_a", at: 1.0, fire: "ready.rise" } });
-
-  // Return: copy B cleared raises a pedestal in back room B and arms its pad. A
-  // press arms the classic teleporter over the pad, so only whoever stands
-  // there goes to room A; the arrival disarms it and starts the wave.
+  // Return: the barrier button raises a pedestal out of back room B's floor at
+  // once and arms its pad, whether or not copy B is clear. A press arms the
+  // classic teleporter over the pad, so only whoever stands there goes to room
+  // A. The arrival reunites the players: it disarms the return, turns the flip
+  // off for good and starts the wave.
   const returnPedestal = getMapEntities("mover", { tag: "return_pedestal" });
   const returnPads = getMapEntities("trigger", { tag: "return_pad" });
   const returnGate = getMapEntities("teleporter", { tag: "echo_return" });
   const rise = defineReaction("return.rise", {
     sequence: [...returnPedestal.flatMap((m) => m.start()), ...returnPads.flatMap((p) => p.arm())],
   });
-  const clearB = defineReaction("clear.b", { progress: { tag: "echo_monster_b", at: 1.0, fire: "return.rise" } });
   const returnArm = defineReaction("return.arm", { sequence: returnGate.flatMap((t) => t.arm()) });
-  const returnSettle = defineReaction("return.settle", { sequence: returnGate.flatMap((t) => t.disarm()) });
+  const returnSettle = defineReaction("return.settle", {
+    sequence: [
+      ...returnGate.flatMap((t) => t.disarm()),
+      ...swapPads.flatMap((p) => p.disarm()),
+      ...swap.flatMap((t) => t.disarm()),
+    ],
+  });
 
   return {
     reactions: [
-      reveal, swell, fight, open, splitArm, splitSettle, battle, settle,
-      wave, ready, clearA, rise, clearB, returnArm, returnSettle,
+      reveal, swell, fight, open, northCloset, northTimer, splitArm, splitSettle,
+      southCloset, limitators, flip, flipSettle, wave, rise, returnArm, returnSettle,
     ],
     triggerEvents: [
       ...getMapEntities("trigger", { tag: "echo_plate" }).map((t) => t.on("enter", [reveal, swell])),
-      ...getMapEntities("trigger", { tag: "vault_button" }).map((t) => t.on("enter", [open])),
+      ...getMapEntities("trigger", { tag: "vault_button" }).map((t) => t.on("enter", [open, rise])),
+      ...getMapEntities("trigger", { tag: "barrier_approach" }).map((t) => t.on("enter", [northCloset])),
       ...splitPads.map((t) => t.on("enter", [splitArm])),
-      ...swapPads.map((t) => t.on("enter", [battle, fight])),
-      ...readyPads.map((t) => t.on("enter", [wave])),
+      ...swapPads.map((t) => t.on("enter", [flip, fight])),
       ...returnPads.map((t) => t.on("enter", [returnArm])),
     ],
     teleportEvents: [
       ...split.map((t) => t.on("teleport", [splitSettle])),
-      ...swap.map((t) => t.on("teleport", [settle])),
+      ...splitToB.map((t) => t.on("teleport", [southCloset, limitators])),
+      ...swap.map((t) => t.on("teleport", [flipSettle])),
       ...returnGate.map((t) => t.on("teleport", [returnSettle, wave])),
     ],
   };

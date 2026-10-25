@@ -439,6 +439,7 @@ mod tests {
             .expect("minimal weapon parses");
         weapon.sounds = Some(sounds);
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(name.to_string()),

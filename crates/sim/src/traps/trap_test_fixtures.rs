@@ -10,6 +10,7 @@ use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 pub(crate) fn projectile(speed: f32) -> ProjectileDescriptor {
     ProjectileDescriptor {
         speed,
+        ghost: false,
         radius: 0.0,
         lifetime_ms: 5_000.0,
         visual: ProjectileVisual {
@@ -91,6 +92,7 @@ pub(crate) fn bolt(recovery_ms: f32) -> WeaponDescriptor {
 pub(crate) fn entity(name: &str, weapon: WeaponDescriptor) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
         faction: None,
+        ghost: false,
         tolerance: None,
         canonical_name: Some(name.to_string()),
         inventory: None,

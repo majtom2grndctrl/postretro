@@ -38,6 +38,7 @@ use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
+use postretro_level_format::ghost_links::GhostLinksSection;
 use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::light_tags::LightTagsSection;
@@ -487,6 +488,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         trigger_volumes,
         &environment_volumes,
         &TeleportersSection::default(),
+        &GhostLinksSection::default(),
         None,
         None,
         cell_draw_index_section,
@@ -533,6 +535,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     trigger_volumes: Option<&TriggerVolumesSection>,
     environment_volumes: &EnvironmentVolumesSection,
     teleporters: &TeleportersSection,
+    // GhostLinks (id 56); written only when non-empty.
+    ghost_links: &GhostLinksSection,
     // PushForces (id 53), or `None` when every force is 1.
     push_forces: Option<&PushForcesSection>,
     // ReflectionProbes (id 54), or `None` when no probe was kept.
@@ -676,6 +680,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         trigger_volumes,
         environment_volumes,
         teleporters,
+        ghost_links,
         push_forces,
         reflection_probes,
         cell_draw_index: cell_draw_index_section,

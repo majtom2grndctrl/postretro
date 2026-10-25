@@ -1,0 +1,895 @@
+diff --git a/crates/level-compiler/src/lightmap_layer.rs b/crates/level-compiler/src/lightmap_layer.rs
+index fd7c063cd..ddce67444 100644
+--- a/crates/level-compiler/src/lightmap_layer.rs
++++ b/crates/level-compiler/src/lightmap_layer.rs
+@@ -726,6 +726,13 @@ fn bake_light_layer_chart_clipped(
+     // One permit covers the clip pre-pass and the walk, so pause and the
+     // concurrency cap apply to both.
+     let _permit = control.governor().enter();
++    let sizing = crate::lm_sizing::enabled();
++    let chart_start = crate::lm_sizing::now();
++    if sizing {
++        crate::lm_sizing::set_kind(light);
++        crate::lm_sizing::set_world_diag(geometry);
++        crate::lm_sizing::add(crate::lm_sizing::C_PAIRS, 1);
++    }
+     let chart = &atlas.charts[face_idx];
+     let capacity = if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
+         let (width, height) = chart_interior_dims(chart);
+@@ -739,8 +746,23 @@ fn bake_light_layer_chart_clipped(
+     let band = ClipBand::for_chart(chart);
+     // Light-independent, but partitions bake per light; it costs little
+     // beside the light's rays.
++    let clip_start = crate::lm_sizing::now();
+     let clip_reach = (skip_unreachable_clips && sampler.is_footprint())
+         .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
++    let clip_ns = clip_start.map(|t| t.elapsed().as_nanos() as u64);
++    let texel_traces = Cell::new(0u16);
++    let shaft_tile = crate::lm_sizing::shaft_tile().filter(|_| sampler.is_footprint() && capacity > 0);
++    if shaft_tile.is_some() {
++        crate::lm_sizing::set_world_diag(geometry);
++    }
++    let shaft_dims = shaft_tile.map_or((0, 0), |tile| {
++        let (iw, ih) = chart_interior_dims(chart);
++        ((iw + tile - 1) / tile, (ih + tile - 1) / tile)
++    });
++    let shaft_states: Vec<Cell<u8>> = (0..(shaft_dims.0 * shaft_dims.1) as usize)
++        .map(|_| Cell::new(0))
++        .collect();
++    let mut records: Vec<crate::lm_sizing::TexelRecord> = Vec::new();
+     // One chart's texels are walked in order on one thread, so the occluder
+     // caches stay local to this `(light, chart)` unit. Wall-clip segments keep
+     // their own: they run between the light's rays and would otherwise evict
+@@ -757,22 +779,159 @@ fn bake_light_layer_chart_clipped(
+                 .as_ref()
+                 .is_none_or(|reach| reach.may_clip(sample.tx, sample.ty)),
+         };
+-        if let Some(texel) = bake_sparse_layer_texel(
++        if let Some(tile) = shaft_tile {
++            let (tw, _) = shaft_dims;
++            let slot = ((sample.ty / tile) * tw + sample.tx / tile) as usize;
++            let (_, _, raw) = crate::lightmap_bake::light_texel_contribution_and_visibility_with(
++                light,
++                site.world_p,
++                site.normal,
++                || {
++                    let mut state = shaft_states[slot].get();
++                    if state == 0 {
++                        let (iw, ih) = chart_interior_dims(chart);
++                        let tx0 = (sample.tx / tile) * tile;
++                        let ty0 = (sample.ty / tile) * tile;
++                        let rect = [tx0, (tx0 + tile - 1).min(iw - 1), ty0, (ty0 + tile - 1).min(ih - 1)];
++                        let (clear, _) = crate::lm_sizing::shaft_clear(
++                            light,
++                            chart,
++                            rect,
++                            frame.radius(),
++                            crate::lm_sizing::world_diag(),
++                            bvh,
++                            primitives,
++                            geometry,
++                        );
++                        state = if clear { 1 } else { 2 };
++                        shaft_states[slot].set(state);
++                    }
++                    if state == 1 {
++                        1.0
++                    } else {
++                        sampler.visibility(
++                            light,
++                            &site,
++                            |from, to| {
++                                segment_clear_remembering(
++                                    bvh, primitives, geometry, from, to, &last_occluder,
++                                )
++                            },
++                            |from, to| {
++                                segment_clear_remembering(
++                                    bvh, primitives, geometry, from, to, &clip_occluder,
++                                )
++                            },
++                            |from, to| lead_in_clear(bvh, primitives, geometry, &band, from, to),
++                        )
++                    }
++                },
++            );
++            if let Some(texel) = sparse_layer_texel(sample.idx, raw) {
++                texels.push(texel);
++            }
++            return;
++        }
++        if !sizing {
++            if let Some(texel) = bake_sparse_layer_texel(
++                sample.idx,
++                light,
++                &site,
++                &sampler,
++                |from, to| {
++                    segment_clear_remembering(bvh, primitives, geometry, from, to, &last_occluder)
++                },
++                |from, to| {
++                    segment_clear_remembering(bvh, primitives, geometry, from, to, &clip_occluder)
++                },
++                |from, to| lead_in_clear(bvh, primitives, geometry, &band, from, to),
++            ) {
++                texels.push(texel);
++            }
++            return;
++        }
++        use crate::lm_sizing as lms;
++        lms::LAST_OUTCOME.with(|o| o.set(lms::OUT_UNCOVERED));
++        texel_traces.set(0);
++        let texel_start = std::time::Instant::now();
++        let baked = bake_sparse_layer_texel(
+             sample.idx,
+             light,
+             &site,
+             &sampler,
+             |from, to| {
+-                segment_clear_remembering(bvh, primitives, geometry, from, to, &last_occluder)
++                let t = std::time::Instant::now();
++                let before = last_occluder.get();
++                let clear =
++                    segment_clear_remembering(bvh, primitives, geometry, from, to, &last_occluder);
++                lms::add(lms::T_TRACE, t.elapsed().as_nanos() as u64);
++                lms::add(lms::C_TRACE, 1);
++                if !clear && before.is_some() && before == last_occluder.get() {
++                    lms::add(lms::C_TRACE_CACHE_HIT, 1);
++                }
++                texel_traces.set(texel_traces.get().saturating_add(1));
++                clear
+             },
+             |from, to| {
+-                segment_clear_remembering(bvh, primitives, geometry, from, to, &clip_occluder)
++                let t = std::time::Instant::now();
++                let clear =
++                    segment_clear_remembering(bvh, primitives, geometry, from, to, &clip_occluder);
++                lms::add(lms::T_REACH, t.elapsed().as_nanos() as u64);
++                lms::add(lms::C_REACH, 1);
++                clear
+             },
+-            |from, to| lead_in_clear(bvh, primitives, geometry, &band, from, to),
+-        ) {
++            |from, to| {
++                let t = std::time::Instant::now();
++                let clear = lead_in_clear(bvh, primitives, geometry, &band, from, to);
++                lms::add(lms::T_LEADIN, t.elapsed().as_nanos() as u64);
++                lms::add(lms::C_LEADIN, 1);
++                clear
++            },
++        );
++        let ns = texel_start.elapsed().as_nanos().min(u128::from(u32::MAX)) as u32;
++        let outcome = lms::LAST_OUTCOME.with(std::cell::Cell::get);
++        if outcome != lms::OUT_UNCOVERED && site.may_clip {
++            lms::add(lms::C_MAYCLIP_COVERED, 1);
++        }
++        records.push(lms::TexelRecord {
++            outcome,
++            ns,
++            traces: texel_traces.get(),
++        });
++        if let Some(texel) = baked {
+             texels.push(texel);
+         }
+     });
++    if sizing {
++        use crate::lm_sizing as lms;
++        let empty = records.iter().all(|r| r.outcome == lms::OUT_UNCOVERED);
++        let (width, height) = if capacity > 0 {
++            chart_interior_dims(chart)
++        } else {
++            (0, 0)
++        };
++        // The chart unit without the sizing analysis.
++        let total = chart_start.map_or(0, |start| start.elapsed().as_nanos() as u64);
++        lms::finish_chart(
++            light,
++            chart,
++            width,
++            height,
++            frame.radius(),
++            &records,
++            bvh,
++            primitives,
++            geometry,
++        );
++        let clip_ns = clip_ns.unwrap_or(0);
++        lms::add(lms::T_CLIPREACH, clip_ns);
++        lms::add(lms::T_CHART, total);
++        if empty {
++            lms::add(lms::C_PAIRS_EMPTY, 1);
++            lms::add(lms::T_CHART_EMPTY, total);
++            lms::add(lms::T_CLIPREACH_EMPTY, clip_ns);
++        }
++    }
+     control.advance(1);
+     texels
+ }
+diff --git a/crates/level-compiler/src/lm_sizing.rs b/crates/level-compiler/src/lm_sizing.rs
+new file mode 100644
+index 000000000..90c50c9f5
+--- /dev/null
++++ b/crates/level-compiler/src/lm_sizing.rs
+@@ -0,0 +1,591 @@
++// TEMPORARY: lightmap-stage sizing spike instrumentation. Not for landing.
++// Enabled by `POSTRETRO_LM_SIZING=<report path>`; off, every hook is one
++// cached-bool check and the bake is unchanged. Counts never feed the bake, so
++// output bytes are identical with it on or off.
++// See: context/plans/drafts/lightmap-stage-sizing/findings.md
++
++use std::cell::Cell;
++use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
++use std::sync::{Arc, LazyLock, Mutex, OnceLock};
++use std::time::Instant;
++
++use bvh::aabb::Aabb;
++use bvh::bvh::Bvh;
++use glam::Vec3;
++use nalgebra::Point3;
++
++use crate::bvh_build::BvhPrimitive;
++use crate::chart_raster::chart_texel_world_position;
++use crate::geometry::GeometryResult;
++use crate::lightmap_bake::{Chart, RAY_EPSILON};
++use crate::map_data::{LightType, MapLight};
++
++static PATH: LazyLock<Option<String>> =
++    LazyLock::new(|| std::env::var("POSTRETRO_LM_SIZING").ok().filter(|p| !p.is_empty()));
++
++#[inline]
++pub(crate) fn enabled() -> bool {
++    PATH.is_some()
++}
++
++// Per-texel outcome on the floored path, set by `footprint_visibility`.
++pub(crate) const OUT_UNCOVERED: u8 = 0;
++pub(crate) const OUT_LIT: u8 = 1;
++pub(crate) const OUT_DARK: u8 = 2;
++pub(crate) const OUT_FULL_DISAGREE: u8 = 3;
++pub(crate) const OUT_FULL_CLIPPED: u8 = 4;
++pub(crate) const OUT_FULL_EMBEDDED: u8 = 5;
++const OUTCOMES: usize = 6;
++
++thread_local! {
++    pub(crate) static LAST_OUTCOME: Cell<u8> = const { Cell::new(OUT_UNCOVERED) };
++    static KIND: Cell<usize> = const { Cell::new(0) };
++    static LOCAL: Arc<Counters> = {
++        let c = Arc::new(Counters::new());
++        REGISTRY.lock().unwrap().push(Arc::clone(&c));
++        c
++    };
++}
++
++static REGISTRY: Mutex<Vec<Arc<Counters>>> = Mutex::new(Vec::new());
++static WORLD_DIAG: OnceLock<f32> = OnceLock::new();
++
++pub(crate) const TILE_SIZES: [i32; 3] = [4, 8, 16];
++
++// Scalar counter ids (per light kind).
++pub(crate) const C_PAIRS: usize = 0;
++pub(crate) const C_PAIRS_EMPTY: usize = 1;
++pub(crate) const C_WALKED: usize = 2;
++// 3..3+OUTCOMES: texels by outcome
++const C_OUTCOME: usize = 3;
++pub(crate) const C_MAYCLIP_COVERED: usize = C_OUTCOME + OUTCOMES;
++pub(crate) const C_TRACE: usize = C_MAYCLIP_COVERED + 1;
++pub(crate) const C_TRACE_CACHE_HIT: usize = C_TRACE + 1;
++pub(crate) const C_REACH: usize = C_TRACE_CACHE_HIT + 1;
++pub(crate) const C_LEADIN: usize = C_REACH + 1;
++// Nanosecond accumulators.
++pub(crate) const T_CHART: usize = C_LEADIN + 1;
++pub(crate) const T_CHART_EMPTY: usize = T_CHART + 1;
++pub(crate) const T_CLIPREACH: usize = T_CHART_EMPTY + 1;
++pub(crate) const T_CLIPREACH_EMPTY: usize = T_CLIPREACH + 1;
++pub(crate) const T_TRACE: usize = T_CLIPREACH_EMPTY + 1;
++pub(crate) const T_REACH: usize = T_TRACE + 1;
++pub(crate) const T_LEADIN: usize = T_REACH + 1;
++pub(crate) const T_PAIRING: usize = T_LEADIN + 1;
++// Time in the per-texel bake call (Lambert + visibility), by outcome.
++const T_TEXEL_BY_OUTCOME: usize = T_PAIRING + 1;
++const T_ANALYSIS: usize = T_TEXEL_BY_OUTCOME + OUTCOMES;
++// Ray counts by outcome (traces, reaches, lead-ins).
++const R_TRACE_BY_OUTCOME: usize = T_ANALYSIS + 1;
++// Per tile size: covered tiles, all-lit tiles, shaft-clear tiles, texels in
++// all-lit / clear tiles, ns in all-lit / clear tiles, traces in clear tiles,
++// shaft test ns, triangles tested, clear-but-not-all-lit (soundness: must be 0).
++const S_BASE: usize = R_TRACE_BY_OUTCOME + OUTCOMES;
++const S_FIELDS: usize = 11;
++const S_COVERED: usize = 0;
++const S_ALLLIT: usize = 1;
++const S_CLEAR: usize = 2;
++const S_TEX_ALLLIT: usize = 3;
++const S_TEX_CLEAR: usize = 4;
++const S_NS_ALLLIT: usize = 5;
++const S_NS_CLEAR: usize = 6;
++const S_TRACE_CLEAR: usize = 7;
++const S_TEST_NS: usize = 8;
++const S_TRIS: usize = 9;
++const S_UNSOUND: usize = 10;
++const PER_KIND: usize = S_BASE + S_FIELDS * TILE_SIZES.len();
++const N: usize = PER_KIND * 2;
++
++struct Counters([AtomicU64; N]);
++
++impl Counters {
++    fn new() -> Self {
++        Self([const { AtomicU64::new(0) }; N])
++    }
++}
++
++/// Single-writer add: only the owning thread writes its counters.
++#[inline]
++fn add_raw(i: usize, v: u64) {
++    LOCAL.with(|c| {
++        let slot = &c.0[i];
++        slot.store(slot.load(Relaxed).wrapping_add(v), Relaxed);
++    });
++}
++
++#[inline]
++pub(crate) fn add(i: usize, v: u64) {
++    add_raw(KIND.with(Cell::get) * PER_KIND + i, v);
++}
++
++pub(crate) fn is_hard(light: &MapLight) -> bool {
++    match light.light_type {
++        LightType::Point | LightType::Spot => light.light_size <= 0.0,
++        LightType::Directional => light.angular_diameter <= 0.0,
++    }
++}
++
++pub(crate) fn set_kind(light: &MapLight) {
++    KIND.with(|k| k.set(usize::from(!is_hard(light))));
++}
++
++#[inline]
++pub(crate) fn now() -> Option<Instant> {
++    enabled().then(Instant::now)
++}
++
++#[inline]
++pub(crate) fn since(start: Option<Instant>, i: usize) {
++    if let Some(start) = start {
++        add(i, start.elapsed().as_nanos() as u64);
++    }
++}
++
++pub(crate) fn set_world_diag(geometry: &GeometryResult) {
++    WORLD_DIAG.get_or_init(|| {
++        let (min, max) = crate::lightmap_layer::geometry_world_aabb(geometry);
++        (max - min).length() as f32 + 1.0
++    });
++}
++
++/// One texel's record from the walk.
++#[derive(Clone, Copy)]
++pub(crate) struct TexelRecord {
++    pub outcome: u8,
++    pub ns: u32,
++    pub traces: u16,
++}
++
++/// Count one walked chart's texels and its tiles' shaft verdicts.
++#[allow(clippy::too_many_arguments)]
++pub(crate) fn finish_chart(
++    light: &MapLight,
++    chart: &Chart,
++    width: i32,
++    height: i32,
++    frame_radius: f32,
++    records: &[TexelRecord],
++    bvh: &Bvh<f32, 3>,
++    primitives: &[BvhPrimitive],
++    geometry: &GeometryResult,
++) {
++    let start = Instant::now();
++    let covered = records.iter().filter(|r| r.outcome != OUT_UNCOVERED).count();
++    add(C_WALKED, records.len() as u64);
++    for r in records {
++        add(C_OUTCOME + r.outcome as usize, 1);
++        add(T_TEXEL_BY_OUTCOME + r.outcome as usize, u64::from(r.ns));
++        add(R_TRACE_BY_OUTCOME + r.outcome as usize, u64::from(r.traces));
++    }
++    if covered > 0 && records.len() == (width * height) as usize {
++        let diag = *WORLD_DIAG.get().unwrap_or(&20_000.0);
++        for (si, &size) in TILE_SIZES.iter().enumerate() {
++            let base = S_BASE + si * S_FIELDS;
++            for ty0 in (0..height).step_by(size as usize) {
++                for tx0 in (0..width).step_by(size as usize) {
++                    let tx1 = (tx0 + size - 1).min(width - 1);
++                    let ty1 = (ty0 + size - 1).min(height - 1);
++                    let mut n_cov = 0u64;
++                    let mut all_lit = true;
++                    let mut ns = 0u64;
++                    let mut traces = 0u64;
++                    for ty in ty0..=ty1 {
++                        for tx in tx0..=tx1 {
++                            let r = records[(ty * width + tx) as usize];
++                            if r.outcome == OUT_UNCOVERED {
++                                continue;
++                            }
++                            n_cov += 1;
++                            all_lit &= r.outcome == OUT_LIT;
++                            ns += u64::from(r.ns);
++                            traces += u64::from(r.traces);
++                        }
++                    }
++                    if n_cov == 0 {
++                        continue;
++                    }
++                    add(base + S_COVERED, 1);
++                    if all_lit {
++                        add(base + S_ALLLIT, 1);
++                        add(base + S_TEX_ALLLIT, n_cov);
++                        add(base + S_NS_ALLLIT, ns);
++                    }
++                    let t = Instant::now();
++                    let (clear, tris) = shaft_clear(
++                        light,
++                        chart,
++                        [tx0, tx1, ty0, ty1],
++                        frame_radius,
++                        diag,
++                        bvh,
++                        primitives,
++                        geometry,
++                    );
++                    add(base + S_TEST_NS, t.elapsed().as_nanos() as u64);
++                    add(base + S_TRIS, tris);
++                    if clear {
++                        add(base + S_CLEAR, 1);
++                        add(base + S_TEX_CLEAR, n_cov);
++                        add(base + S_NS_CLEAR, ns);
++                        add(base + S_TRACE_CLEAR, traces);
++                        if !all_lit {
++                            add(base + S_UNSOUND, 1);
++                        }
++                    }
++                }
++            }
++        }
++    }
++    add(T_ANALYSIS, start.elapsed().as_nanos() as u64);
++}
++
++/// Whether no triangle can cross the convex hull of the tile's lifted,
++/// footprint-padded prism and the emitter, by a separating-axis test over a
++/// candidate axis set. `true` is sound (some axis separates every candidate);
++/// `false` may be a false positive. Returns triangles tested.
++#[allow(clippy::too_many_arguments)]
++pub(crate) fn shaft_clear(
++    light: &MapLight,
++    chart: &Chart,
++    [tx0, tx1, ty0, ty1]: [i32; 4],
++    frame_radius: f32,
++    world_diag: f32,
++    bvh: &Bvh<f32, 3>,
++    primitives: &[BvhPrimitive],
++    geometry: &GeometryResult,
++) -> (bool, u64) {
++    let n = chart.normal;
++    let (u, v) = (chart.u_axis, chart.v_axis);
++    let pad = frame_radius + 4.0 * RAY_EPSILON;
++    let corners = [
++        (chart_texel_world_position(chart, tx0, ty0), -u - v),
++        (chart_texel_world_position(chart, tx1, ty0), u - v),
++        (chart_texel_world_position(chart, tx0, ty1), -u + v),
++        (chart_texel_world_position(chart, tx1, ty1), u + v),
++    ];
++    let mut points: Vec<Vec3> = Vec::with_capacity(48);
++    for (p, out) in corners {
++        let p = p + out * pad;
++        points.push(p + n * (0.5 * RAY_EPSILON));
++        points.push(p + n * (2.5 * RAY_EPSILON));
++    }
++    let tile_centre = points.iter().copied().sum::<Vec3>() / points.len() as f32;
++    // Emitter: a sphere (exact support) or extra points.
++    let mut sphere: Option<(Vec3, f32)> = None;
++    let shaft_dir;
++    match light.light_type {
++        LightType::Point | LightType::Spot => {
++            let c = light.origin.as_vec3();
++            if light.light_size > 0.0 {
++                sphere = Some((c, light.light_size + 1.0e-3));
++            } else {
++                points.push(c);
++            }
++            shaft_dir = (c - tile_centre).normalize_or_zero();
++        }
++        LightType::Directional => {
++            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
++            let a = (-aim).normalize_or_zero();
++            let helper = if a.z.abs() < 0.999 { Vec3::Z } else { Vec3::X };
++            let e1 = helper.cross(a).normalize_or_zero();
++            let e2 = a.cross(e1);
++            let half = light.angular_diameter.to_radians() * 0.5;
++            let spread = world_diag * half.tan() * 1.05 + 1.0e-3;
++            let base: Vec<Vec3> = points.clone();
++            for p in base {
++                let far = p + a * world_diag;
++                if spread > 1.0e-3 {
++                    for (s1, s2) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
++                        points.push(far + e1 * (s1 * spread) + e2 * (s2 * spread));
++                    }
++                } else {
++                    points.push(far);
++                }
++            }
++            shaft_dir = a;
++        }
++    }
++    let support = |axis: Vec3| -> (f32, f32) {
++        let mut lo = f32::INFINITY;
++        let mut hi = f32::NEG_INFINITY;
++        for p in &points {
++            let d = axis.dot(*p);
++            lo = lo.min(d);
++            hi = hi.max(d);
++        }
++        if let Some((c, r)) = sphere {
++            let d = axis.dot(c);
++            let r = r * axis.length();
++            lo = lo.min(d - r);
++            hi = hi.max(d + r);
++        }
++        (lo, hi)
++    };
++    let (mut qmin, mut qmax) = (Vec3::INFINITY, Vec3::NEG_INFINITY);
++    for p in &points {
++        qmin = qmin.min(*p);
++        qmax = qmax.max(*p);
++    }
++    if let Some((c, r)) = sphere {
++        qmin = qmin.min(c - Vec3::splat(r));
++        qmax = qmax.max(c + Vec3::splat(r));
++    }
++    let tol = 1.0e-4;
++    let query = Aabb::with_bounds(
++        Point3::new(qmin.x - tol, qmin.y - tol, qmin.z - tol),
++        Point3::new(qmax.x + tol, qmax.y + tol, qmax.z + tol),
++    );
++    let fixed_axes = [n, u, v, shaft_dir];
++    let (n_lo, n_hi) = support(n);
++    let geom = &geometry.geometry;
++    let mut tested = 0u64;
++    for prim in bvh.traverse_iterator(&query, primitives) {
++        let start = prim.index_offset as usize;
++        let end = start + prim.index_count as usize;
++        let mut tri = start;
++        while tri + 3 <= end {
++            let t = [0, 1, 2].map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
++            tri += 3;
++            let tmin = t[0].min(t[1]).min(t[2]);
++            let tmax = t[0].max(t[1]).max(t[2]);
++            if tmax.cmplt(qmin - Vec3::splat(tol)).any() || tmin.cmpgt(qmax + Vec3::splat(tol)).any() {
++                continue;
++            }
++            tested += 1;
++            let separated_on = |axis: Vec3, hull: (f32, f32)| -> bool {
++                if axis.length_squared() < 1.0e-12 {
++                    return false;
++                }
++                let d = t.map(|p| axis.dot(p));
++                let lo = d[0].min(d[1]).min(d[2]);
++                let hi = d[0].max(d[1]).max(d[2]);
++                let scale = tol * axis.length();
++                hi < hull.0 - scale || lo > hull.1 + scale
++            };
++            if separated_on(n, (n_lo, n_hi)) {
++                continue;
++            }
++            let tn = (t[1] - t[0]).cross(t[2] - t[0]);
++            if separated_on(tn, support(tn)) {
++                continue;
++            }
++            let mut separated = false;
++            'edges: for k in 0..3 {
++                let e = t[(k + 1) % 3] - t[k];
++                for f in fixed_axes {
++                    let axis = e.cross(f);
++                    if separated_on(axis, support(axis)) {
++                        separated = true;
++                        break 'edges;
++                    }
++                }
++            }
++            if !separated {
++                return (false, tested);
++            }
++        }
++    }
++    (true, tested)
++}
++
++/// Write the summed counters to the report path.
++pub(crate) fn report(stage_wall: std::time::Duration) {
++    let Some(path) = PATH.as_ref() else {
++        return;
++    };
++    let mut sum = [0u64; N];
++    for c in REGISTRY.lock().unwrap().iter() {
++        for (i, slot) in c.0.iter().enumerate() {
++            sum[i] += slot.load(Relaxed);
++        }
++    }
++    // Timer overhead: one Instant::now + elapsed pair.
++    let calib_n = 2_000_000u32;
++    let t = Instant::now();
++    let mut acc = 0u128;
++    for _ in 0..calib_n {
++        let s = Instant::now();
++        acc += s.elapsed().as_nanos();
++    }
++    let timer_pair_ns = t.elapsed().as_nanos() as f64 / f64::from(calib_n);
++    let mut out = String::new();
++    use std::fmt::Write;
++    let _ = writeln!(out, "stage_wall_s {:.3}", stage_wall.as_secs_f64());
++    let _ = writeln!(out, "timer_pair_ns {timer_pair_ns:.2} (acc {acc})");
++    let names = [
++        "uncovered", "early_lit", "early_dark", "full_disagree", "full_clipped", "full_embedded",
++    ];
++    for kind in 0..2 {
++        let s = |i: usize| sum[kind * PER_KIND + i];
++        let _ = writeln!(out, "[{}]", if kind == 0 { "hard" } else { "soft" });
++        let _ = writeln!(out, "pairs {} pairs_empty {}", s(C_PAIRS), s(C_PAIRS_EMPTY));
++        let _ = writeln!(out, "walked {} mayclip_covered {}", s(C_WALKED), s(C_MAYCLIP_COVERED));
++        for (o, name) in names.iter().enumerate() {
++            let _ = writeln!(
++                out,
++                "outcome {name} texels {} texel_ns {} traces {}",
++                s(C_OUTCOME + o),
++                s(T_TEXEL_BY_OUTCOME + o),
++                s(R_TRACE_BY_OUTCOME + o)
++            );
++        }
++        let _ = writeln!(
++            out,
++            "calls trace {} trace_cache_hit {} reach {} leadin {}",
++            s(C_TRACE),
++            s(C_TRACE_CACHE_HIT),
++            s(C_REACH),
++            s(C_LEADIN)
++        );
++        let _ = writeln!(
++            out,
++            "ns chart {} chart_empty {} clipreach {} clipreach_empty {} trace {} reach {} leadin {} pairing {} analysis {}",
++            s(T_CHART),
++            s(T_CHART_EMPTY),
++            s(T_CLIPREACH),
++            s(T_CLIPREACH_EMPTY),
++            s(T_TRACE),
++            s(T_REACH),
++            s(T_LEADIN),
++            s(T_PAIRING),
++            s(T_ANALYSIS)
++        );
++        for (si, size) in TILE_SIZES.iter().enumerate() {
++            let b = S_BASE + si * S_FIELDS;
++            let _ = writeln!(
++                out,
++                "tile {size} covered {} all_lit {} clear {} tex_all_lit {} tex_clear {} ns_all_lit {} ns_clear {} traces_clear {} test_ns {} tris {} unsound {}",
++                s(b + S_COVERED),
++                s(b + S_ALLLIT),
++                s(b + S_CLEAR),
++                s(b + S_TEX_ALLLIT),
++                s(b + S_TEX_CLEAR),
++                s(b + S_NS_ALLLIT),
++                s(b + S_NS_CLEAR),
++                s(b + S_TRACE_CLEAR),
++                s(b + S_TEST_NS),
++                s(b + S_TRIS),
++                s(b + S_UNSOUND)
++            );
++        }
++    }
++    log::info!("[lm-sizing] writing report to {path}");
++    if let Err(e) = std::fs::write(path, out) {
++        log::warn!("[lm-sizing] report write failed: {e}");
++    }
++}
++
++// ---- Experiment: exact chart-level coverage cull (`POSTRETRO_LM_CHART_CULL`).
++
++static CHART_CULL: LazyLock<bool> =
++    LazyLock::new(|| std::env::var_os("POSTRETRO_LM_CHART_CULL").is_some());
++static CULL_COUNTS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
++
++pub(crate) fn chart_cull_enabled() -> bool {
++    *CHART_CULL
++}
++
++/// Whether `light` may give any texel of `chart` a direct term, by tests that
++/// hold for every texel at once with margins far above `f32` rounding:
++/// the light behind the chart's plane, the chart outside a spot's outer cone,
++/// or the chart rectangle beyond `falloff_range`. `false` only when no texel
++/// is covered.
++pub(crate) fn chart_may_cover(light: &MapLight, chart: &Chart) -> bool {
++    let verdict = chart_cover_verdict(light, chart);
++    CULL_COUNTS[verdict].fetch_add(1, Relaxed);
++    if verdict != 0 {
++        let (w, h) = crate::chart_raster::chart_interior_dims(chart);
++        CULL_COUNTS[4].fetch_add((w * h) as u64, Relaxed);
++    }
++    verdict == 0
++}
++
++fn chart_cover_verdict(light: &MapLight, chart: &Chart) -> usize {
++    if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
++        return 0;
++    }
++    let n = chart.normal;
++    match light.light_type {
++        LightType::Directional => {
++            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
++            let l = (-aim).normalize_or_zero();
++            // N·L is the same at every texel: exact.
++            if n.dot(l) <= 0.0 { 1 } else { 0 }
++        }
++        LightType::Point | LightType::Spot => {
++            let o = light.origin.as_vec3();
++            let (w, h) = crate::chart_raster::chart_interior_dims(chart);
++            let corners = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]
++                .map(|(tx, ty)| chart_texel_world_position(chart, tx, ty));
++            let centre = corners.iter().copied().sum::<Vec3>() * 0.25;
++            // Behind the plane, by a centimetre.
++            if n.dot(o - centre) < -0.01 {
++                return 1;
++            }
++            // Beyond reach of the texel-centre rectangle.
++            let lu = |p: Vec3| (p - corners[0]).dot(chart.u_axis);
++            let lv = |p: Vec3| (p - corners[0]).dot(chart.v_axis);
++            let (u0, u1) = corners.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &p| {
++                (a.min(lu(p)), b.max(lu(p)))
++            });
++            let (v0, v1) = corners.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &p| {
++                (a.min(lv(p)), b.max(lv(p)))
++            });
++            let ou = lu(o);
++            let ov = lv(o);
++            let du = (u0 - ou).max(ou - u1).max(0.0);
++            let dv = (v0 - ov).max(ov - v1).max(0.0);
++            let dn = n.dot(o - centre);
++            let nearest = (du * du + dv * dv + dn * dn).sqrt();
++            if nearest > light.falloff_range.max(1.0e-4) * 1.0001 + 0.01 {
++                return 2;
++            }
++            if matches!(light.light_type, LightType::Spot) {
++                let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]))
++                    .normalize_or_zero();
++                let inner = light.cone_angle_inner.unwrap_or(0.0);
++                let outer = light.cone_angle_outer.unwrap_or(inner + 0.01);
++                let radius = corners
++                    .iter()
++                    .map(|&p| p.distance(centre))
++                    .fold(0.0f32, f32::max)
++                    + 0.01;
++                let to_c = centre - o;
++                let dist = to_c.length();
++                if dist > radius && outer < 3.0 {
++                    let alpha = (radius / dist).asin();
++                    let theta_c = aim.dot(to_c / dist).clamp(-1.0, 1.0).acos();
++                    if theta_c - alpha > outer + 1.0e-3 {
++                        return 3;
++                    }
++                }
++            }
++            0
++        }
++    }
++}
++
++pub(crate) fn chart_cull_report() {
++    if !chart_cull_enabled() {
++        return;
++    }
++    let c: Vec<u64> = CULL_COUNTS.iter().map(|a| a.load(Relaxed)).collect();
++    eprintln!(
++        "[lm-sizing] chart cull: kept {} behind {} range {} cone {} culled_texels {}",
++        c[0], c[1], c[2], c[3], c[4]
++    );
++}
++
++// ---- Experiment: tile shaft cull (`POSTRETRO_LM_SHAFT=<tile size>`).
++
++static SHAFT_TILE: LazyLock<Option<i32>> = LazyLock::new(|| {
++    std::env::var("POSTRETRO_LM_SHAFT").ok().and_then(|v| v.parse().ok()).filter(|&t| t > 0)
++});
++
++pub(crate) fn shaft_tile() -> Option<i32> {
++    *SHAFT_TILE
++}
++
++pub(crate) fn world_diag() -> f32 {
++    *WORLD_DIAG.get().unwrap_or(&20_000.0)
++}
+diff --git a/crates/level-compiler/src/main.rs b/crates/level-compiler/src/main.rs
+index cbd1cbe1d..c3442a4c8 100644
+--- a/crates/level-compiler/src/main.rs
++++ b/crates/level-compiler/src/main.rs
+@@ -39,6 +39,7 @@ pub mod kinematic_geometry;
+ pub mod light_namespaces;
+ pub mod lightmap_bake;
+ pub mod lightmap_layer;
++mod lm_sizing;
+ #[cfg(test)]
+ mod lightmap_residency_dry_run;
+ pub mod logger;
+diff --git a/crates/level-compiler/src/pipeline.rs b/crates/level-compiler/src/pipeline.rs
+index cfa9652e2..e9d74788b 100644
+--- a/crates/level-compiler/src/pipeline.rs
++++ b/crates/level-compiler/src/pipeline.rs
+@@ -1622,6 +1622,8 @@ fn run_after_parsing(
+     // CPU time summed over workers, so it can exceed the wall time of the line
+     // above.
+     timings.push(("  TexelSteps", texel_step_elapsed));
++    crate::lm_sizing::report(fused_elapsed.saturating_sub(shadowmask_elapsed));
++    crate::lm_sizing::chart_cull_report();
+     if !static_baked_lights.is_empty() && !face_placements.is_empty() {
+         reporter.finish_stage(StageId::LightmapBake);
+     } else {
+diff --git a/crates/level-compiler/src/pipeline/lightmap_stage/partitions.rs b/crates/level-compiler/src/pipeline/lightmap_stage/partitions.rs
+index f2239a4c2..8d6748013 100644
+--- a/crates/level-compiler/src/pipeline/lightmap_stage/partitions.rs
++++ b/crates/level-compiler/src/pipeline/lightmap_stage/partitions.rs
+@@ -268,6 +268,10 @@ impl PartitionSource for LayerPartitions<'_> {
+             .iter()
+             .copied()
+             .filter(|&chart| light_may_reach(light, self.chart_bounds[chart]))
++            .filter(|&chart| {
++                !crate::lm_sizing::chart_cull_enabled()
++                    || crate::lm_sizing::chart_may_cover(light, &self.shared.charts[chart])
++            })
+             .collect();
+         // A culled chart bakes no texel, so it completes here.
+         self.control.advance(layer_charts.len() - reached.len());
+diff --git a/crates/level-compiler/src/texel_footprint.rs b/crates/level-compiler/src/texel_footprint.rs
+index 76a1ac19d..a498d4405 100644
+--- a/crates/level-compiler/src/texel_footprint.rs
++++ b/crates/level-compiler/src/texel_footprint.rs
+@@ -496,7 +496,9 @@ fn footprint_visibility(
+     };
+     let rotation = footprint_rotation(site.seed);
+     // A hard emitter traces one target from every point, so it pairs nothing.
++    let pairing_start = crate::lm_sizing::now();
+     let mut pairing = (!hard).then(|| footprint.emitter_pairing(light, site, rotation));
++    crate::lm_sizing::since(pairing_start, crate::lm_sizing::T_PAIRING);
+     // `None` when the sample is clipped, else whether its ray is clear.
+     let sample = |k: usize, pairing: Option<&EmitterPairing>| -> Option<bool> {
+         let point = if k == 0 {
+@@ -557,15 +559,36 @@ fn footprint_visibility(
+     }
+     // The centre is never clipped, so `surviving >= 1`.
+     if !clipped_probe && early_out.ends(clear, surviving) {
++        if crate::lm_sizing::enabled() {
++            crate::lm_sizing::LAST_OUTCOME.with(|o| {
++                o.set(if clear == 0 {
++                    crate::lm_sizing::OUT_DARK
++                } else {
++                    crate::lm_sizing::OUT_LIT
++                })
++            });
++        }
+         return FootprintOutcome {
+             visibility: clear as f32 / surviving as f32,
+             clipped_probe,
+             early_out: true,
+         };
+     }
++    if crate::lm_sizing::enabled() {
++        let outcome = if clipped_probe {
++            crate::lm_sizing::OUT_FULL_CLIPPED
++        } else if clear == surviving {
++            crate::lm_sizing::OUT_FULL_EMBEDDED
++        } else {
++            crate::lm_sizing::OUT_FULL_DISAGREE
++        };
++        crate::lm_sizing::LAST_OUTCOME.with(|o| o.set(outcome));
++    }
++    let claim_start = crate::lm_sizing::now();
+     if let Some(pairing) = pairing.as_mut() {
+         footprint.claim_counter_ring(pairing);
+     }
++    crate::lm_sizing::since(claim_start, crate::lm_sizing::T_PAIRING);
+     for k in FOOTPRINT_PROBES..footprint.offsets.len() {
+         if let Some(is_clear) = sample(k, pairing.as_ref()) {
+             surviving += 1;

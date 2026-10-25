@@ -1,5 +1,6 @@
 use super::*;
 use crate::map_data::{LightType, MapLight};
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use glam::DVec3;
 use glam::Vec3;
 use log::Level;
@@ -161,6 +162,7 @@ fn config(uncompressed_irradiance: bool) -> LightmapConfig {
         area_sample_count: 4,
         uncompressed_irradiance,
         direction_texel_scale: lightmap_bake::DIRECTION_TEXEL_SCALE,
+        penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
     }
 }
 
@@ -449,6 +451,19 @@ fn fused_cold_warm_and_lightmap_reuse_paths_match_cold_bytes() {
             cold.0,
             reference_lightmap(&lights, &config),
             "cold fused lightmap bytes changed"
+        );
+        // The reference parity holds with the floor off too; a fixture whose
+        // floor changes the bytes is in `penumbra_floor_tests`.
+        let floor_off = LightmapConfig {
+            penumbra_floor: false,
+            ..self::config(uncompressed)
+        };
+        let (cold_off, ..) =
+            fused_outputs_with_workers(1, &args, None, &lights, &initial_selection, &floor_off);
+        assert_eq!(
+            cold_off.0,
+            reference_lightmap(&lights, &floor_off),
+            "floor-off fused lightmap bytes differ from the reference"
         );
         assert_eq!(parallel_cold, cold, "id 42 must not depend on worker count");
 
@@ -1660,3 +1675,11 @@ mod raw_fill_tests;
 mod budget_gate_tests;
 
 mod metadata_tests;
+
+mod penumbra_floor_tests;
+
+mod penumbra_floor_energy_tests;
+
+mod penumbra_floor_animated_energy_tests;
+
+mod texel_step_tests;

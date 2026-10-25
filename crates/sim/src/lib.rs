@@ -13,6 +13,8 @@ pub mod alloc_probe;
 pub mod combat_positioning;
 pub mod emission;
 mod fx;
+pub mod ghost_audio_command;
+pub mod ghost_link_commands;
 mod grant;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod health;

@@ -81,6 +81,7 @@ pub(crate) use postretro_sim::{
     presentation_pool, resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities,
 };
 
+mod ghost_links;
 mod render;
 mod render_preparation;
 mod runtime_movers;
@@ -177,10 +178,10 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 // tests. Test-only: the boot path calls it through `startup::session`.
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
+#[cfg(test)]
+use postretro_entities::Transform;
 use postretro_entities::components::inventory::Inventory;
-use postretro_entities::{
-    ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand, Transform,
-};
+use postretro_entities::{ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand};
 #[cfg(test)]
 use postretro_foundation::LEGACY_WEAPON_PLACEMENT;
 #[cfg(test)]
@@ -259,6 +260,20 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_weapon.clear();
                 app.active_slot_resync.reset();
                 app.observer_weapon_cues.clear();
+                // Received link state is dropped with every other replicated
+                // state; links ramp back to local spawn state.
+                app.ghost_links.reset_received_state();
+                // So are the Ghost bus script fields: the bus returns to this
+                // peer's manifest profile, and the ghost voices that state
+                // admitted are released, as unload releases them.
+                app.drop_script_ghost_audio();
+                if let Some(audio) = app
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.audio.as_mut())
+                {
+                    audio.fade_out_ghost_voices();
+                }
                 // Demotion dropped the host's tuning: until the next one
                 // installs, this client's volumes keep gravity and push but
                 // every fluid is dry.
@@ -960,6 +975,20 @@ pub(crate) struct App {
     /// the composed reaction set. The authoritative fixed tick dispatches each
     /// teleport's reactions through it, and the frame-end residual drain reads it.
     teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
+    /// The level's ghost links: link-state history and this frame's ghosts,
+    /// built at level install and dropped at unload. Render collection reads it.
+    ghost_links: ghost_links::GhostLinks,
+    /// The Ghost bus profile this peer presents: the manifest profile, the
+    /// host's level-scoped `setGhostAudio` fields and their queued calls.
+    ghost_bus: ghost_links::GhostBus,
+    /// This frame's ghost draws and each ghost's flash window. Cleared at
+    /// unload with the links.
+    ghost_render: scripting_systems::ghost_render::GhostRenderCollector,
+    /// This frame's mover ghost draws and their flash windows.
+    mover_ghost_render: scripting_systems::mover_ghost_render::MoverGhostRenderCollector,
+    /// This frame's projectile billboard ghost draws and their flash windows.
+    billboard_ghost_render:
+        scripting_systems::billboard_ghost_render::BillboardGhostRenderCollector,
     /// Host-only player events bound from the composed active set, with their
     /// per-player edge memory. Rebuilt with the trigger bindings.
     player_events: postretro_sim::player_events::PlayerEventTable,
@@ -3465,29 +3494,45 @@ impl App {
                             sound_events::listener_attached_key(&registry),
                         )
                     });
+                    let (anchor, listener_attached) = match anchor {
+                        Some((anchor, listener_attached)) => {
+                            (Some(anchor), Some(listener_attached))
+                        }
+                        None => (None, None),
+                    };
+                    // The reaction surface has no per-voice volume or looping
+                    // yet (deferred); a one-shot on the named bus is the whole
+                    // contract. Default to the SFX bus when none is named.
+                    let sound = ghost_links::LocalSound::from(postretro_audio::SoundRequest {
+                        bus: bus.unwrap_or_else(|| "sfx".to_string()),
+                        sound,
+                        looping: false,
+                        anchor,
+                    });
+                    // A sound at a ghost member echoes on the Ghost bus, judged
+                    // before it plays and started only if it is admitted. An
+                    // unanchored sound plans nothing.
+                    let ghost_voices = self.plan_ghost_voices_for(&sound);
                     if let Some(audio) = self
                         .session
                         .as_mut()
                         .and_then(|session| session.audio.as_mut())
                     {
-                        let anchor = match anchor {
-                            Some((anchor, listener_attached)) => {
-                                audio.set_listener_attached(listener_attached);
-                                Some(anchor)
-                            }
-                            None => None,
-                        };
-                        // The reaction surface has no per-voice volume or looping
-                        // yet (deferred); a one-shot on the named bus is the whole
-                        // contract. Default to the SFX bus when none is named.
-                        let bus = bus.unwrap_or_else(|| "sfx".to_string());
+                        if let Some(listener_attached) = listener_attached {
+                            audio.set_listener_attached(listener_attached);
+                        }
                         // `play` warns-and-drops on an unknown bus or sound, so an
-                        // unregistered sound name never panics.
-                        let _ = audio.play(postretro_audio::SoundRequest {
-                            bus,
-                            sound,
-                            looping: false,
-                            anchor,
+                        // unregistered sound name never panics. The script names
+                        // its sound's bus, so that voice plays through
+                        // `play_script`, which refuses the engine-only Ghost bus;
+                        // the ghost voices beside it are the engine's own.
+                        ghost_voices.play_beside([sound], |request, ghost| {
+                            let played = if ghost {
+                                audio.play(request)
+                            } else {
+                                audio.play_script(request)
+                            };
+                            played.is_some()
                         });
                     }
                     // Audio init failed ⇒ silent (the game runs without sound).
@@ -3663,6 +3708,11 @@ impl App {
                             "[Scripting] setSentiment from `{from}` to `{to}` failed: {error}; skipping"
                         );
                     }
+                }
+                SystemReactionCommand::SetGhostAudio(targets) => {
+                    // Host consequence: applied at the next authoritative tick,
+                    // dropped on a connected client (the host's fields replicate).
+                    self.queue_ghost_audio(targets);
                 }
                 SystemReactionCommand::AdjustSentiment { from, to, delta } => {
                     if let Err(error) = scripting_systems::system_reactions::apply_adjust_sentiment(
@@ -3901,6 +3951,7 @@ impl App {
                 descriptor_entities: _,
                 loaded_movers: _,
                 loaded_teleporters: _,
+                loaded_ghost_links: _,
                 demo_mover: _,
                 state_slots,
                 last_sent_tuning,
@@ -4129,22 +4180,15 @@ impl App {
                                     );
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
-                                    let live_placements = seat_table
-                                        .as_deref()
-                                        .map(|seats| {
-                                            seats.occupied_live_placements(
-                                                &registry,
-                                                host_spawn_points.len(),
-                                            )
-                                        })
-                                        .unwrap_or_default();
+                                    let joinable =
+                                        crate::scripting::builtins::player_spawn::joinable_spawns(
+                                            &host_spawn_points,
+                                            &net_descriptors,
+                                        );
                                     let Some(placement_index) =
                                         seat_table.as_deref_mut().and_then(|seats| {
-                                            seats.assign_placement(
-                                                seat,
-                                                host_spawn_points.len(),
-                                                live_placements,
-                                            )
+                                            seats
+                                                .assign_joiner_placement(&registry, seat, &joinable)
                                         })
                                     else {
                                         log::warn!(
@@ -4728,6 +4772,7 @@ impl App {
             descriptor_entities: _,
             loaded_movers: _,
             loaded_teleporters: _,
+            loaded_ghost_links: _,
             demo_mover,
             state_slots,
             last_sent_tuning,
@@ -4811,6 +4856,7 @@ impl App {
                 &registry,
                 &slot_table,
                 &faction_sentiment,
+                self.ghost_bus.script_fields(),
                 &replication_identity,
                 server,
                 allocator,
@@ -5619,9 +5665,10 @@ impl App {
         );
     }
 
-    /// Register PRL-loaded kinematic movers for outbound replication after level
-    /// install. Host-gated and reload-safe; connected clients have already spawned
-    /// the same movers locally from PRL and bind incoming baselines by `mover_id`.
+    /// Register PRL-loaded kinematic movers, teleporters and ghost links for
+    /// outbound replication after level install. Host-gated and reload-safe;
+    /// connected clients have already installed the same entities from PRL and
+    /// bind incoming baselines by `mover_id` or by map-order index and source.
     fn host_register_loaded_movers_after_install(&mut self) {
         let Some(script_ctx) = self
             .session
@@ -5635,6 +5682,7 @@ impl App {
             replicable,
             loaded_movers,
             loaded_teleporters,
+            loaded_ghost_links,
             ..
         }) = self
             .session
@@ -5650,6 +5698,12 @@ impl App {
             allocator,
             replicable,
             loaded_teleporters,
+        );
+        netcode::host_register_loaded_ghost_links(
+            &registry,
+            allocator,
+            replicable,
+            loaded_ghost_links,
         );
     }
 
@@ -6013,28 +6067,6 @@ impl App {
                 log::warn!("[dev-tools] chase agent attach failed: {err:?}");
             }
         }
-    }
-}
-
-/// Capture placement provenance while newly materialized pawns still have their
-/// authored transforms. Later occupancy reads this durable association after
-/// movement changes those transforms.
-fn capture_player_spawn_placements(
-    registry: &postretro_entities::EntityRegistry,
-    spawn_points: &[crate::scripting::map_entity::MapEntity],
-    seats: &mut netcode::SeatTable,
-) {
-    for (pawn, _) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
-        let Ok(transform) = registry.get_component::<Transform>(pawn) else {
-            continue;
-        };
-        let Some(placement) = spawn_points
-            .iter()
-            .position(|placement| placement.origin == transform.position)
-        else {
-            continue;
-        };
-        seats.bind_level_spawn_placement(pawn, placement);
     }
 }
 
@@ -7198,6 +7230,7 @@ mod tests {
         placement: Option<WeaponPlacementDescriptor>,
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(canonical_name.to_owned()),
@@ -8731,6 +8764,7 @@ mod tests {
         .expect("weapon parses");
         let table = sound_events::DescriptorSoundTable::build(&[
             postretro_entities::EntityTypeDescriptor {
+                ghost: false,
                 faction: None,
                 tolerance: None,
                 canonical_name: Some("pistol".to_string()),
@@ -11197,6 +11231,7 @@ mod tests {
                     faction_sentiment_decay: 0.0,
                     entity_faction_names: Vec::new(),
                     fluids: Default::default(),
+                    ghost_styles: Default::default(),
                     maps: Vec::new(),
                     reactions: Vec::new(),
                     crossings: Vec::new(),
@@ -11996,6 +12031,7 @@ mod tests {
         states.insert("attack".to_string(), unresolved("Attack", false));
 
         let descriptors = vec![EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("remote_enemy".to_string()),

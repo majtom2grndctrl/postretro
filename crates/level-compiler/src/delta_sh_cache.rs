@@ -39,7 +39,8 @@ pub(crate) struct DeltaShCacheInputs<'a> {
     pub(crate) valid_probe_masks: &'a [u64],
     pub(crate) probe_spacing: f32,
     /// Seed axis by keyed light index. Indirect delta supplies zero because its
-    /// stable cell/probe position is already part of the folded coordinates.
+    /// stable cell/probe position is already part of the folded coordinates,
+    /// and its light axis is a digest of the keyed light the key already folds.
     pub(crate) light_seed_axes: &'a [u64],
     pub(crate) expected_subblock_f16_len: usize,
 }
@@ -70,8 +71,7 @@ pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> Ca
     );
 
     let (cell_x, cell_y, cell_z) = affinity_cell_coord(inputs.cell, inputs.affinity_dims);
-    let encoded_light =
-        postcard::to_allocvec(inputs.light).expect("postcard serialize delta MapLight");
+    let encoded_light = encoded_key_light(inputs.light);
     let light_len = u64::try_from(encoded_light.len()).expect("MapLight encoding length fits u64");
 
     let mut hasher = blake3::Hasher::new();
@@ -93,6 +93,12 @@ pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> Ca
         inputs.stage_version,
         hasher.finalize().as_bytes(),
     )
+}
+
+/// A keyed light's bytes exactly as [`delta_sh_entry_cache_key`] folds them.
+/// Anything derived from these bytes moves only with the key.
+pub(crate) fn encoded_key_light(light: &MapLight) -> Vec<u8> {
+    postcard::to_allocvec(light).expect("postcard serialize delta MapLight")
 }
 
 /// Bake or load every CSR entry while preserving the input's exact entry order.

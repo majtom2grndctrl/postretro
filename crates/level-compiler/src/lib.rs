@@ -5,11 +5,12 @@ pub mod bc5;
 /// BC6H block decode, so cross-bake tests read the colour tiles a build emits.
 pub mod bc6h;
 pub mod cache;
-/// Only the Quake angle converter, so placement tests in other crates build
-/// entity orientation through the compiler's own conversion point.
+/// Only the Quake angle and point-origin converters, so placement tests in
+/// other crates build entity poses through the compiler's own conversion points.
 pub mod format {
     pub mod quake_map {
         pub mod angles;
+        pub mod entity_origin;
     }
 }
 pub mod geometry;

@@ -31,6 +31,8 @@ mod authoring_regions;
 mod environment_volume_tests;
 #[path = "parse/environment_volumes.rs"]
 mod environment_volumes;
+#[path = "parse/ghost_links.rs"]
+mod ghost_links;
 #[path = "parse/map_source.rs"]
 mod map_source;
 #[path = "parse/reflection_capture.rs"]
@@ -868,6 +870,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut trigger_volumes = Vec::new();
     let mut environment_volumes = Vec::new();
     let mut teleporters = teleporters::TeleporterParser::default();
+    let mut ghost_links = ghost_links::GhostLinkParser::default();
     // Parallel to `environment_volumes`: each volume's authored brush ids, kept
     // until the fluid volumes' textured sides are built in one pass.
     let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
@@ -1038,6 +1041,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // Swizzle axes then apply unit scale: origin is a position, not a direction.
         let origin = get_property(&geo_map, entity_id, "origin")
             .and_then(|s| parse_origin(&s))
+            .map(|v| quake_map::canonical_entity_origin(&classname, v))
             .map(|v| quake_to_engine(v) * scale);
 
         entities.push(EntityInfo {
@@ -1150,6 +1154,19 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 &props,
                 scale,
                 &classname,
+                entities.len() - 1,
+                &mut map_entities,
+            )?;
+            continue;
+        }
+
+        if classname == postretro_level_format::ghost_links::GHOST_LINK_CLASSNAME {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            ghost_links.extract(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
                 entities.len() - 1,
                 &mut map_entities,
             )?;
@@ -1653,6 +1670,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Map entities (classname dispatch): {}", map_entities.len());
     log::info!("Environment volumes: {}", environment_volumes.len());
     log::info!("Reflection volumes: {}", reflection_volumes.len());
+    let ghost_links = ghost_links.finish(teleporters.destinations())?;
 
     Ok(MapData {
         brush_volumes,
@@ -1673,6 +1691,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         environment_volumes,
         reflection_volumes,
         teleporters: teleporters.finish()?,
+        ghost_links,
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,
@@ -6115,6 +6134,31 @@ mod tests {
         assert!(origin.x.is_finite(), "origin x should be finite");
         assert!(origin.y.is_finite(), "origin y should be finite");
         assert!(origin.z.is_finite(), "origin z should be finite");
+    }
+
+    // A `player_spawn` origin compiles to its feet: the bottom of its FGD box,
+    // 24 units below the authored origin. Other point entities keep theirs.
+    #[test]
+    fn player_spawn_origin_compiles_to_its_feet() {
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("campaign-test.map should parse without error");
+        let spawn = map_data
+            .map_entities
+            .iter()
+            .find(|e| e.classname == "player_spawn")
+            .expect("campaign-test has a player_spawn");
+        // Authored `"origin" "1808 2592 72"`: Quake Z is engine Y.
+        let expected = quake_to_engine(DVec3::new(1808.0, 2592.0, 72.0 - 24.0)) * 0.0254;
+        assert!(
+            (spawn.origin - expected).length() < 1e-9,
+            "player_spawn compiles to its box bottom: {:?} vs {expected:?}",
+            spawn.origin
+        );
+        assert_eq!(
+            quake_map::canonical_entity_origin("prop_mesh", DVec3::new(1.0, 2.0, 3.0)),
+            DVec3::new(1.0, 2.0, 3.0),
+            "only player_spawn moves"
+        );
     }
 
     // -- Quoted brush-face material encoding --

@@ -8,7 +8,8 @@ use crate::scripting::typedef::luau::{
 };
 use crate::scripting::typedef::register_shared_types;
 use crate::scripting::typedef::ts::{
-    emit_ts_game_state_refs, state_ref_ts, ts_public_root_sdk_lib_block, ts_ui_sdk_module_block,
+    emit_ts_game_state_refs, state_ref_ts, ts_audio_sdk_module_block, ts_public_root_sdk_lib_block,
+    ts_ui_sdk_module_block,
 };
 use postretro_entities::registry::EntityId;
 use postretro_entities::scripting::error::ScriptError;
@@ -107,6 +108,7 @@ fn ts_with_sdk_lib_block(prefix_with_brace: &str) -> String {
     out.push_str(&sdk_block);
     out.push_str("}\n");
     out.push_str(ts_ui_sdk_module_block());
+    out.push_str(ts_audio_sdk_module_block());
     out
 }
 

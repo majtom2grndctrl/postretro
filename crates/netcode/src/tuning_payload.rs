@@ -67,10 +67,7 @@ pub(crate) fn decode_tuning_payload(data: &[u8]) -> Result<TuningPayload, Tuning
         descriptor.sounds = None;
     }
     for weapon in payload.wieldables.iter_mut().flatten() {
-        weapon.primary.sounds = None;
-        if let Some(secondary) = &mut weapon.secondary {
-            secondary.sounds = None;
-        }
+        weapon.strip_local_presentation();
         weapon
             .validate()
             .map_err(TuningPayloadError::InvalidWeapon)?;
@@ -759,5 +756,65 @@ mod tests {
             decode_tuning_payload(&serde_json::to_vec(&invalid).unwrap()),
             Err(TuningPayloadError::InvalidWeapon(_))
         ));
+    }
+
+    /// The host's payload for `full_payload`'s pawn with slot 2 firing a
+    /// projectile whose descriptor `ghost` is `ghost`.
+    fn payload_with_projectile_ghost(ghost: bool) -> TuningPayload {
+        use postretro_foundation::{ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual};
+        let mut wieldables = weapon_slots();
+        let row = wieldables[2].as_mut().unwrap();
+        row.resolution = ResolutionMode::Projectile;
+        row.pellet_count = 1;
+        row.projectile = Some(ProjectileDescriptor {
+            speed: 30.0,
+            radius: 0.1,
+            lifetime_ms: 2_000.0,
+            visual: ProjectileVisual {
+                body: ProjectileBodyVisual::Sprite {
+                    sprite: "sprites/projectiles/rocket.png".to_string(),
+                    size: 0.2,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0; 3],
+                    emissive: 0.0,
+                    frame_duration_ms: None,
+                },
+                trail: None,
+                light: None,
+                impact_light: None,
+            },
+            ghost,
+        });
+        TuningPayload::new(Some(movement_descriptor()), wieldables, host_environment())
+            .with_spawn_active_slot(2)
+    }
+
+    // `projectile.ghost` resolves on each peer from its own
+    // descriptor. The host strips it, so flipping it encodes the same bytes:
+    // whole-struct dedupe sends no new payload and the client keeps its pawn.
+    #[test]
+    fn projectile_ghost_flip_encodes_the_same_tuning_and_keeps_the_pawn() {
+        let opted_in = payload_with_projectile_ghost(true);
+        let opted_out = payload_with_projectile_ghost(false);
+        assert_eq!(
+            opted_in, opted_out,
+            "the canonical payload drops the opt-in at construction"
+        );
+        assert!(opted_in.same_pawn_tuning(&opted_out));
+        let encoded = encode_tuning_payload(&opted_in);
+        assert_eq!(encoded, encode_tuning_payload(&opted_out));
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert!(
+            json["wieldables"][2]["projectile"].get("ghost").is_none(),
+            "the opt-in never rides the wire: {json}"
+        );
+
+        // A peer that sent the field anyway does not plant it in the client's
+        // installed tuning either.
+        let mut forged = json;
+        forged["wieldables"][2]["projectile"]["ghost"] = serde_json::Value::Bool(true);
+        let decoded = decode_tuning_payload(&serde_json::to_vec(&forged).unwrap()).unwrap();
+        assert_eq!(decoded, opted_out);
     }
 }

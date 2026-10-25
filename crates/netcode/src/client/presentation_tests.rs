@@ -127,6 +127,7 @@ fn snapshot(sequence: u32, clock: f64, records: Vec<EntityRecord>) -> SnapshotMe
         state_schema_fingerprint: [0; 32],
         state_records: Vec::new(),
         faction_sentiment_record: None,
+        ghost_audio: None,
         server_script_time: clock,
     }
 }

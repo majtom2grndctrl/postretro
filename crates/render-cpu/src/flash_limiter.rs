@@ -93,10 +93,13 @@ pub struct LimiterFrameUniform {
 /// Fail-safe read of the enable flag: an absent, non-boolean, or `true` value
 /// leaves the limiter on. Only an explicit `false` turns it off.
 pub fn flash_limiter_enabled(slot_values: &HashMap<String, SlotValue>) -> bool {
-    !matches!(
-        slot_values.get(FLASH_LIMITER_SLOT),
-        Some(SlotValue::Boolean(false))
-    )
+    flash_limiter_enabled_value(slot_values.get(FLASH_LIMITER_SLOT))
+}
+
+/// [`flash_limiter_enabled`] on the [`FLASH_LIMITER_SLOT`] value alone, for a
+/// reader holding the slot store rather than a snapshot of it.
+pub fn flash_limiter_enabled_value(value: Option<&SlotValue>) -> bool {
+    !matches!(value, Some(SlotValue::Boolean(false)))
 }
 
 /// Pack one frame's limiter input. A non-finite or negative elapsed time packs

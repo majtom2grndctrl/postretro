@@ -16,7 +16,7 @@ fn positioned(anchor: SoundAnchor) -> SoundRequest {
     }
 }
 
-fn at(point: [f32; 3]) -> SoundRequest {
+pub(super) fn at(point: [f32; 3]) -> SoundRequest {
     positioned(SoundAnchor::Point(point))
 }
 
@@ -29,8 +29,10 @@ fn listener_at(position: [f32; 3], forward: [f32; 3]) -> ListenerState {
     }
 }
 
-fn sfx_sub_tracks<B: kira::backend::Backend>(audio: &AudioCore<B>) -> usize {
-    audio.buses.track(BusId::Sfx).num_sub_tracks()
+/// Positional voice tracks under SFX: every SFX child track but the Ghost
+/// track, which lives there for the mixer's lifetime.
+pub(super) fn sfx_sub_tracks<B: kira::backend::Backend>(audio: &AudioCore<B>) -> usize {
+    audio.buses.track(BusId::Sfx).num_sub_tracks() - 1
 }
 
 /// Play one positioned tone into a fresh capturing mixer and return the RMS of
@@ -554,7 +556,7 @@ fn fade_out_positional_stops_every_anchored_voice_and_spares_the_rest() {
 }
 
 #[test]
-fn positioned_request_on_a_non_sfx_bus_or_looping_is_dropped() {
+fn positioned_request_on_a_bus_without_positional_voices_or_looping_is_dropped() {
     let mut audio = mock_audio();
     let ui = SoundRequest {
         bus: "ui".to_string(),

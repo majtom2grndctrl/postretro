@@ -11,7 +11,9 @@ use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry
 use postretro_level_loader::LevelWorld;
 use postretro_model::ModelHandle;
 use postretro_model::sample_params::MeshSampleParams;
-use postretro_render_cpu::mesh_instances::{MeshInstanceInput, MeshPaletteCacheKey};
+use postretro_render_cpu::mesh_instances::{
+    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
+};
 use postretro_render_cpu::mesh_pass::mesh_visible;
 use postretro_render_data::cone_frustum::Aabb;
 use postretro_render_data::influence::LightInfluence;
@@ -66,7 +68,7 @@ fn resample_stride(distance: f32) -> u64 {
 /// in lock-step. Stride 1 (near bucket) makes the modulo always true → every
 /// frame. Pure data logic; the renderer-side cache may still upgrade a `false` to
 /// a resample on a cache miss.
-fn should_resample(distance: f32, frame_index: u64, seed: u32, force: bool) -> bool {
+pub(super) fn should_resample(distance: f32, frame_index: u64, seed: u32, force: bool) -> bool {
     if force {
         return true;
     }
@@ -352,7 +354,7 @@ impl MeshRenderCollector {
                 resample: false,
                 forward_visible,
                 dynamic_shadow_visible,
-                is_viewmodel: false,
+                presentation: MeshPresentation::World,
             });
             let has_skinned_attachment = attachments::emit_for_holder(
                 &mut self.instances,
@@ -432,7 +434,7 @@ impl MeshRenderCollector {
             resample: false,
             forward_visible: true,
             dynamic_shadow_visible: false,
-            is_viewmodel: true,
+            presentation: MeshPresentation::Viewmodel,
         });
     }
 
@@ -454,7 +456,7 @@ impl MeshRenderCollector {
 /// then let the modifier rotate the upper body by `aim_yaw - heading_yaw`. Gameplay
 /// and replicated transforms retain aim yaw; only mesh presentation receives this
 /// lower-body root override (travel, folded toward aim while backpedaling).
-fn presentation_body_rotation(
+pub(super) fn presentation_body_rotation(
     transform_rotation: glam::Quat,
     heading_yaw: Option<f32>,
 ) -> glam::Quat {
@@ -500,7 +502,7 @@ fn influence_from_light(
 /// signal that forces a resample. The current state name does not need hashing
 /// in: a switch always moves the entered stamp (the resolve pass restamps on
 /// entry), so the stamp bits alone capture a (re)entry.
-fn state_fingerprint(
+pub(super) fn state_fingerprint(
     animation: Option<&postretro_entities::components::mesh::MeshAnimation>,
 ) -> Option<u64> {
     animation.map(|anim| anim.entered_at.map(|t| t.to_bits()).unwrap_or(0))
@@ -516,7 +518,7 @@ fn state_fingerprint(
 /// `"smooth"`-interrupt capture instruction. If the current state is unresolved
 /// (no usable clip) the entity falls back to the legacy clip-zero sample so it
 /// still renders rather than vanishing.
-fn resolve_sample(
+pub(super) fn resolve_sample(
     animation: Option<&postretro_entities::components::mesh::MeshAnimation>,
     handle: &ModelHandle,
     tables: &MeshClipTables,
@@ -661,6 +663,7 @@ mod tests {
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
             teleporters: Default::default(),
+            ghost_links: Default::default(),
             environment_push_forces: Vec::new(),
             reflection_probes: None,
             fog_cell_masks: None,
@@ -779,7 +782,7 @@ mod tests {
 
         let instances = collector.instances();
         assert_eq!(instances.len(), 1);
-        assert!(instances[0].is_viewmodel);
+        assert!(instances[0].presentation.is_viewmodel());
         assert!(instances[0].forward_visible);
         assert!(!instances[0].dynamic_shadow_visible);
         assert_eq!(instances[0].model.as_str(), "models/pistol/view.gltf");
@@ -2216,6 +2219,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
         let descriptor = EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("remote-holder".to_string()),

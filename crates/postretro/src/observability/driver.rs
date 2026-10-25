@@ -201,7 +201,7 @@ fn run_headless_inner(
             |_models, _clip_tables| {
                 crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
             },
-            |_spawn_points| {},
+            |_first_player| {},
         )
     };
 

@@ -15,7 +15,7 @@ pub struct TriggerVolumeBridge {
     /// Source-record order is unique within one PRL and survives registry slot
     /// recycling across unload/reinstall.
     authored_order: HashMap<EntityId, usize>,
-    #[cfg(any(test, feature = "dev-tools"))]
+    #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
     names: HashMap<EntityId, String>,
 }
 
@@ -24,14 +24,14 @@ impl TriggerVolumeBridge {
         Self {
             aabbs: HashMap::new(),
             authored_order: HashMap::new(),
-            #[cfg(any(test, feature = "dev-tools"))]
+            #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
             names: HashMap::new(),
         }
     }
     pub fn clear(&mut self) {
         self.aabbs.clear();
         self.authored_order.clear();
-        #[cfg(any(test, feature = "dev-tools"))]
+        #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
         self.names.clear();
     }
     pub fn aabb(&self, id: EntityId) -> Option<(Vec3, Vec3)> {
@@ -50,7 +50,7 @@ impl TriggerVolumeBridge {
             (None, None) => a.cmp(&b),
         }
     }
-    #[cfg(any(test, feature = "dev-tools"))]
+    #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
     pub fn name(&self, id: EntityId) -> Option<&str> {
         self.names.get(&id).map(String::as_str)
     }
@@ -110,7 +110,7 @@ impl TriggerVolumeBridge {
             );
             self.aabbs.insert(id, (min, max));
             self.authored_order.insert(id, authored_order);
-            #[cfg(any(test, feature = "dev-tools"))]
+            #[cfg(any(test, feature = "dev-tools", feature = "test-support"))]
             self.names.insert(id, record.name.clone());
         }
     }

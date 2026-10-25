@@ -134,6 +134,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
         &geometry,
         0.25,
         4,
+        PENUMBRA_FLOOR_DEFAULT,
         2,
         &BakeControl::unrestricted(),
     );
@@ -166,6 +167,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
                 &geometry,
                 0.25,
                 4,
+                PENUMBRA_FLOOR_DEFAULT,
                 layer,
             )
         })
@@ -175,7 +177,8 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
         dense
     );
 
-    // The old section helper folded the dense layer-major matrix verbatim.
+    // The old section helper folded the dense layer-major matrix verbatim;
+    // the texel-step threshold and the cut map follow the encode settings.
     let mut old_section = blake3::Hasher::new();
     old_section.update(&lightmap_layer::LAYER_FORMAT_VERSION.to_le_bytes());
     old_section.update(&(dense.len() as u32).to_le_bytes());
@@ -186,6 +189,19 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
     old_section.update(&0.25f32.to_le_bytes());
     old_section.update(&[0]);
     old_section.update(&2u32.to_le_bytes());
+    old_section.update(&TEXEL_STEP_THRESHOLD.to_bits().to_le_bytes());
+    // Then the cut map: its count, then each cut's parent, range and segments.
+    old_section.update(&(prepared.cut_parents.len() as u32).to_le_bytes());
+    for cut in &prepared.cut_parents {
+        old_section.update(&cut.parent.to_le_bytes());
+        old_section.update(&(cut.faces.start as u32).to_le_bytes());
+        old_section.update(&(cut.faces.end as u32).to_le_bytes());
+        for [u, v] in &cut.own {
+            for bound in [u.start, u.end, v.start, v.end] {
+                old_section.update(&bound.to_le_bytes());
+            }
+        }
+    }
     assert_eq!(
         *old_section.finalize().as_bytes(),
         lightmap_layer::section_input_hash(
@@ -194,6 +210,8 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
             0.25,
             false,
             2,
+            TEXEL_STEP_THRESHOLD,
+            &prepared.cut_parents,
         )
     );
 

@@ -281,6 +281,7 @@ fn projectile_weapon(source: &str) -> WeaponComponent {
         secondary: None,
         resolution: ResolutionMode::Projectile,
         projectile: Some(ProjectileDescriptor {
+            ghost: false,
             speed: 1.0,
             radius: 0.0,
             lifetime_ms: 5_000.0,
@@ -314,6 +315,7 @@ fn projectile_weapon(source: &str) -> WeaponComponent {
 
 fn descriptor(name: &str, placement: WeaponPlacementDescriptor) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        ghost: false,
         faction: None,
         tolerance: None,
         canonical_name: Some(name.into()),

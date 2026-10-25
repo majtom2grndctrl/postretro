@@ -3,7 +3,7 @@
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry, TeleporterComponent};
 use postretro_net::wire::{ComponentPayload, NetworkId, WireTeleporterState};
 
-use super::{ApplyOutcome, ClientReplication, IgnoredPayload};
+use super::{ApplyOutcome, ClientReplication, IgnoredPayload, RegionBinding};
 
 impl ClientReplication {
     /// Bind an unmapped teleporter full baseline to the installed region it names
@@ -48,8 +48,8 @@ impl ClientReplication {
         self.baselines.insert(network_id, baseline_id);
         self.pending_repairs.remove(&network_id);
         self.bindings
-            .teleporter_network_ids
-            .insert(network_id, state.index);
+            .region_network_ids
+            .insert(network_id, RegionBinding::Teleporter(state.index));
         self.interp.forget(network_id);
         if self.apply_components_to(
             registry,
@@ -65,7 +65,7 @@ impl ClientReplication {
         }
         self.remove_mapping(network_id);
         self.baselines.remove(&network_id);
-        self.bindings.teleporter_network_ids.remove(&network_id);
+        self.bindings.region_network_ids.remove(&network_id);
         false
     }
 }

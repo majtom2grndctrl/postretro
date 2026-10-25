@@ -157,6 +157,7 @@ pub(crate) fn build_full_renderer(
         super::shadow_world_draws::ShadowWorldDraws::install(geometry.map(|g| g.bvh), index_count);
 
     let (_depth_texture, depth_view) = create_depth_texture(device, scene.width, scene.height);
+    let ghost_depth = ghost_depth::GhostDepthTarget::new(device, scene.width, scene.height);
 
     // Post-scene compositor seam: a linear HDR `scene_color` target + sRGB
     // resolve. The scene target is independent from the swapchain format.
@@ -493,6 +494,20 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources.mesh_bind_group_layout,
         cube_array_supported,
     );
+    // Mover ghosts: camera + world material + their own instances.
+    // See: context/lib/rendering_pipeline.md §7.9
+    let kinematic_ghost = kinematic_ghost::KinematicGhostPass::new(
+        device,
+        DEPTH_FORMAT,
+        &uniform_bind_group_layout,
+        &texture_bind_group_layout,
+    );
+    let billboard_ghost = billboard_ghost::BillboardGhostPass::new(
+        device,
+        DEPTH_FORMAT,
+        &uniform_bind_group_layout,
+        &smoke_pass,
+    );
     kinematic_brush.rebuild_light_bind_group(
         device,
         &lights_buffer,
@@ -673,6 +688,7 @@ pub(crate) fn build_full_renderer(
         spot_shadow_pool,
         cube_shadow_pool,
         kinematic_brush,
+        kinematic_ghost,
         fluid_surface,
         rigid_occluder_depth,
         promoted_static_states: vec![
@@ -714,6 +730,8 @@ pub(crate) fn build_full_renderer(
         shadow_depth_pipeline,
         shadow_vs_stride,
         depth_view,
+        ghost_depth,
+        ghost_order: ghost_order::GhostDrawOrder::default(),
         screen_effects,
         bloom,
         gpu_textures,
@@ -766,6 +784,8 @@ pub(crate) fn build_full_renderer(
         smoke_pass,
         mesh_pass,
         mesh_draws: Vec::new(),
+        ghost_mesh_draws: Vec::new(),
+        billboard_ghost,
         bone_palette_scratch: Vec::new(),
         mesh_overflow_last_warn: f32::NEG_INFINITY,
         spot_entity_occluders_submitted: 0,

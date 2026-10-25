@@ -227,7 +227,7 @@ pub fn emit_ts_game_state_refs(out: &mut String) {
 // Source of truth for this static block:
 //   sdk/lib/map_entities.ts
 //   sdk/lib/gravity.ts
-//   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,teleporters,spawners}.ts
+//   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,teleporters,ghost_links,spawners}.ts
 //   sdk/lib/util/keyframes.ts
 //   sdk/lib/data_script.ts  (re-exported via index.ts)
 //   sdk/lib/data_script/{reactions,commands,trigger_events,player_events}.ts  (re-exported via data_script.ts)
@@ -264,4 +264,12 @@ const TS_UI_SDK_MODULE_BLOCK: &str = include_str!("templates/ui_sdk_module.d.ts"
 
 pub fn ts_ui_sdk_module_block() -> &'static str {
     TS_UI_SDK_MODULE_BLOCK
+}
+
+const TS_AUDIO_SDK_MODULE_BLOCK: &str = include_str!("templates/audio_sdk_module.d.ts");
+
+/// `declare module "postretro/audio"`: audio subsystem builders, appended
+/// after the UI module. Source of truth: `sdk/lib/audio.ts`.
+pub fn ts_audio_sdk_module_block() -> &'static str {
+    TS_AUDIO_SDK_MODULE_BLOCK
 }

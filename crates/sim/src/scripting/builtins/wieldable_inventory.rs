@@ -386,6 +386,7 @@ mod tests {
 
     fn pawn_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("player".to_string()),
@@ -408,6 +409,7 @@ mod tests {
         reserve: u32,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(canonical_name.to_string()),

@@ -1900,3 +1900,96 @@ fn residual_hop_only_reactions_bind_and_run_the_chained_reaction() {
         );
     }
 }
+
+// A trigger-bound ghost-link step binds through the same argument check every
+// path uses: a valid step becomes a fixed-tick command that queues its change
+// for the host's next tick, and a malformed one warns and does not bind.
+#[test]
+fn trigger_bound_ghost_link_steps_validate_at_bind_and_queue_for_the_next_tick() {
+    use postretro_entities::GhostLinkComponent;
+    use postretro_foundation::{
+        ARM_GHOST_LINK, GhostLinkCommand, SET_GHOST_LINK_COLOR_FILTER, SET_GHOST_LINK_MEMBERS,
+    };
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let ctx = ScriptCtx::new();
+    let link = {
+        let mut registry = ctx.registry.borrow_mut();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                GhostLinkComponent {
+                    index: 0,
+                    source_entity: 3,
+                    armed: false,
+                    members: 0b1111,
+                    filter: Default::default(),
+                },
+            )
+            .unwrap();
+        id
+    };
+    let slots = SlotTable::new();
+    let bind = |primitive: &str, args: serde_json::Value| {
+        bind_command(
+            primitive,
+            Some(BoundTarget::Entity(link)),
+            &args,
+            &slots,
+            Some(&ctx),
+        )
+    };
+    let commands = [
+        bind(ARM_GHOST_LINK, serde_json::json!({})).expect("arm binds"),
+        bind(
+            SET_GHOST_LINK_MEMBERS,
+            serde_json::json!({ "movers": false }),
+        )
+        .expect("setMembers binds"),
+    ];
+    assert!(
+        bind(
+            SET_GHOST_LINK_COLOR_FILTER,
+            serde_json::json!({ "opacity": 2 })
+        )
+        .is_none(),
+        "an out-of-range filter does not bind"
+    );
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "setGhostLinkColorFilter has invalid args; not binding: setColorFilter `opacity` must be a finite number in 0..=1, got 2",
+    );
+    let mut dispatch_scope = DispatchScope::script(ctx.clone(), TRIGGER_EVENT_INPUTS);
+    for command in &commands {
+        assert_eq!(command.kind(), BoundTriggerCommandKind::GhostLink);
+        command.execute_with_script_ctx(
+            &mut ctx.registry.borrow_mut(),
+            &ctx,
+            &mut dispatch_scope,
+            &MoverCommandDiagnostics::default(),
+            &crate::spawner::SpawnContext::default(),
+            &TriggerFireContext::default(),
+        );
+    }
+    assert_eq!(
+        ctx.pending_ghost_link_commands.borrow().as_slice(),
+        [
+            (link, GhostLinkCommand::Armed(true)),
+            (
+                link,
+                GhostLinkCommand::Members {
+                    mask: 0b1000,
+                    shown: 0
+                }
+            ),
+        ],
+        "in-tick work queues; the link changes at the next tick start"
+    );
+    assert!(
+        !ctx.registry
+            .borrow()
+            .get_component::<GhostLinkComponent>(link)
+            .unwrap()
+            .armed
+    );
+}

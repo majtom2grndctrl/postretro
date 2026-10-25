@@ -246,7 +246,11 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
                 resample: true,
                 forward_visible: true,
                 dynamic_shadow_visible: false,
-                is_viewmodel,
+                presentation: if is_viewmodel {
+                    postretro_render_cpu::mesh_instances::MeshPresentation::Viewmodel
+                } else {
+                    postretro_render_cpu::mesh_instances::MeshPresentation::World
+                },
             })
             .collect();
         renderer.set_mesh_draws(&draws);
@@ -275,6 +279,194 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
         );
     }
     eprintln!("[UploadProof] mesh light params: 4 adapter cases ran");
+}
+
+/// GPU proof for the ghost pass (rendering_pipeline.md §7.9): both
+/// `render.ghosts` pipelines build with the full renderer, and a frame holding a
+/// world mesh and two ghosts of it records and submits under each mode with no
+/// validation error.
+#[test]
+fn ghost_draws_record_through_blend_and_dither_pipelines() {
+    use postretro_render_cpu::ghost_instance::GhostInstanceLook;
+    use postretro_render_cpu::ghost_transparency::GhostTransparency;
+    use postretro_render_cpu::mesh_instances::{
+        MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
+    };
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+    let model = "models/pose-modifier-fixture/joint_zones.gltf";
+    assert!(
+        renderer
+            .load_skinned_model(model, &root, &root.join("cache"))
+            .is_some()
+    );
+    let real = MeshInstanceInput {
+        model: postretro_model::ModelHandle::from(model),
+        transform: Mat4::IDENTITY,
+        shadow_bias_scale: 1.0,
+        phase_seed: 1,
+        palette_cache_key: MeshPaletteCacheKey::Entity(1),
+        sample: postretro_model::sample_params::MeshSampleParams::rest(),
+        pose_inputs: None,
+        capture: None,
+        resample: true,
+        forward_visible: true,
+        dynamic_shadow_visible: true,
+        presentation: MeshPresentation::World,
+    };
+    let ghosts: Vec<_> = [0u16, 1]
+        .map(|link| MeshInstanceInput {
+            transform: Mat4::from_translation(Vec3::new(f32::from(link) + 1.0, 0.0, 0.0)),
+            palette_cache_key: real.palette_cache_key.ghost_through(link),
+            dynamic_shadow_visible: false,
+            presentation: MeshPresentation::Ghost(GhostInstanceLook {
+                opacity: 0.5,
+                saturation: 0.0,
+                tint: [1.0, 0.8, 0.6],
+            }),
+            ..real.clone()
+        })
+        .into();
+    let mut font = postretro_ui::text::build_font_system();
+    for mode in GhostTransparency::ALL {
+        renderer.set_ghost_transparency(mode);
+        renderer.set_mesh_draws(std::slice::from_ref(&real));
+        renderer.set_ghost_mesh_draws(&ghosts);
+        let before = renderer.queue.counts();
+        renderer.update_per_frame_uniforms(Mat4::IDENTITY, Vec3::ZERO, 1.0);
+        let encoder = record_window(&mut renderer, &mut font);
+        renderer.submit_windowed_frame(encoder);
+        assert_submit(&renderer, before, 1);
+        renderer
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+    }
+    eprintln!("[UploadProof] ghost pass: blend and dither frames ran");
+}
+
+/// GPU proof for the mover and billboard ghost passes (rendering_pipeline.md
+/// §7.9): both mover ghost pipelines and the billboard ghost pipeline build
+/// with the full renderer, and a frame holding a real mover, two ghosts of it
+/// (one mover id, two links) and a projectile billboard ghost records and
+/// submits under each `render.ghosts` mode with no validation error.
+#[test]
+fn mover_and_billboard_ghosts_record_through_their_pipelines_in_both_modes() {
+    use postretro_level_format::geometry::Vertex;
+    use postretro_render_cpu::ghost_instance::{
+        GhostInstanceLook, KinematicGhostInstance, pack_ghost_sprite_instance,
+    };
+    use postretro_render_cpu::ghost_transparency::GhostTransparency;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let vertex = |position: [f32; 3]| {
+        Vertex::new(
+            position,
+            [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
+            0,
+        )
+    };
+    let mover = postretro_level_loader::LoadedKinematicMover {
+        mover_id: 3,
+        name: "barrier".into(),
+        tags: vec!["barrier".into()],
+        origin: Vec3::ZERO,
+        path: String::new(),
+        speed_mps: 1.0,
+        wait_ms: 0.0,
+        move_mode: 1,
+        start_on_spawn: false,
+        vertices: vec![
+            vertex([-0.5, -0.5, -2.0]),
+            vertex([0.5, -0.5, -2.0]),
+            vertex([0.0, 0.5, -2.0]),
+        ],
+        indices: vec![0, 1, 2],
+        face_meta: Vec::new(),
+        spin_axis: Vec3::ZERO,
+        spin_speed_deg_s: 0.0,
+        spin_accel_deg_s2: 0.0,
+        carry_yaw: false,
+        block_policy: "displace".into(),
+        crush_damage: 0.0,
+        crush_interval_ms: 0.0,
+        auto_close_ms: None,
+        open_event: None,
+        close_event: None,
+        blocked_event: None,
+        crush_event: None,
+        open_sound: None,
+        close_sound: None,
+        blocked_sound: None,
+        crush_sound: None,
+        sealed_portal_ids: Vec::new(),
+        carried_lights: Vec::new(),
+    };
+    let geometry = postretro_level_loader::KinematicGeometry {
+        movers: vec![mover],
+        waypoints: Vec::new(),
+    };
+    let device = renderer.device.clone();
+    renderer
+        .full_mut()
+        .kinematic_brush
+        .install_geometry(&device, Some(&geometry), 1);
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+    renderer.register_smoke_collection(
+        "ghost-proof",
+        "smoke_puff",
+        &root.join("textures"),
+        &root.join("cache"),
+        crate::render::SpriteCollectionRegistration {
+            baked_sidecar_eligible: false,
+            spec_intensity: 0.0,
+            spec_exponent: 16.0,
+            lifetime: 1.0,
+            emissive: 0.0,
+        },
+    );
+    let real = [crate::render::KinematicMoverInstance {
+        mover_id: 3,
+        transform: Mat4::IDENTITY,
+    }];
+    let look = GhostInstanceLook {
+        opacity: 0.5,
+        saturation: 0.0,
+        tint: [1.0, 0.8, 0.6],
+    };
+    let ghosts = [0.0f32, 1.0].map(|x| KinematicGhostInstance {
+        mover_id: 3,
+        transform: Mat4::from_translation(Vec3::new(x, 0.0, 0.0)),
+        look,
+    });
+    let mut sprites = Vec::new();
+    pack_ghost_sprite_instance(Vec3::new(0.0, 0.0, -3.0), 0.0, 1.0, 0.2, look, &mut sprites);
+    let mut font = postretro_ui::text::build_font_system();
+    for mode in GhostTransparency::ALL {
+        renderer.set_ghost_transparency(mode);
+        renderer.set_kinematic_mover_draws(&real, &real);
+        renderer.set_kinematic_ghost_draws(&ghosts);
+        renderer.set_billboard_ghost_draws([("ghost-proof", sprites.as_slice())]);
+        assert!(renderer.full().kinematic_ghost.has_draws());
+        assert!(renderer.full().billboard_ghost.has_draws());
+        let before = renderer.queue.counts();
+        renderer.update_per_frame_uniforms(Mat4::IDENTITY, Vec3::ZERO, 1.0);
+        let encoder = record_window(&mut renderer, &mut font);
+        renderer.submit_windowed_frame(encoder);
+        assert_submit(&renderer, before, 1);
+        renderer
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+    }
+    eprintln!("[UploadProof] mover and billboard ghost passes: blend and dither frames ran");
 }
 
 #[test]

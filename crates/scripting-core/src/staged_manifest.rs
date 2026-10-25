@@ -16,18 +16,18 @@ use super::data_descriptors::{
     drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
     drain_factions_lua, drain_fluids_js, drain_fluids_lua, drain_fonts_js, drain_fonts_lua,
-    drain_frontend_js, drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
-    drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
-    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
-    drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
-    drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_player_events_js, drain_player_events_lua, drain_presentation_overlays_js,
-    drain_presentation_overlays_lua, drain_presentation_templates_js,
-    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
-    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
-    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
-    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_faction_name_from_js,
-    entity_faction_name_from_lua,
+    drain_frontend_js, drain_frontend_lua, drain_ghost_styles_js, drain_ghost_styles_lua,
+    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
+    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
+    drain_input_block_js, drain_input_block_lua, drain_loading_js, drain_loading_lua,
+    drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js, drain_mod_trigger_events_lua,
+    drain_mover_defaults_js, drain_mover_defaults_lua, drain_player_events_js,
+    drain_player_events_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
+    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
+    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
+    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
+    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::LuauConfig;
@@ -346,6 +346,7 @@ fn run_staged_manifest_build(
         faction_sentiment_decay: manifest.faction_sentiment_decay,
         entity_faction_names: manifest.entity_faction_names,
         fluids: manifest.fluids,
+        ghost_styles: manifest.ghost_styles,
         maps: manifest.maps,
         reactions: manifest.reactions,
         crossings: manifest.crossings,
@@ -692,6 +693,13 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let ghost_styles = drain_ghost_styles_js(ctx, &obj, "default mod manifest export").map_err(
+        |e| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `ghostStyles` invalid: {e}"
+            ),
+        },
+    )?;
     let reactions =
         drain_global_reactions_js(ctx, &obj, "default mod manifest export").map_err(|e| {
             ScriptError::InvalidArgument {
@@ -768,6 +776,7 @@ fn manifest_from_js_value<'js>(
         fonts,
         maps,
         fluids,
+        ghost_styles,
         reactions,
         crossings,
         events,
@@ -1060,6 +1069,13 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let ghost_styles = drain_ghost_styles_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `ghostStyles` invalid: {e}"
+            ),
+        }
+    })?;
     let reactions = drain_global_reactions_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -1130,6 +1146,7 @@ fn run_staged_mod_init_luau(
         fonts,
         maps,
         fluids,
+        ghost_styles,
         reactions,
         crossings,
         events,
@@ -1208,6 +1225,7 @@ mod tests {
                     render: {
                         bloom: { resolution: "eighth", pixelated: true },
                         reflections: { style: "smooth" },
+                        ghosts: "dither",
                     },
                 };
             "#,
@@ -1223,6 +1241,7 @@ mod tests {
                     render = {
                         bloom = { resolution = "eighth", pixelated = true },
                         reflections = { style = "smooth" },
+                        ghosts = "dither",
                     },
                 }
             "#,
@@ -1235,6 +1254,7 @@ mod tests {
             reflections: crate::runtime::ModReflectionProfile {
                 style: crate::runtime::ModReflectionStyle::Smooth,
             },
+            ghosts: crate::runtime::ModGhostTransparency::Dither,
         };
         assert_eq!(js, expected);
         assert_eq!(luau, expected);
@@ -1331,8 +1351,8 @@ mod tests {
     }
 
     #[test]
-    fn staged_manifest_audio_attenuation_snapshot_matches_in_both_runtimes() {
-        use crate::runtime::{ModAttenuation, ModAttenuationCurve, ModAudioProfile};
+    fn staged_manifest_audio_profile_snapshot_matches_in_both_runtimes() {
+        use crate::runtime::{ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModGhostAudio};
 
         let staged_audio = |name: &str, entry: &str, source: &str| {
             let dir = temp_mod_root(name);
@@ -1351,7 +1371,10 @@ mod tests {
                     name: "AudioMod",
                     id: "audio-mod",
                     version: "1",
-                    audio: { attenuation: { minDistance: 1, maxDistance: 25, curve: "quadratic" } },
+                    audio: {
+                        attenuation: { minDistance: 1, maxDistance: 25, curve: "quadratic" },
+                        ghost: { volume: 0.7, highPassHz: 250, lowPassHz: 3000, drive: 0.3 },
+                    },
                 };
             "#,
         );
@@ -1363,7 +1386,10 @@ mod tests {
                     name = "AudioMod",
                     id = "audio-mod",
                     version = "1",
-                    audio = { attenuation = { minDistance = 1, maxDistance = 25, curve = "quadratic" } },
+                    audio = {
+                        attenuation = { minDistance = 1, maxDistance = 25, curve = "quadratic" },
+                        ghost = { volume = 0.7, highPassHz = 250, lowPassHz = 3000, drive = 0.3 },
+                    },
                 }
             "#,
         );
@@ -1372,6 +1398,12 @@ mod tests {
                 min_distance: 1.0,
                 max_distance: 25.0,
                 curve: ModAttenuationCurve::Quadratic,
+            },
+            ghost: ModGhostAudio {
+                volume: 0.7,
+                high_pass_hz: 250.0,
+                low_pass_hz: 3000.0,
+                drive: 0.3,
             },
         };
         assert_eq!(js, expected);
@@ -1902,10 +1934,18 @@ mod tests {
         )
         .unwrap();
         fs::write(
+            dir.join("postretro/audio.luau"),
+            r#"error("shadow postretro/audio.luau was read")"#,
+        )
+        .unwrap();
+        fs::write(
             dir.join("start-script.luau"),
             r#"
             local root = require("postretro")
             local UI = require("postretro/ui")
+            local Audio = require("postretro/audio")
+            assert(Audio.setGhostAudio({ volume = 0.5 }).primitive == "setGhostAudio", "Audio.setGhostAudio must be the SDK builder")
+            assert(root.setGhostAudio == nil, "root module must not expose setGhostAudio")
             local helper = require("./helpers/entity")
             assert(root.shadow == nil, "mod-root postretro.luau shadowed the engine module")
             assert(UI.shadow == nil, "mod-root postretro/ui.luau shadowed the engine module")
@@ -1950,7 +1990,9 @@ mod tests {
             !manifest
                 .dependency_paths
                 .iter()
-                .any(|path| path.ends_with("postretro") || path.ends_with("postretro/ui")),
+                .any(|path| path.ends_with("postretro")
+                    || path.ends_with("postretro/ui")
+                    || path.ends_with("postretro/audio")),
             "virtual module names must not be recorded as dependency paths"
         );
         assert!(
@@ -1958,6 +2000,12 @@ mod tests {
                 .dependency_paths
                 .contains(&dir.join("postretro/ui.luau").canonicalize().unwrap()),
             "shadow file for postretro/ui must not enter dependency output"
+        );
+        assert!(
+            !manifest
+                .dependency_paths
+                .contains(&dir.join("postretro/audio.luau").canonicalize().unwrap()),
+            "shadow file for postretro/audio must not enter dependency output"
         );
         assert!(
             !manifest

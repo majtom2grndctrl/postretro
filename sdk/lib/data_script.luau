@@ -239,6 +239,18 @@ export type MoverSetBlockPolicyStep = {
 
 export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args: {} }
 export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
+--- Member categories a ghost link shows; an omitted category keeps its value.
+export type GhostLinkMembersArgs = { players: boolean?, entities: boolean?, projectiles: boolean?, movers: boolean? }
+--- A ghost link's colour filter: each named field ramps on its own over
+--- `periodMs` (default 0); an omitted field keeps its value and any ramp in
+--- flight. `tint` is `{ r, g, b }`; `tint` components, `opacity` and `saturation`
+--- lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of
+--- `tint`, `opacity` and `saturation` warns and drops the step.
+export type GhostColorFilterArgs = { tint: {number}?, opacity: number?, saturation: number?, periodMs: number? }
+export type ArmGhostLinkStep = { id: EntityId, primitive: "armGhostLink", args: {} }
+export type DisarmGhostLinkStep = { id: EntityId, primitive: "disarmGhostLink", args: {} }
+export type SetGhostLinkMembersStep = { id: EntityId, primitive: "setGhostLinkMembers", args: GhostLinkMembersArgs }
+export type SetGhostLinkColorFilterStep = { id: EntityId, primitive: "setGhostLinkColorFilter", args: GhostColorFilterArgs }
 export type ArmTriggerStep = {
   id: number,
   primitive: "armTrigger",
@@ -299,7 +311,7 @@ export type FireStep = {
 --- Ordered member, group, subject-token and control steps. Steps begin in
 --- array order; `fire` queues a named dispatch, while `wait` stops the current
 --- drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read
@@ -847,7 +859,7 @@ end
 --- `config.name`, `config.id`, and `config.version` are required. The id gates
 --- multiplayer admission; the version is display-only and never compared. The
 --- first committed id and version remain active across staged reloads. Optional
---- arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`, `presentationTemplates`,
+--- arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`,
 --- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`,
 --- `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
@@ -909,6 +921,20 @@ end
 --- `{ 48, 80 }`; at most 128, min >= 8 x amplitude) shape it. A field out of range, or a repeated name, is rejected
 --- with a warning naming the field, and the first declaration stands. Pure.
 function DataScriptSdk.defineFluid(desc: FluidDescriptor): FluidDescriptor
+  return desc
+end
+
+--- Identity builder for a ghost style in `ghostStyles` on the returned mod
+--- manifest. A map's `ghost_link` names it through its `ghost_style` key.
+--- `name` is required; every other field is optional and an omitted one takes
+--- the floor style's value: `tint` (rgb, default `{ 1, 1, 1 }`), `opacity`
+--- (default 0.5) and `saturation` (default 0, greyscale), each in [0, 1];
+--- `audio` (default false) plays members' sounds through the Ghost bus, and
+--- `impactAudio` (default false) adds their impact sounds, only when `audio`
+--- is true. A malformed field drops the whole style with a warning naming it,
+--- a repeated name is dropped and the first declaration stands, and a link
+--- naming no declared style uses the floor style. Pure.
+function DataScriptSdk.defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor
   return desc
 end
 

@@ -34,6 +34,7 @@ pub const COMPONENT_KIND_IMMERSION: u16 = 23;
 pub const COMPONENT_KIND_TELEPORTER: u16 = 24;
 /// Reserved discriminant; trap state never replicates.
 pub const COMPONENT_KIND_PROJECTILE_TRAP: u16 = 25;
+pub const COMPONENT_KIND_GHOST_LINK: u16 = 26;
 
 /// Maximum key count in any replicated presentation animation channel.
 pub const MAX_WIRE_CURVE_KEYS: usize = 64;
@@ -604,6 +605,7 @@ pub struct RawComponentPayload {
     pub light: Option<WireLightState>,
     pub emitter: Option<WireEmitterState>,
     pub fog: Option<WireFogState>,
+    pub ghost_link: Option<super::WireGhostLinkState>,
 }
 
 /// A validated component payload. Constructed only by [`RawComponentPayload::validate`],
@@ -618,6 +620,7 @@ pub enum ComponentPayload {
     LightState(WireLightState),
     EmitterState(WireEmitterState),
     FogState(WireFogState),
+    GhostLinkState(super::WireGhostLinkState),
 }
 
 impl ComponentPayload {
@@ -635,6 +638,7 @@ impl ComponentPayload {
             ComponentPayload::LightState(_) => COMPONENT_KIND_LIGHT,
             ComponentPayload::EmitterState(_) => COMPONENT_KIND_BILLBOARD_EMITTER,
             ComponentPayload::FogState(_) => COMPONENT_KIND_FOG_VOLUME,
+            ComponentPayload::GhostLinkState(_) => COMPONENT_KIND_GHOST_LINK,
         }
     }
 }
@@ -655,9 +659,22 @@ impl RawComponentPayload {
             + usize::from(self.kinematic_mover.is_some())
             + usize::from(self.light.is_some())
             + usize::from(self.emitter.is_some())
-            + usize::from(self.fog.is_some());
+            + usize::from(self.fog.is_some())
+            + usize::from(self.ghost_link.is_some());
 
         match self.component_kind {
+            COMPONENT_KIND_GHOST_LINK => match self.ghost_link {
+                Some(state) if populated == 1 => state
+                    .validate()
+                    .map(|()| ComponentPayload::GhostLinkState(state))
+                    .map_err(ValidationError::InvalidGhostLinkState),
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
             COMPONENT_KIND_TELEPORTER => match self.teleporter {
                 Some(state) if populated == 1 => {
                     if state.index == super::NO_WIRE_TELEPORTER {
@@ -842,6 +859,7 @@ mod tests {
             light: None,
             emitter: None,
             fog: None,
+            ghost_link: None,
         }
     }
 
@@ -1183,6 +1201,7 @@ mod tests {
                 RawComponentPayload {
                     teleporter: None,
                     fog: Some(fog_state()),
+                    ghost_link: None,
                     ..empty_raw(COMPONENT_KIND_FOG_VOLUME)
                 },
             ),

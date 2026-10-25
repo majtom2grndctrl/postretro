@@ -13,11 +13,13 @@ use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{chart_interior_dims, chart_texel_seed, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
-    CutParent, SoftProbes, light_contribution_and_direction,
-    light_texel_contribution_and_visibility_with, segment_clear_remembering,
+    CutParent, light_contribution_and_direction, light_texel_contribution_and_visibility_with,
+    segment_clear_remembering,
 };
-use crate::lightmap_layer::SharedAtlas;
-use crate::map_data::{LightType, MapLight};
+use crate::lightmap_layer::{SharedAtlas, light_may_reach};
+use crate::texel_footprint::{
+    ClipBand, ClipReach, EmbeddedEmitters, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
+};
 
 use super::eligibility::EligibleLight;
 use super::fill::quantize_visibility;
@@ -28,10 +30,13 @@ use super::ownership::{Candidate, FaceChannels, LIT_TEXEL_FLOOR};
 /// rarely falls between samples.
 pub(crate) const ESTIMATE_STRIDE: u32 = LIT_TEXEL_FLOOR.isqrt();
 
-/// Each sample runs the walk's own area-sampled visibility, seed and sample
-/// count, so a sample reads exactly what the walk bakes at that texel. A thin
-/// own segment with no lattice coordinate is sampled at its centre; the tag
-/// names that placement so a build without it never shares a memo entry.
+/// Each sample runs the walk's own visibility sampler (receiver footprint,
+/// seed and sample count), so a sample reads what the walk bakes at that
+/// texel, barring the occluder cache's documented rounding catch
+/// (`segment_clear_remembering`): the estimate's caches remember other
+/// triangles at a texel than the walk's do. A thin own segment with no lattice
+/// coordinate is sampled at its centre; the tag names that placement so a
+/// build without it never shares a memo entry.
 const ESTIMATE_MODE: &[u8] = b"walk-area-samples;thin-segment-centres";
 
 /// The estimate's inputs that can change id 42 while every partition stays
@@ -89,7 +94,7 @@ fn axis_samples(segment: &Range<u32>) -> Vec<u32> {
 /// emitted sub-face whose own segment holds it. Own segments are disjoint, so
 /// no parent-grid texel is sampled twice. A piece the polygon missed has no
 /// sub-face and no sample.
-fn sample_points(cut: &CutParent, shared: &SharedAtlas<'_>) -> Vec<(usize, i32, i32)> {
+pub(super) fn sample_points(cut: &CutParent, shared: &SharedAtlas<'_>) -> Vec<(usize, i32, i32)> {
     let mut points = Vec::new();
     for (k, [u, v]) in cut.own.iter().enumerate() {
         let face = cut.faces.start + k;
@@ -128,19 +133,18 @@ fn parent_bounds(cut: &CutParent, shared: &SharedAtlas<'_>) -> (Vec3, Vec3) {
     (min, max)
 }
 
-/// Whether `light`'s falloff can reach the box at all: a cheap cull before any
-/// per-sample analytic test. Directional and unranged lights always may.
-fn light_may_reach_box(light: &MapLight, (min, max): (Vec3, Vec3)) -> bool {
-    if light.light_type == LightType::Directional || light.falloff_range <= 0.0 {
-        return true;
-    }
-    let origin = light.origin.as_vec3();
-    origin.clamp(min, max).distance(origin) <= light.falloff_range
+/// One sub-face's light-independent sampling setup, read by every light.
+struct SubFaceSampling {
+    frame: TexelFrame,
+    band: ClipBand,
+    /// `None` with the floor off, where nothing is clipped.
+    reach: Option<ClipReach>,
 }
 
 /// Trace the estimate for every cut face and rank each one's owners. Work is
-/// one `(cut face, light)` pair per governed item; results are summed in a
-/// fixed sample order and ranked by the same total order as the walk, so the
+/// one `(cut face, light)` pair per governed item, after one governed item
+/// per cut face for its sub-faces' setup; results are summed in a fixed
+/// sample order and ranked by the same total order as the walk, so the
 /// owners never depend on worker count.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn estimate_cut_owners(
@@ -151,6 +155,8 @@ pub(super) fn estimate_cut_owners(
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     area_sample_count: u32,
+    penumbra_floor: bool,
+    embedded_emitters: &EmbeddedEmitters,
     control: &BakeControl,
 ) -> CutEstimate {
     let samples: Vec<Vec<(usize, i32, i32)>> = cut_parents
@@ -165,8 +171,28 @@ pub(super) fn estimate_cut_owners(
             eligible
                 .iter()
                 .enumerate()
-                .filter(move |(_, light)| light_may_reach_box(light.light, bounds))
+                // The static bake's own reach cull, so a light the walk
+                // never reaches is never traced here either.
+                .filter(move |(_, light)| light_may_reach(light.light, Some(bounds)))
                 .map(move |(l, _)| (c, l))
+        })
+        .collect();
+    let sub_faces: Vec<Vec<SubFaceSampling>> = cut_parents
+        .par_iter()
+        .map(|cut| {
+            let _permit = control.governor().enter();
+            cut.faces
+                .clone()
+                .map(|face| {
+                    let chart = &shared.charts[face];
+                    SubFaceSampling {
+                        frame: TexelFrame::for_chart(chart),
+                        band: ClipBand::for_chart(chart),
+                        reach: penumbra_floor
+                            .then(|| ClipReach::for_chart(chart, bvh, primitives, geometry)),
+                    }
+                })
+                .collect()
         })
         .collect();
     // (lit samples, contribution, traces) per pair, in pair order.
@@ -175,27 +201,62 @@ pub(super) fn estimate_cut_owners(
         .map(|&(c, l)| {
             let _permit = control.governor().enter();
             let light = eligible[l].light;
-            let probes = SoftProbes::new(light, area_sample_count);
+            let sampler = TexelSampler::new(
+                light,
+                area_sample_count,
+                penumbra_floor,
+                embedded_emitters.is_embedded(eligible[l].source_index),
+            );
             let last_occluder = Cell::new(None);
+            let clip_occluder = Cell::new(None);
             let (mut lit, mut contribution, mut traces) = (0u32, 0f64, 0usize);
             for &(face, tx, ty) in &samples[c] {
                 let chart = &shared.charts[face];
+                let sub_face = &sub_faces[c][face - cut_parents[c].faces.start];
                 let world_p = chart_texel_world_position(chart, tx, ty);
-                let seed = chart_texel_seed(chart, tx, ty);
+                // A sub-chart's frame is its parent grid's, so every sample of
+                // one cut face draws the walk's own footprint offsets.
+                let site = TexelSite {
+                    world_p,
+                    normal: chart.normal,
+                    seed: chart_texel_seed(chart, tx, ty),
+                    frame: sub_face.frame,
+                    may_clip: sub_face
+                        .reach
+                        .as_ref()
+                        .is_none_or(|reach| reach.may_clip(tx, ty)),
+                };
                 let (_, _, visibility) = light_texel_contribution_and_visibility_with(
                     light,
                     world_p,
                     chart.normal,
-                    seed,
-                    || probes,
-                    |from, to| {
-                        segment_clear_remembering(
-                            bvh,
-                            primitives,
-                            geometry,
-                            from,
-                            to,
-                            &last_occluder,
+                    || {
+                        sampler.visibility(
+                            light,
+                            &site,
+                            |from, to| {
+                                segment_clear_remembering(
+                                    bvh,
+                                    primitives,
+                                    geometry,
+                                    from,
+                                    to,
+                                    &last_occluder,
+                                )
+                            },
+                            |from, to| {
+                                segment_clear_remembering(
+                                    bvh,
+                                    primitives,
+                                    geometry,
+                                    from,
+                                    to,
+                                    &clip_occluder,
+                                )
+                            },
+                            |from, to| {
+                                lead_in_clear(bvh, primitives, geometry, &sub_face.band, from, to)
+                            },
                         )
                     },
                 );

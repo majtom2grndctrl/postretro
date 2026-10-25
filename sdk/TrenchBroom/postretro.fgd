@@ -77,8 +77,10 @@
     // Map-unit (inch) radius of the emitter used for bake-time area-light soft
     // shadows (penumbra width scales with this), authored in map units like
     // _falloff_range. Absent → ~9.84 in (≈0.25 m, the soft default); an authored 0
-    // keeps the hard 1-texel shadow step. Bake-only; never serialized to a runtime
-    // PRL section.
+    // gives the crispest edge the lightmap allows (a baked (lightmap) shadow edge
+    // ramps over about one lightmap texel, never a texel stair-step). For crisper
+    // contact, set a smaller worldspawn _lightmap_density (finer texels). Bake-only;
+    // never serialized to a runtime PRL section.
     _light_size(string) : "Light Size (map-unit radius; bake-only soft shadows)" : ""
     delay(choices) : "Falloff Model" : 0 =
     [
@@ -212,8 +214,11 @@
     angles(angles) : "Direction (pitch yaw roll, degrees)" : "-90 0 0"
     // Angular diameter (degrees) of the parallel source used for bake-time soft
     // shadows — wider angle, softer penumbra. Absent → 0.5 (soft default); an
-    // authored 0 keeps the hard 1-texel shadow step. `_light_size` (inherited
-    // from Light) does not apply to directional sources. Bake-only.
+    // authored 0 gives parallel rays and the crispest edge the lightmap allows (a
+    // baked (lightmap) shadow edge ramps over about one lightmap texel, never a
+    // texel stair-step). For crisper contact, set a smaller worldspawn
+    // _lightmap_density (finer texels). `_light_size` (inherited from Light) does not apply to
+    // directional sources. Bake-only.
     _angular_diameter(string) : "Angular Diameter (degrees; bake-only soft shadows)" : ""
 ]
 
@@ -323,9 +328,11 @@
     model(string) : "Model path (relative to content root, e.g. models/x/scene.gltf)" : ""
 ]
 
-// Player spawn point. At level load the engine spawns one entity per
-// `player_spawn` placement, using `entity_class` to pick the registered
-// classname (defaults to `"player"`).
+// Player spawn point: a place a player can start, not a pawn by itself. The
+// first player (single player, or a co-op host) starts at the first spawn in
+// map order not marked `coop_only`; each co-op joiner takes the first free one.
+// Rest the box on the floor: its bottom is where the player's feet stand.
+// `entity_class` picks the registered classname (defaults to `"player"`).
 @PointClass base(EntitySpawn)
     color(0 220 0)
     size(-16 -16 -24, 16 16 32)
@@ -333,6 +340,11 @@
 [
     angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
     entity_class(string) : "Registered classname to spawn" : "player"
+    coop_only(choices) : "Co-op joiners only" : 0 =
+    [
+        0 : "No"
+        1 : "Yes (never the first player's start)"
+    ]
 ]
 
 // Stateless enemy spawn point. The named archetype is resolved at level load;
@@ -449,6 +461,26 @@
     ]
     arrival_sound(string) : "Arrival sound key" : "" : "Optional key under sounds/, without extension. Blank is silent."
     on_teleport(string) : "Reaction on teleport" : "" : "Authoritative reaction once per travelling player."
+]
+
+// Ghost-link brushwork is a non-solid union over one room copy; while armed, its
+// members draw as ghosts at the landmark → target mapping in the other copy.
+@SolidClass
+    color(120 200 220)
+    = ghost_link : "Ghost link region (members seen from another room copy)"
+[
+    name(string) : "Link name" : ""
+    _tags(string) : "Space-delimited tags" : ""
+    landmark(string) : "Source landmark name" : "" : "Required teleport_destination inside this room copy. Must differ from target."
+    target(string) : "Target name" : "" : "Required teleport_destination in the other room copy, where ghosts draw."
+    enabled_on_spawn(choices) : "Armed on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    ghost_tags(string) : "Ghosted mover tags" : "" : "Space-delimited mover _tags this link ghosts. Blank ghosts no movers."
+    ghost_members(string) : "Member categories" : "" : "Space-delimited from: players entities projectiles movers. Blank shows all four."
+    ghost_style(string) : "Ghost style" : "" : "A ghost style the mod manifest declares. Blank uses the engine floor style."
 ]
 
 @PointClass

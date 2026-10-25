@@ -70,6 +70,9 @@ use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_curren
 
 mod bindings;
 #[cfg(test)]
+mod ghost_link_tests;
+mod ghost_links;
+#[cfg(test)]
 mod late_baseline_tests;
 mod late_baselines;
 #[cfg(test)]
@@ -78,7 +81,8 @@ mod replay_poses;
 #[cfg(test)]
 mod teleporter_tests;
 mod teleporters;
-use bindings::{ClientBindings, is_presentation_payload};
+use bindings::{ClientBindings, RegionBinding, is_presentation_payload};
+pub use ghost_links::GhostLinkUpdate;
 use late_baselines::LateBaselineHistory;
 use postretro_entities::presentation_binding::PresentationBindingResolver;
 use postretro_entities::presentation_binding::{PresentationBindingKey, PresentationBindingKind};
@@ -311,6 +315,10 @@ impl RemotePlayerLocomotionReference {
 pub struct ClientPresentationInputs {
     pub aim_pitches: HashMap<NetworkId, f32>,
     pub heading_yaws: HashMap<NetworkId, f32>,
+    /// The server tick every remote entity was sampled at this frame, exactly as the
+    /// interpolation used it. `None` before time sync names a render tick, while
+    /// remotes hold their newest applied pose.
+    pub render_server_tick: Option<f64>,
 }
 
 const MIN_PRESENTED_HORIZONTAL_SPEED_SQ: f32 = 1.0e-8;
@@ -344,6 +352,13 @@ pub(crate) enum IgnoredPayload {
     /// A teleporter baseline named an index and source entity no installed
     /// teleporter carries. Nothing binds; the region keeps its local armed state.
     UnknownTeleporter {
+        network_id: u32,
+        index: u16,
+        source_entity: u32,
+    },
+    /// A ghost-link baseline named an index and source entity no installed link
+    /// carries. Nothing binds or queues; the link keeps its local spawn state.
+    UnknownGhostLink {
         network_id: u32,
         index: u16,
         source_entity: u32,
@@ -383,7 +398,8 @@ pub struct ClientReplication {
     /// is presentation state only: it detects shared-visible equip changes without
     /// deriving a weapon from owner-private data or mutating gameplay components.
     active_weapon_archetypes: HashMap<NetworkId, Option<String>>,
-    /// Descriptor class retained for each remote presentation entity. Overlay
+    /// Replicated class retained for each remote presentation entity, as the
+    /// snapshot tagged it (`descriptor:` / `pawn:` / `projectile:`). Overlay
     /// anchoring uses the local descriptor's authored hitbox when a model socket
     /// or derived skeletal bound is unavailable; no combat component is created.
     remote_entity_classes: HashMap<NetworkId, String>,
@@ -437,6 +453,17 @@ pub struct ClientReplication {
     local_pawn_entity_class: Option<String>,
     /// Local identity bindings used by snapshot apply.
     bindings: ClientBindings,
+    /// Ghost-link states received since presentation last drained them
+    /// ([`Self::drain_ghost_link_updates`]). Dropped with every other received
+    /// state at unload and demotion.
+    ghost_link_updates: ghost_links::PendingGhostLinkUpdates,
+    /// The newest snapshot's level-scoped ghost-audio record, until presentation
+    /// takes it ([`Self::take_ghost_audio`]). Dropped with every other received
+    /// state at unload and demotion.
+    ghost_audio: Option<postretro_net::wire::WireGhostAudioState>,
+    /// Per remote, the host tick whose state this frame's presented pose shows
+    /// ([`Self::presented_state_tick`]). Rebuilt each sample pass.
+    presented_state_ticks: HashMap<NetworkId, f64>,
     /// Authoritative mover samples from host snapshots, keyed by stable PRL
     /// `mover_id`. This is distinct from the live per-tick side-table. Reconcile
     /// replay reads per-tick poses from it through `resolve_replay_tick` and
@@ -772,9 +799,12 @@ impl ClientReplication {
         self.local_pawn_entity_class = None;
         self.unmerged_refresh_sent = None;
         self.bindings.mover_network_ids.clear();
-        self.bindings.teleporter_network_ids.clear();
+        self.bindings.region_network_ids.clear();
         self.bindings.clear_presentation();
         self.mover_history.clear();
+        self.ghost_link_updates.clear();
+        self.ghost_audio = None;
+        self.presented_state_ticks.clear();
 
         let mut requests = Vec::with_capacity(known.len());
         for (network_id, missing_baseline_ref) in known {
@@ -820,9 +850,12 @@ impl ClientReplication {
         self.local_pawn_entity_class = None;
         self.unmerged_refresh_sent = None;
         self.bindings.mover_network_ids.clear();
-        self.bindings.teleporter_network_ids.clear();
+        self.bindings.region_network_ids.clear();
         self.bindings.clear_presentation();
         self.mover_history.clear();
+        self.ghost_link_updates.clear();
+        self.ghost_audio = None;
+        self.presented_state_ticks.clear();
     }
 
     /// Read-only view of the current `NetworkId -> EntityId` map. Test-only; the
@@ -909,9 +942,31 @@ impl ClientReplication {
 
     /// Descriptor class for a mapped remote presentation entity.
     pub(crate) fn remote_entity_class(&self, network_id: NetworkId) -> Option<&str> {
+        self.remote_entity_classes.get(&network_id).map(|class| {
+            super::descriptor_class::decode_replicated_descriptor_class(class).canonical_name()
+        })
+    }
+
+    /// Every mapped remote presentation entity with the replicated class it was
+    /// materialized from. Display copies carry no provenance, so this is how
+    /// client-side presentation tells a remote pawn from a descriptor entity or a
+    /// projectile mirror. Allocation-free; unordered.
+    pub fn remote_entities_by_class(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            EntityId,
+            super::descriptor_class::ReplicatedDescriptorClass<'_>,
+        ),
+    > + '_ {
         self.remote_entity_classes
-            .get(&network_id)
-            .map(String::as_str)
+            .iter()
+            .filter_map(|(network_id, class)| {
+                Some((
+                    self.entity_for_network_id(*network_id)?,
+                    super::descriptor_class::decode_replicated_descriptor_class(class),
+                ))
+            })
     }
 
     /// Entity ids that should be drawn as remote debug markers. The local predicted
@@ -1002,6 +1057,7 @@ impl ClientReplication {
             self.acked_server_tick = snapshot.server_tick;
             self.bindings
                 .accept_presentation_clock(snapshot.server_script_time, local_script_time);
+            self.receive_ghost_audio(snapshot.ghost_audio);
         }
 
         let mut outcome = ApplyOutcome {
@@ -1313,6 +1369,10 @@ impl ClientReplication {
             teleporters::first_state(components)
                 .and_then(|state| teleporters::find_loaded(registry, state))
                 .or_else(|| {
+                    ghost_links::first_state(components)
+                        .and_then(|state| ghost_links::find_loaded(registry, state))
+                })
+                .or_else(|| {
                     first_mover_state(components).and_then(|state| {
                         bindings::find_loaded_mover_entity(registry, state.mover_id)
                     })
@@ -1390,6 +1450,19 @@ impl ClientReplication {
             // Unmapped: a spawn. Requires a Transform to seed the entity; a baseline
             // without one is invalid and does not spawn.
             None => {
+                if let Some(state) = ghost_links::first_state(components) {
+                    return self.bind_ghost_link_baseline(
+                        registry,
+                        network_id,
+                        baseline_id,
+                        state,
+                        server_tick,
+                        mover_target_tick,
+                        mover_tick_dt,
+                        components,
+                        outcome,
+                    );
+                }
                 if let Some(state) = teleporters::first_state(components) {
                     return self.bind_teleporter_baseline(
                         registry,
@@ -1437,7 +1510,7 @@ impl ClientReplication {
                         self.remove_mapping(network_id);
                         self.baselines.remove(&network_id);
                         self.bindings.mover_network_ids.remove(&network_id);
-                        self.bindings.teleporter_network_ids.remove(&network_id);
+                        self.bindings.region_network_ids.remove(&network_id);
                         return false;
                     }
                     return true;
@@ -1746,7 +1819,7 @@ impl ClientReplication {
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
         self.bindings.mover_network_ids.remove(&network_id);
-        self.bindings.teleporter_network_ids.remove(&network_id);
+        self.bindings.region_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
             entity_id,
@@ -1828,10 +1901,7 @@ impl ClientReplication {
             })
         });
         let bound = self.bindings.is_presentation_bound(network_id)
-            || self
-                .bindings
-                .teleporter_network_ids
-                .contains_key(&network_id);
+            || self.bindings.region_network_ids.contains_key(&network_id);
         if let Some(id) = self.clear_identity_state(network_id)
             && !bound
         {
@@ -1861,7 +1931,7 @@ impl ClientReplication {
         self.remote_entity_classes.remove(&network_id);
         self.projectile_presentations.remove(&network_id);
         self.bindings.mover_network_ids.remove(&network_id);
-        self.bindings.teleporter_network_ids.remove(&network_id);
+        self.bindings.region_network_ids.remove(&network_id);
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
             self.local_pawn_entity_class = None;
@@ -1957,15 +2027,19 @@ impl ClientReplication {
         // drops the one interpolation sample.
         let is_local = self.local_pawn == Some(network_id);
         let bound_mover_id = self.bindings.mover_network_ids.get(&network_id).copied();
-        let bound_teleporter = self
-            .bindings
-            .teleporter_network_ids
-            .get(&network_id)
-            .copied();
+        let bound_region = self.bindings.region_network_ids.get(&network_id).copied();
         if let Some(state) = teleporters::first_state(components)
-            && (bound_teleporter != Some(state.index) || !teleporters::matches(registry, id, state))
+            && (bound_region != Some(RegionBinding::Teleporter(state.index))
+                || !teleporters::matches(registry, id, state))
         {
             log::warn!("[Net] rejecting mismatched teleporter binding for {network_id:?}");
+            return false;
+        }
+        if let Some(state) = ghost_links::first_state(components)
+            && (bound_region != Some(RegionBinding::GhostLink(state.index))
+                || !ghost_links::matches(registry, id, state))
+        {
+            log::warn!("[Net] rejecting mismatched ghost link binding for {network_id:?}");
             return false;
         }
         if let Some(mover_id) = unknown_ground_mover_id(registry, components) {
@@ -2040,13 +2114,19 @@ impl ClientReplication {
                 ComponentPayload::TeleporterState(state) => {
                     teleporters::apply(registry, id, *state)
                 }
+                // Received link state never writes the installed component, which
+                // holds this client's local spawn state; presentation history
+                // takes it from the queue instead.
+                ComponentPayload::GhostLinkState(state) => {
+                    self.queue_ghost_link_update(server_tick, *state)
+                }
                 ComponentPayload::Transform(wire) => {
                     let transform = wire_to_transform(wire);
                     if !is_local {
                         if mover_apply.is_some()
                             || invalid_bound_mover_payload
                             || bound_mover_id.is_some()
-                            || bound_teleporter.is_some()
+                            || bound_region.is_some()
                         {
                             continue;
                         }
@@ -2063,7 +2143,7 @@ impl ClientReplication {
                         && mover_apply.is_none()
                         && !invalid_bound_mover_payload
                         && bound_mover_id.is_none()
-                        && bound_teleporter.is_none()
+                        && bound_region.is_none()
                     {
                         self.interp.record(
                             network_id,
@@ -2299,6 +2379,7 @@ impl ClientReplication {
         self.netdiag.begin_frame(render_server_tick);
         self.presented_player_inputs.aim_pitches.clear();
         self.presented_player_inputs.heading_yaws.clear();
+        self.presented_state_ticks.clear();
         // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
         // writing back through the registry.
         let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
@@ -2312,10 +2393,7 @@ impl ClientReplication {
                 continue;
             }
             if (self.bindings.mover_network_ids.contains_key(&network_id)
-                || self
-                    .bindings
-                    .teleporter_network_ids
-                    .contains_key(&network_id))
+                || self.bindings.region_network_ids.contains_key(&network_id))
                 || self.bindings.is_presentation_bound(network_id)
             {
                 continue;
@@ -2323,6 +2401,8 @@ impl ClientReplication {
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
                 continue; // no samples buffered yet
             };
+            self.presented_state_ticks
+                .insert(network_id, pose.state_tick);
             let mut transform = pose.transform;
             if let Some(facts) = self.projectile_presentations.get(&network_id)
                 && facts.sprite_size.is_none()
@@ -2409,10 +2489,7 @@ impl ClientReplication {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
                 || (self.bindings.mover_network_ids.contains_key(&network_id)
-                    || self
-                        .bindings
-                        .teleporter_network_ids
-                        .contains_key(&network_id))
+                    || self.bindings.region_network_ids.contains_key(&network_id))
                 || self.bindings.is_presentation_bound(network_id)
             {
                 continue;
@@ -2440,15 +2517,14 @@ impl ClientReplication {
     ) {
         self.presented_player_inputs.aim_pitches.clear();
         self.presented_player_inputs.heading_yaws.clear();
+        // Held poses show the newest applied snapshot; no per-remote tick.
+        self.presented_state_ticks.clear();
         let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
         for (network_id, entity_id) in mapped {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
                 || (self.bindings.mover_network_ids.contains_key(&network_id)
-                    || self
-                        .bindings
-                        .teleporter_network_ids
-                        .contains_key(&network_id))
+                    || self.bindings.region_network_ids.contains_key(&network_id))
                 || self.bindings.is_presentation_bound(network_id)
                 || !self.remote_player_locomotion.contains_key(&network_id)
             {
@@ -2512,12 +2588,10 @@ impl ClientReplication {
     }
 
     /// Retain the descriptor identity already carried by the snapshot while
-    /// descriptor-aware presentation materialization has it in scope. The cache stores
-    /// the canonical descriptor name because overlay lookup consumes it directly.
+    /// descriptor-aware presentation materialization has it in scope. The cache keeps
+    /// the class tag; readers decode it, so the representation (pawn, projectile or
+    /// descriptor entity) stays available beside the canonical name.
     pub(crate) fn cache_remote_entity_class(&mut self, network_id: NetworkId, entity_class: &str) {
-        let entity_class =
-            super::descriptor_class::decode_replicated_descriptor_class(entity_class)
-                .canonical_name();
         self.remote_entity_classes
             .insert(network_id, entity_class.to_string());
     }
@@ -2929,6 +3003,16 @@ impl ClientReplication {
     /// Mutable for reconcile, whose replay memo lives beside the samples.
     pub(crate) fn mover_history_mut(&mut self) -> &mut MoverHistoryBuffer {
         &mut self.mover_history
+    }
+
+    /// The host tick, in snapshot-stamp units, whose replicated state `entity`'s
+    /// presented pose shows this frame: the render tick, except across a blend
+    /// (its leading sample) or on the near side of a teleport cut (before the
+    /// cut's tick). `None` for an entity not sampled this frame, and for every
+    /// remote before time sync names a render tick.
+    pub fn presented_state_tick(&self, entity: EntityId) -> Option<f64> {
+        let network_id = self.network_id_for_entity(entity)?;
+        self.presented_state_ticks.get(&network_id).copied()
     }
 
     /// Server tick carried by the latest accepted snapshot. Presentation clocks
@@ -3435,6 +3519,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            ghost_audio: None,
             server_script_time: 0.0,
         }
     }
@@ -4508,6 +4593,40 @@ mod tests {
     }
 
     // --- Despawn: idempotent, drops mapping, acks tombstone; unknown despawn no-ops. ---
+    // Display copies carry no provenance: client-side ghost eligibility tells a
+    // remote pawn from a descriptor entity by the class tag its record carried.
+    #[test]
+    fn remote_entities_by_class_keeps_the_replicated_representation() {
+        use super::super::descriptor_class::ReplicatedDescriptorClass;
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![
+                    full_baseline(7, 1, vec![transform_payload_at([0.0; 3], 0.0)]),
+                    full_baseline(8, 1, vec![transform_payload_at([1.0, 0.0, 0.0], 0.0)]),
+                ],
+            ),
+        );
+        client.cache_remote_entity_class(NetworkId(7), "pawn:player");
+        client.cache_remote_entity_class(NetworkId(8), "descriptor:imp");
+        let pawn = client.entity_for_network_id(NetworkId(7)).unwrap();
+        let imp = client.entity_for_network_id(NetworkId(8)).unwrap();
+        let mut classes: Vec<_> = client.remote_entities_by_class().collect();
+        classes.sort_by_key(|(id, _)| *id);
+        let mut expected = vec![
+            (pawn, ReplicatedDescriptorClass::Pawn("player")),
+            (imp, ReplicatedDescriptorClass::Descriptor("imp")),
+        ];
+        expected.sort_by_key(|(id, _)| *id);
+        assert_eq!(classes, expected);
+        assert_eq!(client.remote_entity_class(NetworkId(7)), Some("player"));
+        assert_eq!(client.remote_entity_class(NetworkId(8)), Some("imp"));
+    }
+
     #[test]
     fn despawn_drops_mapping_and_is_idempotent() {
         let mut registry = EntityRegistry::new();

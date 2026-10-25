@@ -5,6 +5,7 @@
 //! cache identity, CSR locality, and post-bake policy ordering are checked at
 //! the compiler seam where regressions otherwise cross module boundaries.
 
+use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,7 +67,7 @@ use crate::pipeline::lightmap_stage;
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
 use crate::sh_bake::{ShBakeCtx, ShConfig};
-use crate::sh_group::SH_GROUP_STAGE_ID;
+use crate::sh_group::{SH_GROUP_STAGE_ID, SH_GROUP_STAGE_VERSION};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -886,6 +887,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         area_sample_count: 4,
         uncompressed_irradiance: true,
         direction_texel_scale: lightmap_bake::DIRECTION_TEXEL_SCALE,
+        penumbra_floor: PENUMBRA_FLOOR_DEFAULT,
     };
     let output = lightmap_stage::bake_fused_prepared(
         &args,
@@ -1367,7 +1369,8 @@ fn lighting_scale_cache_versions_pin_current_epochs() {
     assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 3);
     assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 3);
     assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
-    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 3);
+    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 4);
+    assert_eq!(SH_GROUP_STAGE_VERSION, 3);
 
     let (dir, cache) = fresh_cache("cone_reach_billboard_epoch");
     let current = CacheKey::new(

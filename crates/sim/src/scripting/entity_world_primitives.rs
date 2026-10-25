@@ -76,6 +76,9 @@ enum QueryFilter {
     Teleporter {
         tag: Option<String>,
     },
+    GhostLink {
+        tag: Option<String>,
+    },
     ProjectileTrap {
         tag: Option<String>,
     },
@@ -94,13 +97,14 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "kinematic_mover" => Ok(QueryFilter::KinematicMover { tag }),
         "trigger_volume" => Ok(QueryFilter::TriggerVolume { tag }),
         "teleporter" => Ok(QueryFilter::Teleporter { tag }),
+        "ghost_link" => Ok(QueryFilter::GhostLink { tag }),
         "spawner" => Ok(QueryFilter::Spawner { tag }),
         "projectile_trap" => Ok(QueryFilter::ProjectileTrap { tag }),
         "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"spawner\" | \"projectile_trap\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"sprite_visual\""
             ),
         }),
     }
@@ -108,7 +112,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
 
 const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Raises outside a level's data script (module evaluation or `setupLevel`). \
      Returns map-placed instances only; an entity a runtime spawn carries never appears. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"spawner\" | \"projectile_trap\" | \"sprite_visual\", tag?: string }. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"sprite_visual\", tag?: string }. \
      `\"sprite_visual\"` always returns `[]` (engine-managed). \
      Unknown component values raise InvalidArgument. \
      The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
@@ -384,6 +388,13 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                         Ok(JsonValue(collect_identity_snapshots_json(
                             &ctx,
                             ComponentKind::Teleporter,
+                            tag.as_deref(),
+                        )))
+                    }
+                    QueryFilter::GhostLink { tag } => {
+                        Ok(JsonValue(collect_identity_snapshots_json(
+                            &ctx,
+                            ComponentKind::GhostLink,
                             tag.as_deref(),
                         )))
                     }
@@ -1740,6 +1751,134 @@ mod tests {
         );
     }
 
+    /// Ghost links as level install spawns them: map order, tags, no runtime
+    /// state on the snapshot.
+    fn add_ghost_link(ctx: &ScriptCtx, index: u16, x: f32, tags: &[&str]) -> EntityId {
+        let mut reg = ctx.registry.borrow_mut();
+        let tags: Vec<String> = tags.iter().map(|tag| tag.to_string()).collect();
+        let id = reg
+            .try_spawn(
+                Transform {
+                    position: Vec3::new(x, 2.0, 3.0),
+                    ..Transform::default()
+                },
+                &tags,
+            )
+            .unwrap();
+        reg.set_component(
+            id,
+            postretro_entities::GhostLinkComponent {
+                index,
+                source_entity: 10 + u32::from(index),
+                armed: true,
+                members: 0b1111,
+                filter: Default::default(),
+            },
+        )
+        .unwrap();
+        id
+    }
+
+    // `getMapEntities("ghostLink", { tag })` returns the tagged links in
+    // map order with `id`, `position` and `tags`, each verb baking its id into
+    // a step; a tag no link carries returns `[]` silently. TS and Luau agree.
+    #[test]
+    fn ghost_link_members_query_in_map_order_and_build_their_steps_in_both_runtimes() {
+        use mlua::LuaSerdeExt as _;
+        let _level = LevelDataContext::enter();
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let ctx = ScriptCtx::new();
+        let first = add_ghost_link(&ctx, 0, 1.0, &["vault_echo", "east"]);
+        add_ghost_link(&ctx, 1, 2.0, &["other"]);
+        let second = add_ghost_link(&ctx, 2, 4.0, &["vault_echo"]);
+        let r = registry_for(ctx);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let ts: serde_json::Value = jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const echoes = getMapEntities("ghostLink", { tag: "vault_echo" });
+                    JSON.stringify({
+                      members: echoes.map((l) => ({ id: l.id, position: l.position, tags: l.tags })),
+                      absent: getMapEntities("ghostLink", { tag: "absent" }),
+                      all: getMapEntities("ghostLink").length,
+                      arm: echoes[0].arm(),
+                      disarm: echoes[1].disarm(),
+                      members2: echoes[0].setMembers({ projectiles: false }),
+                      filter: echoes[1].setColorFilter({ tint: [1, 0.5, 0.25], opacity: 0.5, periodMs: 1500 }),
+                    })
+                    "#,
+                )
+                .unwrap();
+            serde_json::from_str(&json).unwrap()
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let value: mlua::Value = lua
+            .load(
+                r#"
+                local echoes = getMapEntities("ghostLink", { tag = "vault_echo" })
+                local members = {}
+                for i, l in ipairs(echoes) do
+                  members[i] = { id = l.id, position = l.position, tags = l.tags }
+                end
+                local absent = getMapEntities("ghostLink", { tag = "absent" })
+                assert(#absent == 0 and next(absent) == nil, "absent tag: empty")
+                return {
+                  members = members,
+                  all = #getMapEntities("ghostLink"),
+                  arm = echoes[1]:arm(),
+                  disarm = echoes[2]:disarm(),
+                  members2 = echoes[1]:setMembers({ projectiles = false }),
+                  filter = echoes[2]:setColorFilter({ tint = { 1, 0.5, 0.25 }, opacity = 0.5, periodMs = 1500 }),
+                  bridgeHidden = wrapGhostLinkEntity == nil,
+                }
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let mut luau: serde_json::Value = lua.from_value(value).unwrap();
+        assert_eq!(luau["bridgeHidden"], true, "the wrapper bridge is cleared");
+        luau.as_object_mut().unwrap().remove("bridgeHidden");
+        luau["absent"] = json!([]);
+
+        assert_eq!(ts, luau, "TS and Luau ghost-link members diverged");
+        let (a, b) = (first.to_raw(), second.to_raw());
+        assert_eq!(
+            ts,
+            json!({
+                "members": [
+                    { "id": a, "position": { "x": 1, "y": 2, "z": 3 }, "tags": ["vault_echo", "east"] },
+                    { "id": b, "position": { "x": 4, "y": 2, "z": 3 }, "tags": ["vault_echo"] },
+                ],
+                "absent": [],
+                "all": 3,
+                "arm": [{ "id": a, "primitive": "armGhostLink", "args": {} }],
+                "disarm": [{ "id": b, "primitive": "disarmGhostLink", "args": {} }],
+                "members2": [{ "id": a, "primitive": "setGhostLinkMembers", "args": { "projectiles": false } }],
+                "filter": [{
+                    "id": b,
+                    "primitive": "setGhostLinkColorFilter",
+                    "args": { "tint": [1, 0.5, 0.25], "opacity": 0.5, "periodMs": 1500 },
+                }],
+            })
+        );
+        assert!(
+            capture
+                .records()
+                .iter()
+                .all(|record| record.level > log::Level::Warn),
+            "a query with no match is silent: {:?}",
+            capture.records()
+        );
+    }
+
     // A member query with no match returns an empty array in both runtimes.
     #[test]
     fn get_map_entities_returns_an_empty_array_on_no_match_in_both_runtimes() {
@@ -1754,11 +1893,11 @@ mod tests {
             postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
             let got: String = qjs
                 .eval(
-                    r#"JSON.stringify(["mover", "trigger", "light", "fog", "emitter", "spawner"]
+                    r#"JSON.stringify(["mover", "trigger", "ghostLink", "light", "fog", "emitter", "spawner"]
                         .map((kind) => getMapEntities(kind, { tag: "absent" })))"#,
                 )
                 .unwrap();
-            assert_eq!(got, "[[],[],[],[],[],[]]");
+            assert_eq!(got, "[[],[],[],[],[],[],[]]");
         });
 
         let lua = mlua::Lua::new();
@@ -1768,7 +1907,7 @@ mod tests {
             .load(
                 r#"
                 local empties = 0
-                for _, kind in { "mover", "trigger", "light", "fog", "emitter", "spawner" } do
+                for _, kind in { "mover", "trigger", "ghostLink", "light", "fog", "emitter", "spawner" } do
                   local members = getMapEntities(kind, { tag = "absent" })
                   if type(members) == "table" and #members == 0 and next(members) == nil then
                     empties += 1
@@ -1779,7 +1918,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        assert_eq!(empties, 6);
+        assert_eq!(empties, 7);
     }
 
     // The SDK's `getGravity` / `setGravity` behave as `world.getGravity` /

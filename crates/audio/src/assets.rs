@@ -100,6 +100,14 @@ impl SoundRegistry {
         self.sounds.get(key)
     }
 
+    /// Register an in-memory clip under `key`, for tests that synthesize their
+    /// own signal (a tone at a chosen pitch and level) instead of a fixture.
+    #[cfg(test)]
+    pub(crate) fn insert_static_for_test(&mut self, key: &str, data: StaticSoundData) {
+        self.sounds
+            .insert(key.to_string(), LoadedSound::Static(Box::new(data)));
+    }
+
     /// Drop every registered sound. Called at level unload; the registry returns
     /// to its empty state and can be repopulated by a subsequent load.
     pub(crate) fn clear(&mut self) {

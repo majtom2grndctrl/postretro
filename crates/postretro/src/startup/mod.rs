@@ -14,12 +14,16 @@ pub(crate) mod environment_install;
 pub(crate) mod first_launch_hold;
 #[cfg(test)]
 mod fluids_swim_surface_tests;
+#[cfg(test)]
+mod ghost_links_surface_tests;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
 #[cfg(test)]
 mod movement_vault_surface_tests;
 #[cfg(test)]
 mod player_events_surface_tests;
+#[cfg(test)]
+mod player_spawn_surface_tests;
 pub(crate) mod presented_pose;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
@@ -31,7 +35,7 @@ pub(crate) mod start_pose;
 #[cfg(test)]
 mod teleporter_unload_tests;
 #[cfg(test)]
-mod teleporters_surface_tests;
+pub(crate) mod teleporters_surface_tests;
 #[cfg(test)]
 mod traps_surface_tests;
 pub(crate) mod worker;

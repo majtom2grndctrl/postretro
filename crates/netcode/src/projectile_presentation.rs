@@ -757,6 +757,7 @@ mod tests {
 
     fn descriptor() -> ProjectileDescriptor {
         ProjectileDescriptor {
+            ghost: false,
             speed: 4.0,
             radius: 0.1,
             lifetime_ms: 1_000.0,
@@ -800,6 +801,7 @@ mod tests {
 
     fn projectile_visual_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some("test_remote_projectile".to_string()),
@@ -1576,7 +1578,8 @@ mod tests {
     // Trap state never crosses the wire: even a started trap forced into the
     // replicable set snapshots only its transform, since the wire payload
     // vocabulary has no trap component. The two version constants are pinned
-    // here so a trap change that bumps either has to say so.
+    // here so a trap change that bumps either has to say so. Traps bumped
+    // neither; the pinned values are ghost links' bump (wire 34, snapshot 22).
     #[test]
     fn started_trap_snapshot_carries_no_trap_state_and_versions_hold() {
         use postretro_entities::components::projectile_trap::{
@@ -1640,8 +1643,8 @@ mod tests {
                 );
             }
         }
-        assert_eq!(postretro_net::handshake::WIRE_VERSION, 33);
-        assert_eq!(postretro_net::wire::SNAPSHOT_VERSION, 21);
+        assert_eq!(postretro_net::handshake::WIRE_VERSION, 34);
+        assert_eq!(postretro_net::wire::SNAPSHOT_VERSION, 22);
     }
 
     // Regression: multiple enemy shots surfaced by one AI tick had no seam-crossing

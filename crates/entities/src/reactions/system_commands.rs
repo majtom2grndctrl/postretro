@@ -82,6 +82,10 @@ pub enum SystemReactionCommand {
         to: String,
         delta: f32,
     },
+    /// `setGhostAudio` from `postretro/audio`: a validated set of Ghost bus
+    /// field targets. The host applies it at its next fixed tick, in call
+    /// order; a connected client drops it (the bus state is the host's).
+    SetGhostAudio(postretro_foundation::GhostAudioTargets),
     /// Add a delta to the authoritative value of one per-owner numeric slot
     /// for every seat resolved while the reaction fired. The app drain checks
     /// that each queued seat is still live before mutating the slot table.
@@ -331,6 +335,7 @@ pub enum SystemReactionKind {
     SetState,
     SetSentiment,
     AdjustSentiment,
+    SetGhostAudio,
     CellWrite,
     AppendText,
     BackspaceText,
@@ -356,6 +361,7 @@ impl SystemReactionKind {
         Self::SetState,
         Self::SetSentiment,
         Self::AdjustSentiment,
+        Self::SetGhostAudio,
         Self::CellWrite,
         Self::AppendText,
         Self::BackspaceText,
@@ -378,6 +384,7 @@ impl SystemReactionKind {
             Self::SetState => "setState",
             Self::SetSentiment => "setSentiment",
             Self::AdjustSentiment => "adjustSentiment",
+            Self::SetGhostAudio => postretro_foundation::SET_GHOST_AUDIO,
             Self::CellWrite => "cellWrite",
             Self::AppendText => "appendText",
             Self::BackspaceText => "backspaceText",
@@ -410,7 +417,8 @@ impl SystemReactionKind {
             | Self::RestartLevel
             | Self::ReturnToFrontend
             | Self::SetSentiment
-            | Self::AdjustSentiment => SystemReactionClass::HostConsequence,
+            | Self::AdjustSentiment
+            | Self::SetGhostAudio => SystemReactionClass::HostConsequence,
             Self::SetState => SystemReactionClass::SlotWrite,
         }
     }
@@ -468,6 +476,7 @@ impl SystemReactionCommand {
             | Self::ReturnToFrontend
             | Self::SetSentiment { .. }
             | Self::AdjustSentiment { .. }
+            | Self::SetGhostAudio(_)
             | Self::AddOwnerSlot { .. } => SystemReactionClass::HostConsequence,
             Self::SetState { .. } => SystemReactionClass::SlotWrite,
         }

@@ -110,6 +110,7 @@ impl Renderer {
         let Extent { width, height } = scene;
         let (_depth_texture, depth_view) = create_depth_texture(device, width, height);
         full.depth_view = depth_view;
+        full.ghost_depth = ghost_depth::GhostDepthTarget::new(device, width, height);
         // Recreate the HDR scene target before bloom so bloom can rebuild its
         // source view and resolution-dependent parameter table.
         full.screen_effects.resize(device, scene);

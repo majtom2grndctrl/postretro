@@ -918,6 +918,9 @@ mod tests {
             Vec3::ZERO,
             &mut mover_collector,
             &mut mesh_collector,
+            &mut crate::ghost_links::GhostLinks::default(),
+            &mut crate::scripting_systems::ghost_render::GhostRenderCollector::new(),
+            &mut crate::scripting_systems::mover_ghost_render::MoverGhostRenderCollector::new(),
         );
 
         assert_eq!(mover_collector.instances().len(), 1);

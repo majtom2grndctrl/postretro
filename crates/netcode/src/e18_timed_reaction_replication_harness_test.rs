@@ -668,6 +668,7 @@ impl TimedAlarmHarness {
             state_schema_fingerprint: fingerprint,
             state_records: records,
             faction_sentiment_record: None,
+            ghost_audio: None,
             server_script_time: 0.0,
         };
         assert!(

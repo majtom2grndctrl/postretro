@@ -139,6 +139,14 @@ export type MoverSetSpinRateStep = import("postretro").MoverSetSpinRateStep;
 export type MoverSetBlockPolicyStep = import("postretro").MoverSetBlockPolicyStep;
 export type ArmTeleporterStep = { id: import("postretro").EntityId; primitive: "armTeleporter"; args: Record<string, never> };
 export type DisarmTeleporterStep = { id: import("postretro").EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
+/** Member categories a ghost link shows; an omitted category keeps its value. */
+export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
+/** A ghost link's colour filter: each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
+export type GhostColorFilterArgs = { tint?: readonly [number, number, number]; opacity?: number; saturation?: number; periodMs?: number };
+export type ArmGhostLinkStep = { id: import("postretro").EntityId; primitive: "armGhostLink"; args: Record<string, never> };
+export type DisarmGhostLinkStep = { id: import("postretro").EntityId; primitive: "disarmGhostLink"; args: Record<string, never> };
+export type SetGhostLinkMembersStep = { id: import("postretro").EntityId; primitive: "setGhostLinkMembers"; args: GhostLinkMembersArgs };
+export type SetGhostLinkColorFilterStep = { id: import("postretro").EntityId; primitive: "setGhostLinkColorFilter"; args: GhostColorFilterArgs };
 export type ArmTriggerStep = import("postretro").ArmTriggerStep;
 export type DisarmTriggerStep = import("postretro").DisarmTriggerStep;
 export type SpawnFromSpawnerStep = import("postretro").SpawnFromSpawnerStep;
@@ -167,6 +175,10 @@ export type SequenceStep =
   | MoverSetBlockPolicyStep
   | ArmTeleporterStep
   | DisarmTeleporterStep
+  | ArmGhostLinkStep
+  | DisarmGhostLinkStep
+  | SetGhostLinkMembersStep
+  | SetGhostLinkColorFilterStep
   | ArmTriggerStep
   | DisarmTriggerStep
   | SpawnFromSpawnerStep
@@ -622,7 +634,7 @@ export function defineEntity<T>(
  * `config.name`, `config.id`, and `config.version` are required. The id gates
  * multiplayer admission; the version is display-only and never compared. The
  * first committed id and version remain active across staged reloads. Optional
- * arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`, `presentationTemplates`,
+ * arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`,
  * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`,
  * `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
  * effects until the manifest is returned and validated. `factionSentimentDecay`
@@ -676,6 +688,22 @@ export function sentiment(
 export function defineFluid(
   desc: import("postretro").FluidDescriptor,
 ): import("postretro").FluidDescriptor {
+  return desc;
+}
+
+/** Identity builder for a ghost style in `defineMod({ ghostStyles: [...] })`.
+ * A map's `ghost_link` names it through its `ghost_style` key. `name` is
+ * required; every other field is optional and an omitted one takes the floor
+ * style's value: `tint` (rgb, default `[1, 1, 1]`), `opacity` (default 0.5)
+ * and `saturation` (default 0, greyscale), each in [0, 1]; `audio` (default
+ * false) plays members' sounds through the Ghost bus, and `impactAudio`
+ * (default false) adds their impact sounds, only when `audio` is true. A
+ * malformed field drops the whole style with a warning naming it, a repeated
+ * name is dropped and the first declaration stands, and a link naming no
+ * declared style uses the floor style. Pure: no engine side effects. */
+export function defineGhostStyle(
+  desc: import("postretro").GhostStyleDescriptor,
+): import("postretro").GhostStyleDescriptor {
   return desc;
 }
 

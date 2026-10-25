@@ -65,6 +65,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::Immersion,
     ComponentKind::Teleporter,
     ComponentKind::ProjectileTrap,
+    ComponentKind::GhostLink,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -102,6 +103,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::Immersion => "immersion",
         ComponentKind::Teleporter => "teleporter",
         ComponentKind::ProjectileTrap => "projectile_trap",
+        ComponentKind::GhostLink => "ghost_link",
     }
 }
 
@@ -447,6 +449,15 @@ mod tests {
                     false,
                 ),
             ),
+            ComponentKind::GhostLink => {
+                ComponentValue::GhostLink(postretro_entities::GhostLinkComponent {
+                    index: 0,
+                    source_entity: 0,
+                    armed: true,
+                    members: 0b1111,
+                    filter: Default::default(),
+                })
+            }
             ComponentKind::Immersion => ComponentValue::Immersion(
                 postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },
             ),

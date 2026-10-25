@@ -212,7 +212,7 @@ pub fn emit_luau_game_state_refs(out: &mut String) {
 // Source of truth for this static block:
 //   sdk/lib/map_entities.luau
 //   sdk/lib/gravity.luau
-//   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,teleporters,spawners}.luau
+//   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,teleporters,ghost_links,spawners}.luau
 //   sdk/lib/util/keyframes.luau
 //   sdk/lib/data_script.luau  (embedded directly via include_str! in luau.rs)
 //   sdk/lib/data_script/{player_events,commands,reactions,trigger_events}.luau  (part chunks merged into data_script.luau)

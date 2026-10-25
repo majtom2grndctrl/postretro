@@ -191,7 +191,7 @@ impl Level {
                 |_models, _clips| {
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
-                |_spawns| {},
+                |_first_player| {},
             )
         };
         app.collision_world =

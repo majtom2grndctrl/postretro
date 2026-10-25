@@ -19,6 +19,11 @@ const MEMBER_WRAPPER_SOURCES: &[(&str, &str, &str)] = &[
         "entities/teleporters.luau",
     ),
     (
+        "wrapGhostLinkEntity",
+        include_str!("../../../sdk/lib/entities/ghost_links.luau"),
+        "entities/ghost_links.luau",
+    ),
+    (
         "wrapLightEntity",
         include_str!("../../../sdk/lib/entities/lights.luau"),
         "entities/lights.luau",
@@ -159,6 +164,11 @@ const UI_STATE_LUAU_SRC: &str = include_str!("../../../sdk/lib/ui/state.luau");
 /// `postretro/ui`; they are no longer promoted to bare Luau globals.
 const UI_THEME_LUAU_SRC: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 
+/// SDK library prelude — `audio.luau` returns the audio subsystem builders for
+/// the `postretro/audio` virtual module only: never bare globals, never on
+/// `require("postretro")`.
+const AUDIO_LUAU_SRC: &str = include_str!("../../../sdk/lib/audio.luau");
+
 /// SDK library prelude — `game_state.luau` captures the temporary frozen
 /// engine-state reference tree bridge and returns `getGameState`.
 const GAME_STATE_LUAU_SRC: &str = include_str!("../../../sdk/lib/game_state.luau");
@@ -197,6 +207,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineFaction",
     "sentiment",
     "defineFluid",
+    "defineGhostStyle",
     "defineMapCatalog",
     "defineWeaponPlacement",
     "defineTriggerPool",
@@ -299,6 +310,12 @@ const GAME_STATE_FIELDS: &[&str] = &["getGameState"];
 /// `brain.luau`.
 const BRAIN_LUAU_FIELDS: &[&str] = &["brain", "candidate", "state"];
 
+/// Audio SDK fields exported through `require("postretro/audio")`.
+const AUDIO_FIELDS: &[&str] = &["setGhostAudio"];
+
+/// Authoritative runtime export names for `require("postretro/audio")`.
+pub const POSTRETRO_AUDIO_MODULE_EXPORTS: &[&str] = &["setGhostAudio"];
+
 /// Authoritative runtime export names for `require("postretro/ui")`.
 pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "Text",
@@ -383,6 +400,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineFaction",
     "sentiment",
     "defineFluid",
+    "defineGhostStyle",
     "defineMapCatalog",
     "defineWeaponPlacement",
     "defineTriggerPool",
@@ -668,6 +686,9 @@ pub fn evaluate_prelude(
             source_name: "sdk/lib/ui/state.luau".to_string(),
         })?;
 
+    // Evaluate `audio.luau` for the `postretro/audio` virtual module only.
+    let audio_sdk = eval_sdk_table(lua, AUDIO_LUAU_SRC, "audio.luau")?;
+
     // Step 7: evaluate `runtime.luau` and promote its table to global `runtime`.
     // The builders are pure (no primitive dependency), so ordering relative to
     // the other steps is irrelevant.
@@ -731,6 +752,7 @@ pub fn evaluate_prelude(
                 ui_presentation_sdk,
                 ui_state_sdk,
                 ui_theme_sdk,
+                audio_sdk,
             },
         )?;
     }
@@ -755,6 +777,7 @@ struct LuauSdkExportInventory {
     ui_presentation_sdk: Table,
     ui_state_sdk: Table,
     ui_theme_sdk: Table,
+    audio_sdk: Table,
 }
 
 fn populate_virtual_modules(
@@ -822,6 +845,19 @@ fn populate_virtual_modules(
         "ui/theme.luau",
     )?;
     virtual_modules.register_from_table(lua, "postretro/ui", ui_module)?;
+
+    let audio_module = lua
+        .create_table()
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to allocate `postretro/audio` virtual module inventory: {e}"),
+        })?;
+    copy_fields_to_table(
+        &audio_module,
+        &inventory.audio_sdk,
+        AUDIO_FIELDS,
+        "audio.luau",
+    )?;
+    virtual_modules.register_from_table(lua, "postretro/audio", audio_module)?;
 
     let root_module = lua
         .create_table()
@@ -1087,6 +1123,32 @@ mod tests {
                 "lifted SDK global `{name}` shadows a Luau builtin"
             );
         }
+    }
+
+    #[test]
+    fn audio_module_export_inventory_matches_the_evaluated_module() {
+        let lua = Lua::new();
+        let modules = LuauVirtualModuleRegistry::new();
+        evaluate_prelude(&lua, Some(&modules)).expect("SDK prelude must evaluate");
+        let audio = modules
+            .get("postretro/audio")
+            .expect("postretro/audio is registered");
+        let actual = audio
+            .pairs::<String, mlua::Value>()
+            .map(|entry| entry.map(|(field, _)| field))
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("string-keyed module");
+        let expected = POSTRETRO_AUDIO_MODULE_EXPORTS
+            .iter()
+            .map(|field| (*field).to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            AUDIO_FIELDS, POSTRETRO_AUDIO_MODULE_EXPORTS,
+            "the composed fields are the declared inventory"
+        );
+        let bare: mlua::Value = lua.globals().get("setGhostAudio").unwrap();
+        assert!(bare.is_nil(), "setGhostAudio is never a bare global");
     }
 
     #[test]

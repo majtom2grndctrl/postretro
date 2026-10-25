@@ -70,16 +70,18 @@ Luau manifest validation reject author templates in that namespace before commit
 
 Validation follows the fluid policy above: a rule broken drops that fluid with a warning naming the field. Wave rules apply whether or not a period is set. The amplitude range is checked before the length rules, and the 8× rule binds a defaulted amplitude as it does a written one. A defaulted length always passes, so a warning never names a length the author did not write.
 
-**Ghost style declarations (decided, not yet built).** `ModManifest.ghostStyles` declares named ghost presentation with `defineGhostStyle`, a pure identity helper: `name`, `tint`, `opacity`, `saturation`, and whether sound and impact sound carry (`entity_model.md` §7d). A map's `ghost_link` names a style. Validation, local resolution by name, staged reload and the digest stance all follow fluids. The name is an explicit field, not binding-name sugar, because map files reference it as a string. A link naming no style, or an undeclared one, uses the engine floor style: neutral and legible, carrying no sound. Which archetypes can ghost is a descriptor attribute, `ghost`, defaulting to false; a malformed value rejects mod init like any descriptor field.
+**Ghost style declarations.** `ModManifest.ghostStyles` declares named ghost presentation with `defineGhostStyle`, a pure identity helper: `name`, `tint`, `opacity`, `saturation`, and whether sound and impact sound carry (`entity_model.md` §7d). A map's `ghost_link` names a style. Validation, local resolution by name, staged reload and the digest stance all follow fluids. The name is an explicit field, not binding-name sugar, because map files reference it as a string. A link naming no style uses the engine floor style: neutral and legible, carrying no sound. An undeclared name uses it too and warns once at install. Which archetypes can ghost is a descriptor attribute, `ghost`, defaulting to false; a malformed value rejects mod init like any descriptor field.
 
 **Mod render profile.** `ModManifest.render` is optional static mod data.
 `bloom` accepts `resolution: "half" | "quarter" | "eighth"` and
 `pixelated: boolean`; omitted fields use half and smooth defaults.
 `reflections.style` accepts `"pixel" | "smooth"`,
 default pixel, and sets the look of every fluid reflection layer
-(`rendering_pipeline.md` §7.3a). Malformed optional profile fields warn and
+(`rendering_pipeline.md` §7.3a). `ghosts` accepts
+`"blend" | "dither"`, default blend, and sets how every ghost draw is made
+translucent (`rendering_pipeline.md` §7.9). Malformed optional profile fields warn and
 degrade to those defaults without rejecting an otherwise valid manifest;
-`bloom` and `reflections` degrade independently. A
+`bloom`, `reflections` and `ghosts` degrade independently. A
 successful staged mod-init replaces the active profile; failed, rejected, and
 stale attempts preserve it. The profile is not a level script, reaction, or
 player setting.
@@ -237,12 +239,15 @@ Type-definition files are generated from the primitive registry via `cargo run -
 The TypeScript declaration file declares both SDK module IDs:
 `"postretro"` for non-UI authoring APIs and `"postretro/ui"` for UI factories,
 tree/state helpers, UI reactions, game-state refs used by UI, and theme token
-helpers. A third, `"postretro/audio"` (decided, not yet built), holds audio
-subsystem APIs: the ghost-bus setter first, then music layering. Moving
-`playSound` there is a later breaking change. Dev script `tsconfig.json` files resolve both module IDs to the same
-generated declaration file. Luau exposes the same split through literal
-`require("postretro")` and `require("postretro/ui")` overloads in
-`postretro.d.luau`.
+helpers. A third, `"postretro/audio"`, holds audio subsystem APIs:
+`setGhostAudio` first, then music layering. It is not re-exported from
+`"postretro"`. Moving `playSound` there is a later breaking change. Dev script
+`tsconfig.json` files resolve every module ID to the same generated
+declaration file. Luau exposes the same split through literal
+`require("postretro")`, `require("postretro/ui")` and
+`require("postretro/audio")` overloads in `postretro.d.luau`. Each new module
+ID also joins the script compiler's specifier allowlist and build-side Luau
+`require`.
 
 In debug builds, the runtime also emits these files at startup as a convenience for developers (so the working tree stays current while the engine is running). For CI and pre-commit checks, a drift-detection test in `cargo test` fails if the committed files do not match the current registry, catching stale type definitions. Scripts written against the SDK get IDE completions and type checking.
 
@@ -412,9 +417,20 @@ writes have that in-tick trigger surface: a consequential system reaction that
 writes an engine-owned overlay rather than a tick-context slot — the runtime
 sentiment verbs — drains at frame-end from every source,
 trigger fires included, so it lands the next tick with no same-tick visibility.
-`setGhostAudio` (decided, not yet built) is another target-less reaction body,
+`setGhostAudio` is another target-less reaction body,
 from `postretro/audio`. Like ghost-link handle steps, it applies on the host
 at its next tick and replicates (`networking.md` §Current contract).
+
+**Ghost-link steps.** `arm`, `disarm`, `setMembers` and `setColorFilter` are
+sequenced steps on a `ghostLink` member, host-only, applied at the host's next
+tick in call order; on a connected client they do nothing. `setMembers`
+changes only the categories it names. `setColorFilter` and `setGhostAudio`
+ramp each named field over `periodMs` (default 0) on script time; an omitted
+field keeps its value and any ramp in flight. A link's look resolves per
+field: floor style, its named style, then `setColorFilter`. An out-of-range or
+non-finite argument, a non-boolean `setMembers` field, a call naming no field,
+or a `setGhostAudio` leaving `highPassHz` at or above `lowPassHz` warns and
+drops that step or reaction.
 
 Crossing watchers (`onStateCrossing`) may return through `setupLevel`'s
 manifest or through `ModManifest.crossings`. Mod-global watchers compose into
@@ -584,7 +600,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on("teleport", …)` |
-| ghost link member (decided, not yet built) | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
+| ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire`; snapshot adds `spawnedTags` |
 | trap member | `getMapEntities("trap")` | `fire`, `start({ intervalMs?, phaseMs? })`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none; snapshot only |

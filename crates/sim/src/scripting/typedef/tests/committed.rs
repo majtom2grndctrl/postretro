@@ -130,8 +130,58 @@ fn committed_sdk_types_contain_reflection_style_and_surface_reflectivity() {
     }
 }
 
+// Ghost styles and `render.ghosts` reach both committed SDK type files and
+// the generator alike.
 #[test]
-fn committed_sdk_types_contain_mod_audio_attenuation() {
+fn committed_sdk_types_contain_ghost_styles_and_ghost_transparency() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let generated_ts = generate_typescript(&registry);
+    let generated_luau = generate_luau(&registry);
+    let committed_ts = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.ts"
+    ))
+    .expect("read committed postretro.d.ts");
+    let committed_luau = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.luau"
+    ))
+    .expect("read committed postretro.d.luau");
+
+    for output in [&generated_ts, &committed_ts] {
+        assert!(output.contains("export type GhostTransparency ="));
+        assert!(output.contains("| \"blend\""));
+        assert!(output.contains("| \"dither\";"));
+        assert!(output.contains("ghosts?: GhostTransparency;"));
+        assert!(output.contains("export type GhostStyleDescriptor = {"));
+        assert!(output.contains("tint?: readonly [number, number, number];"));
+        assert!(output.contains("impactAudio?: boolean;"));
+        assert!(output.contains("ghostStyles?: ReadonlyArray<GhostStyleDescriptor>;"));
+        assert!(output.contains(
+            "export function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor;"
+        ));
+    }
+    for output in [&generated_luau, &committed_luau] {
+        assert!(output.contains("export type GhostTransparency ="));
+        assert!(output.contains("\"blend\""));
+        assert!(output.contains("| \"dither\""));
+        assert!(output.contains("ghosts: GhostTransparency?,"));
+        assert!(output.contains("export type GhostStyleDescriptor = {"));
+        assert!(output.contains("impactAudio: boolean?,"));
+        assert!(output.contains("ghostStyles: {GhostStyleDescriptor}?,"));
+        assert!(output.contains(
+            "declare function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor"
+        ));
+        assert!(output.contains("defineGhostStyle: typeof(defineGhostStyle),"));
+    }
+}
+
+#[test]
+fn committed_sdk_types_contain_mod_audio_profile() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
 
@@ -159,6 +209,9 @@ fn committed_sdk_types_contain_mod_audio_attenuation() {
         assert!(output.contains("curve?: AttenuationCurve;"));
         assert!(output.contains("export type AudioProfile = {"));
         assert!(output.contains("attenuation?: AudioAttenuation;"));
+        assert!(output.contains("export type AudioGhostProfile = {"));
+        assert!(output.contains("highPassHz?: number;"));
+        assert!(output.contains("ghost?: AudioGhostProfile;"));
         assert!(output.contains("audio?: AudioProfile;"));
     }
     for output in [&generated_luau, &committed_luau] {
@@ -170,6 +223,9 @@ fn committed_sdk_types_contain_mod_audio_attenuation() {
         assert!(output.contains("curve: AttenuationCurve?,"));
         assert!(output.contains("export type AudioProfile = {"));
         assert!(output.contains("attenuation: AudioAttenuation?,"));
+        assert!(output.contains("export type AudioGhostProfile = {"));
+        assert!(output.contains("highPassHz: number?,"));
+        assert!(output.contains("ghost: AudioGhostProfile?,"));
         assert!(output.contains("audio: AudioProfile?,"));
     }
 }
@@ -406,10 +462,11 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
         ) && ts.contains("K extends \"mover\" ? MoverEntityHandle :")
             && ts.contains("K extends \"trigger\" ? TriggerVolumeHandle :")
             && ts.contains("K extends \"teleporter\" ? TeleporterHandle :")
+            && ts.contains("K extends \"ghostLink\" ? GhostLinkHandle :")
             && ts.contains("K extends \"spawner\" ? SpawnerEntityHandle :")
             && ts.contains("K extends \"trap\" ? TrapEntityHandle :")
             && ts.contains(
-                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\" | \"trap\";"
+                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\" | \"trap\";"
             ),
         "TypeScript must select each member handle by map kind:\n{ts}"
     );
@@ -421,12 +478,42 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && luau.contains(
                 "((kind: \"teleporter\", filter: MapEntityFilter?) -> {TeleporterHandle})"
             )
+            && luau
+                .contains("((kind: \"ghostLink\", filter: MapEntityFilter?) -> {GhostLinkHandle})")
             && luau.contains(
                 "((kind: \"spawner\", filter: MapEntityFilter?) -> {SpawnerEntityHandle})"
             )
             && luau.contains("((kind: \"trap\", filter: MapEntityFilter?) -> {TrapEntityHandle})"),
         "Luau must select each member handle by map kind:\n{luau}"
     );
+}
+
+/// The ghost-link member steps and their argument shapes reach both author
+/// surfaces, and join the `SequenceStep` union.
+#[test]
+fn ghost_link_command_step_types_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    let ts = generate_typescript(&r);
+    let luau = generate_luau(&r);
+    for (label, output) in [("ts", &ts), ("luau", &luau)] {
+        for needle in [
+            "GhostLinkHandle",
+            "GhostLinkMembersArgs",
+            "GhostColorFilterArgs",
+            "primitive: \"armGhostLink\"",
+            "primitive: \"disarmGhostLink\"",
+            "primitive: \"setGhostLinkMembers\"",
+            "primitive: \"setGhostLinkColorFilter\"",
+        ] {
+            assert!(output.contains(needle), "{label} is missing {needle}");
+        }
+    }
+    assert!(ts.contains("    | SetGhostLinkColorFilterStep\n"));
+    assert!(luau.contains("| SetGhostLinkMembersStep | SetGhostLinkColorFilterStep |"));
 }
 
 #[test]

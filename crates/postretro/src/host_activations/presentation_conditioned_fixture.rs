@@ -610,6 +610,7 @@ impl Harness {
             &ctx.slot_table.borrow(),
             &ctx.faction_sentiment.borrow(),
             &Default::default(),
+            &Default::default(),
             &mut self.server,
             &mut self.allocator,
             &mut self.replication,

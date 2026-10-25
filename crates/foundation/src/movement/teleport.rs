@@ -1,6 +1,7 @@
 // Wire-mirrored pawn relocation identity and shared teleport yaw representation.
 // See: context/lib/movement.md §6 (Teleport)
 
+use glam::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 
@@ -101,6 +102,61 @@ impl Serialize for TeleportLatches {
 impl<'de> Deserialize<'de> for TeleportLatches {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Vec::<u16>::deserialize(deserializer).map(|latches| Self::from_slice(&latches))
+    }
+}
+
+/// The seamless landmark → target transform: a world-up yaw turn about the
+/// landmark, then a move onto the target. Seamless teleports relocate through it
+/// and ghost links draw through it, so a ghost and a seamless arrival from the
+/// same pose agree by construction (`movement.md` §6, `entity_model.md` §7d).
+/// Yaw-only: pitch and roll pass through unchanged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SeamlessMapping {
+    landmark: Vec3,
+    target: Vec3,
+    yaw_delta: f32,
+    rotation: Quat,
+}
+
+impl SeamlessMapping {
+    pub fn new(
+        landmark_origin: Vec3,
+        landmark_yaw: f32,
+        target_origin: Vec3,
+        target_yaw: f32,
+    ) -> Self {
+        let yaw_delta = target_yaw - landmark_yaw;
+        Self {
+            landmark: landmark_origin,
+            target: target_origin,
+            yaw_delta,
+            rotation: Quat::from_rotation_y(yaw_delta),
+        }
+    }
+
+    /// World-up yaw a view or velocity turns by.
+    pub fn yaw_delta(&self) -> f32 {
+        self.yaw_delta
+    }
+
+    pub fn rotation(&self) -> Quat {
+        self.rotation
+    }
+
+    pub fn point(&self, point: Vec3) -> Vec3 {
+        self.target + self.rotation * (point - self.landmark)
+    }
+
+    /// A direction or velocity: rotated, never translated.
+    pub fn vector(&self, vector: Vec3) -> Vec3 {
+        self.rotation * vector
+    }
+
+    /// The mapping as a world transform, to premultiply onto a model matrix.
+    pub fn matrix(&self) -> Mat4 {
+        Mat4::from_translation(self.target)
+            * Mat4::from_quat(self.rotation)
+            * Mat4::from_translation(-self.landmark)
     }
 }
 

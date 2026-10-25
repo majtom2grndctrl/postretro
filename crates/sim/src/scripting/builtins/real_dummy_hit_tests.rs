@@ -52,8 +52,14 @@ fn map_placement(classname: &str, tag: &str, raw_origin: &str) -> MapEntity {
         .map(|n| n.parse().unwrap())
         .collect();
     let scale = postretro_level_compiler::map_format::MapFormat::IdTech2.units_to_meters() as f32;
-    // Mirrors parse.rs::quake_to_engine (engine = (-qy, qz, -qx)), then unit scale.
-    let origin = Vec3::new(-raw[1], raw[2], -raw[0]) * scale;
+    // The compiler's own canonical-origin point (a `player_spawn` becomes its
+    // feet), then parse.rs::quake_to_engine (engine = (-qy, qz, -qx)) and scale.
+    let raw = postretro_level_compiler::format::quake_map::entity_origin::canonical_entity_origin(
+        classname,
+        glam::DVec3::new(raw[0].into(), raw[1].into(), raw[2].into()),
+    )
+    .as_vec3();
+    let origin = Vec3::new(-raw.y, raw.z, -raw.x) * scale;
     // The compiler's own angle conversion point, on the block's authored keys.
     let angles =
         postretro_level_compiler::format::quake_map::angles::try_quake_to_engine_angles(&props)
@@ -322,33 +328,36 @@ fn player_movement() -> PlayerMovementDescriptor {
 
 #[test]
 fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy() {
-    // Spawn uses the authored origin unchanged for a movement-only descriptor;
-    // the physics tick settles the capsule before the level reveal. Do not add
-    // a guessed feet-to-eye lift to the raw map z=24 coordinate.
+    // The authored z=24 is the spawn box's origin; the compiler puts the spawn
+    // at its feet (z=0) and spawn raises the capsule centre above them, so the
+    // pawn starts resting on the floor and the physics tick keeps it there.
     let placement = map_placement("player_spawn", "player", "288 256 24");
     let mut player_descriptor = mesh_descriptor("player", false);
     player_descriptor.mesh = None;
     player_descriptor.movement = Some(player_movement());
     let mut pawns = EntityRegistry::new();
-    assert_eq!(
+    assert!(
         data_archetype::spawn_from_player_starts(
             std::slice::from_ref(&placement),
             &[player_descriptor],
             &mut pawns,
             None
         )
-        .spawned,
-        1
+        .is_some()
     );
     let pawn = pawns
         .local_player_pawn()
         .expect("spawn installs local pawn");
     let mut transform = *pawns.get_component::<Transform>(pawn).unwrap();
-    assert_eq!(transform.position, placement.origin);
     let mut component = pawns
         .get_component::<PlayerMovementComponent>(pawn)
         .unwrap()
         .clone();
+    assert_eq!(placement.origin.y, 0.0, "the spawn compiles to its feet");
+    assert_eq!(
+        transform.position,
+        placement.origin + Vec3::Y * (component.capsule.half_height + component.capsule.radius)
+    );
     // The map leaves gravity to the compiler default.
     assert!(!MAP.contains("\"initialGravity\""));
     assert!(MAP.contains("( 0 512 0 ) ( 640 0 0 ) ( 0 0 0 )"));

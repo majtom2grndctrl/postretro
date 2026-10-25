@@ -4,20 +4,22 @@
 -- (`entities/*.luau`). Membership is fixed at install, so these are plain
 -- arrays the author inspects.
 --
--- `wrapLightEntity`, `wrapFogVolumeEntity`, `wrapMoverEntity`,
--- `wrapTriggerVolumeEntity`, `wrapSpawnerEntity` and `wrapTrapEntity` are installed as temporary
--- globals by the prelude evaluator before this module evaluates, captured
--- below, and nil'd out after it returns so author scripts never see them.
+-- `wrapTeleporterEntity`, `wrapGhostLinkEntity`, `wrapLightEntity`,
+-- `wrapFogVolumeEntity`, `wrapMoverEntity`, `wrapTriggerVolumeEntity`,
+-- `wrapSpawnerEntity` and `wrapTrapEntity` are installed as temporary globals
+-- by the prelude evaluator before this module evaluates, captured below, and
+-- nil'd out after it returns so author scripts never see them.
 -- See: context/lib/scripting.md §12 (Entity addressing)
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner" | "trap"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
 
 local wrapTeleporterEntity = wrapTeleporterEntity
+local wrapGhostLinkEntity = wrapGhostLinkEntity
 local wrapLightEntity = wrapLightEntity
 local wrapFogVolumeEntity = wrapFogVolumeEntity
 local wrapMoverEntity = wrapMoverEntity
@@ -39,13 +41,14 @@ local MAP_KINDS: { [string]: { component: string, wrap: (any) -> any } } = {
   mover = { component = "kinematic_mover", wrap = wrapMoverEntity },
   trigger = { component = "trigger_volume", wrap = wrapTriggerVolumeEntity },
   teleporter = { component = "teleporter", wrap = wrapTeleporterEntity },
+  ghostLink = { component = "ghost_link", wrap = wrapGhostLinkEntity },
   light = { component = "light", wrap = wrapLightEntity },
   fog = { component = "fog_volume", wrap = wrapFogVolumeEntity },
   emitter = { component = "emitter", wrap = projectEmitter },
   spawner = { component = "spawner", wrap = wrapSpawnerEntity },
   trap = { component = "projectile_trap", wrap = wrapTrapEntity },
 }
-local KIND_NAMES = '"mover", "trigger", "teleporter", "light", "fog", "emitter", "spawner", "trap"'
+local KIND_NAMES = '"mover", "trigger", "teleporter", "ghostLink", "light", "fog", "emitter", "spawner", "trap"'
 
 local MapEntitiesSdk = {}
 

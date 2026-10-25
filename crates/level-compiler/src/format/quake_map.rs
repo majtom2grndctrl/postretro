@@ -17,6 +17,9 @@ use crate::map_format::MapFormat;
 // this adapter.
 pub mod angles;
 pub use angles::{quake_to_engine_angles, try_quake_to_engine_angles};
+// Point-entity origin translation, a child module for the same reason.
+pub mod entity_origin;
+pub use entity_origin::canonical_entity_origin;
 
 /// Every classname the FGD defines as a light entity. Baked-tier
 /// (`light`/`light_spot`/`light_sun`) and dynamic-tier
@@ -181,7 +184,8 @@ pub fn translate_light(
     // absent KVP takes it directly (NOT through `map_scale`); an authored value is
     // `authored × map_scale`. The "absent → nonzero default, authored 0 → keep 0"
     // distinction is preserved — an authored `0 × map_scale` is still `0`, so the
-    // hard-edge short-circuit still fires.
+    // zero-size (point) emitter path still fires: it traces one target per
+    // footprint point, even with the penumbra floor on.
     let (light_size, angular_diameter) = match light_type {
         LightType::Point | LightType::Spot => (
             parse_optional_distance(props, "_light_size", DEFAULT_LIGHT_SIZE, map_scale)?,
@@ -654,8 +658,8 @@ fn parse_f32(s: &str) -> Option<f32> {
 /// An absent or blank value yields `default` verbatim (a resolved meter value — it
 /// is NOT scaled). An authored value — including an explicit `0` — is multiplied by
 /// `map_scale` (units→meters) so the field reads in map units like `_falloff_range`,
-/// then clamped non-negative. An authored `0` scales to `0`, preserving the hard
-/// edge; a negative authored value clamps to `0`.
+/// then clamped non-negative. An authored `0` scales to `0`, preserving the
+/// zero-size (point) emitter; a negative authored value clamps to `0`.
 fn parse_optional_distance(
     props: &HashMap<String, String>,
     key: &'static str,
@@ -2149,8 +2153,8 @@ mod tests {
 
     #[test]
     fn light_size_authored_zero_is_preserved() {
-        // An explicit 0 opts back into a hard 1-texel shadow; it must NOT be
-        // replaced by the absent-case default.
+        // An explicit 0 opts into a point emitter (the crispest edge the
+        // lattice shows); it must NOT be replaced by the absent-case default.
         let light = translate_light(
             &point_light_props(&[("_light_size", "0")]),
             DVec3::ZERO,

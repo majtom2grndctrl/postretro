@@ -5,7 +5,7 @@
 mod lifecycle_boot_state;
 #[cfg(test)]
 #[path = "lifecycle_environment_install_tests.rs"]
-mod lifecycle_environment_install_tests;
+pub(crate) mod lifecycle_environment_install_tests;
 #[path = "lifecycle_model_sweep.rs"]
 mod lifecycle_model_sweep;
 #[path = "lifecycle_net.rs"]
@@ -902,20 +902,12 @@ impl App {
             handles,
             &mut self.level_timings,
             upload_mesh_models,
-            |spawn_points| {
-                let Some(seats) = session.seat_table.as_mut() else {
-                    return;
-                };
-                let local_pawn = {
-                    let registry = script_ctx.registry.borrow();
-                    crate::capture_player_spawn_placements(&registry, spawn_points, seats);
-                    registry.local_player_pawn()
-                };
-                if let Some(pawn) = local_pawn {
-                    seats.bind_pawn(
+            |first_player| {
+                if let Some(seats) = session.seat_table.as_mut() {
+                    bind_installed_first_player(
+                        seats,
                         &mut script_ctx.registry.borrow_mut(),
-                        postretro_foundation::Seat(0),
-                        pawn,
+                        first_player,
                     );
                 }
             },
@@ -923,6 +915,25 @@ impl App {
         crate::runtime_teleporters::bind_loaded_teleporters(
             &mut self.collision_world.teleporters,
             &script_ctx.registry.borrow(),
+        );
+        self.ghost_links = crate::ghost_links::GhostLinks::install(
+            self.level
+                .as_ref()
+                .expect("level installed before ghost links bind"),
+            &script_ctx.registry.borrow(),
+        );
+        crate::ghost_links::warn_if_links_without_opt_ins(
+            self.level
+                .as_ref()
+                .map_or(0, |level| level.ghost_links.links.len()),
+            self.ghost_links.ghosts_movers(),
+            &script_ctx.data_registry.borrow(),
+        );
+        self.ghost_links.bind_styles(
+            self.level
+                .as_ref()
+                .expect("level installed before ghost styles bind"),
+            &script_ctx.data_registry.borrow().ghost_styles,
         );
         // The level's trees joined the tree set.
         session.check_accessibility_entry();
@@ -1534,12 +1545,28 @@ pub(crate) struct WorldInstallProducts {
     /// field is dead only in a build without that feature.
     #[cfg_attr(not(feature = "observability"), allow(dead_code))]
     pub(crate) mover_tick_states: crate::kinematic_mover::MoverTickStateTable,
-    /// First `player_spawn` origin + engine-convention YXZ angles (x=pitch,
-    /// y=yaw), for the windowed camera teleport. `None` when the map has none.
+    /// Where a pawn stands at the first player's `player_spawn`, plus that
+    /// spawn's engine-convention YXZ angles (x=pitch, y=yaw), for the windowed
+    /// camera teleport. `None` when the map has no spawn.
     pub(crate) first_spawn: Option<(Vec3, Vec3)>,
     /// The map's `player_spawn` placements, retained by the windowed host for the
     /// runtime net-slot accept path.
     pub(crate) spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
+}
+
+/// Bind the installed first player to the host's seat (seat 0) and record the
+/// `player_spawn` it took, so joiners are assigned the spawns left free.
+pub(crate) fn bind_installed_first_player(
+    seats: &mut crate::netcode::SeatTable,
+    registry: &mut postretro_entities::EntityRegistry,
+    first_player: Option<crate::scripting::builtins::PlayerSpawned>,
+) {
+    if let Some(spawned) = first_player {
+        seats.bind_level_spawn_placement(spawned.pawn, spawned.placement);
+    }
+    if let Some(pawn) = registry.local_player_pawn() {
+        seats.bind_pawn(registry, postretro_foundation::Seat(0), pawn);
+    }
 }
 
 /// Why a delivered level payload was refused before any install mutation.
@@ -1949,6 +1976,11 @@ pub(crate) mod tests {
             fluid_eye: Default::default(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             teleporter_bindings: Default::default(),
+            ghost_links: Default::default(),
+            ghost_bus: Default::default(),
+            ghost_render: Default::default(),
+            mover_ghost_render: Default::default(),
+            billboard_ghost_render: Default::default(),
             player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
@@ -2022,6 +2054,7 @@ pub(crate) mod tests {
 
     pub(super) fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            ghost: false,
             faction: None,
             tolerance: None,
             canonical_name: Some(name.to_string()),
@@ -2335,6 +2368,7 @@ pub(crate) mod tests {
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
             teleporters: Default::default(),
+            ghost_links: Default::default(),
             environment_push_forces: Vec::new(),
             reflection_probes: None,
             fog_cell_masks: None,
@@ -2534,9 +2568,9 @@ pub(crate) mod tests {
         armed_by_tag: BTreeMap<String, Vec<EntityId>>,
     }
 
-    struct TriggerPoolWorldInstall {
+    pub(crate) struct TriggerPoolWorldInstall {
         report: TriggerPoolInstallReport,
-        registry: postretro_entities::EntityRegistry,
+        pub(crate) registry: postretro_entities::EntityRegistry,
         upload_models: Vec<String>,
         hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore,
     }
@@ -2558,7 +2592,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn install_descriptor_world(
+    pub(crate) fn install_descriptor_world(
         world: postretro_level_loader::LevelWorld,
         policy: TriggerPoolSeedPolicy,
         active_level_tags: &[&str],
@@ -2622,7 +2656,7 @@ pub(crate) mod tests {
                     }));
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
-                |_spawn_points| {},
+                |_first_player| {},
             )
         };
 
@@ -2882,7 +2916,7 @@ pub(crate) mod tests {
             handles,
             &mut StartupTimings::new(),
             |_models, _clips| crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide,
-            |_spawns| {},
+            |_first_player| {},
         );
         start_installed_presentation_animations(
             &ctx.registry.borrow(),
@@ -3800,6 +3834,7 @@ pub(crate) mod tests {
                 faction_sentiment_decay: 0.0,
                 entity_faction_names: Vec::new(),
                 fluids: Default::default(),
+                ghost_styles: Default::default(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),
@@ -4896,7 +4931,7 @@ pub(crate) mod tests {
                 |_models, _clip_tables| {
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
-                |_spawn_points| {},
+                |_first_player| {},
             );
         }
 

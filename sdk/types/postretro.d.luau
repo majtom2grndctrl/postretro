@@ -75,6 +75,8 @@ export type LocomotionDescriptor = {
 export type EntityTypeDescriptor = {
   --- Stable archetype name used by map classname routing and inventory loadout references. Required for direct map placement and for weapon descriptors named by `components.inventory.loadout`; omit only for archetypes that are never addressed by name.
   canonicalName: string?,
+  --- Whether entities of this archetype can ghost: draw as a translucent ghost in the other room copy while inside an armed ghost link. Optional; defaults to false for every descriptor, a player's included. A link only narrows what descriptors opt in. Each peer reads it from its own descriptors; it never affects simulation.
+  ghost: boolean?,
   --- Optional component presets. Direct map placement materializes light, emitter, movement, mesh, health, and touchable presets; `player_spawn` also composes its inventory loadout into separate wieldable instances.
   components: EntityTypeComponents?,
 }
@@ -245,6 +247,8 @@ export type ProjectileDescriptor = {
   lifetimeMs: number,
   --- What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection.
   visual: ProjectileVisual,
+  --- Whether this projectile can ghost through an armed ghost link, whoever fired it, a monster included. Optional; defaults to false. Presentation only: it changes no damage or hit detection.
+  ghost: boolean?,
 }
 
 --- Direct-hit velocity change independent of damage. Omit the block for no direct knockback.
@@ -656,11 +660,11 @@ export type TouchableDescriptor = {
   radius: number?,
 }
 
---- One world-aligned direct-impact AABB. Hitscan rays and swept projectiles share this target query; projectile radius expands the tested shape. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.
+--- One world-aligned direct-impact AABB. Hitscan rays and swept projectiles share this target query; projectile radius expands the tested shape. `halfExtents` is the box half-size on each axis; `offset` shifts the box center: a descriptor with `behavior` measures it from the feet; anything else from the entity's transform position, which for a `movement` pawn is its capsule centre.
 export type HitboxDescriptor = {
   --- Box half-size on each axis, in metres. Each element must be finite and > 0.
   halfExtents: {number},
-  --- Center offset from the entity's transform position, in metres. Each element must be finite. Optional; defaults to [0, 0, 0].
+  --- Center offset, in metres: from the feet for a descriptor with `behavior`, else from the entity's transform position (a `movement` pawn's capsule centre). Each element must be finite. Optional; defaults to [0, 0, 0].
   offset: {number}?,
 }
 
@@ -1244,12 +1248,21 @@ export type ReflectionRenderProfile = {
   style: ReflectionStyle?,
 }
 
+--- How every ghost-link ghost is made translucent, mod-wide. Projectile billboard ghosts blend under both. Valid values: `blend`, `dither`.
+export type GhostTransparency =
+  --- Alpha-blend each ghost at its presented opacity. This is the default.
+  "blend"
+  --- Screen-door: an ordered screen-space pattern keeps or discards each ghost pixel, keeping about its presented opacity's share of them, so ghosts read as stippled rather than see-through.
+  | "dither"
+
 --- Static renderer preferences declared once for the entire mod.
 export type RenderProfile = {
   --- Bloom presentation preferences. Optional; defaults to half-resolution smooth bloom.
   bloom: BloomRenderProfile?,
   --- Fluid reflection presentation preferences. Optional; defaults to pixel-style reflections.
   reflections: ReflectionRenderProfile?,
+  --- How ghosts are made translucent. Optional; defaults to `"blend"`. An unknown value warns and uses `"blend"`.
+  ghosts: GhostTransparency?,
 }
 
 --- Static kinematic-mover defaults for the mod. Authored mover `auto_close_ms` values take precedence.
@@ -1275,10 +1288,24 @@ export type AudioAttenuation = {
   curve: AttenuationCurve?,
 }
 
+--- Mod-wide mix of the Ghost bus, the shared bus ghost-link echoes play through. It sits under SFX, so the player's SFX volume and the underwater muffle apply on top. Every field is optional; an omitted field takes the floor value. A malformed field — not a number, non-finite or out of range — or a `highPassHz` at or above `lowPassHz` once omitted fields are filled warns naming the field and applies the whole floor profile (0.6, 200 Hz, 4000 Hz, drive 0).
+export type AudioGhostProfile = {
+  --- Bus volume, 0 to 1, on the same perceptual taper as the player's volume options; 0 silences ghost audio. Optional; defaults to 0.6.
+  volume: number?,
+  --- High-pass cutoff in Hz, 20 to 20000, below `lowPassHz`: thins out the low end. Optional; defaults to 200.
+  highPassHz: number?,
+  --- Low-pass cutoff in Hz, 20 to 20000, above `highPassHz`: muffles the top end. Optional; defaults to 4000.
+  lowPassHz: number?,
+  --- Distortion drive, 0 to 1; 0 applies no distortion, and higher values saturate the echo harder. Optional; defaults to 0.
+  drive: number?,
+}
+
 --- Static audio preferences declared once for the entire mod.
 export type AudioProfile = {
   --- Distance attenuation for positional sounds. Optional; defaults to 2 to 60 metres, linear.
   attenuation: AudioAttenuation?,
+  --- Ghost bus mix for ghost-link echoes. Optional; defaults to the floor profile: volume 0.6, 200 Hz to 4000 Hz, no drive.
+  ghost: AudioGhostProfile?,
 }
 
 --- Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`.
@@ -1494,6 +1521,22 @@ export type FluidDescriptor = {
   waveLength: number | {number}?,
 }
 
+--- A ghost style declared in `ModManifest.ghostStyles`, built with `defineGhostStyle`: how a ghost link's ghosts look and whether their sounds carry. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional; an omitted field takes the floor style's value (neutral, translucent, no sound). A malformed field drops the whole style with a warning naming it, and a second declaration of an existing name is dropped; the first declaration stands and the rest of the manifest is kept. A link naming no declared style uses the floor style. Styles resolve on each machine by name and never affect co-op compatibility.
+export type GhostStyleDescriptor = {
+  --- Non-empty name a `ghost_link`'s `ghost_style` key refers to. Unique within the manifest; a later duplicate is dropped.
+  name: string,
+  --- Colour multiplier as `[r, g, b]`, each finite and in [0, 1]. Omitted: `[1, 1, 1]`.
+  tint: {number}?,
+  --- Presented opacity, finite and in [0, 1]. Omitted: 0.5.
+  opacity: number?,
+  --- Colour saturation, finite and in [0, 1]: 0 is greyscale, 1 the member's own colour. Omitted: 0.
+  saturation: number?,
+  --- Members' sounds also play at the ghost through the Ghost bus. Omitted: false.
+  audio: boolean?,
+  --- Impact sounds from members' shots ghost too. Takes effect only when `audio` is true. Omitted: false.
+  impactAudio: boolean?,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
@@ -1502,11 +1545,11 @@ export type ModManifest = {
   id: string,
   --- Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid.
   version: string,
-  --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom and pixel-style fluid reflections.
+  --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom, pixel-style fluid reflections and alpha-blended ghosts.
   render: RenderProfile?,
   --- Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay.
   movers: MoverDefaults?,
-  --- Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation.
+  --- Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation and the floor ghost bus profile.
   audio: AudioProfile?,
   --- The game's commands, default bindings, and glyph art. Optional; omission keeps the engine's default bindings. Malformed entries warn and fall back per command and device class; they never reject the manifest.
   input: ModInput?,
@@ -1524,6 +1567,8 @@ export type ModManifest = {
   factionSentimentDecay: number?,
   --- Engine-global fluid declarations, each built with `defineFluid`. Optional; declaration order assigns each fluid's index. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune fluids.
   fluids: {FluidDescriptor}?,
+  --- Engine-global ghost style declarations, each built with `defineGhostStyle`. Optional. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune styles.
+  ghostStyles: {GhostStyleDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
@@ -1871,6 +1916,31 @@ export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport",
 --- teleport-scoped reaction, or a reaction's name.
 export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string
 
+--- Snapshot of a map-placed ghost link: id, position and tags.
+export type GhostLinkEntity = { id: EntityId, position: Vec3, tags: {string} }
+--- Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state,
+--- member categories and colour filter are host-authoritative and replicated;
+--- each method returns closed command steps that apply on the host at its next
+--- tick, in call order, and do nothing on a connected client. An out-of-range
+--- argument warns and drops that step when it runs; a non-finite argument (NaN
+--- or Infinity) drops the whole reaction when the level loads.
+export type GhostLinkHandle = {
+  id: EntityId, position: Vec3, tags: {string},
+  --- Arm the link: its members draw as ghosts at the mapped pose in the other
+  --- copy.
+  arm: (self: GhostLinkHandle) -> {ArmGhostLinkStep},
+  --- Disarm the link.
+  disarm: (self: GhostLinkHandle) -> {DisarmGhostLinkStep},
+  --- Show or hide member categories; an omitted category keeps its value. A
+  --- category only narrows: it never ghosts what a descriptor's `ghost` or the
+  --- link's `ghost_tags` did not opt in.
+  setMembers: (self: GhostLinkHandle, members: GhostLinkMembersArgs) -> {SetGhostLinkMembersStep},
+  --- Override the link style's tint, opacity and saturation, field by field.
+  --- Each named field ramps on its own over `periodMs` (default 0) in script
+  --- time; an omitted field keeps its value and any ramp in flight.
+  setColorFilter: (self: GhostLinkHandle, filter: GhostColorFilterArgs) -> {SetGhostLinkColorFilterStep},
+}
+
 --- Snapshot of a map-placed spawner: id, position, its own tags, and
 --- `spawnedTags`, the tags each NPC it spawns carries. Its own tags never
 --- pass to its spawns.
@@ -1918,7 +1988,7 @@ export type TrapEntityHandle = {
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner" | "trap"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -1932,6 +2002,7 @@ export type MapEntityFilter = { tag: string? }
 declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEntityHandle})
   & ((kind: "trigger", filter: MapEntityFilter?) -> {TriggerVolumeHandle})
   & ((kind: "teleporter", filter: MapEntityFilter?) -> {TeleporterHandle})
+  & ((kind: "ghostLink", filter: MapEntityFilter?) -> {GhostLinkHandle})
   & ((kind: "light", filter: MapEntityFilter?) -> {LightEntityHandle})
   & ((kind: "fog", filter: MapEntityFilter?) -> {FogVolumeHandle})
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
@@ -2203,6 +2274,26 @@ export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args
 --- Sequence step that disarms one teleporter (`t:disarm()`). Applies on the
 --- host at the start of its next movement tick.
 export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
+--- Member categories a ghost link shows; an omitted category keeps its value.
+export type GhostLinkMembersArgs = { players: boolean?, entities: boolean?, projectiles: boolean?, movers: boolean? }
+--- A ghost link's colour filter. Each named field ramps on its own over
+--- `periodMs` (default 0); an omitted field keeps its value and any ramp in
+--- flight. `tint` is `{ r, g, b }`; `tint` components, `opacity` and
+--- `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming
+--- none of `tint`, `opacity` and `saturation` warns and drops the step.
+export type GhostColorFilterArgs = { tint: {number}?, opacity: number?, saturation: number?, periodMs: number? }
+--- Sequence step that arms one ghost link (`l:arm()`). Applies on the host at
+--- its next tick.
+export type ArmGhostLinkStep = { id: EntityId, primitive: "armGhostLink", args: {} }
+--- Sequence step that disarms one ghost link (`l:disarm()`). Applies on the
+--- host at its next tick.
+export type DisarmGhostLinkStep = { id: EntityId, primitive: "disarmGhostLink", args: {} }
+--- Sequence step that changes one ghost link's member categories
+--- (`l:setMembers(...)`). Applies on the host at its next tick.
+export type SetGhostLinkMembersStep = { id: EntityId, primitive: "setGhostLinkMembers", args: GhostLinkMembersArgs }
+--- Sequence step that sets one ghost link's colour filter
+--- (`l:setColorFilter(...)`). Applies on the host at its next tick.
+export type SetGhostLinkColorFilterStep = { id: EntityId, primitive: "setGhostLinkColorFilter", args: GhostColorFilterArgs }
 --- Sequence step that arms one trigger volume.
 export type ArmTriggerStep = {
   id: EntityId,
@@ -2266,7 +2357,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Sequence reaction body: ordered member, group, subject-token and control
 --- steps. Steps begin in array order; `fire` queues a named dispatch, while
@@ -2709,7 +2800,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
@@ -2729,6 +2820,13 @@ declare function sentiment(fromFaction: string, toFaction: string, values: { sen
 --- declaration order assigns its index. A field out of range, or a repeated
 --- name, is rejected with a warning naming the field; the first stands.
 declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
+--- Pure identity builder for a ghost style in `ghostStyles` on the returned
+--- mod manifest. A map's `ghost_link` names it through its `ghost_style` key.
+--- Every field but `name` is optional and takes the floor style's value when
+--- omitted. A malformed field drops the whole style with a warning naming it,
+--- a repeated name is dropped and the first stands, and a link naming no
+--- declared style uses the floor style.
+declare function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -2819,6 +2917,7 @@ export type ModManifestInput = {
   sentiment: {FactionSentimentDescriptor}?,
   factionSentimentDecay: number?,
   fluids: {FluidDescriptor}?,
+  ghostStyles: {GhostStyleDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,
@@ -3350,7 +3449,8 @@ export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.
 -- ---------------------------------------------------------------------------
 -- Luau SDK virtual modules. Runtime module tables contain values only; these
 -- structural aliases describe the read-only engine-owned singletons returned by
--- literal `require` calls. Root `postretro` excludes UI authoring APIs; `postretro/ui`
+-- literal `require` calls. Root `postretro` excludes UI and audio authoring APIs;
+-- `postretro/audio` holds audio subsystem builders; `postretro/ui`
 -- is typed directly from SDK function signatures instead of bare globals.
 
 --- Accessibility toggles a menu button may cycle.
@@ -3474,6 +3574,14 @@ export type PostretroUiModule = {
   clearText: (ref: Ref<string>) -> PrimitiveReactionDescriptor,
 }
 
+--- Ghost bus fields `setGhostAudio` may set. Volume and drive are linear 0..=1; cutoffs are 20..=20000 Hz with the high-pass below the low-pass; `periodMs` (finite, >= 0, default 0) is the ramp length.
+export type GhostAudioFields = { volume: number?, highPassHz: number?, lowPassHz: number?, drive: number?, periodMs: number? }
+
+export type PostretroAudioModule = {
+  --- Change the mod-wide Ghost bus mix during play; a primitive reaction body (no target). Applies on the host at its next tick and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; omitted fields keep their value and ramp. Out-of-range, non-finite, empty, or crossing-cutoff calls warn and drop.
+  setGhostAudio: (fields: GhostAudioFields) -> PrimitiveReactionDescriptor,
+}
+
 export type PostretroModule = {
   runtime: Runtime,
   --- Pure bounded weapon-action data builders with read-only normalized charge.
@@ -3516,6 +3624,8 @@ export type PostretroModule = {
   sentiment: typeof(sentiment),
   --- Pure identity builder for a fluid declaration in a mod manifest's `fluids`.
   defineFluid: typeof(defineFluid),
+  --- Pure identity builder for a ghost style in a mod manifest's `ghostStyles`.
+  defineGhostStyle: typeof(defineGhostStyle),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.
@@ -3548,4 +3658,5 @@ export type PostretroModule = {
 
 declare require: ((path: "postretro") -> PostretroModule)
   & ((path: "postretro/ui") -> PostretroUiModule)
+  & ((path: "postretro/audio") -> PostretroAudioModule)
   & ((path: string) -> any)

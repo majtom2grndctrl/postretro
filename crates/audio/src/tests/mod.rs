@@ -9,6 +9,7 @@ use kira::AudioManagerSettings;
 use kira::backend::mock::MockBackend;
 use kira::backend::{Backend, Renderer};
 
+mod ghost;
 mod muffle;
 mod spatial;
 
@@ -110,11 +111,17 @@ impl CapturingBackend {
 /// frames carry the tone at full resolution (kira's `MockBackend` defaults
 /// to 1 Hz, which would resample the clip away to near-nothing).
 pub(super) fn capturing_audio() -> AudioCore<CapturingBackend> {
+    capturing_audio_at(8_000)
+}
+
+/// [`capturing_audio`] rendering at `sample_rate`, for tests whose synthesized
+/// signal needs more bandwidth than the 8 kHz fixture rate carries.
+pub(super) fn capturing_audio_at(sample_rate: u32) -> AudioCore<CapturingBackend> {
     let mono = MonoFoldHandle::default();
     let settings = AudioManagerSettings::<CapturingBackend> {
         capacities: CAPACITIES,
         main_track_builder: main_track_builder(&mono),
-        backend_settings: 8_000,
+        backend_settings: sample_rate,
         ..Default::default()
     };
     let manager =
@@ -334,6 +341,7 @@ fn parse_bus_is_case_insensitive_and_rejects_unknown() {
     assert_eq!(parse_bus("sfx"), Some(BusId::Sfx));
     assert_eq!(parse_bus("Music"), Some(BusId::Music));
     assert_eq!(parse_bus("UI"), Some(BusId::UI));
+    assert_eq!(parse_bus("ghost"), Some(BusId::Ghost));
     assert_eq!(parse_bus("master"), None);
     assert_eq!(parse_bus(""), None);
 }
@@ -409,6 +417,31 @@ fn unknown_bus_returns_none_without_holding_a_voice() {
     for bus in BusId::ALL {
         assert_eq!(audio.active_voices(bus), 0, "no voice acquired on any bus");
     }
+}
+
+// Regression: a script's `playSound(k, { bus: "ghost" })` played on the Ghost
+// bus, holding a ghost voice beside no real voice.
+#[test]
+fn a_script_request_naming_the_ghost_bus_is_an_unknown_bus() {
+    let mut audio = mock_audio();
+    let on_ghost = SoundRequest {
+        bus: "Ghost".to_string(),
+        ..sfx_request()
+    };
+    assert!(audio.play_script(on_ghost.clone()).is_none(), "dropped");
+    for bus in BusId::ALL {
+        assert_eq!(audio.active_voices(bus), 0, "no voice acquired on any bus");
+    }
+    assert!(
+        audio.play_script(sfx_request()).is_some(),
+        "a script's sfx sound still plays"
+    );
+    assert!(
+        audio.play(on_ghost).is_some(),
+        "an engine ghost voice still plays"
+    );
+    assert_eq!(parse_script_bus("ghost"), None);
+    assert_eq!(parse_script_bus("UI"), Some(BusId::UI));
 }
 
 #[test]

@@ -20,12 +20,19 @@ use postretro_net::wire::{
 
 use crate::presentation_state::apply_presentation_payload;
 
+/// An installed map region a record binds to by map-order index and source
+/// entity. Its records carry state only: the region is never interpolated,
+/// materialized from a baseline, or despawned on unbinding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RegionBinding {
+    Teleporter(u16),
+    GhostLink(u16),
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ClientBindings {
-    /// Network ids bound to installed local teleporter regions, with their
-    /// map-order index. Their records carry armed state only: the region is never
-    /// interpolated, materialized from a baseline, or despawned on unbinding.
-    pub(super) teleporter_network_ids: HashMap<NetworkId, u16>,
+    /// Network ids bound to installed local teleporter and ghost-link regions.
+    pub(super) region_network_ids: HashMap<NetworkId, RegionBinding>,
     /// Network ids bound to PRL-loaded local kinematic movers, with their stable
     /// compile-time mover id. These entities are predicted/reconciled in place and
     /// must never be remote-interpolated or materialized from a baseline.

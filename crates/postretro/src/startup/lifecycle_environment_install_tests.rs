@@ -371,7 +371,7 @@ fn a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry() {
 
 /// Queue a staged manifest build of the start script under `mod_root` and poll
 /// until it commits, the route a host's manifest reload takes.
-fn commit_staged_manifest(app: &mut App, mod_root: &std::path::Path) {
+pub(crate) fn commit_staged_manifest(app: &mut App, mod_root: &std::path::Path) {
     let generation = app
         .session
         .as_mut()

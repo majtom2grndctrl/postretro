@@ -297,17 +297,17 @@ fn teleport_reconcile_refusal_restores_yaw_silently_and_unknown_indices_are_reje
 }
 
 /// One host and one participating client over the real relay transport.
-struct RelaySession {
-    server: postretro_net::transport::NetServer,
-    client: postretro_net::transport::NetClient,
+pub(crate) struct RelaySession {
+    pub(crate) server: postretro_net::transport::NetServer,
+    pub(crate) client: postretro_net::transport::NetClient,
 }
 
 impl RelaySession {
-    const CLIENT: u64 = 7;
-    const STEP: std::time::Duration = std::time::Duration::from_millis(16);
-    const FINGERPRINT: [u8; 32] = [0x5a; 32];
+    pub(crate) const CLIENT: u64 = 7;
+    pub(crate) const STEP: std::time::Duration = std::time::Duration::from_millis(16);
+    pub(crate) const FINGERPRINT: [u8; 32] = [0x5a; 32];
 
-    fn participating() -> Self {
+    pub(crate) fn participating() -> Self {
         use std::net::{Ipv4Addr, UdpSocket};
         let origin = std::time::Duration::from_secs(1);
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -345,7 +345,7 @@ impl RelaySession {
         session
     }
 
-    fn relay_to_server(&mut self) {
+    pub(crate) fn relay_to_server(&mut self) {
         self.client.update_connections(Self::STEP);
         for packet in self.client.packets_to_send() {
             self.server.process_packet_from(&packet, Self::CLIENT);
@@ -354,7 +354,7 @@ impl RelaySession {
         let _ = self.server.poll_handshakes();
     }
 
-    fn relay_to_client(&mut self) {
+    pub(crate) fn relay_to_client(&mut self) {
         self.server.update_connections(Self::STEP);
         for packet in self.server.packets_to_send(Self::CLIENT) {
             self.client.process_packet(&packet);
@@ -363,7 +363,7 @@ impl RelaySession {
         let _ = self.client.drain_control();
     }
 
-    fn settle(&mut self) {
+    pub(crate) fn settle(&mut self) {
         for _ in 0..64 {
             self.relay_to_server();
             self.relay_to_client();

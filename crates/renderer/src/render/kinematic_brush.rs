@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use postretro_render_data::cone_frustum::Aabb;
 use wgpu::util::DeviceExt;
 
 use super::*;
@@ -83,6 +84,17 @@ pub(crate) struct KinematicBrushPass {
     /// Camera-visible subset of `active_draws` for the beauty pass.
     beauty_draws: Vec<ActiveMoverDraw>,
     mover_index_ranges: Vec<MoverIndexRange>,
+    /// Each uploaded mover's local geometry bounds, parallel to `movers`: a
+    /// ghost of it sorts among the frame's ghosts by these bounds under its
+    /// model transform.
+    mover_bounds: Vec<Aabb>,
+    /// Every uploaded mover's triangles in its local space, three positions
+    /// each (36 bytes a triangle), one mover's after another; each mover's
+    /// span is parallel to `movers`. CPU-only: the ghost sort asks which of a
+    /// carrying mover's surfaces lie between the eye and its rider. Replaced
+    /// at its exact size on every geometry install.
+    mover_triangles: Vec<[glam::Vec3; 3]>,
+    mover_triangle_spans: Vec<std::ops::Range<usize>>,
     instance_bytes: Vec<u8>,
 }
 
@@ -255,6 +267,19 @@ fn pack_vertex(
         // Movers never sample the animated lightmap atlas.
         animated_block: 0,
     }
+}
+
+/// One triangle's local positions; `None` when an index falls past the
+/// mover's vertices.
+fn triangle_positions(
+    vertices: &[postretro_level_format::geometry::Vertex],
+    corners: &[u32],
+) -> Option<[glam::Vec3; 3]> {
+    let position = |slot: usize| {
+        let vertex = vertices.get(*corners.get(slot)? as usize)?;
+        Some(glam::Vec3::from_array(vertex.position))
+    };
+    Some([position(0)?, position(1)?, position(2)?])
 }
 
 fn derive_material_ranges(
@@ -486,6 +511,9 @@ impl KinematicBrushPass {
             active_draw_lookup: HashMap::new(),
             beauty_draws: Vec::new(),
             mover_index_ranges: Vec::new(),
+            mover_bounds: Vec::new(),
+            mover_triangles: Vec::new(),
+            mover_triangle_spans: Vec::new(),
             instance_bytes: Vec::new(),
         }
     }
@@ -502,6 +530,10 @@ impl KinematicBrushPass {
         self.active_draw_lookup.clear();
         self.beauty_draws.clear();
         self.mover_index_ranges.clear();
+        self.mover_bounds.clear();
+        // Dropped, not cleared: the previous level's triangles free with it.
+        self.mover_triangles = Vec::new();
+        self.mover_triangle_spans.clear();
 
         let Some(geometry) = geometry else {
             self.install_empty_geometry(device);
@@ -511,6 +543,14 @@ impl KinematicBrushPass {
         // so shadow recording does not trigger a per-frame reallocation.
         self.active_draw_lookup.reserve(geometry.movers.len());
         self.beauty_draws.reserve(geometry.movers.len());
+        self.mover_triangles.reserve_exact(
+            geometry
+                .movers
+                .iter()
+                .filter(|mover| !mover.vertices.is_empty())
+                .map(|mover| mover.indices.len() / 3)
+                .sum(),
+        );
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -546,6 +586,22 @@ impl KinematicBrushPass {
                 index_start: index_base,
                 index_count: mover.indices.len() as u32,
             });
+            let (min, max) = mover.vertices.iter().fold(
+                (glam::Vec3::INFINITY, glam::Vec3::NEG_INFINITY),
+                |(min, max), vertex| {
+                    let position = glam::Vec3::from_array(vertex.position);
+                    (min.min(position), max.max(position))
+                },
+            );
+            self.mover_bounds.push(Aabb { min, max });
+            let first = self.mover_triangles.len();
+            for corners in mover.indices.as_chunks::<3>().0 {
+                if let Some(triangle) = triangle_positions(&mover.vertices, corners) {
+                    self.mover_triangles.push(triangle);
+                }
+            }
+            self.mover_triangle_spans
+                .push(first..self.mover_triangles.len());
         }
 
         if vertices.is_empty() || indices.is_empty() {
@@ -610,6 +666,25 @@ impl KinematicBrushPass {
     /// use the camera-visible subset held separately.
     pub(crate) fn active_draws(&self) -> &[ActiveMoverDraw] {
         &self.active_draws
+    }
+
+    /// One uploaded mover's geometry bounds, in the space its model matrix
+    /// maps from. `None` for a mover id this level did not upload.
+    pub(super) fn mover_bounds(&self, mover_id: u32) -> Option<Aabb> {
+        Some(self.mover_bounds[*self.mover_lookup.get(&mover_id)?])
+    }
+
+    /// One uploaded mover's triangles, in the space its model matrix maps
+    /// from; empty for a mover id this level did not upload.
+    pub(super) fn mover_triangles(&self, mover_id: u32) -> &[[glam::Vec3; 3]] {
+        let span = self
+            .mover_lookup
+            .get(&mover_id)
+            .and_then(|&draw_index| self.mover_triangle_spans.get(draw_index));
+        match span {
+            Some(span) => self.mover_triangles.get(span.clone()).unwrap_or(&[]),
+            None => &[],
+        }
     }
 
     /// One full index span per uploaded mover, keyed by `mover_draw_index`.
@@ -810,6 +885,29 @@ impl KinematicBrushPass {
         self.index_count > 0 && !self.beauty_draws.is_empty()
     }
 
+    /// One uploaded mover's per-material index spans in the shared index
+    /// buffer, as `(world material index, index range)`: what a draw path that
+    /// binds world materials itself (the ghost pass) records per instance.
+    /// `None` for a mover id this level did not upload.
+    pub(super) fn material_spans(
+        &self,
+        mover_id: u32,
+    ) -> Option<impl Iterator<Item = (usize, std::ops::Range<u32>)> + '_> {
+        let mover = &self.movers[*self.mover_lookup.get(&mover_id)?];
+        Some(
+            mover
+                .material_ranges
+                .iter()
+                .filter(|range| range.index_count > 0)
+                .map(|range| {
+                    (
+                        range.material_index,
+                        range.index_start..range.index_start + range.index_count,
+                    )
+                }),
+        )
+    }
+
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
         if !self.has_draws() {
             return;
@@ -989,6 +1087,34 @@ mod tests {
         assert_eq!(packed.base_uv, [4.0, 5.0]);
         assert_eq!(packed.lightmap_uv, [0, 0]);
         assert_eq!(packed.lightmap_block, 0);
+    }
+
+    // The ghost sort's CPU copy of a mover's triangles: each index triple
+    // becomes its three local positions, and one indexing past the mover's
+    // vertices is dropped rather than panicking.
+    #[test]
+    fn mover_triangle_positions_follow_the_indices_and_drop_one_past_the_vertices() {
+        let corner = |position: [f32; 3]| {
+            Vertex::new(
+                position,
+                [0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+                0,
+            )
+        };
+        let vertices = [
+            corner([0.0, 0.0, 0.0]),
+            corner([1.0, 0.0, 0.0]),
+            corner([0.0, 0.0, 1.0]),
+        ];
+        assert_eq!(
+            triangle_positions(&vertices, &[2, 0, 1]),
+            Some([glam::Vec3::Z, glam::Vec3::ZERO, glam::Vec3::X])
+        );
+        assert_eq!(triangle_positions(&vertices, &[0, 1, 3]), None);
     }
 
     #[test]

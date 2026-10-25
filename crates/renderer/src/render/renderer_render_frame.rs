@@ -240,10 +240,11 @@ impl Renderer {
         // deliberately sees only the world partition.
         let mesh_frame_plans: Option<mesh_instances::MeshFramePlans> = if render_world
             && self.full().mesh_pass.has_model()
-            && !self.full().mesh_draws.is_empty()
+            && !(self.full().mesh_draws.is_empty() && self.full().ghost_mesh_draws.is_empty())
         {
             Some(mesh_instances::plan_mesh_frame_plans(
                 &self.full().mesh_draws,
+                &self.full().ghost_mesh_draws,
                 &self.full().mesh_pass,
             ))
         } else {
@@ -357,7 +358,11 @@ impl Renderer {
             // palette-slot cap and the instance-count cap. Rigid / zero-joint
             // props still reserve one identity palette entry, so either cap
             // can reject them.
-            let dropped = plans.world.dropped.saturating_add(plans.viewmodel.dropped);
+            let dropped = plans
+                .world
+                .dropped
+                .saturating_add(plans.viewmodel.dropped)
+                .saturating_add(plans.ghost.dropped);
             if dropped > 0 {
                 let now = now_seconds as f32;
                 if now - self.full().mesh_overflow_last_warn >= 1.0 {
@@ -382,7 +387,7 @@ impl Renderer {
                     .expect("renderer full-init must complete before full-ready paths run");
                 full.mesh_pass.plan_and_upload(
                     queue,
-                    &[&plans.world, &plans.viewmodel],
+                    &[&plans.world, &plans.viewmodel, &plans.ghost],
                     &mut full.bone_palette_scratch,
                     &cpu,
                 );
@@ -649,6 +654,83 @@ impl Renderer {
             self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
         }
 
+        // Ghosts: unlit, translucent, after every opaque pass so they depth-test
+        // against the whole opaque scene, and before fluid so a submerged
+        // ghost stays under the water's surface. They test a ghost-only depth
+        // target, never writing scene depth: a ghost hides nothing drawn after
+        // it, so the later translucent passes (fluid, billboards) cover a ghost
+        // even where they lie behind it, the accepted unsorted-translucency
+        // limit. Only the ghost plan draws here; it never reached shadow depth.
+        //
+        // Order: seed the ghost depth from scene depth; then one pass draws
+        // every skinned and mover ghost farthest first, each a depth-only draw
+        // that writes its nearest surface, then its colour draw where the
+        // fragment equals that depth. So a ghost's inner surfaces never show
+        // through its outer ones, and a nearer ghost blends over a farther
+        // one. Paid only on frames with a skinned or mover ghost: one copy, one
+        // pass, two pipeline switches per ghost.
+        let skinned_ghost_plan = mesh_frame_plans
+            .as_ref()
+            .map(|plans| &plans.ghost)
+            .filter(|plan| render_world && !plan.groups.is_empty());
+        let mover_ghosts = render_world && self.full().kinematic_ghost.has_draws();
+        if skinned_ghost_plan.is_some() || mover_ghosts {
+            let _ghost_scope = cpu.scope(RenderStage::GhostMesh);
+            let mode = self.ghost_transparency();
+            {
+                let full = self.full_mut();
+                // The eye `view_proj` was built from, stored with it this frame.
+                let eye = full.last_camera_position;
+                full.ghost_order.build(
+                    skinned_ghost_plan,
+                    full.kinematic_ghost.draw_shapes(&full.kinematic_brush),
+                    view_proj,
+                    eye,
+                );
+            }
+            self.full()
+                .ghost_depth
+                .seed_from_scene_depth(encoder, self.full().depth_view.texture());
+            let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Ghost Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: self.full().ghost_depth.view(),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            // Mover ghosts draw over the mover pass's geometry with world
+            // materials; like the skinned ghosts, never part of shadow depth or
+            // the occluder bounds recorded earlier.
+            let full = self.full();
+            ghost_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
+            full.ghost_order.record(
+                &mut ghost_pass,
+                &ghost_order::GhostDrawSources {
+                    mesh_pass: &full.mesh_pass,
+                    skinned: skinned_ghost_plan,
+                    movers: &full.kinematic_ghost,
+                    brush: &full.kinematic_brush,
+                    materials: &full.gpu_textures,
+                },
+                mode,
+            );
+        }
+
         // Fluid surfaces: translucent, after every opaque pass and before
         // billboards, so smoke above the water draws over it undimmed (and
         // smoke below it does too, the accepted draw-order limit). Gated on
@@ -776,6 +858,36 @@ impl Renderer {
                     particle_collections,
                 );
             }
+        }
+
+        // Projectile billboard ghosts: after the billboards they ghost, unlit
+        // and additive in both `render.ghosts` modes, depth-tested without
+        // writing depth, binding each collection's sprite sheet.
+        if render_world && self.full().billboard_ghost.has_draws() {
+            let _ghost_scope = cpu.scope(RenderStage::GhostMesh);
+            let mut ghost_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Billboard Ghost Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.full().depth_view,
+                    depth_ops: None,
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+            let full = self.full();
+            full.billboard_ghost
+                .record_draws(&mut ghost_pass, &full.smoke_pass);
         }
 
         // Volumetric fog: low-res compute raymarch + additive composite.

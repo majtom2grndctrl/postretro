@@ -1,4 +1,5 @@
 use super::*;
+use crate::environment_volumes::EnvironmentPlane;
 
 fn brush() -> EnvironmentBrush {
     EnvironmentBrush {

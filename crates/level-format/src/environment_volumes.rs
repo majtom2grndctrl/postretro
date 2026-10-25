@@ -2,7 +2,13 @@
 // static regional volume (gravity, push, fluid) as convex brush leaves.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use crate::FormatError;
+use crate::convex_leaf_codec::{
+    SectionReader, brushes_byte_len, write_brushes, write_count, write_f32, write_string,
+    write_vec3,
+};
+
+/// Every decode error names this section.
+const SECTION: &str = "environment volumes";
 
 pub const ENVIRONMENT_VOLUMES_VERSION: u16 = 1;
 
@@ -16,10 +22,6 @@ pub const DEFAULT_WORLD_GRAVITY_MPS2: f32 = -20.32_f32;
 /// fluid name: entity, priority, gravity flag + value, push flag + vector,
 /// fluid length, brush count, face count.
 const MIN_VOLUME_SIZE: usize = 4 + 4 + 1 + 4 + 1 + 12 + 4 + 4 + 4;
-/// One brush with zero planes: AABB min, AABB max, plane count.
-const MIN_BRUSH_SIZE: usize = 12 + 12 + 4;
-/// One plane: normal and distance.
-const PLANE_SIZE: usize = 16;
 /// One surface face with zero vertices: texture index, vertex count.
 const MIN_FACE_SIZE: usize = 4 + 4;
 /// One surface vertex: position and UV.
@@ -111,13 +113,10 @@ impl EnvironmentVolumesSection {
                 .volumes
                 .iter()
                 .map(|volume| {
-                    MIN_VOLUME_SIZE
+                    // The brush count is inside MIN_VOLUME_SIZE.
+                    MIN_VOLUME_SIZE - 4
                         + volume.fluid.len()
-                        + volume
-                            .brushes
-                            .iter()
-                            .map(|brush| MIN_BRUSH_SIZE + brush.planes.len() * PLANE_SIZE)
-                            .sum::<usize>()
+                        + brushes_byte_len(&volume.brushes)
                         + volume
                             .surface_faces
                             .iter()
@@ -130,35 +129,25 @@ impl EnvironmentVolumesSection {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.byte_len());
         out.extend_from_slice(&ENVIRONMENT_VOLUMES_VERSION.to_le_bytes());
-        f32_out(&mut out, self.level_gravity);
-        count(&mut out, self.volumes.len());
+        write_f32(&mut out, self.level_gravity);
+        write_count(&mut out, self.volumes.len());
         for volume in &self.volumes {
             out.extend_from_slice(&volume.source_entity.to_le_bytes());
             out.extend_from_slice(&volume.priority.to_le_bytes());
             out.push(u8::from(volume.gravity.is_some()));
-            f32_out(&mut out, volume.gravity.unwrap_or(0.0));
+            write_f32(&mut out, volume.gravity.unwrap_or(0.0));
             out.push(u8::from(volume.push.is_some()));
-            vec3(&mut out, volume.push.unwrap_or([0.0; 3]));
-            count(&mut out, volume.fluid.len());
-            out.extend_from_slice(volume.fluid.as_bytes());
-            count(&mut out, volume.brushes.len());
-            for brush in &volume.brushes {
-                vec3(&mut out, brush.aabb_min);
-                vec3(&mut out, brush.aabb_max);
-                count(&mut out, brush.planes.len());
-                for plane in &brush.planes {
-                    vec3(&mut out, plane.normal);
-                    f32_out(&mut out, plane.distance);
-                }
-            }
-            count(&mut out, volume.surface_faces.len());
+            write_vec3(&mut out, volume.push.unwrap_or([0.0; 3]));
+            write_string(&mut out, &volume.fluid);
+            write_brushes(&mut out, &volume.brushes);
+            write_count(&mut out, volume.surface_faces.len());
             for face in &volume.surface_faces {
                 out.extend_from_slice(&face.texture_index.to_le_bytes());
-                count(&mut out, face.vertices.len());
+                write_count(&mut out, face.vertices.len());
                 for vertex in &face.vertices {
-                    vec3(&mut out, vertex.position);
-                    f32_out(&mut out, vertex.uv[0]);
-                    f32_out(&mut out, vertex.uv[1]);
+                    write_vec3(&mut out, vertex.position);
+                    write_f32(&mut out, vertex.uv[0]);
+                    write_f32(&mut out, vertex.uv[1]);
                 }
             }
         }
@@ -168,10 +157,10 @@ impl EnvironmentVolumesSection {
     /// Decode untrusted section bytes. Every count is bounded by the bytes
     /// left before anything is allocated, and every float must be finite.
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        let mut r = Reader { data, offset: 0 };
+        let mut r = SectionReader::new(data, SECTION);
         let version = r.u16("version")?;
         if version != ENVIRONMENT_VOLUMES_VERSION {
-            return invalid(format!("unsupported version {version}"));
+            return r.invalid(format!("unsupported version {version}"));
         }
         let level_gravity = r.finite_f32("level gravity")?;
         let volume_count = r.bounded_count("volume count", MIN_VOLUME_SIZE)?;
@@ -179,13 +168,7 @@ impl EnvironmentVolumesSection {
         for i in 0..volume_count {
             volumes.push(read_volume(&mut r, i)?);
         }
-        if r.offset != data.len() {
-            return invalid(format!(
-                "trailing bytes: expected {}, got {}",
-                r.offset,
-                data.len()
-            ));
-        }
+        r.finish()?;
         Ok(Self {
             level_gravity,
             volumes,
@@ -193,12 +176,13 @@ impl EnvironmentVolumesSection {
     }
 }
 
-fn read_volume(r: &mut Reader<'_>, i: usize) -> crate::Result<EnvironmentVolumeRecord> {
+fn read_volume(r: &mut SectionReader<'_>, i: usize) -> crate::Result<EnvironmentVolumeRecord> {
     let source_entity = r.u32(&format!("volume {i} source entity"))?;
     let priority = r.u32(&format!("volume {i} priority"))? as i32;
     let gravity_present = r.flag(&format!("volume {i} gravity flag"))?;
     let gravity = r.finite_f32(&format!("volume {i} gravity"))?;
-    let gravity = r.optional(
+    let gravity = optional(
+        r,
         gravity_present,
         gravity,
         0.0,
@@ -206,51 +190,19 @@ fn read_volume(r: &mut Reader<'_>, i: usize) -> crate::Result<EnvironmentVolumeR
     )?;
     let push_present = r.flag(&format!("volume {i} push flag"))?;
     let push = r.finite_vec3(&format!("volume {i} push"))?;
-    let push = r.optional(push_present, push, [0.0; 3], &format!("volume {i} push"))?;
+    let push = optional(r, push_present, push, [0.0; 3], &format!("volume {i} push"))?;
     let fluid = r.string(&format!("volume {i} fluid"))?;
     if gravity.is_none() && push.is_none() && fluid.is_empty() {
-        return invalid(format!(
+        return r.invalid(format!(
             "volume {i} sets no field; a volume sets gravity, push or a fluid"
         ));
     }
 
-    let brush_count = r.bounded_count(&format!("volume {i} brush count"), MIN_BRUSH_SIZE)?;
-    if brush_count == 0 {
-        return invalid(format!("volume {i} has no brushes"));
-    }
-    let mut brushes = Vec::with_capacity(brush_count);
-    for b in 0..brush_count {
-        let what = format!("volume {i} brush {b}");
-        let aabb_min = r.finite_vec3(&format!("{what} AABB min"))?;
-        let aabb_max = r.finite_vec3(&format!("{what} AABB max"))?;
-        if aabb_min.iter().zip(aabb_max).any(|(min, max)| *min > max) {
-            return invalid(format!("{what} AABB min exceeds max"));
-        }
-        let plane_count = r.bounded_count(&format!("{what} plane count"), PLANE_SIZE)?;
-        if plane_count < MIN_PLANES_PER_BRUSH {
-            return invalid(format!(
-                "{what} has {plane_count} planes; a closed convex leaf needs at least {MIN_PLANES_PER_BRUSH}"
-            ));
-        }
-        let mut planes = Vec::with_capacity(plane_count);
-        for p in 0..plane_count {
-            let normal = r.finite_vec3(&format!("{what} plane {p} normal"))?;
-            if normal == [0.0; 3] {
-                return invalid(format!("{what} plane {p} has a zero normal"));
-            }
-            let distance = r.finite_f32(&format!("{what} plane {p} distance"))?;
-            planes.push(EnvironmentPlane { normal, distance });
-        }
-        brushes.push(EnvironmentBrush {
-            aabb_min,
-            aabb_max,
-            planes,
-        });
-    }
+    let brushes = r.brushes(&format!("volume {i}"))?;
 
     let face_count = r.bounded_count(&format!("volume {i} surface face count"), MIN_FACE_SIZE)?;
     if fluid.is_empty() && face_count > 0 {
-        return invalid(format!(
+        return r.invalid(format!(
             "volume {i} is dry but carries {face_count} surface face(s); a dry volume has none"
         ));
     }
@@ -260,7 +212,7 @@ fn read_volume(r: &mut Reader<'_>, i: usize) -> crate::Result<EnvironmentVolumeR
         let texture_index = r.u32(&format!("{what} texture index"))?;
         let vertex_count = r.bounded_count(&format!("{what} vertex count"), VERTEX_SIZE)?;
         if vertex_count < MIN_VERTICES_PER_FACE {
-            return invalid(format!(
+            return r.invalid(format!(
                 "{what} has {vertex_count} vertices; a polygon needs at least {MIN_VERTICES_PER_FACE}"
             ));
         }
@@ -291,123 +243,19 @@ fn read_volume(r: &mut Reader<'_>, i: usize) -> crate::Result<EnvironmentVolumeR
     })
 }
 
-fn invalid<T>(message: String) -> crate::Result<T> {
-    Err(FormatError::Io(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        format!("environment volumes: {message}"),
-    )))
-}
-
-fn count(out: &mut Vec<u8>, n: usize) {
-    let n = u32::try_from(n).expect("environment volume counts fit the PRL u32 field");
-    out.extend_from_slice(&n.to_le_bytes());
-}
-
-fn f32_out(out: &mut Vec<u8>, value: f32) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn vec3(out: &mut Vec<u8>, value: [f32; 3]) {
-    for v in value {
-        f32_out(out, v);
-    }
-}
-
-struct Reader<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize, what: &str) -> crate::Result<&'a [u8]> {
-        let end = self
-            .offset
-            .checked_add(n)
-            .filter(|end| *end <= self.data.len())
-            .ok_or_else(|| {
-                FormatError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    format!("environment volumes: truncated {what}"),
-                ))
-            })?;
-        let slice = &self.data[self.offset..end];
-        self.offset = end;
-        Ok(slice)
-    }
-
-    fn u8(&mut self, what: &str) -> crate::Result<u8> {
-        Ok(self.take(1, what)?[0])
-    }
-
-    fn u16(&mut self, what: &str) -> crate::Result<u16> {
-        let b = self.take(2, what)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
-    }
-
-    fn u32(&mut self, what: &str) -> crate::Result<u32> {
-        let b = self.take(4, what)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    fn finite_f32(&mut self, what: &str) -> crate::Result<f32> {
-        let value = f32::from_bits(self.u32(what)?);
-        if !value.is_finite() {
-            return invalid(format!("{what} is not finite"));
-        }
-        Ok(value)
-    }
-
-    fn finite_vec3(&mut self, what: &str) -> crate::Result<[f32; 3]> {
-        Ok([
-            self.finite_f32(what)?,
-            self.finite_f32(what)?,
-            self.finite_f32(what)?,
-        ])
-    }
-
-    fn flag(&mut self, what: &str) -> crate::Result<bool> {
-        match self.u8(what)? {
-            0 => Ok(false),
-            1 => Ok(true),
-            other => invalid(format!("{what} must be 0 or 1, got {other}")),
-        }
-    }
-
-    /// An absent field's value is always written as zero; anything else is a
-    /// malformed section, not a value to ignore.
-    fn optional<T: PartialEq + Copy>(
-        &self,
-        present: bool,
-        value: T,
-        zero: T,
-        what: &str,
-    ) -> crate::Result<Option<T>> {
-        match (present, value == zero) {
-            (true, _) => Ok(Some(value)),
-            (false, true) => Ok(None),
-            (false, false) => invalid(format!("{what} is absent but its value is not zero")),
-        }
-    }
-
-    /// A count whose elements each need at least `min_element_size` bytes,
-    /// rejected before allocation when the remaining bytes cannot hold it.
-    fn bounded_count(&mut self, what: &str, min_element_size: usize) -> crate::Result<usize> {
-        let n = self.u32(what)? as usize;
-        let remaining = self.data.len() - self.offset;
-        if n > remaining / min_element_size {
-            return invalid(format!(
-                "{what} {n} exceeds what the remaining {remaining} bytes can hold"
-            ));
-        }
-        Ok(n)
-    }
-
-    fn string(&mut self, what: &str) -> crate::Result<String> {
-        let n = self.u32(&format!("{what} length"))? as usize;
-        let bytes = self.take(n, what)?;
-        std::str::from_utf8(bytes)
-            .map(str::to_owned)
-            .or_else(|_| invalid(format!("invalid UTF-8 in {what}")))
+/// An absent field's value is always written as zero; anything else is a
+/// malformed section, not a value to ignore.
+fn optional<T: PartialEq + Copy>(
+    r: &SectionReader<'_>,
+    present: bool,
+    value: T,
+    zero: T,
+    what: &str,
+) -> crate::Result<Option<T>> {
+    match (present, value == zero) {
+        (true, _) => Ok(Some(value)),
+        (false, true) => Ok(None),
+        (false, false) => r.invalid(format!("{what} is absent but its value is not zero")),
     }
 }
 

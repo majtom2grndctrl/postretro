@@ -155,6 +155,20 @@ impl WieldableTuningPayload {
         }
     }
 
+    /// Clear the fields each peer resolves from its own descriptors: sound keys
+    /// and the projectile's `ghost` opt-in. Neither is predicted simulation
+    /// tuning, so a host change to either never resends tuning or rebuilds a
+    /// client's pawn.
+    pub fn strip_local_presentation(&mut self) {
+        self.primary.sounds = None;
+        if let Some(secondary) = &mut self.secondary {
+            secondary.sounds = None;
+        }
+        if let Some(projectile) = &mut self.projectile {
+            projectile.ghost = false;
+        }
+    }
+
     pub fn validate(&self) -> Result<(), postretro_foundation::DescriptorError> {
         self.placement.validate()?;
         self.weapon_descriptor().validate().map(|_| ())
@@ -167,9 +181,10 @@ impl WieldableTuningPayload {
 /// wieldable array is capacity-sized so a slot's identity survives empty
 /// positions. `movement.view_feel` and `movement.sounds` are always cleared
 /// because they are local presentation rather than predicted simulation tuning;
-/// this tuning payload omits sound keys. Observer cues carry frozen effective
-/// sound keys separately. `environment` is the host's level state the client
-/// predicts against ([`EnvironmentTuning`]).
+/// this tuning payload omits sound keys and the projectile `ghost` opt-in
+/// ([`WieldableTuningPayload::strip_local_presentation`]). Observer cues carry
+/// frozen effective sound keys separately. `environment` is the host's level
+/// state the client predicts against ([`EnvironmentTuning`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuningPayload {
     epoch: u32,
@@ -214,10 +229,7 @@ impl TuningPayload {
             descriptor.sounds = None;
         }
         for weapon in wieldables.iter_mut().flatten() {
-            weapon.primary.sounds = None;
-            if let Some(secondary) = &mut weapon.secondary {
-                secondary.sounds = None;
-            }
+            weapon.strip_local_presentation();
         }
         Self {
             epoch: TUNING_PAYLOAD_EPOCH,

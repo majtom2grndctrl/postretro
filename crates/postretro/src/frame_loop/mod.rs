@@ -1711,7 +1711,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             view_proj,
             &app.blocked_portals,
             capture_portal_walk,
-            &mut app.scratch_cells,
+            &mut app.portal_walk_scratch,
             app.cpu_timer.gate(),
         ),
         None => render_preparation::VisibleRenderPreparation::empty_world(),
@@ -2699,9 +2699,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     }
     app.poll_staged_manifest_results();
 
-    if let VisibleCells::Culled(mut cells) = visible_cells {
-        cells.clear();
-        app.scratch_cells = cells;
+    if let VisibleCells::Culled(cells) = visible_cells {
+        app.portal_walk_scratch.recycle_cells(cells);
     }
 
     let pos = render_eye_position;

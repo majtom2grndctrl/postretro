@@ -92,7 +92,7 @@ impl App {
             view.view_proj,
             &self.blocked_portals,
             false,
-            &mut self.scratch_cells,
+            &mut self.portal_walk_scratch,
             self.cpu_timer.gate(),
         );
         let streaming_cpu = postretro_stage_timing::StageFrame::<cpu_timing::StreamingStage>::new(
@@ -242,9 +242,8 @@ impl App {
         if let Some(present_handle) = present_handle {
             renderer.present(present_handle);
         }
-        if let VisibleCells::Culled(mut cells) = visible_render.visible_cells {
-            cells.clear();
-            self.scratch_cells = cells;
+        if let VisibleCells::Culled(cells) = visible_render.visible_cells {
+            self.portal_walk_scratch.recycle_cells(cells);
         }
 
         let frame_cpu = Instant::now().duration_since(frame_start);

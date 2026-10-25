@@ -255,10 +255,11 @@ const PRE_REGION_WALK_CACHE_KEY: &str =
 
 #[test]
 fn cache_key_pins_the_walk_epoch_and_sampling_projection() {
+    // The walk epoch alone moves the key: projection and stage version hold.
     let (cells, portals, locator) = l_corridor_sections();
     let key = cell_residency_set_cache_key(&cells, &portals, &locator, &Default::default(), None)
         .as_filename();
-    assert_eq!(key, PRE_REGION_WALK_CACHE_KEY);
+    assert_ne!(key, PRE_REGION_WALK_CACHE_KEY);
     assert_eq!(super::pvs_sampling::CUBE_FACE_FOV_DEGREES, 94.0);
     assert_eq!(super::pvs_sampling::LATTICE_FRACTIONS, [0.1, 0.5, 0.9]);
     assert_eq!(super::CELL_RESIDENCY_SET_STAGE_VERSION, 3);

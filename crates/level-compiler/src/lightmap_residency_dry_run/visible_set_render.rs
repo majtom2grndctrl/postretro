@@ -26,13 +26,15 @@ impl DryRunReport {
         );
         let _ = writeln!(
             out,
-            "note: runtime portal walks from sampled eye points; a sample only misses cells, so every \
-             PVS, set, byte figure and sightline below is a lower bound on true visibility, per \
-             cell volume (a free-fly camera; eye points span {:.0}-{:.0}% of each cell's AABB on \
-             every axis, ceiling bands included), not per standing-player eye; the cube faces \
-             tile every view direction, so it holds for any FOV up to the \
-             {RUNTIME_MAX_FOV_DEGREES}° maximum; a cell with no eye point keeps the set {{cell}} \
-             alone, a much weaker bound",
+            "note: runtime portal walks from sampled eye points; the walk's visible set is a \
+             conservative superset of true visibility per projection, and its over-inclusion \
+             depends on FOV, aspect and view direction, so every PVS, set, byte figure and \
+             sightline below is a sample of the runtime walk, neither a bound on true visibility \
+             nor FOV-independent: it is what the {CUBE_FACE_FOV_DEGREES}° cube faces reach, and \
+             a runtime view (FOV up to {RUNTIME_MAX_FOV_DEGREES}°, any aspect) can draw cells it \
+             lacks; sampled per cell volume (a free-fly camera; eye points span {:.0}-{:.0}% of \
+             each cell's AABB on every axis, ceiling bands included), not per standing-player \
+             eye; a cell with no eye point keeps the set {{cell}} alone",
             LATTICE_FRACTIONS[0] * 100.0,
             LATTICE_FRACTIONS[LATTICE_FRACTIONS.len() - 1] * 100.0
         );
@@ -51,7 +53,7 @@ impl DryRunReport {
         );
         let _ = writeln!(
             out,
-            "walks: {}, step-limit overflow {} (truncated walk kept, not the runtime's frustum superset), \
+            "walks: {}, step-limit overflow {} (capped walk's partial reach kept, not the runtime's frustum fallback), \
              other frustum-all fallbacks {} (dropped)",
             stats.walks, stats.step_limit_walks, stats.frustum_all_walks
         );

@@ -530,8 +530,9 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
-    /// Drive real visibility provenance on a small world. Eight parallel
-    /// portals exhaust the bounded chain walk without compiling a stress map.
+    /// Drive real visibility provenance on a small world. Parallel portals
+    /// past the walk's step cap (5,000 portal tests) force its step-limit
+    /// fallback without compiling a stress map.
     fn coverage_visibility_world(
         portal_count: u32,
         camera_cell: usize,
@@ -576,6 +577,10 @@ mod tests {
         .expect("valid coverage visibility fixture")
     }
 
+    /// One camera-cell expansion tests every parallel portal, so this many
+    /// trips the walk's cap with headroom for the cap to rise.
+    const STEP_CAP_TRIPPING_PORTALS: u32 = 20_001;
+
     #[test]
     fn visible_span_coverage_on_every_concrete_visibility_path() {
         use postretro_visibility::{TimingGate, VisibilityPath, determine_visible_cells};
@@ -607,7 +612,9 @@ mod tests {
         ] {
             let mut level = match expected {
                 VisibilityPath::PrlPortal { .. } => coverage_visibility_world(1, 0),
-                VisibilityPath::PortalStepLimitFallback { .. } => coverage_visibility_world(8, 0),
+                VisibilityPath::PortalStepLimitFallback { .. } => {
+                    coverage_visibility_world(STEP_CAP_TRIPPING_PORTALS, 0)
+                }
                 VisibilityPath::SolidCellFallback => {
                     let mut level = coverage_visibility_world(1, 4);
                     level.cells[4].is_solid = true;
@@ -633,7 +640,7 @@ mod tests {
                 &level,
                 &[],
                 false,
-                &mut Vec::new(),
+                &mut postretro_visibility::PortalWalkScratch::new(),
                 TimingGate::OFF,
             );
             assert_eq!(

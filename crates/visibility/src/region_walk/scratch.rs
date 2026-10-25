@@ -14,20 +14,26 @@ use crate::visibility::FrustumPlane;
 /// equals the current generation, so no per-walk clear runs; a generation
 /// wrap clears the stamps once. One scratch per thread: the state is not
 /// shared.
+///
+/// It also lends `determine_visible_cells` its `VisibleCells::Culled` buffer;
+/// [`Self::recycle_cells`] takes it back.
 #[derive(Debug, Default)]
 pub struct PortalWalkScratch {
     generation: u32,
     reached_at: Vec<u32>,
     queued_at: Vec<u32>,
     rects: Vec<ScreenRect>,
-    expansions: Vec<u32>,
     reached: Vec<u32>,
+    /// The draw-set buffer lent out per frame.
+    cells: Vec<u32>,
     /// Front-to-back worklist: nearest clipped distance, ties by cell id, so
     /// the order never depends on how cells or seeds arrived.
     queue: BinaryHeap<Reverse<(u32, u32)>>,
     pub(super) clip_a: Vec<Vec3>,
     pub(super) clip_b: Vec<Vec3>,
     pub(super) planes: Vec<FrustumPlane>,
+    #[cfg(test)]
+    expansions: Vec<u32>,
     /// The expansion that first reached each cell: (parent, parent's
     /// expansion number). Seeds record `(u32::MAX, 0)`.
     #[cfg(test)]
@@ -47,9 +53,11 @@ impl PortalWalkScratch {
             self.reached_at.resize(cell_count, 0);
             self.queued_at.resize(cell_count, 0);
             self.rects.resize(cell_count, ScreenRect::FULL);
-            self.expansions.resize(cell_count, 0);
             #[cfg(test)]
-            self.first_reached_by.resize(cell_count, (u32::MAX, 0));
+            {
+                self.expansions.resize(cell_count, 0);
+                self.first_reached_by.resize(cell_count, (u32::MAX, 0));
+            }
         }
         if self.generation == u32::MAX {
             self.reached_at.fill(0);
@@ -72,9 +80,9 @@ impl PortalWalkScratch {
         if self.reached_at[cell] != generation {
             self.reached_at[cell] = generation;
             self.rects[cell] = *rect;
-            self.expansions[cell] = 0;
             #[cfg(test)]
             {
+                self.expansions[cell] = 0;
                 self.first_reached_by[cell] = self.expanding;
             }
             self.reached.push(cell as u32);
@@ -96,9 +104,9 @@ impl PortalWalkScratch {
         let Reverse((_, cell)) = self.queue.pop()?;
         let cell = cell as usize;
         self.queued_at[cell] = 0;
-        self.expansions[cell] += 1;
         #[cfg(test)]
         {
+            self.expansions[cell] += 1;
             self.expanding = (cell as u32, self.expansions[cell]);
         }
         Some((cell, self.rects[cell]))
@@ -111,6 +119,20 @@ impl PortalWalkScratch {
     /// Cells the last walk reached, in reach order.
     pub fn reached(&self) -> &[u32] {
         &self.reached
+    }
+
+    /// Hand back a `VisibleCells::Culled` buffer once the frame has consumed
+    /// it, so the next `determine_visible_cells` reuses its allocation.
+    pub fn recycle_cells(&mut self, mut cells: Vec<u32>) {
+        cells.clear();
+        self.cells = cells;
+    }
+
+    /// The draw-set buffer for one frame, empty.
+    pub(crate) fn take_cells(&mut self) -> Vec<u32> {
+        let mut cells = std::mem::take(&mut self.cells);
+        cells.clear();
+        cells
     }
 
     #[cfg(test)]

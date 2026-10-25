@@ -10,11 +10,10 @@ use super::test_fixtures::{
     CameraPose, GridWorld, SplitMix64, axis_node, axis_rect, boxes_world, camera_view_proj,
     cyclic_rings, look_at_view_proj, open_lattice, portal, sample_cameras, stacked_slab_shaft,
 };
-use super::tests::{
-    SWEEP_CAMERAS, SWEEP_SEED, WALK_STEP_LIMIT, fixtures, oracle, unclassified_misses, walk,
-};
+use super::tests::{SWEEP_CAMERAS, SWEEP_SEED, fixtures, oracle, unclassified_misses, walk};
 use super::{
-    PortalWalkScratch, RegionWalkStats, ScreenRect, WalkView, WalkWorld, drain, walk_from_camera,
+    MAX_PORTAL_WALK_STEPS, PortalWalkScratch, RegionWalkStats, ScreenRect, WalkView, WalkWorld,
+    drain, walk_from_camera,
 };
 
 fn view_walk(
@@ -546,7 +545,7 @@ fn region_walk_includes_portal_tangent_to_rect_edge() {
         let mut stats = RegionWalkStats::default();
         scratch.begin(world.cell_count());
         scratch.offer(0, &seed_rect, 0.0);
-        drain(input, &view, u32::MAX, &mut scratch, &mut stats);
+        drain(input, &view, u32::MAX, &mut scratch, &mut stats, None);
         assert!(scratch.is_reached(1), "seed rect {seed_rect:?}");
         // The clip pad keeps the portal but never widens the region.
         let reached = scratch.rect(1).expect("B reached");
@@ -658,7 +657,8 @@ fn region_walk_finishes_open_lattice_sweep_on_small_fixed_stack() {
             .spawn_scoped(scope, || {
                 let mut scratch = PortalWalkScratch::new();
                 for pose in &poses {
-                    let stats = pose_walk(&grid.world, &[], pose, WALK_STEP_LIMIT, &mut scratch);
+                    let stats =
+                        pose_walk(&grid.world, &[], pose, MAX_PORTAL_WALK_STEPS, &mut scratch);
                     assert!(!stats.step_limit_hit, "{pose:?}");
                 }
             })

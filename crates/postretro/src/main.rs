@@ -872,7 +872,9 @@ pub(crate) struct App {
     /// `postretro::portal_trace` for that one frame only.
     capture_portal_walk_next_frame: bool,
 
-    scratch_cells: Vec<u32>,
+    /// Walk state reused across frames; also lends each frame's draw-set
+    /// buffer, handed back after the frame.
+    portal_walk_scratch: postretro_visibility::PortalWalkScratch,
     /// Render-only portal blockers rebuilt from live mover phase every frame.
     blocked_portals: Vec<bool>,
 
@@ -6710,7 +6712,7 @@ mod tests {
                 &world,
                 blocked_portals,
                 false,
-                &mut Vec::new(),
+                &mut postretro_visibility::PortalWalkScratch::new(),
                 postretro_visibility::TimingGate::OFF,
             );
             result

@@ -118,7 +118,11 @@ fn flood(state: &mut OracleState, cell: usize, frustum: &Frustum, forward: bool,
         } else {
             portal.front_cell
         };
-        if state.blocked_portals.get(portal_idx).copied().unwrap_or(false)
+        if state
+            .blocked_portals
+            .get(portal_idx)
+            .copied()
+            .unwrap_or(false)
             || neighbor >= world.cell_count()
             || state.path.contains(&portal_idx)
             || world.cell_is_solid(neighbor)
@@ -150,8 +154,12 @@ fn flood(state: &mut OracleState, cell: usize, frustum: &Frustum, forward: bool,
             narrowed.planes.extend_from_slice(&frustum.planes);
             (narrowed, !wholly_outside(&portal.polygon, view.frustum()))
         } else {
-            let clipped =
-                clip_polygon_to_frustum(&portal.polygon, frustum, &mut state.clip_a, &mut state.clip_b);
+            let clipped = clip_polygon_to_frustum(
+                &portal.polygon,
+                frustum,
+                &mut state.clip_a,
+                &mut state.clip_b,
+            );
             if clipped.len() < 3 {
                 continue;
             }
@@ -173,8 +181,9 @@ fn flood(state: &mut OracleState, cell: usize, frustum: &Frustum, forward: bool,
 
 /// Some plane of `frustum` has every vertex strictly outside it.
 fn wholly_outside(polygon: &[Vec3], frustum: &Frustum) -> bool {
-    frustum
-        .planes
-        .iter()
-        .any(|plane| polygon.iter().all(|v| plane.normal.dot(*v) + plane.dist < 0.0))
+    frustum.planes.iter().any(|plane| {
+        polygon
+            .iter()
+            .all(|v| plane.normal.dot(*v) + plane.dist < 0.0)
+    })
 }

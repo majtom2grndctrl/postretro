@@ -48,7 +48,10 @@ fn build_portal_planes(
     cell_portal_refs: &[u32],
     portals: &[PortalData],
 ) -> Vec<PortalPlane> {
-    let centroids: Vec<Vec3> = portals.iter().map(|p| polygon_centroid(&p.polygon)).collect();
+    let centroids: Vec<Vec3> = portals
+        .iter()
+        .map(|p| polygon_centroid(&p.polygon))
+        .collect();
     let cell_portal_means: Vec<Option<Vec3>> = cells
         .iter()
         .map(|cell| {

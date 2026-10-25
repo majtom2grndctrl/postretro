@@ -10,12 +10,10 @@ use super::test_fixtures::{
     GridWorld, SplitMix64, axis_node, axis_rect, boxes_world, camera_view_proj, cyclic_rings,
     look_at_view_proj, open_lattice, portal, sample_cameras, stacked_slab_shaft,
 };
-use super::tests::{
-    SWEEP_CAMERAS, SWEEP_SEED, WALK_STEP_LIMIT, fixtures, input, unclassified_misses,
-};
+use super::tests::{SWEEP_CAMERAS, SWEEP_SEED, fixtures, input, unclassified_misses};
 use super::{
-    PORTAL_BYPASS_DISTANCE, PortalWalkScratch, RegionWalkStats, WalkView, walk_from_camera,
-    walk_from_seeds,
+    MAX_PORTAL_WALK_STEPS, PORTAL_BYPASS_DISTANCE, PortalWalkScratch, RegionWalkStats, WalkView,
+    walk_from_camera, walk_from_seeds,
 };
 use crate::visibility::{
     FrustumPlane, NEAR_PLANE_INDEX, extract_frustum_planes, is_aabb_outside_frustum,
@@ -524,7 +522,7 @@ fn seeded_walk_cap_keeps_double_headroom_over_seeded_sweeps() {
         }
         eprintln!("[region_walk seeded sweep] mirror {name}: worst_tests={worst}");
         assert!(
-            WALK_STEP_LIMIT >= 2 * worst,
+            MAX_PORTAL_WALK_STEPS >= 2 * worst,
             "{name}: cap needs 2x headroom over {worst}"
         );
     }
@@ -540,7 +538,7 @@ fn seeded_walk_cap_keeps_double_headroom_over_seeded_sweeps() {
         }
         eprintln!("[region_walk seeded sweep] camera cell {name}: worst_tests={worst}");
         assert!(
-            WALK_STEP_LIMIT >= 2 * worst,
+            MAX_PORTAL_WALK_STEPS >= 2 * worst,
             "{name}: cap needs 2x headroom over {worst}"
         );
     }

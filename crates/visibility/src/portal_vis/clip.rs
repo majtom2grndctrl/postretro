@@ -15,12 +15,13 @@ pub(crate) const CLIP_EPSILON: f32 = 1e-4;
 /// Returns a slice into whichever scratch buffer held the final output; the
 /// `'a` lifetime ties both scratch buffers to the return value so the borrow
 /// checker prevents reuse of either until the slice is dropped. Callers that
-/// recurse with the same scratches (e.g. `flood`) must confine this slice to
-/// an inner scope.
+/// recurse with the same scratches (the oracle's `flood`) must confine this
+/// slice to an inner scope.
 ///
 /// Planes use Hessian normal form pointing inward; `CLIP_EPSILON` tilts
 /// boundary cases toward "inside" without violating the strict-subset
 /// invariant — slop kept here is outside the next narrowing's edge planes.
+#[cfg(test)]
 pub(crate) fn clip_polygon_to_frustum<'a>(
     polygon: &[Vec3],
     frustum: &Frustum,
@@ -196,39 +197,6 @@ fn compute_split_point_on_plane(
     }
 
     mid
-}
-
-/// Tolerance for "camera lies on the portal's supporting plane".
-///
-/// Signed distance from the apex to the polygon's plane, measured in world
-/// units. Looser than `CLIP_EPSILON` because the camera only needs to be
-/// *near enough* that the view-frustum cross-section at the portal collapses
-/// to something Sutherland-Hodgman can't keep convex — a sub-millimeter
-/// margin around the plane is plenty to catch the "player on the portal
-/// boundary" case without triggering on genuinely-frontal portals.
-const APEX_ON_PORTAL_PLANE_EPSILON: f32 = 1e-3;
-
-// Newell's method for the normal: robust against near-colinear leading
-// vertices that collapse a simple (v1-v0)×(v2-v0) cross product.
-pub(super) fn camera_on_polygon_plane(apex: Vec3, polygon: &[Vec3]) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-    let n = polygon.len();
-    let centroid = polygon.iter().copied().sum::<Vec3>() / n as f32;
-    let mut normal = Vec3::ZERO;
-    for i in 0..n {
-        let cur = polygon[i];
-        let nxt = polygon[(i + 1) % n];
-        normal.x += (cur.y - nxt.y) * (cur.z + nxt.z);
-        normal.y += (cur.z - nxt.z) * (cur.x + nxt.x);
-        normal.z += (cur.x - nxt.x) * (cur.y + nxt.y);
-    }
-    if normal.length_squared() < 1e-12 {
-        return false;
-    }
-    let normal = normal.normalize();
-    normal.dot(apex - centroid).abs() < APEX_ON_PORTAL_PLANE_EPSILON
 }
 
 /// Returns None if the portal is degenerate or the normal collapses.

@@ -279,7 +279,7 @@ fn run(
     let after = section_reads(&read_counters);
     report.preload_bytes = (after.0 - before.0) + (after.1 - before.1);
 
-    let mut scratch = Vec::new();
+    let mut scratch = postretro_visibility::PortalWalkScratch::new();
     let mut mandatory_now = Vec::new();
     let mut mandatory_prev = Vec::new();
     let mut mandatory_cells_now = Vec::new();
@@ -443,7 +443,7 @@ fn run(
             report.frames += 1;
             seconds += FRAME_SECONDS;
             if let VisibleCells::Culled(cells) = visibility.visible_cells {
-                scratch = cells;
+                scratch.recycle_cells(cells);
             }
             if modes.reads == ReadsMode::RealTime && driver.permits_in_use() > 0 {
                 report.paced_frames += 1;

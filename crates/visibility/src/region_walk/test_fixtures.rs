@@ -75,30 +75,42 @@ impl GridWorld {
                     let here = index(i, j, k);
                     if i + 1 < nx {
                         let x = xs[i + 1];
-                        add(here, index(i + 1, j, k), quad(
-                            Vec3::new(x, ys[j], zs[k]),
-                            Vec3::new(x, ys[j + 1], zs[k]),
-                            Vec3::new(x, ys[j + 1], zs[k + 1]),
-                            Vec3::new(x, ys[j], zs[k + 1]),
-                        ));
+                        add(
+                            here,
+                            index(i + 1, j, k),
+                            quad(
+                                Vec3::new(x, ys[j], zs[k]),
+                                Vec3::new(x, ys[j + 1], zs[k]),
+                                Vec3::new(x, ys[j + 1], zs[k + 1]),
+                                Vec3::new(x, ys[j], zs[k + 1]),
+                            ),
+                        );
                     }
                     if j + 1 < ny {
                         let y = ys[j + 1];
-                        add(here, index(i, j + 1, k), quad(
-                            Vec3::new(xs[i], y, zs[k]),
-                            Vec3::new(xs[i + 1], y, zs[k]),
-                            Vec3::new(xs[i + 1], y, zs[k + 1]),
-                            Vec3::new(xs[i], y, zs[k + 1]),
-                        ));
+                        add(
+                            here,
+                            index(i, j + 1, k),
+                            quad(
+                                Vec3::new(xs[i], y, zs[k]),
+                                Vec3::new(xs[i + 1], y, zs[k]),
+                                Vec3::new(xs[i + 1], y, zs[k + 1]),
+                                Vec3::new(xs[i], y, zs[k + 1]),
+                            ),
+                        );
                     }
                     if k + 1 < nz {
                         let z = zs[k + 1];
-                        add(here, index(i, j, k + 1), quad(
-                            Vec3::new(xs[i], ys[j], z),
-                            Vec3::new(xs[i + 1], ys[j], z),
-                            Vec3::new(xs[i + 1], ys[j + 1], z),
-                            Vec3::new(xs[i], ys[j + 1], z),
-                        ));
+                        add(
+                            here,
+                            index(i, j, k + 1),
+                            quad(
+                                Vec3::new(xs[i], ys[j], z),
+                                Vec3::new(xs[i + 1], ys[j], z),
+                                Vec3::new(xs[i + 1], ys[j + 1], z),
+                                Vec3::new(xs[i], ys[j + 1], z),
+                            ),
+                        );
                     }
                 }
             }
@@ -114,9 +126,8 @@ impl GridWorld {
         let mut nodes = Vec::new();
         let root = locator(&xs, &ys, &zs, [0, 0, 0], [nx, ny, nz], &index, &mut nodes);
         let has_portals = !portals.is_empty();
-        let world =
-            LevelWorld::new_visibility_only(cells, refs, root, nodes, portals, has_portals)
-                .expect("valid grid world");
+        let world = LevelWorld::new_visibility_only(cells, refs, root, nodes, portals, has_portals)
+            .expect("valid grid world");
         Self { world, xs, ys, zs }
     }
 
@@ -195,7 +206,9 @@ pub(crate) fn stacked_slab_shaft(columns: usize, slabs: usize) -> GridWorld {
 
 /// An open `n`³ lattice of unit-ish cubes, no solids.
 pub(crate) fn open_lattice(n: usize) -> GridWorld {
-    let coords: Vec<f32> = (0..=n).map(|i| i as f32 * 2.0 + (i % 2) as f32 * 0.3).collect();
+    let coords: Vec<f32> = (0..=n)
+        .map(|i| i as f32 * 2.0 + (i % 2) as f32 * 0.3)
+        .collect();
     GridWorld::new(coords.clone(), coords.clone(), coords, |_, _, _| false)
 }
 
@@ -384,7 +397,11 @@ pub(crate) fn portal(polygon: Vec<Vec3>, front_cell: usize, back_cell: usize) ->
 /// View-projection looking from `eye` toward `target`, runtime projection.
 pub(crate) fn look_at_view_proj(eye: Vec3, target: Vec3) -> Mat4 {
     let look = (target - eye).normalize();
-    let up = if look.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+    let up = if look.y.abs() > 0.99 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
     let view = glam::camera::rh::view::look_at_mat4(eye, target, up);
     let aspect = 16.0 / 9.0;
     let vfov = 2.0 * ((100f32.to_radians() / 2.0).tan() / aspect).atan();

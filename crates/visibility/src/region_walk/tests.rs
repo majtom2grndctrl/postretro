@@ -2,25 +2,27 @@
 
 use super::oracle::{ORACLE_STEP_LIMIT, OracleWalk, oracle_from_camera};
 use super::test_fixtures::{
-    CameraPose, GridWorld, camera_view_proj, cyclic_rings, open_lattice,
-    sample_cameras, stacked_slab_shaft,
+    CameraPose, GridWorld, camera_view_proj, cyclic_rings, open_lattice, sample_cameras,
+    stacked_slab_shaft,
 };
-use super::{PortalWalkScratch, RegionWalkStats, WalkView, WalkWorld, walk_from_camera};
-use crate::portal_vis::MAX_PORTAL_WALK_STEPS;
+use super::{
+    MAX_PORTAL_WALK_STEPS, PortalWalkScratch, RegionWalkStats, WalkView, WalkWorld,
+    walk_from_camera,
+};
 use postretro_level_loader::LevelWorld;
 
 /// Randomized superset sweep: fixed seed and count per fixture.
-pub(super) const SWEEP_SEED: u64 = 0x5EED_2026_1025;
-pub(super) const SWEEP_CAMERAS: usize = 600;
+pub(crate) const SWEEP_SEED: u64 = 0x5EED_2026_1025;
+pub(crate) const SWEEP_CAMERAS: usize = 600;
 /// Portal tests per summed degree of reached cells: the measured worst over
 /// the fixture sweep, rounded up, with headroom (see `plan.md`).
 pub(super) const PORTAL_TESTS_PER_DEGREE: u32 = 2;
 /// Expansions any one cell may take on a fixture.
 pub(super) const MAX_EXPANSIONS_PER_CELL: u32 = 32;
-/// The runtime cap the new walk ships with.
-pub(super) const WALK_STEP_LIMIT: u32 = 5_000;
+/// The chain walk's cap before the bounded-region walk replaced it.
+const PRE_REGION_WALK_STEP_LIMIT: u64 = 20_000;
 
-pub(super) fn fixtures() -> Vec<(&'static str, GridWorld)> {
+pub(crate) fn fixtures() -> Vec<(&'static str, GridWorld)> {
     vec![
         ("stacked-slab shaft", stacked_slab_shaft(3, 24)),
         ("open lattice", open_lattice(6)),
@@ -90,7 +92,10 @@ fn sweep(name: &str, grid: &GridWorld) -> SweepReport {
         report.worst_oracle_steps = report.worst_oracle_steps.max(exact.considered);
 
         assert!(!stats.step_limit_hit);
-        assert!(scratch.is_reached(pose.cell), "{name}: camera cell always visible");
+        assert!(
+            scratch.is_reached(pose.cell),
+            "{name}: camera cell always visible"
+        );
         let misses = unclassified_misses(&exact, &scratch);
         assert!(
             misses.is_empty(),
@@ -146,17 +151,17 @@ fn region_walk_reaches_every_cell_the_exact_walk_reaches_over_randomized_cameras
             report.worst_tests_per_degree
         );
         assert!(
-            WALK_STEP_LIMIT >= 2 * report.worst_tests,
+            MAX_PORTAL_WALK_STEPS >= 2 * report.worst_tests,
             "{name}: cap needs 2x headroom over {}",
             report.worst_tests
         );
         if name == "stacked-slab shaft" {
-            slab_beats_today = report.worst_oracle_steps > u64::from(MAX_PORTAL_WALK_STEPS)
+            slab_beats_today = report.worst_oracle_steps > PRE_REGION_WALK_STEP_LIMIT
                 && report.worst_oracle_steps < ORACLE_STEP_LIMIT;
         }
     }
     assert!(
         slab_beats_today,
-        "a stacked-slab camera's exact walk must exceed today's cap and finish under the oracle's"
+        "a stacked-slab camera's exact walk must exceed the pre-change cap and finish under the oracle's"
     );
 }

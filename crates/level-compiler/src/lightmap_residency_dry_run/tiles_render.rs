@@ -56,8 +56,9 @@ impl DryRunReport {
             self.camera_cells.len()
         );
         out.push_str(
-            "note: M(c) is the sampled visible set above, so every figure is a lower bound; bytes \
-             cover id 22 + id 42 only\n",
+            "note: M(c) is the sampled visible set above, a sample of the runtime walk rather than \
+             a bound on true visibility, and every figure here inherits that; bytes cover id 22 + \
+             id 42 only\n",
         );
         out.push_str(
             "each unit's charts pack first-fit decreasing into its own tiles (bake MaxRects, \

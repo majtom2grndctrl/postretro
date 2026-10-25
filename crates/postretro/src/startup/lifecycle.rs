@@ -1949,7 +1949,7 @@ pub(crate) mod tests {
             view_feel_descriptor: None,
             diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
             capture_portal_walk_next_frame: false,
-            scratch_cells: Vec::new(),
+            portal_walk_scratch: Default::default(),
             blocked_portals: Vec::new(),
             frame_rate_meter: FrameRateMeter::new(),
             cpu_timer: crate::cpu_timing::CpuFrameTimer::new(crate::cpu_timing::TimingGate::OFF),

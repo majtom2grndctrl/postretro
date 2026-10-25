@@ -62,6 +62,10 @@ const UNITS_PER_METRE: f32 = 39.37;
 const COPY_OFFSET: Vec3 = Vec3::new(0.0, 0.0, -4096.0 / UNITS_PER_METRE);
 /// The closets' open faces, Quake y ±208, on engine x: past it is a closet.
 const CLOSET_LINE: f32 = 208.0 / UNITS_PER_METRE;
+/// Metres the two spawns' capsules keep clear of each other, beyond touching.
+const SPAWN_MARGIN: f32 = 0.5;
+/// Quake x of the westmost closet mouth in a room copy: copy A's south closet.
+const CLOSET_MOUTH_WEST_X: f32 = -64.0;
 /// The partner's client id: its seat, and its `PlayerId::Remote` while live.
 const PARTNER_CLIENT: u64 = 7;
 /// The north closet's timer, counted from level load.
@@ -938,8 +942,8 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
         assert_eq!(data.volume_trigger_events().len(), 9);
         assert_eq!(
             data.teleport_events().len(),
-            5,
-            "both split, both swap and the return teleporter bind"
+            6,
+            "both split, the A-to-B split's closets, both swap and the return teleporter bind"
         );
     }
     let manifest_of = |level: &Level| {
@@ -1016,11 +1020,13 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
     }
 }
 
-// Each copy holds a `player_spawn`, copy B's marked `coop_only`. The host gets
-// one pawn, at copy A's spawn; copy B's spawn stands empty until a joiner
-// takes it through the host's seat table, resting on copy B's floor.
+// Both players start in copy A's main room, each at their own `player_spawn`,
+// the second marked `coop_only`. The host gets one pawn; the second spawn
+// stands empty until a joiner takes it through the host's seat table. The two
+// stand level, far enough apart that their capsules cannot touch, outside every
+// trigger volume and west of every closet mouth.
 #[test]
-fn ghost_link_spawns_one_host_pawn_and_seats_the_joiner_in_copy_b() {
+fn ghost_link_seats_both_players_apart_in_copy_a() {
     let out = tempfile::tempdir().unwrap();
     for map in ["ghost-links", "ghost-links-luau"] {
         let level = Level::install(compile(map, out.path()));
@@ -1030,19 +1036,58 @@ fn ghost_link_spawns_one_host_pawn_and_seats_the_joiner_in_copy_b() {
             "{map}: the joiner takes the free spawn"
         );
         let (pawn, partner) = (level.position(level.pawn), level.position(level.partner));
-        assert!(
-            pawn.z > COPY_OFFSET.z * 0.5,
-            "{map}: the host starts in copy A: {pawn}"
-        );
-        assert!(
-            partner.z < COPY_OFFSET.z * 0.5,
-            "{map}: the joiner starts in copy B: {partner}"
-        );
-        // Both copies' floors sit at the same height: the pawns stand level.
+        for (who, at) in [("host", pawn), ("joiner", partner)] {
+            assert!(
+                at.z > COPY_OFFSET.z * 0.5,
+                "{map}: the {who} starts in copy A: {at}"
+            );
+            // Quake x is engine −z; the closets open on Quake x −64 to 160.
+            assert!(
+                -at.z * UNITS_PER_METRE < CLOSET_MOUTH_WEST_X,
+                "{map}: the {who} starts west of every closet mouth: {at}"
+            );
+        }
         assert!(
             close(pawn.y, partner.y, 1e-4),
             "{map}: both stand on the floor: {pawn} vs {partner}"
         );
+        let radius = |pawn: EntityId| {
+            level
+                .ctx
+                .registry
+                .borrow()
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .capsule
+                .radius
+        };
+        let (host_radius, joiner_radius) = (radius(level.pawn), radius(level.partner));
+        let gap = flat_distance(pawn, partner);
+        assert!(
+            gap > host_radius + joiner_radius + SPAWN_MARGIN,
+            "{map}: the spawns stand {gap} m apart, more than two capsule radii \
+             ({host_radius} + {joiner_radius} m) plus {SPAWN_MARGIN} m"
+        );
+        let bridge = &level.app.session.as_ref().unwrap().trigger_volume_bridge;
+        for (trigger, _) in level
+            .ctx
+            .registry
+            .borrow()
+            .query_by_component_and_tag(ComponentKind::TriggerVolume, None)
+        {
+            let (min, max) = bridge.aabb(trigger).expect("trigger volume is bridged");
+            for (who, at, r) in [
+                ("host", pawn, host_radius),
+                ("joiner", partner, joiner_radius),
+            ] {
+                let clear =
+                    at.x + r < min.x || at.x - r > max.x || at.z + r < min.z || at.z - r > max.z;
+                assert!(
+                    clear,
+                    "{map}: the {who}'s capsule starts outside trigger {trigger:?}"
+                );
+            }
+        }
     }
 }
 
@@ -1079,6 +1124,12 @@ fn assert_closet(map: &str, level: &Level, doors: &str, monsters: &str, open: bo
             open,
             "{map}: `{monsters}` {why}"
         );
+        if !open {
+            assert!(
+                level.position(npc).x.abs() > CLOSET_LINE,
+                "{map}: `{monsters}` stays in its closet: {why}"
+            );
+        }
     }
 }
 
@@ -1092,13 +1143,13 @@ fn classes(level: &Level, tag: &str) -> Vec<String> {
 }
 
 /// Copy A's and copy B's closets, checked as the level installs: two knights
-/// behind copy A's north door, one behind its south door, a limitator behind
-/// each of copy B's doors, every monster in its closet and asleep.
+/// behind each of copy A's doors, a limitator behind each of copy B's, every
+/// monster in its closet and asleep.
 fn closets(map: &str, level: &Level) {
     assert_eq!(
         level.entities(ComponentKind::Health, "echo_monster").len(),
-        5,
-        "{map}: five closet monsters"
+        6,
+        "{map}: six closet monsters"
     );
     assert_eq!(
         classes(level, "echo_monster_a1"),
@@ -1107,8 +1158,8 @@ fn closets(map: &str, level: &Level) {
     );
     assert_eq!(
         classes(level, "echo_monster_a2"),
-        ["reference_enemy"; 1],
-        "{map}: one knight waits in copy A's south closet"
+        ["reference_enemy"; 2],
+        "{map}: two knights wait in copy A's south closet"
     );
     assert_eq!(
         classes(level, "echo_monster_b"),
@@ -1162,6 +1213,14 @@ fn run_set_pieces(map: &str, mut level: Level) {
         .iter()
         .map(|&door| level.position(door))
         .collect();
+    // Both players start in copy A. The partner stands in for one who already
+    // crossed: it waits in copy B's room, where echo_b will ghost it.
+    let joined = level.position(level.partner);
+    level.place_pawn(
+        level.partner,
+        joined + COPY_OFFSET,
+        joined.y - PAD_CLEARANCE,
+    );
     level.settle();
     let height = level.position(level.pawn).y;
     // Copy A's spawn: off both purple pads and the blue plate.
@@ -1586,10 +1645,12 @@ fn run_set_pieces(map: &str, mut level: Level) {
     );
 }
 
-// The north closet's timer: with nobody near the barrier, its door holds and
-// its knights sleep for fifteen seconds from level load, then the door sinks,
-// both knights wake, walk out and engage the host. The crossing's closets stay
-// shut, since nobody split.
+// The north closet's timer, in co-op with both players standing at their
+// spawns in copy A: with nobody near the barrier, its door holds and its
+// knights sleep for fifteen seconds from level load, then the door sinks and
+// exactly its two knights wake, walk out and engage. The south closet, which
+// waits for the split, stays shut with its two knights asleep inside, and so
+// do copy B's closets.
 #[test]
 fn ghost_link_north_closet_opens_fifteen_seconds_after_level_load() {
     let out = tempfile::tempdir().unwrap();
@@ -1600,6 +1661,7 @@ fn ghost_link_north_closet_opens_fifteen_seconds_after_level_load() {
 
 fn run_north_timer(map: &str, mut level: Level) {
     closets(map, &level);
+    level.partner_live = true;
     level.settle();
     while level.app.script_time < NORTH_TIMER_SECS - WAVE_BEAT_SLACK {
         assert_closet(
@@ -1622,6 +1684,24 @@ fn run_north_timer(map: &str, mut level: Level) {
         "echo_monster_a1",
         true,
         "opens fifteen seconds after level load",
+    );
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a2",
+        "echo_monster_a2",
+        false,
+        "ignores the north closet's timer",
+    );
+    let awake: Vec<EntityId> = level
+        .entities(ComponentKind::Health, "echo_monster")
+        .into_iter()
+        .filter(|&npc| level.brain(npc).aggro_armed)
+        .collect();
+    assert_eq!(
+        awake,
+        level.entities(ComponentKind::Health, "echo_monster_a1"),
+        "{map}: the timer wakes the north closet's two knights and nobody else"
     );
     assert_north_knights_engage(map, &mut level);
     for (doors, monsters) in [

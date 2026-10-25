@@ -1,8 +1,9 @@
 -- Ghost-link acceptance fixture (maps/ghost-links-luau.map). TypeScript twin: ghost-links.ts.
--- A two-player co-op set-piece. The first press of a purple pad sends whoever
--- stands on it alone into the other copy; every later press flips both players
--- between the copies until the return reunites them. Every reaction is
--- explicitly named, and member traversal preserves map order.
+-- A two-player co-op set-piece: both players start in copy A. The first press
+-- of copy A's purple pad sends whoever stands on it alone into copy B; every
+-- later press flips both players between the copies until the return reunites
+-- them. Every reaction is explicitly named, and member traversal preserves map
+-- order.
 local Postretro = require("postretro")
 local Audio = require("postretro/audio")
 
@@ -41,7 +42,7 @@ function setupLevel(_ctx)
     sequence = each(barrier, function(door) return door:start() end),
   })
 
-  -- North closet, copy A: its door sinks and its knights wake. The monsters'
+  -- North closet, copy A: its door sinks and its two knights wake. The monsters'
   -- sealed aggro gate (enabled_on_spawn 0) ignores everything else, damage
   -- included. Fifteen seconds after level load, or the first player to walk up
   -- to the barrier, whichever comes first. A start on a mover already moving
@@ -59,12 +60,14 @@ function setupLevel(_ctx)
   local northTimer = Postretro.defineReaction("levelLoad", { sequence = timerSteps })
 
   -- Split: the first pad press arms both split teleporters, one over each pad,
-  -- so only whoever stands on a pad crosses, and turns the split pads off. The
-  -- pad press stands in for a game condition (a timer, a health threshold) and
-  -- splits once: press it alone from the pad's centre.
+  -- so only whoever stands on a pad crosses, and turns the split pads off. Both
+  -- players start in copy A, so the crossing is always copy A's, tagged
+  -- split_to_b. The pad press stands in for a game condition (a timer, a health
+  -- threshold) and splits once: press it alone from the pad's centre.
   local splitPads = Postretro.getMapEntities("trigger", { tag = "split_pad" })
   local swapPads = Postretro.getMapEntities("trigger", { tag = "swap_pad" })
   local split = Postretro.getMapEntities("teleporter", { tag = "echo_split" })
+  local splitToB = Postretro.getMapEntities("teleporter", { tag = "split_to_b" })
   local splitArmSteps = each(split, function(t) return t:arm() end)
   append(splitArmSteps, each(splitPads, function(p) return p:disarm() end))
   local splitArm = Postretro.defineReaction("split.arm", { sequence = splitArmSteps })
@@ -74,8 +77,9 @@ function setupLevel(_ctx)
   append(splitSettleSteps, each(swapPads, function(p) return p:arm() end))
   local splitSettle = Postretro.defineReaction("split.settle", { sequence = splitSettleSteps })
 
-  -- The crossing starts both fights. Copy A's south closet opens at once, so
-  -- its knight waits for whoever is left in or flips back to copy A.
+  -- The crossing into copy B starts both fights. Copy A's south closet opens at
+  -- once, so its two knights wait for whoever is left in or flips back to
+  -- copy A.
   local southDoor = Postretro.getMapEntities("mover", { tag = "echo_closet_a2" })
   local southSteps = each(southDoor, function(door) return door:start() end)
   table.insert(southSteps, Postretro.npcs({ tag = "echo_monster_a2" }):update({ aggro = true }))
@@ -136,7 +140,8 @@ function setupLevel(_ctx)
   bind(triggerEvents, swapPads, "enter", { flip, fight })
   bind(triggerEvents, returnPads, "enter", { returnArm })
   local teleportEvents = {}
-  bind(teleportEvents, split, "teleport", { splitSettle, southCloset, limitators })
+  bind(teleportEvents, split, "teleport", { splitSettle })
+  bind(teleportEvents, splitToB, "teleport", { southCloset, limitators })
   bind(teleportEvents, swap, "teleport", { flipSettle })
   bind(teleportEvents, returnGate, "teleport", { returnSettle, wave })
   return {

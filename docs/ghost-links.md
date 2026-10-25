@@ -431,17 +431,17 @@ on the north wall of back room B drops copy A's barrier, whose ghost sinks in
 copy B's doorway. The blue plate in either copy reveals the second link and
 swells the echo.
 
-It is a two-player set-piece. Each copy hides monsters behind purple doors
-in the north and south walls of its room: two knights in copy A's north
-closet, one knight in its south closet, and a limitator in each of copy B's.
-Until its cue, each closet stays shut and its monsters asleep.
+It is a two-player set-piece, and both players start side by side in copy A.
+Each copy hides monsters behind purple doors in the north and south walls of
+its room: two knights in each of copy A's closets, and a limitator in each of
+copy B's. Until its cue, each closet stays shut and its monsters asleep.
 
 - **Copy A's north closet** opens fifteen seconds after the level loads, or
   as soon as a player walks up to the barrier, whichever comes first. The
   count starts at load, so a host still waiting for a partner may meet these
   knights alone.
-- **The split** is the first press of a purple pad. It sends whoever stands
-  on that pad alone into the other copy. The crossing opens copy A's south
+- **The split** is the first press of copy A's purple pad. It sends whoever
+  stands on that pad alone into copy B. The crossing opens copy A's south
   closet at once, and copy B's closets three seconds later. The split fires
   only once, so press it alone from the middle of the pad.
 - **The flip:** once the split lands, every press of a purple pad swaps
@@ -463,14 +463,13 @@ bin/postretro-tool run maps/ghost-links.prl
 ```
 
 Run a host and a client on one machine as in
-[diagnostics.md](diagnostics.md). The host starts in copy A and the client in
-copy B, whose spawn is `coop_only`. A good first run: the client walks into
-back room B, presses the red button and watches the barrier's ghost sink in
-copy B's doorway. The host presses copy A's pad to split into copy B, then presses
-copy B's pad to flip back alone, since the client stands outside the swap.
-Each of you clears your own copy, flipping whenever you want to trade fights.
-The client clears copy B and returns by the return button, and three seconds
-after the arrival the final wave comes out on both of you in copy A.
+[diagnostics.md](diagnostics.md). Both start in copy A; the client takes the
+second spawn, which is `coop_only`. A good first run: the client presses copy
+A's purple pad to split into copy B, walks into back room B, presses the red
+button and watches the barrier's ghost sink in copy B's doorway. Each of you
+clears your own copy, flipping whenever you want to trade fights. The client
+clears copy B and returns by the return button, and three seconds after the
+arrival the final wave comes out on both of you in copy A.
 
 ```bash
 # Terminal 1

@@ -27,7 +27,7 @@
 // in copy A, plus 4096 in copy B. Each is 96 units deep and full room height,
 // so a monster eye clears its ceiling. Copy A north closet, door tag
 // echo_closet_a1, holds two knights, reference_enemy, tagged echo_monster_a1;
-// copy A south closet, door tag echo_closet_a2, holds one knight tagged
+// copy A south closet, door tag echo_closet_a2, holds two knights tagged
 // echo_monster_a2. Copy B closets, door tag echo_closet_b, hold one limitator
 // each, tagged echo_monster_b. Their sealed aggro gate, enabled_on_spawn 0,
 // ignores even damage until a script wakes them. These closets sit outside
@@ -36,11 +36,13 @@
 // North closet: it opens fifteen seconds after level load, or as soon as a
 // player touches the barrier_approach volume in front of copy A barrier,
 // x 128 to 192, y -64 to 64, whichever comes first.
-// Split: the first press of the purple use pad in either copy sends whoever
-// stands on it alone into the other copy, through the seamless split teleporter
-// laid over each pad. The crossing sinks copy A south closet door and wakes
-// its knight at once, and three seconds later sinks both copy B closet doors
-// and wakes the limitators.
+// Split: the first press of the purple use pad in copy A sends whoever stands
+// on it alone into copy B, through the seamless split teleporter laid over the
+// pad. Copy B has a matching pad and split teleporter for symmetry, but both
+// players start in copy A and the first press turns both pads off, so only
+// the A to B crossing, tagged split_to_b, ever fires. It sinks copy A south
+// closet door and wakes its knights at once, and three seconds later sinks
+// both copy B closet doors and wakes the limitators.
 // Flip: once the split lands, every press of a purple pad arms both seamless
 // swap teleporters, so everyone standing in either room lands in the other
 // copy. The first teleport through either swap teleporter disarms both, and
@@ -53,8 +55,9 @@
 // closet door sinks and two knights and two limitators wake. A second arrival
 // starts nothing again. No placed monster opts into ghosting.
 // The blue touch plate in either copy runs echo.reveal and echo.swell.
-// Player spawn 1 is in copy A and spawn 2, coop_only, in copy B. Body centres
-// are 40 units up.
+// Both players start in copy A main room, west of the room centre, clear of
+// every trigger volume and closet mouth: spawn 1 at -128 0 and spawn 2,
+// coop_only, 64 units north of it. Body centres are 40 units up.
 // An animated-bake lamp in each back room near the doorway, tagged
 // alcove_lamp, shines out through the doorway. The ghost capture forces it to
 // two colours: the scene around the ghost relights, the unlit ghost does not
@@ -542,7 +545,7 @@
 }
 {
 "classname" "player_spawn"
-"origin" "3968 0 24"
+"origin" "-128 64 24"
 "angles" "0 0 0"
 "coop_only" "1"
 }
@@ -728,7 +731,14 @@
 }
 {
 "classname" "reference_enemy"
-"origin" "0 -232 16"
+"origin" "-32 -232 16"
+"angles" "0 90 0"
+"_tags" "enemy echo_monster echo_monster_a2"
+"enabled_on_spawn" "0"
+}
+{
+"classname" "reference_enemy"
+"origin" "32 -232 16"
 "angles" "0 90 0"
 "_tags" "enemy echo_monster echo_monster_a2"
 "enabled_on_spawn" "0"
@@ -1026,7 +1036,7 @@
 {
 "classname" "trigger_teleport"
 "name" "split_a_to_b"
-"_tags" "echo_split"
+"_tags" "echo_split split_to_b"
 "mode" "seamless"
 "target" "era_b"
 "landmark" "era_a"

@@ -28,7 +28,9 @@ use thiserror::Error;
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
-use crate::lightmap_bake::soft_visibility;
+use crate::lightmap_bake::{
+    DEFAULT_AREA_SAMPLE_COUNT, soft_visibility, soft_visibility_one_sample,
+};
 use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
 use crate::ray_traversal::BoundedRay;
@@ -37,6 +39,10 @@ use crate::ray_traversal::BoundedRay;
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 const RAYS_PER_PROBE: u32 = 256;
+
+// The one-sample bounce strides a probe's rays across the emitter lattice; a
+// whole number of passes is what makes every lattice sample equally likely.
+const _: () = assert!(RAYS_PER_PROBE.is_multiple_of(DEFAULT_AREA_SAMPLE_COUNT));
 
 /// Indirect-only: lightmap carries the direct term; folding direct into SH would double-count it at runtime.
 const BOUNCE_ALBEDO: f32 = 0.45;
@@ -62,6 +68,24 @@ pub(crate) enum ShAtlasBakeError {
         max_dim: u32,
         max_layers: u32,
     },
+}
+
+/// How the bounce resolves a soft light's shadow at a gather-ray hit. A hard
+/// light traces its one hard ray either way, bit for bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BounceVisibility {
+    /// One emitter sample per (hit, light), stratified across the probe's
+    /// gather rays (`bounce_sample_index`). Every bake ships this.
+    OneSample,
+    /// `soft_visibility`'s probe-and-escalate set at every hit: the bake
+    /// before stratification, kept as the parity reference.
+    #[cfg(test)]
+    FullSet,
+    /// [`Self::FullSet`] with every hit's seed re-avalanched under this salt:
+    /// another draw of the full set's own lattice-rotation noise, the parity
+    /// measurement's control.
+    #[cfg(test)]
+    FullSetReseeded(u64),
 }
 
 /// Shared between the base SH baker and per-light delta SH baker (`delta_sh_bake.rs`).
@@ -219,6 +243,17 @@ pub fn bake_sh_volume_controlled(
     config: &ShConfig,
     control: &BakeControl,
 ) -> OctahedralShVolumeSection {
+    bake_sh_volume_with_visibility(inputs, config, control, BounceVisibility::OneSample)
+}
+
+/// The whole-volume bake with the bounce's soft-light visibility chosen; the
+/// production entry points pass [`BounceVisibility::OneSample`].
+pub(crate) fn bake_sh_volume_with_visibility(
+    inputs: &ShBakeCtx<'_>,
+    config: &ShConfig,
+    control: &BakeControl,
+    visibility: BounceVisibility,
+) -> OctahedralShVolumeSection {
     let probe_spacing_meters = config.probe_spacing;
     let layout = probe_grid_layout(inputs, config);
     if layout.is_empty() {
@@ -260,7 +295,7 @@ pub fn bake_sh_volume_controlled(
         .into_par_iter()
         .map(|i| {
             let _permit = control.governor().enter();
-            let probe = bake_probe(
+            let probe = bake_probe_with_visibility(
                 inputs,
                 vec3_from(layout.probe_positions[i]),
                 &static_lights,
@@ -269,6 +304,7 @@ pub fn bake_sh_volume_controlled(
                 far_sentinel,
                 layout.validity[i] != 0,
                 i as u64,
+                visibility,
             );
             control.advance(1);
             probe
@@ -1143,11 +1179,17 @@ fn cosine_lobe_factor(band: usize) -> f32 {
 /// duplicated, so the delta path projects radiance without ever touching the
 /// `Σd` / `Σd²` moments. This loop discards the distance the shared sampler
 /// returns.
+///
+/// `light_axis` is the light's soft-visibility seed axis. The delta bake
+/// derives it from the keyed light, so animated lights sharing a cell sample
+/// their emitters independently and the axis moves only with the cache key.
 pub(crate) fn bake_probe_indirect_rgb(
     ctx: &RaytracingCtx<'_>,
     probe_pos: Vec3,
-    lights: &[&MapLight],
+    light: &MapLight,
+    light_axis: u64,
     probe_index: u64,
+    visibility: BounceVisibility,
 ) -> [f32; 27] {
     let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
@@ -1160,12 +1202,12 @@ pub(crate) fn bake_probe_indirect_rgb(
             ctx,
             probe_pos,
             *dir,
-            lights,
-            // Delta path: single-light slice, seed unchanged (slice position).
-            None,
+            &[light],
+            Some(&[light_axis]),
             f32::INFINITY,
             probe_index,
             ray_index as u64,
+            visibility,
         );
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
     }
@@ -1242,6 +1284,7 @@ fn bake_probe_rgb_with_moments(
     light_global_indices: Option<&[u64]>,
     far_sentinel: f32,
     probe_index: u64,
+    visibility: BounceVisibility,
 ) -> ([f32; 27], f32, f32) {
     let ctx = inputs.ray_ctx();
     let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
@@ -1259,6 +1302,7 @@ fn bake_probe_rgb_with_moments(
             far_sentinel,
             probe_index,
             ray_index as u64,
+            visibility,
         );
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
         sum_d += distance;
@@ -1290,6 +1334,31 @@ pub(crate) fn bake_probe(
     valid: bool,
     probe_index: u64,
 ) -> BakedProbe {
+    bake_probe_with_visibility(
+        inputs,
+        probe_pos,
+        static_lights,
+        light_global_indices,
+        far_sentinel,
+        valid,
+        probe_index,
+        BounceVisibility::OneSample,
+    )
+}
+
+/// [`bake_probe`] with the bounce's soft-light visibility chosen.
+// `bake_probe`'s inputs plus the visibility mode; see `sample_radiance_rgb`.
+#[allow(clippy::too_many_arguments)]
+fn bake_probe_with_visibility(
+    inputs: &ShBakeCtx<'_>,
+    probe_pos: Vec3,
+    static_lights: &[&MapLight],
+    light_global_indices: Option<&[u64]>,
+    far_sentinel: f32,
+    valid: bool,
+    probe_index: u64,
+    visibility: BounceVisibility,
+) -> BakedProbe {
     if !valid {
         return BakedProbe::default();
     }
@@ -1300,6 +1369,7 @@ pub(crate) fn bake_probe(
         light_global_indices,
         far_sentinel,
         probe_index,
+        visibility,
     );
     // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel), so these
     // are exact divisions by the constant.
@@ -1329,7 +1399,8 @@ pub(crate) fn bake_probe(
 /// byte-for-byte across separate processes. NO `RandomState`, NO hash-map iteration
 /// order — the byte-identical-`.prl` determinism AC depends on this staying
 /// index-derived. The base SH volume and the sparse animated delta tiles both reach
-/// this through `sample_radiance_rgb`, so both inherit the same deterministic seed.
+/// this through `sample_radiance_rgb`, so both inherit the same deterministic seed;
+/// the delta bake's light axis is a digest of its keyed light, not an index.
 fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index: u64) -> u64 {
     // Distinct odd multipliers keep the three index axes from aliasing onto each
     // other (e.g. probe 1/ray 0 vs probe 0/ray 1) before the avalanche.
@@ -1340,6 +1411,37 @@ fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index: u64) -> u
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+/// Which sample of a `lattice`-sample emitter lattice the one-sample bounce
+/// traces for gather ray `ray_index` of probe `probe_index` against the light
+/// on seed axis `light_axis`.
+///
+/// Stratification: the index walks the lattice in ray order,
+/// `(offset + ray_index) mod lattice`. The gather rays are a Fibonacci sphere
+/// ordered pole to pole, so each run of `lattice` consecutive rays is one polar
+/// band of the probe's sphere, and each band visits every emitter sample
+/// exactly once; every sample is assigned exactly `RAYS_PER_PROBE / lattice`
+/// ray indices. Hits are not stratified: a ray that misses, or skips the light,
+/// leaves its sample untraced. `offset` is a pure function of the probe and the
+/// light axis (the high half of the ray-0 visibility seed, whose low half
+/// drives that ray's lattice rotation), so neighbouring probes and lights on
+/// different axes start their passes at unrelated samples instead of aliasing
+/// the same rays onto the same samples. The SH volume's axis is the light's
+/// global index; the delta bake's is a digest of its keyed unit light, so two
+/// animated lights differ unless every keyed field matches. Over the offset
+/// each ray's sample is uniform on the lattice, so a hit's expected visibility
+/// is the whole lattice's clear fraction under that ray's rotation, with no
+/// fixed centre ray to bias a penumbra. The warm per-group bake passes the same
+/// global index, so a kept light traces the same sample warm and cold.
+pub(crate) fn bounce_sample_index(
+    probe_index: u64,
+    ray_index: u64,
+    light_axis: u64,
+    lattice: u32,
+) -> u32 {
+    let offset = soft_visibility_seed(probe_index, 0, light_axis) >> 32;
+    (offset.wrapping_add(ray_index) % u64::from(lattice)) as u32
 }
 
 /// Indirect (bounced) radiance along one ray plus the ray's hit distance —
@@ -1354,21 +1456,25 @@ fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index: u64) -> u
 /// light's bounce contribution is scaled by the `[0, 1]` area-light visibility
 /// fraction so bounced shadows soften in lockstep with the direct static term
 /// (an authored hard light — `_light_size`/`_angular_diameter == 0` — collapses to
-/// the single hard ray inside `soft_visibility`, matching the old binary gate).
+/// the single hard ray inside either visibility helper, matching the old binary
+/// gate).
+/// `visibility` picks how a soft light resolves: production traces one
+/// stratified emitter sample per (hit, light) (`bounce_sample_index`), whose
+/// expectation at a hit is the full 32-sample lattice's clear fraction.
 ///
-/// `light_global_indices` carries each `lights[i]`'s position in the global
-/// `static_lights` slice, used as the third seed axis. The warm per-group path
-/// passes a *bounded* `lights` subset, so seeding off the slice position would
-/// give a kept light a different lattice rotation than the cold (full-set) bake —
-/// warm could then read slightly brighter, breaking the strict dimmer-or-equal
-/// contract. Threading the global index keeps a kept light's rotation identical
-/// in either bake. `None` means identity (slice position == global index): the
-/// monolithic SH path and the delta path pass `None`, leaving their seeds — and
-/// thus their bytes — unchanged.
+/// `light_global_indices` carries each `lights[i]`'s seed axis. For the SH
+/// volume that is its position in the global `static_lights` slice. The warm
+/// per-group path passes a *bounded* `lights` subset, so seeding off the slice
+/// position would give a kept light a different lattice rotation than the cold
+/// (full-set) bake — warm could then read slightly brighter, breaking the
+/// strict dimmer-or-equal contract. Threading the global index keeps a kept
+/// light's rotation identical in either bake. `None` means identity (slice
+/// position == global index), as the monolithic SH path passes. The delta path
+/// passes its one light's content-derived axis (`bake_probe_indirect_rgb`).
 // Each argument is a distinct, irreducible input to the per-ray bounce sample
 // (geometry ctx, ray origin/dir, the light slice + its global-index map, the sky
-// sentinel, and the two seed axes). Bundling them into a struct would only move
-// the plumbing, not reduce it.
+// sentinel, the two seed axes, and the visibility mode). Bundling them into a
+// struct would only move the plumbing, not reduce it.
 #[allow(clippy::too_many_arguments)]
 fn sample_radiance_rgb(
     ctx: &RaytracingCtx<'_>,
@@ -1379,6 +1485,7 @@ fn sample_radiance_rgb(
     far_sentinel: f32,
     probe_index: u64,
     ray_index: u64,
+    visibility: BounceVisibility,
 ) -> (Vec3, f32) {
     match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
         None => (Vec3::from(SKY_COLOR), far_sentinel),
@@ -1397,17 +1504,41 @@ fn sample_radiance_rgb(
                     .unwrap_or(light_index as u64);
                 let seed = soft_visibility_seed(probe_index, ray_index, global_index);
                 // SH bounce is low-frequency, so it has no author-facing
-                // sample-count knob — it always uses the default escalated
-                // sample count (Task 6 wires the knob only to the lightmap and
-                // animated stages); agreeing probes never escalate.
-                let v = soft_visibility(
-                    hit.point,
-                    hit.normal,
-                    light,
-                    seed,
-                    crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
-                    |from, to| segment_clear(ctx, from, to),
-                );
+                // sample-count knob — it always samples the default lattice
+                // (the `--soft-shadow-samples` knob reaches only the lightmap
+                // and animated stages).
+                let trace = |from, to| segment_clear(ctx, from, to);
+                let v = match visibility {
+                    BounceVisibility::OneSample => soft_visibility_one_sample(
+                        hit.point,
+                        hit.normal,
+                        light,
+                        seed,
+                        |lattice| {
+                            bounce_sample_index(probe_index, ray_index, global_index, lattice)
+                        },
+                        DEFAULT_AREA_SAMPLE_COUNT,
+                        trace,
+                    ),
+                    #[cfg(test)]
+                    BounceVisibility::FullSet => soft_visibility(
+                        hit.point,
+                        hit.normal,
+                        light,
+                        seed,
+                        DEFAULT_AREA_SAMPLE_COUNT,
+                        trace,
+                    ),
+                    #[cfg(test)]
+                    BounceVisibility::FullSetReseeded(salt) => soft_visibility(
+                        hit.point,
+                        hit.normal,
+                        light,
+                        soft_visibility_seed(seed, salt, 0),
+                        DEFAULT_AREA_SAMPLE_COUNT,
+                        trace,
+                    ),
+                };
                 if v <= 0.0 {
                     continue;
                 }
@@ -1486,6 +1617,12 @@ fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
         start_active: if anim.start_active { 1 } else { 0 },
     }
 }
+
+#[cfg(test)]
+mod bounce_parity_tests;
+
+#[cfg(test)]
+mod bounce_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1880,7 +2017,7 @@ mod tests {
     /// miss to the sentinel, the rest graze one plane); multiple triangles at
     /// different depths give the depth-moment accumulator a real spread of
     /// `closest_hit` distances to integrate.
-    fn multi_triangle_geometry(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
+    pub(super) fn multi_triangle_geometry(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
         let mut vertices = Vec::with_capacity(triangles.len() * 3);
         let mut indices = Vec::with_capacity(triangles.len() * 3);
         let mut faces = Vec::with_capacity(triangles.len());
@@ -1929,7 +2066,7 @@ mod tests {
         multi_triangle_geometry(&[floor_a, floor_b, wall_near, wall_far, wall_side])
     }
 
-    fn tree_all_empty() -> BspTree {
+    pub(super) fn tree_all_empty() -> BspTree {
         BspTree {
             nodes: Vec::new(),
             leaves: vec![BspLeaf {
@@ -2577,7 +2714,7 @@ mod tests {
     /// Soft-shadow shadow-casting point light at `origin` with the given world-unit
     /// area radius. `light_size > 0` takes the soft area-sample path in
     /// `soft_visibility`; `0` collapses to the single hard ray.
-    fn soft_point_light(origin: DVec3, light_size: f32) -> MapLight {
+    pub(super) fn soft_point_light(origin: DVec3, light_size: f32) -> MapLight {
         MapLight {
             origin,
             carrier: String::new(),
@@ -2620,8 +2757,17 @@ mod tests {
 
         let origin = Vec3::new(0.0, 1.0, -1.0);
         let direction = Vec3::NEG_Y;
-        let without_trailing_light =
-            sample_radiance_rgb(&ctx, origin, direction, &[&kept_light], None, 100.0, 17, 23);
+        let without_trailing_light = sample_radiance_rgb(
+            &ctx,
+            origin,
+            direction,
+            &[&kept_light],
+            None,
+            100.0,
+            17,
+            23,
+            BounceVisibility::OneSample,
+        );
         let with_trailing_light = sample_radiance_rgb(
             &ctx,
             origin,
@@ -2631,6 +2777,7 @@ mod tests {
             100.0,
             17,
             23,
+            BounceVisibility::OneSample,
         );
 
         assert_eq!(
@@ -2656,6 +2803,8 @@ mod tests {
     /// The mixed light set includes lights the new guard culls (out-of-cone spot,
     /// back-facing point, spot and sun) beside lights it keeps, on soft and hard
     /// emitters, so each kept light's seed and trace are exercised alongside.
+    /// The reference traces the full set, so the guarded call does too; the
+    /// guard precedes the visibility mode and is shared by both.
     #[test]
     fn sample_radiance_rgb_full_term_guard_matches_range_only_reference_bit_identically() {
         fn range_only_reference(
@@ -2788,8 +2937,17 @@ mod tests {
         {
             let origin = Vec3::new(x, 1.0, z);
             let dir = Vec3::new(0.05, -1.0, 0.03).normalize();
-            let guarded =
-                sample_radiance_rgb(&ctx, origin, dir, &lights, None, 100.0, 7, ray_index as u64);
+            let guarded = sample_radiance_rgb(
+                &ctx,
+                origin,
+                dir,
+                &lights,
+                None,
+                100.0,
+                7,
+                ray_index as u64,
+                BounceVisibility::FullSet,
+            );
             let reference =
                 range_only_reference(&ctx, origin, dir, &lights, 100.0, 7, ray_index as u64);
             assert_eq!(
@@ -2868,6 +3026,7 @@ mod tests {
             100.0,
             0,
             0,
+            BounceVisibility::OneSample,
         );
         assert_ne!(
             radiance,
@@ -2881,7 +3040,9 @@ mod tests {
     /// half-plane occluder blocking part of the light's sphere, must bounce
     /// strictly between fully-occluded (0) and fully-clear — the partial-penumbra
     /// fraction. This exercises the wired `sample_radiance_rgb` call site through
-    /// real geometry tracing, not just the helper in isolation.
+    /// real geometry tracing, not just the helper in isolation. A single ray of
+    /// the one-sample bounce is 0 or 1 by design, so this pins the full set;
+    /// `bounce_tests` pins the one-sample mean against the lattice.
     #[test]
     fn sh_bounce_scales_by_soft_visibility_fraction() {
         // Floor receiver around the origin (normal +Y) plus a half-plane occluder
@@ -2906,7 +3067,18 @@ mod tests {
 
         // Large area radius so the sphere straddles the +X occluder edge.
         let soft_light = soft_point_light(DVec3::new(0.0, 5.0, 0.0), 2.0);
-        let soft = sample_radiance_rgb(&ctx, probe, dir, &[&soft_light], None, far, 0, 0).0;
+        let soft = sample_radiance_rgb(
+            &ctx,
+            probe,
+            dir,
+            &[&soft_light],
+            None,
+            far,
+            0,
+            0,
+            BounceVisibility::FullSet,
+        )
+        .0;
 
         // Reference: the same light over the floor with NO occluder → fully-clear
         // bounce (v = 1). Tracing against floor-only geometry is the clean way to
@@ -2918,7 +3090,18 @@ mod tests {
             primitives: &clear_prims,
             geometry: &clear_geo,
         };
-        let clear = sample_radiance_rgb(&clear_ctx, probe, dir, &[&soft_light], None, far, 0, 0).0;
+        let clear = sample_radiance_rgb(
+            &clear_ctx,
+            probe,
+            dir,
+            &[&soft_light],
+            None,
+            far,
+            0,
+            0,
+            BounceVisibility::FullSet,
+        )
+        .0;
 
         // Fractional, not binary: strictly dimmer than fully-clear yet nonzero.
         assert!(clear.length() > 0.0, "reference clear bounce should be lit");
@@ -2947,7 +3130,7 @@ mod tests {
         let tree = tree_all_empty();
 
         // Soft shadow-caster inside the box; the walls partially occlude its area
-        // from interior probes, so soft_visibility takes the escalated path.
+        // from interior probes, so the one-sample bounce resolves penumbra hits.
         let light = soft_point_light(DVec3::new(2.0, 2.5, 2.0), 1.5);
         let lights = std::slice::from_ref(&light);
         let exterior: HashSet<usize> = HashSet::new();
@@ -3098,6 +3281,7 @@ mod tests {
             None,
             far_sentinel,
             0,
+            BounceVisibility::OneSample,
         );
         let mean_d = sum_d / RAYS_PER_PROBE as f32;
         let mean_sq_d = sum_d2 / RAYS_PER_PROBE as f32;

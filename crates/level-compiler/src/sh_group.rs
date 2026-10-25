@@ -46,7 +46,8 @@ pub const SH_GROUP_STAGE_ID: &str = "sh_group";
 /// The downstream compact-section/BC6H packaging transform is not part of these
 /// cached records. Versions independently from the other cached stages so each
 /// can evolve without invalidating the other.
-pub const SH_GROUP_STAGE_VERSION: u32 = 2;
+/// v3: the bounce traces one stratified emitter sample per (hit, soft light).
+pub const SH_GROUP_STAGE_VERSION: u32 = 3;
 
 /// Edge length of a probe group, in probes, per axis. 4³ aligns with the
 /// existing `affinity_grid::AFFINITY_FACTOR = 4` decomposition.

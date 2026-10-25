@@ -1,6 +1,7 @@
 -- Ghost-link acceptance fixture (maps/ghost-links-luau.map). TypeScript twin: ghost-links.ts.
--- The first press of a purple pad sends whoever stands on it alone into the
--- other copy; every later press swaps both players. Every reaction is
+-- A two-player co-op set-piece. The first press of a purple pad sends whoever
+-- stands on it alone into the other copy; every later press flips both players
+-- between the copies until the return reunites them. Every reaction is
 -- explicitly named, and member traversal preserves map order.
 local Postretro = require("postretro")
 local Audio = require("postretro/audio")
@@ -40,6 +41,23 @@ function setupLevel(_ctx)
     sequence = each(barrier, function(door) return door:start() end),
   })
 
+  -- North closet, copy A: its door sinks and its knights wake. The monsters'
+  -- sealed aggro gate (enabled_on_spawn 0) ignores everything else, damage
+  -- included. Fifteen seconds after level load, or the first player to walk up
+  -- to the barrier, whichever comes first. A start on a mover already moving
+  -- or open does nothing and waking a woken monster changes nothing, so the
+  -- second path opens nothing again.
+  local northDoor = Postretro.getMapEntities("mover", { tag = "echo_closet_a1" })
+  local northSteps = each(northDoor, function(door) return door:start() end)
+  table.insert(northSteps, Postretro.npcs({ tag = "echo_monster_a1" }):update({ aggro = true }))
+  local northCloset = Postretro.defineReaction("closet.a1", { sequence = northSteps })
+  -- The timer counts from level load, so a host still waiting for a partner
+  -- may meet the knights alone. The fire step keeps the group wake out of the
+  -- levelLoad body itself.
+  local timerSteps = Postretro.wait(15000)
+  append(timerSteps, Postretro.fire(northCloset))
+  local northTimer = Postretro.defineReaction("levelLoad", { sequence = timerSteps })
+
   -- Split: the first pad press arms both split teleporters, one over each pad,
   -- so only whoever stands on a pad crosses, and turns the split pads off. The
   -- pad press stands in for a game condition (a timer, a health threshold) and
@@ -56,47 +74,45 @@ function setupLevel(_ctx)
   append(splitSettleSteps, each(swapPads, function(p) return p:arm() end))
   local splitSettle = Postretro.defineReaction("split.settle", { sequence = splitSettleSteps })
 
-  -- Battle swap: the pad arms both seamless swap teleporters, so each player
-  -- lands in the other copy, facing the monsters only the partner could see.
-  -- The closet doors in both copies sink and the monsters wake; the links stop
-  -- ghosting the partner's projectiles. The monsters' sealed aggro gate
-  -- (enabled_on_spawn 0) ignores everything else, damage included.
+  -- The crossing starts both fights. Copy A's south closet opens at once, so
+  -- its knight waits for whoever is left in or flips back to copy A.
+  local southDoor = Postretro.getMapEntities("mover", { tag = "echo_closet_a2" })
+  local southSteps = each(southDoor, function(door) return door:start() end)
+  table.insert(southSteps, Postretro.npcs({ tag = "echo_monster_a2" }):update({ aggro = true }))
+  local southCloset = Postretro.defineReaction("closet.a2", { sequence = southSteps })
+  -- Copy B's closets open three seconds after the crossing lands, so the
+  -- arrival gets a beat to look around before the limitators wake.
+  local closetsB = Postretro.getMapEntities("mover", { tag = "echo_closet_b" })
+  local limitatorSteps = Postretro.wait(3000)
+  append(limitatorSteps, each(closetsB, function(door) return door:start() end))
+  table.insert(limitatorSteps, Postretro.npcs({ tag = "echo_monster_b" }):update({ aggro = true }))
+  local limitators = Postretro.defineReaction("closet.b", { sequence = limitatorSteps })
+
+  -- Flip: every swap pad press arms both seamless swap teleporters, so each
+  -- player in a room lands in the other copy; the links stop ghosting the
+  -- partner's projectiles. The first crossing disarms both directions, and
+  -- the next press arms them again. The return turns the swap pads off.
   local swap = Postretro.getMapEntities("teleporter", { tag = "echo_swap" })
-  local closets = Postretro.getMapEntities("mover", { tag = "echo_closet_door" })
-  local battleSteps = each(swap, function(t) return t:arm() end)
-  append(battleSteps, each(closets, function(door) return door:start() end))
-  table.insert(battleSteps, Postretro.npcs({ tag = "echo_monster" }):update({ aggro = true }))
-  local battle = Postretro.defineReaction("battle.swap", { sequence = battleSteps })
-  -- The first crossing disarms both directions, so walking out and back in
-  -- does not swap again.
-  local settle = Postretro.defineReaction("battle.settle", {
+  local flip = Postretro.defineReaction("swap.arm", {
+    sequence = each(swap, function(t) return t:arm() end),
+  })
+  local flipSettle = Postretro.defineReaction("swap.settle", {
     sequence = each(swap, function(t) return t:disarm() end),
   })
 
-  -- Final wave: the barrier drops, and after a three-second beat the closet in
-  -- back room A opens and its monsters wake. It turns the ready button off. A
-  -- start on a mover already moving or open does nothing, so whichever path
-  -- fires it second starts nothing again.
-  local readyPads = Postretro.getMapEntities("trigger", { tag = "ready_pad" })
+  -- Final wave: the barrier drops if it still stands, and after a three-second
+  -- beat the closet in back room A opens and its monsters wake.
   local finalDoors = Postretro.getMapEntities("mover", { tag = "final_closet_door" })
-  local waveSteps = each(readyPads, function(p) return p:disarm() end)
-  append(waveSteps, each(barrier, function(door) return door:start() end))
+  local waveSteps = each(barrier, function(door) return door:start() end)
   append(waveSteps, Postretro.wait(3000))
   append(waveSteps, each(finalDoors, function(door) return door:start() end))
   table.insert(waveSteps, Postretro.npcs({ tag = "final_wave" }):update({ aggro = true }))
   local wave = Postretro.defineReaction("wave.start", { sequence = waveSteps })
 
-  -- Ready button: copy A cleared raises a pedestal in the north closet the
-  -- knights came from and arms its pad. A press starts the wave.
-  local readyPedestal = Postretro.getMapEntities("mover", { tag = "ready_pedestal" })
-  local readySteps = each(readyPedestal, function(m) return m:start() end)
-  append(readySteps, each(readyPads, function(p) return p:arm() end))
-  local ready = Postretro.defineReaction("ready.rise", { sequence = readySteps })
-  local clearA = Postretro.defineReaction("clear.a", { progress = { tag = "echo_monster_a", at = 1.0, fire = "ready.rise" } })
-
   -- Return: copy B cleared raises a pedestal in back room B and arms its pad. A
   -- press arms the classic teleporter over the pad, so only whoever stands
-  -- there goes to room A; the arrival disarms it and starts the wave.
+  -- there goes to room A. The arrival reunites the players: it disarms the
+  -- return, turns the flip off for good and starts the wave.
   local returnPedestal = Postretro.getMapEntities("mover", { tag = "return_pedestal" })
   local returnPads = Postretro.getMapEntities("trigger", { tag = "return_pad" })
   local returnGate = Postretro.getMapEntities("teleporter", { tag = "echo_return" })
@@ -107,25 +123,26 @@ function setupLevel(_ctx)
   local returnArm = Postretro.defineReaction("return.arm", {
     sequence = each(returnGate, function(t) return t:arm() end),
   })
-  local returnSettle = Postretro.defineReaction("return.settle", {
-    sequence = each(returnGate, function(t) return t:disarm() end),
-  })
+  local returnSettleSteps = each(returnGate, function(t) return t:disarm() end)
+  append(returnSettleSteps, each(swapPads, function(p) return p:disarm() end))
+  append(returnSettleSteps, each(swap, function(t) return t:disarm() end))
+  local returnSettle = Postretro.defineReaction("return.settle", { sequence = returnSettleSteps })
 
   local triggerEvents = {}
   bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "echo_plate" }), "enter", { reveal, swell })
   bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "vault_button" }), "enter", { open })
+  bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "barrier_approach" }), "enter", { northCloset })
   bind(triggerEvents, splitPads, "enter", { splitArm })
-  bind(triggerEvents, swapPads, "enter", { battle, fight })
-  bind(triggerEvents, readyPads, "enter", { wave })
+  bind(triggerEvents, swapPads, "enter", { flip, fight })
   bind(triggerEvents, returnPads, "enter", { returnArm })
   local teleportEvents = {}
-  bind(teleportEvents, split, "teleport", { splitSettle })
-  bind(teleportEvents, swap, "teleport", { settle })
+  bind(teleportEvents, split, "teleport", { splitSettle, southCloset, limitators })
+  bind(teleportEvents, swap, "teleport", { flipSettle })
   bind(teleportEvents, returnGate, "teleport", { returnSettle, wave })
   return {
     reactions = {
-      reveal, swell, fight, open, splitArm, splitSettle, battle, settle,
-      wave, ready, clearA, rise, clearB, returnArm, returnSettle,
+      reveal, swell, fight, open, northCloset, northTimer, splitArm, splitSettle,
+      southCloset, limitators, flip, flipSettle, wave, rise, clearB, returnArm, returnSettle,
     },
     triggerEvents = triggerEvents,
     teleportEvents = teleportEvents,

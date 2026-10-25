@@ -1,6 +1,7 @@
 // Game: Postretro
 // Format: Standard
-// Ghost-link acceptance fixture. All coordinates below are Quake map units.
+// Ghost-link acceptance fixture, a two-player co-op set-piece. All coordinates
+// below are Quake map units.
 // Two corresponding copies of one room: copy A centred at 0 0 and copy B at
 // 4096 0, so the copies sit about 104 metres apart, farther than the 60 metre
 // dev mod attenuation maxDistance. A real voice in one copy never reaches the
@@ -21,30 +22,36 @@
 // stays a member until it is out of sight.
 // Barrier puzzle: press the red button in back room B. The barrier in copy A
 // drops into the floor, and its ghost drops in copy B doorway.
+// Monster closets: each copy hides monsters in two closets sealed by purple
+// doors. The north closet opens x 32 to 160 and the south closet x -64 to 64
+// in copy A, plus 4096 in copy B. Each is 96 units deep and full room height,
+// so a monster eye clears its ceiling. Copy A north closet, door tag
+// echo_closet_a1, holds two knights, reference_enemy, tagged echo_monster_a1;
+// copy A south closet, door tag echo_closet_a2, holds one knight tagged
+// echo_monster_a2. Copy B closets, door tag echo_closet_b, hold one limitator
+// each, tagged echo_monster_b. Their sealed aggro gate, enabled_on_spawn 0,
+// ignores even damage until a script wakes them. These closets sit outside
+// the swap teleporter and ghost link volumes, and both copies build them
+// alike, so the copies still line up.
+// North closet: it opens fifteen seconds after level load, or as soon as a
+// player touches the barrier_approach volume in front of copy A barrier,
+// x 128 to 192, y -64 to 64, whichever comes first.
 // Split: the first press of the purple use pad in either copy sends whoever
 // stands on it alone into the other copy, through the seamless split teleporter
-// laid over each pad.
-// Battle swap: each copy hides monsters in two closets sealed by purple doors
-// tagged echo_closet_door. The north closet opens x 32 to 160 and the south
-// closet x -64 to 64 in copy A, plus 4096 in copy B. Each is 96 units deep and
-// full room height, so a monster eye clears its ceiling. Copy A holds three
-// knights, reference_enemy, two north and one south. Copy B holds two
-// limitators, one per closet. Every later pad press arms both seamless swap
-// teleporters, sinks all four closet doors and wakes every echo monster. The
-// first teleport through either swap teleporter disarms both. These closets sit
-// outside the swap teleporter and ghost link volumes, and both copies build
-// them alike, so the copies still line up.
-// Ready button: once copy A monsters are cleared the green ready pedestal
-// rises against the back wall of copy A north closet and its purple use pad
-// arms. A press starts the final wave and turns the pad off.
+// laid over each pad. The crossing sinks copy A south closet door and wakes
+// its knight at once, and three seconds later sinks both copy B closet doors
+// and wakes the limitators.
+// Flip: once the split lands, every press of a purple pad arms both seamless
+// swap teleporters, so everyone standing in either room lands in the other
+// copy. The first teleport through either swap teleporter disarms both, and
+// the next press arms them again.
 // Return: once copy B monsters are cleared the return pedestal rises and its
 // purple use pad arms. A press arms the classic teleporter over the pad, which
-// sends whoever stands there alone to return_a in room A, then disarms.
-// Final wave: a ready press or a return arrival, whichever comes first, drops
-// the barrier, and three seconds later the final closet door sinks and two
-// knights and two limitators wake. Their sealed aggro gate, enabled_on_spawn
-// 0, ignores even damage until then. A second fire starts nothing again. No
-// placed monster opts into ghosting.
+// sends whoever stands there alone to return_a in room A, then disarms. The
+// arrival turns the purple swap pads off for good and starts the final wave:
+// the barrier drops if it still stands, and three seconds later the final
+// closet door sinks and two knights and two limitators wake. A second arrival
+// starts nothing again. No placed monster opts into ghosting.
 // The blue touch plate in either copy runs echo.reveal and echo.swell.
 // Player spawn 1 is in copy A and spawn 2, coop_only, in copy B. Body centres
 // are 40 units up.
@@ -594,7 +601,7 @@
 "move_mode" "once"
 "start_on_spawn" "0"
 "open_sound" "movers/door_open"
-"_tags" "echo_closet_door"
+"_tags" "echo_closet_a1"
 {
 ( 32 0 0 ) ( 32 1 0 ) ( 32 0 1 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 ( 160 0 0 ) ( 160 0 1 ) ( 160 1 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
@@ -624,7 +631,7 @@
 "move_mode" "once"
 "start_on_spawn" "0"
 "open_sound" "movers/door_open"
-"_tags" "echo_closet_door"
+"_tags" "echo_closet_a2"
 {
 ( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 ( 64 0 0 ) ( 64 0 1 ) ( 64 1 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
@@ -654,7 +661,7 @@
 "move_mode" "once"
 "start_on_spawn" "0"
 "open_sound" "movers/door_open"
-"_tags" "echo_closet_door"
+"_tags" "echo_closet_b"
 {
 ( 4128 0 0 ) ( 4128 1 0 ) ( 4128 0 1 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 ( 4256 0 0 ) ( 4256 0 1 ) ( 4256 1 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
@@ -684,7 +691,7 @@
 "move_mode" "once"
 "start_on_spawn" "0"
 "open_sound" "movers/door_open"
-"_tags" "echo_closet_door"
+"_tags" "echo_closet_b"
 {
 ( 4032 0 0 ) ( 4032 1 0 ) ( 4032 0 1 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 ( 4160 0 0 ) ( 4160 0 1 ) ( 4160 1 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
@@ -709,21 +716,21 @@
 "classname" "reference_enemy"
 "origin" "64 232 16"
 "angles" "0 270 0"
-"_tags" "enemy echo_monster echo_monster_a"
+"_tags" "enemy echo_monster echo_monster_a1"
 "enabled_on_spawn" "0"
 }
 {
 "classname" "reference_enemy"
 "origin" "128 232 16"
 "angles" "0 270 0"
-"_tags" "enemy echo_monster echo_monster_a"
+"_tags" "enemy echo_monster echo_monster_a1"
 "enabled_on_spawn" "0"
 }
 {
 "classname" "reference_enemy"
 "origin" "0 -232 16"
 "angles" "0 90 0"
-"_tags" "enemy echo_monster echo_monster_a"
+"_tags" "enemy echo_monster echo_monster_a2"
 "enabled_on_spawn" "0"
 }
 {
@@ -827,36 +834,6 @@
 "classname" "kinematic_waypoint"
 "origin" "4512 0 24"
 "name" "return_pedestal_open"
-}
-{
-"classname" "kinematic_mover"
-"name" "ready_pedestal"
-"path" "ready_pedestal_closed"
-"speed" "1"
-"wait_ms" "0"
-"move_mode" "once"
-"start_on_spawn" "0"
-"open_sound" "movers/door_open"
-"_tags" "ready_pedestal"
-{
-( 80 0 0 ) ( 80 1 0 ) ( 80 0 1 ) DebugTextures/debug_wall_green 0 0 0 1 1
-( 112 0 0 ) ( 112 0 1 ) ( 112 1 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
-( 0 272 0 ) ( 0 272 1 ) ( 1 272 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
-( 0 304 0 ) ( 1 304 0 ) ( 0 304 1 ) DebugTextures/debug_wall_green 0 0 0 1 1
-( 0 0 -56 ) ( 1 0 -56 ) ( 0 1 -56 ) DebugTextures/debug_wall_green 0 0 0 1 1
-( 0 0 -8 ) ( 0 1 -8 ) ( 1 0 -8 ) DebugTextures/debug_wall_green 0 0 0 1 1
-}
-}
-{
-"classname" "kinematic_waypoint"
-"origin" "96 288 -32"
-"name" "ready_pedestal_closed"
-"next" "ready_pedestal_open"
-}
-{
-"classname" "kinematic_waypoint"
-"origin" "96 288 24"
-"name" "ready_pedestal_open"
 }
 {
 "classname" "light"
@@ -1145,18 +1122,18 @@
 }
 {
 "classname" "trigger_volume"
-"name" "ready_pad"
-"_tags" "ready_pad"
-"activation" "use"
-"fire_mode" "multiple"
-"enabled_on_spawn" "0"
+"name" "barrier_approach"
+"_tags" "barrier_approach"
+"activation" "touch"
+"fire_mode" "once"
+"enabled_on_spawn" "1"
 {
-( 72 0 0 ) ( 72 1 0 ) ( 72 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
-( 120 0 0 ) ( 120 0 1 ) ( 120 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
-( 0 224 0 ) ( 0 224 1 ) ( 1 224 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
-( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 128 0 0 ) ( 128 1 0 ) ( 128 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 192 0 0 ) ( 192 0 1 ) ( 192 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 64 0 ) ( 1 64 0 ) ( 0 64 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
-( 0 0 80 ) ( 0 1 80 ) ( 1 0 80 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 88 ) ( 0 1 88 ) ( 1 0 88 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 }
 }
 {

@@ -284,3 +284,50 @@ pre-change lake spawn tripped on every Settling frame and every post-reveal fram
 The chosen shaft A pose did not trip the pre-change walk (8,416 portal tests at +45° vs rect
 802); a known trip pose from the research sweep would be needed to show the old walk's
 fallback there. Settle-set peaks don't move with pitch (camera-cell mandatory tier).
+
+## Visual — offscreen capture A/B (row 47, partial)
+
+Both builds rebuilt with `--features capture` (pre-change from a detached worktree at
+`e31209623`, rect at `b3310f1bc` = `a8e4a2a63` source), each on its own bake. 1280×720,
+default HFOV 100°, `measurement` 180 warm-up frames + 1 sample so animation time and
+promotion ramps match, `POSTRETRO_SH_STREAMING=sync-proof`. The capture derives its
+texture root from the map path, so scratch bakes need `<scratch>/../baked` linked to the
+repo's `baked/`. Scenes, PNGs and reports: scratchpad
+`846ad593…/cap/`; contact sheet `…/sheet/`.
+
+19 poses: shaft A at 4 yaws, ±45° high, and R1's worst pose (`-37.90,18.49,16.97`, yaw 90
+pitch 45); shafts B and C at 2 yaws; arena at 4 yaws; lake spawn (`-16.87,1.6,-48.77`) at
+yaws 90 and 270, plus z offsets.
+
+| result | poses |
+|---|---|
+| byte-identical | 11 |
+| ≤ 1/255 on ≤ 127 px | shaft A ±45° high, arena × 4 |
+| 1,510 px at 1/255 + 1 px at 32/255 | shaft A worst; light-term masks put it in static indirect (SH); full-resident SH compose doesn't change it; the 32/255 px is an isolated speck both builds show |
+| 9 px (18 with the reflection) at 3F3F50, the capture clear colour | lake spawn yaw 90, column x = 640 |
+
+**Lake spawn: classified, not a walk defect.** The camera looks edge-on down a 10 cm slot
+(cell 166, x ∈ [−76.5048, −76.4032], z ∈ [−48.8696, −48.768]) beside a pillar; the slot
+fills one column at 59.6 m. The true line of sight enters through the slot's open end at
+x = −76.4032, which has neither face nor portal: `MIN_PORTAL_AREA_M2 = 0.1`
+(`level-compiler/src/portals.rs`) dropped the 3↔166 (0.083 m²) and 2↔166 (0.021 m²)
+portals. Only side portals 425/426 (z = −48.768) and 409/410 (z = −48.8696) remain, and
+with the eye inside the slot's z range every crossing of them is from the far side. The
+walk rejects those under the facing rule; the oracle reaches 166/167 through them on
+`CLIP_EPSILON` slop and classifies both as backward crossings (superset row, O36):
+`unclassified_misses` = []. The walk's miss band is eye z ∈ [−48.8696, −48.7680] (sign
+flips at 0.1 mm steps); the pixel differs only for about [−48.816, −48.768]. The
+pre-change build drew 166 by accident (its lake spawn also trips the step limit every
+frame, R4). Loosening `FACING_EPSILON` would restore the slop leak; the walk needs no
+change. The same gap exists at the matching slots, cells 162 and 169.
+
+**Follow-up outside this brief:** the compiler's area cut makes the portal graph
+non-conservative for every consumer (draw, fog reach, lightmap and SH demand, bake
+sampling walks) wherever an open gap is under about 0.1 m². Direction: stop the area cut
+when both leaves are non-solid (keep a degenerate-winding check), bump the portal cache
+epoch, rebake. To be routed through `/draft-session`. Replay test source:
+scratchpad `846ad593…/tmp_lake_spawn_replay.rs` (deleted from the tree).
+
+**Not covered by capture:** the dynamic-direct term is identical to all-terms-off at all
+19 poses, so no shadow-slot competition was exercised; pops are temporal. Both stay with
+the owner's in-engine run, along with row 46.

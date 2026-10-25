@@ -7,10 +7,12 @@ read at: 1e84f1dd2
 ## Corrections
 - Brief read at d116329d7 → no file outside `context/` changed through 1e84f1dd2; the Decision reads stand.
 - §Margin scale's coordinate rows (research) → the derivation puts coordinate magnitude in the sampler's endpoint arithmetic, per hull and per axis, not in the hit test; a receiver declines past ~315–405 m along its normal axis, not at 1 km. Same Decision meaning: speed lost only at large coordinates; every authored map measured spans ≤ 150 m.
+- A6 "the cone test drops those pairs" (research, spot aimed away) → the upward spot sits inside one quad's bounding sphere, so the Decision's inside-sphere guard keeps that one pair; it lights nothing and its bytes match. The fixture asserts exactly which pairs bake.
+- Seam "a path through `bake_light_layer_chart_controlled`" → task 3 landed `ExactSkips { chart_cull }` on the partition window only; task 4 adds `shaft_cull` and threads it through the chart walk, where it is first read.
 - "In `plan_charts`" (Path, chart cull placement) → the stage's planner is `LayerPartitions::plan_charts` (`pipeline/lightmap_stage/partitions.rs`); `lightmap_bake/charts.rs::plan_charts` is the chart builder the drift research cites. The cull goes in the former, after `light_may_reach`, before its `control.advance`.
 
 ## Delegated answers
-- Reuse `affinity_grid.rs::direct_light_may_reach_cell` for the cone test? — Decided in task 3: reuse only if the lightmap's spot term reads the same axis, defaults and half-angles as `spot_cone_parameters`, with the brief's extra guards (outer strictly in (0, π/2), non-zero aim) wrapped around it; otherwise a sibling test, reason recorded here.
+- Reuse `affinity_grid.rs::direct_light_may_reach_cell` for the cone test? — No, a sibling (`lightmap_layer/chart_cull.rs`): the spot conventions match, but the precedent tests a 0.5 m-padded cell with an angle-space slack through an f32 `acos`, while the lightmap's zero is a cos-space compare at texel centres, so the sibling bounds the texel-centre rectangle's sphere in f64 with a cos-space margin.
 - Margin constants — derived in `research.md` §Margin derivation (task 2), reviewed by the integrating executor; copied below.
 - Safety factor κ = 2 or smaller? — 2. Its cost is the receiver crossover (a receiver stops clearing past ~315 m along its own normal axis), and the largest authored map measured (`stress-warren`, 5888 units) spans 150 m, the gate maps at most 125 m.
 
@@ -62,7 +64,7 @@ Fixtures live in the lightmap stage and layer test modules; "on/off" means the c
 |---|---|---|---|---|
 | 1 | Split the clipped chart walk out of `lightmap_layer.rs`, behavior-preserving, own commit | delegated (split) | — | done: 50cd0aeb5, `lightmap_layer` 49 passed, clippy clean |
 | 2 | Margin derivation in `research.md`; constants into this plan | delegated (derivation), reviewed by integrating executor | — | done: research §Margin derivation, randomized f32 MT checks at ≤ 42% of each bound |
-| 3 | Chart coverage cull in `LayerPartitions::plan_charts` + culls-off seam through `bake_light_layer_chart_controlled` + A1–A6 | delegated, integrated by executor | 1 | in progress |
-| 4 | Tile shaft cull + verify mode + test counters in the chart walk + A7–A19 | delegated, integrated by executor | 2, 3 | |
+| 3 | Chart coverage cull in `LayerPartitions::plan_charts` + culls-off seam through `bake_light_layer_chart_controlled` + A1–A6 | delegated, integrated by executor | 1 | done: `chart_cull` 13 passed; `lightmap_stage lightmap_layer chart_cull` 112 passed / 4 ignored; stage-path suites 280 passed / 9 ignored; clippy clean |
+| 4 | Tile shaft cull + verify mode + test counters in the chart walk + A7–A19 | delegated, integrated by executor | 2, 3 | in progress |
 | 5 | Permit side and reference parity (A20, A21) | integrating executor | 4 | |
 | 6 | Manual gates M1–M4, M6; M5 baseline + runs | integrating executor / owner | 5 | |

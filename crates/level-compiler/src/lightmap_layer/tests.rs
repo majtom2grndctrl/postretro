@@ -2646,3 +2646,129 @@ fn section_key_changes_when_soft_shadow_samples_change() {
         "changing --soft-shadow-samples must change the section key (section miss)"
     );
 }
+
+// --- chart coverage cull ---------------------------------------------------
+
+/// Whether the direct term covers any interior texel of `chart`, at the
+/// positions and normal the walk reads.
+fn any_texel_covered(light: &MapLight, chart: &Chart) -> bool {
+    let (width, height) = chart_interior_dims(chart);
+    (0..height).any(|ty| {
+        (0..width).any(|tx| {
+            light_texel_is_covered(
+                light,
+                chart_texel_world_position(chart, tx, ty),
+                chart.normal,
+            )
+        })
+    })
+}
+
+fn unit(v: [f32; 3]) -> Vec3 {
+    let v = Vec3::from(v);
+    if v.length_squared() < 1.0e-4 {
+        Vec3::Y
+    } else {
+        v.normalize()
+    }
+}
+
+/// A `width × height` interior chart of `pitch` m texels, its u axis along
+/// `u`, its normal leaning off the face by `lean` toward u (as a vertex normal
+/// may), v as chart planning derives it, and with `window` a sub-chart at
+/// that texel of a parent grid two texels larger each way.
+#[allow(clippy::too_many_arguments)]
+fn cull_chart(
+    origin: [f32; 3],
+    u: [f32; 3],
+    across: [f32; 3],
+    lean: f32,
+    uv_min: [f32; 2],
+    pitch: f32,
+    [width, height]: [u32; 2],
+    window: Option<[u32; 2]>,
+) -> Chart {
+    let u_axis = unit(u);
+    let face = u_axis.cross(unit(across));
+    let face_normal = if face.length_squared() < 1.0e-4 {
+        u_axis.any_orthonormal_vector()
+    } else {
+        face.normalize()
+    };
+    let normal = (face_normal + u_axis * lean).normalize();
+    let padding = crate::chart_raster::CHART_PADDING_TEXELS;
+    let parent = window.map(|origin| [width + origin[0] + 2, height + origin[1] + 2]);
+    Chart {
+        origin: Vec3::from(origin),
+        u_axis,
+        v_axis: normal.cross(u_axis).normalize(),
+        uv_min,
+        uv_extent: [pitch * width as f32, pitch * height as f32],
+        normal,
+        width_texels: width + 2 * padding,
+        height_texels: height + 2 * padding,
+        leaf_index: 0,
+        window: window
+            .zip(parent)
+            .map(|(origin, grid)| crate::lightmap_bake::ChartWindow {
+                grid_uv_min: uv_min,
+                grid_uv_extent: [pitch * grid[0] as f32, pitch * grid[1] as f32],
+                grid_interior: grid,
+                origin,
+            }),
+    }
+}
+
+proptest::proptest! {
+    // A pair the chart coverage cull drops has no covered texel: points,
+    // spots and suns of any falloff and cone, against charts of any frame,
+    // normal lean, size and sub-chart window, the light placed near the
+    // chart's plane, range and cone edges as often as far from them.
+    #[test]
+    fn chart_cull_drops_only_pairs_with_no_covered_texel(
+        chart_origin in proptest::array::uniform3(-200.0f32..200.0),
+        u in proptest::array::uniform3(-1.0f32..1.0),
+        across in proptest::array::uniform3(-1.0f32..1.0),
+        lean in proptest::prop_oneof![proptest::strategy::Just(0.0f32), -0.3f32..0.3],
+        uv_min in proptest::array::uniform2(-20.0f32..20.0),
+        pitch in 0.05f32..1.0,
+        size in proptest::array::uniform2(1u32..12),
+        window in proptest::option::of(proptest::array::uniform2(0u32..4)),
+        at in proptest::array::uniform2(-0.3f32..1.3),
+        height in proptest::prop_oneof![-0.01f32..0.01, -6.0f32..6.0],
+        kind in 0u8..3,
+        model in 0u8..3,
+        range_scale in proptest::prop_oneof![0.999f32..1.001, 0.2f32..2.0],
+        aim in proptest::array::uniform3(-1.0f32..1.0),
+        outer in proptest::prop_oneof![0.005f32..1.0, -0.5f32..2.0],
+        authored_cone in proptest::prelude::any::<bool>(),
+    ) {
+        let chart = cull_chart(chart_origin, u, across, lean, uv_min, pitch, size, window);
+        let (width, height_texels) = chart_interior_dims(&chart);
+        let on_chart = chart_texel_world_position(
+            &chart,
+            ((width - 1) as f32 * at[0]).round() as i32,
+            ((height_texels - 1) as f32 * at[1]).round() as i32,
+        ) + chart.u_axis * (at[0] - at[0].clamp(0.0, 1.0)) * 4.0;
+        let origin = on_chart + chart.normal * height;
+        let mut light = point_light(origin.as_dvec3().to_array(), 1.0);
+        light.light_type = [LightType::Point, LightType::Spot, LightType::Directional][kind as usize];
+        light.falloff_model =
+            [FalloffModel::Linear, FalloffModel::InverseDistance, FalloffModel::InverseSquared]
+                [model as usize];
+        light.falloff_range = origin.distance(chart_texel_world_position(&chart, 0, 0)) * range_scale;
+        if authored_cone {
+            light.cone_direction = Some(aim);
+            light.cone_angle_inner = Some(outer * 0.5);
+            light.cone_angle_outer = Some(outer);
+        } else if kind == 2 {
+            light.cone_direction = Some(aim);
+        }
+        if !chart_may_cover(&light, &chart) {
+            proptest::prop_assert!(
+                !any_texel_covered(&light, &chart),
+                "dropped a pair that covers a texel: {light:?} {chart:?}"
+            );
+        }
+    }
+}

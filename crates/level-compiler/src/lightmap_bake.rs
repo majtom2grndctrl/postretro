@@ -641,8 +641,7 @@ pub(crate) fn light_contribution_and_direction(
             )
         }
         LightType::Directional => {
-            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
-            let l = (-aim).normalize_or_zero();
+            let l = directional_light_direction(light);
             let ndotl = surface_normal.dot(l).max(0.0);
             if ndotl <= 0.0 {
                 return (Vec3::ZERO, l);
@@ -785,10 +784,26 @@ pub(crate) fn falloff(light: &MapLight, distance: f32) -> f32 {
     }
 }
 
-fn spot_cone(light: &MapLight, light_to_surface: Vec3) -> f32 {
+/// The unit vector toward a directional light, as its direct term reads it.
+/// The chart coverage cull evaluates N·L with it, so a sun pair it drops is
+/// the bake's own zero.
+pub(crate) fn directional_light_direction(light: &MapLight) -> Vec3 {
+    let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
+    (-aim).normalize_or_zero()
+}
+
+/// A spot's aim and its inner and outer half-angles in radians, defaults
+/// applied, as [`spot_cone`] reads them; the chart coverage cull reads the
+/// same.
+pub(crate) fn spot_cone_angles(light: &MapLight) -> (Vec3, f32, f32) {
     let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero();
     let inner = light.cone_angle_inner.unwrap_or(0.0);
     let outer = light.cone_angle_outer.unwrap_or(inner + 0.01);
+    (aim, inner, outer)
+}
+
+fn spot_cone(light: &MapLight, light_to_surface: Vec3) -> f32 {
+    let (aim, inner, outer) = spot_cone_angles(light);
     let cos_inner = inner.cos();
     let cos_outer = outer.cos();
     let cos_theta = aim.dot(light_to_surface.normalize_or_zero());

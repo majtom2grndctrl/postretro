@@ -11,7 +11,9 @@ use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedEntry;
-use crate::lightmap_layer::{self, SharedAtlas, chart_texel_bounds, light_may_reach};
+use crate::lightmap_layer::{
+    self, ExactSkips, SharedAtlas, chart_may_cover, chart_texel_bounds, light_may_reach,
+};
 use crate::texel_footprint::EmbeddedEmitters;
 
 #[cfg(test)]
@@ -137,6 +139,8 @@ pub(super) struct LayerPartitions<'a> {
     /// Padded world bounds of each chart's texels; `None` for a chart with no
     /// texels.
     chart_bounds: Vec<Option<(Vec3, Vec3)>>,
+    /// The exact skips this source takes: all of them, outside tests.
+    exact_skips: ExactSkips,
     #[cfg(test)]
     hooks: PartitionHooks,
 }
@@ -164,6 +168,10 @@ impl<'a> LayerPartitions<'a> {
             layer_charts[placement.layer as usize].push(face_idx);
         }
         let chart_bounds = shared.charts.iter().map(chart_texel_bounds).collect();
+        #[cfg(not(test))]
+        let exact_skips = ExactSkips::ON;
+        #[cfg(test)]
+        let exact_skips = window.exact_skips;
         Self {
             args,
             cache,
@@ -180,6 +188,7 @@ impl<'a> LayerPartitions<'a> {
             steps,
             layer_charts,
             chart_bounds,
+            exact_skips,
             #[cfg(test)]
             hooks: window.hooks.clone(),
         }
@@ -264,14 +273,18 @@ impl PartitionSource for LayerPartitions<'_> {
         let (layer, light) = self.items.get(item);
         let layer_charts = &self.layer_charts[layer as usize];
         let light = self.layer_lights[light].light;
-        let reached: Vec<usize> = layer_charts
+        let chart_cull = self.exact_skips.chart_cull;
+        let planned: Vec<usize> = layer_charts
             .iter()
             .copied()
             .filter(|&chart| light_may_reach(light, self.chart_bounds[chart]))
+            // Range alone keeps many pairs that light no texel; the coverage
+            // cull drops those whose direct term is zero at every texel.
+            .filter(|&chart| !chart_cull || chart_may_cover(light, &self.shared.charts[chart]))
             .collect();
         // A culled chart bakes no texel, so it completes here.
-        self.control.advance(layer_charts.len() - reached.len());
-        reached
+        self.control.advance(layer_charts.len() - planned.len());
+        planned
     }
 
     fn bake_chart(&self, item: usize, chart: usize) -> Vec<lightmap_layer::LayerTexel> {

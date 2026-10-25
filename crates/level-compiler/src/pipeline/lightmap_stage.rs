@@ -75,6 +75,10 @@ pub(crate) struct PartitionWindow {
     /// holds this; run it without a cache.
     #[cfg(test)]
     pub(crate) ignore_embedded_emitters: bool,
+    /// The exact skips the stage takes, [`lightmap_layer::ExactSkips::ON`]
+    /// outside tests. Skips leave bytes unchanged, so no key holds this.
+    #[cfg(test)]
+    pub(crate) exact_skips: lightmap_layer::ExactSkips,
 }
 
 impl Default for PartitionWindow {
@@ -91,6 +95,8 @@ impl Default for PartitionWindow {
             step_threshold: None,
             #[cfg(test)]
             ignore_embedded_emitters: false,
+            #[cfg(test)]
+            exact_skips: lightmap_layer::ExactSkips::ON,
         }
     }
 }

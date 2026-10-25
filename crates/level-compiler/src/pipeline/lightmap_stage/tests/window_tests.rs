@@ -1,7 +1,7 @@
 //! Lightmap partition-window behavior: fold order, throttle and pause, cache I/O
 //! outside permits, the consumer's permit, paused cache hits, the resident
-//! bound, chart-cull byte identity, and a memo-hit rebuild followed by a
-//! one-light edit.
+//! bound, chart-cull byte identity with the exact skips on and off, and a
+//! memo-hit rebuild followed by a one-light edit.
 //! Governing context: `context/lib/build_pipeline.md` §Build Cache and §Progress reporting, controls, and logging.
 
 use super::*;
@@ -349,15 +349,30 @@ fn cull_quads() -> GeometryResult {
     quads_in_one_cell(WINDOW_QUADS)
 }
 
-/// One cached, culled bake of a fixture, and what unculled bakes of the same
-/// lights produce.
+/// One cached bake of a fixture with every exact skip on, beside what an
+/// uncached bake with the skips off and unculled per-light bakes produce.
 struct CullRun {
-    /// `(light, layer, chart)` for every chart the cull let through, sorted.
+    /// `(light, layer, chart)` for every chart the culls let through, sorted.
     baked: Vec<(usize, u32, usize)>,
+    /// The same with the exact skips off: every chart in range.
+    reached: Vec<(usize, u32, usize)>,
     /// Bake layers the fixture atlas holds.
     layer_count: u32,
     /// Texels each light's unculled partitions light, summed over layers.
     lit_texels: Vec<usize>,
+}
+
+impl CullRun {
+    /// Whether light `light`'s pair with layer-0 chart `chart` was in range
+    /// and the chart coverage cull dropped it.
+    fn dropped(&self, light: usize, chart: usize) -> bool {
+        self.reached.contains(&(light, 0, chart)) && !self.baked.contains(&(light, 0, chart))
+    }
+
+    /// Whether light `light`'s pair with layer-0 chart `chart` was baked.
+    fn kept(&self, light: usize, chart: usize) -> bool {
+        self.baked.contains(&(light, 0, chart))
+    }
 }
 
 /// The fixture's charts in face order. Chart planning never reads the lights,
@@ -376,20 +391,27 @@ fn fixture_charts(build: fn() -> GeometryResult) -> Vec<lightmap_bake::Chart> {
     .charts
 }
 
-/// Bake `lights` through the window with the chart cull active and a cache,
-/// then assert progress completes at its published total and every cached
-/// partition equals the unculled per-light, per-layer bake.
-fn cull_bake_matches_unculled(
+/// One fused bake of a fixture, and the charts it walked.
+struct CullBake {
+    /// `(light, layer, chart)` for every chart baked, sorted.
+    baked: Vec<(usize, u32, usize)>,
+    lightmap: Vec<u8>,
+    shadowmask: Option<Vec<u8>>,
+}
+
+/// Bake `lights` through the window with `exact_skips`, and assert progress
+/// completes at its published total.
+fn cull_bake(
     build: fn() -> GeometryResult,
     lights: &[MapLight],
-    label: &str,
-) -> CullRun {
+    cache: Option<&StageCache>,
+    exact_skips: lightmap_layer::ExactSkips,
+) -> CullBake {
     let args = test_args();
     let config = config(false);
-    let dir = fresh_cache_dir(label);
-    let cache = StageCache::new(&dir).expect("cull cache");
     let baked = Arc::new(Mutex::new(Vec::new()));
     let mut window = sized(2);
+    window.exact_skips = exact_skips;
     let record = Arc::clone(&baked);
     window.hooks.before_chart = Some(Arc::new(move |light, layer, chart| {
         record.lock().unwrap().push((light, layer, chart));
@@ -401,7 +423,7 @@ fn cull_bake_matches_unculled(
     let static_lights = StaticBakedLights::from_lights(lights);
     let alpha_lights = AlphaLightsNs::from_lights(lights);
     let control = BakeControl::new(Arc::new(Governor::new(4, false)), &progress);
-    let placements = ThreadPoolBuilder::new()
+    let (placements, output) = ThreadPoolBuilder::new()
         .num_threads(4)
         .build()
         .expect("cull fixture pool")
@@ -414,9 +436,9 @@ fn cull_bake_matches_unculled(
             )
             .expect("cull fixture atlas");
             let placements = prepared.placements.len();
-            bake_fused_windowed(
+            let output = bake_fused_windowed(
                 &args,
-                Some(&cache),
+                cache,
                 &control,
                 &BakeControl::unrestricted(),
                 &mut geometry,
@@ -431,13 +453,43 @@ fn cull_bake_matches_unculled(
                 &window,
             )
             .expect("cull fixture bake");
-            placements
+            (placements, output)
         });
     let published = progress.total().expect("lightmap total is published");
     assert_eq!(published, placements * lights.len());
     assert_eq!(progress.completed(), published);
     let mut baked = baked.lock().unwrap().clone();
     baked.sort_unstable();
+    CullBake {
+        baked,
+        lightmap: output.lightmap.section.to_bytes(),
+        shadowmask: output.shadowmask.map(|section| section.to_bytes()),
+    }
+}
+
+/// Bake `lights` through the window with every exact skip on and a cache,
+/// then assert: progress completes at its published total, the lightmap and
+/// shadowmask bytes equal an uncached bake with the skips off, and every
+/// cached partition equals the unculled per-light, per-layer bake.
+fn cull_bake_matches_unculled(
+    build: fn() -> GeometryResult,
+    lights: &[MapLight],
+    label: &str,
+) -> CullRun {
+    let args = test_args();
+    let config = config(false);
+    let dir = fresh_cache_dir(label);
+    let cache = StageCache::new(&dir).expect("cull cache");
+    let culled = cull_bake(build, lights, Some(&cache), lightmap_layer::ExactSkips::ON);
+    let unculled = cull_bake(build, lights, None, lightmap_layer::ExactSkips::OFF);
+    assert!(
+        culled.lightmap == unculled.lightmap,
+        "{label}: lightmap bytes differ with the exact skips off"
+    );
+    assert!(
+        culled.shadowmask == unculled.shadowmask,
+        "{label}: shadowmask bytes differ with the exact skips off"
+    );
 
     // Each cached partition equals an unculled bake of that light and layer.
     let mut geometry = build();
@@ -493,7 +545,8 @@ fn cull_bake_matches_unculled(
     drop(cache);
     let _ = std::fs::remove_dir_all(&dir);
     CullRun {
-        baked,
+        baked: culled.baked,
+        reached: unculled.baked,
         layer_count,
         lit_texels,
     }
@@ -531,10 +584,198 @@ fn chart_cull_is_byte_identical_and_progress_completes() {
     );
 }
 
-// The cull keeps a chart at distance == falloff_range, so a texel exactly
-// there still lights under the inverse models and is zero under Linear.
+/// One window quad whose vertex normal leans off the face toward −X, so its
+/// chart normal is not orthogonal to the chart's u axis (+X).
+fn leaning_normal_quad() -> GeometryResult {
+    let mut geometry = quads_in_one_cell(1);
+    let normal = Vec3::new(-0.5, 1.0, 0.0).normalize().to_array();
+    for vertex in &mut geometry.geometry.vertices {
+        *vertex = Vertex::new(
+            vertex.position,
+            vertex.uv,
+            normal,
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
+            0,
+        );
+    }
+    geometry
+}
+
+/// A chart's interior corner texel centres.
+fn corner_texels(chart: &lightmap_bake::Chart) -> [Vec3; 4] {
+    let (width, height) = crate::chart_raster::chart_interior_dims(chart);
+    [
+        (0, 0),
+        (width - 1, 0),
+        (0, height - 1),
+        (width - 1, height - 1),
+    ]
+    .map(|(tx, ty)| crate::chart_raster::chart_texel_world_position(chart, tx, ty))
+}
+
+/// A sphere about a chart's corner texels' centre, through the farthest.
+fn texel_sphere(chart: &lightmap_bake::Chart) -> (Vec3, f32) {
+    let corners = corner_texels(chart);
+    let centre = (corners[0] + corners[3]) * 0.5;
+    let radius = corners
+        .iter()
+        .map(|corner| corner.distance(centre))
+        .fold(0.0, f32::max);
+    (centre, radius)
+}
+
+fn spot_light(origin: Vec3, aim: Option<[f32; 3]>, outer: Option<f32>) -> MapLight {
+    let mut light = point_light(origin.as_dvec3(), [1.0, 0.8, 0.5]);
+    light.light_type = LightType::Spot;
+    light.falloff_range = 13.0;
+    light.cone_direction = aim;
+    light.cone_angle_inner = outer.map(|_| 0.1);
+    light.cone_angle_outer = outer;
+    light
+}
+
+// A point light 1 cm behind a chart's plane lights no texel and is dropped;
+// 1 cm in front it lights the chart and is kept. A soft light whose centre is
+// behind is dropped though its sphere crosses the plane: the direct term
+// reads the centre only.
 #[test]
-fn chart_cull_keeps_chart_whose_nearest_texel_is_at_falloff_range() {
+fn chart_cull_drops_a_light_behind_the_plane_and_keeps_one_just_in_front() {
+    let at = |y: f64, light_size: f32| {
+        let mut light = point_light(DVec3::new(6.0, y, 6.0), [1.0, 0.6, 0.3]);
+        light.light_size = light_size;
+        light
+    };
+    let lights = vec![at(-0.01, 0.0), at(0.01, 0.0), at(-0.01, 0.25)];
+
+    let run = cull_bake_matches_unculled(cull_quads, &lights, "chart_cull_behind_plane");
+
+    assert!(run.dropped(0, 0), "1 cm behind: {:?}", run.baked);
+    assert!(run.kept(1, 0), "1 cm in front: {:?}", run.baked);
+    assert!(run.dropped(2, 0), "soft, centre behind: {:?}", run.baked);
+    assert_eq!(run.lit_texels[0], 0);
+    assert!(run.lit_texels[1] > 0, "the light in front lights the chart");
+    assert_eq!(run.lit_texels[2], 0);
+}
+
+// The chart normal comes from a vertex normal, here leaning off the face, so
+// it is not orthogonal to the u axis and the texel centres sit at different
+// heights along it. A light behind the normal's plane at one corner texel and
+// in front at another lights the texels in front, and is kept.
+#[test]
+fn chart_cull_keeps_a_leaning_normal_chart_whose_light_is_behind_at_one_corner_only() {
+    let charts = fixture_charts(leaning_normal_quad);
+    let chart = &charts[0];
+    assert!(
+        chart.normal.dot(chart.u_axis).abs() > 0.1,
+        "fixture: the normal leans along u"
+    );
+    let mut light = point_light(DVec3::new(6.0, -0.5, 6.0), [1.0, 0.6, 0.3]);
+    light.falloff_range = 20.0;
+    let heights =
+        corner_texels(chart).map(|corner| chart.normal.dot(light.origin.as_vec3() - corner));
+    assert!(
+        heights.iter().any(|&h| h < 0.0) && heights.iter().any(|&h| h > 0.0),
+        "fixture: the light is behind at one corner and in front at another: {heights:?}"
+    );
+
+    let run = cull_bake_matches_unculled(
+        leaning_normal_quad,
+        std::slice::from_ref(&light),
+        "chart_cull_leaning_normal",
+    );
+
+    assert!(run.kept(0, 0), "{:?}", run.baked);
+    assert!(run.lit_texels[0] > 0, "the texels in front light");
+}
+
+// A spot whose outer cone passes just clear of a chart's texel bounding sphere
+// is dropped, and one whose cone just crosses the sphere is kept.
+#[test]
+fn chart_cull_drops_a_spot_just_outside_its_outer_cone_and_keeps_one_just_inside() {
+    let charts = fixture_charts(cull_quads);
+    let (centre, radius) = texel_sphere(&charts[0]);
+    let height = 12.0;
+    let origin = centre + Vec3::Y * height;
+    let outer = 0.3_f32;
+    // Tilt the aim off the line to the sphere's centre, toward −X, by the
+    // sphere's angular radius and the outer angle, plus `gap`.
+    let spot = |gap: f32| {
+        let tilt = (radius / height).asin() + outer + gap;
+        spot_light(origin, Some([-tilt.sin(), -tilt.cos(), 0.0]), Some(outer))
+    };
+    let lights = vec![spot(0.002), spot(-0.002)];
+
+    let run = cull_bake_matches_unculled(cull_quads, &lights, "chart_cull_cone_edge");
+
+    assert!(run.dropped(0, 0), "just outside: {:?}", run.baked);
+    assert!(run.kept(1, 0), "just inside: {:?}", run.baked);
+    assert_eq!(run.lit_texels[0], 0);
+}
+
+// A spot with no authored aim or angles takes the bake's defaults, a 0.01 rad
+// cone straight down: beside a chart it is dropped, and over a texel it is
+// kept and lights it.
+#[test]
+fn chart_cull_culls_a_spot_with_no_authored_cone_by_the_bake_defaults() {
+    let charts = fixture_charts(cull_quads);
+    let (centre, radius) = texel_sphere(&charts[0]);
+    let texel = crate::chart_raster::chart_texel_world_position(&charts[0], 24, 24);
+    let lights = vec![
+        spot_light(centre + Vec3::new(0.0, 12.0, radius + 1.0), None, None),
+        spot_light(texel + Vec3::Y * 12.0, None, None),
+    ];
+
+    let run = cull_bake_matches_unculled(cull_quads, &lights, "chart_cull_cone_defaults");
+
+    assert!(run.dropped(0, 0), "beside the chart: {:?}", run.baked);
+    assert!(run.kept(1, 0), "over a texel: {:?}", run.baked);
+    assert_eq!(run.lit_texels[0], 0);
+    assert!(
+        run.lit_texels[1] > 0,
+        "the default cone lights the texel below"
+    );
+}
+
+// The cone test declines, keeping the pair, for an outer angle at or past a
+// right angle or negative, for a zero aim, and for a light inside the chart's
+// bounding sphere, each aimed away from the chart.
+#[test]
+fn chart_cull_keeps_spots_the_cone_test_declines() {
+    let charts = fixture_charts(cull_quads);
+    let (centre, _) = texel_sphere(&charts[0]);
+    let above = centre + Vec3::Y * 12.0;
+    let up = Some([0.0, 1.0, 0.0]);
+    let lights = vec![
+        spot_light(above, up, Some(std::f32::consts::FRAC_PI_2)),
+        spot_light(above, up, Some(2.0)),
+        spot_light(above, up, Some(-0.3)),
+        spot_light(above, Some([0.0, 0.0, 0.0]), Some(0.3)),
+        spot_light(centre + Vec3::Y, up, Some(0.3)),
+    ];
+
+    let run = cull_bake_matches_unculled(cull_quads, &lights, "chart_cull_cone_declines");
+
+    for (light, label) in [
+        "outer at a right angle",
+        "outer past a right angle",
+        "negative outer",
+        "zero aim",
+        "inside the bounding sphere",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(run.kept(light, 0), "{label}: {:?}", run.baked);
+    }
+}
+
+// For each falloff model, a light 1 mm past falloff_range of the nearest texel
+// centre is dropped, and one exactly at range is kept: a texel there still
+// lights under the inverse models and is zero under Linear.
+#[test]
+fn chart_cull_drops_a_light_just_past_range_and_keeps_one_at_range_for_each_falloff_model() {
     let charts = fixture_charts(cull_quads);
     let texel = crate::chart_raster::chart_texel_world_position(&charts[0], 0, 0);
     let models = [
@@ -543,29 +784,39 @@ fn chart_cull_keeps_chart_whose_nearest_texel_is_at_falloff_range() {
         ("inverse_squared", FalloffModel::InverseSquared, true),
     ];
     for (label, model, lights_at_range) in models {
-        // Straight above the texel, so no other texel is nearer.
+        // Straight above the corner texel, so no other texel is nearer.
         let origin = DVec3::new(
             f64::from(texel.x),
             f64::from(texel.y + 4.0),
             f64::from(texel.z),
         );
-        let mut light = point_light(origin, [1.0, 0.6, 0.3]);
-        light.falloff_model = model;
+        let light_with_range = |range: f32| {
+            let mut light = point_light(origin, [1.0, 0.6, 0.3]);
+            light.falloff_model = model;
+            light.falloff_range = range;
+            light
+        };
         // The bake measures from the f32 origin, so use that exact distance.
-        light.falloff_range = origin.as_vec3().distance(texel);
-        let at_range = lightmap_bake::falloff(&light, light.falloff_range);
+        let distance = origin.as_vec3().distance(texel);
+        let lights = vec![
+            light_with_range(distance),
+            light_with_range(distance - 0.001),
+        ];
+        let at_range = lightmap_bake::falloff(&lights[0], distance);
 
         let run = cull_bake_matches_unculled(
             cull_quads,
-            std::slice::from_ref(&light),
+            &lights,
             &format!("chart_cull_texel_range_{label}"),
         );
 
         assert_eq!(
             run.baked,
             vec![(0, 0, 0)],
-            "{label}: only the chart at range"
+            "{label}: only the light at range bakes the chart"
         );
+        assert!(run.dropped(1, 0), "{label}: just past range");
+        assert_eq!(run.lit_texels[1], 0, "{label}: nothing lights past range");
         if lights_at_range {
             assert!(at_range > 0.0, "{label}: falloff at range");
             assert!(run.lit_texels[0] > 0, "{label}: texel at range lights");
@@ -576,17 +827,54 @@ fn chart_cull_keeps_chart_whose_nearest_texel_is_at_falloff_range() {
     }
 }
 
-// The cull compares the padded texel bounds with `<=`: a chart whose padded
-// bounds are exactly falloff_range away is baked, one ulp short it is not.
-// Neither lights a texel, since the padding puts every texel beyond the range.
+// A sun with N·L ≤ 0 lights no texel and is dropped from every chart, one
+// with N·L just above 0 lights them all and is kept. The aims graze the
+// decoded chart normal, so the sign does not rest on its quantization.
 #[test]
-fn chart_cull_keeps_chart_at_padded_bounds_range_and_drops_it_one_ulp_beyond() {
+fn chart_cull_drops_a_sun_with_n_dot_l_at_most_zero_and_keeps_one_just_above() {
+    let charts = fixture_charts(cull_quads);
+    let normal = charts[0].normal;
+    assert!(
+        charts.iter().all(|chart| chart.normal == normal),
+        "fixture: every quad shares one normal"
+    );
+    let along = normal.cross(Vec3::Z).normalize();
+    let sun = |aim: Vec3| {
+        let mut light = point_light(DVec3::ZERO, [0.3, 0.4, 1.0]);
+        light.light_type = LightType::Directional;
+        light.cone_direction = Some(aim.to_array());
+        light
+    };
+    // A sun shines along its aim, so N·L is −(normal · aim).
+    let lights = vec![
+        sun(normal),
+        sun((along + normal * 1.0e-4).normalize()),
+        sun((along - normal * 1.0e-4).normalize()),
+    ];
+
+    let run = cull_bake_matches_unculled(cull_quads, &lights, "chart_cull_sun");
+
+    for chart in 0..WINDOW_QUADS {
+        assert!(run.dropped(0, chart), "N·L = −1: {:?}", run.baked);
+        assert!(run.dropped(1, chart), "N·L just below 0: {:?}", run.baked);
+        assert!(run.kept(2, chart), "N·L just above 0: {:?}", run.baked);
+    }
+    assert_eq!(run.lit_texels[..2], [0, 0]);
+    assert!(run.lit_texels[2] > 0, "the grazing sun lights the quads");
+}
+
+// `light_may_reach` compares the padded texel bounds with `<=`: a light whose
+// range reaches them exactly keeps the chart in range, one ulp short it does
+// not. Neither range reaches a texel, so the coverage cull drops the pair the
+// range test keeps.
+#[test]
+fn chart_cull_drops_a_chart_the_light_reaches_only_through_its_padded_bounds() {
     let charts = fixture_charts(cull_quads);
     let (min, max) = chart_texel_bounds(&charts[0]).expect("fixture chart has texels");
     let origin = Vec3::new((min.x + max.x) * 0.5, max.y + 3.0, (min.z + max.z) * 0.5);
     let at_bounds = origin.distance(Vec3::new(origin.x, max.y, origin.z));
     let one_ulp_short = f32::from_bits(at_bounds.to_bits() - 1);
-    for (label, range, kept) in [("at", at_bounds, true), ("beyond", one_ulp_short, false)] {
+    for (label, range, in_range) in [("at", at_bounds, true), ("beyond", one_ulp_short, false)] {
         let mut light = point_light(
             DVec3::new(
                 f64::from(origin.x),
@@ -604,8 +892,13 @@ fn chart_cull_keeps_chart_at_padded_bounds_range_and_drops_it_one_ulp_beyond() {
             &format!("chart_cull_bounds_range_{label}"),
         );
 
-        let expected = if kept { vec![(0, 0, 0)] } else { Vec::new() };
-        assert_eq!(run.baked, expected, "{label}: baked charts");
+        let expected = if in_range {
+            vec![(0, 0, 0)]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(run.reached, expected, "{label}: charts in range");
+        assert_eq!(run.baked, Vec::new(), "{label}: baked charts");
         assert_eq!(
             run.lit_texels[0], 0,
             "{label}: padded texels are out of range"
@@ -613,11 +906,11 @@ fn chart_cull_keeps_chart_at_padded_bounds_range_and_drops_it_one_ulp_beyond() {
     }
 }
 
-// The cull reads only distance, never a spot's cone: charts the cone points
-// away from are still baked, and they bake to nothing, matching the unculled
-// bake.
+// Every quad is in range of a spot 40 m long, but the cone test drops the
+// quads its cone points away from. Down keeps only the quad below it; up keeps
+// only the quad whose bounding sphere holds the light, and lights nothing.
 #[test]
-fn chart_cull_bakes_charts_a_spot_cone_points_away_from_to_unculled_bytes() {
+fn chart_cull_drops_charts_a_spot_cone_points_away_from() {
     let spot = |direction: [f32; 3]| {
         let mut light = point_light(DVec3::new(20.0, 6.0, 6.0), [1.0, 0.8, 0.5]);
         light.light_type = LightType::Spot;
@@ -635,7 +928,12 @@ fn chart_cull_bakes_charts_a_spot_cone_points_away_from_to_unculled_bytes() {
     let every_quad_per_light: Vec<_> = (0..lights.len())
         .flat_map(|light| (0..WINDOW_QUADS).map(move |chart| (light, 0, chart)))
         .collect();
-    assert_eq!(run.baked, every_quad_per_light, "every quad is in range");
+    assert_eq!(run.reached, every_quad_per_light, "every quad is in range");
+    assert_eq!(
+        run.baked,
+        vec![(0, 0, 1), (1, 0, 1)],
+        "only the quad under the spot"
+    );
     assert!(run.lit_texels[0] > 0, "the downward cone lights a quad");
     assert_eq!(run.lit_texels[1], 0, "the upward cone lights nothing");
 }

@@ -21,6 +21,7 @@ use crate::texel_footprint::{ProbeEarlyOut, TexelSampler, TexelSite, has_embedde
 use glam::DVec3;
 
 mod cache_keys;
+mod chart_cull;
 mod chart_walk;
 
 pub(crate) use cache_keys::atlas_layout_fingerprint;
@@ -28,6 +29,7 @@ pub use cache_keys::{
     LayerKeyContext, layer_input_hash, section_input_hash, validate_cached_lightmap_section,
     validate_layer_partition,
 };
+pub(crate) use chart_cull::{ExactSkips, chart_may_cover};
 use chart_walk::bake_light_layer_chart_clipped;
 pub(crate) use chart_walk::{bake_light_layer_chart_controlled, for_each_light_layer_chart_texel};
 #[cfg(test)]

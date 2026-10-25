@@ -802,9 +802,10 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 
 // `soft_visibility` and `soft_visibility_with` are the centre-point sampler.
 // `TexelSampler::Centre` (floor off) and the probe-point bakers (direct SH,
-// scatter) call them, each wrapping its own `segment_clear` as the trace
-// closure. The SH bounce traces one sample of the same lattice per hit
-// (`soft_visibility_one_sample`). The floored texel path is `texel_footprint`.
+// animated direct SH, scatter) call them, each wrapping its own `segment_clear`
+// as the trace closure. The SH bounce traces one sample of the same lattice per
+// hit (`soft_visibility_one_sample`). The floored texel path is
+// `texel_footprint`.
 
 /// Probe samples traced before escalating. Tracing this many first lets the
 /// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;
@@ -819,7 +820,7 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 pub(crate) const SOFT_PROBE_SAMPLES: u32 = 4;
 
 /// Default full stratified sample count once a penumbra is detected. The
-/// area-sample-count bake knob (Task 6) overrides this per call via
+/// area-sample-count bake knob overrides this per call via
 /// `soft_visibility`'s `full_samples` argument; callers without a knob pass
 /// this default, and the SH bounce, where bounce is low-frequency, uses it as
 /// the lattice its one sample per hit draws from.
@@ -941,10 +942,10 @@ pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Ve
 ///
 /// `trace(from, to)` returns true when the segment is clear; the max-distance clamp
 /// lives inside the closure. This keeps the helper trace-context-agnostic so its
-/// callers (the static lightmap and animated weight-map texels, direct SH,
-/// scatter) and the SH bounce's one-sample twin, [`soft_visibility_one_sample`],
-/// wrap their own `segment_clear` — each with a different signature — as the
-/// closure.
+/// callers (the static lightmap and animated weight-map texels, direct SH and
+/// animated direct SH through `bake_probe_direct_rgb`, scatter) and the SH
+/// bounce's one-sample twin, [`soft_visibility_one_sample`], wrap their own
+/// `segment_clear` — each with a different signature — as the closure.
 ///
 /// Determinism: the sample pattern is a fixed Fibonacci lattice (mirroring
 /// `sh_bake.rs`'s convention) rotated by `seed`. No RNG, no hash-order dependence —
@@ -1120,7 +1121,7 @@ pub(crate) fn soft_visibility_one_sample(
 
 /// The emitter extent soft visibility samples: the sphere radius of a point or
 /// spot light, the angular diameter of a sun. `<= 0` is an authored hard edge.
-fn emitter_radius(light: &MapLight) -> f32 {
+pub(crate) fn emitter_radius(light: &MapLight) -> f32 {
     match light.light_type {
         LightType::Point | LightType::Spot => light.light_size,
         LightType::Directional => light.angular_diameter,

@@ -146,7 +146,7 @@ pub(crate) fn bake_delta_sh_volumes_controlled_with_tally(
 
 /// The delta bake with the bounce's soft-light visibility chosen; production
 /// passes [`BounceVisibility::OneSample`]. The mode is not keyed: only that
-/// mode ever reaches the cache.
+/// mode ever reaches the cache, and every other mode must pass `cache: None`.
 pub(crate) fn bake_delta_sh_volumes_with_visibility(
     inputs: &DeltaBakeInputs<'_>,
     config: &crate::sh_bake::ShConfig,
@@ -154,6 +154,10 @@ pub(crate) fn bake_delta_sh_volumes_with_visibility(
     control: &BakeControl,
     visibility: BounceVisibility,
 ) -> (Option<DeltaShVolumesSection>, DeltaShCacheTally) {
+    debug_assert!(
+        cache.is_none() || visibility == BounceVisibility::OneSample,
+        "only the one-sample bounce may bake through the cache"
+    );
     if inputs.animated_lights.is_empty() {
         return (None, DeltaShCacheTally::default());
     }
@@ -944,7 +948,10 @@ mod tests {
     /// Two soft animated lights reaching one cell bake on different seed axes,
     /// so their one-sample bounces start each probe's stratified pass at
     /// unrelated lattice samples instead of sharing one noise pattern that
-    /// adds linearly when the deltas compose.
+    /// adds linearly when the deltas compose. A shared cell in the penumbra
+    /// (one-sample differs from the full set there, so the sample drawn
+    /// matters) re-bakes to its stored bytes on the light's own axis and to
+    /// different bytes on the other light's axis.
     #[test]
     fn indirect_delta_lights_sharing_a_cell_sample_independently() {
         let lights = [
@@ -956,17 +963,35 @@ mod tests {
             .map(|l| indirect_light_axis(&unit_radiance_light(l)));
         assert_ne!(axes[0], axes[1]);
         with_occluded_floor_bake(&lights, BounceVisibility::OneSample, |inputs, section| {
-            let blocks = subblocks_by_cell_and_light(&section);
+            let full = bake_delta_sh_volumes_with_visibility(
+                inputs,
+                &crate::sh_bake::ShConfig { probe_spacing: 1.0 },
+                None,
+                &BakeControl::unrestricted(),
+                BounceVisibility::FullSet,
+            )
+            .0
+            .expect("expected a section");
+            let (blocks, full_blocks) = (
+                subblocks_by_cell_and_light(&section),
+                subblocks_by_cell_and_light(&full),
+            );
             let shared: Vec<u32> = blocks
                 .keys()
                 .filter(|&&(cell, light)| light == 0 && blocks.contains_key(&(cell, 1)))
                 .map(|&(cell, _)| cell)
                 .collect();
             assert!(!shared.is_empty(), "the lights must share a cell");
+            let in_penumbra = |cell: u32| {
+                (0..2u32).all(|light| blocks[&(cell, light)] != full_blocks[&(cell, light)])
+            };
+            assert!(
+                shared.iter().any(|&cell| in_penumbra(cell)),
+                "some shared cell must lie in both lights' penumbrae"
+            );
             for &cell in &shared {
-                // The bake traces each light on its own content axis.
-                for (light, &axis) in axes.iter().enumerate() {
-                    let rebaked = bake_subblock(
+                let rebake = |light: usize, axis| {
+                    bake_subblock(
                         inputs,
                         &unit_radiance_light(&lights[light]),
                         axis,
@@ -975,8 +1000,19 @@ mod tests {
                         world_aabb_min(inputs),
                         1.0,
                         BounceVisibility::OneSample,
-                    );
-                    assert_eq!(blocks[&(cell, light as u32)], &rebaked[..]);
+                    )
+                };
+                for (light, &axis) in axes.iter().enumerate() {
+                    let stored = blocks[&(cell, light as u32)];
+                    // The bake traces each light on its own content axis.
+                    assert_eq!(stored, &rebake(light, axis)[..]);
+                    if in_penumbra(cell) {
+                        assert_ne!(
+                            stored,
+                            &rebake(light, axes[1 - light])[..],
+                            "cell {cell}: light {light} baked the same bytes on the other light's axis"
+                        );
+                    }
                 }
                 let lattice = crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
                 let differing = (0..PROBES_PER_CELL)

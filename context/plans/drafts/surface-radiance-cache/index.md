@@ -4,12 +4,12 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Compiler pipeline
 
 ## Problem
 
-Owner request: reclaim bake time after the lightmap penumbra floor doubled the Lightmap Bake stage (hallway-mini cold total 440 s → 638 s), and keep SH bake cost from growing with light count as maps grow. The SH indirect bake is about half the full hallway's cold compile. Cause: for each of 256 gather rays per probe, the bake re-shadows every reaching light at the hit point, so shadow rays scale with probes × rays × lights. A one-sample estimator lands first (Path) and cuts the per-light ray count, but not the scaling. The bake is also single-bounce, so shadowed areas get no fill from light bounced twice. Done means the SH base (id 34) and animated indirect deltas (id 27) read outgoing radiance from a surface radiance cache built once per bake, with multi-bounce. Cold SH bake time is measured against the one-sample estimator on hallway-mini, the full hallway, `stress-warren-mini` and `campaign-test`.
+Owner request: multi-bounce indirect light, and SH bake cost that does not grow with light count as maps grow. Cause: for each of 256 gather rays per probe, the bake shadows every reaching light at the hit point, so shadow rays scale with probes × rays × lights. A second bounce on that estimator would multiply it again, so the single-bounce bake leaves shadowed areas with no fill from light bounced twice. The one-sample estimator (PR #618) cut cold SH Bake 1.86× on the full hallway (648 → 349 s) but not the scaling. The near-term bake-time win now comes from it and the lightmap culls, and coloured bounce needs no cache, so neither is this brief's case (owner, 2026-10-25). Done means the SH base (id 34) and animated indirect deltas (id 27) read outgoing radiance from a surface radiance cache built once per bake, with multi-bounce. Cold SH bake time is measured against the one-sample estimator on hallway-mini, the full hallway, `stress-warren-mini` and `campaign-test`.
 
 ## Decisions
 
 - **Gather from a bake-only surface radiance cache.** Fixed-size patches on world faces store outgoing radiance: albedo × irradiance. Gather rays look up the patch they hit instead of tracing shadow rays. Patch direct irradiance reuses today's light evaluation, early-outs and `soft_visibility`, so only the place shadows are traced changes.
-- **Prerequisite: the one-sample estimator lands and is measured first (owner: least visual difference first).** This brief is re-scoped against that measurement before promotion.
+- **Sequenced after the lightmap culls and coloured bounce (owner).** A sizing pass first measures the share of one-sample SH Bake still spent on shadow rays at gather hits; it prices the scaling half of the case before promotion.
 - **Scope: id 34 and id 27.** Base and deltas share one estimator, so an animated light's bounce matches the static bounce beside it (owner). Ids 35, 41, 45, 47 and 48 trace no gather hits and keep their paths.
 - **Albedo is whatever the bake uses when this builds.** That is grey today; coloured bounce is its own step and may land first. The cache reproduces the pre-cache estimator in single-bounce mode.
 - **Multi-bounce is in scope (owner), a look change judged by A/B.** Bounce two and later gathers patch to patch from the cache. A `prl-build` switch selects single-bounce for the parity row; it is listed in `--help`, absent from `docs/`, and folded into the SH keys.
@@ -67,7 +67,7 @@ Bounds:
 
 ## Open questions
 
-- Re-scope after the one-sample estimator is measured: does the cache's remaining saving, plus multi-bounce, still earn this shape? — owner — **blocks build**
+- After the sizing pass: does the shadow-ray share, plus multi-bounce, still earn this shape? — owner — **blocks build**
 - Multi-bounce under warm locality: warm builds bake bounce one only (dimmer-or-equal, local) while cold adds later bounces, or bounces two and later re-bake globally on any light edit? Recommend warm bounce one only. — owner — **blocks build**
 - Animated lights under multi-bounce: do deltas carry bounces two and later, or bounce one only? — owner — **blocks build**
 - Patch size, and nearest vs filtered lookup across patches — **delegated**: the parity row and the RAM row decide.

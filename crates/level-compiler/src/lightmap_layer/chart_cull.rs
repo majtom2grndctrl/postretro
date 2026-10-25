@@ -6,25 +6,69 @@ use std::f32::consts::FRAC_PI_2;
 
 use glam::{DVec3, Vec3};
 
-use crate::chart_raster::{chart_grid, chart_interior_dims};
+use crate::chart_raster::{ChartGrid, chart_grid, chart_interior_dims};
 use crate::lightmap_bake::{Chart, directional_light_direction, spot_cone_angles};
 use crate::map_data::{LightType, MapLight};
+
+#[cfg(test)]
+use super::skip_stats::SkipStats;
 
 /// Which exact skips the light-layer bake takes. A skip drops only work whose
 /// answer is already known, so output bytes are the same with it on or off.
 /// Production takes every skip; tests turn them off, through the partition
-/// window, to check the skipped bake against the full one. No flag, env var
-/// or cache key holds this.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// window or the chart walk's argument, to check the skipped bake against the
+/// full one. No flag, env var or cache key holds this.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ExactSkips {
     /// Planning drops a `(light, chart)` pair [`chart_may_cover`] rules out.
     pub chart_cull: bool,
+    /// The chart walk stores visibility 1 at a tile of texels the tile shaft
+    /// cull ([`super::shaft_cull`]) proves clear, and traces none of them.
+    pub shaft_cull: bool,
+    /// Every covered texel of a clear tile is also traced normally, with
+    /// copies of both occluder caches, and must give exactly 1.0 and leave
+    /// both copies as the skipped walk holds them. On by default in tests, so
+    /// every walk a test runs checks the cull.
+    #[cfg(test)]
+    pub verify: bool,
+    /// Where the walk and planning tally what they skipped.
+    #[cfg(test)]
+    pub stats: Option<&'static SkipStats>,
 }
 
 impl ExactSkips {
-    pub(crate) const ON: Self = Self { chart_cull: true };
+    pub(crate) const ON: Self = Self {
+        chart_cull: true,
+        shaft_cull: true,
+        #[cfg(test)]
+        verify: true,
+        #[cfg(test)]
+        stats: None,
+    };
     #[cfg(test)]
-    pub(crate) const OFF: Self = Self { chart_cull: false };
+    pub(crate) const OFF: Self = Self {
+        chart_cull: false,
+        shaft_cull: false,
+        verify: false,
+        stats: None,
+    };
+
+    /// These skips, tallied into `stats`.
+    #[cfg(test)]
+    pub(crate) fn tallied(self, stats: &'static SkipStats) -> Self {
+        Self {
+            stats: Some(stats),
+            ..self
+        }
+    }
+}
+
+/// `chart_texel_world_position`'s local coordinate on `axis` of grid texel
+/// `texel` (window-relative), in `f64`: the exact value of its `f32`
+/// expression's inputs.
+pub(super) fn exact_texel_local(grid: &ChartGrid, axis: usize, texel: i32) -> f64 {
+    let frac = (f64::from(grid.origin[axis] + texel) + 0.5) / f64::from(grid.interior[axis]);
+    f64::from(grid.uv_min[axis]) + frac * f64::from(grid.uv_extent[axis])
 }
 
 /// Bound, per metre of coordinate magnitude, on how far an `f32` centre from
@@ -103,11 +147,7 @@ impl TexelRect {
     fn of(chart: &Chart) -> Option<Self> {
         let grid = chart_grid(chart);
         let (width, height) = chart_interior_dims(chart);
-        let local = |axis: usize, texel: i32| {
-            let frac =
-                (f64::from(grid.origin[axis] + texel) + 0.5) / f64::from(grid.interior[axis]);
-            f64::from(grid.uv_min[axis]) + frac * f64::from(grid.uv_extent[axis])
-        };
+        let local = |axis: usize, texel: i32| exact_texel_local(&grid, axis, texel);
         let origin = chart.origin.as_dvec3();
         let u_axis = chart.u_axis.as_dvec3();
         let v_axis = chart.v_axis.as_dvec3();

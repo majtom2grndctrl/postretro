@@ -11,18 +11,22 @@ use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 #[cfg(test)]
+use crate::lightmap_bake::light_texel_contribution_and_visibility_with;
+#[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
-use crate::lightmap_bake::{
-    BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction,
-    light_texel_contribution_and_visibility_with,
-};
+use crate::lightmap_bake::{BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction};
 use crate::map_data::{LightType, MapLight};
-use crate::texel_footprint::{ProbeEarlyOut, TexelSampler, TexelSite, has_embedded_emitter};
+use crate::texel_footprint::{ProbeEarlyOut, has_embedded_emitter};
+#[cfg(test)]
+use crate::texel_footprint::{TexelSampler, TexelSite};
 use glam::DVec3;
 
 mod cache_keys;
 mod chart_cull;
 mod chart_walk;
+mod shaft_cull;
+#[cfg(test)]
+mod skip_stats;
 
 pub(crate) use cache_keys::atlas_layout_fingerprint;
 pub use cache_keys::{
@@ -36,6 +40,11 @@ pub(crate) use chart_walk::{bake_light_layer_chart_controlled, for_each_light_la
 pub(crate) use chart_walk::{
     bake_light_layer_chart_without_clip_prepass, visit_light_chart_coverage_controlled,
 };
+pub(crate) use shaft_cull::ShaftScene;
+#[cfg(test)]
+pub(crate) use shaft_cull::{SHAFT_TILE_TEXELS, ShaftCull};
+#[cfg(test)]
+pub(crate) use skip_stats::{ChartTally, SkipStats};
 
 /// Bump when the per-light layer payload format or the single-light bake math
 /// changes. Folded into every `"lightmap_layer"` cache key, so a bump
@@ -119,6 +128,7 @@ fn sparse_layer_texel(idx: u32, raw_visibility: Option<f32>) -> Option<LayerTexe
     })
 }
 
+#[cfg(test)]
 fn bake_sparse_layer_texel(
     idx: u32,
     light: &MapLight,
@@ -628,6 +638,7 @@ fn bake_light_layer_for_faces(
     control: &BakeControl,
 ) -> LightmapLayer {
     let layer_count = atlas_layer_count(atlas);
+    let shaft_scene = ShaftScene::new(primitives, geometry);
     // `par_iter().map().collect()` is indexed: the outer collection retains
     // planner order even while ray work runs concurrently. Flattening those
     // per-chart buffers therefore preserves the cache payload's established
@@ -646,6 +657,8 @@ fn bake_light_layer_for_faces(
                 penumbra_floor,
                 early_out,
                 true,
+                ExactSkips::ON,
+                &shaft_scene,
                 control,
             )
         })

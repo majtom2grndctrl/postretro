@@ -589,6 +589,8 @@ pub(crate) use embedded_emitter::{NO_EMBEDDED_EMITTERS, embedded_emitter_fractio
 use pairing::EmitterPairing;
 
 #[cfg(test)]
+mod shaft_cull_tests;
+#[cfg(test)]
 mod test_fixtures;
 #[cfg(test)]
 mod tests;

@@ -240,6 +240,8 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
         false,
+        ExactSkips::ON,
+        &ShaftScene::new(&primitives, &geometry),
         &BakeControl::unrestricted(),
     );
     let mut analytic = Vec::new();

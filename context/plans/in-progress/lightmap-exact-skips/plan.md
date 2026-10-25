@@ -9,6 +9,11 @@ read at: 1e84f1dd2
 - §Margin scale's coordinate rows (research) → the derivation puts coordinate magnitude in the sampler's endpoint arithmetic, per hull and per axis, not in the hit test; a receiver declines past ~315–405 m along its normal axis, not at 1 km. Same Decision meaning: speed lost only at large coordinates; every authored map measured spans ≤ 150 m.
 - A6 "the cone test drops those pairs" (research, spot aimed away) → the upward spot sits inside one quad's bounding sphere, so the Decision's inside-sphere guard keeps that one pair; it lights nothing and its bytes match. The fixture asserts exactly which pairs bake.
 - Seam "a path through `bake_light_layer_chart_controlled`" → task 3 landed `ExactSkips { chart_cull }` on the partition window only; task 4 adds `shaft_cull` and threads it through the chart walk, where it is first read.
+- A8 "two shadowed tiles that share one occluder" → one triangle cannot shadow A and C on the same rows while B between them clears (a separating halfspace holding A's and C's slab points holds B's between them). The fixture's one occluder is a gate (two posts beside B's shaft, a lintel above the light); on each row the left post's triangle is the remembered occluder carried across B, as O1 intends.
+- §Hull containment's slab argument for lead-ins → it needs a near-orthonormal chart frame (unit axes within 1e-6, pairwise dots ≤ 1e-3) and a light centre ≥ 5ε above the texel plane after `light_size`; otherwise the tile tests blocked. Speed only: flat brush faces pass; a leaning vertex-normal chart never clears.
+- A10 "an occluder just past its last texel column inside the pad" → applies to the floored pad; floor-off's pad is 4ε, so that post is outside the hull and the tile clears, bytes checked at both settings.
+- A20 reference parity → `mixed_lights` drops no pair, so a sibling test (`reference_parity_fixture_drops_a_pair_and_clears_a_tile_at_each_floor_setting`) adds one light and compares against the same cull-free reference at each floor setting; the original test is unchanged.
+- Test seam → `ExactSkips::ON` runs verify mode under `cfg(test)`, so every existing test and `#[ignore]` gate re-traces each clear tile.
 - "In `plan_charts`" (Path, chart cull placement) → the stage's planner is `LayerPartitions::plan_charts` (`pipeline/lightmap_stage/partitions.rs`); `lightmap_bake/charts.rs::plan_charts` is the chart builder the drift research cites. The cull goes in the former, after `light_may_reach`, before its `control.advance`.
 
 ## Delegated answers
@@ -65,6 +70,6 @@ Fixtures live in the lightmap stage and layer test modules; "on/off" means the c
 | 1 | Split the clipped chart walk out of `lightmap_layer.rs`, behavior-preserving, own commit | delegated (split) | — | done: 50cd0aeb5, `lightmap_layer` 49 passed, clippy clean |
 | 2 | Margin derivation in `research.md`; constants into this plan | delegated (derivation), reviewed by integrating executor | — | done: research §Margin derivation, randomized f32 MT checks at ≤ 42% of each bound |
 | 3 | Chart coverage cull in `LayerPartitions::plan_charts` + culls-off seam through `bake_light_layer_chart_controlled` + A1–A6 | delegated, integrated by executor | 1 | done: `chart_cull` 13 passed; `lightmap_stage lightmap_layer chart_cull` 112 passed / 4 ignored; stage-path suites 280 passed / 9 ignored; clippy clean |
-| 4 | Tile shaft cull + verify mode + test counters in the chart walk + A7–A19 | delegated, integrated by executor | 2, 3 | in progress |
-| 5 | Permit side and reference parity (A20, A21) | integrating executor | 4 | |
+| 4 | Tile shaft cull + verify mode + test counters in the chart walk + A7–A20 | delegated, integrated by executor | 2, 3 | done: focused 289 passed / 10 ignored; bin target 1880 passed / 21 ignored; clippy clean; margin search 2 × 150k cases, 0 violations |
+| 5 | Existing parity (A21) in the final gate | integrating executor | 4 | |
 | 6 | Manual gates M1–M4, M6; M5 baseline + runs | integrating executor / owner | 5 | |

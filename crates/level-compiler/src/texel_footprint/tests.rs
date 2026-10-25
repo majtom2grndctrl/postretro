@@ -1711,6 +1711,8 @@ fn lit_records(
                     count,
                     true,
                     embedded,
+                    crate::lightmap_layer::ExactSkips::ON,
+                    &crate::lightmap_layer::ShaftScene::new(&primitives, geometry),
                     &control,
                 );
                 checked += texels.len();
@@ -2006,6 +2008,7 @@ fn assert_prepass_matches_full_clip(
         .iter()
         .map(|light| super::has_embedded_emitter(light, &bvh, &primitives, geometry))
         .collect();
+    let scene = crate::lightmap_layer::ShaftScene::new(&primitives, geometry);
     let (mut skipped, mut total) = (0, 0);
     for (face, chart) in atlas.charts.iter().enumerate() {
         if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
@@ -2036,6 +2039,8 @@ fn assert_prepass_matches_full_clip(
                         count,
                         true,
                         embedded,
+                        crate::lightmap_layer::ExactSkips::ON,
+                        &scene,
                         &control,
                     );
                     let full = crate::lightmap_layer::bake_light_layer_chart_without_clip_prepass(
@@ -2047,6 +2052,8 @@ fn assert_prepass_matches_full_clip(
                         geometry,
                         count,
                         embedded,
+                        crate::lightmap_layer::ExactSkips::ON,
+                        &scene,
                         &control,
                     );
                     assert_eq!(
@@ -2245,6 +2252,7 @@ const SCALED_PITCH: f32 = 4.0 * PITCH;
 fn receiver_at(cx: f32, pitch: f32) -> Receiver {
     Receiver {
         x0: cx - 24.0 * pitch,
+        y: 0.0,
         z0: -24.0 * pitch,
         width: 48,
         height: 48,
@@ -2342,6 +2350,11 @@ fn a_scaled_face_ramps_over_the_same_texels_in_either_walk_order() {
                         DEFAULT_AREA_SAMPLE_COUNT,
                         true,
                         false,
+                        crate::lightmap_layer::ExactSkips::ON,
+                        &crate::lightmap_layer::ShaftScene::new(
+                            &fixture.primitives,
+                            &fixture.geometry,
+                        ),
                         &BakeControl::unrestricted(),
                     );
                 }

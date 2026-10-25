@@ -10,7 +10,7 @@ use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::{
-    ClipBand, FootprintOutcome, ProbeEarlyOut, TexelFrame, TexelSite, footprint_for,
+    ClipBand, FootprintOutcome, ProbeEarlyOut, TexelFrame, TexelSampler, TexelSite, footprint_for,
     footprint_visibility, lead_in_clear,
 };
 use crate::bake_control::BakeControl;
@@ -22,7 +22,10 @@ use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::lightmap_bake::{
     BlockLayout, Chart, light_texel_is_covered, segment_clear, segment_clear_remembering,
 };
-use crate::lightmap_layer::{SharedAtlas, bake_light_layer_chart_controlled};
+use crate::lightmap_layer::{
+    ExactSkips, LayerTexel, ShaftCull, ShaftScene, SharedAtlas, bake_light_layer_chart_controlled,
+    bake_light_layer_chart_without_clip_prepass,
+};
 use crate::map_data::{DEFAULT_LIGHT_SIZE, FalloffModel, LightType, MapLight, ShadowType};
 use crate::texel_step_detector::VisibilityGrid;
 
@@ -140,12 +143,14 @@ impl SceneBuilder {
 // --- receiver ---------------------------------------------------------------
 
 /// An up-facing floor receiver `width × height` texels at `PITCH`, its first
-/// texel's corner at `(x0, 0, z0)`. Texel `(tx, ty)` is centred at texel
+/// texel's corner at `(x0, y, z0)`. Texel `(tx, ty)` is centred at texel
 /// coordinates `(tx + 0.5, ty + 0.5)`; [`Receiver::texel_coords`] maps a
 /// world point there.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Receiver {
     pub(super) x0: f32,
+    /// Height of the floor plane.
+    pub(super) y: f32,
     pub(super) z0: f32,
     pub(super) width: u32,
     pub(super) height: u32,
@@ -156,6 +161,7 @@ impl Receiver {
     pub(super) fn centred(width: u32, height: u32) -> Self {
         Self {
             x0: -(width as f32) * PITCH * 0.5,
+            y: 0.0,
             z0: -(height as f32) * PITCH * 0.5,
             width,
             height,
@@ -166,7 +172,7 @@ impl Receiver {
     pub(super) fn chart(&self) -> Chart {
         let padding = 2 * CHART_PADDING_TEXELS;
         Chart {
-            origin: Vec3::new(self.x0, 0.0, self.z0),
+            origin: Vec3::new(self.x0, self.y, self.z0),
             u_axis: Vec3::X,
             v_axis: Vec3::Z,
             uv_min: [0.0, 0.0],
@@ -188,12 +194,13 @@ impl Receiver {
             self.x0 + self.width as f32 * self.pitch,
             self.z0 + self.height as f32 * self.pitch,
         );
+        let y = self.y;
         scene.quad(
             [
-                Vec3::new(self.x0, 0.0, self.z0),
-                Vec3::new(self.x0, 0.0, z1),
-                Vec3::new(x1, 0.0, z1),
-                Vec3::new(x1, 0.0, self.z0),
+                Vec3::new(self.x0, y, self.z0),
+                Vec3::new(self.x0, y, z1),
+                Vec3::new(x1, y, z1),
+                Vec3::new(x1, y, self.z0),
             ],
             Vec3::Y,
         );
@@ -299,6 +306,104 @@ impl Fixture {
         area_sample_count: u32,
         floor: bool,
     ) -> VisibilityGrid {
+        self.grid_of(&self.bake_texels(light, area_sample_count, floor, ExactSkips::ON))
+    }
+
+    /// The layer records [`Fixture::bake`] reads, walked with `skips`.
+    pub(super) fn bake_texels(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+        floor: bool,
+        skips: ExactSkips,
+    ) -> Vec<LayerTexel> {
+        // The emitter test the production stage runs once per light.
+        let embedded = floor && self.has_embedded_emitter(light);
+        self.with_atlas(|shared| {
+            bake_light_layer_chart_controlled(
+                light,
+                shared,
+                0,
+                &self.bvh,
+                &self.primitives,
+                &self.geometry,
+                area_sample_count,
+                floor,
+                embedded,
+                skips,
+                &self.shaft_scene(),
+                &BakeControl::unrestricted(),
+            )
+        })
+    }
+
+    /// [`Fixture::bake_texels`], floored, with every clip segment traced (no
+    /// clip pre-pass).
+    pub(super) fn bake_texels_without_clip_prepass(
+        &self,
+        light: &MapLight,
+        area_sample_count: u32,
+        skips: ExactSkips,
+    ) -> Vec<LayerTexel> {
+        let embedded = self.has_embedded_emitter(light);
+        self.with_atlas(|shared| {
+            bake_light_layer_chart_without_clip_prepass(
+                light,
+                shared,
+                0,
+                &self.bvh,
+                &self.primitives,
+                &self.geometry,
+                area_sample_count,
+                embedded,
+                skips,
+                &self.shaft_scene(),
+                &BakeControl::unrestricted(),
+            )
+        })
+    }
+
+    /// The bake's map-wide shaft-cull terms over this fixture.
+    pub(super) fn shaft_scene(&self) -> ShaftScene {
+        ShaftScene::new(&self.primitives, &self.geometry)
+    }
+
+    /// The shaft test the receiver's walk runs for `light`.
+    pub(super) fn shaft_cull<'a>(
+        &'a self,
+        light: &MapLight,
+        floor: bool,
+        scene: &'a ShaftScene,
+    ) -> ShaftCull<'a> {
+        let chart = self.receiver.chart();
+        let sampler = TexelSampler::new(light, 4, floor, false);
+        ShaftCull::new(
+            light,
+            &chart,
+            &sampler,
+            &TexelFrame::for_chart(&chart),
+            scene,
+            &self.bvh,
+            &self.primitives,
+            &self.geometry,
+        )
+        .expect("a point or spot light")
+    }
+
+    /// Layer records placed back on the receiver's texel grid.
+    pub(super) fn grid_of(&self, texels: &[LayerTexel]) -> VisibilityGrid {
+        let atlas_width = self.receiver.chart().width_texels;
+        let mut grid = VisibilityGrid::new(self.receiver.width, self.receiver.height);
+        for texel in texels {
+            let x = texel.idx % atlas_width - CHART_PADDING_TEXELS;
+            let y = texel.idx / atlas_width - CHART_PADDING_TEXELS;
+            grid.set(x, y, texel.raw_visibility);
+        }
+        grid
+    }
+
+    /// The receiver's one-chart atlas.
+    fn with_atlas<R>(&self, walk: impl FnOnce(&SharedAtlas<'_>) -> R) -> R {
         let chart = self.receiver.chart();
         let charts = [chart];
         let placements = [ChartPlacement {
@@ -315,27 +420,7 @@ impl Fixture {
             atlas_height,
             layout: &layout,
         };
-        // The emitter test the production stage runs once per light.
-        let embedded = floor && self.has_embedded_emitter(light);
-        let texels = bake_light_layer_chart_controlled(
-            light,
-            &shared,
-            0,
-            &self.bvh,
-            &self.primitives,
-            &self.geometry,
-            area_sample_count,
-            floor,
-            embedded,
-            &BakeControl::unrestricted(),
-        );
-        let mut grid = VisibilityGrid::new(self.receiver.width, self.receiver.height);
-        for texel in texels {
-            let x = texel.idx % atlas_width - CHART_PADDING_TEXELS;
-            let y = texel.idx / atlas_width - CHART_PADDING_TEXELS;
-            grid.set(x, y, texel.raw_visibility);
-        }
-        grid
+        walk(&shared)
     }
 
     /// [`super::embedded_emitter_fraction`] against this fixture.

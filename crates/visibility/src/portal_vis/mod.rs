@@ -16,6 +16,8 @@ use postretro_stage_timing::TimingGate;
 
 use chain_walk::{DfsState, flood};
 pub use clip::narrow_frustum;
+#[cfg(test)]
+pub(crate) use clip::{CLIP_EPSILON, clip_polygon_to_frustum, clip_polygon_to_planes};
 
 // Dense detail-brush partitions can create highly cyclic portal graphs where
 // the number of distinct portal chains is far larger than the number of cells.

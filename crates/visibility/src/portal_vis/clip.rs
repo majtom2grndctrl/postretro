@@ -8,7 +8,7 @@ use crate::visibility::{Frustum, FrustumPlane};
 // Half-space boundary epsilon for Sutherland-Hodgman. Over-inclusion at the
 // boundary is safe: the next narrowing iteration will discard any slop, so the
 // strict-subset invariant holds.
-pub(super) const CLIP_EPSILON: f32 = 1e-4;
+pub(crate) const CLIP_EPSILON: f32 = 1e-4;
 
 /// Clip a convex polygon against every frustum plane (Sutherland-Hodgman).
 ///
@@ -27,6 +27,17 @@ pub(crate) fn clip_polygon_to_frustum<'a>(
     scratch_a: &'a mut Vec<Vec3>,
     scratch_b: &'a mut Vec<Vec3>,
 ) -> &'a [Vec3] {
+    clip_polygon_to_planes(polygon, &frustum.planes, scratch_a, scratch_b)
+}
+
+/// [`clip_polygon_to_frustum`] over a bare plane list, for callers that build
+/// their clip planes per step instead of holding a `Frustum`.
+pub(crate) fn clip_polygon_to_planes<'a>(
+    polygon: &[Vec3],
+    planes: &[FrustumPlane],
+    scratch_a: &'a mut Vec<Vec3>,
+    scratch_b: &'a mut Vec<Vec3>,
+) -> &'a [Vec3] {
     scratch_a.clear();
     scratch_b.clear();
 
@@ -37,7 +48,7 @@ pub(crate) fn clip_polygon_to_frustum<'a>(
     scratch_a.extend_from_slice(polygon);
 
     let mut input_is_a = true;
-    for plane in &frustum.planes {
+    for plane in planes {
         let (input, output) = if input_is_a {
             (&*scratch_a, &mut *scratch_b)
         } else {

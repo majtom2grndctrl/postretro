@@ -4,6 +4,7 @@
 #[cfg(feature = "load-prl")]
 mod lightmap_stream;
 mod load_progress;
+mod portal_planes;
 mod prl;
 #[cfg(feature = "load-prl")]
 mod prl_animated_atlas;
@@ -46,6 +47,7 @@ pub use lightmap_stream::{
     LightmapTarget, PreparedLightmapBlock, requested_lightmap_streaming_mode,
 };
 pub use load_progress::LoadProgress;
+pub use portal_planes::PortalPlane;
 pub use prl::{
     CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
     CellLocatorTraceStep, CellVisibility, CoupledCellPair, CouplingTuple, FalloffModel, LevelWorld,

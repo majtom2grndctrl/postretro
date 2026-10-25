@@ -594,6 +594,9 @@ pub struct LevelWorld {
     pub cell_locator_nodes: Vec<CellLocatorNodeData>,
     pub portals: Vec<PortalData>,
     pub has_portals: bool,
+    /// Lazily built per-portal planes; read through [`LevelWorld::portal_planes`].
+    /// Construct with `Default::default()`.
+    pub portal_planes: std::sync::OnceLock<Vec<crate::portal_planes::PortalPlane>>,
     /// Optional baked CellVisibility section. `None` is the conservative
     /// all-perceivable fallback for maps compiled before the section existed.
     pub cell_visibility: Option<CellVisibility>,
@@ -837,6 +840,7 @@ impl LevelWorld {
             cell_locator_nodes,
             portals,
             has_portals,
+            portal_planes: Default::default(),
             cell_visibility: None,
             #[cfg(feature = "load-prl")]
             texture_names: vec![],
@@ -1315,6 +1319,7 @@ mod slim_tests {
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
+            portal_planes: Default::default(),
             cell_visibility: None,
         };
 
@@ -1982,6 +1987,7 @@ mod tests {
             }],
             portals: vec![],
             has_portals: false,
+            portal_planes: Default::default(),
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
@@ -2091,6 +2097,7 @@ mod tests {
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
+            portal_planes: Default::default(),
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
@@ -2154,6 +2161,7 @@ mod tests {
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
+            portal_planes: Default::default(),
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },

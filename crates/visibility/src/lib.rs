@@ -3,6 +3,9 @@
 
 mod cpu_stages;
 mod portal_vis;
+// The bounded-region walk; test-only until it replaces the chain walk.
+#[cfg(test)]
+mod region_walk;
 mod visibility;
 
 /// Epoch of the portal walk's output contract: which cells a pose reaches.

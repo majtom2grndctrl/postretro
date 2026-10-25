@@ -28,6 +28,13 @@ pub(crate) struct HeldLevelFrame {
     sh_drain_batch: ShDrainBatch,
 }
 
+impl HeldLevelFrame {
+    /// The visibility path the held view's walk took.
+    pub(crate) fn path(&self) -> postretro_visibility::VisibilityPath {
+        self.visible_render.stats.path
+    }
+}
+
 impl App {
     /// Render and present one world-less frame showing `ui_snapshot` over
     /// `clear_color`. Releases any level streaming: nothing is installed to

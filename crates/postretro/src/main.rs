@@ -1050,6 +1050,10 @@ pub(crate) struct App {
     /// The current level entry's Settling stretch; `Some` only in Settling.
     settle: Option<crate::startup::settling::SettleState>,
 
+    /// The revealed entry's Settling record, set at the reveal edge and
+    /// logged at the end of the reveal frame, once its misses are counted.
+    settle_summary: Option<crate::startup::settle_log::SettleSummary>,
+
     /// Set during `mod_init` if a mod registers a `SplashSource` override.
     /// The consume path in `run_splash_frame` frame 1 is wired; today the field
     /// stays `None` because no mod system yet calls the setter.

@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
-use crate::session::level_streaming::settle::{ResourceSettle, SettleReport};
+use crate::session::level_streaming::settle::{ResourceSettle, SettleReport, SettleSetSize};
 use crate::startup::BootState;
 use crate::startup::loading_screen::LOAD_PARSE_SHARE;
+use crate::startup::settle_log::SettleLog;
 
 /// How long a level entry waits for its settle set before revealing with
 /// each resource's miss fallback.
@@ -33,6 +34,10 @@ pub(crate) struct SettleState {
     /// Decided on the previous Settling frame, which painted the bar full; the
     /// next redraw, after its request drain, reveals.
     release: Option<SettleRelease>,
+    /// Entry to the latest decision; at release, to the deciding frame.
+    hold: Duration,
+    /// What the per-entry `[Settling]` line reports.
+    log: SettleLog,
 }
 
 impl SettleState {
@@ -41,6 +46,8 @@ impl SettleState {
             started,
             peak_unsettled: 0,
             release: None,
+            hold: Duration::ZERO,
+            log: SettleLog::default(),
         }
     }
 }
@@ -125,16 +132,23 @@ impl App {
             }
         };
         // No session means nothing streams.
-        let report = self.session.as_ref().map_or(
-            SettleReport {
-                sh: ResourceSettle::NotStreamed,
-                lightmap: ResourceSettle::NotStreamed,
-            },
-            |session| session.settle_report(),
+        let (report, set) = self.session.as_ref().map_or(
+            (
+                SettleReport {
+                    sh: ResourceSettle::NotStreamed,
+                    lightmap: ResourceSettle::NotStreamed,
+                },
+                SettleSetSize::default(),
+            ),
+            |session| (session.settle_report(), session.settle_set_size()),
         );
         // A load or unload request that arrived in this frame's transport
         // poll wins: no release is decided for a level about to unload.
         if self.level_requests.is_empty() {
+            if let Some(settle) = self.settle.as_mut() {
+                let path = held.as_ref().map(|held| held.path());
+                settle.log.observe_frame(path, report, set);
+            }
             self.advance_settle(report, frame_start);
         }
 
@@ -216,12 +230,14 @@ impl App {
         let Some(settle) = self.settle.as_mut() else {
             return;
         };
-        let release = settle_decision(report, now.duration_since(settle.started));
+        let elapsed = now.duration_since(settle.started);
+        let release = settle_decision(report, elapsed);
         let unsettled = unsettled_units(report);
         if let Some(unsettled) = unsettled {
             settle.peak_unsettled = settle.peak_unsettled.max(unsettled);
         }
         settle.release = release;
+        settle.hold = elapsed;
         let progress = match unsettled {
             Some(unsettled) => settle_progress(unsettled, settle.peak_unsettled, release.is_some()),
             None if release.is_some() => 1.0,
@@ -241,7 +257,10 @@ impl App {
                 report.lightmap.describe(),
             );
         }
-        self.settle = None;
+        if let Some(settle) = self.settle.take() {
+            let timed_out = matches!(release, SettleRelease::TimedOut(_));
+            self.settle_summary = Some(settle.log.finish(timed_out, settle.hold));
+        }
         self.level_timings.record("settle_hold");
         self.end_loading_screen();
         if let Some(renderer) = self.renderer.as_mut() {
@@ -256,6 +275,20 @@ impl App {
         // Defer log line C until after the reveal frame's render returns, so
         // `first_level_frame` captures GPU work the user actually sees.
         self.pending_level_log = true;
+    }
+
+    /// The reveal frame's tail, after its lightmap drain counted the frame's
+    /// visible misses: logs the entry's one `[Settling]` line. An entry
+    /// abandoned before its reveal logs none.
+    pub(crate) fn log_settle_summary(&mut self) {
+        let Some(summary) = self.settle_summary.take() else {
+            return;
+        };
+        let reveal_misses = self
+            .session
+            .as_ref()
+            .and_then(|session| session.last_frame_lightmap_misses());
+        summary.log(reveal_misses);
     }
 }
 
@@ -487,6 +520,65 @@ mod tests {
             has_mark(&app, "settle_hold"),
             "the hold is its own line C mark"
         );
+    }
+
+    const SETTLE_LINE: &str = "[Settling] entry outcome=";
+
+    fn observe(app: &mut App, path: postretro_visibility::VisibilityPath, report: SettleReport) {
+        let settle = app.settle.as_mut().unwrap();
+        settle
+            .log
+            .observe_frame(Some(path), report, SettleSetSize::default());
+    }
+
+    // The entry's line waits for the reveal frame's tail, carries the hold to
+    // the deciding frame, and logs once; the timeout warning stays as it was.
+    #[test]
+    fn timed_out_entry_logs_one_settle_line_after_the_reveal_frame() {
+        use postretro_visibility::VisibilityPath;
+
+        let capture = LogCapture::start();
+        let started = Instant::now();
+        let mut app = settling_app(started);
+        observe(
+            &mut app,
+            VisibilityPath::PrlPortal { walk_reach: 1 },
+            unsettled(3),
+        );
+        app.advance_settle(unsettled(3), started + Duration::from_secs(5));
+        let step_limit = VisibilityPath::PortalStepLimitFallback {
+            considered: 9,
+            accepted: 1,
+        };
+        observe(&mut app, step_limit, unsettled(2));
+        app.advance_settle(unsettled(2), started + SETTLE_TIMEOUT);
+        app.reveal_level(release(&app).unwrap());
+        capture.assert_not_logged(log::Level::Info, SETTLE_LINE);
+        capture.assert_logged_once(log::Level::Warn, TIMEOUT_WARNING);
+
+        app.log_settle_summary();
+        app.log_settle_summary();
+        capture.assert_logged_once(
+            log::Level::Info,
+            "[Settling] entry outcome=timed_out hold_ms=10000 frames=2 walk_frames=1 \
+             step_limit_frames=1 sh_set_peak=n/a lightmap_set_peak=n/a sh_unsettled_peak=3 \
+             lightmap_unsettled_peak=n/a reveal_misses=n/a",
+        );
+    }
+
+    #[test]
+    fn abandoned_settle_logs_no_settle_line() {
+        let capture = LogCapture::start();
+        let mut app = settling_app(Instant::now());
+        observe(
+            &mut app,
+            postretro_visibility::VisibilityPath::PrlPortal { walk_reach: 1 },
+            unsettled(1),
+        );
+        app.enqueue_level_request(LevelRequest::Unload);
+        app.drain_level_requests();
+        app.log_settle_summary();
+        capture.assert_not_logged(log::Level::Info, SETTLE_LINE);
     }
 
     #[test]

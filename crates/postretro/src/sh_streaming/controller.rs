@@ -455,6 +455,22 @@ impl ShResidencyController {
         })
     }
 
+    /// The settle set's size: every settle-set target, Sampleable or not, as
+    /// of the latest target update; `None` before the first. The Settling
+    /// log reports its peak.
+    pub(crate) fn settle_set_targets(&self) -> Option<usize> {
+        self.demand_updated.then(|| {
+            self.targets
+                .iter()
+                .filter(|&&cluster_id| {
+                    self.states[cluster_id as usize]
+                        .class
+                        .is_some_and(TargetClass::is_settle_target)
+                })
+                .count()
+        })
+    }
+
     /// True only when every current target, optional classes included, has
     /// crossed the renderer-confirmed one-frame compose boundary.
     #[cfg(test)]

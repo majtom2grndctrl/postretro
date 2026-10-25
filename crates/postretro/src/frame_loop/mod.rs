@@ -2693,6 +2693,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FrameTail);
+    if reveal_frame {
+        // The frame's lightmap drain has counted its visible misses.
+        app.log_settle_summary();
+    }
     app.poll_staged_manifest_results();
 
     if let VisibleCells::Culled(mut cells) = visible_cells {

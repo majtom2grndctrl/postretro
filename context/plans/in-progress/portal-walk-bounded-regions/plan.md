@@ -155,7 +155,7 @@ fixture has its own locator.
 | 5 | Settling log: step-limit frames, the settle set's peak in lightmap blocks and SH targets, hold time and reveal-frame misses, per entry. Capture the pre-change id-51 key for row 38. Mark this commit as the **pre-change build** in the plan. Build and copy out the pre-change release binary. | integrating executor, log delegated | 4 | done: this commit is the **pre-change build**. R4 line: `[Settling] entry outcome= hold_ms= frames= walk_frames= step_limit_frames= sh_set_peak= lightmap_set_peak= sh_unsettled_peak= lightmap_unsettled_peak= reveal_misses=`, logged once per entry at the reveal frame; 51 settle tests pass. Pre-change id-51 key on the L-corridor fixture pinned (`cache_key_pins_the_walk_epoch_and_sampling_projection`). On a timed-out entry `reveal_misses` also counts still-missing settle-set blocks. |
 | 6 | Wire the walk:<br>• The camera entry goes behind `determine_visible_cells`, with a caller-owned `PortalWalkScratch` through every caller (frame loop, bake threads, `walk_measurement`, probes, mirror, tests).<br>• Lift the `#[cfg(test)]` gate and keep the oracle test-only.<br>• Set the cap and bump `PORTAL_WALK_EPOCH`.<br>• Widen the fallback's fog test with the bypass-distance keep test, and drop the retired counters.<br>• Point the bake's step-limit branch at the new walk.<br>• Restate `pvs_sampling`, the dry run's `visible_set` and the tiles note, and pin the key.<br>Prove rows 20, 21, 35–40. | integrating executor, wiring delegated | 3, 5 | done: visibility 93 passed (14 traversal tests ported unchanged in geometry, two-paths also reversed; none retired); `prl-build cell_residency` 17, `lightmap_residency_dry_run` 52; `postretro` bin 2,041 passed; guards (outside-baked-set demand, closet reveal ×2, SH doorway, settle on every path) unchanged and passing; clippy clean with and without dev-tools. Public: `determine_visible_cells(…, &mut PortalWalkScratch, …)`, `portal_traverse(eye, view_proj, cell, world, scratch) -> PortalTraversal`, `portal_walk_seeded(…) -> SeededWalk`. |
 | 7 | Rebake the swept and measured maps after the bump: hallway, lake, occlusion-test, movement-feel, campaign-test. Check the id-51 bake reports no step-limit walks. | integrating executor | 6 | |
-| 8 | Sweep instrument as an ignored test, then run R1 on the hallway, lake and occlusion-test, plus straight up and down at the shaft poses. Finalize the cap (2× rule) and recheck k. | integrating executor | 6, 7 | |
+| 8 | Sweep instrument as an ignored test, then run R1 on the hallway, lake and occlusion-test, plus straight up and down at the shaft poses. Finalize the cap (2× rule) and recheck k. | integrating executor, instrument delegated | 6, 7 | done (R1 below). Cap stays 5,000: worst 2,021 (occlusion-test), 2.47×. k = 2 holds on the fixtures (worst 1.56); real maps reach 3.77 tests per summed degree (hallway), which the fixture row does not bound. Worst expansions per cell 18 (≤ 32). CPU µs taken under load (a bake and a measurement run concurrently); quiet rerun pending. |
 | 9 | Measurements: the residency gate R2 and R3 on both builds, SH reach, and Settle R4. A failed gate stops for an owner decision. | integrating executor | 5, 7 | |
 | 10 | Preflight, then review-panel → fix → retest loop | integrating executor | 8, 9 | |
 | 11 | Owner: Live and Visual rows | owner | 10 | manual |
@@ -165,3 +165,23 @@ grown to the world (rects, stamps and the heap reuse capacity, and the output re
 caller's `Vec<u32>`); the walk is iterative, with no recursion; cost is bounded per
 reached cell by the snap lattice, with the cap as backstop; walk time is measured through
 `record_walk`.
+
+## R1 — sweep (Task 8, 2026-10-25, i9-9980HK, release, single-threaded, loaded machine)
+
+Instrument: `region_walk/real_map_sweep.rs` (`#[ignore]`); rerun in its header. 8 yaws ×
+pitch 0/±45°, plus pitch ±89.9° at the hallway shafts. Extra cells are vs the tightened
+oracle. µs best of 2, indicative only (load average 13–17).
+
+| map | walks | trips | unclassified | tests p50/95/99/max | µs p50/p99/p99.9/max | extra p50/95/max |
+|---|---|---|---|---|---|---|
+| hallway | 94,440 + 5,200 | 0 | 0 | 32/226/707/1,903 | 9.3/226/467/2,529 | 0/4/71 |
+| reflection-lake-test | 5,208 | 0 | 0 | 221/952/1,240/1,511 | 70.7/557/740/1,264 | 0/5/51 |
+| occlusion-test | 13,128 | 0 | 0 | 304/1,299/1,623/2,021 | 101/755/933/1,577 | 0/20/182 |
+
+Hallway regions: shaft A max 1,903 tests, extra p95/max 13/59 (up/down 16/36); B 1,132,
+13/43; C 1,247, 16/45; arena 430, 2/13. SH clusters drawn per pose, walk vs exact (mean):
+shaft A 4.65 vs 4.36, B 3.62 vs 3.44, C 4.62 vs 4.27, arena 2.08 vs 2.03 (delta p95 0–2,
+max 6). Shadow-eligible lights (influence sphere reaches a reached cell; brightness and
+receiver gates omitted): shaft A 48.0 vs 46.8 (p95 +9, max +29), B 18.6 vs 18.2, C 29.6 vs
+28.9, arena 31.5 vs 31.2 (max +45). occlusion-test's `.prl` predates the current loader,
+so it has no light or SH data; its walk sweep reads cells, portals and locator only.

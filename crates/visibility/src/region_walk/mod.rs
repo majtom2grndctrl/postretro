@@ -10,6 +10,8 @@ mod trace;
 #[cfg(test)]
 mod oracle;
 #[cfg(test)]
+mod real_map_sweep;
+#[cfg(test)]
 pub(crate) mod test_fixtures;
 #[cfg(test)]
 pub(crate) mod tests;

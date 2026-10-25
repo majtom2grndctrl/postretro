@@ -45,9 +45,6 @@ impl TimedSlotTargets {
             raw.cell,
         ];
         for (index, sample) in samples.into_iter().enumerate() {
-            if excluded[index] {
-                continue;
-            }
             let bound = match index {
                 0 => Some(1.0),
                 1 | 2 => Some(0.0),
@@ -57,6 +54,13 @@ impl TimedSlotTargets {
                     .and_then(|s| s.value),
                 _ => unreachable!(),
             };
+            if excluded[index] {
+                // Capacity commits independently of a cell held for repair.
+                if index == 3 {
+                    self.ramps[index].constrain(bound, self.timeline);
+                }
+                continue;
+            }
             self.ramps[index].accept(tick, sample, bound, index == 0 || index == 3, self.timeline);
         }
     }

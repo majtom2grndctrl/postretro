@@ -47,6 +47,24 @@ impl Ramp {
         self.pending_len = 0;
     }
 
+    pub(super) fn constrain(&mut self, bound: Option<f32>, timeline: Option<f64>) {
+        self.bound = bound.map(f64::from);
+        let Some(bound) = self.bound else {
+            self.show_raw();
+            return;
+        };
+        self.target = self.target.map(|target| {
+            if self.upward {
+                target.min(bound)
+            } else {
+                target.max(bound)
+            }
+        });
+        if let Some(timeline) = timeline {
+            self.advance(timeline);
+        }
+    }
+
     pub(super) fn accept(
         &mut self,
         tick: u32,

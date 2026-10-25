@@ -306,12 +306,25 @@ fn actual_shots_delays_wraps_and_tuning_jumps_show_unagreed_samples_raw() {
     }
 }
 
+// Regression: Completed and fall can both apply on one 144 Hz frame. The
+// endpoint must reach 1 at intake before the ordered fall leaves the frame at 0.
 #[test]
 fn conditioned_reload_endpoints_stay_in_step_and_lost_endpoints_do_not_break_onset() {
-    for (drop_started, drop_completed) in [(false, false), (true, false), (false, true)] {
+    let mut applied_completed = 0;
+    let mut same_frame_ordered_fall = 0;
+    let mut lost_completed_deadline_before_fall = 0;
+    for (drop_started, drop_completed, outage) in [
+        (false, false, None),
+        (true, false, None),
+        (false, true, None),
+        // Completion is due at tick 299 (~4.983 s). Keep the following fall
+        // out until the timeline's tick-300 deadline, inside the 16-tick cap.
+        (false, true, Some((4_970_000, 5_350_000))),
+    ] {
         let mut harness = TimedSlotHarness::scenario(144, Scenario::Reload, true);
         harness.drop_started = drop_started;
         harness.drop_completed = drop_completed;
+        harness.snapshot_outage = outage;
         harness.run_until_us(6_000_000);
         assertions::assert_quantitative_frames(&harness);
         let rise = harness
@@ -334,54 +347,164 @@ fn conditioned_reload_endpoints_stay_in_step_and_lost_endpoints_do_not_break_ons
             .unwrap();
         assert_eq!(completed.due_us, u64::from(completed.tick) * 1_000_000 / 60);
         assert!(completed.executed_us >= completed.due_us);
-        let first_full = harness
-            .frames
-            .iter()
-            .find(|f| f.reload_active && f.targets[0] == Some(1.0))
-            .unwrap();
-        assert!(
-            first_full.now_us + 16_667 >= completed.due_us + 45_000,
-            "completion projected too early: host due {completed:?}, full at {first_full:?}"
-        );
-        if let Some(endpoint) = harness
-            .intakes
-            .iter()
-            .find(|sample| sample.raw[0] == Some(1.0))
-        {
-            assert!(
-                first_full.now_us <= endpoint.now_us,
-                "missed applied Completed endpoint"
-            );
-        } else {
-            assert!(
-                drop_completed,
-                "ordinary run did not apply its completed endpoint"
-            );
-            let deadline = harness
-                .frames
-                .iter()
-                .find(|f| {
-                    f.playback_tick
-                        .is_some_and(|t| t >= f64::from(completed.tick) + 1.0)
-                        && f.now_us >= completed.due_us
-                })
-                .unwrap();
-            assert!(
-                first_full.now_us <= deadline.now_us,
-                "lost completion was not reached within one timeline tick"
-            );
-        }
-        if drop_completed {
-            assert!(harness.dropped_endpoints[1] > 0);
-        }
-        let fall = harness
+        let fall = &harness
             .frames
             .windows(2)
             .find(|p| p[0].reload_active && !p[1].reload_active)
-            .unwrap();
-        assert_eq!(fall[1].targets[0], fall[1].raw[0]);
-        assert_eq!(fall[1].targets[0], Some(0.0));
+            .unwrap()[1];
+        let deadline = harness
+            .frames
+            .iter()
+            .find(|frame| {
+                frame.now_us >= completed.due_us
+                    && frame
+                        .playback_tick
+                        .is_some_and(|tick| tick >= f64::from(completed.tick) + 1.0)
+            })
+            .expect("initialized timeline must cross the completion deadline");
+        let first_full_frame = harness
+            .frames
+            .iter()
+            .find(|frame| frame.reload_active && frame.targets[0] == Some(1.0));
+        let first_full_intake = harness
+            .intakes
+            .iter()
+            .find(|sample| sample.ramps[0].target == Some(1.0));
+        let first_full_us = first_full_frame
+            .map(|frame| frame.now_us)
+            .into_iter()
+            .chain(first_full_intake.map(|sample| sample.now_us))
+            .min();
+        if let Some(first_full_us) = first_full_us {
+            assert!(
+                first_full_us + 16_667 >= completed.due_us + 45_000,
+                "completion projected too early: host={completed:?}, full={first_full_us}, drop_started={drop_started}, drop_completed={drop_completed}, outage={outage:?}"
+            );
+        }
+        if let Some((position, endpoint)) = harness
+            .intakes
+            .iter()
+            .enumerate()
+            .find(|(_, sample)| sample.raw[0] == Some(1.0))
+        {
+            applied_completed += 1;
+            assert_eq!(
+                endpoint.ramps[0].target,
+                Some(1.0),
+                "Completed must set 1 at intake"
+            );
+            assert!(
+                first_full_us.is_some_and(|at| at <= endpoint.now_us),
+                "missed applied Completed endpoint"
+            );
+            let endpoint_frame = harness
+                .frames
+                .iter()
+                .find(|frame| frame.now_us == endpoint.now_us)
+                .unwrap();
+            if endpoint_frame.targets[0] == Some(1.0) {
+                assert!(first_full_frame.is_some_and(|frame| frame.now_us <= endpoint.now_us));
+            } else {
+                let same_frame_fall = harness.intakes[position + 1..]
+                    .iter()
+                    .find(|sample| sample.now_us == endpoint.now_us && sample.raw[0] == Some(0.0))
+                    .expect("a Completed frame below 1 requires an ordered same-frame fall");
+                assert!(endpoint.tick < same_frame_fall.tick);
+                let completed_order = endpoint_frame
+                    .applied_ticks
+                    .iter()
+                    .position(|tick| *tick == endpoint.tick)
+                    .unwrap();
+                let fall_order = endpoint_frame
+                    .applied_ticks
+                    .iter()
+                    .position(|tick| *tick == same_frame_fall.tick)
+                    .unwrap();
+                assert!(completed_order < fall_order);
+                assert_eq!(same_frame_fall.ramps[0].target, same_frame_fall.raw[0]);
+                assert_eq!(endpoint_frame.targets[0], Some(0.0));
+                assert_eq!(endpoint_frame.targets[0], endpoint_frame.raw[0]);
+                assert!(!endpoint_frame.reload_active);
+                same_frame_ordered_fall += 1;
+            }
+        } else {
+            assert!(
+                drop_completed,
+                "ordinary run did not apply its Completed endpoint"
+            );
+            if fall.now_us > deadline.now_us {
+                let first_full = first_full_frame.unwrap_or_else(|| panic!(
+                    "lost Completed must project full before fall: completed={completed:?}, fall={fall:?}, deadline={deadline:?}, outage={outage:?}"
+                ));
+                assert!(
+                    first_full.now_us <= deadline.now_us,
+                    "lost completion missed one-timeline-tick deadline: full={first_full:?}, deadline={deadline:?}"
+                );
+                assert!(
+                    first_full.raw[0].is_some_and(|raw| raw < 1.0),
+                    "lost endpoint case must reach 1 by projection"
+                );
+                lost_completed_deadline_before_fall += 1;
+            } else {
+                // P6 explicitly lets a received fall retire the meter before
+                // its missing endpoint's timeline deadline. It must be raw.
+                assert!(
+                    harness.intakes.iter().any(|sample| {
+                        sample.now_us == fall.now_us
+                            && sample.tick >= completed.tick
+                            && sample.raw[0] == Some(0.0)
+                            && fall.applied_ticks.contains(&sample.tick)
+                    }),
+                    "fall-first exemption requires an accepted post-completion fall sample"
+                );
+            }
+            if outage.is_some() {
+                assert!(
+                    fall.now_us > deadline.now_us,
+                    "outage must exercise the mandatory projected-full deadline"
+                );
+                let latest = harness
+                    .intakes
+                    .iter()
+                    .rev()
+                    .find(|sample| sample.now_us <= deadline.now_us)
+                    .unwrap();
+                assert!(
+                    deadline.playback_tick.unwrap() - f64::from(latest.tick) < 16.0,
+                    "deadline proof must precede the hold cap"
+                );
+            }
+        }
+        if drop_completed {
+            if let Some((start, end)) = outage {
+                // The outage drop short-circuits the explicit endpoint-drop
+                // counter, so prove that the actual completion was suppressed.
+                assert!((start..end).contains(&completed.executed_us));
+                assert!(
+                    harness
+                        .intakes
+                        .iter()
+                        .all(|sample| sample.raw[0] != Some(1.0))
+                );
+            } else {
+                assert!(harness.dropped_endpoints[1] > 0);
+            }
+        }
+        assert_eq!(fall.targets[0], fall.raw[0]);
+        assert_eq!(fall.targets[0], Some(0.0));
     }
+    assert!(
+        applied_completed > 0,
+        "no applied Completed endpoint exercised"
+    );
+    assert!(
+        same_frame_ordered_fall > 0,
+        "no ordered Completed/fall frame exercised"
+    );
+    assert!(
+        lost_completed_deadline_before_fall > 0,
+        "no missing Completed forced projection by its deadline"
+    );
 }
 
 #[test]
@@ -534,5 +657,101 @@ fn first_real_sync_mid_ramp_preserves_the_raw_floor_then_advances() {
                 && p[1].applied_ticks.is_empty()
                 && p[1].targets[0] > p[0].targets[0]),
         "projection did not start within two intervals after first echo"
+    );
+}
+
+// Regression: a partial Started interval delayed projection past the first two
+// full, agreeing host intervals because the oracle trusted implementation state.
+#[test]
+fn partial_started_interval_projects_on_first_two_full_irregular_host_intervals() {
+    let mut harness = TimedSlotHarness::scenario(144, Scenario::Reload, false);
+    harness.fixed_snapshot_delay();
+    harness.run_until_us(1_400_000);
+    let samples: Vec<_> = [61, 62, 65, 68]
+        .into_iter()
+        .map(|tick| {
+            harness
+                .intakes
+                .iter()
+                .find(|sample| sample.tick == tick)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(samples[0].raw[0], Some(0.0), "tick 61 must replay Started");
+    let slopes: Vec<_> = samples
+        .windows(2)
+        .map(|pair| {
+            (pair[1].raw[0].unwrap() - pair[0].raw[0].unwrap())
+                / f64::from(pair[1].tick - pair[0].tick)
+        })
+        .collect();
+    assert!((slopes[0] - slopes[1]).abs() > 0.08 * slopes[0].min(slopes[1]));
+    assert!((slopes[1] - slopes[2]).abs() <= 0.08 * slopes[1].min(slopes[2]));
+    assert!(samples[2].ramps[0].slope.is_none());
+    assert!(samples[3].ramps[0].slope.is_some());
+    assertions::assert_quantitative_frames(&harness);
+}
+
+#[test]
+fn quantitative_oracle_rejects_projection_delayed_past_first_qualifying_sample() {
+    let mut harness = TimedSlotHarness::scenario(144, Scenario::Reload, false);
+    harness.fixed_snapshot_delay();
+    harness.run_until_us(1_400_000);
+    // Synthetic delayed-onset mutant: the real host observations stay intact,
+    // while implementation traces claim that tick 68 is still unagreed/raw.
+    let onset = harness.intakes.iter_mut().find(|s| s.tick == 68).unwrap();
+    assert!(
+        onset.ramps[0].slope.is_some(),
+        "mutant must remove a real onset"
+    );
+    onset.ramps[0].slope = None;
+    onset.ramps[0].target = onset.raw[0];
+    onset.ramps[0].fed_tick = None;
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assertions::assert_quantitative_frames(&harness);
+    }))
+    .expect_err("oracle accepted a delayed-onset mutant");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("first qualifying host sample"),
+        "wrong rejection: {message}"
+    );
+}
+
+// Regression: target == capacity used to bypass every movement budget, allowing
+// a projected cell value near 50 to jump to 100 without a host bound sample.
+#[test]
+fn quantitative_oracle_rejects_a_projection_jump_to_capacity_without_a_bound_sample() {
+    let mut harness = TimedSlotHarness::scenario(144, Scenario::Cell, false);
+    harness.run_until_us(10_200_000);
+    let frame = harness
+        .frames
+        .iter_mut()
+        .find(|frame| {
+            frame.now_us >= 10_000_000
+                && frame.applied_ticks.is_empty()
+                && frame.raw[3].is_some_and(|value| (49.0..51.0).contains(&value))
+                && frame.ramps[3].slope.is_some()
+        })
+        .expect("mutant needs a live half-capacity projection between samples");
+    assert_eq!(frame.bounds[3], Some(100.0));
+    frame.targets[3] = Some(100.0);
+    frame.ramps[3].target = Some(100.0);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assertions::assert_quantitative_frames(&harness);
+    }))
+    .expect_err("oracle accepted a jump from half capacity to the bound");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("between-sample") || message.contains("sample/feed"),
+        "bound mutant must fail the ordinary frame budget: {message}"
     );
 }

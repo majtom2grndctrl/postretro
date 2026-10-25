@@ -112,3 +112,13 @@ fn real_clock_reseed_and_folds_slew_without_a_meter_retreat() {
         assertions::assert_playback_slew(&harness);
     }
 }
+
+#[test]
+fn one_tick_host_frame_echoes_queued_probe_before_emitting_final_tick_snapshot() {
+    TimedSlotHarness::assert_queued_probe_echoes_before_frame_ticks(1);
+}
+
+#[test]
+fn three_tick_host_frame_echoes_queued_probe_before_emitting_final_tick_snapshot() {
+    TimedSlotHarness::assert_queued_probe_echoes_before_frame_ticks(3);
+}

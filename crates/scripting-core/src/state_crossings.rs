@@ -167,6 +167,16 @@ impl CrossingDetector {
     /// observed value without firing. A slot that loses its value (back to
     /// `None`) disarms without firing.
     pub fn detect(&mut self, slot_table: &SlotTable) -> Vec<CrossingFire> {
+        self.detect_excluding_threshold_slots(slot_table, &[])
+    }
+
+    /// Observe settled predicates and thresholds other than slots already sampled
+    /// at their authoritative intake cadence. Predicates always read the live store.
+    pub fn detect_excluding_threshold_slots(
+        &mut self,
+        slot_table: &SlotTable,
+        excluded: &[&str],
+    ) -> Vec<CrossingFire> {
         let mut to_fire = Vec::new();
         for watcher in &mut self.watchers {
             match watcher {
@@ -179,24 +189,19 @@ impl CrossingDetector {
                     fire,
                     previous,
                 } => {
-                    let current = read_number(slot_table, slot).map(|raw| raw / *max);
-                    // A crossing needs both endpoints. When either is `None`
-                    // (arming on the first observed value, or disarming when
-                    // the value is gone) no edge exists, so nothing fires.
-                    if let (Some(prev), Some(cur)) = (*previous, current) {
-                        let authored_crossing = threshold_crosses(condition, prev, cur);
-                        let mirrored_crossing =
-                            *both_edges && threshold_crosses_mirrored(condition, prev, cur);
-                        if authored_crossing || mirrored_crossing {
-                            let rising = cur > prev;
-                            to_fire.extend(fire.iter().cloned().map(|reaction| CrossingFire {
-                                reaction,
-                                rising,
-                                source_id: *source_id,
-                            }));
-                        }
+                    if excluded.contains(&slot.as_str()) {
+                        continue;
                     }
-                    *previous = current;
+                    observe_threshold(
+                        *source_id,
+                        condition,
+                        *max,
+                        *both_edges,
+                        fire,
+                        previous,
+                        read_number(slot_table, slot),
+                        &mut to_fire,
+                    );
                 }
                 Watcher::Predicate {
                     source_id,
@@ -232,6 +237,41 @@ impl CrossingDetector {
         to_fire
     }
 
+    /// Observe one ordered batch of raw numeric values or absences. Only named
+    /// threshold watchers advance; live StoreScope predicates remain frame-final.
+    /// Missing names are excluded observations, not absent slot values.
+    pub fn observe_threshold_samples(
+        &mut self,
+        samples: &[(&str, Option<f32>)],
+    ) -> Vec<CrossingFire> {
+        let mut to_fire = Vec::new();
+        for watcher in &mut self.watchers {
+            if let Watcher::Threshold {
+                source_id,
+                slot,
+                condition,
+                max,
+                both_edges,
+                fire,
+                previous,
+            } = watcher
+                && let Some((_, current)) = samples.iter().find(|(name, _)| *name == slot.as_str())
+            {
+                observe_threshold(
+                    *source_id,
+                    condition,
+                    *max,
+                    *both_edges,
+                    fire,
+                    previous,
+                    *current,
+                    &mut to_fire,
+                );
+            }
+        }
+        to_fire
+    }
+
     pub fn clear(&mut self) {
         self.watchers.clear();
     }
@@ -256,6 +296,33 @@ impl PartialEq<String> for CrossingFire {
     fn eq(&self, other: &String) -> bool {
         self.reaction == *other
     }
+}
+
+/// Share threshold edge semantics between frame-final and raw sample observation.
+#[allow(clippy::too_many_arguments)]
+fn observe_threshold(
+    source_id: usize,
+    condition: &CrossingCondition,
+    max: f32,
+    both_edges: bool,
+    fire: &[String],
+    previous: &mut Option<f32>,
+    raw: Option<f32>,
+    to_fire: &mut Vec<CrossingFire>,
+) {
+    let current = raw.map(|value| value / max);
+    // Absence disarms; the first number after it only arms.
+    if let (Some(prev), Some(cur)) = (*previous, current)
+        && (threshold_crosses(condition, prev, cur)
+            || (both_edges && threshold_crosses_mirrored(condition, prev, cur)))
+    {
+        to_fire.extend(fire.iter().cloned().map(|reaction| CrossingFire {
+            reaction,
+            rising: cur > prev,
+            source_id,
+        }));
+    }
+    *previous = current;
 }
 
 /// Predicate programs retain `ScriptCtx`; threshold watchers receive a caller
@@ -800,6 +867,73 @@ mod tests {
                 rising: false,
                 source_id: 0,
             }]
+        );
+    }
+
+    #[test]
+    fn sampled_thresholds_disarm_on_absence_and_leave_predicates_frame_final() {
+        let ctx = predicate_ctx(0.0, 0.0);
+        {
+            let mut table = ctx.slot_table.borrow_mut();
+            for name in ["player.heat", "player.cell"] {
+                table.get_mut(name).unwrap().value = Some(SlotValue::Number(0.25));
+            }
+        }
+        let mut heat = above_crossing("player.heat", 0.5, 1.0, &["heat"]);
+        heat.edge = Some("both".to_string());
+        let mut cell = above_crossing("player.cell", 0.5, 1.0, &["cell"]);
+        cell.edge = Some("both".to_string());
+        let reg = registry_with(vec![
+            heat,
+            cell,
+            predicate_crossing(both_thresholds_predicate(), &["predicate"]),
+        ]);
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&reg, &ctx.slot_table.borrow(), &ctx);
+        let mut table = ctx.slot_table.borrow_mut();
+        set(&mut table, "test.a", 2.0);
+        set(&mut table, "test.b", 1.0);
+        // Holding the live mutable borrow proves sample intake never evaluates a
+        // StoreScope predicate. Declaration order wins over input-slot order.
+        let fires = detector
+            .observe_threshold_samples(&[("player.cell", Some(0.75)), ("player.heat", Some(0.75))]);
+        assert_eq!(
+            fires
+                .iter()
+                .map(|fire| (fire.reaction.as_str(), fire.rising, fire.source_id))
+                .collect::<Vec<_>>(),
+            [("heat", true, 0), ("cell", true, 1)]
+        );
+        assert!(
+            detector
+                .observe_threshold_samples(&[("player.heat", None), ("player.cell", None),])
+                .is_empty()
+        );
+        assert!(
+            detector
+                .observe_threshold_samples(&[
+                    ("player.heat", Some(0.75)),
+                    ("player.cell", Some(0.75)),
+                ])
+                .is_empty(),
+            "first numeric sample after absence only arms"
+        );
+        let fires = detector
+            .observe_threshold_samples(&[("player.heat", Some(0.25)), ("player.cell", Some(0.25))]);
+        assert_eq!(
+            fires
+                .iter()
+                .map(|fire| (fire.reaction.as_str(), fire.rising))
+                .collect::<Vec<_>>(),
+            [("heat", false), ("cell", false)]
+        );
+        drop(table);
+        assert_eq!(
+            detector.detect_excluding_threshold_slots(
+                &ctx.slot_table.borrow(),
+                &["player.heat", "player.cell"]
+            ),
+            vec!["predicate".to_string()]
         );
     }
 

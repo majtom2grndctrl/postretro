@@ -1,8 +1,11 @@
 # coop--timed-slot-projection — plan of record
 
 mode: compact
-status: active
+status: test-ready
 read at: 545c5c2f3
+
+## Session constraint
+- Owner requested usage monitoring. If either available usage window falls below 3% remaining, save a coherent checkpoint and pause at the next safe stopping point. Resume only on the owner's instruction. Latest resumed window began with 99% five-hour and 53% weekly remaining.
 
 ## Corrections
 - Time-sync and snapshot/newest-gate consumers changed since d6f3471; re-opened current intake, estimator, reset and UI snapshot boundaries. `ClientTimeSync` now exposes an initialized-only estimate and RTT; use those directly.
@@ -16,42 +19,42 @@ read at: 545c5c2f3
 
 ## AC-to-proof
 
-| AC | Acceptance | Proof | Status |
-|---|---|---|---|
-| 1 | Reproduces first. The harness sends at `SNAPSHOT_TICK_INTERVAL`, advances the host at 60 Hz (50 | conditioned timer harness, committed red reproduction | achievable as stated |
-| 2 | Onset | conditioned timer harness + onset bounds | achievable as stated |
-| 3 | Between samples | conditioned timer harness frame classification | achievable as stated |
-| 4 | On samples | conditioned timer harness sample/feed bounds | achievable as stated |
-| 5 | Breaking | timer harness slope-change/loss cases | achievable as stated |
-| 6 | The slope is the host samples' slope | host/client tuning mismatch case | achievable as stated |
-| 7 | Refuse | timer jump/delay/wrap cases | achievable as stated |
-| 8 | Bounds | timer bounds + correlated-capacity cases | achievable as stated |
-| 9 | Refuse | cancel/switch/exit-fade integration | achievable as stated |
-| 10 | In step | reload endpoint and completion timing cases | achievable as stated |
-| 11 | Sample intake, observed at the intake seam | state-apply intake seam tests | achievable as stated |
-| 12 | Frame cadence | newest-gate multi-snapshot and low-FPS harness | achievable as stated |
-| 13 | Outage | cap/outage deterministic tests | achievable as stated |
-| 14 | Before time sync has a sample, the target is the newest raw sample (P30). Its first sample mid- | first-sync timeline tests | achievable as stated |
-| 15 | Resets | reset/correlation/absence lifecycle tests | achievable as stated |
-| 16 | Raw readers stay raw | raw weapon presentation and reconcile tests | achievable as stated |
-| 17 | State crossings on an enumerated slot fire once per crossing in the applied host samples, never | state-crossing integration tests | achievable as stated |
-| 18 | UI reads | UI snapshot / binding / predicate / max / tween tests | achievable as stated |
-| 19 | Host and single-player are unchanged | role-isolation snapshot tests | achievable as stated |
-| 20 | No client heat or cell state is written | raw-store/component isolation and write grep | achievable as stated |
-| 21 | The wire is unchanged | version/fingerprint/wire diff gate | achievable as stated |
-| 22 | Loopback recipe (`networking.md` §Manual loopback recipe) on `coop-presentation-test`, client c | owner loopback runbook | manual-visual |
+| AC | Contract | Named proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Committed red reproduction and production proof setup | `conditioned_reload_target_advances_between_samples` — red `384f85491`, then green | achievable as stated | pass |
+| 2 | First agreeing onset | `conditioned_all_timed_ramps_obey_frame_bounds_using_host_sample_slopes` (onset class); `partial_started_interval_projects_on_first_two_full_irregular_host_intervals`; `quantitative_oracle_rejects_projection_delayed_past_first_qualifying_sample` | achievable as stated | pass |
+| 3 | Between-sample frame bounds | `conditioned_all_timed_ramps_obey_frame_bounds_using_host_sample_slopes` (between class and fed-line holds) | achievable as stated | pass |
+| 4 | Sample/feed frame bounds | `conditioned_all_timed_ramps_obey_frame_bounds_using_host_sample_slopes`; `future_sample_feeds_on_timeline_and_break_discards_waiting_line`; `quantitative_oracle_rejects_a_projection_jump_to_capacity_without_a_bound_sample` | achievable as stated | pass |
+| 5 | Slope-break retargeting | `a_lost_slope_change_retargets_when_the_next_real_timer_sample_breaks_agreement`; slowing-heat case in `actual_shots_delays_wraps_and_tuning_jumps_show_unagreed_samples_raw` | achievable as stated | pass |
+| 6 | Host-derived slope | `conditioned_all_timed_ramps_obey_frame_bounds_using_host_sample_slopes` — installed reload duration/cool rate 2× host | achievable as stated | pass |
+| 7 | Jumps remain raw until agreement | `actual_shots_delays_wraps_and_tuning_jumps_show_unagreed_samples_raw`; `real_cooldown_reaches_zero_then_a_new_shot_resets_it_raw` | achievable as stated | pass |
+| 8 | Reload/cooldown/heat/cell bounds | `actual_overheat_cools_to_zero_in_step_with_the_raw_latch`; `actual_cell_regeneration_reaches_capacity_and_every_frame_stays_clamped`; `cell_requires_capacity_naming_its_host_slot_and_bounds_are_immediate`; `timed_slot_receive_cell_repair_applies_capacity_bounds_without_sampling_cell` | achievable as stated | pass |
+| 9 | Cancel, slot switch and exit fade | `slot_round_trip_and_both_resource_absences_drop_waiting_history`; cancel case in `actual_shots_delays_wraps_and_tuning_jumps_show_unagreed_samples_raw`; `timed_slot_ui_exit_fade_captures_host_fall_after_completion_in_same_frame` | achievable as stated | pass |
+| 10 | Reload start/completion timing | `conditioned_reload_endpoints_stay_in_step_and_lost_endpoints_do_not_break_onset`; `real_completed_and_fall_snapshots_in_one_frame_are_both_sampled_in_order`; `completed_snapshot_overtaken_by_the_real_fall_never_becomes_a_sample`; `timed_slot_ui_exit_fade_captures_host_fall_after_completion_in_same_frame` | achievable as stated | pass |
+| 11 | Accepted/held/excluded/rejected sample intake | `held_empty_and_held_id_batches_sample_but_rejections_and_refreshes_do_not`; `long_real_cool_delay_samples_held_resends_omissions_and_empty_snapshots`; `timed_slot_receive_deferral_and_undecodable_snapshot_do_not_sample`; `timed_slot_receive_empty_fingerprint_mismatch_preserves_agreement_and_cap` | achievable as stated | pass |
+| 12 | Ordered multi-snapshot and low-FPS frames | `duplicate_and_reordered_snapshots_are_not_samples_and_low_fps_projects_at_frame_time`; `real_completed_and_fall_snapshots_in_one_frame_are_both_sampled_in_order` | achievable as stated | pass |
+| 13 | Outage cap and recovery | `outage_caps_each_real_timer_then_recovers_at_the_new_sample_projection`; `outage_holds_at_cap_and_first_late_agreeing_sample_retargets_its_projection` | achievable as stated | pass |
+| 14 | Before sync and first initialized frame | `first_real_sync_mid_ramp_preserves_the_raw_floor_then_advances`; `real_clock_reseed_and_folds_slew_without_a_meter_retreat` | achievable as stated | pass |
+| 15 | Lifecycle/identity/absence resets | `timed_slot_history_clears_at_level_manifest_and_demotion_boundaries`; `slot_round_trip_and_both_resource_absences_drop_waiting_history`; `fresh_rejoin_clock_and_apply_resume_lower_host_ticks_without_an_old_clamp` | achievable as stated | pass |
+| 16 | Raw audio, pull, dry-fire and reconcile readers | `timed_slot_ui_full_reload_target_keeps_raw_pull_and_near_full_cancel_silent`; `timed_slot_ui_regen_target_does_not_supply_cell_charge_to_dry_fire`; `timed_slot_ui_cooling_target_keeps_overheat_cue_frames_on_raw_latch`; `timed_slot_ui_cooldown_target_does_not_enter_weapon_reconciliation` | achievable as stated | pass |
+| 17 | Applied-sample crossings only | `timed_slot_ui_projection_does_not_fire_raw_state_crossings`; `timed_slot_receive_crossings_preserve_order_and_dispatch_after_local_writes`; `timed_slot_receive_crossings_skip_rejected_duplicate_older_deferred_and_refresh_slots`; `timed_slot_history_clears_at_level_manifest_and_demotion_boundaries` | achievable as stated | pass |
+| 18 | Shared UI targets and tween/reduce-motion | `timed_slot_ui_snapshot_drives_binding_predicate_max_focus_and_accessibility`; `timed_slot_ui_tween_follows_moving_target_and_reduce_motion_snaps_this_frame` | achievable as stated | pass |
+| 19 | Host/SP and unrelated client slots | `timed_slot_ui_snapshot_drives_binding_predicate_max_focus_and_accessibility` — host/SP equality; conditioned harness every-frame unrelated-slot equality | achievable as stated | pass |
+| 20 | No projection writes to store/components | `accepted_host_samples_project_four_timers_without_mutating_raw_slots`; conditioned harness every-frame host/client component+store invariance; static write-API grep | achievable as stated | pass |
+| 21 | Unchanged wire/schema/fingerprint | Static byte comparison against `545c5c2f3`: schema/fingerprint/wire-shape tags+host production unchanged; net wire/handshake/state record sources unchanged | achievable as stated | pass |
+| 22 | Owner visual/audio loopback | Owner-run loopback recipe below — pending manual result | manual-visual | outstanding manual proof |
 
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Extend loss harness with independent host/client clocks, production timers, newest gate and conditioned time sync; commit failing stepped-reload reproduction | integrating executor / bounded harness worker | — | done: `conditioned_reload_target_advances_between_samples` failed as intended (0 pass / 1 fail); all 248 eligible non-sample frames held. Setup assertions passed; 869-test target compiled. |
-| 2 | Add accepted sample intake, four-slot agreed-slope projection and bounded slew timeline; resets and deterministic seam tests | integrating executor | 1 | done: 27 focused `timed_slot` tests pass, including first-sync correction, real receive rejection, lifecycle boundaries and four timer streams. |
+| 2 | Add accepted sample intake, four-slot agreed-slope projection and bounded slew timeline; resets and deterministic seam tests | integrating executor | 1 | done: covered by the final 36-test timer matrix, including first-sync correction, receive rejection, correlated bounds, lifecycle resets and four timer streams. |
 | 3 | Integrate projection before every UI snapshot for connected clients; heat HUD and SDK documentation; UI/isolation proof | bounded UI worker / integrating executor | 2 contract | done: all 9 `timed_slot_ui_` CPU integration tests pass, including bindings/predicates/max, focus/accessibility, tween/reduce motion, exit fade and raw readers. |
-| 4 | Extend conditioned harness across ramps, jumps, loss, clocks, caps, resets and raw readers; map every acceptance result | integrating executor / bounded harness worker | 2, 3 | done: 17 real-timer conditioned tests plus intake/lifecycle/receive seam tests pass in the 27-test matrix; every automated AC has named proof. |
-| 5 | Readiness checks, review-panel/fix loop, final preflight, manual runbook and result report | integrating executor | 4 | in progress: focused suites pass; readiness checks, review-panel and final preflight remain. |
+| 4 | Extend conditioned harness across ramps, jumps, loss, clocks, caps, resets and raw readers; map every acceptance result | integrating executor / bounded harness worker | 2, 3 | done: 21 conditioned harness tests plus intake/lifecycle/receive seam tests pass; every automated AC has named proof. |
+| 5 | Readiness checks, review-panel/fix loop, final preflight, manual runbook and result report | integrating executor | 4 | done: review fixes and focused retests pass; final fmt, Clippy and workspace tests pass. Manual AC22 remains outstanding under the runbook below. |
 
-Hot-path constraints: four fixed histories; bounded pending samples; no allocations in frame projection; UI map substitution uses existing keys. Intake work is bounded by the existing validated batch and only four projected slots. Measure frame projection with the deterministic harness and document fixed memory bounds.
+Hot-path constraints: four fixed histories; bounded pending samples; no allocations in frame projection; UI map substitution uses existing keys. Intake work is bounded by the existing validated batch and only four projected slots. Projection timing and fixed memory bounds are recorded below.
 
 ## Landing
 Manual visual proof is outstanding and is not inferred from automated checks. Keep the brief in progress until the owner supplies that result and says “land the plane.”
@@ -81,8 +84,32 @@ POSTRETRO_NET_LAG=45,60,5 RUST_LOG=info target/debug/postretro-tool run --instal
 
 ## Verification checkpoints
 - Red checkpoint `384f85491`: intended 1-test failure, all 248 eligible frames held between host samples.
-- Focused netcode matrix after first-sync correction: `CARGO_INCREMENTAL=0 cargo test -p postretro-netcode --features dev-tools --lib timed_slot` — 27 passed, 0 failed, 875 filtered; includes 17 conditioned-timer tests.
+- Focused netcode matrix after first-sync correction: `CARGO_INCREMENTAL=0 cargo test -p postretro-netcode --features dev-tools --lib timed_slot` — 27 passed, 0 failed, 875 filtered; includes 16 conditioned-timer tests.
 - Static isolation gate: schema/fingerprint/wire-shape tags and host production byte-identical to `545c5c2f3`; net wire, handshake and state record sources unchanged (`SNAPSHOT_VERSION=21`, `WIRE_VERSION=33`, application protocol PRLC). Projection modules have no store or weapon-component write APIs.
 - App UI integration: `CARGO_INCREMENTAL=0 cargo test -p postretro --features dev-tools timed_slot_ui_` — 9 passed, 0 failed, 1897 filtered. An unrelated integration target matched 0 tests (3 filtered); the intended unit target matched all nine.
 - Quantitative budgets use accepted host overheat/capacity samples and the cooldown ramp's first sample. The 27-test matrix passes after this tightening.
 - First-sync mid-ramp initialization now primes the agreed line on the first initialized frame. The real time-sync harness caught and verifies the correction; later sample frames satisfy the normal bound.
+
+## Review checkpoint
+- Reviewed immutable range `545c5c2f3..84e02bf3b` in four slices plus a crossing seam pass. Three correctness findings require repair: refresh-excluded cell retains stale capacity; empty state batches bypass fingerprint validation; multiple applied raw samples in one frame can hide an intermediate threshold crossing (AC17).
+- AC17 remains achievable within the Decisions: retain ordered raw observations for threshold watchers on the four enumerated slots, then dispatch at the existing frame crossing stage. Predicate watchers, other slots and host/single-player retain their frame cadence. No projected value is observed and no store value is restored or rewritten.
+- Harness repairs: echo time-sync probes before host catch-up ticks; derive onset from accepted samples independently; enforce frame limits when projection reaches a bound without a bound sample. Record projection timing and fixed memory bounds after repairs.
+- Mechanical comment repairs: raw/UI boundary descriptions and the already accepted zero-delay aggregate-shot exception in `networking.md`.
+- No Decision or Acceptance restatement is needed. Manual AC22 remains outstanding.
+
+## Focused review-fix gate
+- Compile and format checks passed after repairs. Initial matrix exposed two fixture assumptions: a purported held-id resend was encoded as FullBaseline; a Completed and fall accepted in one frame were incorrectly required to leave a full final frame. Corrected the delta fixture and tested ordered intake against P25. Added an outage case that requires projected completion by the P6 deadline before the fall arrives.
+- Final focused matrix: 36 passed, 0 failed, 1 ignored (875 filtered). Broader state-slot module: 69 passed, 0 failed, 1 ignored. Detector: 18 passed. Simulation crossing integration: 16 passed. App UI: 9 passed. Ignored timing observation explicitly run and passed.
+- Review fixes cover all three correctness findings, three harness proof repairs, performance proof and three comment/doc repairs. No Decision or Acceptance changed. Final workspace preflight passed; manual AC22 remains outstanding.
+
+## Projection cost observation
+- Explicit ignored observation `timed_slot_projection_frame_cost_observation`: 100,000 frame advances at the standard optimized dev profile, four agreed histories including capped steady state. Observed 30.3 ns/frame on this host; no wall-clock pass threshold. This measures projection advance, excluding the existing UI snapshot copy and snapshot intake.
+- Four fixed histories, each with 32 pending lines; at most 128 waiting-line entries can be visited in a frame. Instrumented history container occupies 4,688 bytes, including four test-only sample counters; production is no larger. Frame advance allocates nothing.
+- Raw crossing observations retain four tagged optional numbers per accepted batch, bounded by the transport drain, then drain at the same frame's crossing stage. Lifecycle resets clear retained observations. Reactions use the existing allocation/dispatch path only when an edge fires.
+
+## Final preflight
+- `CARGO_INCREMENTAL=0 cargo fmt --check` — pass. Workspace formatter corrected one import order after the mechanical lint repair.
+- `CARGO_INCREMENTAL=0 cargo clippy --target-dir target/preflight-clippy --workspace --all-targets --features postretro/dev-tools -- -D warnings` — pass. Initial lint found two unnecessary unwraps in the harness oracle; explicit matching preserves the calculation. Warm rerun passed.
+- `CARGO_INCREMENTAL=0 cargo test --workspace --features postretro/dev-tools` — pass: 12,332 passed, 0 failed, 60 ignored across 71 result groups, including doc tests. No ignored test is counted as a pass. The performance observation was run explicitly in the focused gate.
+- All 21 automated Acceptance rows pass. AC22 is outstanding manual proof; status is `test-ready`, brief remains in progress, feature branch remains local pending owner result and “land the plane.”
+- Last resource check: 38 GiB free; usage 34% five-hour / 43% weekly remaining, above the owner's 3% pause threshold.

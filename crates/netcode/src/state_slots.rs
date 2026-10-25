@@ -1220,6 +1220,9 @@ pub struct ClientStateApply {
     /// across the reset names no slot until its next baseline.
     weapon_projection: ReplicatedWeaponProjection,
     timed_slot_targets: timed_slot_targets::TimedSlotTargets,
+    /// Ordered accepted raw batches awaiting the frame's crossing stage. Outer
+    /// None excludes a refresh-held slot; Some(None) observes a genuine absence.
+    timed_slot_observations: Vec<[Option<Option<f32>>; 4]>,
 }
 
 impl ClientStateApply {
@@ -1231,6 +1234,7 @@ impl ClientStateApply {
             held_faction_sentiment_baseline: None,
             weapon_projection: ReplicatedWeaponProjection::default(),
             timed_slot_targets: timed_slot_targets::TimedSlotTargets::default(),
+            timed_slot_observations: Vec::new(),
         }
     }
 
@@ -1252,6 +1256,7 @@ impl ClientStateApply {
             && self.held_faction_sentiment_baseline.is_none()
             && self.weapon_projection == ReplicatedWeaponProjection::default()
             && self.timed_slot_targets.is_reset()
+            && self.timed_slot_observations.is_empty()
     }
 
     /// The owner-private weapon values as last committed, each with the host
@@ -1399,13 +1404,6 @@ impl ClientStateApply {
         snapshot_fingerprint: &[u8; 32],
         records: &[RawStateSlotRecord],
     ) -> StateApplyOutcome {
-        if records.is_empty() {
-            return StateApplyOutcome {
-                state_batch_applied: true,
-                ..StateApplyOutcome::default()
-            };
-        }
-
         // Validate the whole batch against the local schema. The schema borrow is
         // released before the slot-table mutation below.
         let typed = {

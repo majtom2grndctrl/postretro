@@ -364,3 +364,36 @@ fn fresh_rejoin_clock_and_apply_resume_lower_host_ticks_without_an_old_clamp() {
     assert!(target(&rejoined, &table, NAMES[0]).unwrap() > 0.25);
     assert!(retired.timed_slot_debug().playback_tick.unwrap() > 400.0);
 }
+
+#[test]
+#[ignore = "manual timing observation; no wall-clock pass threshold"]
+fn timed_slot_projection_frame_cost_observation() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut client = ClientStateApply::new();
+    let mut table = SlotTable::new();
+    ramp(&mut client, &mut table);
+    assert!(
+        client
+            .timed_slot_debug()
+            .slots
+            .iter()
+            .all(|slot| slot.agreed_slope.is_some())
+    );
+    let mut targets = client.timed_slot_targets;
+    const FRAMES: u32 = 100_000;
+    const DT: f64 = 1.0 / 144.0;
+    let started = Instant::now();
+    for frame in 1..=FRAMES {
+        let estimate = 4.0 + f64::from(frame) * DT * TICKS_PER_SECOND;
+        black_box(&mut targets).advance(Some(black_box(estimate)), black_box(DT));
+    }
+    let elapsed = started.elapsed();
+    black_box(&targets);
+    eprintln!(
+        "four agreed timer histories (including capped steady state): {:.1} ns/frame over {FRAMES} frames; instrumented size upper bound {} bytes (includes test sample counters); four x 32 pending lines, constant bounded scan, no frame allocation",
+        elapsed.as_nanos() as f64 / f64::from(FRAMES),
+        std::mem::size_of::<TimedSlotTargets>(),
+    );
+}

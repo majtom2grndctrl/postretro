@@ -89,6 +89,8 @@ pub(super) struct IntakeTrace {
     pub(super) tick: u32,
     pub(super) now_us: u64,
     pub(super) raw: [Option<f64>; 4],
+    pub(super) host_slots: [Option<usize>; 4],
+    pub(super) bounds: [Option<f64>; 4],
     pub(super) ramps: [RampTrace; 4],
     pub(super) records: usize,
     pub(super) timed_record_present: [bool; 4],
@@ -112,6 +114,8 @@ pub(super) struct ClientFrame {
     pub(super) reload_active: bool,
     pub(super) targets: [Option<f64>; 4],
     pub(super) raw: [Option<f64>; 4],
+    pub(super) host_slots: [Option<usize>; 4],
+    pub(super) bounds: [Option<f64>; 4],
     pub(super) ramps: [RampTrace; 4],
     pub(super) playback_tick: Option<f64>,
     pub(super) overheated: bool,
@@ -373,13 +377,6 @@ impl TimedSlotHarness {
     }
 
     fn host_step(&mut self) {
-        let mut snapshot_due = false;
-        while self.host_tick < self.next_host_tick {
-            let tick = self.host_tick + 1;
-            self.simulated_tick_times.push(Self::host_tick_due_us(tick));
-            self.simulate_host_tick(tick);
-            complete_host_fixed_tick(&mut self.host_tick, &mut snapshot_due);
-        }
         for packet in self.base.to_server.take_ready() {
             match wire::decode::<ClientMessage>(&packet).unwrap() {
                 ClientMessage::Ack(ack) => self.base.host.apply_ack(
@@ -418,6 +415,14 @@ impl TimedSlotHarness {
         {
             self.sync_to_client.enqueue(echo);
             self.stall_first_echo_until_us = None;
+        }
+        // Production polls and echoes before this frame runs its fixed ticks.
+        let mut snapshot_due = false;
+        while self.host_tick < self.next_host_tick {
+            let tick = self.host_tick + 1;
+            self.simulated_tick_times.push(Self::host_tick_due_us(tick));
+            self.simulate_host_tick(tick);
+            complete_host_fixed_tick(&mut self.host_tick, &mut snapshot_due);
         }
         if snapshot_due {
             use postretro_entities::components::weapon::{ReloadFeedback, ReloadFeedbackConsumer};
@@ -672,6 +677,8 @@ impl TimedSlotHarness {
                 tick: raw.server_tick,
                 now_us: self.now_us,
                 raw: self.raw(),
+                host_slots: self.committed_host_slots(),
+                bounds: self.committed_bounds(),
                 ramps,
                 records: raw.state_records.len(),
                 timed_record_present,
@@ -761,6 +768,8 @@ impl TimedSlotHarness {
                 == Some(SlotValue::Boolean(true)),
             targets,
             raw,
+            host_slots: self.committed_host_slots(),
+            bounds: self.committed_bounds(),
             ramps,
             playback_tick,
             overheat_at: display.get("player.overheatAt").and_then(slot_number),
@@ -768,6 +777,65 @@ impl TimedSlotHarness {
                 == Some(SlotValue::Boolean(true)),
         });
         self.client_frame += 1;
+    }
+
+    fn committed_host_slots(&self) -> [Option<usize>; 4] {
+        let raw = self.base.client.weapon_projection();
+        [
+            raw.reload_progress.map(|s| s.slot),
+            raw.cooldown.map(|s| s.slot),
+            raw.heat.map(|s| s.slot),
+            raw.cell.map(|s| s.slot),
+        ]
+    }
+
+    fn committed_bounds(&self) -> [Option<f64>; 4] {
+        let raw = self.base.client.weapon_projection();
+        [
+            Some(1.0),
+            Some(0.0),
+            Some(0.0),
+            raw.cell_capacity
+                .filter(|capacity| raw.cell.is_some_and(|cell| cell.slot == capacity.slot))
+                .and_then(|capacity| capacity.value)
+                .map(f64::from),
+        ]
+    }
+
+    pub(super) fn assert_queued_probe_echoes_before_frame_ticks(ticks: u32) {
+        // Regression: catch-up ticks were incorrectly included in the echo,
+        // biasing the fixture's sample timeline by as much as three ticks.
+        let mut harness = Self::scenario(144, Scenario::Heat, false);
+        let clean = postretro_net::harness::LinkConfig {
+            delay: 0,
+            jitter: 0,
+            loss_probability: 0.0,
+            seed: 1,
+        };
+        harness.sync_to_host = PacketConditioner::new(clean);
+        harness.sync_to_client = PacketConditioner::new(clean);
+        harness.base.to_client = PacketConditioner::new(clean);
+        // Both 1 -> 2 and 3 -> 6 cross the real two-tick snapshot cadence.
+        harness.host_tick = if ticks == 1 { 1 } else { 3 };
+        harness.next_host_tick = harness.host_tick + ticks;
+        let before = harness.host_tick;
+        let probe = harness.time_sync.maybe_send_probe(0).unwrap();
+        harness
+            .sync_to_host
+            .enqueue(wire::encode(&ClientMessage::TimeSync(probe)));
+        harness.advance_clock(Self::host_tick_due_us(harness.next_host_tick));
+        harness.host_step();
+        let packets = harness.sync_to_client.take_ready();
+        assert_eq!(packets.len(), 1);
+        let ServerMessage::TimeSync(echo) = wire::decode(&packets[0]).unwrap() else {
+            panic!("expected the queued probe's echo");
+        };
+        assert_eq!(echo.server_tick, before, "echo includes this frame's ticks");
+        let snapshots = harness.base.to_client.take_ready();
+        assert_eq!(snapshots.len(), 1, "frame must cross snapshot cadence");
+        let snapshot = crate::decode_snapshot(&snapshots[0]).unwrap();
+        assert_eq!(snapshot.server_tick, before + ticks);
+        assert_eq!(harness.sent_ticks, vec![before + ticks]);
     }
 
     fn raw(&self) -> [Option<f64>; 4] {

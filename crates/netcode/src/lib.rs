@@ -934,8 +934,10 @@ pub fn client_receive_and_apply(
         // a new highest-sequence snapshot. A late first entity baseline can produce
         // an additive ack, but its superseded state/faction batch must stay skipped.
         // Applied BEFORE the UI read snapshot is built (the receive path runs in
-        // the Game-logic stage, well before render), so the UI sees the authoritative
-        // value next frame. The state acks ride back in the SAME `AckMessage` as the
+        // the Game-logic stage, well before render). Raw readers see the final host
+        // sample this frame; the UI substitutes display-only timer targets. Ordered
+        // raw timer observations reach crossings after local game logic settles.
+        // The state acks ride back in the SAME `AckMessage` as the
         // entity acks (one ack per snapshot); refresh requests go out as their own
         // `ClientMessage::StateBaselineRefresh`.
         if outcome.accepted_newest_snapshot {

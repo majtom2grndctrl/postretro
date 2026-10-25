@@ -1230,7 +1230,7 @@ mod tests {
 
     #[test]
     fn timed_slot_history_clears_at_level_manifest_and_demotion_boundaries() {
-        for boundary in 0..3 {
+        for boundary in 0..4 {
             let mut endpoint = NetEndpoint::from_role(
                 &NetRole::Connect {
                     addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
@@ -1247,6 +1247,20 @@ mod tests {
             let NetEndpoint::Client { state_slots, .. } = &mut endpoint else {
                 unreachable!()
             };
+            let mut detector = postretro_scripting_core::state_crossings::CrossingDetector::new();
+            let mut data = postretro_entities::DataRegistry::new();
+            data.populate_level(
+                Vec::new(),
+                vec![postretro_entities::CrossingDescriptor {
+                    slot: Some("player.reloadProgress".to_string()),
+                    condition: postretro_entities::CrossingCondition::Above { threshold: 0.1 },
+                    max: 1.0,
+                    edge: None,
+                    fire: vec!["stale".to_string()],
+                }],
+                &[],
+            );
+            detector.initialize(&data, &table, &postretro_entities::ScriptCtx::new());
             state_slots.advance_timed_slot_targets(Some(100.0), 0.0);
             for tick in [100, 102, 104] {
                 let record = postretro_net::state_slots::RawStateSlotRecord {
@@ -1281,11 +1295,27 @@ mod tests {
             match boundary {
                 0 => endpoint.reset_level_scoped_client_state(),
                 1 => endpoint.reset_state_slot_schema(),
-                _ => endpoint.demote_client_state(&mut EntityRegistry::new()),
+                2 => endpoint.demote_client_state(&mut EntityRegistry::new()),
+                _ => {
+                    endpoint = NetEndpoint::from_role(
+                        &NetRole::Connect {
+                            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+                        },
+                        None,
+                    )
+                    .unwrap()
+                    .unwrap()
+                }
             }
             let NetEndpoint::Client { state_slots, .. } = &mut endpoint else {
                 unreachable!()
             };
+            assert!(
+                state_slots
+                    .detect_state_crossings(&mut detector, &table)
+                    .is_empty(),
+                "pending raw crossings cannot survive lifecycle boundary {boundary}"
+            );
             let cleared = state_slots.timed_slot_debug();
             assert!(cleared.playback_tick.is_none(), "boundary {boundary}");
             assert!(

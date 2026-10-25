@@ -2466,9 +2466,18 @@ impl frame_order::ReplicatedStateFrame for App {
         let Some(session) = self.session.as_mut() else {
             return Vec::new();
         };
-        crate::scripting::reactions::dispatch_state_crossings_with_sequences(
-            &mut session.crossing_detector,
-            &script_ctx.slot_table.borrow(),
+        let crossing_events = {
+            let slot_table = script_ctx.slot_table.borrow();
+            if let Some(netcode::NetEndpoint::Client { state_slots, .. }) =
+                session.net_endpoint.as_mut()
+            {
+                state_slots.detect_state_crossings(&mut session.crossing_detector, &slot_table)
+            } else {
+                session.crossing_detector.detect(&slot_table)
+            }
+        };
+        crate::scripting::reactions::dispatch_crossing_fires_with_sequences(
+            crossing_events,
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -3355,8 +3364,8 @@ impl App {
     /// borrow of `self.renderer`, and a `&self` receiver here would conflict with
     /// it. Borrowing only the script slot table keeps the two field borrows disjoint.
     ///
-    /// `pub(crate)` so the netcode state-slot apply tests can drive the REAL UI read
-    /// path (the replicated value must surface here), not a hand-mirrored copy.
+    /// Raw snapshot helper shared by store-isolation tests and the display snapshot
+    /// builder below, which substitutes connected-client timer targets for the UI.
     pub(crate) fn build_ui_slot_snapshot(
         slot_table: &postretro_entities::SlotTable,
     ) -> std::collections::HashMap<String, postretro_entities::SlotValue> {

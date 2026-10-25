@@ -12,7 +12,7 @@ impl ClientStateApply {
     pub(crate) fn accept_timed_slot_sample(
         &mut self,
         server_tick: u32,
-        _slot_table: &SlotTable,
+        slot_table: &SlotTable,
         outcome: &StateApplyOutcome,
     ) {
         if !outcome.state_batch_applied {
@@ -29,6 +29,18 @@ impl ClientStateApply {
                 }
             }
         }
+        self.timed_slot_observations
+            .push(std::array::from_fn(|index| {
+                (!excluded[index]).then(|| {
+                    match slot_table
+                        .get(NAMES[index])
+                        .and_then(|record| record.value.as_ref())
+                    {
+                        Some(SlotValue::Number(value)) => Some(*value),
+                        _ => None,
+                    }
+                })
+            }));
         self.timed_slot_targets
             .accept(server_tick, &self.weapon_projection, excluded);
     }
@@ -49,8 +61,38 @@ impl ClientStateApply {
         self.timed_slot_targets.apply(values);
     }
 
+    /// Detect client crossings after local game logic settles, behind the frame's
+    /// snapshot-apply witness. Replay only timer thresholds at accepted sample
+    /// cadence; all predicates and other thresholds retain frame-final cadence.
+    pub fn detect_state_crossings(
+        &mut self,
+        detector: &mut postretro_scripting_core::state_crossings::CrossingDetector,
+        slot_table: &SlotTable,
+    ) -> Vec<postretro_scripting_core::state_crossings::CrossingFire> {
+        let mut fires = Vec::new();
+        for observation in self.timed_slot_observations.drain(..) {
+            let mut samples = [("", None); 4];
+            let mut count = 0;
+            for (name, value) in NAMES.into_iter().zip(observation) {
+                if let Some(value) = value {
+                    samples[count] = (name, value);
+                    count += 1;
+                }
+            }
+            fires.extend(detector.observe_threshold_samples(&samples[..count]));
+        }
+        fires.extend(detector.detect_excluding_threshold_slots(slot_table, &NAMES));
+        fires
+    }
+
     pub(crate) fn reset_timed_slot_targets(&mut self) {
         self.timed_slot_targets = super::TimedSlotTargets::default();
+        self.timed_slot_observations.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn timed_slot_pending_observations(&self) -> &[[Option<Option<f32>>; 4]] {
+        &self.timed_slot_observations
     }
 
     #[cfg(test)]

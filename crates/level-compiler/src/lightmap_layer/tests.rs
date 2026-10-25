@@ -11,7 +11,7 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{FalloffModel, ShadowType};
 use crate::reporter::StageProgress;
-use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
+use crate::texel_footprint::{PENUMBRA_FLOOR_DEFAULT, TexelFrame};
 use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 use glam::DVec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};

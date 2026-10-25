@@ -152,6 +152,7 @@ impl Receiver {
                 .collect(),
             faction_sentiment_record: None,
             server_script_time: f64::from(tick) / 60.0,
+            ghost_audio: None,
         }
     }
 
@@ -238,6 +239,7 @@ fn descriptor_record() -> RawEntityRecord {
             emitter: None,
             fog: None,
             teleporter: None,
+            ghost_link: None,
         }],
     }
 }

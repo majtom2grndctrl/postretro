@@ -1,7 +1,7 @@
 # coop--timed-slot-projection — plan of record
 
 mode: compact
-status: test-ready
+status: landed
 read at: 545c5c2f3
 
 ## Session constraint
@@ -42,7 +42,7 @@ read at: 545c5c2f3
 | 19 | Host/SP and unrelated client slots | `timed_slot_ui_snapshot_drives_binding_predicate_max_focus_and_accessibility` — host/SP equality; conditioned harness every-frame unrelated-slot equality | achievable as stated | pass |
 | 20 | No projection writes to store/components | `accepted_host_samples_project_four_timers_without_mutating_raw_slots`; conditioned harness every-frame host/client component+store invariance; static write-API grep | achievable as stated | pass |
 | 21 | Unchanged wire/schema/fingerprint | Static byte comparison against `545c5c2f3`: schema/fingerprint/wire-shape tags+host production unchanged; net wire/handshake/state record sources unchanged | achievable as stated | pass |
-| 22 | Owner visual/audio loopback | Owner-run loopback recipe below — pending manual result | manual-visual | outstanding manual proof |
+| 22 | Owner visual/audio loopback | Owner reported all manual tests pass on 2026-10-25, following the runbook below | manual-visual | pass (owner) |
 
 ## Tasks
 
@@ -52,16 +52,16 @@ read at: 545c5c2f3
 | 2 | Add accepted sample intake, four-slot agreed-slope projection and bounded slew timeline; resets and deterministic seam tests | integrating executor | 1 | done: covered by the final 36-test timer matrix, including first-sync correction, receive rejection, correlated bounds, lifecycle resets and four timer streams. |
 | 3 | Integrate projection before every UI snapshot for connected clients; heat HUD and SDK documentation; UI/isolation proof | bounded UI worker / integrating executor | 2 contract | done: all 9 `timed_slot_ui_` CPU integration tests pass, including bindings/predicates/max, focus/accessibility, tween/reduce motion, exit fade and raw readers. |
 | 4 | Extend conditioned harness across ramps, jumps, loss, clocks, caps, resets and raw readers; map every acceptance result | integrating executor / bounded harness worker | 2, 3 | done: 21 conditioned harness tests plus intake/lifecycle/receive seam tests pass; every automated AC has named proof. |
-| 5 | Readiness checks, review-panel/fix loop, final preflight, manual runbook and result report | integrating executor | 4 | done: review fixes and focused retests pass; final fmt, Clippy and workspace tests pass. Manual AC22 remains outstanding under the runbook below. |
+| 5 | Readiness checks, review-panel/fix loop, final preflight, manual runbook and result report | integrating executor | 4 | done: review fixes and focused retests pass; final fmt, Clippy and workspace tests pass. Manual AC22 passed by the owner's 2026-10-25 report; post-merge verification is recorded below. |
 
 Hot-path constraints: four fixed histories; bounded pending samples; no allocations in frame projection; UI map substitution uses existing keys. Intake work is bounded by the existing validated batch and only four projected slots. Projection timing and fixed memory bounds are recorded below.
 
 ## Landing
-Manual visual proof is outstanding and is not inferred from automated checks. Keep the brief in progress until the owner supplies that result and says “land the plane.”
+Owner reported “All manual tests pass!” on 2026-10-25 and authorized merging latest main, preflight and landing. AC22 passes by that direct report. Merge `eb0dc2d36` incorporates `origin/main` at `d116329d7` without conflicts. Post-merge formatting, workspace Clippy and the full workspace suite pass. All 22 Acceptance rows now pass, including direct owner manual evidence. Brief archived in `done/` and roadmap marked complete for landing.
 
 ## External manual proof runbook
 
-Outstanding AC 22. Use this branch's build on `coop-presentation-test`, with client presentation at 144 Hz and only the client conditioned to 45 ms delay, 60 ms jitter, 5% loss. The automated harness fixes the same cadence/profile; the owner supplies the visual and audio result.
+AC22 passed by the owner's report on 2026-10-25, after playtesting feature checkpoint `f730a92e5`. Retained reproduction recipe: use this branch's build on `coop-presentation-test`, with client presentation at 144 Hz and only the client conditioned to 45 ms delay, 60 ms jitter, 5% loss. The automated harness fixes the same cadence/profile; the owner supplies the visual and audio result.
 
 From the checkout root, prepare binaries/content (tools compile nothing):
 
@@ -107,9 +107,25 @@ POSTRETRO_NET_LAG=45,60,5 RUST_LOG=info target/debug/postretro-tool run --instal
 - Four fixed histories, each with 32 pending lines; at most 128 waiting-line entries can be visited in a frame. Instrumented history container occupies 4,688 bytes, including four test-only sample counters; production is no larger. Frame advance allocates nothing.
 - Raw crossing observations retain four tagged optional numbers per accepted batch, bounded by the transport drain, then drain at the same frame's crossing stage. Lifecycle resets clear retained observations. Reactions use the existing allocation/dispatch path only when an edge fires.
 
-## Final preflight
+## Pre-integration final preflight
 - `CARGO_INCREMENTAL=0 cargo fmt --check` — pass. Workspace formatter corrected one import order after the mechanical lint repair.
 - `CARGO_INCREMENTAL=0 cargo clippy --target-dir target/preflight-clippy --workspace --all-targets --features postretro/dev-tools -- -D warnings` — pass. Initial lint found two unnecessary unwraps in the harness oracle; explicit matching preserves the calculation. Warm rerun passed.
 - `CARGO_INCREMENTAL=0 cargo test --workspace --features postretro/dev-tools` — pass: 12,332 passed, 0 failed, 60 ignored across 71 result groups, including doc tests. No ignored test is counted as a pass. The performance observation was run explicitly in the focused gate.
 - All 21 automated Acceptance rows pass. AC22 is outstanding manual proof; status is `test-ready`, brief remains in progress, feature branch remains local pending owner result and “land the plane.”
 - Last resource check: 38 GiB free; usage 34% five-hour / 43% weekly remaining, above the owner's 3% pause threshold.
+
+## Owner acceptance and main integration
+- 2026-10-25: owner reported all manual tests pass and explicitly authorized “land the plane.” Manual proof is direct owner evidence; no frame-rate/platform measurements beyond that report are invented.
+- Fetched `origin/main` at `d116329d7`, merged cleanly as `eb0dc2d36`. Latest main brings unrelated ghost replication wire versions (`SNAPSHOT_VERSION=22`, `WIRE_VERSION=34`); the timed-slot branch adds no wire/schema change relative to that main. The original wire gate against `545c5c2f3` remains the pre-integration historical proof.
+- Post-merge formatting and workspace Clippy pass. Updated the receive test's snapshot/component initializers with main's new `ghost_audio: None` and `ghost_link: None` fields; no production behavior changed. Full workspace tests passed.
+- Wire/schema/host-producer static comparison against fetched `origin/main` passes after integration.
+
+## Landing verification (2026-10-25)
+- Latest main integrated: `d116329d7`, merge commit `eb0dc2d36`; no merge conflicts.
+- `CARGO_INCREMENTAL=0 cargo fmt --check` — pass.
+- `CARGO_INCREMENTAL=0 cargo clippy --target-dir target/preflight-clippy --workspace --all-targets --features postretro/dev-tools -- -D warnings` — pass after the two test-only ghost field initializers were updated for main.
+- `CARGO_INCREMENTAL=0 cargo test --workspace --features postretro/dev-tools` — exit 0; 12,877 passed, 0 failed, 68 ignored across 71 result groups. Luna monitored the existing process; integrating executor confirmed exit status and totals. Ignored tests are not counted as passes.
+- AC22 passed by owner's direct 2026-10-25 report. No remaining acceptance gaps or owner decisions.
+- Durable sample-intake, correlation/reset and crossing contracts updated in `networking.md` and `ui.md`; SDK documentation was already updated with the implementation.
+- Landing cleanup targets only session temporary files and high-churn packages in this checkout's targets. No auxiliary worktree was created by this session; other chats' worktrees and the active checkout are retained.
+- Resource check before cleanup: 27 GiB free, 79% five-hour and 97% weekly usage remaining, above the requested 3% pause threshold.

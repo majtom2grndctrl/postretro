@@ -66,7 +66,7 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
 
 - [x] **coop--lossy-link-delivery** — under the dev lag profile a connected client's own pawn rubber-bands, worst in slides and vaults, because one lost datagram stalls reliable-ordered gameplay traffic for a 300 ms resend. Input resends at most one tick later and carries every gameplay family, switches included; Control resends at about 100 ms; the harness runs production channel semantics. Brief: `context/plans/done/coop--lossy-link-delivery/`.
 
-- [ ] **coop--timed-slot-projection** — a connected client's reload meter fills in steps because the host's samples arrive about 30 times a second and show raw. The client projects reload, cooldown, heat and cell between samples from the host's own stamped slope, display only, with no wire change; the dev HUD gains a heat bar. Brief: `context/plans/ready/coop--timed-slot-projection/`.
+- [x] **coop--timed-slot-projection** — connected-client reload, cooldown, heat and cell meters project between host samples for smooth display; dev HUD heat bar, unchanged raw gameplay readers and no feature wire change. Automated and owner manual proofs pass. Brief: `context/plans/done/coop--timed-slot-projection/`.
 
 - [ ] **coop--pre-arm-fire-resolves-slot-zero** — before a connected client's pawn arms, its Input carries `firing_slot` 0, and a fresh fire press there fires the host pawn's slot-0 weapon whatever its active slot. Traced in source, not yet seen in play. Trace: `context/plans/done/coop--client-inventory-awaits-tuning/research.md`. Needs a draft session.
 

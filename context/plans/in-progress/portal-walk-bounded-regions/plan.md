@@ -238,3 +238,49 @@ far-point tour (FT). Logs: scratchpad `measure/pair/`.
 | campaign-test | rect | 12.3 / 12.9 | 16.0 / 16.4 |
 
 No refusals. Worst cell 172 MiB, under the 256 MiB floor.
+
+## R1 — quiet rerun at `a8e4a2a63` (epoch 3)
+
+Same instrument and poses; machine quiet (`pgrep` empty before and after). 0 cap trips, 0
+unclassified misses on every map; worst 2,021 tests (occlusion-test), cap 2.47×.
+Orientation: means tier orients every portal on all three maps; 0 unoriented, 0 probe
+mismatches. Log: scratchpad `measure/sweep-final.log`. These µs supersede the loaded run.
+
+| map / region | tests p50/95/99/max | µs p50/p99/p99.9/max | extra p50/95/max |
+|---|---|---|---|
+| hallway | 32/226/707/1,903 | 4.9/126/220/524 | 0/4/71 |
+| hallway incl. vertical | 33/335/793/1,903 | 5.1/141/227/524 | 0/4/71 |
+| shaft A | 319/1,033/1,350/1,903 | 50.9/256/391/524 | 1/13/59 |
+| shaft A up/down | 259/1,075/1,189/1,311 | 42.0/229/275/363 | 0/16/36 |
+| shaft B | 188/715/928/1,132 | 30.9/182/233/325 | 0/13/43 |
+| shaft C | 199/737/982/1,247 | 30.5/175/244/307 | 1/16/45 |
+| arena | 25/137/238/430 | 3.7/36/55/103 | 0/2/13 |
+| reflection-lake-test | 221/952/1,240/1,511 | 38.8/238/361/449 | 0/5/51 |
+| occlusion-test | 304/1,299/1,623/2,021 | 52.3/299/459/644 | 0/20/182 |
+
+Epoch-3 bakes (`a8e4a2a63` `prl-build`): CellResidencySet sampling 0 step-limited walks on
+lake (20,736), movement-feel (11,808) and hallway (335,898). The pre-change lake bake
+logged 1,070 of 20,736 step-limited.
+
+## R4 — Settle (fresh launches, release, `POSTRETRO_CPU_TIMING=1`)
+
+Pre-change `e31209623` on its own bakes vs rect `a8e4a2a63` on epoch-3 bakes. Launch
+recipe: scratchpad `measure/settle/launch.sh` (`--mod dev --app-name postretro-dev
+--baked-root <repo>/baked --core-root <repo>/core <abs .prl> --start-pose=x,y,z,yaw,pitch`).
+Shaft A pose `-42.27,18.88,21.13,90,±45`; arena `35,2.63,-15,0,0`. No timeout, warning,
+ERROR or panic.
+
+| entry | build | step-limit / walk frames | SH / LM set peak | hold ms | reveal misses |
+|---|---|---|---|---|---|
+| hallway spawn | pre / rect | 0/60 · 0/57 | 70/58 · 70/58 | 1,304 · 1,227 | 0 · 0 |
+| shaft A 0° | pre / rect | 0/47 · 0/45 | 85/198 · 86/220 | 1,072 · 1,108 | 0 · 0 |
+| shaft A +45° | pre / rect | 0/45 · 0/47 | 85/198 · 86/220 | 1,063 · 1,056 | 0 · 0 |
+| shaft A −45° | pre / rect | 0/46 · 0/45 | 85/198 · 86/220 | 1,046 · 1,123 | 0 · 0 |
+| arena 0° | pre / rect | 0/64 · 0/70 | 79/95 · 79/96 | 1,395 · 1,492 | 0 · 0 |
+| lake spawn | pre / rect | **16/0** · 0/16 | 7/128 · 7/128 | 383 · 371 | 0 · 0 |
+
+Rect: no step-limit frames on any entry, and no `walk_step_limit` marker after reveal. The
+pre-change lake spawn tripped on every Settling frame and every post-reveal frame (120/120).
+The chosen shaft A pose did not trip the pre-change walk (8,416 portal tests at +45° vs rect
+802); a known trip pose from the research sweep would be needed to show the old walk's
+fallback there. Settle-set peaks don't move with pitch (camera-cell mandatory tier).

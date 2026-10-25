@@ -15,15 +15,13 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 use log::Level as LogLevel;
 use postretro_entities::components::brain::BrainComponent;
-use postretro_entities::components::health::{
-    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
-};
+use postretro_entities::components::health::HealthComponent;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, EntityId, GhostLinkComponent, KinematicMoverComponent, ReactionDescriptor,
     ScriptCtx, ScriptError, SequenceTarget, TeleporterComponent, Transform, TriggerVolumeComponent,
 };
-use postretro_foundation::{DamagePayload, GhostStyle, PlayerMovementComponent};
+use postretro_foundation::{GhostStyle, PlayerMovementComponent};
 use postretro_level_format::ghost_links::GhostMembers;
 use postretro_level_loader::LevelWorld;
 use postretro_physics::movement::{MovementInput, TeleportEvent};
@@ -52,7 +50,7 @@ use crate::startup::teleporters_surface_tests::run_prl_build_on;
 const DT: f32 = 1.0 / 60.0;
 /// Frames that let placed pawns settle onto the floor before they act.
 const SETTLE: usize = 30;
-/// Fixed ticks the battle runs after the swap press: ten seconds.
+/// Fixed ticks a fight runs once its monsters wake: ten seconds.
 const BATTLE_FRAMES: usize = 600;
 /// Metres above the bare floor's standing height that clear a 4-unit floor marker.
 const PAD_CLEARANCE: f32 = 0.2;
@@ -62,25 +60,30 @@ const UNITS_PER_METRE: f32 = 39.37;
 const COPY_OFFSET: Vec3 = Vec3::new(0.0, 0.0, -4096.0 / UNITS_PER_METRE);
 /// The closets' open faces, Quake y ±208, on engine x: past it is a closet.
 const CLOSET_LINE: f32 = 208.0 / UNITS_PER_METRE;
+/// Metres the two spawns' capsules keep clear of each other, beyond touching.
+const SPAWN_MARGIN: f32 = 0.5;
+/// Quake x of the westmost closet mouth in a room copy: copy A's south closet.
+const CLOSET_MOUTH_WEST_X: f32 = -64.0;
 /// The partner's client id: its seat, and its `PlayerId::Remote` while live.
 const PARTNER_CLIENT: u64 = 7;
+/// The north closet's timer, counted from level load.
+const NORTH_TIMER_SECS: f64 = 15.0;
+/// The beat between the split crossing and copy B's closets opening.
+const LIMITATOR_BEAT_SECS: f64 = 3.0;
 /// The final wave's beat between its fire and the closet doors starting.
 const WAVE_BEAT_SECS: f64 = 3.0;
-/// Slack around the beat's end: a few ticks either side of three seconds.
+/// Slack around a beat's end: a few ticks either side of it.
 const WAVE_BEAT_SLACK: f64 = 0.1;
-/// Frames that carry a removal to `progress` and its fired reaction.
-const PROGRESS_FRAMES: usize = 5;
-/// Frames past the beat that show a wave did not start: four seconds.
-const NO_WAVE_FRAMES: usize = 240;
 /// Frames a pedestal takes to rise its 56 units at 1 m/s, with margin.
 const RISE_FRAMES: usize = 120;
+/// The return pedestal's half height: its brush is 48 Quake units tall.
+const PEDESTAL_HALF_HEIGHT: f32 = 24.0 / UNITS_PER_METRE;
 /// Where the players stand for the final wave: in room A just inside the
 /// doorway, east of the cover wall, in sight of the final closet. From farther
 /// back in room A the baked navmesh offers the closet's knights no route (a
 /// `find_path` limit, not this map's geometry), so they would wait in it.
 const HOST_STAND: (f32, f32) = (160.0, -32.0);
 const PARTNER_STAND: (f32, f32) = (160.0, 32.0);
-const SOLO_STAND: (f32, f32) = (160.0, 0.0);
 /// Quake x of the final closet's open face: past it is the closet.
 const FINAL_CLOSET_X: f32 = 448.0;
 
@@ -131,20 +134,21 @@ const UNRELATED_WARNINGS: [&str; 5] = [
     "[AI] enemy animation state",
 ];
 
-const LEVEL_REACTIONS: [&str; 15] = [
+const LEVEL_REACTIONS: [&str; 16] = [
     "echo.reveal",
     "echo.swell",
     "echo.fight",
     "barrier.open",
+    "closet.a1",
+    "levelLoad",
     "split.arm",
     "split.settle",
-    "battle.swap",
-    "battle.settle",
+    "closet.a2",
+    "closet.b",
+    "swap.arm",
+    "swap.settle",
     "wave.start",
-    "ready.rise",
-    "clear.a",
     "return.rise",
-    "clear.b",
     "return.arm",
     "return.settle",
 ];
@@ -212,8 +216,6 @@ struct Level {
     boot_players: usize,
     /// The `player_spawn` index the host's seat table assigned the partner.
     partner_placement: usize,
-    /// Whether the partner joined. A solo level's `partner` is its own pawn.
-    has_partner: bool,
     /// Whether the partner runs as a connected client's pawn: one neutral
     /// remote command per tick, so triggers and teleporters see it.
     /// Off, the host moves it only where a test puts it.
@@ -233,15 +235,6 @@ impl Level {
     /// Load the compiled level and install it the way level load does, under the
     /// production dev mod, including the ghost-link install `lifecycle.rs` runs.
     fn install(world: LevelWorld) -> Self {
-        Self::install_with(world, true)
-    }
-
-    /// The same level with nobody joining: single player.
-    fn install_solo(world: LevelWorld) -> Self {
-        Self::install_with(world, false)
-    }
-
-    fn install_with(world: LevelWorld, with_partner: bool) -> Self {
         let mut app = test_app();
         let ctx = script_ctx(&app);
         let captured: Rc<RefCell<Option<Value>>> = Rc::new(RefCell::new(None));
@@ -372,9 +365,7 @@ impl Level {
         // The partner joins: the host's seat table assigns its spawn, as the
         // participating-slot path in `main.rs` does, and the network-slot
         // materialization spawns it there.
-        let (partner, partner_placement) = if !with_partner {
-            (pawn, 0)
-        } else {
+        let (partner, partner_placement) = {
             let seat = seats
                 .admit_or_reclaim(
                     PARTNER_CLIENT,
@@ -417,7 +408,6 @@ impl Level {
             partner,
             boot_players,
             partner_placement,
-            has_partner: with_partner,
             partner_live: false,
             input_tick: 0,
             anim_time: 0.0,
@@ -571,19 +561,13 @@ impl Level {
     }
 
     fn frame_with(&mut self, use_pressed: bool) -> Vec<(EntityId, TeleportEvent)> {
-        self.frame_full(use_pressed, false, &[])
+        self.frame_full(use_pressed, false)
     }
 
     /// One frame in which the live partner presses use.
     fn partner_frame_with_use(&mut self) -> Vec<(EntityId, TeleportEvent)> {
         assert!(self.partner_live, "only a live partner presses");
-        self.frame_full(false, true, &[])
-    }
-
-    /// One frame that first deals each of `kill` lethal damage, as a shot
-    /// would, before the tick.
-    fn frame_killing(&mut self, kill: &[EntityId]) -> Vec<(EntityId, TeleportEvent)> {
-        self.frame_full(false, false, kill)
+        self.frame_full(false, true)
     }
 
     /// One host frame of one fixed tick, in `frame_loop` order: the frame's
@@ -596,7 +580,6 @@ impl Level {
         &mut self,
         use_pressed: bool,
         partner_use: bool,
-        kill: &[EntityId],
     ) -> Vec<(EntityId, TeleportEvent)> {
         self.frames += 1;
         self.app.script_time += f64::from(DT);
@@ -610,25 +593,6 @@ impl Level {
         let session = app.session.as_mut().unwrap();
         session.scripting.scheduler.begin_frame();
         let mut deaths = std::mem::take(&mut session.pending_death_events);
-        if !kill.is_empty() {
-            let mut registry = ctx.registry.borrow_mut();
-            for &target in kill {
-                let mut context = DamageContext::new("ghost-links-fixture", DamageProducer::InTick);
-                context.attacker = Some(pawn);
-                apply_damage_with_context(
-                    &mut registry,
-                    target,
-                    &DamagePayload {
-                        amount: 10_000.0,
-                        impulse: Vec3::ZERO,
-                    },
-                    context,
-                );
-                session
-                    .scripting
-                    .evaluate_pending_in_tick_impacts(&mut registry);
-            }
-        }
         let mut use_edges: HashMap<PlayerId, bool> = HashMap::new();
         if use_pressed {
             use_edges.insert(PlayerId::Local(pawn), true);
@@ -945,12 +909,12 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
         expected.sort_unstable();
         assert_eq!(names, expected, "every level reaction installs");
         // Echo plate, split pad and swap pad in each copy, the button and the
-        // return pad in copy B, the ready pad in copy A.
+        // return pad in copy B, the barrier approach in copy A.
         assert_eq!(data.volume_trigger_events().len(), 9);
         assert_eq!(
             data.teleport_events().len(),
-            5,
-            "both split, both swap and the return teleporter bind"
+            6,
+            "both split, the A-to-B split's closets, both swap and the return teleporter bind"
         );
     }
     let manifest_of = |level: &Level| {
@@ -1004,14 +968,36 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
             swell.args,
             serde_json::json!({ "volume": 0.9, "lowPassHz": 5000, "periodMs": 1500 })
         );
+        // The north closet's timer: a 15 s wait, then a fire of `closet.a1`,
+        // so the levelLoad body itself holds no group step.
+        let ReactionDescriptor::Sequence(steps) = reaction(level, "levelLoad") else {
+            panic!("the levelLoad timer is a sequence");
+        };
+        let shape: Vec<(&SequenceTarget, &Value)> =
+            steps.iter().map(|step| (&step.id, &step.args)).collect();
+        assert_eq!(
+            shape,
+            [
+                (
+                    &SequenceTarget::Wait,
+                    &serde_json::json!({ "durationMs": 15000, "interruptible": false })
+                ),
+                (
+                    &SequenceTarget::Fire,
+                    &serde_json::json!({ "event": "closet.a1" })
+                ),
+            ]
+        );
     }
 }
 
-// Each copy holds a `player_spawn`, copy B's marked `coop_only`. The host gets
-// one pawn, at copy A's spawn; copy B's spawn stands empty until a joiner
-// takes it through the host's seat table, resting on copy B's floor.
+// Both players start in copy A's main room, each at their own `player_spawn`,
+// the second marked `coop_only`. The host gets one pawn; the second spawn
+// stands empty until a joiner takes it through the host's seat table. The two
+// stand level, far enough apart that their capsules cannot touch, outside every
+// trigger volume and west of every closet mouth.
 #[test]
-fn ghost_link_spawns_one_host_pawn_and_seats_the_joiner_in_copy_b() {
+fn ghost_link_seats_both_players_apart_in_copy_a() {
     let out = tempfile::tempdir().unwrap();
     for map in ["ghost-links", "ghost-links-luau"] {
         let level = Level::install(compile(map, out.path()));
@@ -1021,19 +1007,58 @@ fn ghost_link_spawns_one_host_pawn_and_seats_the_joiner_in_copy_b() {
             "{map}: the joiner takes the free spawn"
         );
         let (pawn, partner) = (level.position(level.pawn), level.position(level.partner));
-        assert!(
-            pawn.z > COPY_OFFSET.z * 0.5,
-            "{map}: the host starts in copy A: {pawn}"
-        );
-        assert!(
-            partner.z < COPY_OFFSET.z * 0.5,
-            "{map}: the joiner starts in copy B: {partner}"
-        );
-        // Both copies' floors sit at the same height: the pawns stand level.
+        for (who, at) in [("host", pawn), ("joiner", partner)] {
+            assert!(
+                at.z > COPY_OFFSET.z * 0.5,
+                "{map}: the {who} starts in copy A: {at}"
+            );
+            // Quake x is engine −z; the closets open on Quake x −64 to 160.
+            assert!(
+                -at.z * UNITS_PER_METRE < CLOSET_MOUTH_WEST_X,
+                "{map}: the {who} starts west of every closet mouth: {at}"
+            );
+        }
         assert!(
             close(pawn.y, partner.y, 1e-4),
             "{map}: both stand on the floor: {pawn} vs {partner}"
         );
+        let radius = |pawn: EntityId| {
+            level
+                .ctx
+                .registry
+                .borrow()
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .capsule
+                .radius
+        };
+        let (host_radius, joiner_radius) = (radius(level.pawn), radius(level.partner));
+        let gap = flat_distance(pawn, partner);
+        assert!(
+            gap > host_radius + joiner_radius + SPAWN_MARGIN,
+            "{map}: the spawns stand {gap} m apart, more than two capsule radii \
+             ({host_radius} + {joiner_radius} m) plus {SPAWN_MARGIN} m"
+        );
+        let bridge = &level.app.session.as_ref().unwrap().trigger_volume_bridge;
+        for (trigger, _) in level
+            .ctx
+            .registry
+            .borrow()
+            .query_by_component_and_tag(ComponentKind::TriggerVolume, None)
+        {
+            let (min, max) = bridge.aabb(trigger).expect("trigger volume is bridged");
+            for (who, at, r) in [
+                ("host", pawn, host_radius),
+                ("joiner", partner, joiner_radius),
+            ] {
+                let clear =
+                    at.x + r < min.x || at.x - r > max.x || at.z + r < min.z || at.z - r > max.z;
+                assert!(
+                    clear,
+                    "{map}: the {who}'s capsule starts outside trigger {trigger:?}"
+                );
+            }
+        }
     }
 }
 
@@ -1043,17 +1068,98 @@ fn ghost_link_spawns_one_host_pawn_and_seats_the_joiner_in_copy_b() {
 // copy B drops it and its ghost follows. The echo plate arms the second link,
 // so the partner in copy B ghosts into copy A, and both links' colour filters
 // and the Ghost bus ramp. The first purple-pad press splits the player
-// standing on copy A's pad alone into copy B, and runs nothing else. The next
-// press narrows projectiles, opens the closets, rouses the monsters, and swaps
-// that player back into copy A. Monsters, whose descriptor does not opt in,
-// and the viewer's own pawn never ghost. Under the real AI tick, copy A's
-// knights then walk out and hit the presser, and copy B's limitators shoot
-// the partner.
+// standing on copy A's pad alone into copy B. The crossing opens copy A's south
+// closet at once and copy B's closets three seconds later, and arms the swap
+// pads. Each later press flips both players between the copies and narrows
+// projectiles; the next press flips them again. Monsters, whose descriptor
+// does not opt in, and the viewer's own pawn never ghost. Under the real AI
+// tick, the south closet's knight then walks out and hits the player in copy
+// A, and copy B's limitators shoot the player in copy B.
 #[test]
-fn ghost_link_dev_level_runs_the_barrier_puzzle_and_battle_swap() {
+fn ghost_link_dev_level_runs_the_barrier_puzzle_split_and_flip() {
     let out = tempfile::tempdir().unwrap();
     for map in ["ghost-links", "ghost-links-luau"] {
         run_set_pieces(map, Level::install(compile(map, out.path())));
+    }
+}
+
+/// Each of `tag`'s closet doors has started (`open`) or holds shut, and each
+/// of `monsters` is awake or still sealed in.
+fn assert_closet(map: &str, level: &Level, doors: &str, monsters: &str, open: bool, why: &str) {
+    for &door in &level.entities(ComponentKind::KinematicMover, doors) {
+        assert_eq!(level.started(door), open, "{map}: `{doors}` {why}");
+    }
+    for &npc in &level.entities(ComponentKind::Health, monsters) {
+        assert_eq!(
+            level.brain(npc).aggro_armed,
+            open,
+            "{map}: `{monsters}` {why}"
+        );
+        if !open {
+            assert!(
+                level.position(npc).x.abs() > CLOSET_LINE,
+                "{map}: `{monsters}` stays in its closet: {why}"
+            );
+        }
+    }
+}
+
+/// The classes of the monsters tagged `tag`, in registry order.
+fn classes(level: &Level, tag: &str) -> Vec<String> {
+    level
+        .entities(ComponentKind::Health, tag)
+        .iter()
+        .map(|&npc| level.class(npc))
+        .collect()
+}
+
+/// Copy A's and copy B's closets, checked as the level installs: two knights
+/// behind each of copy A's doors, a limitator behind each of copy B's, every
+/// monster in its closet and asleep.
+fn closets(map: &str, level: &Level) {
+    assert_eq!(
+        level.entities(ComponentKind::Health, "echo_monster").len(),
+        6,
+        "{map}: six closet monsters"
+    );
+    assert_eq!(
+        classes(level, "echo_monster_a1"),
+        ["reference_enemy"; 2],
+        "{map}: two knights wait in copy A's north closet"
+    );
+    assert_eq!(
+        classes(level, "echo_monster_a2"),
+        ["reference_enemy"; 2],
+        "{map}: two knights wait in copy A's south closet"
+    );
+    assert_eq!(
+        classes(level, "echo_monster_b"),
+        ["limitator"; 2],
+        "{map}: two limitators wait in copy B"
+    );
+    for &npc in &level.entities(ComponentKind::Health, "echo_monster") {
+        assert!(
+            level.position(npc).x.abs() > CLOSET_LINE,
+            "{map}: every monster starts in a closet, out of the room"
+        );
+    }
+    for (tag, count) in [
+        ("echo_closet_a1", 1),
+        ("echo_closet_a2", 1),
+        ("echo_closet_b", 2),
+    ] {
+        assert_eq!(
+            level.entities(ComponentKind::KinematicMover, tag).len(),
+            count,
+            "{map}: `{tag}` doors"
+        );
+    }
+    for (doors, monsters) in [
+        ("echo_closet_a1", "echo_monster_a1"),
+        ("echo_closet_a2", "echo_monster_a2"),
+        ("echo_closet_b", "echo_monster_b"),
+    ] {
+        assert_closet(map, level, doors, monsters, false, "starts shut");
     }
 }
 
@@ -1067,35 +1173,25 @@ fn run_set_pieces(map: &str, mut level: Level) {
     for index in [0, 1] {
         assert_eq!(level.app.ghost_links.link_style(index), ECHO, "{map}");
     }
+    closets(map, &level);
     let monsters = level.entities(ComponentKind::Health, "echo_monster");
-    assert_eq!(monsters.len(), 5, "{map}: five closet monsters");
-    let knights = level.entities(ComponentKind::Health, "echo_monster_a");
-    let limitators = level.entities(ComponentKind::Health, "echo_monster_b");
-    assert_eq!(
-        knights
-            .iter()
-            .map(|&npc| level.class(npc))
-            .collect::<Vec<_>>(),
-        ["reference_enemy"; 3],
-        "{map}: three knights wait in copy A"
+    // The closets the split opens: copy A's south closet and copy B's two.
+    let fight_doors: Vec<EntityId> = ["echo_closet_a2", "echo_closet_b"]
+        .iter()
+        .flat_map(|tag| level.entities(ComponentKind::KinematicMover, tag))
+        .collect();
+    let shut: Vec<Vec3> = fight_doors
+        .iter()
+        .map(|&door| level.position(door))
+        .collect();
+    // Both players start in copy A. The partner stands in for one who already
+    // crossed: it waits in copy B's room, where echo_b will ghost it.
+    let joined = level.position(level.partner);
+    level.place_pawn(
+        level.partner,
+        joined + COPY_OFFSET,
+        joined.y - PAD_CLEARANCE,
     );
-    assert_eq!(
-        limitators
-            .iter()
-            .map(|&npc| level.class(npc))
-            .collect::<Vec<_>>(),
-        ["limitator"; 2],
-        "{map}: two limitators wait in copy B"
-    );
-    for &npc in &monsters {
-        assert!(
-            level.position(npc).x.abs() > CLOSET_LINE,
-            "{map}: every monster starts in a closet, out of the room"
-        );
-    }
-    let doors = level.entities(ComponentKind::KinematicMover, "echo_closet_door");
-    assert_eq!(doors.len(), 4, "{map}: two closet doors per copy");
-    let shut: Vec<Vec3> = doors.iter().map(|&door| level.position(door)).collect();
     level.settle();
     let height = level.position(level.pawn).y;
     // Copy A's spawn: off both purple pads and the blue plate.
@@ -1243,11 +1339,9 @@ fn run_set_pieces(map: &str, mut level: Level) {
         ),
         "{map}: the swell mid-ramp {bus:?}"
     );
-
     // The split: the first press of copy A's purple pad arms both split
     // teleporters and turns both split pads off, so only the presser crosses,
-    // into copy B. The press runs nothing else: the swap pads stay off until
-    // the crossing, so neither the swap nor echo.fight fires on it.
+    // into copy B. The press itself opens no closet.
     let swap = level.entities(ComponentKind::Teleporter, "echo_swap");
     assert_eq!(swap.len(), 2, "{map}: a two-way seamless pair");
     let split = level.entities(ComponentKind::Teleporter, "echo_split");
@@ -1263,14 +1357,8 @@ fn run_set_pieces(map: &str, mut level: Level) {
     }
     for &npc in &monsters {
         assert!(
-            !level
-                .ctx
-                .registry
-                .borrow()
-                .get_component::<BrainComponent>(npc)
-                .unwrap()
-                .aggro_armed,
-            "{map}: monsters wait for the swap"
+            !level.brain(npc).aggro_armed,
+            "{map}: monsters wait for their cue"
         );
     }
     level.place(level.trigger_center("split_pad", false), height);
@@ -1285,7 +1373,16 @@ fn run_set_pieces(map: &str, mut level: Level) {
         level.frame_with(true).is_empty(),
         "{map}: the use queues the split"
     );
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a2",
+        "echo_monster_a2",
+        false,
+        "waits for the crossing, not the press",
+    );
     let crossed = level.frame();
+    let crossed_at = level.app.script_time;
     assert_eq!(crossed.len(), 1, "{map}: the presser splits");
     assert_eq!(crossed[0].0, level.pawn);
     let partner_after = level.position(level.partner);
@@ -1332,25 +1429,6 @@ fn run_set_pieces(map: &str, mut level: Level) {
             "{map}: the split press does not arm the swap"
         );
     }
-    for &npc in &monsters {
-        assert!(
-            !level
-                .ctx
-                .registry
-                .borrow()
-                .get_component::<BrainComponent>(npc)
-                .unwrap()
-                .aggro_armed,
-            "{map}: the split press does not rouse the monsters"
-        );
-    }
-    for (&door, closed) in doors.iter().zip(&shut) {
-        assert_eq!(
-            level.position(door),
-            *closed,
-            "{map}: the split press leaves the closets shut"
-        );
-    }
     for (_, link) in level.links() {
         assert_eq!(
             link.members,
@@ -1358,55 +1436,117 @@ fn run_set_pieces(map: &str, mut level: Level) {
             "{map}: the split press does not run echo.fight"
         );
     }
+    // The crossing opens copy A's south closet at once. The north closet keeps
+    // its own cue, and copy B's closets hold through their three-second beat.
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a2",
+        "echo_monster_a2",
+        true,
+        "opens on the crossing",
+    );
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a1",
+        "echo_monster_a1",
+        false,
+        "ignores the crossing",
+    );
+    while level.app.script_time < crossed_at + LIMITATOR_BEAT_SECS - WAVE_BEAT_SLACK {
+        assert_closet(
+            map,
+            &level,
+            "echo_closet_b",
+            "echo_monster_b",
+            false,
+            "holds through the beat",
+        );
+        level.frame();
+    }
+    while level.app.script_time < crossed_at + LIMITATOR_BEAT_SECS + WAVE_BEAT_SLACK {
+        level.frame();
+    }
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_b",
+        "echo_monster_b",
+        true,
+        "opens three seconds after the crossing",
+    );
+    assert!(
+        level.app.script_time < NORTH_TIMER_SECS - 1.0,
+        "{map}: the north closet's timer has not run out yet"
+    );
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a1",
+        "echo_monster_a1",
+        false,
+        "still waits for its timer",
+    );
 
-    // The battle swap: the next press, on copy B's pad where the split landed,
-    // arms both seamless swap teleporters, opens every closet, rouses the
-    // monsters and stops ghosting projectiles; the presser lands back in copy
-    // A, and the first crossing disarms both. The partner stands in copy B's
-    // middle, as the swap leaves a co-op partner: this host moves a slot pawn
-    // only on its owner's input, so it stays where it is put.
-    level.place_pawn(level.partner, Vec3::new(0.0, 0.0, COPY_OFFSET.z), height);
-    let before = level.position(level.pawn);
-    assert!(
-        level.frame_with(true).is_empty(),
-        "{map}: the use queues the arm"
-    );
-    let swapped = level.frame();
-    assert_eq!(swapped.len(), 1, "{map}: the player in copy B swaps");
-    assert_eq!(swapped[0].0, level.pawn);
-    let after = level.position(level.pawn);
-    assert!(
-        (Vec3::new(after.x, 0.0, after.z) - Vec3::new(before.x, 0.0, before.z - COPY_OFFSET.z))
-            .length()
-            < 1e-2,
-        "{map}: the swap carries the player into copy A: {before} → {after}"
-    );
-    for (_, link) in level.links() {
+    // The flip: the partner, now a connected client's pawn, stands in copy A's
+    // middle and the presser on copy B's pad. Each press arms both seamless
+    // swap teleporters, so the two trade copies; the first crossing disarms
+    // both, and the next press arms them again.
+    level.partner_live = true;
+    level.place_pawn(level.partner, quake(0.0, 0.0, 0.0), height);
+    for _ in 0..SETTLE {
+        assert!(level.frame().is_empty(), "{map}: nobody flips unpressed");
+    }
+    for flip in 0..2 {
+        let in_b = flip % 2 == 1;
+        let (pawn_before, partner_before) =
+            (level.position(level.pawn), level.position(level.partner));
+        assert!(
+            level.frame_with(true).is_empty(),
+            "{map}: the use queues the arm"
+        );
+        let flipped = level.frame();
+        let movers: HashSet<EntityId> = flipped.iter().map(|(pawn, _)| *pawn).collect();
         assert_eq!(
-            link.members,
-            (GhostMembers::all() - GhostMembers::PROJECTILES).bits(),
-            "{map}: echo.fight hides projectiles"
+            movers,
+            HashSet::from([level.pawn, level.partner]),
+            "{map}: flip {flip} moves both players"
         );
-    }
-    for &npc in &monsters {
-        assert!(
-            level
-                .ctx
-                .registry
-                .borrow()
-                .get_component::<BrainComponent>(npc)
-                .unwrap()
-                .aggro_armed,
-            "{map}: the swap rouses every monster"
-        );
-    }
-    level.frame();
-    level.frame();
-    for &teleporter in &swap {
-        assert!(
-            !level.teleporter(teleporter).armed,
-            "{map}: the crossing disarms both directions"
-        );
+        // Copy B is engine −z of copy A: the presser leaves copy B on even
+        // flips, the partner leaves copy A.
+        let toward = if in_b { COPY_OFFSET } else { -COPY_OFFSET };
+        for (pawn, from, delta) in [
+            (level.pawn, pawn_before, toward),
+            (level.partner, partner_before, -toward),
+        ] {
+            let at = level.position(pawn);
+            assert!(
+                flat_distance(at, from + delta) < 1e-2,
+                "{map}: flip {flip} carries each player into the other copy: {from} → {at}"
+            );
+        }
+        level.frame();
+        level.frame();
+        for &teleporter in &swap {
+            assert!(
+                !level.teleporter(teleporter).armed,
+                "{map}: flip {flip}'s crossing disarms both directions"
+            );
+        }
+        for &pad in &swap_pads {
+            assert!(level.trigger_armed(pad), "{map}: the swap pads stay on");
+        }
+        for (_, link) in level.links() {
+            assert_eq!(
+                link.members,
+                (GhostMembers::all() - GhostMembers::PROJECTILES).bits(),
+                "{map}: echo.fight hides projectiles"
+            );
+        }
+        for _ in 0..SETTLE {
+            assert!(level.frame().is_empty(), "{map}: one press flips once");
+        }
     }
     let ghosts = level.ghosts();
     assert!(
@@ -1416,10 +1556,15 @@ fn run_set_pieces(map: &str, mut level: Level) {
         "{map}: neither the viewer nor a monster ever ghosts: {ghosts:#?}"
     );
 
-    // The battle: every closet door sinks out of the way, copy A's knights walk
-    // out of their closets and hit the presser, and copy B's limitators shoot
-    // the partner from their closet mouths. The sim runs the real AI tick, so
-    // this is the whole path from the press to a monster's attack.
+    // The fights: the south closet's knight walks out and hits the partner,
+    // flipped back into copy A, and copy B's limitators shoot the presser from
+    // their closet mouths. The sim runs the real AI tick, so this is the whole
+    // path from the crossing to a monster's attack.
+    assert!(
+        level.position(level.partner).z > COPY_OFFSET.z * 0.5
+            && level.position(level.pawn).z < COPY_OFFSET.z * 0.5,
+        "{map}: two flips leave the partner in copy A and the presser in copy B"
+    );
     let health = |level: &Level, pawn: EntityId| {
         level
             .ctx
@@ -1430,47 +1575,208 @@ fn run_set_pieces(map: &str, mut level: Level) {
             .current
     };
     let (pawn_full, partner_full) = (health(&level, level.pawn), health(&level, level.partner));
+    let fighters: Vec<EntityId> = ["echo_monster_a2", "echo_monster_b"]
+        .iter()
+        .flat_map(|tag| level.entities(ComponentKind::Health, tag))
+        .collect();
+    let south_knight = level.entities(ComponentKind::Health, "echo_monster_a2");
     let mut left_closet: HashSet<EntityId> = HashSet::new();
     let mut engaged: HashSet<EntityId> = HashSet::new();
     for _ in 0..BATTLE_FRAMES {
         level.frame();
-        for &npc in &monsters {
+        for &npc in &fighters {
             if level.position(npc).x.abs() < CLOSET_LINE {
                 left_closet.insert(npc);
             }
-            let brain = level
-                .ctx
-                .registry
-                .borrow()
-                .get_component::<BrainComponent>(npc)
-                .unwrap()
-                .clone();
-            if brain.active_path_names().first() == Some(&"engage") {
+            if level.brain(npc).active_path_names().first() == Some(&"engage") {
                 engaged.insert(npc);
             }
         }
     }
-    for (&door, closed) in doors.iter().zip(&shut) {
+    for (&door, closed) in fight_doors.iter().zip(&shut) {
         let drop = closed.y - level.position(door).y;
-        assert!(drop > 2.5, "{map}: every closet door sinks open: {drop}");
+        assert!(drop > 2.5, "{map}: every opened closet door sinks: {drop}");
     }
-    for &npc in &knights {
+    for &npc in &south_knight {
         assert!(
             left_closet.contains(&npc),
-            "{map}: every knight walks out of its closet"
+            "{map}: the south closet's knight walks out"
         );
     }
-    for &npc in &monsters {
-        assert!(engaged.contains(&npc), "{map}: every monster engages");
+    for &npc in &fighters {
+        assert!(engaged.contains(&npc), "{map}: every woken monster engages");
     }
     assert!(
-        health(&level, level.pawn) < pawn_full,
-        "{map}: copy A's knights hit the presser"
+        health(&level, level.partner) < partner_full,
+        "{map}: copy A's knight hits the player in copy A"
     );
     assert!(
-        health(&level, level.partner) < partner_full,
-        "{map}: copy B's limitators hit the partner"
+        health(&level, level.pawn) < pawn_full,
+        "{map}: copy B's limitators hit the player in copy B"
     );
+}
+
+// The north closet's timer, in co-op with both players standing at their
+// spawns in copy A: with nobody near the barrier, its door holds and its
+// knights sleep for fifteen seconds from level load, then the door sinks and
+// exactly its two knights wake, walk out and engage. The south closet, which
+// waits for the split, stays shut with its two knights asleep inside, and so
+// do copy B's closets.
+#[test]
+fn ghost_link_north_closet_opens_fifteen_seconds_after_level_load() {
+    let out = tempfile::tempdir().unwrap();
+    for map in ["ghost-links", "ghost-links-luau"] {
+        run_north_timer(map, Level::install(compile(map, out.path())));
+    }
+}
+
+fn run_north_timer(map: &str, mut level: Level) {
+    closets(map, &level);
+    level.partner_live = true;
+    level.settle();
+    while level.app.script_time < NORTH_TIMER_SECS - WAVE_BEAT_SLACK {
+        assert_closet(
+            map,
+            &level,
+            "echo_closet_a1",
+            "echo_monster_a1",
+            false,
+            "holds until its timer",
+        );
+        assert!(level.frame().is_empty());
+    }
+    while level.app.script_time < NORTH_TIMER_SECS + WAVE_BEAT_SLACK {
+        level.frame();
+    }
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a1",
+        "echo_monster_a1",
+        true,
+        "opens fifteen seconds after level load",
+    );
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a2",
+        "echo_monster_a2",
+        false,
+        "ignores the north closet's timer",
+    );
+    let awake: Vec<EntityId> = level
+        .entities(ComponentKind::Health, "echo_monster")
+        .into_iter()
+        .filter(|&npc| level.brain(npc).aggro_armed)
+        .collect();
+    assert_eq!(
+        awake,
+        level.entities(ComponentKind::Health, "echo_monster_a1"),
+        "{map}: the timer wakes the north closet's two knights and nobody else"
+    );
+    assert_north_knights_engage(map, &mut level);
+    for (doors, monsters) in [
+        ("echo_closet_a2", "echo_monster_a2"),
+        ("echo_closet_b", "echo_monster_b"),
+    ] {
+        assert_closet(map, &level, doors, monsters, false, "waits for a split");
+    }
+    hidden_return(map, &level, "while nobody presses the barrier button");
+}
+
+/// The north closet's door sinks open and both its knights walk out and
+/// engage a player, under the real AI tick.
+fn assert_north_knights_engage(map: &str, level: &mut Level) {
+    let door = only(map, level, ComponentKind::KinematicMover, "echo_closet_a1");
+    let shut = level.position(door).y;
+    let knights = level.entities(ComponentKind::Health, "echo_monster_a1");
+    let mut left_closet: HashSet<EntityId> = HashSet::new();
+    let mut engaged: HashSet<EntityId> = HashSet::new();
+    for _ in 0..BATTLE_FRAMES {
+        level.frame();
+        for &npc in &knights {
+            if level.position(npc).x.abs() < CLOSET_LINE {
+                left_closet.insert(npc);
+            }
+            if level.brain(npc).active_path_names().first() == Some(&"engage") {
+                engaged.insert(npc);
+            }
+        }
+    }
+    let drop = shut - level.position(door).y;
+    assert!(
+        drop > 2.5,
+        "{map}: the north closet door sinks open: {drop}"
+    );
+    for &npc in &knights {
+        assert!(
+            left_closet.contains(&npc) && engaged.contains(&npc),
+            "{map}: every north closet knight walks out and engages"
+        );
+    }
+}
+
+// The barrier approach: the host walking up to copy A's closed barrier opens
+// the north closet at once, long before its timer. When the timer runs out
+// later, its fire starts nothing again: the open door stays where it stopped.
+#[test]
+fn ghost_link_barrier_approach_opens_the_north_closet_early() {
+    let out = tempfile::tempdir().unwrap();
+    for map in ["ghost-links", "ghost-links-luau"] {
+        run_barrier_approach(map, Level::install(compile(map, out.path())));
+    }
+}
+
+fn run_barrier_approach(map: &str, mut level: Level) {
+    closets(map, &level);
+    let barrier = level.barrier();
+    level.settle();
+    let height = level.position(level.pawn).y;
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a1",
+        "echo_monster_a1",
+        false,
+        "waits while nobody approaches",
+    );
+    level.place(level.trigger_center("barrier_approach", false), height);
+    level.frame();
+    level.frame();
+    let opened_at = level.app.script_time;
+    assert!(
+        !level.started(barrier),
+        "{map}: walking up leaves the barrier standing"
+    );
+    assert_closet(
+        map,
+        &level,
+        "echo_closet_a1",
+        "echo_monster_a1",
+        true,
+        "opens when a player walks up to the barrier",
+    );
+    assert!(
+        opened_at < NORTH_TIMER_SECS - 10.0,
+        "{map}: the approach beats the timer by far ({opened_at:.2} s)"
+    );
+    assert_north_knights_engage(map, &mut level);
+    let door = only(map, &level, ComponentKind::KinematicMover, "echo_closet_a1");
+    let open = level.position(door);
+    while level.app.script_time < NORTH_TIMER_SECS + 1.0 {
+        level.frame();
+        assert!(
+            (level.position(door) - open).length() < 1e-4,
+            "{map}: the timer's fire does not move the open door"
+        );
+    }
+    for (doors, monsters) in [
+        ("echo_closet_a2", "echo_monster_a2"),
+        ("echo_closet_b", "echo_monster_b"),
+    ] {
+        assert_closet(map, &level, doors, monsters, false, "waits for a split");
+    }
+    hidden_return(map, &level, "while nobody presses the barrier button");
 }
 
 /// The final wave's closet door and monsters, checked as the level installs:
@@ -1509,60 +1815,58 @@ fn only(map: &str, level: &Level, kind: ComponentKind, tag: &str) -> EntityId {
 }
 
 /// The host splits from copy A's purple pad into copy B, then presses the pad
-/// there and swaps back alone, starting the battle: whatever stands outside
-/// copy B's room, the partner in back room B included, stays.
-fn split_then_swap_back(map: &str, level: &mut Level, height: f32) {
+/// there and flips back alone: whatever stands outside copy B's room, the
+/// partner in back room B included, stays. Returns the split's script time.
+fn split_then_flip_back(map: &str, level: &mut Level, height: f32) -> f64 {
     level.place(level.trigger_center("split_pad", false), height);
     for _ in 0..SETTLE {
         assert!(level.frame().is_empty());
     }
     level.frame_with(true);
     let crossed = level.frame();
+    let crossed_at = level.app.script_time;
     assert_eq!(crossed.len(), 1, "{map}: the host splits alone");
     assert_eq!(crossed[0].0, level.pawn);
     for _ in 0..SETTLE {
         assert!(level.frame().is_empty());
     }
     level.frame_with(true);
-    let swapped = level.frame();
-    assert_eq!(swapped.len(), 1, "{map}: the host swaps back alone");
-    assert_eq!(swapped[0].0, level.pawn);
+    let flipped = level.frame();
+    assert_eq!(flipped.len(), 1, "{map}: the host flips back alone");
+    assert_eq!(flipped[0].0, level.pawn);
     level.frame();
     level.frame();
-    for &npc in &level.entities(ComponentKind::Health, "echo_monster") {
-        assert!(
-            level.brain(npc).aggro_armed,
-            "{map}: the swap starts the battle"
-        );
-    }
+    crossed_at
 }
 
-/// Kill every monster tagged `monsters`; the dev mod's death policy removes
-/// them, `progress` fires, and the pedestal tagged `pedestal` rises out of the
-/// floor while its pad arms.
-fn clear_and_raise(map: &str, level: &mut Level, monsters: &str, pedestal: &str, pad: &str) {
-    let pedestal = only(map, level, ComponentKind::KinematicMover, pedestal);
-    let pad = only(map, level, ComponentKind::TriggerVolume, pad);
+/// Back room B's return pedestal and its pad, while the pedestal is hidden:
+/// not started, its top below the floor, its pad disarmed. Returns both.
+fn hidden_return(map: &str, level: &Level, why: &str) -> (EntityId, EntityId) {
+    let pedestal = only(map, level, ComponentKind::KinematicMover, "return_pedestal");
+    let pad = only(map, level, ComponentKind::TriggerVolume, "return_pad");
+    let top = level.position(pedestal).y + PEDESTAL_HALF_HEIGHT;
     assert!(
-        !level.started(pedestal) && !level.trigger_armed(pad),
-        "{map}: the button waits for its copy's clear"
+        !level.started(pedestal) && top < 0.0,
+        "{map}: the return pedestal stays below the floor {why}: top at {top}"
     );
-    let sunk = level.position(pedestal).y;
-    let residents = level.entities(ComponentKind::Health, monsters);
-    assert!(!residents.is_empty(), "{map}: `{monsters}` placed");
-    level.frame_killing(&residents);
-    for _ in 0..PROGRESS_FRAMES {
-        level.frame();
-    }
     assert!(
-        level.entities(ComponentKind::Health, monsters).is_empty(),
-        "{map}: the death policy removed every `{monsters}`"
+        !level.trigger_armed(pad),
+        "{map}: the return pad stays off {why}"
     );
+    (pedestal, pad)
+}
+
+/// The barrier button's press raised the pedestal tagged `return_pedestal`
+/// and armed its pad at once; the pedestal then stands out of the floor.
+fn assert_return_rises(map: &str, level: &mut Level, pedestal: EntityId, pad: EntityId, sunk: f32) {
     assert!(
         level.started(pedestal),
-        "{map}: the clear raises the pedestal"
+        "{map}: the barrier press raises the return pedestal"
     );
-    assert!(level.trigger_armed(pad), "{map}: the clear arms its pad");
+    assert!(
+        level.trigger_armed(pad),
+        "{map}: the barrier press arms the return pad"
+    );
     for _ in 0..RISE_FRAMES {
         level.frame();
     }
@@ -1571,24 +1875,10 @@ fn clear_and_raise(map: &str, level: &mut Level, monsters: &str, pedestal: &str,
         close(rise, 56.0 / UNITS_PER_METRE, 0.02),
         "{map}: the pedestal stands out of the floor: {rise}"
     );
-}
-
-/// The host presses the ready button in copy A's north closet; returns the
-/// script time of the press.
-fn press_ready(map: &str, level: &mut Level, height: f32) -> f64 {
-    let pad = only(map, level, ComponentKind::TriggerVolume, "ready_pad");
-    level.place(level.trigger_center("ready_pad", false), height);
-    for _ in 0..SETTLE {
-        assert!(level.frame().is_empty());
-    }
-    level.frame_with(true);
-    let pressed_at = level.app.script_time;
-    level.frame();
     assert!(
-        !level.trigger_armed(pad),
-        "{map}: the wave turns the ready pad off"
+        level.position(pedestal).y - PEDESTAL_HALF_HEIGHT > -1e-3,
+        "{map}: the risen pedestal sits on the floor"
     );
-    pressed_at
 }
 
 /// The partner presses the return pad in back room B and alone arrives at
@@ -1725,95 +2015,26 @@ fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monster
     }
 }
 
-/// The wave already fired: a second path's fire leaves the open doors and the
-/// woken monsters exactly as they are.
-fn assert_wave_not_restarted(
-    map: &str,
-    level: &mut Level,
-    doors: &[EntityId],
-    monsters: &[EntityId],
-    open: &[Vec3],
-) {
-    for _ in 0..NO_WAVE_FRAMES {
-        level.frame();
-        for (&door, at) in doors.iter().zip(open) {
-            assert!(level.started(door), "{map}");
-            assert!(
-                (level.position(door) - *at).length() < 1e-4,
-                "{map}: the second fire does not move an open door"
-            );
-        }
-    }
-    for &npc in monsters {
-        if level
-            .entities(ComponentKind::Health, "final_wave")
-            .contains(&npc)
-        {
-            assert!(level.brain(npc).aggro_armed, "{map}: the wave stays awake");
-        }
-    }
-}
-
-// Alone, copy B's monsters never fight anyone. Copy A cleared raises the ready
-// button in copy A's north closet; its press drops a barrier no button
-// dropped, so the final wave can reach room A, and three seconds later back
-// room A's closets open and the knights and limitators engage the player
-// under the real AI tick.
+// Co-op, the whole run: the host starts in copy A and the partner, a connected
+// client's pawn, in back room B. Until the partner presses the button there,
+// the return pedestal stays hidden below the floor and its pad off. The press
+// drops copy A's barrier and at once raises the pedestal and arms its pad. The
+// host splits into copy B and flips back alone, since the partner stands
+// outside the swap; copy B's limitators wake three seconds after the split.
+// With the limitators still alive, the return pad's press sends only the
+// partner to room A. The arrival reunites the players: the flip turns off for
+// good, and three seconds later back room A's closet opens and the final wave
+// engages. A press of copy A's purple pad afterwards flips nobody.
 #[test]
-fn ghost_link_solo_ready_button_starts_the_final_wave() {
+fn ghost_link_coop_return_reunites_and_starts_the_final_wave() {
     let out = tempfile::tempdir().unwrap();
     for map in ["ghost-links", "ghost-links-luau"] {
-        run_solo_flow(map, Level::install_solo(compile(map, out.path())));
+        run_coop_return(map, Level::install(compile(map, out.path())));
     }
 }
 
-fn run_solo_flow(map: &str, mut level: Level) {
-    assert!(
-        !level.has_partner && level.boot_players == 1,
-        "{map}: alone"
-    );
+fn run_coop_return(map: &str, mut level: Level) {
     let (doors, monsters) = final_wave(map, &level);
-    let barrier = level.barrier();
-    level.settle();
-    let height = level.position(level.pawn).y;
-    split_then_swap_back(map, &mut level, height);
-    clear_and_raise(
-        map,
-        &mut level,
-        "echo_monster_a",
-        "ready_pedestal",
-        "ready_pad",
-    );
-    assert!(!level.started(barrier), "{map}: nobody pressed the button");
-    let pressed_at = press_ready(map, &mut level, height);
-    assert!(
-        level.started(barrier),
-        "{map}: the wave drops the barrier as it fires"
-    );
-    level.place(quake(SOLO_STAND.0, SOLO_STAND.1, 0.0), height);
-    assert_wave_beat(map, &mut level, pressed_at, &doors, &monsters);
-    assert_wave_engages(map, &mut level, &doors, &monsters);
-}
-
-// Co-op, the return path first: the host starts in copy A and the partner, a
-// connected client's pawn, in copy B. The partner's press in back room B drops
-// copy A's barrier. The host splits into copy B and swaps back alone, since the
-// partner stands outside the swap. Copy B cleared raises the return pedestal;
-// its press sends only the partner to room A, and the arrival starts the wave:
-// three seconds later back room A's closets open and the monsters engage.
-// Copy A cleared afterwards raises the ready button, whose press starts
-// nothing again.
-#[test]
-fn ghost_link_coop_return_arrival_starts_the_final_wave_once() {
-    let out = tempfile::tempdir().unwrap();
-    for map in ["ghost-links", "ghost-links-luau"] {
-        run_coop_return_first(map, Level::install(compile(map, out.path())));
-    }
-}
-
-/// A co-op level with the barrier dropped from back room B and the battle
-/// started, the host in room A and the partner in back room B.
-fn coop_battle(map: &str, level: &mut Level) -> f32 {
     level.partner_live = true;
     let barrier = level.barrier();
     level.settle();
@@ -1826,31 +2047,55 @@ fn coop_battle(map: &str, level: &mut Level) -> f32 {
     for _ in 0..SETTLE {
         assert!(level.frame().is_empty());
     }
+    let (pedestal, pad) = hidden_return(map, &level, "before the barrier press");
+    let sunk = level.position(pedestal).y;
     level.partner_frame_with_use();
     level.frame();
     assert!(
         level.started(barrier),
         "{map}: the button in back room B drops copy A's barrier"
     );
-    split_then_swap_back(map, level, height);
-    height
-}
-
-fn run_coop_return_first(map: &str, mut level: Level) {
-    let (doors, monsters) = final_wave(map, &level);
-    let height = coop_battle(map, &mut level);
-    level.place(quake(HOST_STAND.0, HOST_STAND.1, 0.0), height);
-    clear_and_raise(
+    assert_return_rises(map, &mut level, pedestal, pad, sunk);
+    let crossed_at = split_then_flip_back(map, &mut level, height);
+    while level.app.script_time < crossed_at + LIMITATOR_BEAT_SECS + WAVE_BEAT_SLACK {
+        level.frame();
+    }
+    assert_closet(
         map,
-        &mut level,
+        &level,
+        "echo_closet_b",
         "echo_monster_b",
-        "return_pedestal",
-        "return_pad",
+        true,
+        "opens three seconds after the split",
+    );
+    level.place(quake(HOST_STAND.0, HOST_STAND.1, 0.0), height);
+    assert!(
+        !level
+            .entities(ComponentKind::Health, "echo_monster_b")
+            .is_empty(),
+        "{map}: the return does not wait for copy B's clear"
     );
     for &door in &doors {
         assert!(!level.started(door), "{map}: the wave waits for a return");
     }
+    let swap = level.entities(ComponentKind::Teleporter, "echo_swap");
+    let swap_pads = level.entities(ComponentKind::TriggerVolume, "swap_pad");
+    for &pad in &swap_pads {
+        assert!(
+            level.trigger_armed(pad),
+            "{map}: the flip runs until the players reunite"
+        );
+    }
     let arrived_at = partner_returns(map, &mut level, height);
+    for &pad in &swap_pads {
+        assert!(
+            !level.trigger_armed(pad),
+            "{map}: the reunion ends the flip"
+        );
+    }
+    for &teleporter in &swap {
+        assert!(!level.armed(teleporter), "{map}: no swap stays armed");
+    }
     level.place_pawn(
         level.partner,
         quake(PARTNER_STAND.0, PARTNER_STAND.1, 0.0),
@@ -1859,61 +2104,16 @@ fn run_coop_return_first(map: &str, mut level: Level) {
     assert_wave_beat(map, &mut level, arrived_at, &doors, &monsters);
     assert_wave_engages(map, &mut level, &doors, &monsters);
 
-    // The second path: copy A cleared raises the ready button; its press
-    // starts nothing again and turns the pad back off.
-    let open: Vec<Vec3> = doors.iter().map(|&door| level.position(door)).collect();
-    clear_and_raise(
-        map,
-        &mut level,
-        "echo_monster_a",
-        "ready_pedestal",
-        "ready_pad",
-    );
-    press_ready(map, &mut level, height);
-    assert_wave_not_restarted(map, &mut level, &doors, &monsters, &open);
-}
-
-// Co-op, the ready button first: the host clears copy A and presses the ready
-// button without the partner, which the wave accepts. Three seconds later the
-// closets open. Copy B cleared afterwards still returns the partner alone to
-// room A, and the arrival starts nothing again.
-#[test]
-fn ghost_link_coop_ready_button_starts_the_final_wave_once() {
-    let out = tempfile::tempdir().unwrap();
-    for map in ["ghost-links", "ghost-links-luau"] {
-        run_coop_ready_first(map, Level::install(compile(map, out.path())));
+    // After the reunion, a press of copy A's purple pad flips nobody.
+    level.place(level.trigger_center("swap_pad", false), height);
+    for _ in 0..SETTLE {
+        assert!(level.frame().is_empty());
     }
-}
-
-fn run_coop_ready_first(map: &str, mut level: Level) {
-    let (doors, monsters) = final_wave(map, &level);
-    let height = coop_battle(map, &mut level);
-    clear_and_raise(
-        map,
-        &mut level,
-        "echo_monster_a",
-        "ready_pedestal",
-        "ready_pad",
-    );
-    let pressed_at = press_ready(map, &mut level, height);
-    level.place(quake(HOST_STAND.0, HOST_STAND.1, 0.0), height);
-    assert_wave_beat(map, &mut level, pressed_at, &doors, &monsters);
-    for _ in 0..NO_WAVE_FRAMES {
-        level.frame();
+    assert!(level.frame_with(true).is_empty());
+    for _ in 0..SETTLE {
+        assert!(
+            level.frame().is_empty(),
+            "{map}: the swap pad stays off after the reunion"
+        );
     }
-    let open: Vec<Vec3> = doors.iter().map(|&door| level.position(door)).collect();
-
-    clear_and_raise(
-        map,
-        &mut level,
-        "echo_monster_b",
-        "return_pedestal",
-        "return_pad",
-    );
-    partner_returns(map, &mut level, height);
-    assert!(
-        !level.trigger_armed(only(map, &level, ComponentKind::TriggerVolume, "ready_pad")),
-        "{map}: the ready pad stays off"
-    );
-    assert_wave_not_restarted(map, &mut level, &doors, &monsters, &open);
 }

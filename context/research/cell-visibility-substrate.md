@@ -21,8 +21,8 @@ level connected, so reachability barely culls. The sightline test is what makes 
 v1 work. What defers is the graded `aperture` *magnitude*, extracted from the same separating planes
 later. The runtime query is a struct, not a bare bool — see the graded tuple below.
 
-It is the **area-source, precomputed, view-independent** cousin of the runtime `narrow_frustum` cull
-(`crates/visibility/src/portal_vis.rs`), which is **point-source, per-frame, viewer-dependent**.
+It is the **area-source, precomputed, view-independent** cousin of the runtime bounded-region portal
+walk (`crates/visibility/src/region_walk/`), which is **point-source, per-frame, viewer-dependent**.
 The runtime frustum answers "what does *this camera* see *now*" (rendering); this relation answers
 "can any observer in A perceive B, *ever*" (relevance / audio / simulation) — a question no per-frame
 camera cull can answer, and precisely why the precomputed area-source math earns its extra cost
@@ -267,9 +267,9 @@ pathological map provokes it. Floods per source cell are independent, so they pa
   test map; that pair is the before/after signal.
 - Tests need real convex portal polygons. Degenerate fixtures clip to zero-area wedges and prove
   nothing.
-- Same clipping shape as the runtime `narrow_frustum`, different inputs. Runtime planes come from a
-  viewer point each frame; wedge planes come from static portal pairs, once, at bake. Keep the code
-  separate.
+- Same clipping shape as the runtime walk's portal clip (`crates/visibility/src/portal_vis/`),
+  different inputs. Runtime planes come from a viewer point each frame; wedge planes come from static
+  portal pairs, once, at bake. Keep the code separate.
 
 ## Build guidance
 

@@ -1,5 +1,5 @@
 // Real-map sweep (R1): the bounded-region walk against the exact oracle on baked PRLs.
-// See: context/plans/in-progress/portal-walk-bounded-regions/research.md §Sweep setup, §Report sets
+// See: context/plans/done/portal-walk-bounded-regions/research.md §Sweep setup, §Report sets
 //
 // Ignored. Reads `.prl` paths from POSTRETRO_WALK_SWEEP_PRL (one path or a
 // comma-separated list). Rerun from the workspace root, release, single-threaded:

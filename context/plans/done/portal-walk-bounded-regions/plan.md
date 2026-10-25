@@ -1,7 +1,7 @@
 # portal-walk-bounded-regions — plan of record
 
 mode: resumable
-status: approved
+status: landed
 read at: d23959def
 
 Branch: `portal-walk-bounded-regions`, cut from the claim commit d23959def. No `crates/`
@@ -326,8 +326,42 @@ non-conservative for every consumer (draw, fog reach, lightmap and SH demand, ba
 sampling walks) wherever an open gap is under about 0.1 m². Direction: stop the area cut
 when both leaves are non-solid (keep a degenerate-winding check), bump the portal cache
 epoch, rebake. To be routed through `/draft-session`. Replay test source:
-scratchpad `846ad593…/tmp_lake_spawn_replay.rs` (deleted from the tree).
+`prototype/lake_spawn_replay.rs` (an `#[ignore]` test module for
+`crates/visibility/src/region_walk/`; its PRL paths point at session scratch, so rebake
+reflection-lake-test and repoint them before reuse).
 
 **Not covered by capture:** the dynamic-direct term is identical to all-terms-off at all
 19 poses, so no shadow-slot competition was exercised; pops are temporal. Both stay with
 the owner's in-engine run, along with row 46.
+
+## Live and Visual — owner run (rows 46, 47), 2026-10-25
+
+Frozen pair builds on their own bakes, `POSTRETRO_CPU_TIMING=1`, this Mac (i9-9980HK,
+5300M), vsync on. occlusion-test baked for the pair this session (rect 0 of 45,522
+sampling walks step-limited, pre-change 1,641). Logs: scratchpad `846ad593…/play-*.log`.
+
+| run | length | frame mean | `portal_walk` mean / max | portal tests mean / max |
+|---|---|---|---|---|
+| pre-change hallway | ~36 s | 17.2 ms | 2.01 / 3.69 ms | 13,026 / 20,000 (cap) |
+| rect hallway | ~18 s | 16.4 ms | 0.21 / 0.39 ms | 1,005 / 2,125 |
+| rect lake | ~4 min | 16.8 ms | 0.18 / 0.53 ms | 736 / 1,703 |
+| rect occlusion-test | ~4 min | 17.4 ms | 0.22 / 0.77 ms | 819 / 1,931 |
+
+- **Row 46: pass.** No step-limit marker on any rect run; every Settling entry 0
+  step-limit frames, 0 reveal misses. Slow windows (a frame > 33 ms) on lake and
+  occlusion-test are `wait_acquire` (GPU-bound) in 102 of 106; one 836 ms frame on
+  occlusion-test is `script_drain` (824 ms) at a menu `setState`, not visibility. These
+  builds log no mesh-instance count, so that comparison has no numbers.
+- **Row 47: pass, owner.** Hallway perfect: no pops or missing geometry. Offscreen
+  capture A/B above. No dynamic-shadow drop reported.
+- **Owner-carved follow-ups, outside this brief:**
+  - occlusion-test: walking from the small room back toward the big room slows down;
+    the cull-status wireframe shows the pillars rendered (green) behind the big retaining
+    wall, returning to not submitted (cyan, outside the CPU-visible cells) and recovering
+    frame rate nearer the wall.
+    Consistent with R1's occlusion-test over-inclusion (extra cells p95 20, max 182): one
+    rect per cell unions openings across the wall. The pillars are an intentional
+    portal-renderer stress case.
+  - reflection-lake-test: slowdown standing on top of structures and looking across the
+    lake (GPU-bound windows above).
+  - Compiler portal area cut (`MIN_PORTAL_AREA_M2`), from the capture A/B section.

@@ -14,8 +14,9 @@ of the real traversal plus alternatives), run on stress-warren-hallway-inspectio
   cross-checked walks (0 mismatches).
 - "Step" = one outbound portal tested (the engine's `considered`), including
   facing-rejected portals.
-- Rerun: `target\release\portalsweep.exe alt <prl> out_alt` (about 2 min). The
-  Cargo.toml path dependencies point at the owner's checkout.
+- Rerun: `cargo build --release` in `prototype/`, then `portalsweep alt <prl> out_alt`
+  (about 2 min on the hallway). The path dependencies are relative to the checkout;
+  `analyze_alt.py` summarizes the hallway's named regions, `analyze_alt_any.py` any map.
 
 ## Why the exact walk explodes
 
@@ -154,7 +155,7 @@ Source recheck before review; the Problem's mechanism and seams held.
 | Capture preload | `capture/lightmap.rs` preload | More blocks preloaded for capture |
 | Walk measurement | `walk_measurement` controller, `drawn_outside_baked_set` | Counts blocks drawn outside the baked set; the bake-gap instrument |
 
-No consumer reads the set as line of sight or checks it for equality at runtime.
+No consumer reads the set as line of sight or checks it for equality at runtime. Candidate-cull's output identity rests on spans matching the visible cells, and dynamic-light cull's zero-slot guarantee rests on closed portals blocking; a superset keeps both.
 
 ### id-51 bake vs runtime projection
 
@@ -192,20 +193,38 @@ From `/review-brief` (rows lens, 2026-09-29). Acceptance rows cite these ids.
 | O5 | Cap trips mid re-expansion | The cap trips with cells still queued. | The frame uses the fallback sets and discards the partial walk. The walk entry the id-51 bake re-runs on a trip returns only cells the uncapped walk reaches, always including the camera cell. |
 | O6 | Fallback vs walk, same camera | Trip frame vs non-trip frame at one pose; the bypass hands a neighbour the full screen unclipped. | Fallback fog reach contains the walk's fog reach, including a camera beside a portal looking away from it. This corner already fails with today's bypass. |
 | O7 | State across calls | A door toggles between frames; the camera cell changes; bake threads walk concurrently. | Each walk equals a walk from fresh state. |
-| O8 | Locator vs side test | The locator reports A while the camera sits within the bypass distance on B's side of portal A–B. The bypass test runs before the facing test. | A and B both visible, both directions. Beyond the bypass distance, the result is a superset of the oracle's. |
+| O8 | Locator vs side test | The locator reports A while the camera sits within the bypass distance on B's side of portal A–B. The bypass test runs before the facing test. | A and B both visible, both directions. Beyond the bypass distance the locator reports the cell holding the eye, and the result is a superset of the oracle's. |
 | O9 | Near-plane slide vs clipping | The near plane slides to the eye before any cell's portals are clipped, not only the camera cell's. | Camera within the render near distance of two consecutive portals (a corner): the cell past the second portal is visible. |
 | O10 | Bypass boundary | Camera on a portal plane just outside the polygon, inside then beyond the bypass distance; separately, on a plane shared by several coplanar slab portals. | Inside: full screen both directions. Beyond: clipped normally. Shared slab plane: cells above, below and their lateral neighbours visible. |
 | O11 | Portal-test counting | Each outbound portal counts once per cell expansion, before any blocked, solid, facing or clip rejection. | Counts match the prototype's "step" and the CPU log's portal-test count; the cap means what it meant during measurement. |
 | O12 | Draw and fog from one walk | Both sets come from the walk's final state, after the worklist drains. | The draw set is exactly the drawable part of fog reach. |
 | O13 | Cap trip on a Settling frame | The presented pose's walk trips the cap. Settling demand marks every drawn block and cluster Visible on any path, and the settle check reads that demand in the same frame. The pose is fixed, so every Settling frame trips again. In Running, the same trip holds lightmap blocks without reading them, while SH still demands every drawn cluster. | The settle set becomes the fallback's frustum draw set for both resources and never shrinks. Reveal waits on it until settled or timed out. A lowered cap trips sooner on content the sweep never measured. |
-| O15 | Over-included cell flickers | A cell enters the rect set on frame N, leaves on N+1, and returns on N+2. Lightmap demand drops it on N+1, and that frame's drain frees its blocks. SH keeps its clusters through hysteresis. | Lightmap re-reads the blocks on N+2. A re-read whose pair needs growth while a generation retires is deferred and counts a miss. The cost is reported, not bounded. |
 | O14 | Pre-change vs rect residency runs | The pre-change build reads the base commit's bake. The rect build reads a bake made after the epoch bump; the epoch is hashed only into the id-51 cache key, and the runtime never checks a .prl's walk epoch. The harness preloads the spawn with no drawn blocks, unlike Settling. | Each run names the bake it read; a rect run on a pre-bump bake is invalid. Spawn frames are reported apart from the gate. |
+| O15 | Over-included cell flickers | A cell enters the rect set on frame N, leaves on N+1, and returns on N+2. Lightmap demand drops it on N+1, and that frame's drain frees its blocks. SH keeps its clusters through hysteresis. | Lightmap re-reads the blocks on N+2. A re-read whose pair needs growth while a generation retires is deferred and counts a miss. The cost is reported, not bounded. |
 | O16 | Reveal frame vs last Settling frame | The last Settling frame settles the held view. The reveal frame projects at the same extents but ticks once, so the pose can move, and the snapped rect set can change with it. | Blocks the reveal frame draws outside the settle set are misses counted on that frame. For a cell the exact walk reaches at the settled pose, the count is zero. Over-included blocks may miss without a visible pop. |
 | O17 | Drains per frame in the synchronous mode | Frame N's walk issues reads after admitting earlier completions. The mode waits for those reads, then admits and drains again before the frame's misses are counted. The pool mirror retires a grown-out generation after a fixed number of drains. | Retirement counts frames, not drain calls, so a second drain in one frame does not shorten it. Misses are counted once per frame, after the last drain. The pre-change build runs the same mode. |
-| O18 | Growth retiring under the next frame's demand | Frame N installs its whole view and grows the pool; the old generation retires. Frame N+1 turns and its reads complete at once, needing room. | Those pairs defer behind the retiring generation and draw non-resident on N+1. Read latency usually hides this in play, so the mode overstates it. Deferrals are reported per build, split into those behind a retiring generation and those at the device limit. |
+| O18 | Growth retiring under the next frame's demand | Frame N installs its whole view and grows the pool; the old generation retires. Frame N+1 turns and its reads complete at once, needing room. | Those pairs defer behind the retiring generation and draw non-resident on N+1. Read latency usually hides this in play, so the mode overstates it. The harness's pool has no device limit, so every deferral there is behind a retiring generation (O29). |
 | O19 | Measurement commits vs walk change | The harness's projection, pitch and synchronous-read modes, and any Settling instrument, land before the rect walk and the epoch bump. The portal_vis split lands first and changes no behavior. | The pre-change build is the last commit before the walk change, with every instrument and the old walk and epoch, read on the base commit's bake. The epoch bump lands with the walk change, so no instrument commit invalidates the pre-change bake. |
 | O21 | Start pose vs Settling | The start-pose override moves the pawn and camera after the map spawn and before the presented pose is fixed, on the first gameplay install only. Settling then projects the held view from that pose. | The settle set is the start pose's. A second level load in the same session enters at the map spawn, so each Settle entry is a fresh launch. |
-| O20 | SH fix lands mid-build | The device-limit fix reaches main after the pre-change build was made or some manual rows ran. | Both builds of every comparison share a base containing the fix. Rows run on an older base are rerun on the new one, and the lightmap layout still matches between builds. |
+| O22 | Growth while queued | C is queued; two contributions grow its rect before it is expanded. | C expands once, against the union; one expansion is counted. |
+| O23 | Bypass at a portal off the camera cell | The eye is within the bypass distance of a portal between two cells, neither of them the camera cell; the source cell's rect is smaller than the screen. | The neighbour receives the source cell's rect, never more. Crossing back adds nothing, so neither cell re-expands from the bypass. The cell past the second portal is still visible (O9). |
+| O24 | Cap boundary | The cap is checked before each portal test. One walk needs exactly cap tests; another needs none. | Exactly cap tests completes on the walk path, and one more test trips it. A walk that tests no portal never trips, even at cap 0. Today's walk trips on cell entry at cap 0 even with no portals; the new walk does not. |
+| O25 | Scratch across worlds and wraps | One caller walks world A, then a larger world B; separately, the scratch's generation counter wraps between two walks. | Each walk equals a walk from fresh state; no cell reads as reached from an earlier walk. |
+| O26 | Fallback vs bypassed neighbour behind the eye | The walk takes the bypass for a portal within the bypass distance of the eye, and the neighbour's bounds lie wholly behind the eye by less than that distance. The cap trips on the same pose. | The fallback's fog reach still holds that neighbour, because it keeps every cell whose bounds come within the bypass distance of the eye. The fallback's draw set is unchanged. |
+| O27 | Seeded walk | Several seeds, none holding the eye; the caller's eye is the mirrored eye and its near plane is the water plane; seeds arrive in any order. | No near-plane slide and no locator call. Every usable seed is queued with the caller's full screen before any cell expands, and all seeds share one region state and one cap. The result is a superset of the oracle seeded from the same cells. A cap trip is returned to the caller. One seed at the camera cell under the slid frustum equals the camera entry. |
+| O28 | Pre-change trip frame in a gate run | The pre-change walk trips on frame N, so N's lightmap demand is the camera cell's baked set: drawn blocks are held, never read or grown for. The rect build walks the same pose, demands every drawn block as Visible, and may grow its pool on N; that generation retires across the following drains. | N leaves the gate, and so does each frame after it until a pool growth either build began on N has retired. Both builds report those frames' deferred and non-resident block-frames apart, with their count per run. The pre-change build's non-resident draws on N count as left behind by admission. |
+| O29 | Deferral attribution in the completed-reads mode | Frame N's reads complete, then the frame admits and drains, possibly more than once, before misses are counted. | Misses are counted once per drawn block per frame, after the last drain. A drawn block still non-resident then counts as deferred behind a retiring generation when that drain carried and deferred it; any other drawn non-resident block counts as left behind by admission. Retirement advances once per frame however many drains run. The pre-change build runs the same mode and attribution. |
+| O30 | Fallback vs bypassed neighbour beside the eye | The walk takes the bypass for a portal within the bypass distance of the eye. The neighbour's bounds lie outside one side plane of the slid frustum, within that distance of the eye, and the camera looks away. The cap trips on the same pose. | The fallback's fog reach holds the neighbour. A near-only widening drops it, because the fog test culls per plane. The draw set is unchanged. |
+| O31 | Bypass vs the near plane | A portal lies within the bypass distance of the eye and wholly behind the walk's near plane. On the camera entry that plane passes through the eye, so the portal is behind or beside the eye. On the seeded entry the near plane is the water plane and the eye is behind it. | Camera entry: the bypass applies and the neighbour is reached (O6, O26). Seeded entry: the near-plane test runs first and the portal is rejected, so no cell behind the water plane is reached through it. The oracle's seeded entry follows the same order. |
+| O32 | Seed list shape | The caller passes no seeds, the same cell twice, or a seed that is out of range, solid, exterior, or wholly outside the caller's frustum. | No usable seed: an empty set, no portal tests, no trip, no locator call. A repeated seed changes neither the set nor the portal-test count. Unusable seeds are skipped, never visible and never indexed. Skipping a wholly off-screen seed is superset-safe: no eye ray inside the frustum passes through it. |
+| O33 | Seed order under one cap | Seeds arrive in any order; all share one cap. | Every usable seed is queued before any cell expands, and the worklist breaks ties by cell id, not arrival. Seed order changes neither the set, the portal-test count, nor whether the cap trips. The spike's one-flood-per-seed loop, which stops at the first trip, lacks this property. |
+| O34 | Seeded cap trip | The seeded walk's portal tests reach the cap with cells still queued. | The trip is returned to the caller with the walk's counters. The walk applies no fallback set of its own, and the camera entry's fallback never runs. Any cell returned is one the uncapped seeded walk reaches. |
+| O35 | Two entries on one tick | One caller runs the camera walk, then a seeded walk, on the same scratch, before the camera result is last read; the next frame runs the camera walk again. | The camera result is unchanged by the seeded walk, and each walk equals a walk from fresh state. The seeded walk's counters and time are not added to the camera walk's counters or its step-limit marker. |
+| O36 | Eye on a distant portal's plane | The eye lies on a portal's plane beyond the bypass distance of its polygon, so the facing sign is zero within float error; the oracle crosses it, clipped. | The walk's facing test and the superset check's backward-crossing exception use one sign rule with one tolerance. A crossing the walk rejects as away from the camera is classified as backward, so no oracle-only cell reached through it is unclassified. |
+| O37 | Closed door at the eye | The eye is within the bypass distance of a blocked portal's polygon: a player pressed against a closed door. | The blocked test runs before the bypass and the facing test, as today. The closet stays out of the draw set and fog reach, and the test counts once toward the cap. |
+| O38 | Pre-change trip frames, known to the rect run | The pre-change run finishes first and records, per frame, whether its walk tripped. The rect run walks the same seeded path, eyes, yaws and pitches on its own bake and splits its frames by that record. | Frame i is the same pose in both runs. A pair whose pose sequence or locate-mismatch count differs is invalid and rerun. The gated frames are identical for both builds. |
+
+O20 retired: its SH device-limit dependency landed in `done/sh-streaming--pool-growth-device-limit`.
 
 Premise pins (premise lens):
 
@@ -261,9 +280,12 @@ Premise pins (premise lens):
 - The walk measurement's misses race wall-clock disk reads (`walk_measurement` frames sleep to a deadline), and its drawn-not-resident count includes occluded, over-included blocks. Completing reads before the frame draws makes the run deterministic; the gate then counts pool deferrals by cause (see gate semantics below).
 - The lead sweep varies L, not the bake's projections, so it is an analogy for widening, not a measurement of it. Its L = 0 tour also drew 5 non-resident and 9 not-resident block-frames in 5 frames.
 - The harness looks only at pitch 0; the shafts' vertical over-inclusion needs ±45°.
-- The exact walk becomes a test-only oracle the engine harness cannot call, so the comparison build is the base commit on its own bake. It keeps the old infinite-plane bypass, so its numbers are looser than the tightened oracle's.
+- The exact walk becomes a test-only oracle the engine harness cannot call. The comparison build is therefore the pre-change build: the last instrument commit, reading the base commit's bake (O14, O19). It keeps the old infinite-plane bypass, so its numbers are looser than the tightened oracle's.
 
 ## SH pool device limit (traced 2026-10-13)
+
+Historical: `plans/done/sh-streaming--pool-growth-device-limit` (c63ddd09a) fixed this. SH growth now clamps to the device limit and refuses one cluster when the minimum does not fit, instead of ending the session. The gate semantics below still hold.
+
 
 - `AtlasShape::grown_for_slots` doubles layers and returns `GpuCapacity` when the doubled count exceeds `max_texture_array_layers`, even when the minimum needed fits. `grow_sparse` doubles the same way, and `validate_storage_buffer_size` errors rather than clamps.
 - Only `GpuRetirementPressure` is retried. Any other drain error reaches the frame loop, which sets `exit_result` and exits, in Settling and Running alike.
@@ -279,3 +301,41 @@ Premise pins (premise lens):
 - The sliver rationale for snapping was dropped: an outward snap of a bound on a grid line is still zero width; the tangent-portal Acceptance row pins the behaviour instead.
 - The residency gate charges the whole change, bake and runtime together, because both builds read their own bake and the rect-sampled mandatory set is part of this change's cost. A zero baseline requires zero. Both builds run the same synchronous mode, so O18's overstatement applies to both.
 - The mesh instance cap orders by visibility tier (forward-visible, shadow-only, promoted-static), then first seen; neither it nor `candidate_slot_score` has a line-of-sight term.
+
+## Re-grounding at 800bbe186 (assessment 2026-10-25)
+
+Full record: `assessment-2026-10-25.md`. Intel i9-9980HK, Radeon Pro 5300M, macOS, Metal.
+
+- No walk source changed since 27ca6a6. The prototype's exact walk still matches `determine_visible_cells` (2,010 walks, 0 mismatches).
+- The cap trips beyond the hallway. Same sweep generator as §Sweep setup, run on each map's local `.prl`:
+
+| map | walks | exact trips at 20k | exact steps p99 / max | rect256 steps max | rect µs p50/p99/max | rect extra cells p95/max |
+|---|---|---|---|---|---|---|
+| stress-warren-hallway-inspection | 94,440 | 103 | 6,722 / 37,139 | 1,922 | 2.8/65/303 | 3/71 |
+| reflection-lake-test | 5,208 | 203 (170 of 1,736 at pitch 0) | 27,793 / 45,064 | 1,533 | 17.9/117/309 | 4/50 |
+| occlusion-test | 13,128 | 394 | 35,892 / 75,774 | 1,987 | 31/177/378 | 21/182 |
+| stress-env-volumes | 151,920 | 134 | 8,462 / 54,407 | 1,554 | 2.9/74/252 | 3/65 |
+| reflection-probes-test | 3,288 | 5 | 5,495 / 105,987 | 666 | 8.2/42/62 | 2/13 |
+| movement-feel | 2,736 | 0 | 8,662 / 12,967 | 937 | 4.9/54/128 | 2/28 |
+| campaign-test | 8,928 | 0 | 2,165 / 4,028 | 601 | 5.5/32/109 | 2/24 |
+| e24-environment-test | 3,840 | 0 | 982 / 1,846 | 369 | 4.5/24/45 | 2/14 |
+
+- Worst rect walk over every map: 1,987 steps (occlusion-test), so a 5,000-step cap leaves 2.5× headroom.
+- Live, reflection-lake-test spawn, dev profile with `dev-tools`, `POSTRETRO_CPU_TIMING=1`: every frame took the step-limit fallback at 20,000 portal tests; `portal_walk` 3.56–3.81 ms of 10.2–11.1 ms work CPU; settle hold 1,040 ms. There the cost is the walk itself: frustum-all draws only 1.1× the exact set at p50.
+- Rect misses vs the exact walk (campaign-test 24 poses, env-volumes 8, lake 4, occlusion-test 2) were replayed for two poses; both fell in the oracle exception classes. The campaign-test one starts at a bypass hop: the bypass feeds the unclipped polygon to `narrow_frustum`, which keeps the portal, edge and far planes but not the parent's side planes, so the exact walk floods off screen. Hence the oracle Decision.
+- Spike seeded walk (`claude/planar-water-spike`, `portal_traverse_seeded`): several seeds, one shared budget, no apex cell, solid, exterior or off-frustum seeds skipped, one `flood` per seed; the mirror replaces the near plane with the water plane and never calls the locator.
+- Residency baseline bias: on a step-limit frame, `PathDemand::of` maps the path to `CameraSet`, so lightmap demand holds drawn blocks without reading them. The pre-change build's trip frames therefore add no reads or growths, which is why O28 takes them out of the gate.
+- The bake's step-limit branch calls the public `portal_traverse`, whose `Frustum` carries planes only; the rect needs the view-projection.
+- The SH device-limit dependency is in `done/` (c63ddd09a).
+
+## Report sets
+
+Manual rows cite these. "Both builds" means pre-change and rect.
+
+| id | run | report |
+|---|---|---|
+| R1 | Sweep, per map | Portal-test counts; CPU µs p50/p99/p99.9/max; extra cells vs exact p50/p95/max, per map and for the hallway's shafts and arena, against the prototype numbers above. Those were measured against the untightened exact walk with a full-screen bypass, so differences are not by themselves a regression or a win. At the shaft and arena poses, the change in visible SH clusters and shadow-eligible lights. |
+| R2 | Residency gate, both builds, per projection and pitch | Non-resident block-frames by cause (left behind by admission, deferred behind a retiring generation); outside-set block-frames; pool growths; peak occupied layers; bytes read and physical reads (O15); the baked mandatory set per camera cell (p50, p95, max blocks); the id-51 stage time. Spawn frames apart. Frames outside the gate apart: their count and each build's deferred and non-resident block-frames (O28). |
+| R3 | movement-feel, both builds | R2's fields, plus outside-set blocks per drawn cell outside the baked set. |
+| R4 | Settle, per entry and build | Step-limit frames from the Settling log; the settle set's peak in lightmap blocks and SH targets; settle hold time; misses counted on the reveal frame. |
+

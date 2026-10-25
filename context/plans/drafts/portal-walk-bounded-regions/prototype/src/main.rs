@@ -368,7 +368,7 @@ fn main() {
         let smp = samples[w / views.len()];
         let (yaw, pitch) = views[w % views.len()];
         let vp = view_proj(smp.pos, yaw, pitch);
-        let (res, _) = postretro_visibility::determine_visible_cells(smp.pos, vp, &world, &[], false, &mut scratch);
+        let (res, _) = postretro_visibility::determine_visible_cells(smp.pos, vp, &world, &[], false, &mut scratch, postretro_visibility::TimingGate::OFF);
         let real_trip = matches!(res.stats.path, postretro_visibility::VisibilityPath::PortalStepLimitFallback { .. });
         let real_n = match &res.visible_cells {
             postretro_visibility::VisibleCells::Culled(v) => v.len() as u32,

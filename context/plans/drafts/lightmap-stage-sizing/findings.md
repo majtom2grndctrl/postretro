@@ -110,11 +110,6 @@ It culled 82,950 pairs on hallway-mini (behind 45,423, cone 35,385, range 2,142)
 
 **Not worth building:** sharing the clip pre-pass across lights (0.1%). Lever B stays declined, as the owner ruled.
 
-## Proposed roadmap edit
+## Roadmap
 
-Replace the "lightmap tile shaft culling" entry in `context/plans/roadmap.md` with:
-
-> - [ ] **lightmap exact skips: tile shaft culling and chart coverage cull** — skip every shadow ray for an 8×8 lightmap tile whose padded shaft to the emitter no triangle crosses (visibility exactly 1), and drop (light, chart) pairs no texel of which has a direct term (light behind the plane, outside a spot's cone, beyond range of the texel rectangle). Exact: bytes unchanged, no key change. Sized on hallway-mini (cold, dev): Lightmap Bake 374.7 → 210.4 s together (shaft −129 s, chart cull −32 s), reclaiming ~84% of the penumbra floor's cost; groups-capture −46%. Prototype and numbers: `context/plans/drafts/lightmap-stage-sizing/`. Not yet drafted.
-> - [ ] **lightmap dark-texel sizing** — after the exact skips, dark early-outs are ~55% of Lightmap Bake. Size a cell-visibility reach cull (exact only if cell visibility is a superset of segment visibility) and the emitter-pairing cost (~0.46 µs per covered texel) before drafting either. Not yet drafted.
-
-Also mark item 3 of `lighting-scale--cold-bake-reaching-light-spike/out-of-scope-findings.md` superseded. Production already culls per light at chart level, and what it still pays for unreached texels is lever 2.
+`context/plans/roadmap.md` carries both levers as one entry, "lightmap exact skips", and the dark-texel follow-up as "lightmap dark-texel cost". Out-of-scope item 3 of `lighting-scale--cold-bake-reaching-light-spike/` is marked superseded.

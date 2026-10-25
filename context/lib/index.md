@@ -22,7 +22,7 @@
 - **Render resolution / HiDPI / scene extent vs surface extent / integer upscale / native UI layer / covers-HUD effect switches** → `rendering_pipeline.md` §7.8 · `player_options.md` §4 · `ui.md` §5
 - **Projectile visuals / emissive billboards / flipbook sprite bodies / mover-attached dynamic lights / impact-flash light / animated light radius** → `rendering_pipeline.md` §4, §7.4 · `resource_management.md` §6
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md` §PRL Compilation
-- **Portal walk cost bound / bounded-region walk / visible-set superset contract (what consumers may assume)** → `rendering_pipeline.md` §2
+- **Portal walk cost bound / bounded-region walk / seeded mirror entry / visible-set superset contract (what consumers may assume)** → `rendering_pipeline.md` §2
 - **Cell→cell coupling relation / baked cell-visibility substrate / network relevance, audio occlusion, AI-perception broad phase, or VFX cull shared foundation** → `build_pipeline.md` §PRL section IDs
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Bake stage ordering / what a compiler stage may depend on / where atlas preparation runs / compile working-set budget / lightmap bake scale** → `build_pipeline.md` §Compiler pipeline

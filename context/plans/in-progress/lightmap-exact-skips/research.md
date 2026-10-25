@@ -10,7 +10,7 @@ The hull from the brief's shaft-cull Decision contains every segment piece the u
 |---|---|---|---|
 | Shadow trace, every k | floored (`footprint_visibility`) | q_k + n·ε → light centre (hard, and k = 0) or a sphere-surface point (`area_sample_target`). The tracer skips the first ε and stops strictly before the target. | Origin at height ε, inside the 0.5–2.5ε slab, and offset within the pad. Target inside `light_size` + 1 mm. The hull is convex. |
 | Clip segment, k > 0, when `may_clip` | floored | p + n·ε − ô_k·ε → q_k + n·ε, in-plane at height ε | Within the pad (radius + 4ε) |
-| Lead-in, k > 0, after a clear trace | floored (`lead_in_clear`) | origin − along·0.25ε → origin + along·1.25ε, tested over its full length, front faces only | Back end: height 0.75–1.25ε, in-plane ≤ radius + 0.25ε. Forward end: within 2.25ε of q_k with the lift and 1.25ε along the receiver (`ClipReach` doc). So it is inside slab and pad when along·n ≥ 0, and otherwise on the traced segment, inside the hull by convexity (segment ≥ 1.25ε). |
+| Lead-in, k > 0, after a clear trace | floored (`lead_in_clear`) | origin − along·0.25ε → origin + along·1.25ε, tested over its full length, front faces only | Back end: height 0.75–1.25ε, in-plane ≤ radius + 0.25ε. Forward end: within 2.25ε of q_k with the lift and 1.25ε along the receiver (`ClipReach` doc). So it is inside slab and pad when along·n ≥ 0, and otherwise on the traced segment, inside the hull by convexity (segment ≥ 1.25ε). Holds only for a near-orthonormal chart frame (unit axes within 1e-6, pairwise dots ≤ 1e-3) with the light centre ≥ 5ε above the texel plane after `light_size`; otherwise the tile tests blocked. |
 | Shadow trace | floor-off (`TexelSampler::Centre`, `soft_visibility_with`) | p + n·ε → centre (hard) or the 4 probes and then the full set on the sphere (soft) | Pad 4ε is enough; there are no offsets, clips or lead-ins |
 | Sun trace | both | q_k → q_k + dir·10 km (`DIRECTIONAL_LIGHT_RAY_LENGTH_METERS`), from the unlifted point | **Not contained** by a world-diagonal sweep. This is the reason suns are excluded. |
 
@@ -143,7 +143,7 @@ Randomized f32 searches checked each bound (scratch scripts, not landed). The wo
 | MT ulp multiple | 5√2 ≈ 7.07 per numerator | γ_5 per cross-then-dot, and √2 from Cauchy–Schwarz |
 | Sampler ulp multiples | 10·R_i, 6·L | The endpoint table |
 | θ0 | 2° | m_A scales as 1/sin θ0. For a 3 m triangle at the origin, m_A is 1.1 mm at 2°, 0.44 mm at 5° and 0.24 mm at 10°. The acceptance rows' 10° wall sits above the floor, so its clear is exact. |
-| ρ_cap | 100, so the angle at a is ≥ 0.57° | Sizes the query growth only (§Candidates and the sliver gap) |
+| ρ_cap | 100, so the angle at a is ≥ 0.57° | Sizes the query growth (§Candidates and the sliver gap). A candidate past it blocks the tile, conservatively: m_N stays valid at any ρ, but the query growth does not |
 | Absolute floor | None | Every term is relative to S_T, L or R_i, each ≥ ε. f32 underflow adds less than 1e-44 m. |
 
 Worked check. The setup:
@@ -191,7 +191,7 @@ Worked check. The setup:
 
   Which one costs less is a measurement.
 - **Exact AABB queries.** An AABB query cannot miss a returned box by rounding (§Exactness premises). The query box must be rounded outward when narrowed to f32. A box gap is a lower bound on D.
-- **Degenerate triangles inside the query.** A triangle with ρ > ρ_cap or N′ = 0 has no certificate there, so it blocks the tile. That is correct.
+- **Degenerate triangles inside the query.** A triangle with N′ = 0 has no certificate. One with ρ > ρ_cap still has a valid m_N, but the code blocks it anyway: conservative, speed only.
 - **Degenerate triangles outside the query.** Such a triangle is the accepted sliver gap, and it is not confined to "beside" the hull.
   - A near-degenerate f32 sliver (ρ ≈ 2e7, 19 m long) gave accepted hits on segments 37 m away. Whenever its line nearly meets a ray's line, u, v and t are noise.
   - The unculled bake already reports those phantom hits.

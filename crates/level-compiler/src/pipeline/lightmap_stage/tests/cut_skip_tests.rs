@@ -1,6 +1,6 @@
 //! Exact skips on a cut face through the stage: the chart cull drops one dark
 //! sub-chart, tiles anchor per sub-chart, and overlap twins stay identical.
-//! Governing context: `context/lib/build_pipeline.md` §Compiler pipeline (step 12).
+//! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use std::collections::HashMap;
 
@@ -152,7 +152,7 @@ impl CutAtlas {
     }
 }
 
-// O6: on the 2 × 2-cut floor, a light whose range reaches the +u sub-chart's
+// On the 2 × 2-cut floor, a light whose range reaches the +u sub-chart's
 // padded bounds but none of its texel centres drops that sub-chart alone
 // through the chart cull; a broad light clears tiles in every sub-chart,
 // among them a tile holding overlap texels. The stage's bytes equal a bake

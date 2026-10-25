@@ -2,10 +2,66 @@
 // margin along an axis, and the candidate query's growth.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
+//! Margin derivation, compact enough to re-check each coefficient. Notation:
+//! u = 2⁻²⁴; a, e1 = fl₃₂(b − a), e2 = fl₃₂(c − a) in index order, as
+//! Möller–Trumbore forms them; N′ = e1 × e2, exact; ρ = ‖e1‖‖e2‖/‖N′‖;
+//! e_T = max(‖e1‖, ‖e2‖); B the hull's box, L = diag(B) ≥ every t_max;
+//! S_T = ‖a − centre(B)‖ + ½L ≥ ‖x − a‖ for every hull point x; θ the ray's
+//! angle to plane(T′), T′ = (a, a + e1, a + e2).
+//!
+//! - **Accepted-hit residual.** The hit test's det and u, v, t numerators are
+//!   Cramer's rule for o + t·d = a + u·e1 + v·e2, each an `f32` cross then
+//!   dot, off by at most γ₅·Σ|xᵢ|(|y_j z_k| + |y_k z_j|) ≤ γ₅√2‖x‖‖y‖‖z‖
+//!   (Cauchy–Schwarz; any summation order, FMA or not): [`HIT_TEST_ULPS`].
+//!   On an accepted hit (u, v ≥ 0, u + v ≤ 1, 0 < t < t_max), the residual
+//!   r from the triangle point to the ray point has |N′·r| ≤
+//!   5√2u‖e1‖‖e2‖(S_T + L), and |(d × e2)·r|, |(d × e1)·r| bounded alike with
+//!   ‖s‖ ≤ S_T. Forming s = o − a moves o by ≤ u·S_T. Off the normal, the
+//!   triangle point also strays ≤ 4u·e_T past T′ (u + v ≤ 1 + 4u), and T′
+//!   lies within u·e_T of the stored corners.
+//! - **m_N: no ray-angle term, but ρ.** |N′·r|/‖N′‖ bounds the hit point's
+//!   height off plane(T′) by 5√2uρ(S_T + L) + u·S_T. It bounds height, not t,
+//!   so t's 1/sin θ error cancels the 1/sin θ run along the ray. ρ stays: the
+//!   products scale as ‖e1‖‖e2‖, not as ‖N′‖.
+//! - **m_A: the 2° floor.** On any other axis, write r = α·d + β·e1 + γ·e2;
+//!   each coefficient is a residual over |det| = ‖N′‖ sin θ, so the hit point
+//!   lies within 5√2uρ(3S_T + L + ‖e1‖ + ‖e2‖)/sin θ + u(S_T + 5e_T) of the
+//!   stored triangle. That grows without bound as θ → 0 (all three residual
+//!   normals turn perpendicular to d, pinning the line, not the point), so
+//!   it is taken at θ0 ([`SIN_ANGLE_FLOOR`]).
+//! - **Sampler endpoints.** The hull is exact over the sampler's `f32`
+//!   inputs. The `f32` segment ends stray per world axis by ε_i = 10u·R_i +
+//!   6u·L ([`POSITION_ULPS`], [`LENGTH_ULPS`]): 7u·R_i for the texel centre,
+//!   2u·R_i for offset and lift, u·R_i for the target, u·R_i + 6u·L for the
+//!   ray's delta, length, direction, origin, `max_distance` and t. R_i is the
+//!   larger of the chart frame's terms ([`Hull::terms`]) and B's coordinates.
+//!   Along a unit axis this adds e_H(a) = Σ|aᵢ|ε_i ≤ ‖ε‖. A sampler change
+//!   that adds an `f32` operation to a segment end re-counts ε_i.
+//! - **κ.** [`KAPPA`] multiplies each sum, for second-order terms (relative
+//!   < 1e-6), ‖d‖ ≠ 1 and the `f64` evaluation of gaps and margins. The
+//!   proven factor is 1 + 1e-5; the rest guards an operation miscount.
+//!
+//! So m_N = κ[5√2uρ(S_T + L) + u·S_T + e_H(n̂′)] and m_A(a) = κ[5√2uρ(3S_T +
+//! L + ‖e1‖ + ‖e2‖)/sin θ0 + u(S_T + 5e_T) + e_H(a)], and a gap at or past
+//! its margin admits no accepted hit.
+//!
+//! **Query growth.** A triangle at box distance D has S_T ≤ D + 2e_T + diag.
+//! With L = diag, 3S_T + L + ‖e1‖ + ‖e2‖ ≤ 3D + 4·diag + 8e_T and S_T + 5e_T
+//! ≤ D + diag + 7e_T. With P = 5√2u/sin θ0, m_A ≤ D once D ≥ κ[P(4ρ·diag +
+//! 8ρe_T) + u(diag + 7e_T) + ‖ε‖] / (1 − κ(3Pρ + u)), the `shrink`
+//! denominator. That is monotone in ρ, ρe_T and e_T, so the map's maxima
+//! bound every triangle under the cap.
+//!
+//! **Accepted gaps.** Rays under θ0 fall outside m_A, and a sliver past
+//! [`SHAPE_CAP`] (or with N′ = 0) outside the query is never tested; inside
+//! it, such a sliver blocks. Verify mode in tests, which re-traces every
+//! clear tile, is the oracle.
+
 use std::f64::consts::SQRT_2;
 
 use glam::{DVec3, Vec3};
 
+use super::{primitive_triangles, triangle_points};
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 
@@ -33,10 +89,13 @@ pub(super) const SIN_ANGLE_FLOOR: f64 = 0.034_899_496_702_500_97;
 /// query's growth ([`ShaftScene`]).
 pub(super) const SHAPE_CAP: f64 = 100.0;
 
-/// Ulps, per world axis, that the sampler's `f32` endpoint arithmetic can
-/// move a segment end from its exact place: ten of the largest coordinate
-/// term (texel centre, offset, lift, target), six of the longest segment.
+/// Ulps of the largest coordinate term R_i (texel centre, offset, lift,
+/// target) that the sampler's `f32` endpoint arithmetic can move a segment
+/// end, per world axis, from its exact place.
 const POSITION_ULPS: f64 = 10.0;
+
+/// Ulps of the longest segment L that the ray's own `f32` arithmetic (delta,
+/// length, direction, origin, `max_distance`, t) adds to the same bound.
 const LENGTH_ULPS: f64 = 6.0;
 
 /// Map-wide shape maxima the candidate query reads: ρ, ρ·e_T and e_T (e_T
@@ -53,14 +112,9 @@ pub(crate) struct ShaftScene {
 impl ShaftScene {
     pub(crate) fn new(primitives: &[BvhPrimitive], geometry: &GeometryResult) -> Self {
         let mut scene = Self::default();
-        let geom = &geometry.geometry;
         for prim in primitives {
-            let start = prim.index_offset as usize;
-            let end = start + prim.index_count as usize;
-            for tri in (start..end).step_by(3).take_while(|&tri| tri + 3 <= end) {
-                let points = [0, 1, 2]
-                    .map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
-                if let Some(candidate) = Candidate::of(points)
+            for tri in primitive_triangles(prim) {
+                if let Some(candidate) = Candidate::of(triangle_points(geometry, tri))
                     && candidate.shape <= SHAPE_CAP
                 {
                     scene.shape = scene.shape.max(candidate.shape);
@@ -142,9 +196,12 @@ impl Hull {
         Some(side * (1.0 - ratio * ratio).sqrt() - across * ratio)
     }
 
-    /// The hull face a candidate edge along `run` would meet: the plane
-    /// along `run` tangent to the emitter through the slab corner that
-    /// plane, first drawn through `from`, puts highest toward `outward`.
+    /// A plane along `run`, tangent to the emitter on the side `outward`
+    /// points to, pushed out to the slab: the tangent plane through `from`
+    /// picks the slab corner farthest along its normal, and the tangent
+    /// plane through that corner is returned. It approximates the hull face
+    /// a candidate edge along `run` would meet; any axis certifies at its
+    /// own margin, so it need not be exact.
     fn edge_plane(&self, from: DVec3, run: DVec3, outward: DVec3) -> Option<DVec3> {
         let first = self.tangent_plane(from, run, outward)?;
         let corner = self
@@ -165,10 +222,15 @@ pub(super) struct HullBounds {
     /// ε_i: how far, per world axis, an `f32` segment end the sampler forms
     /// can stray from its exact place in the hull.
     sampler_error: DVec3,
+    /// The mean of the slab's eight corners: the spine's start, the edge
+    /// planes' first point and the shaft direction's base. Computed once
+    /// per tile.
+    pub(super) slab_centre: DVec3,
 }
 
 impl HullBounds {
     pub(super) fn new(hull: Hull) -> Self {
+        let slab_centre = hull.corners.iter().copied().sum::<DVec3>() / 8.0;
         let axis_range = |axis: DVec3| hull.range(axis);
         let (x, y, z) = (
             axis_range(DVec3::X),
@@ -187,6 +249,7 @@ impl HullBounds {
             hi,
             diag,
             sampler_error,
+            slab_centre,
         }
     }
 
@@ -195,7 +258,7 @@ impl HullBounds {
     /// usually does, and then the axes need not run. A wrong `true` costs
     /// only speed.
     fn meets_spine(&self, tri: &Candidate) -> bool {
-        let from = self.hull.corners.iter().copied().sum::<DVec3>() / 8.0;
+        let from = self.slab_centre;
         let run = self.hull.centre - from;
         let [a, b, c] = tri.corners;
         let (e1, e2) = (b - a, c - a);
@@ -217,21 +280,23 @@ impl HullBounds {
         axis.abs().dot(self.sampler_error)
     }
 
-    /// S_T: a bound on the distance from `corner` to every hull point.
-    fn reach_from(&self, corner: DVec3) -> f64 {
-        corner.distance((self.lo + self.hi) * 0.5) + 0.5 * self.diag
+    /// S_T: a bound on the distance from `tri`'s first corner to every hull
+    /// point. Both margins read it; [`Self::separates`] computes it once per
+    /// candidate and passes it as `reach`.
+    pub(super) fn reach(&self, tri: &Candidate) -> f64 {
+        tri.corners[0].distance((self.lo + self.hi) * 0.5) + 0.5 * self.diag
     }
 
     /// (g_N, m_N): the gap between the hull and the plane of the triangle's
-    /// `f32` edges along its own normal, and the margin that gap must reach.
-    /// The hit test's height error along N′ carries no ray-angle term: the
-    /// 1/sin θ in its distance error cancels the 1/sin θ along the ray.
-    pub(super) fn normal_certificate(&self, tri: &Candidate) -> (f64, f64) {
+    /// `f32` edges along its own normal, and the margin that gap must reach,
+    /// with `reach` its [`Self::reach`]. The hit test's height error along
+    /// N′ carries no ray-angle term: the 1/sin θ in its distance error
+    /// cancels the 1/sin θ along the ray.
+    pub(super) fn normal_certificate(&self, tri: &Candidate, reach: f64) -> (f64, f64) {
         let axis = tri.normal / tri.normal.length();
         let offset = axis.dot(tri.corners[0]);
         let (lo, hi) = self.hull.range(axis);
         let gap = (offset - hi).max(lo - offset);
-        let reach = self.reach_from(tri.corners[0]);
         let margin = KAPPA
             * (HIT_TEST_ULPS * UNIT_ROUNDOFF * tri.shape * (reach + self.diag)
                 + UNIT_ROUNDOFF * reach
@@ -245,7 +310,7 @@ impl HullBounds {
     #[cfg(test)]
     pub(super) fn axis_certificate(&self, tri: &Candidate, axis: DVec3) -> Option<(f64, f64)> {
         let axis = self.hull_axis(axis)?;
-        axis.certificate(tri, self.axis_margin_base(tri))
+        axis.certificate(tri, self.axis_margin_base(tri, self.reach(tri)))
     }
 
     /// `axis`, normalized, with the hull's range and e_H along it: what every
@@ -266,9 +331,9 @@ impl HullBounds {
         })
     }
 
-    /// m_A(T, a) less its e_H(a) term, which alone depends on the axis.
-    pub(super) fn axis_margin_base(&self, tri: &Candidate) -> f64 {
-        let reach = self.reach_from(tri.corners[0]);
+    /// m_A(T, a) less its e_H(a) term, which alone depends on the axis, with
+    /// `reach` its [`Self::reach`].
+    pub(super) fn axis_margin_base(&self, tri: &Candidate, reach: f64) -> f64 {
         HIT_TEST_ULPS * UNIT_ROUNDOFF * tri.shape * (3.0 * reach + self.diag + tri.edge_sum)
             / SIN_ANGLE_FLOOR
             + UNIT_ROUNDOFF * (reach + 5.0 * tri.longest_edge)
@@ -281,6 +346,11 @@ impl HullBounds {
     /// ([`Hull::edge_plane`]), and each triangle edge crossed with the chart
     /// axes, the normal and the shaft direction (`frame_axes`). Cheap and
     /// likely axes go first; the order changes no verdict.
+    ///
+    /// Two exits come early, both `false`: ρ past [`SHAPE_CAP`], which the
+    /// query growth does not cover, and, once the normal fails, a triangle
+    /// that meets the spine ([`Self::meets_spine`]), which crosses the hull
+    /// and so has no separating axis.
     pub(super) fn separates<'h>(
         &self,
         tri: &Candidate,
@@ -290,7 +360,8 @@ impl HullBounds {
         if tri.shape > SHAPE_CAP {
             return false;
         }
-        let (gap, margin) = self.normal_certificate(tri);
+        let reach = self.reach(tri);
+        let (gap, margin) = self.normal_certificate(tri, reach);
         if gap >= margin {
             return true;
         }
@@ -298,7 +369,7 @@ impl HullBounds {
             // It crosses the hull, so no axis separates it.
             return false;
         }
-        let base = self.axis_margin_base(tri);
+        let base = self.axis_margin_base(tri, reach);
         let certified = |axis: &HullAxis| {
             axis.certificate(tri, base)
                 .is_some_and(|(gap, margin)| gap >= margin)
@@ -307,7 +378,7 @@ impl HullBounds {
             return true;
         }
         let [a, b, c] = tri.corners;
-        let slab_centre = self.hull.corners.iter().copied().sum::<DVec3>() / 8.0;
+        let slab_centre = self.slab_centre;
         let toward = (a + b + c) / 3.0 - slab_centre;
         let edge_planed = [b - a, c - a, c - b].into_iter().any(|edge| {
             self.hull

@@ -148,9 +148,9 @@ impl Search {
     }
 }
 
-// Requirement 9 of the margin derivation: a segment that stops short of a
-// triangle's plane, from either side and at any grazing angle, is never hit
-// once its gap along the triangle's own normal reaches m_N. Segments end a
+// The normal margin is sound against the hit test: a segment that stops short
+// of a triangle's plane, from either side and at any grazing angle, is never
+// hit once its gap along the triangle's own normal reaches m_N. Segments end a
 // random multiple of the hit test's rounding scale from the plane, over a
 // triangle's interior, at coordinates up to 4 km.
 #[test]
@@ -191,7 +191,7 @@ fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
         let from = to - toward_plane * length;
         let (from, to) = (from.as_vec3(), to.as_vec3());
         let bounds = segment_bounds(from, to);
-        let certificate = bounds.normal_certificate(&candidate);
+        let certificate = bounds.normal_certificate(&candidate, bounds.reach(&candidate));
         search.record(traced_hit(from, to, points), certificate);
         search.record(lead_in_hit(from, to, points), certificate);
     }
@@ -203,14 +203,20 @@ fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
     assert!(search.worst_ratio > 0.01, "{search:?}");
 }
 
-// Requirement 9, off the normal: a segment at or above the angle floor that
-// crosses a triangle's plane just outside one of its edges is never hit once
-// its gap along that edge's outward normal reaches m_A. Steeper rays than the
-// floor only; a ray below it is the accepted gap and is not asserted.
+// The axis margin is sound against the hit test above the angle floor: a
+// segment at or above the floor that crosses a triangle's plane just outside
+// one of its edges is never hit once its gap reaches m_A, along that edge's
+// in-plane outward normal or along any other unit axis, N′ components
+// included. Steeper rays than the floor only; a ray below it is the accepted
+// gap and is not asserted.
 #[test]
 fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
     let mut stream = Stream(0x5348_4146_545f_4131);
+    // The other axes draw from their own stream, so the edge-normal cases
+    // are the ones a search without them would draw.
+    let mut axis_stream = Stream(0x5348_4146_545f_4132);
     let mut search = Search::default();
+    let mut other_axes = Search::default();
     let mut below_floor = 0;
     for _ in 0..150_000 {
         let offset = stream.pick(&OFFSETS);
@@ -242,9 +248,9 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         let length = stream.log_range(0.01, 30.0);
         let reach = p0.distance(corners[0]) + 2.0 * length + offset;
         let scale = UNIT_ROUNDOFF * candidate.shape * (3.0 * reach + candidate.edge_sum) / sin;
-        let crossing = p0
-            + (p1 - p0) * stream.range(0.05, 0.95)
-            + outward * scale * stream.log_range(1.0e-2, 60.0);
+        let along_edge = stream.range(0.05, 0.95);
+        let beyond = stream.log_range(1.0e-2, 60.0);
+        let crossing = p0 + (p1 - p0) * along_edge + outward * scale * beyond;
         let sign = if stream.unit() < 0.5 { 1.0 } else { -1.0 };
         let dir = run * sign * (1.0 - sin * sin).sqrt() + normal * sin;
         let before = stream.range(0.1, 0.9);
@@ -255,11 +261,26 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
             continue;
         }
         let bounds = segment_bounds(from, to);
-        let Some(certificate) = bounds.axis_certificate(&candidate, outward) else {
-            continue;
+        let hits = [traced_hit(from, to, points), lead_in_hit(from, to, points)];
+        if let Some(certificate) = bounds.axis_certificate(&candidate, outward) {
+            for hit in hits {
+                search.record(hit, certificate);
+            }
+        }
+        // Mostly the edge normal tipped toward a random direction, N′
+        // included, by up to a few times the angle that still keeps the gap
+        // open; now and then a direction drawn at random.
+        let axis = if axis_stream.unit() < 0.125 {
+            axis_stream.direction()
+        } else {
+            let open = scale * beyond / (length + candidate.edge_sum);
+            outward + axis_stream.direction() * open * axis_stream.log_range(1.0e-3, 3.0)
         };
-        search.record(traced_hit(from, to, points), certificate);
-        search.record(lead_in_hit(from, to, points), certificate);
+        if let Some(certificate) = bounds.axis_certificate(&candidate, axis) {
+            for hit in hits {
+                other_axes.record(hit, certificate);
+            }
+        }
     }
     assert_eq!(search.violations, 0, "{search:?}");
     assert!(
@@ -267,6 +288,11 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         "the search must reach the rounding regime and the margin: {search:?}"
     );
     assert!(search.worst_ratio > 0.01, "{search:?}");
+    assert_eq!(other_axes.violations, 0, "{other_axes:?}");
+    assert!(
+        other_axes.certified > 2_000,
+        "the other axes must reach the margin: {other_axes:?}"
+    );
     assert!(
         below_floor > 0,
         "some rays round below the floor and are skipped"
@@ -294,14 +320,21 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
         terms: DVec3::splat(0.3),
     };
     let bounds = HullBounds::new(hull);
-    // A sliver at the shape cap, 3 m long, facing the hull across +X.
+    // A sliver just inside the shape cap, 3 m edges, facing the hull across
+    // +X. Its narrow angle sits at its first corner, the one ρ measures.
+    let sin = 1.0001 / SHAPE_CAP;
     let at = |x: f64| {
         let a = DVec3::new(x, 1.0, -1.0);
         let b = a + DVec3::new(0.0, 0.0, 3.0);
-        let c = a + DVec3::new(0.0, 3.0 / SHAPE_CAP, 0.0);
+        let c = a + DVec3::new(0.0, sin, (1.0 - sin * sin).sqrt()) * 3.0;
         [a, b, c].map(|p| p.as_vec3())
     };
     let probe = Candidate::of(at(1.0)).unwrap();
+    assert!(
+        probe.shape <= SHAPE_CAP && probe.shape > 0.999 * SHAPE_CAP,
+        "the probe sits just inside the cap: ρ = {}",
+        probe.shape
+    );
     let scene = ShaftScene {
         shape: probe.shape,
         shape_edge: probe.shape * probe.longest_edge,
@@ -316,9 +349,10 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
         gap >= margin,
         "growth {growth}: a triangle that far has gap {gap} under its margin {margin}"
     );
+    // About 8 cm: the capped sliver's 8ρe_T term dominates.
     assert!(
-        growth < 0.2,
-        "growth {growth} stays far below the hull's size"
+        (0.05..0.1).contains(&growth),
+        "growth {growth}: a capped 3 m sliver sets it near 8 cm, far below the hull's size"
     );
 }
 

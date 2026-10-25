@@ -1712,7 +1712,7 @@ fn lit_records(
                     true,
                     embedded,
                     crate::lightmap_layer::ExactSkips::ON,
-                    &crate::lightmap_layer::ShaftScene::new(&primitives, geometry),
+                    &std::sync::OnceLock::new(),
                     &control,
                 );
                 checked += texels.len();
@@ -2008,7 +2008,7 @@ fn assert_prepass_matches_full_clip(
         .iter()
         .map(|light| super::has_embedded_emitter(light, &bvh, &primitives, geometry))
         .collect();
-    let scene = crate::lightmap_layer::ShaftScene::new(&primitives, geometry);
+    let scene = std::sync::OnceLock::new();
     let (mut skipped, mut total) = (0, 0);
     for (face, chart) in atlas.charts.iter().enumerate() {
         if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
@@ -2351,10 +2351,7 @@ fn a_scaled_face_ramps_over_the_same_texels_in_either_walk_order() {
                         true,
                         false,
                         crate::lightmap_layer::ExactSkips::ON,
-                        &crate::lightmap_layer::ShaftScene::new(
-                            &fixture.primitives,
-                            &fixture.geometry,
-                        ),
+                        &std::sync::OnceLock::new(),
                         &BakeControl::unrestricted(),
                     );
                 }

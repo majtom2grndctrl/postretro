@@ -23,10 +23,13 @@ use margin::{Candidate, Hull, HullAxis, HullBounds};
 /// first interior texel, so a chart's last tile on each axis may be narrower.
 pub(crate) const SHAFT_TILE_TEXELS: i32 = 8;
 
-/// The lifted slab every ray origin, clip segment and lead-in starts in, in
-/// `RAY_EPSILON`s along the chart normal: origins sit at 1, lead-ins reach
-/// 0.75 to 2.25.
+/// Bottom of the lifted slab every ray origin, clip segment and lead-in
+/// starts in, in `RAY_EPSILON`s along the chart normal: origins sit at 1,
+/// lead-ins reach down to 0.75.
 const SLAB_FLOOR: f64 = 0.5;
+
+/// Top of the lifted slab, in `RAY_EPSILON`s along the chart normal:
+/// lead-ins reach up to 2.25.
 const SLAB_CEILING: f64 = 2.5;
 
 /// In-plane pad past the footprint radius, in `RAY_EPSILON`s: a clip
@@ -42,9 +45,12 @@ const EMITTER_SLACK: f64 = 1.0e-3;
 /// least this far up, that point lies on the traced segment, inside the hull.
 const EMITTER_CLEARANCE: f64 = 5.0;
 
-/// How far the chart frame may stray from orthonormal for the slab to hold
+/// Largest `|dot|` between two chart-frame axes for the slab to hold
 /// lead-ins, whose direction is any world direction.
 const FRAME_SKEW_LIMIT: f64 = 1.0e-3;
+
+/// Largest distance from 1 of a chart-frame axis's length, for the same
+/// containment.
 const FRAME_NORM_LIMIT: f64 = 1.0e-6;
 
 /// Relative slack on the footprint radius: offsets go through `f32` texel
@@ -60,11 +66,20 @@ pub(crate) struct ShaftCull<'a> {
     normal: DVec3,
     grid: ChartGrid,
     dims: (i32, i32),
-    /// In-plane pad in chart-axis units: the footprint radius on the floored
-    /// sampler, the lift's slack alone on the centre sampler.
+    /// In-plane pad in chart-axis units: `frame.radius() · (1 +
+    /// RADIUS_SLACK) + PAD_SLACK · RAY_EPSILON` on the floored sampler,
+    /// `PAD_SLACK · RAY_EPSILON` alone on the centre sampler.
     pad: f64,
+    /// R_i's chart part, per world axis: `|origin| + |u_axis| · (|uv_min.u| +
+    /// |uv_extent.u|) + |v_axis| · (|uv_min.v| + |uv_extent.v|)`, at least
+    /// every term the `f32` texel-centre expression adds. Each tile's margins
+    /// raise it to the hull box's own coordinates.
     terms: DVec3,
+    /// The emitter's centre: the light's `f32` origin, as every ray target
+    /// reads it.
     centre: DVec3,
+    /// The emitter sphere's radius: `light_size + EMITTER_SLACK` for an area
+    /// light, zero for a hard one.
     radius: f64,
     /// Whether the containment argument holds for this chart and light: a
     /// near-orthonormal frame and an emitter clear of the slab. Without it
@@ -182,24 +197,22 @@ impl<'a> ShaftCull<'a> {
             Point3::new(f32_below(lo.x), f32_below(lo.y), f32_below(lo.z)),
             Point3::new(f32_above(hi.x), f32_above(hi.y), f32_above(hi.z)),
         );
-        let slab_centre = hull.corners.iter().copied().sum::<DVec3>() / 8.0;
         let frame_axes = [
             self.u_axis,
             self.v_axis,
             self.normal,
-            self.centre - slab_centre,
+            self.centre - bounds.slab_centre,
         ];
-        // Built on the first candidate its own normal leaves unseparated.
+        // Built on the first candidate that its own normal leaves
+        // unseparated and that misses the spine.
         let hull_axes = OnceCell::new();
         let hull_axes = || {
             hull_axes
                 .get_or_init(|| self.hull_axes(&bounds, &hull))
                 .as_slice()
         };
-        let geom = &self.geometry.geometry;
         let blocks = |tri: usize| {
-            let points = [0, 1, 2]
-                .map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
+            let points = triangle_points(self.geometry, tri);
             let tri_lo = points[0].min(points[1]).min(points[2]).as_dvec3();
             let tri_hi = points[0].max(points[1]).max(points[2]).as_dvec3();
             if tri_hi.cmplt(lo).any() || tri_lo.cmpgt(hi).any() {
@@ -217,9 +230,7 @@ impl<'a> ShaftCull<'a> {
             return false;
         }
         for prim in self.bvh.traverse_iterator(&query, self.primitives) {
-            let start = prim.index_offset as usize;
-            let end = start + prim.index_count as usize;
-            for tri in (start..end).step_by(3).take_while(|&tri| tri + 3 <= end) {
+            for tri in primitive_triangles(prim) {
                 if blocks(tri) {
                     self.last_blocker.set(Some(tri));
                     return false;
@@ -319,7 +330,7 @@ impl<'a> ShaftCull<'a> {
         let bounds = HullBounds::new(self.tile_hull(tile.0, tile.1));
         let candidate = Candidate::of(points).expect("a non-degenerate triangle");
         (
-            bounds.normal_certificate(&candidate),
+            bounds.normal_certificate(&candidate, bounds.reach(&candidate)),
             bounds.axis_certificate(&candidate, axis),
         )
     }
@@ -338,8 +349,24 @@ impl<'a> ShaftCull<'a> {
     }
 }
 
-/// Axes [`ShaftCull::hull_axes`] builds per tile.
-const HULL_AXES: usize = 17;
+/// Axes [`ShaftCull::hull_axes`] builds per tile: the receiver normal, then
+/// at each of the two slab heights the four sides and four corners.
+const HULL_AXES: usize = 1 + 2 * (4 + 4);
+
+/// The first index of each whole triangle in `prim`'s index range.
+fn primitive_triangles(prim: &BvhPrimitive) -> impl Iterator<Item = usize> {
+    let start = prim.index_offset as usize;
+    let end = start + prim.index_count as usize;
+    (start..end)
+        .step_by(3)
+        .take_while(move |&tri| tri + 3 <= end)
+}
+
+/// The stored `f32` corners of the triangle at index `tri`, in index order.
+fn triangle_points(geometry: &GeometryResult, tri: usize) -> [Vec3; 3] {
+    let geom = &geometry.geometry;
+    [0, 1, 2].map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position))
+}
 
 /// The largest `f32` at or below `x`.
 fn f32_below(x: f64) -> f32 {

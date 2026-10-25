@@ -143,8 +143,9 @@ pub(super) struct LayerPartitions<'a> {
     chart_bounds: Vec<Option<(Vec3, Vec3)>>,
     /// The exact skips this source takes: all of them, outside tests.
     exact_skips: ExactSkips,
-    /// The shaft cull's map-wide terms, built by the first chart bake and
-    /// shared read-only by the rest; a pass of cache hits never builds it.
+    /// The shaft cull's map-wide terms, built inside its permit by the first
+    /// chart walk that takes a shaft test and shared read-only by the rest; a
+    /// pass of cache hits, or of suns alone, never builds it.
     shaft_scene: OnceLock<ShaftScene>,
     #[cfg(test)]
     hooks: PartitionHooks,
@@ -321,8 +322,7 @@ impl PartitionSource for LayerPartitions<'_> {
             self.penumbra_floor,
             self.embedded_emitters.is_embedded(entry.source_index),
             self.exact_skips,
-            self.shaft_scene
-                .get_or_init(|| ShaftScene::new(self.primitives, self.geometry)),
+            &self.shaft_scene,
             self.control,
         )
     }

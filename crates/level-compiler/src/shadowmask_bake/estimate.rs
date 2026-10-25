@@ -171,8 +171,10 @@ pub(super) fn estimate_cut_owners(
             eligible
                 .iter()
                 .enumerate()
-                // The static bake's own reach cull, so a light the walk
-                // never reaches is never traced here either.
+                // Range only: the first half of the static bake's chart
+                // planning, so a light past range is never traced here either.
+                // The coverage cull (`chart_may_cover`) is left out on
+                // purpose; it would save this estimate nothing.
                 .filter(move |(_, light)| light_may_reach(light.light, Some(bounds)))
                 .map(move |(l, _)| (c, l))
         })

@@ -11,7 +11,7 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{FalloffModel, ShadowType};
 use crate::reporter::StageProgress;
-use crate::texel_footprint::{PENUMBRA_FLOOR_DEFAULT, TexelFrame};
+use crate::texel_footprint::{PENUMBRA_FLOOR_DEFAULT, TexelFrame, TexelSampler};
 use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 use glam::DVec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -127,6 +127,7 @@ fn bake_layer_for_test(
         0,
         area_sample_count,
         PENUMBRA_FLOOR_DEFAULT,
+        ExactSkips::ON,
         &control,
     )
 }
@@ -241,7 +242,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         PENUMBRA_FLOOR_DEFAULT,
         false,
         ExactSkips::ON,
-        &ShaftScene::new(&primitives, &geometry),
+        &std::sync::OnceLock::new(),
         &BakeControl::unrestricted(),
     );
     let mut analytic = Vec::new();
@@ -378,6 +379,7 @@ fn layer_bake_preserves_chart_order_and_bytes_across_thread_counts() {
             0,
             AREA_SAMPLES,
             PENUMBRA_FLOOR_DEFAULT,
+            ExactSkips::ON,
             &single_control,
         )
     });
@@ -398,6 +400,7 @@ fn layer_bake_preserves_chart_order_and_bytes_across_thread_counts() {
             0,
             AREA_SAMPLES,
             PENUMBRA_FLOOR_DEFAULT,
+            ExactSkips::ON,
             &multi_control,
         )
     });
@@ -473,6 +476,7 @@ fn layer_bake_degenerate_chart_advances_progress_and_keeps_ordered_empty_slot() 
             0,
             AREA_SAMPLES,
             PENUMBRA_FLOOR_DEFAULT,
+            ExactSkips::ON,
             &control,
         )
     });
@@ -540,6 +544,7 @@ fn layer_bake_paused_before_permit_release_starts_no_chart() {
                     0,
                     AREA_SAMPLES,
                     PENUMBRA_FLOOR_DEFAULT,
+                    ExactSkips::ON,
                     &control,
                 )
             });
@@ -645,35 +650,35 @@ fn floor_site(world_p: Vec3) -> TexelSite {
     }
 }
 
+/// The chart walk's record step ([`bake_sparse_layer_texel`]) at a
+/// [`floor_site`], with every shadow and clip trace returning `clear` and
+/// every lead-in clear.
+fn mock_traced_record(
+    idx: u32,
+    light: &MapLight,
+    world_p: Vec3,
+    clear: bool,
+) -> Option<LayerTexel> {
+    let site = floor_site(world_p);
+    let sampler = TexelSampler::new(light, 1, PENUMBRA_FLOOR_DEFAULT, false);
+    bake_sparse_layer_texel(idx, light, &site, || {
+        sampler.visibility(light, &site, |_, _| clear, |_, _| clear, |_, _| true)
+    })
+}
+
 #[test]
 fn sparse_presence_and_reconstruction_preserve_dense_edge_semantics() {
     let light = point_light([0.5, 1.0, 0.5], 5.0);
     let world_p = Vec3::new(0.5, 0.0, 0.5);
 
-    let unreached = bake_sparse_layer_texel(
-        3,
-        &light,
-        &floor_site(Vec3::new(20.0, 0.0, 20.0)),
-        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
-        |_, _| true,
-        |_, _| true,
-        |_, _| true,
-    );
+    let unreached = mock_traced_record(3, &light, Vec3::new(20.0, 0.0, 20.0), true);
     assert!(
         unreached.is_none(),
         "an unreached texel must have no record"
     );
 
-    let occluded = bake_sparse_layer_texel(
-        3,
-        &light,
-        &floor_site(world_p),
-        &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
-        |_, _| false,
-        |_, _| false,
-        |_, _| true,
-    )
-    .expect("analytic coverage survives full occlusion");
+    let occluded = mock_traced_record(3, &light, world_p, false)
+        .expect("analytic coverage survives full occlusion");
     assert_eq!(occluded.raw_visibility.to_bits(), 0.0f32.to_bits());
     let (irradiance, weighted_dir) =
         reconstruct_light_texel(&light, world_p, Vec3::Y, occluded.raw_visibility);
@@ -727,31 +732,9 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
     ));
 
     light.intensity = below;
-    assert!(
-        bake_sparse_layer_texel(
-            0,
-            &light,
-            &floor_site(Vec3::ZERO),
-            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
-            |_, _| true,
-            |_, _| true,
-            |_, _| true
-        )
-        .is_none()
-    );
+    assert!(mock_traced_record(0, &light, Vec3::ZERO, true).is_none());
     light.intensity = above;
-    assert!(
-        bake_sparse_layer_texel(
-            0,
-            &light,
-            &floor_site(Vec3::ZERO),
-            &TexelSampler::new(&light, 1, PENUMBRA_FLOOR_DEFAULT, false),
-            |_, _| true,
-            |_, _| true,
-            |_, _| true
-        )
-        .is_some()
-    );
+    assert!(mock_traced_record(0, &light, Vec3::ZERO, true).is_some());
 }
 
 #[test]
@@ -799,6 +782,7 @@ fn empty_sparse_partition_roundtrips_and_has_no_fold_effect() {
         0,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        ExactSkips::ON,
         &BakeControl::unrestricted(),
     );
     assert!(partition.texels.is_empty());
@@ -846,6 +830,7 @@ fn sparse_multilayer_payload_is_below_one_tenth_dense_bytes() {
         &geo,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        ExactSkips::ON,
         &BakeControl::unrestricted(),
     );
     assert_eq!(partitions.len(), 2, "named fixture must remain multi-layer");
@@ -1012,6 +997,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
         0,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        ExactSkips::ON,
         &control,
     );
     let second = bake_light_layer_controlled(
@@ -1023,6 +1009,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
         1,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        ExactSkips::ON,
         &control,
     );
 
@@ -1083,6 +1070,7 @@ fn validate_layer_partition_accepts_sparse_and_rejects_invalid_records() {
         0,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        ExactSkips::ON,
         &BakeControl::unrestricted(),
     );
     assert!(original.texels.len() > 1, "fixture needs multiple texels");
@@ -1776,6 +1764,7 @@ fn malformed_partition_cache_hits_soft_miss_before_warm_fold() {
         0,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        ExactSkips::ON,
         &control,
     );
     assert!(expected.texels.len() > 1, "fixture needs multiple texels");
@@ -1819,6 +1808,7 @@ fn malformed_partition_cache_hits_soft_miss_before_warm_fold() {
                     0,
                     AREA_SAMPLES,
                     PENUMBRA_FLOOR_DEFAULT,
+                    ExactSkips::ON,
                     &control,
                 )
             });
@@ -1941,6 +1931,7 @@ fn lightmap_composite_equals_monolithic_on_fixtures() {
                     &layer_geo,
                     AREA_SAMPLES,
                     PENUMBRA_FLOOR_DEFAULT,
+                    ExactSkips::ON,
                     &BakeControl::unrestricted(),
                 )
             })
@@ -2157,6 +2148,7 @@ fn compose_section_with_format(
                     target_layer,
                     AREA_SAMPLES,
                     PENUMBRA_FLOOR_DEFAULT,
+                    ExactSkips::ON,
                     &control,
                 );
                 accumulator.fold_partition(light, &partition, shared);

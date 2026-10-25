@@ -287,6 +287,7 @@ fn stored_grid(
         prepared.placements[face].layer,
         test_args().soft_shadow_samples,
         penumbra_floor,
+        lightmap_layer::ExactSkips::ON,
         &BakeControl::unrestricted(),
     );
     let (width, height) = crate::chart_raster::chart_interior_dims(&prepared.charts[face]);

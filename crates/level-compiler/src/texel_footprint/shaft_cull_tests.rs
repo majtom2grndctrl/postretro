@@ -2,10 +2,14 @@
 // walk orderings it must survive, its margins at authored angles, and verify mode.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
+use std::f64::consts::SQRT_2;
+
 use glam::{DVec3, Vec3};
 
 use super::test_fixtures::*;
-use crate::lightmap_layer::{ChartTally, ExactSkips, LayerTexel, SHAFT_TILE_TEXELS, SkipStats};
+use crate::lightmap_layer::{
+    ChartTally, ExactSkips, LayerTexel, SHAFT_TILE_TEXELS, ShaftCull, SkipStats,
+};
 use crate::map_data::{FalloffModel, LightType, MapLight};
 
 /// Emitter samples per texel: past the nine probes, so penumbrae escalate.
@@ -90,7 +94,7 @@ fn floor_with(receiver: Receiver, add: impl FnOnce(&mut SceneBuilder)) -> Fixtur
     Fixture::new(scene, receiver)
 }
 
-/// The A7 occluder: a plate 0.3 m up over one quadrant of a centred
+/// The quadrant occluder: a plate 0.3 m up over one quadrant of a centred
 /// 32 × 32 receiver, moved by `offset`.
 fn quadrant_plate(scene: &mut SceneBuilder, offset: Vec3) {
     scene.aabb(
@@ -166,7 +170,8 @@ fn shaft_cull_clears_an_open_floor_and_matches_the_unculled_walk_beside_an_occlu
     }
 }
 
-// O1: tile B between shadowed tiles A and C along the walk's rows. One
+// Tile B between shadowed tiles A and C along the walk's rows, so the
+// remembered occluder crosses a skipped clear run on every texel row. One
 // triangle cannot shadow both and miss B's hull (a halfspace holding points
 // of A's and C's slabs holds the point of B's slab between them), so the one
 // occluder is a gate: two posts beside B's shaft joined by a lintel over the
@@ -199,9 +204,10 @@ fn shaft_cull_skips_a_clear_tile_between_two_tiles_its_occluder_shadows() {
     }
 }
 
-// O3: a range edge and a spot's cone edge cross tiles, so the walk reaches
-// a tile's first covered texel after its first texel. The hull still spans
-// the whole tile; such a tile clears and bakes the unculled bytes.
+// A tile's first covered texel is not its first texel: a range edge and a
+// spot's cone edge cross tiles, so the walk reaches that texel after the
+// tile's first. The hull still spans the whole tile; such a tile clears and
+// bakes the unculled bytes.
 #[test]
 fn shaft_cull_clears_a_tile_whose_first_covered_texel_is_not_its_first() {
     let receiver = receiver(0.0, 0.0, 0.0, 16, 16);
@@ -234,11 +240,11 @@ fn shaft_cull_clears_a_tile_whose_first_covered_texel_is_not_its_first() {
     }
 }
 
-// O4: an interior that is not a multiple of 8 on either axis, and a
-// one-texel chart. Their last tiles are narrower than 8, and the hull holds
-// exactly their texels: a post inside the pad past the last column blocks the
-// last tile column on the floored sampler, and once moved past the pad it
-// clears.
+// Narrow last tiles: an interior that is not a multiple of 8 on either axis,
+// and a one-texel chart. Their last tiles are narrower than 8, and the hull
+// holds exactly their texels: a post inside the pad past the last column
+// blocks the last tile column on the floored sampler, and once moved past the
+// pad it clears.
 #[test]
 fn shaft_cull_narrow_last_tiles_block_on_an_occluder_inside_the_pad_and_clear_past_it() {
     struct Case {
@@ -338,6 +344,46 @@ fn place(
     panic!("could not place the triangle at {ratio} of its margin");
 }
 
+/// The box `(lo, hi)` of `tile`'s hull, read through the hull's support
+/// function along the world axes.
+fn hull_box(shaft: &ShaftCull, tile: (i32, i32)) -> (DVec3, DVec3) {
+    let support = |axis: DVec3| shaft.tile_support(tile, axis);
+    (
+        DVec3::new(
+            -support(-DVec3::X),
+            -support(-DVec3::Y),
+            -support(-DVec3::Z),
+        ),
+        DVec3::new(support(DVec3::X), support(DVec3::Y), support(DVec3::Z)),
+    )
+}
+
+/// An independent `f64` recomputation of the axis margin the cull asks of
+/// `points` (index order) against a hull with box `(lo, hi)`:
+///
+/// m_A = κ·[5√2·u·ρ·(3·S_T + L + ‖e1‖ + ‖e2‖) / sin θ0 + u·(S_T + 5·e_T) + e_H]
+///
+/// with κ = 2, θ0 = 2°, u = 2⁻²⁴, e1 = b − a, e2 = c − a, ρ = ‖e1‖‖e2‖ /
+/// ‖e1 × e2‖, e_T = max(‖e1‖, ‖e2‖), L the box's diagonal, S_T = ‖a −
+/// centre‖ + L/2, and e_H the axis-weighted sum of 10u·R + 6u·L per world
+/// axis. R is taken from the box alone: the chart's own coordinate terms stay
+/// under a metre here, and e_H is under one percent of the margin.
+fn expected_axis_margin(points: [Vec3; 3], (lo, hi): (DVec3, DVec3), axis: DVec3) -> f64 {
+    let u = 2.0_f64.powi(-24);
+    let sin_floor = 2.0_f64.to_radians().sin();
+    let [a, b, c] = points.map(|p| p.as_dvec3());
+    let (e1, e2) = (b - a, c - a);
+    let (l1, l2) = (e1.length(), e2.length());
+    let rho = l1 * l2 / e1.cross(e2).length();
+    let diag = (hi - lo).length();
+    let s_t = a.distance((lo + hi) * 0.5) + 0.5 * diag;
+    let epsilon = lo.abs().max(hi.abs()) * (10.0 * u) + DVec3::splat(6.0 * u * diag);
+    let e_h = axis.abs().dot(epsilon);
+    2.0 * (5.0 * SQRT_2 * u * rho * (3.0 * s_t + diag + l1 + l2) / sin_floor
+        + u * (s_t + 5.0 * l1.max(l2))
+        + e_h)
+}
+
 /// Floor bakes of a margin fixture: the occluder triangle beside tile B.
 fn margin_fixture(occluder: [Vec3; 3]) -> Fixture {
     floor_with(margin_receiver(), |scene| {
@@ -348,7 +394,7 @@ fn margin_fixture(occluder: [Vec3; 3]) -> Fixture {
     })
 }
 
-// O5: a triangle on the plane tangent to tile B's hull on the side facing A,
+// A triangle on the plane tangent to tile B's hull on the side facing A,
 // between A and most of the emitter, so it shadows A, whose rays meet nothing
 // else, and is A's remembered occluder when the walk reaches B. Outside B's
 // hull by 0.95 of its normal margin it keeps B blocked; by 1.05 it clears B.
@@ -403,11 +449,12 @@ fn shaft_cull_blocks_a_triangle_inside_its_margin_and_clears_one_outside_it() {
     }
 }
 
-// §Margin scale near the origin: a wall the tile's rays meet at about 10°,
+// Margins near the origin: a wall the tile's rays meet at about 10°,
 // and a trim triangle whose narrowest angle (at its first corner) is 5°, each
 // with an edge along the chart's u axis, crossing B's shaft only if extended,
 // separated from B's hull along the v axis by 1.05 of that axis's margin.
-// Tile B clears.
+// Tile B clears, and each margin is within a quarter of an independent
+// recomputation from the triangle and the hull's box.
 #[test]
 fn shaft_cull_clears_beside_a_grazing_wall_and_a_narrow_trim_just_past_their_margins() {
     let light = default_point([0.48, 2.0, 0.16]);
@@ -416,41 +463,35 @@ fn shaft_cull_clears_beside_a_grazing_wall_and_a_narrow_trim_just_past_their_mar
     // Up the wall's plane, away from the shaft: 10° off the vertical rays.
     let rise = DVec3::new(0.0, cos, sin);
     type Shape = fn(DVec3, DVec3) -> [DVec3; 3];
-    let shapes: [(&str, Shape, (f64, f64)); 2] = [
-        (
-            "10° wall",
-            |a, rise| {
-                let b = a + DVec3::X * 3.0;
-                [a, b, (a + b) * 0.5 + rise * 1.5]
-            },
-            (1.0e-4, 5.0e-3),
-        ),
-        (
-            "5° trim",
-            |a, rise| {
-                let (sin, cos) = 5.0_f64.to_radians().sin_cos();
-                [
-                    a,
-                    a + DVec3::X * 3.0,
-                    a + (DVec3::X * cos + rise * sin) * 3.0,
-                ]
-            },
-            (1.0e-3, 5.0e-2),
-        ),
+    let shapes: [(&str, Shape); 2] = [
+        ("10° wall", |a, rise| {
+            let b = a + DVec3::X * 3.0;
+            [a, b, (a + b) * 0.5 + rise * 1.5]
+        }),
+        ("5° trim", |a, rise| {
+            let (sin, cos) = 5.0_f64.to_radians().sin_cos();
+            [
+                a,
+                a + DVec3::X * 3.0,
+                a + (DVec3::X * cos + rise * sin) * 3.0,
+            ]
+        }),
     ];
     for floor in [true, false] {
         let scene = bare.shaft_scene();
         let shaft = bare.shaft_cull(&light, floor, &scene);
         let reach = shaft.tile_support(TILE_B, DVec3::Z);
-        for (label, shape, expected_margin) in shapes {
+        let hull = hull_box(&shaft, TILE_B);
+        for (label, shape) in shapes {
             let at = |gap: f64| {
                 let a = DVec3::new(0.48 - 1.5, 2.0, reach + gap);
                 shape(a, rise).map(|p| p.as_vec3())
             };
             let (occluder, (gap, margin)) = place(&bare, &light, floor, 1.05, Some(DVec3::Z), at);
+            let expected = expected_axis_margin(occluder, hull, DVec3::Z);
             assert!(
-                (expected_margin.0..expected_margin.1).contains(&margin),
-                "{label}: margin {margin}"
+                (0.75..=1.25).contains(&(margin / expected)),
+                "{label}, floor {floor}: margin {margin}, recomputed {expected}"
             );
             // Its own plane crosses the hull: only the off-normal axis
             // separates it.
@@ -538,7 +579,7 @@ fn shaft_cull_tests_no_tile_for_a_sun() {
     }
 }
 
-// O2: a spot covering part of the open floor. Each tile with a covered
+// A spot covering part of the open floor. Each tile with a covered
 // texel is tested once, on its first, and a tile with none never is; a clear
 // tile's texels trace no shadow segment. With the clip pre-pass off, the
 // unculled walk traces clip segments and lead-ins at those texels, and the
@@ -625,4 +666,21 @@ fn shaft_cull_verify_mode_traces_every_covered_texel_of_each_clear_tile() {
     light.falloff_model = FalloffModel::InverseSquared;
     let stats = culled_matches_unculled(&fixture, &light, true, "verify");
     assert_eq!(stats.verified_texels(), 32 * 32, "every texel verified");
+}
+
+// Negative control for the oracle above: verify mode must fail a bake that
+// skips a tile the geometry shadows. Forcing every tested tile clear under the
+// quadrant plate's shadow (the `force_clear` test seam) has to trip it.
+#[test]
+#[should_panic(expected = "shaft cull:")]
+fn shaft_cull_verify_mode_fails_a_shadowed_tile_forced_clear() {
+    let fixture = floor_with(Receiver::centred(32, 32), |scene| {
+        quadrant_plate(scene, Vec3::ZERO)
+    });
+    let light = default_point([0.0, 2.0, 0.0]);
+    let forced = ExactSkips {
+        force_clear: true,
+        ..ExactSkips::ON
+    };
+    fixture.bake_texels(&light, SAMPLES, true, forced);
 }

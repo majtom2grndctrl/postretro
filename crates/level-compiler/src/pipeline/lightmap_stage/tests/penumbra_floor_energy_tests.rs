@@ -25,7 +25,7 @@ use crate::chart_raster::{CHART_PADDING_TEXELS, chart_grid};
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::lightmap_bake::light_contribution_and_direction;
 use crate::lightmap_layer::{
-    IncrementalLayerAccumulator, LightmapLayer, SharedAtlas, bake_light_layer,
+    ExactSkips, IncrementalLayerAccumulator, LightmapLayer, SharedAtlas, bake_light_layer,
     bake_light_layer_full_sets, for_each_light_layer_chart_texel,
 };
 use crate::map_data::{MapLight, ShadowType};
@@ -543,6 +543,7 @@ fn penumbra_floor_energy_on_a_real_map() {
                 geo,
                 args.soft_shadow_samples,
                 floor,
+                ExactSkips::ON,
                 &control,
             )
         };
@@ -550,7 +551,7 @@ fn penumbra_floor_energy_on_a_real_map() {
         let on = bake(true);
         let elapsed = started.elapsed();
         // Floored with every texel's full set traced: the floor's own
-        // reference, which no probe early-out can bias.
+        // reference, which no probe early-out or exact skip can bias.
         let full = bake_light_layer_full_sets(
             light,
             &shared,

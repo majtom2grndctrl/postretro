@@ -3,22 +3,26 @@
 // See: context/lib/build_pipeline.md (Lightmap id 22)
 
 use glam::Vec3;
+#[cfg(test)]
 use rayon::prelude::*;
 
 use crate::affinity_grid::{AABB_PADDING_METERS, light_aabb};
+#[cfg(test)]
 use crate::bake_control::BakeControl;
+#[cfg(test)]
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 #[cfg(test)]
-use crate::lightmap_bake::light_texel_contribution_and_visibility_with;
-#[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
-use crate::lightmap_bake::{BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction};
+use crate::lightmap_bake::{
+    BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction,
+    light_texel_contribution_and_visibility_with,
+};
 use crate::map_data::{LightType, MapLight};
-use crate::texel_footprint::{ProbeEarlyOut, has_embedded_emitter};
+use crate::texel_footprint::TexelSite;
 #[cfg(test)]
-use crate::texel_footprint::{TexelSampler, TexelSite};
+use crate::texel_footprint::{ProbeEarlyOut, has_embedded_emitter};
 use glam::DVec3;
 
 mod cache_keys;
@@ -34,6 +38,7 @@ pub use cache_keys::{
     validate_layer_partition,
 };
 pub(crate) use chart_cull::{ExactSkips, chart_may_cover};
+#[cfg(test)]
 use chart_walk::bake_light_layer_chart_clipped;
 pub(crate) use chart_walk::{bake_light_layer_chart_controlled, for_each_light_layer_chart_texel};
 #[cfg(test)]
@@ -121,28 +126,22 @@ pub struct LayerTexel {
     pub raw_visibility: f32,
 }
 
-fn sparse_layer_texel(idx: u32, raw_visibility: Option<f32>) -> Option<LayerTexel> {
-    raw_visibility.map(|raw_visibility| LayerTexel {
-        idx,
-        raw_visibility,
-    })
-}
-
-#[cfg(test)]
+/// One texel's sparse record: `visibility` runs only where `light` has a
+/// direct term at `site`, and its raw value is the record. The chart walk
+/// records every texel through here, so the sparse-writer tests pin the
+/// production step.
 fn bake_sparse_layer_texel(
     idx: u32,
     light: &MapLight,
     site: &TexelSite,
-    sampler: &TexelSampler,
-    trace: impl Fn(Vec3, Vec3) -> bool,
-    reach: impl Fn(Vec3, Vec3) -> bool,
-    lead_in: impl Fn(Vec3, Vec3) -> bool,
+    visibility: impl FnOnce() -> f32,
 ) -> Option<LayerTexel> {
     let (_, _, raw_visibility) =
-        light_texel_contribution_and_visibility_with(light, site.world_p, site.normal, || {
-            sampler.visibility(light, site, trace, reach, lead_in)
-        });
-    sparse_layer_texel(idx, raw_visibility)
+        light_texel_contribution_and_visibility_with(light, site.world_p, site.normal, visibility);
+    raw_visibility.map(|raw_visibility| LayerTexel {
+        idx,
+        raw_visibility,
+    })
 }
 
 pub(crate) fn reconstruct_light_texel(
@@ -451,6 +450,12 @@ pub(crate) fn chart_texel_bounds(chart: &Chart) -> Option<(Vec3, Vec3)> {
 /// Every falloff model is zero beyond `falloff_range`, so a point or spot
 /// light reaches no texel farther than that; a directional light reaches all.
 /// A chart with no texels is never reached.
+///
+/// It stays range-only on purpose. The layer key's footprint padding reads
+/// it, so a tighter test would move cache keys; the texel-step detector and
+/// the shadowmask cut-face estimate read it too, and tightening them saves
+/// nothing, so neither output moves. The static bake's partition planning
+/// adds [`chart_may_cover`] on top of it.
 pub(crate) fn light_may_reach(light: &MapLight, bounds: Option<(Vec3, Vec3)>) -> bool {
     let Some((min, max)) = bounds else {
         return false;
@@ -465,7 +470,8 @@ pub(crate) fn light_may_reach(light: &MapLight, bounds: Option<(Vec3, Vec3)>) ->
     }
 }
 
-/// Bake one light's contribution layer across the shared atlas.
+/// Bake one light's contribution layer across the shared atlas, walking every
+/// chart of each layer with `exact_skips`.
 ///
 /// Mirrors `bake_face_chart`'s per-texel structure exactly but for a single
 /// light: same chart interior walk, same `chart_texel_seed`, same Lambert +
@@ -477,8 +483,14 @@ pub(crate) fn light_may_reach(light: &MapLight, bounds: Option<(Vec3, Vec3)>) ->
 /// The sparse set is the subset of chart interiors reached by this light before
 /// visibility. The compositor derives atlas coverage and fallback normals from
 /// the shared chart walk rather than from each light's records.
+///
+/// Test-only: prl-build bakes through the partition window
+/// (`lightmap_stage::partitions`). This face walk plans no charts, so the
+/// chart coverage cull never applies to it whatever `exact_skips` says; the
+/// shaft cull follows `exact_skips.shaft_cull`.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub fn bake_light_layer(
+pub(crate) fn bake_light_layer(
     light: &MapLight,
     atlas: &SharedAtlas<'_>,
     bvh: &bvh::bvh::Bvh<f32, 3>,
@@ -486,6 +498,7 @@ pub fn bake_light_layer(
     geometry: &GeometryResult,
     area_sample_count: u32,
     penumbra_floor: bool,
+    exact_skips: ExactSkips,
     control: &BakeControl,
 ) -> Vec<LightmapLayer> {
     // Once for the light, before any layer, as the production stage tests it.
@@ -502,6 +515,7 @@ pub fn bake_light_layer(
                 area_sample_count,
                 penumbra_floor,
                 ProbeEarlyOut::for_light(embedded_emitter),
+                exact_skips,
                 control,
             )
         })
@@ -510,6 +524,7 @@ pub fn bake_light_layer(
 
 /// The light's embedded-emitter flag as the production stage tests it: only
 /// with the floor on, which alone reads it.
+#[cfg(test)]
 fn embedded_emitter_flag(
     light: &MapLight,
     bvh: &bvh::bvh::Bvh<f32, 3>,
@@ -520,13 +535,17 @@ fn embedded_emitter_flag(
     penumbra_floor && has_embedded_emitter(light, bvh, primitives, geometry)
 }
 
-/// Bake one light's cacheable contribution for exactly one atlas array layer.
+/// Bake one light's cacheable contribution for exactly one atlas array layer,
+/// walking every chart on it with `exact_skips` ([`bake_light_layer`]'s face
+/// walk). With [`ExactSkips::OFF`] it is free of both exact skips: the
+/// reference a skipped bake is held against.
 ///
 /// `target_layer` is deliberately part of both the returned partition's
 /// containment and its cache key. A partition never carries texels from a
 /// neighbouring atlas layer.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub fn bake_light_layer_controlled(
+pub(crate) fn bake_light_layer_controlled(
     light: &MapLight,
     atlas: &SharedAtlas<'_>,
     bvh: &bvh::bvh::Bvh<f32, 3>,
@@ -535,6 +554,7 @@ pub fn bake_light_layer_controlled(
     target_layer: u32,
     area_sample_count: u32,
     penumbra_floor: bool,
+    exact_skips: ExactSkips,
     control: &BakeControl,
 ) -> LightmapLayer {
     // One light and one layer, so the light's emitter test runs here; the
@@ -551,12 +571,14 @@ pub fn bake_light_layer_controlled(
         area_sample_count,
         penumbra_floor,
         ProbeEarlyOut::for_light(embedded_emitter),
+        exact_skips,
         control,
     )
 }
 
 /// [`bake_light_layer_controlled`] with the light's footprint early-out
 /// already chosen from its emitter flag ([`embedded_emitter_flag`]).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn bake_light_layer_on(
     light: &MapLight,
@@ -568,6 +590,7 @@ fn bake_light_layer_on(
     area_sample_count: u32,
     penumbra_floor: bool,
     early_out: ProbeEarlyOut,
+    exact_skips: ExactSkips,
     control: &BakeControl,
 ) -> LightmapLayer {
     let face_indices: Vec<usize> = atlas
@@ -587,13 +610,15 @@ fn bake_light_layer_on(
         area_sample_count,
         penumbra_floor,
         early_out,
+        exact_skips,
         control,
     )
 }
 
 /// [`bake_light_layer`] floored with the probe early-out off
-/// ([`ProbeEarlyOut::Off`]): the full-set reference a measurement holds the
-/// floored bake against.
+/// ([`ProbeEarlyOut::Off`]) and both exact skips off ([`ExactSkips::OFF`]):
+/// the full-set reference a measurement holds the floored bake against, which
+/// neither an early-out nor a skip can bias.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_light_layer_full_sets(
@@ -617,12 +642,14 @@ pub(crate) fn bake_light_layer_full_sets(
                 area_sample_count,
                 true,
                 ProbeEarlyOut::Off,
+                ExactSkips::OFF,
                 control,
             )
         })
         .collect()
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn bake_light_layer_for_faces(
     light: &MapLight,
@@ -635,10 +662,13 @@ fn bake_light_layer_for_faces(
     area_sample_count: u32,
     penumbra_floor: bool,
     early_out: ProbeEarlyOut,
+    exact_skips: ExactSkips,
     control: &BakeControl,
 ) -> LightmapLayer {
     let layer_count = atlas_layer_count(atlas);
-    let shaft_scene = ShaftScene::new(primitives, geometry);
+    // One scene per call, built by the first chart walk that takes a shaft
+    // test, inside its permit, as the stage's partitions build theirs.
+    let shaft_scene = std::sync::OnceLock::new();
     // `par_iter().map().collect()` is indexed: the outer collection retains
     // planner order even while ray work runs concurrently. Flattening those
     // per-chart buffers therefore preserves the cache payload's established
@@ -657,7 +687,7 @@ fn bake_light_layer_for_faces(
                 penumbra_floor,
                 early_out,
                 true,
-                ExactSkips::ON,
+                exact_skips,
                 &shaft_scene,
                 control,
             )

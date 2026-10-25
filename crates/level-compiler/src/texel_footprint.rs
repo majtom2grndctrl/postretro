@@ -69,6 +69,10 @@ const COUNTER_RING_SAMPLES: usize = RING_SAMPLES;
 /// either point is then entered inside the test, whichever side of it
 /// rounding puts the point. Far above `f32` rounding at map scale, far below
 /// a texel.
+///
+/// Keep in step with `lightmap_layer::shaft_cull`, whose `SLAB_FLOOR`,
+/// `SLAB_CEILING`, `PAD_SLACK` and `EMITTER_CLEARANCE` assume lead-ins reach
+/// `RAY_EPSILON + LEAD_IN_OVERLAP`; re-check them on any change here.
 const LEAD_IN_OVERLAP: f32 = 0.25 * RAY_EPSILON;
 
 /// One light's footprint sample set at one sample count: an offset in texels
@@ -470,6 +474,14 @@ fn footprint_rotation(seed: u64) -> (f32, f32) {
 /// needs no lead-in. The centre's ray stays the texel's own, traced as the
 /// floor-off bake traces it.
 ///
+/// Keep in step with `lightmap_layer::shaft_cull`, which proves every segment
+/// built here lies inside its hull from this geometry: origins lifted one
+/// `RAY_EPSILON`, clip segments starting one `RAY_EPSILON` behind the centre,
+/// lead-ins reaching `RAY_EPSILON + LEAD_IN_OVERLAP` along the ray, and
+/// offsets within the frame's footprint radius. A change to any segment
+/// origin, target, clip or lead-in must re-check the cull's `SLAB_FLOOR`,
+/// `SLAB_CEILING`, `PAD_SLACK`, `EMITTER_CLEARANCE` and `RADIUS_SLACK`.
+///
 /// The nine probes are traced first. When none is clipped and they agree as
 /// `early_out` asks, the texel is exactly 0 or 1: all blocked or all clear
 /// for an ordinary light, all blocked only for one whose emitter reaches into
@@ -583,7 +595,9 @@ mod clip_reach;
 mod embedded_emitter;
 mod pairing;
 pub(crate) use clip_reach::{ClipBand, ClipReach, lead_in_clear};
-pub(crate) use embedded_emitter::{EmbeddedEmitters, has_embedded_emitter};
+pub(crate) use embedded_emitter::EmbeddedEmitters;
+#[cfg(test)]
+pub(crate) use embedded_emitter::has_embedded_emitter;
 #[cfg(test)]
 pub(crate) use embedded_emitter::{NO_EMBEDDED_EMITTERS, embedded_emitter_fraction};
 use pairing::EmitterPairing;

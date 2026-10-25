@@ -331,7 +331,7 @@ impl Fixture {
                 floor,
                 embedded,
                 skips,
-                &self.shaft_scene(),
+                &OnceLock::new(),
                 &BakeControl::unrestricted(),
             )
         })
@@ -357,7 +357,7 @@ impl Fixture {
                 area_sample_count,
                 embedded,
                 skips,
-                &self.shaft_scene(),
+                &OnceLock::new(),
                 &BakeControl::unrestricted(),
             )
         })

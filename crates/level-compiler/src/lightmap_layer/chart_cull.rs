@@ -16,7 +16,8 @@ use super::skip_stats::SkipStats;
 /// Which exact skips the light-layer bake takes. A skip drops only work whose
 /// answer is already known, so output bytes are the same with it on or off.
 /// Production takes every skip; tests turn them off, through the partition
-/// window or the chart walk's argument, to check the skipped bake against the
+/// window, the chart walk's argument or the test-only face walk's
+/// (`bake_light_layer_controlled`), to check the skipped bake against the
 /// full one. No flag, env var or cache key holds this.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ExactSkips {
@@ -31,6 +32,11 @@ pub(crate) struct ExactSkips {
     /// every walk a test runs checks the cull.
     #[cfg(test)]
     pub verify: bool,
+    /// Every tested tile counts as clear, whatever the shaft test says: the
+    /// negative control that verify mode fails a skip the geometry does not
+    /// allow.
+    #[cfg(test)]
+    pub force_clear: bool,
     /// Where the walk and planning tally what they skipped.
     #[cfg(test)]
     pub stats: Option<&'static SkipStats>,
@@ -43,6 +49,8 @@ impl ExactSkips {
         #[cfg(test)]
         verify: true,
         #[cfg(test)]
+        force_clear: false,
+        #[cfg(test)]
         stats: None,
     };
     #[cfg(test)]
@@ -50,6 +58,7 @@ impl ExactSkips {
         chart_cull: false,
         shaft_cull: false,
         verify: false,
+        force_clear: false,
         stats: None,
     };
 

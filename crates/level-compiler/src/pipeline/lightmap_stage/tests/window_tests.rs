@@ -1,7 +1,8 @@
 //! Lightmap partition-window behavior: fold order, throttle and pause, cache I/O
 //! outside permits, the consumer's permit, paused cache hits, the resident
-//! bound, chart-cull byte identity with the exact skips on and off, and a
-//! memo-hit rebuild followed by a one-light edit.
+//! bound, chart-cull byte identity with the exact skips on and off, a warm
+//! rebuild over a plan the chart cull emptied, and a memo-hit rebuild followed
+//! by a one-light edit.
 //! Governing context: `context/lib/build_pipeline.md` §Build Cache and §Progress reporting, controls, and logging.
 
 use super::*;
@@ -400,15 +401,18 @@ struct CullBake {
 }
 
 /// Bake `lights` through the window with `exact_skips`, and assert progress
-/// completes at its published total.
+/// completes at its published total. `uncompressed_irradiance` keys the
+/// lightmap section memo but no partition, so a second bake under the other
+/// setting misses the memo and reads every cached partition.
 fn cull_bake(
     build: fn() -> GeometryResult,
     lights: &[MapLight],
     cache: Option<&StageCache>,
     exact_skips: lightmap_layer::ExactSkips,
+    uncompressed_irradiance: bool,
 ) -> CullBake {
     let args = test_args();
-    let config = config(false);
+    let config = config(uncompressed_irradiance);
     let baked = Arc::new(Mutex::new(Vec::new()));
     let mut window = sized(2);
     window.exact_skips = exact_skips;
@@ -470,7 +474,8 @@ fn cull_bake(
 /// Bake `lights` through the window with every exact skip on and a cache,
 /// then assert: progress completes at its published total, the lightmap and
 /// shadowmask bytes equal an uncached bake with the skips off, and every
-/// cached partition equals the unculled per-light, per-layer bake.
+/// cached partition equals the per-light, per-layer face walk with both
+/// exact skips off, which no cull reaches.
 fn cull_bake_matches_unculled(
     build: fn() -> GeometryResult,
     lights: &[MapLight],
@@ -480,8 +485,14 @@ fn cull_bake_matches_unculled(
     let config = config(false);
     let dir = fresh_cache_dir(label);
     let cache = StageCache::new(&dir).expect("cull cache");
-    let culled = cull_bake(build, lights, Some(&cache), lightmap_layer::ExactSkips::ON);
-    let unculled = cull_bake(build, lights, None, lightmap_layer::ExactSkips::OFF);
+    let culled = cull_bake(
+        build,
+        lights,
+        Some(&cache),
+        lightmap_layer::ExactSkips::ON,
+        false,
+    );
+    let unculled = cull_bake(build, lights, None, lightmap_layer::ExactSkips::OFF, false);
     assert!(
         culled.lightmap == unculled.lightmap,
         "{label}: lightmap bytes differ with the exact skips off"
@@ -491,7 +502,8 @@ fn cull_bake_matches_unculled(
         "{label}: shadowmask bytes differ with the exact skips off"
     );
 
-    // Each cached partition equals an unculled bake of that light and layer.
+    // Each cached partition equals a bake of that light and layer with both
+    // exact skips off.
     let mut geometry = build();
     let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
     let static_lights = StaticBakedLights::from_lights(lights);
@@ -531,6 +543,7 @@ fn cull_bake_matches_unculled(
                 layer,
                 args.soft_shadow_samples,
                 PENUMBRA_FLOOR_DEFAULT,
+                lightmap_layer::ExactSkips::OFF,
                 &BakeControl::unrestricted(),
             );
             lit_texels[index] += unculled.texels.len();
@@ -657,6 +670,78 @@ fn chart_cull_drops_a_light_behind_the_plane_and_keeps_one_just_in_front() {
     assert_eq!(run.lit_texels[0], 0);
     assert!(run.lit_texels[1] > 0, "the light in front lights the chart");
     assert_eq!(run.lit_texels[2], 0);
+}
+
+// The warm side of an emptied plan. Range and the chart cull together drop
+// every chart of the light behind the plane, yet the bake that fills the
+// cache stores its empty partition, and a warm rebuild loads it like any
+// other: no chart is walked, progress completes at its published total
+// (`cull_bake`), and the bytes equal an uncached cold bake's.
+#[test]
+fn chart_cull_emptied_plan_loads_from_the_cache_on_a_warm_rebuild() {
+    let at = |y: f64| point_light(DVec3::new(6.0, y, 6.0), [1.0, 0.6, 0.3]);
+    let lights = vec![at(-0.01), at(0.01)];
+    let charts = fixture_charts(cull_quads);
+    let bounds = lightmap_layer::chart_texel_bounds(&charts[0]);
+    assert!(
+        lightmap_layer::light_may_reach(&lights[0], bounds),
+        "range keeps the light behind the plane on chart 0; the chart cull drops it"
+    );
+    let cold = cull_bake(
+        cull_quads,
+        &lights,
+        None,
+        lightmap_layer::ExactSkips::ON,
+        false,
+    );
+
+    let dir = fresh_cache_dir("chart_cull_emptied_plan_warm");
+    let cache = StageCache::new(&dir).expect("emptied plan cache");
+    // Fill the partitions under the other irradiance encoding, so the warm
+    // bake below misses the section memo and reads every partition.
+    let fill = cull_bake(
+        cull_quads,
+        &lights,
+        Some(&cache),
+        lightmap_layer::ExactSkips::ON,
+        true,
+    );
+    assert!(
+        fill.baked.iter().all(|&(light, _, _)| light != 0),
+        "the light behind the plane walks no chart: {:?}",
+        fill.baked
+    );
+    cache.clear_test_accesses();
+
+    let warm = cull_bake(
+        cull_quads,
+        &lights,
+        Some(&cache),
+        lightmap_layer::ExactSkips::ON,
+        false,
+    );
+    let layers = cache.test_access("lightmap_layer");
+    assert_eq!(
+        layers.read_hits,
+        lights.len(),
+        "each light's one partition loads, the empty one too"
+    );
+    assert_eq!(layers.writes, 0, "no partition re-bakes");
+    assert!(
+        warm.baked.is_empty(),
+        "a warm rebuild walks no chart: {:?}",
+        warm.baked
+    );
+    assert!(
+        warm.lightmap == cold.lightmap,
+        "warm lightmap bytes differ from the cold bake"
+    );
+    assert!(
+        warm.shadowmask == cold.shadowmask,
+        "warm shadowmask bytes differ from the cold bake"
+    );
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // The chart normal comes from a vertex normal, here leaning off the face, so

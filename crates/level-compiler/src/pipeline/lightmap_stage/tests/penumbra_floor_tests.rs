@@ -206,6 +206,7 @@ impl Prepared {
             self.atlas.placements[face].layer,
             test_args().soft_shadow_samples,
             penumbra_floor,
+            lightmap_layer::ExactSkips::ON,
             &BakeControl::unrestricted(),
         )
         .texels

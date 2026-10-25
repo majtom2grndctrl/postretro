@@ -98,7 +98,8 @@ impl SettleSummary {
     /// The entry's one `[Settling]` line. `reveal_misses` is the lightmap
     /// blocks the reveal frame drew while not installed, `None` when the
     /// lightmap does not stream. On a settled entry every settle-set block
-    /// was installed, so these lie outside the settle set; a timed-out
+    /// was installed, so when the reveal pose is the settled pose these lie
+    /// outside the settle set; a timed-out
     /// entry's count also holds settle-set blocks still missing.
     pub(crate) fn line(&self, reveal_misses: Option<u32>) -> String {
         let log = &self.log;

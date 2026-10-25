@@ -1701,7 +1701,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         rebuild_blocked_portals(&mut app.blocked_portals, app.level.as_ref(), &registry);
     }
 
-    // Portal DFS → cell IDs → renderer inputs. This stays after
+    // Portal walk → cell IDs → renderer inputs. This stays after
     // game and audio work; the shared preparation seam also feeds
     // VM-free capture without changing frame order.
     let visible_render = match app.level.as_ref() {

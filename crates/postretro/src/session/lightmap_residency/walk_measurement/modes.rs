@@ -55,8 +55,10 @@ pub(super) enum ReadsMode {
     /// a grown-out generation per drain call.
     RealTime,
     /// Deterministic (O17, O29): before each of the frame's drains every read
-    /// in flight completes, so frame N's reads land in frame N's second
-    /// drain. Misses are counted once, after the last drain, and the pool
+    /// in flight completes, so reads issued in drain 0 land in drain 1. Reads
+    /// held back by the 32-permit cap or the in-hand byte cap are issued in
+    /// drain 1 and land next frame, or are dropped if the block has left
+    /// demand. Misses are counted once, after the last drain, and the pool
     /// mirror retires a grown-out generation per frame.
     CompletedReads,
 }

@@ -20,10 +20,10 @@ use postretro_stage_timing::{StageFrame, TimingGate};
 
 #[cfg(test)]
 pub(crate) use frustum::is_aabb_outside_frustum;
-pub use frustum::{Frustum, FrustumPlane, extract_frustum_planes};
 pub(crate) use frustum::{
-    NEAR_PLANE_INDEX, frustum_plane_array, is_aabb_outside_planes, slide_plane_to,
+    FAR_PLANE_INDEX, NEAR_PLANE_INDEX, frustum_plane_array, is_aabb_outside_planes, slide_plane_to,
 };
+pub use frustum::{Frustum, FrustumPlane, extract_frustum_planes};
 
 /// Result of per-frame visibility determination for the GPU-driven indirect
 /// draw path. The portal walk determines the visible cell set; the BVH
@@ -79,8 +79,11 @@ pub struct VisibilityStats {
 #[derive(Debug, Clone, Copy)]
 pub enum VisibilityPath {
     /// Primary PRL rendering path using the per-frame bounded-region portal
-    /// walk. Every region the walk clips to lies inside the camera frustum,
-    /// so no separate AABB cull runs on this path. The set is a conservative
+    /// walk. Every region the walk clips to lies inside the camera frustum
+    /// with its near plane slid to the eye and its side planes pushed out by
+    /// the walk's clip pad (half a snap step), so no separate AABB cull runs
+    /// on this path; a cell lying wholly in that sliver beside a screen edge
+    /// draws nothing on screen. The set is a conservative
     /// superset of the cells a point camera can see through the portals
     /// (`rendering_pipeline.md` §2); never read a cell in it as proof of line
     /// of sight.
@@ -108,9 +111,10 @@ pub enum VisibilityPath {
     /// frustum; `fog_reachable` uses a wider predicate (see
     /// `fog_reachable_frustum_fallback`) that holds every cell the walk could
     /// reach. The drawing set is a superset of the walk's too, except for
-    /// cells lying entirely in the near slab or beside the eye, which the
-    /// walk may keep but the unslid drawing cull drops — harmless, since the
-    /// camera frustum clips their geometry regardless. Unlike the other
+    /// cells lying entirely in the near slab, beside the eye, or in the clip
+    /// pad's sliver just outside a screen edge, which the walk may keep but
+    /// the plain camera cull drops — harmless, since the camera frustum
+    /// clips their geometry regardless. Unlike the other
     /// fallbacks, this path never hands consumers the empty "no portal
     /// isolation" sentinel.
     PortalStepLimitFallback { considered: u32, accepted: u32 },
@@ -254,6 +258,9 @@ fn determine_visible_cell_set(
         world,
         blocked_portals,
     };
+    // Build the portal planes once, outside the walk's timer, so the first
+    // frame's walk time does not carry the one-time build.
+    world.portal_planes();
     let walk_start = cpu.gate().is_enabled().then(std::time::Instant::now);
     let stats = region_walk::walk_from_camera_traced(
         input,
@@ -286,15 +293,11 @@ fn determine_visible_cell_set(
         // of them fall back to "every cell" on exactly the frames the walk
         // was already too expensive. The partial walk is discarded.
         visible_cells_frustum_all(&world.cells, &frustum, cells);
-        // Fog reach starts from the walk's own frustum, near plane slid to
-        // the eye. Slide `frustum` in place and restore it after, rather than
-        // cloning a `Frustum` every step-limit frame.
-        let mut frustum = frustum;
-        let original_near = frustum.planes[NEAR_PLANE_INDEX];
-        frustum.slide_near_plane_to(camera_position);
+        // Fog reach tests against the walk's own outermost clip region,
+        // built in the scratch's plane buffer.
+        let clip_planes = region_walk::screen_clip_planes(&view, scratch);
         let fog_reachable =
-            fog_reachable_frustum_fallback(&world.cells, &frustum, camera_position, camera_cell);
-        frustum.planes[NEAR_PLANE_INDEX] = original_near;
+            fog_reachable_frustum_fallback(&world.cells, clip_planes, camera_position, camera_cell);
         let path = CellVisPath::PortalStepLimit {
             considered: stats.considered,
             accepted: stats.accepted,

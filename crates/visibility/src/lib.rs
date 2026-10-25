@@ -11,12 +11,12 @@ mod visibility;
 /// set) hash it into their cache keys, so a walk change re-bakes them instead
 /// of serving sets from the old walk. Bump it whenever a change can alter any
 /// pose's visible set: traversal rule, region snapping, clipping, epsilons,
-/// the step cap or the fallback set. A pure speedup with identical output
-/// keeps it. Epoch 2 is the bounded-region walk.
-pub const PORTAL_WALK_EPOCH: u32 = 2;
+/// the step cap, the fallback set, or portal-plane orientation (built in
+/// `postretro-level-loader`'s `portal_planes`, which the facing rule reads).
+/// A pure speedup with identical output keeps it.
+pub const PORTAL_WALK_EPOCH: u32 = 3;
 
 pub use cpu_stages::VisibilityStage;
-pub use portal_vis::narrow_frustum;
 pub use postretro_stage_timing::TimingGate;
 pub use region_walk::{
     PortalTraversal, PortalWalkScratch, SeededWalk, portal_traverse, portal_walk_seeded,

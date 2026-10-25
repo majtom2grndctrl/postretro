@@ -18,6 +18,8 @@
 //! not a standing player's eye: 10–90% of the AABB on every axis, ceiling
 //! bands included. A cell with no accepted eye point keeps the set {cell}
 //! alone.
+//!
+//! See: context/lib/rendering_pipeline.md §2
 
 use glam::Vec3;
 use postretro_level_loader::LevelWorld;
@@ -296,6 +298,11 @@ fn walk_cube_faces(
                 stats.step_limit_walks += 1;
                 // The capped walk's partial reach, not the runtime's frustum
                 // fallback: it holds only cells the uncapped walk reaches.
+                // Re-walked with the same inputs as the call above (eye,
+                // view_proj, no blocked portals, same cap; `cell` is the
+                // located cell, since eye points are accepted only where the
+                // locator agrees), so this capped reach is a prefix of that
+                // same walk.
                 let walk = portal_traverse(eye, view_proj, cell as usize, world, scratch);
                 for &reached in walk.reached {
                     if world.cells[reached as usize].is_drawable {

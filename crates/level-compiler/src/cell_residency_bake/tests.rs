@@ -254,8 +254,9 @@ const PRE_REGION_WALK_CACHE_KEY: &str =
     "f20c4934693e2d31d8faeeb4d9e763087579899a051266a996669a038fdc6c16";
 
 #[test]
-fn cache_key_pins_the_walk_epoch_and_sampling_projection() {
-    // The walk epoch alone moves the key: projection and stage version hold.
+fn cache_key_differs_from_pre_region_walk_key_and_pins_sampling_projection() {
+    // The region walk's epoch moves the key; the sampling projection and stage
+    // version keep their pre-change values.
     let (cells, portals, locator) = l_corridor_sections();
     let key = cell_residency_set_cache_key(&cells, &portals, &locator, &Default::default(), None)
         .as_filename();

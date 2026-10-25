@@ -17,13 +17,15 @@
 //   sleeps to its 16.7 ms deadline, so misses race disk reads. The pool
 //   mirror retires a grown-out generation per drain call.
 // - `completed`: the residency gate's mode (O17, O29). Every read in flight
-//   completes before each of the frame's two drains, so frame N's reads land
-//   in its second drain; no wall clock is involved. Misses are counted once
-//   per drawn block, after the last drain, and retirement advances once per
-//   frame.
+//   completes before each of the frame's two drains, so the reads issued in
+//   drain 0 land in drain 1; no wall clock is involved. Reads held back by
+//   the 32-permit cap or the in-hand byte cap are issued in drain 1 instead,
+//   and land next frame, or are dropped if their block has left demand.
+//   Misses are counted once per drawn block, after the last drain, and
+//   retirement advances once per frame.
 //
-// After the last drain each drawn, non-resident block counts as deferred
-// behind a retiring generation when the frame's latest drain carrying it
+// After the last drain a drawn, non-resident block counts as deferred behind
+// a retiring generation when the frame's latest drain that carried it
 // deferred it, and as left behind by admission otherwise, undemanded
 // included. The mirror's pool has no device limit, so every deferral is
 // behind a retiring generation (O18).
@@ -50,7 +52,10 @@
 // modes and `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_IN=<file>`. The rect run
 // splits its frames by the recorded trips (O28, O38) and prints both builds'
 // totals in and outside the gate. A pair whose poses or locate mismatches
-// differ prints INVALID. Each run also prints the bake it read (O14).
+// differ, or that read the same id 51 under different walk epochs, prints
+// INVALID and no verdict (O14). Each run also prints the bake it read. A run's
+// split against its own record prints totals only; the verdict is the paired
+// split's.
 
 mod baked_set;
 mod completed_reads;
@@ -369,6 +374,8 @@ fn run(
             {
                 for &drawn in cells {
                     for block in cell_blocks[drawn as usize].clone() {
+                        // After the swap above, `mandatory_prev` holds the
+                        // current camera cell's set.
                         if mandatory_prev.binary_search(&block).is_err()
                             && !driver.mirror().model().is_resident(block)
                         {
@@ -542,7 +549,7 @@ fn lightmap_residency_walks_from_prl() {
             let report = run(&world, &walk, levers, &modes, &bake);
             print_run(&walk, levers, &report);
             let own = &report.record;
-            print_split("its own trip record", &trip_record::split(own, own));
+            print_split("its own trip record", &trip_record::split(own, own), false);
             if let Some((file, runs)) = &recorded {
                 let pair = runs
                     .iter()
@@ -555,15 +562,16 @@ fn lightmap_residency_walks_from_prl() {
                             && bake_token(&run.bake, "walk_epoch")
                                 != bake_token(&own.bake, "walk_epoch")
                         {
-                            println!(
-                                "   WARNING: this build's walk epoch differs from the recorded \
-                                 run's but both read the same id 51: a rect run on a pre-bump bake \
-                                 is invalid (O14)"
+                            return Err(
+                                "this build's walk epoch differs from the recorded run's but \
+                                 both read the same id 51: a rect run on a pre-bump bake is \
+                                 invalid (O14)"
+                                    .to_string(),
                             );
                         }
                         trip_record::split(run, own)
                     });
-                print_split(&format!("{file}'s trip record"), &pair);
+                print_split(&format!("{file}'s trip record"), &pair, true);
             }
             records.push(report.record);
         }
@@ -574,7 +582,7 @@ fn lightmap_residency_walks_from_prl() {
     }
 }
 
-/// AC 24, CPU half: level load time under the process's
+/// CPU half of the install-timing check: level load time under the process's
 /// `POSTRETRO_LIGHTMAP_STREAMING` mode, then (streaming only) a synchronous
 /// preload at `POSTRETRO_LIGHTMAP_WALK_SPAWN` = `x,y,z`, approximating a
 /// settled entry: positional reads plus the pool model's plan. GPU upload is

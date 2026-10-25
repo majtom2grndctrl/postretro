@@ -85,8 +85,9 @@ pub enum SeededWalk<'a> {
 /// `near_plane` is rejected before the camera-on-plane bypass is tested, so
 /// the bypass never crosses it. Every usable seed starts with the full
 /// screen and is queued before any cell expands, sharing one region state
-/// and one cap, so seed order and repeats change nothing. Seeds out of
-/// range, solid, exterior or wholly off screen are skipped. The result is
+/// and one cap, so seed order and repeats change neither the set nor the
+/// portal-test count; the reach-order slice can differ. Seeds out of range,
+/// solid, exterior or wholly off screen are skipped. The result is
 /// the raw reach, a conservative superset per §2; filtering it into draw
 /// and fog sets is the caller's.
 pub fn portal_walk_seeded<'a>(

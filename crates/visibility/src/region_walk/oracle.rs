@@ -109,10 +109,12 @@ fn flood(state: &mut OracleState, cell: usize, frustum: &Frustum, forward: bool,
             return;
         }
         state.result.considered += 1;
-        let Some(portal_idx) = world.cell_portal_index(cell, i) else {
+        let found = world
+            .cell_portal_index(cell, i)
+            .and_then(|idx| Some((idx, world.portals.get(idx)?, *planes.get(idx)?)));
+        let Some((portal_idx, portal, plane)) = found else {
             continue;
         };
-        let portal = &world.portals[portal_idx];
         let neighbor = if portal.front_cell == cell {
             portal.back_cell
         } else {
@@ -132,7 +134,6 @@ fn flood(state: &mut OracleState, cell: usize, frustum: &Frustum, forward: bool,
         if view.near_gates_bypass && wholly_behind(&view.near, &portal.polygon) {
             continue;
         }
-        let plane = planes[portal_idx];
         let bypass =
             distance_to_polygon(view.eye, &portal.polygon, &plane) <= PORTAL_BYPASS_DISTANCE;
         let backward = !bypass && plane.oriented && {

@@ -28,7 +28,8 @@ use crate::portal_vis::clip_polygon_to_planes;
 #[cfg(test)]
 use crate::visibility::Frustum;
 use crate::visibility::{
-    FrustumPlane, NEAR_PLANE_INDEX, frustum_plane_array, is_aabb_outside_planes, slide_plane_to,
+    FAR_PLANE_INDEX, FrustumPlane, NEAR_PLANE_INDEX, frustum_plane_array, is_aabb_outside_planes,
+    slide_plane_to,
 };
 use geometry::{distance_to_polygon, wholly_behind};
 use postretro_level_loader::LevelWorld;
@@ -51,9 +52,12 @@ pub(crate) const MAX_PORTAL_WALK_STEPS: u32 = 5_000;
 /// degenerates; a distant portal on the eye's plane is clipped normally.
 pub(crate) const PORTAL_BYPASS_DISTANCE: f32 = 0.01;
 /// A walk crosses a portal out of a cell only when the eye lies on that
-/// cell's side of the portal plane by more than this. The oracle's
-/// backward-crossing exception uses the same predicate.
-const FACING_EPSILON: f32 = 1e-3;
+/// cell's side of the portal plane by more than this. It absorbs f32 error in
+/// the signed distance at map-scale coordinates; it is not a slab, so an eye
+/// just off a distant portal's plane still crosses it. An eye near the
+/// polygon itself takes the bypass first. The oracle's backward-crossing
+/// exception uses the same predicate.
+const FACING_EPSILON: f32 = 1e-4;
 
 /// The facing rule: `source_side` is the eye's signed distance to a portal
 /// plane, positive on the side of the cell being left. NaN never crosses.
@@ -111,7 +115,7 @@ impl WalkView {
                 view_proj.row(3),
             ],
             near: planes[NEAR_PLANE_INDEX],
-            far: planes[NEAR_PLANE_INDEX + 1],
+            far: planes[FAR_PLANE_INDEX],
             near_gates_bypass,
             planes,
             #[cfg(test)]
@@ -125,6 +129,28 @@ impl WalkView {
     pub(crate) fn frustum(&self) -> &Frustum {
         &self.frustum
     }
+
+    /// The planes a cell holding `rect` clips its portals with: this view's
+    /// near plane, the rect's padded side planes, and its far plane.
+    fn load_clip_planes(&self, rect: &ScreenRect, out: &mut Vec<FrustumPlane>) {
+        out.clear();
+        out.push(self.near);
+        rect.push_planes(&self.rows, out);
+        out.push(self.far);
+    }
+}
+
+/// The walk's outermost clip region for `view`, in `scratch`'s plane buffer:
+/// the full screen's clip planes, padded as every rect's are. Every polygon
+/// the walk keeps lies inside it within `CLIP_EPSILON`, so every cell it
+/// reaches through a clipped portal touches it; the step-limit fallback's
+/// fog test reads it.
+pub(crate) fn screen_clip_planes<'a>(
+    view: &WalkView,
+    scratch: &'a mut PortalWalkScratch,
+) -> &'a [FrustumPlane] {
+    view.load_clip_planes(&ScreenRect::FULL, &mut scratch.planes);
+    &scratch.planes
 }
 
 /// Counters for one walk. `considered` counts every outbound portal looked
@@ -265,10 +291,7 @@ fn expand_cell(
 ) -> bool {
     let world = input.world;
     let planes_by_portal = world.portal_planes();
-    scratch.planes.clear();
-    scratch.planes.push(view.near);
-    rect.push_planes(&view.rows, &mut scratch.planes);
-    scratch.planes.push(view.far);
+    view.load_clip_planes(&rect, &mut scratch.planes);
 
     for i in 0..world.cell_portal_count(cell) {
         if stats.considered >= step_limit {
@@ -276,14 +299,17 @@ fn expand_cell(
         }
         stats.considered += 1;
 
-        let Some(portal_idx) = world.cell_portal_index(cell, i) else {
+        // A ref past the portal list counts as invalid, like a missing ref.
+        let found = world
+            .cell_portal_index(cell, i)
+            .and_then(|idx| Some((idx, world.portals.get(idx)?, *planes_by_portal.get(idx)?)));
+        let Some((portal_idx, portal, plane)) = found else {
             stats.rejected_invalid += 1;
             if let Some(trace) = trace.as_deref_mut() {
                 trace.reject(cell, None, 0, Reject::Invalid);
             }
             continue;
         };
-        let portal = &world.portals[portal_idx];
         let verts = portal.polygon.len();
         let neighbor = if portal.front_cell == cell {
             portal.back_cell
@@ -318,7 +344,6 @@ fn expand_cell(
             continue;
         }
 
-        let plane = planes_by_portal[portal_idx];
         let bypass =
             distance_to_polygon(view.eye, &portal.polygon, &plane) <= PORTAL_BYPASS_DISTANCE;
         let (contribution, key, clipped_len) = if bypass {
@@ -366,13 +391,13 @@ fn expand_cell(
                 .map(|v| v.distance_squared(view.eye))
                 .fold(f32::MAX, f32::min)
                 .sqrt();
-            let contribution = match ScreenRect::bound_points(clipped, &view.rows) {
-                // Touches the eye plane: hand on the source rect.
-                None => rect,
-                Some(bounds) => bounds
-                    .intersect(&rect)
-                    .unwrap_or_else(|| bounds.clamp_into(&rect)),
-            };
+            // No usable bounds (the polygon touches the eye plane, or the
+            // projection is degenerate), or bounds that float slop pushed
+            // just outside the rect: hand on the source rect, which is
+            // conservative.
+            let contribution = ScreenRect::bound_points(clipped, &view.rows)
+                .and_then(|bounds| bounds.intersect(&rect))
+                .unwrap_or(rect);
             (contribution, key, clipped.len())
         };
         stats.accepted += 1;

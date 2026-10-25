@@ -112,11 +112,18 @@ impl PortalWalkScratch {
         Some((cell, self.rects[cell]))
     }
 
+    /// Whether the last walk run on this scratch reached `cell`.
+    /// `determine_visible_cells` runs no walk on its non-portal paths (nor
+    /// for a located cell past the cell list), so after one of those this
+    /// still describes an earlier walk.
     pub fn is_reached(&self, cell: usize) -> bool {
         self.reached_at.get(cell) == Some(&self.generation) && self.generation != 0
     }
 
-    /// Cells the last walk reached, in reach order.
+    /// Cells the last walk run on this scratch reached, in reach order.
+    /// `determine_visible_cells` runs no walk on its non-portal paths (nor
+    /// for a located cell past the cell list), so after one of those this
+    /// still describes an earlier walk.
     pub fn reached(&self) -> &[u32] {
         &self.reached
     }

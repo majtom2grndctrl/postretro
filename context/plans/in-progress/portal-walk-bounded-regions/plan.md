@@ -88,6 +88,19 @@ symbol reads as the assessment recorded it (`portal_vis.rs` `flood` :281,
   parallel portals; the region walk tests those 16 times. Its fixture now builds 20,001
   portals so it trips any cap up to 20,000, and its assertions are unchanged.
 
+- **Review round 1 moved the epoch to 3.** Epoch 2 was never landed. Facing tolerance
+  1e-3 → 1e-4 (f32 error at map scale, not a slab: an eye 0.5 mm above a floor dropped
+  truly visible cells), and the orientation bounds tier takes a side only when a cell's
+  whole box lies on one side (a box centre mis-orients slanted planes). The fallback's fog
+  test now uses the walk's own padded clip planes, so it holds cells the walk reaches
+  through the half-step clip pad at the screen edge. R1 and the R2/R3 gate ran at
+  `006c79512` (epoch 2); the round-1 changes alter only sub-millimetre and degenerate
+  cases, and R1 reruns at the final commit.
+- **Portal planes build lazily.** Correction 1 said the constructors build them; they
+  build on first `portal_planes()` call through a `OnceLock`, which works for the
+  struct-literal construction sites. `determine_visible_cells` touches them before its
+  walk timer.
+
 ## AC-to-proof
 
 Report sets R1–R4 are in `research.md` §Report sets. "Fixtures" means the synthetic
@@ -157,7 +170,7 @@ fixture has its own locator.
 | 7 | Rebake the swept and measured maps after the bump: hallway, lake, occlusion-test, movement-feel, campaign-test. Check the id-51 bake reports no step-limit walks. | integrating executor | 6 | |
 | 8 | Sweep instrument as an ignored test, then run R1 on the hallway, lake and occlusion-test, plus straight up and down at the shaft poses. Finalize the cap (2× rule) and recheck k. | integrating executor, instrument delegated | 6, 7 | done (R1 below). Cap stays 5,000: worst 2,021 (occlusion-test), 2.47×. k = 2 holds on the fixtures (worst 1.56); real maps reach 3.77 tests per summed degree (hallway), which the fixture row does not bound. Worst expansions per cell 18 (≤ 32). CPU µs taken under load (a bake and a measurement run concurrently); quiet rerun pending. |
 | 9 | Measurements: the residency gate R2 and R3 on both builds, SH reach, and Settle R4. A failed gate stops for an owner decision. | integrating executor | 5, 7 | |
-| 10 | Preflight, then review-panel → fix → retest loop | integrating executor | 8, 9 | |
+| 10 | Preflight, then review-panel → fix → retest loop | integrating executor | 8, 9 | round 1 done: preflight green (12,780 / 12,883 with dev-tools; one unreproduced `reflection_probe_exclusion_compile` failure under a concurrent bake, 3/3 on rerun). Panel of 9 (3 slices + seam), 0 must-fix; fixes in the next commit, gate 13/13 green. |
 | 11 | Owner: Live and Visual rows | owner | 10 | manual |
 
 Hot-path constraints carried into Task 6: no per-frame allocation once the scratch has
@@ -185,3 +198,40 @@ max 6). Shadow-eligible lights (influence sphere reaches a reached cell; brightn
 receiver gates omitted): shaft A 48.0 vs 46.8 (p95 +9, max +29), B 18.6 vs 18.2, C 29.6 vs
 28.9, arena 31.5 vs 31.2 (max +45). occlusion-test's `.prl` predates the current loader,
 so it has no light or SH data; its walk sweep reads cells, portals and locator only.
+
+## R2/R3 — residency gate (Task 9, 2026-10-25, i9-9980HK, frozen binaries)
+
+Builds: pre-change `e31209623` (epoch 1) and rect `006c79512` (epoch 2), each on its own
+warm bake made with its own `prl-build` and identical flags. The `content/dev/maps/`
+originals were an older toolchain's bakes (2–4.5× larger; occlusion-test no longer loads),
+so a first pre-change batch on them was discarded. Pair bakes differ only in id-51 bytes and
+epoch; no INVALID pair. `READS=completed`, `RUNS=default`, 2,000 steps, random walk (RW) and
+far-point tour (FT). Logs: scratchpad `measure/pair/`.
+
+- **Gate: passes in all 36 passes.** Deferred-behind-retiring block-frames in gate 0 pre,
+  0 rect, every projection and pitch, both maps. Rect step-limit frames 0 everywhere. Rect
+  deferrals are 0 over every frame, so the verdict holds under any O28 window (the review
+  panel's stricter-window question is moot for this run).
+- Frames outside the gate (pre-change trip frames): hallway RW 652–2,662, FT 18–73;
+  movement-feel 0–12 / 0–4. On them the pre-change build left 3.2k–2.16M drawn blocks
+  non-resident (held, never read); the rect build 0 deferred, 0 non-resident.
+- Hallway mandatory set per camera cell p50/p95/max: pre 96/211/267, rect 105/230/283.
+  movement-feel 73/73/73 both. Hallway pre bake: 941 of 335,898 sampling walks
+  step-limited; rect bake 0.
+- Growths / peak layers: hallway RW 0 / 15 both; FT pre 1 / 16, rect 2 / 17 (1 / 16 at
+  130° p+45). movement-feel 0 / 6 both.
+- Outside-baked-set block-frames in gate (rect over-inclusion, never refused): hallway
+  100° 1–129, 130° 3.6k–23.7k; pre 415 (RW) / 1,056 (FT), 0 at 100° ±45°. movement-feel
+  rect 0–7, pre 0.
+- Left-behind in gate: pre 0; rect 4 at 130° p0 RW (16:9 and 4:3), 0 elsewhere.
+
+## SH reach (Task 9)
+
+| map | build | L 16 m p95 / max MiB | L 32 m p95 / max MiB |
+|---|---|---|---|
+| hallway | pre | 125.4 / 147.0 | 140.0 / 172.1 |
+| hallway | rect | 131.9 / 147.3 | 141.1 / 172.1 |
+| campaign-test | pre | 12.3 / 12.9 | 16.0 / 16.4 |
+| campaign-test | rect | 12.3 / 12.9 | 16.0 / 16.4 |
+
+No refusals. Worst cell 172 MiB, under the 256 MiB floor.

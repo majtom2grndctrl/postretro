@@ -531,8 +531,8 @@ mod tests {
     use glam::Vec3;
 
     /// Drive real visibility provenance on a small world. Parallel portals
-    /// past the walk's step cap (5,000 portal tests) force its step-limit
-    /// fallback without compiling a stress map.
+    /// past the walk's step cap (`STEP_CAP_TRIPPING_PORTALS` trips any cap up
+    /// to 20,000) force its step-limit fallback without compiling a stress map.
     fn coverage_visibility_world(
         portal_count: u32,
         camera_cell: usize,
@@ -837,8 +837,8 @@ mod tests {
 
     // Regression: the portal step-limit fallback ran the single-invocation
     // tree walk. It now drives the candidate cull with its frustum-culled
-    // visible set, which includes cells the exact portal walk would have
-    // occluded. The candidate path must submit every leaf the tree walk submits
+    // visible set, which includes cells the walk's own visible set would
+    // have occluded. The candidate path must submit every leaf the tree walk submits
     // for that set, so the wider set can only over-draw.
     #[test]
     fn step_limit_fallback_superset_candidate_matches_tree_walk_without_under_draw() {

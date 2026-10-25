@@ -613,7 +613,7 @@ fn step_limit_fallback_fog_reachable_keeps_camera_cell_when_frustum_set_is_empty
 }
 
 #[test]
-fn portal_walk_within_step_limit_keeps_exact_visible_and_fog_sets() {
+fn portal_walk_within_step_limit_keeps_walk_visible_and_fog_sets() {
     let world = portal_chain_world();
     let eye = Vec3::ZERO;
     let mut scratch = PortalWalkScratch::new();
@@ -631,13 +631,13 @@ fn portal_walk_within_step_limit_keeps_exact_visible_and_fog_sets() {
         result.stats.path,
         VisibilityPath::PrlPortal { walk_reach: 2 }
     ));
-    // Exact portal sets: occluded cell 3 is absent from both.
+    // Occluded cell 3 is absent from both of the walk's sets.
     assert_eq!(culled(&result.visible_cells), &[0, 1]);
     assert_eq!(result.fog_reachable, vec![0, 1, 2]);
 }
 
 #[test]
-fn step_limit_fallback_sets_are_supersets_of_exact_portal_sets() {
+fn step_limit_fallback_sets_are_supersets_of_walk_portal_sets() {
     let world = portal_chain_world();
     let eye = Vec3::ZERO;
     let vp = wide_view_proj(eye);
@@ -673,11 +673,10 @@ fn step_limit_fallback_sets_are_supersets_of_exact_portal_sets() {
 
 // Regression: the fallback fog-reachable set used the unslid camera
 // frustum, whose near cutoff excludes an AABB that lies entirely between
-// the camera and the near plane. The exact portal walk slides its near
-// plane to the camera (`Frustum::slide_near_plane_to`) and can reach such
-// a cell, so the fallback silently dropped it — breaking the "superset
-// of the exact portal set" contract for a cell beside or just behind the
-// camera plane.
+// the camera and the near plane. The walk's camera entry slides its near
+// plane to the camera and can reach such a cell, so the fallback silently
+// dropped it — breaking the "superset of the walk's reach" contract for a
+// cell beside or just behind the camera plane.
 #[test]
 fn step_limit_fallback_fog_reachable_includes_camera_adjacent_near_slab_cell() {
     let camera_cell = prl_cell(
@@ -735,20 +734,20 @@ fn step_limit_fallback_fog_reachable_includes_camera_adjacent_near_slab_cell() {
     let vp = wide_view_proj(eye);
     let mut scratch = PortalWalkScratch::new();
 
-    // Ground truth: the exact walk with a large step limit.
+    // Reference: the walk with a large step limit.
     let (exact, _) =
         determine_visible_cells(eye, vp, &world, &[], false, &mut scratch, TimingGate::OFF);
     assert!(
         matches!(exact.stats.path, VisibilityPath::PrlPortal { .. }),
-        "expected the exact portal walk to run without hitting the step limit"
+        "expected the walk to run without hitting the step limit"
     );
     assert!(
         exact.fog_reachable.contains(&1),
-        "exact portal walk should reach the near-slab cell beside the camera"
+        "the walk should reach the near-slab cell beside the camera"
     );
 
     // Force the step-limit fallback and check its fog-reachable set still
-    // covers what the exact walk reached.
+    // covers what the walk reached.
     let (fallback, _) = determine_visible_cells_with_step_limit(
         eye,
         vp,

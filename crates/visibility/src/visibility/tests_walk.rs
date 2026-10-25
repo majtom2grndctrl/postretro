@@ -3,7 +3,9 @@
 use glam::{Mat4, Vec3};
 use postretro_level_loader::{CellLocatorChild, LevelWorld};
 
+use super::frustum::is_aabb_outside_planes_by;
 use super::*;
+use crate::portal_vis::CLIP_EPSILON;
 use crate::region_walk::test_fixtures::{
     CameraPose, axis_node, axis_rect, boxes_world, camera_view_proj, cyclic_rings,
     look_at_view_proj, portal, sample_cameras, stacked_slab_shaft,
@@ -250,13 +252,14 @@ fn assert_fallback_covers_uncapped_walk(case: &str, world: &LevelWorld, eye: Vec
     assert!(!culled(&result.visible_cells).contains(&1), "{case}");
 }
 
-/// Whether B's box passes the slid camera frustum alone, without the
-/// distance keep.
-fn slid_frustum_keeps_b(world: &LevelWorld, eye: Vec3, target: Vec3) -> bool {
-    let mut frustum = extract_frustum_planes(look_at_view_proj(eye, target));
-    frustum.slide_near_plane_to(eye);
+/// Whether B's box passes the fallback's plane test alone, the walk's
+/// outermost clip region, without the distance keep.
+fn clip_region_keeps_b(world: &LevelWorld, eye: Vec3, target: Vec3) -> bool {
+    let view = WalkView::camera(eye, look_at_view_proj(eye, target));
+    let mut scratch = PortalWalkScratch::new();
+    let planes = region_walk::screen_clip_planes(&view, &mut scratch);
     let b = &world.cells[1];
-    !is_aabb_outside_frustum(b.bounds_min, b.bounds_max, &frustum)
+    !is_aabb_outside_planes_by(b.bounds_min, b.bounds_max, planes, CLIP_EPSILON)
 }
 
 #[test]
@@ -273,15 +276,96 @@ fn step_limit_fallback_fog_reach_covers_a_bypassed_neighbour_behind_or_beside_th
     // eye, past the slid near plane.
     let face = side_by_side(4.0, axis_rect(0, 4.0, [0.0, 0.0], [4.0, 4.0]));
     let eye = Vec3::new(3.995, 2.0, 2.0);
-    assert!(!slid_frustum_keeps_b(&face, eye, eye - Vec3::X));
+    assert!(!clip_region_keeps_b(&face, eye, eye - Vec3::X));
     assert_fallback_covers_uncapped_walk("behind the eye", &face, eye, eye - Vec3::X);
 
     // Looking along the portal plane: B ends 1 mm ahead of the eye, beside
     // it and outside the view's left edge. The near plane passes B; the left
-    // side plane drops it, so the slid frustum alone, or one widened only at
+    // side plane drops it, so the clip region alone, or one widened only at
     // the near plane, fails here. Only the distance keep holds B.
     let shallow = side_by_side(2.0, axis_rect(0, 4.0, [0.0, 0.0], [4.0, 2.0]));
     let eye = Vec3::new(3.995, 2.0, 1.999);
-    assert!(!slid_frustum_keeps_b(&shallow, eye, eye + Vec3::Z));
+    assert!(!clip_region_keeps_b(&shallow, eye, eye + Vec3::Z));
     assert_fallback_covers_uncapped_walk("beside the eye", &shallow, eye, eye + Vec3::Z);
+}
+
+#[test]
+fn step_limit_fallback_fog_reach_keeps_a_cell_reached_through_the_screen_edge_pad() {
+    // Row 37. A's portal lies wholly in the clip pad's sliver just past the
+    // right screen edge (NDC 1 to 1 + half a snap step). The walk keeps it,
+    // so it reaches B, a thin box behind it lying wholly outside the true
+    // right plane. The unpadded camera frustum would drop B from fog reach.
+    let eye = Vec3::ZERO;
+    let target = Vec3::NEG_Z;
+    let view_proj = look_at_view_proj(eye, target);
+    // At depth 5, NDC x = `ndc` where x = ndc * 5 / P00.
+    let at_ndc = |ndc: f32| ndc * 5.0 / view_proj.col(0).x;
+    let (x_lo, x_hi) = (at_ndc(1.001), at_ndc(1.0018));
+    let world = boxes_world(
+        &[
+            (Vec3::new(-10.0, -10.0, -5.0), Vec3::new(10.0, 10.0, 1.0)),
+            (Vec3::new(x_lo, -1.0, -5.002), Vec3::new(x_hi, 1.0, -5.0)),
+        ],
+        vec![portal(axis_rect(2, -5.0, [x_lo, -1.0], [x_hi, 1.0]), 0, 1)],
+        (
+            CellLocatorChild::Node(0),
+            vec![axis_node(
+                2,
+                -5.0,
+                CellLocatorChild::Cell(0),
+                CellLocatorChild::Cell(1),
+            )],
+        ),
+    );
+    assert_eq!(world.locate_cell(eye), 0);
+    let b = &world.cells[1];
+    let frustum = extract_frustum_planes(view_proj);
+    assert!(is_aabb_outside_frustum(
+        b.bounds_min,
+        b.bounds_max,
+        &frustum
+    ));
+    assert!(clip_region_keeps_b(&world, eye, target));
+    assert_fallback_covers_uncapped_walk("screen-edge pad", &world, eye, target);
+}
+
+#[test]
+fn step_limit_fallback_fog_reach_covers_uncapped_walk_over_sweep() {
+    // Row 37 over the superset sweep: a forced trip at every walk camera.
+    let mut trips = 0;
+    for (name, grid) in fixtures() {
+        let world = &grid.world;
+        let mut scratch = PortalWalkScratch::new();
+        for pose in sample_cameras(&grid, SWEEP_CAMERAS, SWEEP_SEED) {
+            if world.cells[pose.cell].is_solid {
+                continue;
+            }
+            let view_proj = camera_view_proj(pose.eye, pose.yaw, pose.pitch);
+            let reach = uncapped_reach(world, pose.eye, view_proj);
+            let result = run(world, pose.eye, view_proj, &[], 0, &mut scratch);
+            assert!(
+                matches!(
+                    result.stats.path,
+                    VisibilityPath::PortalStepLimitFallback { .. }
+                ),
+                "{name} at {pose:?}"
+            );
+            trips += 1;
+            for &cell in &reach {
+                let data = &world.cells[cell as usize];
+                if data.is_solid || data.is_exterior {
+                    continue;
+                }
+                assert!(
+                    result.fog_reachable.binary_search(&cell).is_ok(),
+                    "{name} at {pose:?}: fallback fog reach dropped cell {cell}"
+                );
+            }
+            let VisibleCells::Culled(cells) = result.visible_cells else {
+                unreachable!();
+            };
+            scratch.recycle_cells(cells);
+        }
+    }
+    assert!(trips > 0);
 }

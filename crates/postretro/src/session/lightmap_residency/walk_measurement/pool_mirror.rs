@@ -1,5 +1,5 @@
 //! The renderer's lightmap drain without the GPU, for the residency walks.
-//! See: context/lib/experimental_spikes.md
+//! See: context/lib/rendering_pipeline.md §4
 
 // The real `LightmapPoolModel` plans every batch as the renderer's lightmap
 // stream drain does, and the outcome is built the same way. Texture work is

@@ -1,5 +1,5 @@
 // Per-portal supporting planes, oriented toward each portal's front cell.
-// See: context/lib/rendering_pipeline.md §2
+// See: context/lib/rendering_pipeline.md §2 · epoch: postretro_visibility::PORTAL_WALK_EPOCH
 
 use glam::Vec3;
 
@@ -29,6 +29,8 @@ impl LevelWorld {
     /// One plane per `portals[i]`. Built on first use from the portal
     /// polygons, the cells' portal refs and cell bounds — data every world
     /// carries, whatever its locator — and kept for the world's lifetime.
+    /// Since the planes are built lazily and never rebuilt, `cells`,
+    /// `portals` and `cell_portal_refs` must not change after first use.
     pub fn portal_planes(&self) -> &[PortalPlane] {
         self.portal_planes
             .get_or_init(|| build_portal_planes(&self.cells, &self.cell_portal_refs, &self.portals))
@@ -40,9 +42,15 @@ impl LevelWorld {
 /// the mean of a cell's portal centroids lies strictly on its side unless all
 /// of them are coplanar (a portal's own centroid sits on its plane and adds
 /// nothing). Both cells' means are read first; only when neither gives a side
-/// are the cell bounds centres tried, since fixtures and degenerate cells may
-/// share bounds. Disagreement within a tier, or no evidence, leaves the portal
-/// unoriented.
+/// are the cell bounds tried, since fixtures and degenerate cells may share
+/// bounds. A cell's bounds give a side only when the whole box lies on it: no
+/// corner beyond `SIDE_EVIDENCE_EPSILON` on the far side, and at least one
+/// beyond it on the near side. A box's centre alone can sit on the wrong
+/// side of a slanted plane. Disagreement within a tier, or no evidence,
+/// leaves the portal unoriented.
+///
+/// Orientation drives the walk's facing rule, so a change here can alter
+/// visible sets and must bump `postretro_visibility::PORTAL_WALK_EPOCH`.
 fn build_portal_planes(
     cells: &[CellData],
     cell_portal_refs: &[u32],
@@ -94,16 +102,37 @@ fn build_portal_planes(
                 }
             };
             let mean = |cell: usize| cell_portal_means.get(cell).copied().flatten();
-            let bounds_centre = |cell: usize| {
-                cells
-                    .get(cell)
-                    .map(|data| (data.bounds_min + data.bounds_max) * 0.5)
+            // The whole box on one side, by its extreme corners.
+            let bounds_side = |cell: usize| -> f32 {
+                let Some(data) = cells.get(cell) else {
+                    return 0.0;
+                };
+                let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+                for corner in 0..8 {
+                    let pick = |axis: usize| {
+                        if corner & (1 << axis) == 0 {
+                            data.bounds_min[axis]
+                        } else {
+                            data.bounds_max[axis]
+                        }
+                    };
+                    let s = normal.dot(Vec3::new(pick(0), pick(1), pick(2))) + dist;
+                    lo = lo.min(s);
+                    hi = hi.max(s);
+                }
+                if lo >= -SIDE_EVIDENCE_EPSILON && hi > SIDE_EVIDENCE_EPSILON {
+                    1.0
+                } else if hi <= SIDE_EVIDENCE_EPSILON && lo < -SIDE_EVIDENCE_EPSILON {
+                    -1.0
+                } else {
+                    0.0
+                }
             };
             let tiers = [
                 (side(mean(portal.front_cell)), side(mean(portal.back_cell))),
                 (
-                    side(bounds_centre(portal.front_cell)),
-                    side(bounds_centre(portal.back_cell)),
+                    bounds_side(portal.front_cell),
+                    bounds_side(portal.back_cell),
                 ),
             ];
             let mut sign = 0.0;
@@ -223,6 +252,45 @@ mod tests {
             cell(Vec3::splat(-1.0), Vec3::splat(1.0), 0, 1),
         ];
         let planes = build_portal_planes(&cells, &[0], &[quad_at_x(0.0, 0, 1)]);
+        assert!(!planes[0].oriented);
+    }
+
+    #[test]
+    fn portal_planes_orient_from_cell_bounds_wholly_on_one_side() {
+        // One portal per cell, so the means tier sees only the portal's own
+        // centroid; each box lies wholly on its side of x = 0.
+        let cells = vec![
+            cell(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(0.0, 1.0, 1.0), 0, 1),
+            cell(Vec3::new(0.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0), 0, 1),
+        ];
+        let planes = build_portal_planes(&cells, &[0], &[quad_at_x(0.0, 1, 0)]);
+        assert!(planes[0].oriented);
+        assert!(planes[0].signed_distance(Vec3::new(0.5, 0.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn portal_planes_take_no_bounds_evidence_from_a_box_straddling_a_slanted_plane() {
+        // The plane x + y + z = 0. The front box's centre (-2.5, -2.5, -2.5)
+        // lies on the negative side, yet a thin slab cell along the triangle
+        // on the positive side has exactly these bounds. The box straddles
+        // the plane, so it gives no side. The back box is centred on the
+        // plane. A centre-point test would orient the portal from the front
+        // box alone, and could orient it backwards.
+        let triangle = vec![
+            Vec3::new(-10.0, 5.0, 5.0),
+            Vec3::new(5.0, -10.0, 5.0),
+            Vec3::new(5.0, 5.0, -10.0),
+        ];
+        let cells = vec![
+            cell(Vec3::splat(-10.0), Vec3::splat(5.0), 0, 1),
+            cell(Vec3::splat(-1.0), Vec3::splat(1.0), 0, 1),
+        ];
+        let portal = PortalData {
+            polygon: triangle,
+            front_cell: 0,
+            back_cell: 1,
+        };
+        let planes = build_portal_planes(&cells, &[0], &[portal]);
         assert!(!planes[0].oriented);
     }
 }

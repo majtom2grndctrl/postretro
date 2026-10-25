@@ -321,7 +321,7 @@ fn portal_traverse_l_shaped_corridor_hides_c() {
     // L-shaped corridor: A -- portal 0 (at X=32 in YZ plane) -- B -- portal 1 (at Z=64 in XY plane) -- C
     // Camera in A looking along +X sees B through portal 0,
     // but portal 1 is perpendicular (in the Z direction), so C is not visible
-    // through the narrow frustum left after passing through portal 0.
+    // through the rect portal 0 leaves on B: portal 1's clip against that rect is empty.
     let portal_0 = PortalData {
         polygon: vec![
             Vec3::new(32.0, 0.0, 0.0),
@@ -468,8 +468,8 @@ fn portal_traversal_sees_room_through_both_sides_of_pillar() {
         assert!(
             visible[3],
             "cell D (far room) should be visible through left passage (A->B->D). \
-             If not, the narrow frustum through the 2-unit-wide portal A-B may be \
-             rejecting the 2-unit-wide portal B-D."
+             If not, B's rect (the clipped bounds of the 2-unit-wide portal A-B) may be \
+             clipping the 2-unit-wide portal B-D to nothing."
         );
     }
 
@@ -486,8 +486,8 @@ fn portal_traversal_sees_room_through_both_sides_of_pillar() {
         assert!(
             visible[3],
             "cell D (far room) should be visible through right passage (A->C->D). \
-             If not, the narrow frustum through the 2-unit-wide portal A-C may be \
-             rejecting the 2-unit-wide portal C-D."
+             If not, C's rect (the clipped bounds of the 2-unit-wide portal A-C) may be \
+             clipping the 2-unit-wide portal C-D to nothing."
         );
     }
 }
@@ -496,12 +496,12 @@ fn portal_traversal_sees_room_through_both_sides_of_pillar() {
 fn portal_traverse_straddling_portal_hides_unreachable_side_branch() {
     // Straight-through layout: camera in cell 0 looking +X.
     // Portal 0 (A -> B) straddles the camera's side plane — it extends
-    // far beyond the frustum to the +Y direction. Without polygon
-    // clipping, frustum narrowing through the un-clipped portal could
-    // produce a cone that extends into -Y regions the camera cannot see
-    // and incorrectly admit off-axis neighbors.
+    // far beyond the frustum to the +Y direction. If the portal were not
+    // clipped against A's rect, the rect it hands to B would extend into
+    // off-screen regions the camera cannot see, and B's rect could then
+    // admit off-axis neighbors.
     //
-    // This test asserts that with clipping in place, cell B is still
+    // This test asserts that with the clip against A's rect in place, cell B is still
     // visible (the portal is in view) and a far off-axis cell C reached
     // through an orthogonal portal at cell B is correctly hidden.
     let portal_a_b = PortalData {
@@ -562,12 +562,14 @@ fn portal_traverse_straddling_portal_hides_unreachable_side_branch() {
     assert!(
         !visible[2],
         "cell C should be hidden: portal 1 is far off-axis and \
-         unreachable through the clipped sight cone"
+         unreachable through B's clipped rect"
     );
 }
 
 /// Regression test for the "two paths to the same cell, narrower path
-/// wins, downstream reach is lost" topology fixed by per-chain DFS.
+/// wins, downstream reach is lost" topology. Kept for a failure shape the old
+/// chain walk had (it planted the first-arriving narrow frustum at X); the
+/// region walk avoids it by growing X's rect from every arrival.
 ///
 /// Topology (abstract; bounding boxes are not used by portal_traverse):
 ///
@@ -587,26 +589,26 @@ fn portal_traverse_straddling_portal_hides_unreachable_side_branch() {
 /// The load-bearing geometry:
 ///
 /// - Camera frustum (100° hfov) easily contains both A-outbound portals.
-/// - The B-path's frustum narrows severely through portal 0's 0.1x0.1 slit.
-///   By X=30 that cone has a radius of roughly 0.15 units from the X axis.
-/// - The C-path's frustum narrows gently through portal 1's 4.0x4.0 aperture.
-///   By X=30 that cone has a radius of several units.
-/// - Portal 4 is offset to Y=1..2 so it lies **outside** the narrow B-path
-///   cone at X=30 (clips to empty) and **inside** the wide C-path cone
-///   (passes through cleanly).
+/// - B's rect is the clip of portal 0's 0.1x0.1 slit: a tiny screen region.
+///   Portal 2 clipped against it yields a tiny rect for X.
+/// - C's rect is the clip of portal 1's 4.0x4.0 aperture: a wide screen
+///   region. Portal 3 clipped against it yields a wide rect for X.
+/// - Portal 4 is offset to Y=1..2 so it lies **outside** the tiny rect X
+///   gets via B (its clip is empty) and **inside** the wide rect X gets
+///   via C (passes through cleanly).
 ///
-/// Under BFS-keyed-on-cells (the former implementation):
-///   A's outbound iteration order is [0, 1] → A→B runs first → X marked
-///   visible with the narrow frustum planted by the B-path → A→C→X is
-///   then rejected by the already-visited early-skip → X's outbound
-///   portal 4 is evaluated against the narrow B-frustum → Y missed.
+/// Old failure shape (cell-keyed BFS): A's outbound order is [0, 1], so A→B
+/// ran first and planted the narrow frustum at X; A→C→X was then skipped as
+/// already visited, portal 4 was tested against the narrow frustum, and Y was
+/// missed.
 ///
-/// Under DFS-with-per-path-tracking (the current implementation):
-///   Both A→B→X and A→C→X chains run independently. The C-path produces
-///   a wide frustum at X that does not clip X→Y to empty → Y visible.
+/// Region walk: X's rect is grow-only. The arrival via B contributes a tiny
+/// rect and the arrival via C a wide one; X's rect is their union, so portal 4
+/// clipped against X's rect is non-empty and Y is reached. Arrival order does
+/// not matter (the test also runs the reversed portal order).
 ///
-/// The test asserts visibility of all five cells. The BFS topology fails
-/// on `visible[4]` (Y) and DFS passes.
+/// The test asserts visibility of all five cells; the old BFS failed on
+/// `visible[4]` (Y).
 #[test]
 fn portal_traverse_two_paths_to_same_leaf_uses_widest_frustum() {
     // Portal 0: A→B, NARROW slit at X=10.
@@ -660,7 +662,7 @@ fn portal_traverse_two_paths_to_same_leaf_uses_widest_frustum() {
     };
 
     // Portal 4: X→Y at X=30, offset to Y=1..2 so it sits outside the
-    // narrow B-path cone and inside the wide C-path cone.
+    // tiny rect X gets via B and inside the wide rect X gets via C.
     let portal_x_y = PortalData {
         polygon: vec![
             Vec3::new(30.0, 1.0, -0.5),
@@ -688,9 +690,8 @@ fn portal_traverse_two_paths_to_same_leaf_uses_widest_frustum() {
             cell_template(), // 3: X
             cell_template(), // 4: Y
         ],
-        // Iteration order matters: A lists portal 0 (narrow) BEFORE
-        // portal 1 (wide) so BFS would deterministically plant the
-        // narrow frustum at X first.
+        // A lists portal 0 (narrow) BEFORE portal 1 (wide), the order in
+        // which the old BFS planted the narrow frustum at X first.
         &[&[0, 1], &[0, 2], &[1, 3], &[2, 3, 4], &[4]],
         vec![portal_a_b, portal_a_c, portal_b_x, portal_c_x, portal_x_y],
     );
@@ -724,11 +725,10 @@ fn portal_traverse_two_paths_to_same_leaf_uses_widest_frustum() {
         );
         assert!(
             visible[4],
-            "cell Y must be visible via the A→C→X→Y chain. Under the \
-         previous BFS-keyed-on-cells implementation, the A→B→X chain \
-         would plant a narrow frustum at X that clips X→Y to empty, \
-         and the wider A→C→X chain would be dropped by the \
-         visible[X] early-skip before it ever reached X→Y."
+            "cell Y must be visible via the A→C→X→Y route. X's rect must \
+         grow to include the wide arrival via C; if only the narrow \
+         arrival via B counted (the old BFS behaviour), X→Y would clip \
+         to empty."
         );
     }
 }

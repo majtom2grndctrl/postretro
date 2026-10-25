@@ -61,18 +61,6 @@ impl ScreenRect {
         *self != before
     }
 
-    /// Clamp each bound into `outer`: a degenerate rect on `outer`'s edge
-    /// for a contribution that float slop pushed just outside it.
-    pub(crate) fn clamp_into(&self, outer: &Self) -> Self {
-        let clamp = |v: i32, lo: i32, hi: i32| v.clamp(lo, hi);
-        Self {
-            x0: clamp(self.x0, outer.x0, outer.x1),
-            x1: clamp(self.x1, outer.x0, outer.x1),
-            y0: clamp(self.y0, outer.y0, outer.y1),
-            y1: clamp(self.y1, outer.y0, outer.y1),
-        }
-    }
-
     /// The rect's four side planes in world space, pushed outward by
     /// [`CLIP_PAD_STEPS`] so a portal touching the rect only along an edge
     /// still clips to a polygon. Each plane passes through the eye, since the
@@ -101,7 +89,9 @@ impl ScreenRect {
     }
 
     /// Outward-snapped screen bounds of `points`, clamped to the full screen.
-    /// `None` if any point's w is below [`MIN_PROJECT_W`].
+    /// `None` if any point's w is below [`MIN_PROJECT_W`] or NaN, if any
+    /// projected NDC value is non-finite (a degenerate view-projection), or
+    /// if there are no points.
     pub(crate) fn bound_points(points: &[Vec3], rows: &[Vec4; 4]) -> Option<Self> {
         let mut min = [f32::MAX; 2];
         let mut max = [f32::MIN; 2];
@@ -112,12 +102,15 @@ impl ScreenRect {
                 return None;
             }
             let ndc = [rows[0].dot(h) / w, rows[1].dot(h) / w];
+            if !ndc[0].is_finite() || !ndc[1].is_finite() {
+                return None;
+            }
             for axis in 0..2 {
                 min[axis] = min[axis].min(ndc[axis]);
                 max[axis] = max[axis].max(ndc[axis]);
             }
         }
-        if points.is_empty() {
+        if min[0] > max[0] || min[1] > max[1] {
             return None;
         }
         let snap_lo = |v: f32| snap((v - SNAP_PAD) * SNAP_STEPS as f32, f32::floor);

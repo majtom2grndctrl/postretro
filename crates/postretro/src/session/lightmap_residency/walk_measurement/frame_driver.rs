@@ -1,5 +1,5 @@
-//! One measured frame of streamed lightmap residency: drains, the pool mirror,
-//! and why each drawn block is missing. See: context/lib/rendering_pipeline.md §4
+//! Owns one measured frame of streamed lightmap residency: drains, the pool mirror, and why each drawn block is missing.
+//! See: context/lib/rendering_pipeline.md §4
 
 use std::ops::Range;
 use std::time::Instant;
@@ -17,9 +17,11 @@ use crate::lightmap_streaming::controller::LightmapResidencyCounters;
 use crate::session::level_streaming::{LevelStreaming, StreamingFrame};
 use crate::session::sh_residency::ShStreamingSession;
 
-/// Drains per frame in the completed-reads mode: the first admits earlier
-/// reads and issues this frame's, the second admits those (O17). More would
-/// hide the per-drain install budget's own misses, which both builds share.
+/// Drains per frame in the completed-reads mode: drain 0 admits earlier reads
+/// and issues this frame's, and drain 1 admits the ones drain 0 issued (O17).
+/// Reads held back by the permit cap or the in-hand byte cap are issued in
+/// drain 1 and land next frame, or are dropped if their block left demand.
+/// More drains would hide the per-drain install budget's own misses, which both builds share.
 pub(super) const COMPLETED_READS_DRAINS: u32 = 2;
 
 impl ReadsMode {
@@ -225,6 +227,6 @@ impl FrameDriver {
     }
 }
 
-pub(super) fn elapsed_nanos(since: Instant) -> u64 {
+fn elapsed_nanos(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }

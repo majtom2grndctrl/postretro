@@ -132,7 +132,7 @@ fn completed_reads_frame_counts_a_twice_deferred_block_once_and_retires_per_fram
     let fourth = corridor.frame(3, PORTAL, &[3, 4, 5]);
     assert!(
         !fourth.retiring_at_start,
-        "released at the third frame's start"
+        "released at this frame's start, after two ticks on frames 2 and 3"
     );
     assert!(fourth.grew);
     assert_eq!((fourth.deferred, fourth.left_behind), (0, 0));

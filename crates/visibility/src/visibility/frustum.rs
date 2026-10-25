@@ -12,9 +12,10 @@ pub struct FrustumPlane {
 
 /// The planes of a view frustum, extracted from a view-projection matrix.
 ///
-/// The initial camera frustum always contains exactly 6 planes in
-/// left/right/bottom/top/near/far order. A frustum narrowed through a portal
-/// may contain more planes (one per portal edge plus near/far).
+/// A camera frustum always contains exactly 6 planes in
+/// left/right/bottom/top/near/far order. Only the test oracle's chain walk
+/// narrows one through a portal, into more planes (one per portal edge plus
+/// near/far); the runtime walk clips against plane lists of its own.
 #[derive(Debug, Clone)]
 pub struct Frustum {
     pub planes: Vec<FrustumPlane>,
@@ -24,37 +25,13 @@ pub struct Frustum {
 /// [`extract_frustum_planes`]. Kept next to the extraction so any future
 /// reordering has exactly one place to update.
 pub(crate) const NEAR_PLANE_INDEX: usize = 4;
+pub(crate) const FAR_PLANE_INDEX: usize = 5;
 
-impl Frustum {
-    /// Slide the near plane so it passes exactly through `apex`, keeping
-    /// the inward normal unchanged. Intended for the initial camera frustum
-    /// before any portal narrowing.
-    ///
-    /// Fixes the tight-corridor blank-frame bug: the render pipeline's
-    /// 0.1-unit near clip is depth-precision only, and when the camera sits
-    /// closer than that to a portal plane, every portal vertex lies between
-    /// camera and near plane — Sutherland-Hodgman clips the polygon to
-    /// empty, the neighbor is rejected, and the frame flashes the clear
-    /// color.
-    ///
-    /// Assumes the canonical 6-plane layout from [`extract_frustum_planes`]
-    /// (Left, Right, Bottom, Top, Near, Far). **Do not call on a narrowed
-    /// sub-frustum**: those replace the near plane with the portal plane,
-    /// and sliding it to the camera apex would defeat the narrowing.
-    pub(crate) fn slide_near_plane_to(&mut self, apex: Vec3) {
-        debug_assert_eq!(
-            self.planes.len(),
-            6,
-            "slide_near_plane_to expects the canonical 6-plane extraction; \
-             narrowed sub-frustums must not call this"
-        );
-        if let Some(near) = self.planes.get_mut(NEAR_PLANE_INDEX) {
-            slide_plane_to(near, apex);
-        }
-    }
-}
-
-/// Move `plane` along its normal so it passes through `point`.
+/// Move `plane` along its normal so it passes through `point`. The camera
+/// walk slides its near plane to the eye this way: the render pipeline's
+/// near clip is depth precision only, and a camera closer than it to a
+/// portal plane would otherwise clip every portal vertex away and flash the
+/// clear color.
 pub(crate) fn slide_plane_to(plane: &mut FrustumPlane, point: Vec3) {
     plane.dist = -plane.normal.dot(point);
 }
@@ -125,10 +102,22 @@ pub(crate) fn is_aabb_outside_frustum(mins: Vec3, maxs: Vec3, frustum: &Frustum)
 
 /// [`is_aabb_outside_frustum`] over a bare plane list.
 pub(crate) fn is_aabb_outside_planes(mins: Vec3, maxs: Vec3, planes: &[FrustumPlane]) -> bool {
+    is_aabb_outside_planes_by(mins, maxs, planes, 0.0)
+}
+
+/// [`is_aabb_outside_planes`] with each plane's boundary widened by
+/// `slack`: outside only when some plane has the whole box more than `slack`
+/// behind it, as a clipper with that on-plane tolerance would discard it.
+pub(crate) fn is_aabb_outside_planes_by(
+    mins: Vec3,
+    maxs: Vec3,
+    planes: &[FrustumPlane],
+    slack: f32,
+) -> bool {
     planes.iter().any(|plane| {
         // Select the AABB vertex farthest along the plane normal (positive vertex).
         let p_vertex = Vec3::select(plane.normal.cmpge(Vec3::ZERO), maxs, mins);
         // If the positive vertex is behind the plane, the AABB is fully outside.
-        plane.normal.dot(p_vertex) + plane.dist < 0.0
+        plane.normal.dot(p_vertex) + plane.dist < -slack
     })
 }

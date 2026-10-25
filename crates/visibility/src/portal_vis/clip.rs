@@ -1,13 +1,17 @@
-// Portal polygon clipping and frustum narrowing.
+// Portal polygon clipping, and frustum narrowing for the test oracle.
 // See: context/lib/rendering_pipeline.md §2
 
 use glam::Vec3;
 
-use crate::visibility::{Frustum, FrustumPlane};
+#[cfg(test)]
+use crate::visibility::Frustum;
+use crate::visibility::FrustumPlane;
 
 // Half-space boundary epsilon for Sutherland-Hodgman. Over-inclusion at the
-// boundary is safe: the next narrowing iteration will discard any slop, so the
-// strict-subset invariant holds.
+// boundary is safe: the region walk's visible set is a conservative superset,
+// so a vertex kept within this tolerance can only add a cell, never drop one.
+// Anything that bounds the walk from above (the step-limit fallback's fog
+// test) must allow the same tolerance.
 pub(crate) const CLIP_EPSILON: f32 = 1e-4;
 
 /// Clip a convex polygon against every frustum plane (Sutherland-Hodgman).
@@ -19,8 +23,9 @@ pub(crate) const CLIP_EPSILON: f32 = 1e-4;
 /// slice to an inner scope.
 ///
 /// Planes use Hessian normal form pointing inward; `CLIP_EPSILON` tilts
-/// boundary cases toward "inside" without violating the strict-subset
-/// invariant — slop kept here is outside the next narrowing's edge planes.
+/// boundary cases toward "inside". For the oracle's chain walk that keeps
+/// its strict-subset invariant: slop kept here lies outside the next
+/// narrowing's edge planes.
 #[cfg(test)]
 pub(crate) fn clip_polygon_to_frustum<'a>(
     polygon: &[Vec3],
@@ -31,8 +36,10 @@ pub(crate) fn clip_polygon_to_frustum<'a>(
     clip_polygon_to_planes(polygon, &frustum.planes, scratch_a, scratch_b)
 }
 
-/// [`clip_polygon_to_frustum`] over a bare plane list, for callers that build
-/// their clip planes per step instead of holding a `Frustum`.
+/// Clip a convex polygon against every plane in `planes` (Sutherland-Hodgman).
+/// The region walk builds its plane list per cell instead of holding a
+/// `Frustum`. Returns a slice into whichever scratch buffer held the final
+/// output, so neither scratch can be reused until it is dropped.
 pub(crate) fn clip_polygon_to_planes<'a>(
     polygon: &[Vec3],
     planes: &[FrustumPlane],
@@ -86,7 +93,9 @@ pub(crate) fn clip_polygon_to_planes<'a>(
 /// from the bracketing edge, producing the near-duplicate leading pair that
 /// makes `narrow_frustum`'s cross-product normal collapse. That is the
 /// mechanism behind the `test-2.prl` S-maze missing-panels bug; see the
-/// regression probe below.
+/// regression probe
+/// `narrow_frustum_accepts_sutherland_hodgman_near_duplicate_leading_vertices`
+/// in `portal_vis/tests.rs`.
 ///
 /// Writes the clipped vertices into `output` (which is cleared on entry by
 /// the caller). The input polygon must be closed in winding order; vertex
@@ -199,8 +208,12 @@ fn compute_split_point_on_plane(
     mid
 }
 
-/// Returns None if the portal is degenerate or the normal collapses.
-pub fn narrow_frustum(
+/// The chain walk's narrowing step, used only by the test oracle: the
+/// frustum from `camera_position` through `portal_polygon`, keeping
+/// `original_frustum`'s far plane. Returns None if the portal is degenerate
+/// or the normal collapses.
+#[cfg(test)]
+pub(crate) fn narrow_frustum(
     camera_position: Vec3,
     portal_polygon: &[Vec3],
     original_frustum: &Frustum,

@@ -10,11 +10,12 @@ use super::test_fixtures::{
     CameraPose, GridWorld, SplitMix64, axis_node, axis_rect, boxes_world, camera_view_proj,
     cyclic_rings, look_at_view_proj, open_lattice, portal, sample_cameras, stacked_slab_shaft,
 };
-use super::tests::{SWEEP_CAMERAS, SWEEP_SEED, fixtures, oracle, unclassified_misses, walk};
+use super::tests::{SWEEP_CAMERAS, SWEEP_SEED, fixtures, input, oracle, unclassified_misses, walk};
 use super::{
-    MAX_PORTAL_WALK_STEPS, PortalWalkScratch, RegionWalkStats, ScreenRect, WalkView, WalkWorld,
-    drain, walk_from_camera,
+    MAX_PORTAL_WALK_STEPS, PortalWalkScratch, RegionWalkStats, ScreenRect, SeededWalk, WalkView,
+    WalkWorld, drain, portal_traverse, portal_walk_seeded, walk_from_camera,
 };
+use crate::visibility::{NEAR_PLANE_INDEX, extract_frustum_planes};
 
 fn view_walk(
     world: &LevelWorld,
@@ -302,9 +303,10 @@ fn region_walk_on_shared_slab_plane_reaches_cells_above_below_and_beside() {
 #[test]
 fn region_walk_classifies_misses_through_distant_portal_on_eye_plane() {
     // O36: one sign rule for the facing test and the oracle's backward class.
+    // The eye sits within FACING_EPSILON of the x = 3 plane.
     let grid = cyclic_rings(5, 1);
     let world = &grid.world;
-    let eye = Vec3::new(3.0 - 0.0005, 1.25, 7.5);
+    let eye = Vec3::new(3.0 - 0.00005, 1.25, 7.5);
     let camera_cell = world.locate_cell(eye);
     assert_eq!(camera_cell, grid.cell_at(0, 0, 2));
     let view_proj = camera_view_proj(eye, 0.0, 0.0);
@@ -869,4 +871,120 @@ fn walk_scratch_per_thread_matches_single_thread_walks() {
             assert_eq!(handle.join().expect("walk thread"), single);
         }
     });
+}
+
+/// `m` with every entry of row `row` set to NaN.
+fn with_nan_row(m: Mat4, row: usize) -> Mat4 {
+    let mut cols = m.to_cols_array_2d();
+    for col in &mut cols {
+        col[row] = f32::NAN;
+    }
+    Mat4::from_cols_array_2d(&cols)
+}
+
+#[test]
+fn region_walk_survives_a_view_projection_with_a_nan_row() {
+    // A degenerate projection hands on source rects instead of panicking.
+    let grid = GridWorld::new(
+        vec![0.0, 4.0, 8.0, 12.0],
+        vec![0.0, 4.0],
+        vec![0.0, 4.0],
+        |_, _, _| false,
+    );
+    let world = &grid.world;
+    let eye = Vec3::new(2.0, 2.0, 2.0);
+    let camera_cell = world.locate_cell(eye);
+    let sane = look_at_view_proj(eye, Vec3::new(12.0, 2.0, 2.0));
+    for row in [0, 1] {
+        let view_proj = with_nan_row(sane, row);
+        let mut scratch = PortalWalkScratch::new();
+        let view = WalkView::camera(eye, view_proj);
+        let stats = walk_from_camera(
+            input(world),
+            &view,
+            camera_cell,
+            MAX_PORTAL_WALK_STEPS,
+            &mut scratch,
+        );
+        assert!(!stats.step_limit_hit, "row {row}");
+        assert!(scratch.is_reached(camera_cell), "row {row}");
+
+        let traversal = portal_traverse(eye, view_proj, camera_cell, world, &mut scratch);
+        assert!(
+            traversal.reached.contains(&(camera_cell as u32)),
+            "row {row}"
+        );
+
+        let near = extract_frustum_planes(view_proj).planes[NEAR_PLANE_INDEX];
+        let seeded = portal_walk_seeded(
+            eye,
+            view_proj,
+            near,
+            &[camera_cell],
+            world,
+            &[],
+            &mut scratch,
+        );
+        assert!(
+            matches!(seeded, SeededWalk::Completed { .. }),
+            "row {row}: {seeded:?}"
+        );
+    }
+}
+
+#[test]
+fn region_walk_counts_a_portal_ref_past_the_portal_list_as_invalid() {
+    // Validation rejects a dangling ref at construction, so point A's ref
+    // past the list afterwards, before the portal planes are first built.
+    let mut world = window_world();
+    let start = world.cells[0].portal_ref_start as usize;
+    world.cell_portal_refs[start] = world.portals.len() as u32 + 7;
+    let eye = Vec3::new(2.0, 2.0, 2.0);
+    let view_proj = look_at_view_proj(eye, Vec3::new(8.0, 2.0, 2.0));
+
+    let mut scratch = PortalWalkScratch::new();
+    let stats = view_walk(&world, &[], eye, view_proj, 0, &mut scratch);
+    assert_eq!(stats.rejected_invalid, 1);
+    assert_eq!(sorted_reached(&scratch), vec![0]);
+    let exact = view_oracle(&world, &[], eye, view_proj, 0);
+    assert!(!exact.visible[1]);
+
+    let traversal = portal_traverse(eye, view_proj, 0, &world, &mut scratch);
+    assert_eq!(traversal.reached, &[0]);
+    assert!(!traversal.step_limit_hit);
+    let near = extract_frustum_planes(view_proj).planes[NEAR_PLANE_INDEX];
+    let seeded = portal_walk_seeded(eye, view_proj, near, &[0, 1], &world, &[], &mut scratch);
+    assert!(matches!(seeded, SeededWalk::Completed { .. }), "{seeded:?}");
+}
+
+#[test]
+fn oriented_portal_planes_hold_the_front_cell_on_their_positive_side_on_every_fixture() {
+    // The facing rule reads this orientation; check it against the locator.
+    const DELTA: f32 = 1e-3;
+    for (name, grid) in fixtures() {
+        let world = &grid.world;
+        let planes = world.portal_planes();
+        let mut oriented = 0;
+        for (index, (portal, plane)) in world.portals.iter().zip(planes).enumerate() {
+            if !plane.oriented {
+                continue;
+            }
+            oriented += 1;
+            let centroid =
+                portal.polygon.iter().copied().sum::<Vec3>() / portal.polygon.len() as f32;
+            assert_eq!(
+                world.locate_cell(centroid + plane.normal * DELTA),
+                portal.front_cell,
+                "{name}: portal {index}"
+            );
+            assert_eq!(
+                world.locate_cell(centroid - plane.normal * DELTA),
+                portal.back_cell,
+                "{name}: portal {index}"
+            );
+        }
+        // Every grid cell is a box wholly on its side, so every portal has
+        // side evidence.
+        assert_eq!(oriented, world.portals.len(), "{name}");
+    }
 }

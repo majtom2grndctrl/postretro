@@ -1,5 +1,5 @@
 // Portal-walk capture: one batched `portal_trace` log message per armed frame.
-// See: context/lib/input.md §7
+// See: context/lib/input.md §8
 
 use std::fmt::Write as _;
 

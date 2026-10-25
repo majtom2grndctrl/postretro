@@ -619,7 +619,8 @@ impl Renderer {
 
     /// Emit runtime cell bounds colored from the current frame's drawable
     /// `VisibleCells`. This intentionally ignores fog/light reachable masks:
-    /// `Culled` is the exact visible drawable set, and `DrawAll` uses a distinct
+    /// `Culled` is the drawable visible set (a conservative superset of true
+    /// visibility, `rendering_pipeline.md` §2), and `DrawAll` uses a distinct
     /// fallback color so it does not read as a successful portal traversal.
     #[cfg(feature = "dev-tools")]
     pub fn emit_cell_overlay_diagnostics(

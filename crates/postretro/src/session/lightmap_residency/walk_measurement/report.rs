@@ -175,7 +175,9 @@ fn totals_line(t: &SplitTotals) -> String {
 }
 
 /// The gate split: this run's frames against `against`, both runs' totals.
-pub(super) fn print_split(against: &str, result: &Result<GateSplit, String>) {
+/// `verdict` is true only for the pair split against the other build's record;
+/// a self-split prints totals alone.
+pub(super) fn print_split(against: &str, result: &Result<GateSplit, String>, verdict: bool) {
     match result {
         Err(why) => println!("   gate split by {against}: INVALID pair, rerun both: {why}"),
         Ok(split) => {
@@ -200,7 +202,15 @@ pub(super) fn print_split(against: &str, result: &Result<GateSplit, String>) {
                 "     apart,   recorded run: {}",
                 totals_line(&split.apart[1])
             );
+            if !verdict {
+                return;
+            }
             let (this, recorded) = (split.gate[0].deferred, split.gate[1].deferred);
+            println!(
+                "     this run's step-limit frames: {} in gate, {} apart (the rect build \
+                 must have 0 in gate)",
+                split.gate[0].trip_frames, split.apart[0].trip_frames,
+            );
             println!(
                 "     gate: deferred block-frames {this} vs recorded {recorded}: {}",
                 if this <= recorded {

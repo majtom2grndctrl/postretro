@@ -349,6 +349,8 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
 - AC 38: unchanged (e24 override: peak 74 vs 72, `mirror_only_blocks=2`).
 - AC 39: unchanged.
 
+**Merge of `origin/main` 3275d1480 (merge commit 53c7756e3).** Clean, no conflicts. Main brought only `context/` changes: plan moves, the occluder-first-partition brief and its measurement scratch (whose `gran` crate is not a workspace member), and `context/lib` edits to `build_pipeline.md`, `index.md` and `rendering_pipeline.md`. No file outside `context/` differs from 06a41967a, so the compiled tree is the one gated above. The gate and measured rows were not rerun.
+
 **For the owner (not done; each is a decision):**
 - **D at very_high only.** A finite D cuts the mirror walk (research: D15 took it from 2.69 to 0.06 ms). Take it only if the Mac run shows `mirror_walk` matters.
 - **Per-style crop pad.** Smooth style tilts nothing, so it could crop nearly tight. This reverses Task 4's single-pad choice and needs AC 17, 18 and 35 rerun.

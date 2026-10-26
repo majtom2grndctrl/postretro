@@ -45,7 +45,12 @@ impl ReadsMode {
 /// One frame's visibility, as the harness hands it to streaming.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct FrameInput<'a> {
+    /// Every cell the frame draws: the main view's, plus the planar mirror's
+    /// reach in planar mode, as the play frame streams them.
     pub(super) visible_cells: &'a VisibleCells,
+    /// The cells SH visible targeting reads (the play frame's planar gate).
+    /// SH does not stream here; carried so the frame matches play's.
+    pub(super) sh_visible_cells: &'a VisibleCells,
     pub(super) camera_cell: u32,
     pub(super) path: VisibilityPath,
     pub(super) seconds: f64,
@@ -155,7 +160,7 @@ impl FrameDriver {
                     Some(residency_set),
                     StreamingFrame {
                         visible_cells: input.visible_cells,
-                        sh_visible_cells: input.visible_cells,
+                        sh_visible_cells: input.sh_visible_cells,
                         camera_cell: Some(input.camera_cell as usize),
                         path: input.path,
                         monotonic_seconds: input.seconds,

@@ -66,6 +66,7 @@ impl Corridor {
         self.driver.frame(
             FrameInput {
                 visible_cells: &visible,
+                sh_visible_cells: &visible,
                 camera_cell,
                 path,
                 seconds: 0.0,

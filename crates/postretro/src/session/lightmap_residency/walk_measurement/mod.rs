@@ -43,7 +43,13 @@
 // `POSTRETRO_LIGHTMAP_WALK_HFOV` (degrees, default 100),
 // `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
 // stays fixed) and `POSTRETRO_LIGHTMAP_WALK_PITCH` (degrees, up positive,
-// default 0).
+// default 0). `POSTRETRO_LIGHTMAP_WALK_PLANAR=1` runs the play frame's planar
+// mirror step each frame and streams main visible ∪ mirror reach (`mirror`).
+//
+// Bake gap with planar on (§4): on a water map, run planar off with
+// `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT`, then planar on with the same
+// modes and `..._TRIP_RECORD_IN`; the planar flag stays out of the run label,
+// so the pair splits and prints the deferred-block verdict.
 //
 // Residency gate, per projection and pitch: run the pre-change build with
 // `POSTRETRO_LIGHTMAP_WALK_READS=completed` and
@@ -60,6 +66,7 @@
 mod baked_set;
 mod completed_reads;
 mod frame_driver;
+mod mirror;
 mod modes;
 mod paths;
 mod pool_mirror;
@@ -73,9 +80,10 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 use postretro_level_format::SectionId;
 use postretro_level_loader::{LevelWorld, PrlReadCounters};
-use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells, determine_visible_cells};
+use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells};
 
 use super::{LightmapLevelView, LightmapStreamingSession};
+use crate::render_preparation::VisibleRenderPreparation;
 use crate::session::level_streaming::LevelStreaming;
 use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
@@ -85,7 +93,8 @@ use baked_set::{
     mandatory_set_sizes,
 };
 use frame_driver::{FrameDriver, FrameInput};
-use modes::{ReadsMode, WalkModes, view_projection};
+use mirror::{MirrorStats, WalkMirror};
+use modes::{ReadsMode, WalkModes, render_camera};
 use paths::{SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path};
 use pool_mirror::{PoolMirror, RetireClock};
 use report::{RunReport, mib, print_run, print_split};
@@ -259,8 +268,10 @@ fn run(
             bake: bake.to_string(),
             ..RunRecord::default()
         },
+        mirror: modes.planar.then(MirrorStats::default),
         ..RunReport::default()
     };
+    let mut planar = modes.planar.then(|| WalkMirror::install(world));
     let started = Instant::now();
     let mut rng = SplitMix64(WALK_SEED ^ 0xE7E5);
 
@@ -312,19 +323,30 @@ fn run(
             let frame_started = Instant::now();
             let eye = eye_point(world, cell, &mut rng);
             let yaw = walk.travel_yaw[step] + frame as f32 * std::f32::consts::FRAC_PI_2;
-            let view_proj = view_projection(eye, yaw, modes.pitch, modes.projection);
-            let (visibility, _) = determine_visible_cells(
-                eye,
-                view_proj,
+            let camera = render_camera(eye, yaw, modes.pitch, modes.projection);
+            let main = VisibleRenderPreparation::for_level(
                 world,
+                eye,
+                camera.view_projection,
                 &[],
                 false,
                 &mut scratch,
                 TimingGate::OFF,
             );
-            let camera_cell = visibility.stats.camera_cell;
+            // O1: the mirror step after the camera walk; the main view's sets
+            // stay as without it.
+            if let (Some(planar), Some(stats)) = (&mut planar, &mut report.mirror) {
+                planar.prepare(world, &camera, &main, &cell_blocks, stats);
+            }
+            let drawn = planar
+                .as_ref()
+                .map_or(&main.visible_cells, |p| p.drawn_cells(&main.visible_cells));
+            let sh_visible = planar.as_ref().map_or(&main.visible_cells, |p| {
+                p.sh_visible_cells(&main.visible_cells)
+            });
+            let camera_cell = main.stats.camera_cell;
             report.locate_mismatch_frames += u64::from(camera_cell != cell);
-            match visibility.stats.path {
+            match main.stats.path {
                 VisibilityPath::PrlPortal { .. } => report.path_portal += 1,
                 VisibilityPath::PortalStepLimitFallback { .. } => report.path_step_limit += 1,
                 _ => report.path_other += 1,
@@ -359,9 +381,10 @@ fn run(
 
             let outcome = driver.frame(
                 FrameInput {
-                    visible_cells: &visibility.visible_cells,
+                    visible_cells: drawn,
+                    sh_visible_cells: sh_visible,
                     camera_cell,
-                    path: visibility.stats.path,
+                    path: main.stats.path,
                     seconds,
                 },
                 view.residency_set,
@@ -370,7 +393,7 @@ fn run(
             // this frame's drain: the frame samples them SH-only.
             let mut outside_missing = 0u32;
             if let (VisibilityPath::PrlPortal { .. }, VisibleCells::Culled(cells)) =
-                (visibility.stats.path, &visibility.visible_cells)
+                (main.stats.path, drawn)
             {
                 for &drawn in cells {
                     for block in cell_blocks[drawn as usize].clone() {
@@ -384,7 +407,7 @@ fn run(
                     }
                 }
             }
-            if let VisibleCells::Culled(cells) = &visibility.visible_cells {
+            if let VisibleCells::Culled(cells) = drawn {
                 for &drawn in cells {
                     let blocks = cell_blocks[drawn as usize].len() as u32;
                     if blocks > 0 && mandatory_cells_now.binary_search(&drawn).is_err() {
@@ -416,7 +439,7 @@ fn run(
             report.record.frames.push(FrameRecord::of(
                 pose_fingerprint(step, cell, eye, yaw, modes.pitch, projection),
                 step == 0,
-                visibility.stats.path,
+                main.stats.path,
                 &outcome,
             ));
             if outside > 0 && report.first_outside.len() < 8 {
@@ -449,7 +472,7 @@ fn run(
             }
             report.frames += 1;
             seconds += FRAME_SECONDS;
-            if let VisibleCells::Culled(cells) = visibility.visible_cells {
+            if let VisibleCells::Culled(cells) = main.visible_cells {
                 scratch.recycle_cells(cells);
             }
             if modes.reads == ReadsMode::RealTime && driver.permits_in_use() > 0 {
@@ -514,6 +537,15 @@ fn lightmap_residency_walks_from_prl() {
         view.residency_set.max_lead as f32 / LEAD_UNITS_PER_METRE as f32,
         modes.label(),
     );
+    if modes.planar {
+        println!(
+            "planar on: the play frame's mirror step at the very high preset, {} candidate \
+             planes; drawn cells = main visible ∪ mirror reach",
+            WalkMirror::install(&world).candidate_planes(),
+        );
+    } else {
+        println!("planar off: camera walk only");
+    }
 
     let default = Levers {
         lead_metres: 16.0,

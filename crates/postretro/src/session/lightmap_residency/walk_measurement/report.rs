@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use super::mirror::MirrorStats;
 use super::pool_mirror::PoolStats;
 use super::trip_record::{GateSplit, RunRecord, SplitTotals};
 use super::{Levers, Walk};
@@ -106,6 +107,8 @@ pub(super) struct RunReport {
     pub(super) mandatory_set: [u64; 3],
     /// Per-frame trip record of this run.
     pub(super) record: RunRecord,
+    /// The planar mirror, in planar mode.
+    pub(super) mirror: Option<MirrorStats>,
 }
 
 /// Drawn blocks still non-resident after the frame's last drain, by cause
@@ -391,6 +394,18 @@ pub(super) fn print_run(walk: &Walk, levers: Levers, report: &RunReport) {
         "   non-resident by cause, after spawn: {}",
         report.causes_play.line()
     );
+    println!(
+        "   bake gap: deferred block-frames {} (spawn step {}, after spawn {}); pool deferrals {} \
+         block-drains",
+        report.causes_spawn.deferred + report.causes_play.deferred,
+        report.causes_spawn.deferred,
+        report.causes_play.deferred,
+        pool.deferred,
+    );
+    match &report.mirror {
+        Some(mirror) => println!("   planar mirror: {}", mirror.line()),
+        None => println!("   planar mirror: off"),
+    }
     let cells = &report.outside_cells;
     println!(
         "   drawn cells outside the baked set (with blocks): {} cell-frames, {} blocks, {:.2} \

@@ -128,7 +128,7 @@ struct MeshLightParams {
     // Exclusive end of the descriptor-backed prefix: dynamic tier plus raw
     // AnimatedBakedLights tail. The selected-static suffix follows and lacks descriptors.
     scripted_light_count: u32,
-    _pad1: u32,
+    indirect_scale: f32,
     _pad2: u32,
 };
 @group(2) @binding(4) var<uniform> mesh_light_params: MeshLightParams;
@@ -628,7 +628,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // (unused, backface rejection off) the geometric backface test.
     let base_color = textureSample(base_texture, character_model_sampler, in.uv);
     let n = normalize(in.world_normal);
-    let indirect = sample_sh_indirect(in.world_position, n, n);
+    let indirect = sample_sh_indirect(in.world_position, n, n)
+        * mesh_light_params.indirect_scale;
     // Baked static direct SH term, sampled with the same normal/grid as the
     // indirect read (corners-depth-aware, backface rejection off). The direct
     // term is gated off (0) when the baked DIRECT section is absent

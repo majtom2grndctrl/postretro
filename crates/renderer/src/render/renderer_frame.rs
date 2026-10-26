@@ -224,6 +224,7 @@ impl Renderer {
         // following frame rather than mixing group-0's old value with live
         // post-UI state.
         full.frame_light_term_mask = full.light_term_mask;
+        full.frame_indirect_scale = full.indirect_scale;
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position,
@@ -232,7 +233,7 @@ impl Renderer {
             total_light_count: full.total_light_count,
             time,
             light_term_mask: full.frame_light_term_mask,
-            indirect_scale: full.indirect_scale,
+            indirect_scale: full.frame_indirect_scale,
             sdf_shadow_flags,
             sdf_shadow_mode: full.sdf_shadow_mode,
             sdf_force_visibility_one: full.sdf_force_visibility_one,

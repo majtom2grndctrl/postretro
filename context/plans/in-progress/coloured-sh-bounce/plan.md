@@ -63,7 +63,7 @@ read at: 3275d1480
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Unify runtime indirect scale; check serialized dynamic uploads and shader guards; preserve grey baseline commit | bounded renderer worker; integrating executor verifies and commits | — | active |
+| 1 | Unify runtime indirect scale; check serialized dynamic uploads and shader guards; preserve grey baseline commit | bounded renderer worker; integrating executor verifies and commits | — | done: fmt; 4 indirect-scale CPU tests; 9 light-params tests; explicit GPU uniform readback passed all 3 adapter cases |
 | 2 | Capture pre-colour fixture section digests and full-texture bake baseline; move SurfaceMaterials into shared module in its own commit | integrating executor | 1 | pending |
 | 3 | Split extended large modules; derive fixed-size mean stats in the texture bake without extra decodes; preserve sidecar and byte accounting contracts | integrating executor | 2 | pending |
 | 4 | Add material stage after gate and validation; preserve fluid tail, failures, indices and report; share stats with SH estimator and keys | integrating executor | 3 | pending |
@@ -82,3 +82,12 @@ read at: 3275d1480
 - Branch: codex/coloured-sh-bounce. Claim commit: 3275d1480, published on main.
 - Renderer indirect-scale slice is edited and its focused test build is running. Colour integration is blocked pending the alias/glow decision. New oracle harness, unreferenced stats module, and prepared world material code are uncommitted; do not integrate the latter until the owner resolves the block.
 - Baseline usage: 95% five-hour / 68% weekly remaining.
+
+## Task 1 verification
+- `CARGO_INCREMENTAL=0 cargo fmt --check`: pass.
+- `cargo test -p postretro-renderer --lib --features dev-tools indirect_scale`: 4 passed, 1 explicitly GPU-gated test ignored.
+- `cargo test -p postretro-renderer --lib --features dev-tools light_params`: 9 passed.
+- `cargo test -p postretro-renderer --lib --features dev-tools indirect_scale_runtime_change -- --ignored --nocapture`: pass with graphics access, 1 test / 3 adapter cases. Restricted execution saw no adapter and failed explicitly; rerun with graphics access read actual world/fluid, mover and mesh uniforms successfully.
+- No baked-map visuals performed yet. Default indirect scale remains 0.33, fog unscaled. Full preflight/review deferred until integration per skill.
+- Usage after task: 58% five-hour / 63% weekly remaining. Disk free: 61 GiB.
+- Resume from the alias/glow owner decision; re-run the source proof, record only authorized contract wording, then capture byte oracle on the task-1 commit before any compiler implementation.

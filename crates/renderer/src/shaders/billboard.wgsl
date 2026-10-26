@@ -311,7 +311,7 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     let use_dynamic_direct = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
     let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;
 
-    let sh_ambient = sample_sh_indirect(sprite_pos, N);
+    let sh_ambient = sample_sh_indirect(sprite_pos, N) * uniforms.indirect_scale;
     var sh_direct = vec3<f32>(0.0);
     var direct_scatter = vec3<f32>(0.0);
     if uniforms.has_scatter != 0u {

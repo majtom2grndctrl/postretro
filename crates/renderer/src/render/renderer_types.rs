@@ -860,6 +860,8 @@ pub(super) struct FullRenderer {
     /// frame. Consumers must use this, never the UI-mutated live mask, so a
     /// toggle takes effect atomically on the following frame.
     pub(super) frame_light_term_mask: LightTermMask,
+    /// Indirect scale captured with group 0, before diagnostics can change it.
+    pub(super) frame_indirect_scale: f32,
     /// Camera-PVS-visible kinematic mover instances for the beauty pass.
     pub(super) kinematic_mover_draws: Vec<kinematic_brush::KinematicMoverInstance>,
     /// Every present kinematic mover transform, including camera-PVS-culled

@@ -1447,3 +1447,67 @@ fn wgsl_struct_has_member(source: &str, name: &str, member_name: &str, label: &s
         .map(str::trim_start)
         .any(|line| line.starts_with(&format!("{member_name}:")))
 }
+
+// Regression: entities sampled unscaled SH while world and fluid used the slider.
+#[test]
+fn every_surface_sh_consumer_applies_its_renderer_indirect_scale_and_fog_ignores_it() {
+    for (name, source, sample, scale) in [
+        (
+            "world",
+            include_str!("../../shaders/forward.wgsl"),
+            "sample_sh_indirect(in.world_position",
+            "uniforms.indirect_scale",
+        ),
+        (
+            "fluid",
+            include_str!("../../shaders/fluid_surface.wgsl"),
+            "sh.a",
+            "uniforms.indirect_scale",
+        ),
+        (
+            "mover",
+            include_str!("../../shaders/kinematic_brush.wgsl"),
+            "sample_sh_indirect(in.world_position, n, n_bump, mesh_n)",
+            "kinematic_light_params.indirect_scale",
+        ),
+        (
+            "mesh",
+            include_str!("../../shaders/skinned_mesh.wgsl"),
+            "sample_sh_indirect(in.world_position, n, n)",
+            "mesh_light_params.indirect_scale",
+        ),
+        (
+            "billboard",
+            include_str!("../../shaders/billboard.wgsl"),
+            "sample_sh_indirect(sprite_pos, N)",
+            "uniforms.indirect_scale",
+        ),
+    ] {
+        let statement = source
+            .split(sample)
+            .nth(1)
+            .expect("consumer must sample indirect")
+            .split(';')
+            .next()
+            .unwrap();
+        assert!(
+            statement.contains(&format!("* {scale}")),
+            "{name} must multiply its SH sample by its renderer indirect scale"
+        );
+        assert!(
+            !statement.contains("select("),
+            "{name} must not override the scale"
+        );
+        assert_eq!(
+            source.matches(&format!("* {scale}")).count(),
+            1,
+            "{name} must apply the scale once"
+        );
+    }
+    let fog = include_str!("../../shaders/fog_volume.wgsl");
+    assert!(fog.contains("sample_sh_indirect_corners_two_without_depth("));
+    assert!(
+        !fog.contains("indirect_scale"),
+        "fog has its own authored scatter controls"
+    );
+}

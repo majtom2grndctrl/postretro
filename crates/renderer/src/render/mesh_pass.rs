@@ -197,7 +197,8 @@ struct MeshLightParams {
     /// Descriptor-bearing prefix: dynamic tier plus the raw section-45
     /// animated-baked tail. Selected-static promotion records append after it.
     scripted_light_count: u32,
-    _pad: [u32; 2],
+    indirect_scale: f32,
+    _pad: u32,
 }
 
 /// Byte size of the group-2 params uniform (`MeshLightParams`, 32 B).
@@ -215,8 +216,8 @@ fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
         params.ambient_floor.to_ne_bytes(),
         params.dynamic_light_count.to_ne_bytes(),
         params.scripted_light_count.to_ne_bytes(),
-        params._pad[0].to_ne_bytes(),
-        params._pad[1].to_ne_bytes(),
+        params.indirect_scale.to_ne_bytes(),
+        params._pad.to_ne_bytes(),
     ]
     .concat()
 }
@@ -1477,6 +1478,11 @@ impl MeshPass {
         self.mirror_light_records = mirror;
     }
 
+    #[cfg(test)]
+    pub(super) fn light_params_buffer_for_test(&self) -> &wgpu::Buffer {
+        &self.light_params_buffer
+    }
+
     /// Write this frame's group-2 params uniform (binding 4): the dynamic-light
     /// `light_count`, the frame's render-clock `time`, and `light_term_mask`.
     /// `time` MUST be the SAME value the renderer wrote to forward `Uniforms.time`
@@ -1488,6 +1494,8 @@ impl MeshPass {
     /// `ambient_floor` MUST be the SAME value the renderer writes to forward
     /// `Uniforms.ambient_floor` this frame, so shadowed mesh faces lift with the
     /// diagnostics ambient-floor slider exactly as world surfaces do.
+    /// `indirect_scale` is the snapshot captured with forward group 0, so a
+    /// diagnostics change reaches all SH surface consumers on the same frame.
     #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
@@ -1498,6 +1506,7 @@ impl MeshPass {
         time: f32,
         light_term_mask: u32,
         ambient_floor: f32,
+        indirect_scale: f32,
     ) {
         let bytes = build_light_params_bytes(MeshLightParams {
             light_count,
@@ -1506,7 +1515,8 @@ impl MeshPass {
             time,
             light_term_mask,
             ambient_floor,
-            _pad: [0; 2],
+            indirect_scale,
+            _pad: 0,
         });
         queue.write_buffer(&self.light_params_buffer, 0, &bytes);
     }
@@ -2224,7 +2234,8 @@ mod tests {
             ambient_floor,
             dynamic_light_count: 2,
             scripted_light_count: 5,
-            _pad: [0; 2],
+            indirect_scale: 0.625,
+            _pad: 0,
         });
         assert_eq!(bytes.len(), 32, "serialized MeshLightParams must be 32 B");
         assert_eq!(
@@ -2250,7 +2261,31 @@ mod tests {
             &5u32.to_le_bytes(),
             "scripted_light_count at 20..24",
         );
-        assert_eq!(&bytes[24..], &[0; 8], "second-row padding stays zero");
+        assert_eq!(
+            &bytes[24..28],
+            &0.625f32.to_ne_bytes(),
+            "indirect_scale at 24..28"
+        );
+        assert_eq!(&bytes[28..], &[0; 4], "second-row padding stays zero");
+    }
+
+    // Regression: indirect scale must survive serialization again after the slider changes.
+    #[test]
+    fn mesh_pass_serialized_light_params_follow_indirect_scale_changes() {
+        for indirect_scale in [0.625_f32, 0.125_f32] {
+            let bytes = build_light_params_bytes(MeshLightParams {
+                light_count: 11,
+                time: 1.5,
+                light_term_mask: 0x7F,
+                ambient_floor: 0.375,
+                dynamic_light_count: 7,
+                scripted_light_count: 10,
+                indirect_scale,
+                _pad: 0,
+            });
+            let uploaded = f32::from_ne_bytes(bytes[24..28].try_into().unwrap());
+            assert!((uploaded - indirect_scale).abs() < f32::EPSILON);
+        }
     }
 
     #[test]
@@ -2290,7 +2325,7 @@ mod tests {
                 Some("ambient_floor"),
                 Some("dynamic_light_count"),
                 Some("scripted_light_count"),
-                Some("_pad1"),
+                Some("indirect_scale"),
                 Some("_pad2"),
             ],
         );

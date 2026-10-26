@@ -161,6 +161,8 @@ fn neutral_command() -> SimCommand {
 
 fn remote_fire(pawn: EntityId, weapon: EntityId, shot_id: ShotId) -> RemotePawnCommand {
     RemotePawnCommand {
+        reload_press_tick: None,
+        equip: Default::default(),
         real_command: true,
         rejected_activation: None,
         pawn,

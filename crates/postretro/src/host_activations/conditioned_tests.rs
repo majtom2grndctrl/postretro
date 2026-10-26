@@ -236,17 +236,20 @@ struct Actors {
     target: EntityId,
 }
 
+fn mark_unarmed_host_seat(registry: &mut EntityRegistry) {
+    // Keep remote pawns out of the legacy local-movement fallback.
+    let local = registry.spawn(Transform {
+        position: Vec3::new(20.0, 0.0, 0.0),
+        ..Default::default()
+    });
+    registry.set_component(local, movement()).unwrap();
+    registry.set_component(local, health(None)).unwrap();
+    registry.mark_local_player_pawn(local).unwrap();
+}
+
 fn actors(registry: &mut EntityRegistry, descriptor: &WeaponDescriptor, host: bool) -> Actors {
     if host {
-        // The listen-host local seat is intentionally unarmed. The owned remote
-        // pawn must never be selected by the legacy local-movement fallback.
-        let local = registry.spawn(Transform {
-            position: Vec3::new(20.0, 0.0, 0.0),
-            ..Default::default()
-        });
-        registry.set_component(local, movement()).unwrap();
-        registry.set_component(local, health(None)).unwrap();
-        registry.mark_local_player_pawn(local).unwrap();
+        mark_unarmed_host_seat(registry);
     }
     let pawn = registry.spawn(Transform::default());
     registry.set_component(pawn, movement()).unwrap();
@@ -296,6 +299,15 @@ fn actors(registry: &mut EntityRegistry, descriptor: &WeaponDescriptor, host: bo
 }
 
 struct Fixture {
+    before_switch_resolution: Option<fn(&mut Fixture)>,
+    /// Weapon-ordering adversaries may withhold commands independently of movement prediction.
+    weapon_only_input: bool,
+    lifecycle_drive: bool,
+    shooter_client_id: u64,
+    /// Actual retained declaration consumption by the timed host resolver.
+    switch_lane_drains: Vec<(u32, usize)>,
+    retired_pawn_network: Option<u32>,
+    slot_pawns: netcode::TestSlotPawns,
     server: NetServer,
     client: NetClient,
     up: PacketConditioner,
@@ -375,6 +387,7 @@ struct Fixture {
     /// Opt-in composition coverage: ordinary tests intentionally leave snapshot
     /// receive outside their transport/activation seam.
     receive: Option<receive_alternate::SnapshotReceive>,
+    switch_receive: Option<switch_timing::SwitchReceive>,
     /// Client ticks the host's copy of the pawn starts vaulting with fire
     /// blocked, set at each resolution as its movement would have left it.
     /// Tests vault the client's pawn over the same ticks.
@@ -424,6 +437,13 @@ impl Fixture {
         let mut down_link = link;
         down_link.seed ^= 0x5a5a;
         let mut fixture = Self {
+            before_switch_resolution: None,
+            weapon_only_input: false,
+            lifecycle_drive: false,
+            shooter_client_id: CLIENT,
+            switch_lane_drains: Vec::new(),
+            retired_pawn_network: None,
+            slot_pawns: Default::default(),
             server,
             client,
             up: PacketConditioner::new(link),
@@ -482,6 +502,7 @@ impl Fixture {
             touch: Default::default(),
             descriptors: Vec::new(),
             receive: None,
+            switch_receive: None,
             vault_ticks: None,
             host_pose: None,
         };
@@ -545,8 +566,9 @@ impl Fixture {
     fn pawn_network(&self) -> u32 {
         self.allocator
             .network_id_for_entity(self.host_actors.pawn)
-            .unwrap()
-            .0
+            .map(|id| id.0)
+            .or(self.retired_pawn_network)
+            .expect("current or retired shooter network identity")
     }
     fn shot_id(&self, token: ActivationToken, ordinal: u8) -> ShotId {
         ShotId::from_parts(self.pawn_network(), token.start_tick, token.lane, ordinal)
@@ -563,7 +585,7 @@ impl Fixture {
                 self.up.enqueue(packet);
             }
         }
-        let downlink = self.server.packets_to_send(CLIENT);
+        let downlink = self.server.packets_to_send(self.shooter_client_id);
         if self.cut_down {
             self.cut_down_packets += downlink.len();
         } else {
@@ -572,20 +594,27 @@ impl Fixture {
         self.up.advance(17);
         self.down.advance(17);
         for packet in self.up.take_ready() {
-            self.server.process_packet_from(&packet, CLIENT);
+            self.server
+                .process_packet_from(&packet, self.shooter_client_id);
         }
         for packet in self.down.take_ready() {
             self.client.process_packet(&packet);
         }
-        let _ = self.server.poll_handshakes();
+        let poll = self.server.poll_handshakes();
+        if self.lifecycle_drive {
+            self.drive_switch_disconnects(&poll.disconnects);
+            self.drive_switch_lifecycle(&poll.lifecycle);
+        }
         for message in self.client.drain_control() {
             if let Some(receive) = self.receive.as_mut() {
                 receive.control(&message, &mut self.local.borrow_mut());
             }
         }
         self.receive_snapshots();
-        for bytes in self.client.drain_input() {
-            match wire::decode::<wire::ServerMessage>(&bytes).unwrap() {
+        self.receive_switch_observer();
+        let messages = self.receive_switch_messages();
+        for message in messages {
+            match message {
                 wire::ServerMessage::ActivationOutcomes(outcomes) => {
                     for outcome in outcomes {
                         let effect = {
@@ -653,7 +682,12 @@ impl Fixture {
     }
 
     fn send_input(&mut self, tick: u32, command: &sim::SimCommand) {
-        if let Some(declaration) = self.unsent_switches.remove(&tick) {
+        if !self
+            .switch_receive
+            .as_ref()
+            .is_some_and(|receive| receive.hold_declarations)
+            && let Some(declaration) = self.unsent_switches.remove(&tick)
+        {
             self.send_switch_declaration(declaration);
         }
         // Fixed fixture data, not an alternative serializer or queue: actual
@@ -694,7 +728,7 @@ impl Fixture {
                 cancel: command.activation.cancel.map(wire_token),
             },
         };
-        if let Some(receive) = self.receive.as_mut() {
+        if let Some(receive) = self.receive.as_mut().filter(|_| !self.weapon_only_input) {
             let no_volumes = postretro_collision::EnvironmentVolumes::empty();
             // The send seam reads pitch off the command, as the app's camera
             // stamps it there.
@@ -730,12 +764,14 @@ impl Fixture {
     /// Declare a switch to `slot` made on `tick`'s command; `send_input` sends
     /// it just before that command.
     fn declare_switch(&mut self, slot: usize, tick: u32) {
+        self.register_switch_pending(slot);
         self.unsent_switches.insert(
             tick,
             wire::ClientSwitchDeclaration {
                 declaration_id: self.next_switch_id,
                 slot: u8::try_from(slot).expect("inventory slots fit a u8"),
                 client_tick: tick,
+                kind: postretro_net::wire::SwitchDeclarationKind::Switch,
             },
         );
         self.next_switch_id += 1;
@@ -780,6 +816,12 @@ impl Fixture {
         command.input_tick = tick;
         // Match the real main loop: equip/switch first, fixed activation second,
         // spatial resolution last. This catches accidental double advancement.
+        let origin = self
+            .local
+            .borrow()
+            .get_component::<Inventory>(self.local_actors.pawn)
+            .ok()
+            .map(|inventory| inventory.active_slot);
         let (switch_accepted, _) = sim::simulate_client_wieldable_tick(
             self.local.clone(),
             &self.world,
@@ -796,6 +838,7 @@ impl Fixture {
         // command it was made on, stamped with that command's tick.
         if switch_accepted && let Some(slot) = command.select_slot {
             self.declare_switch(slot, tick);
+            self.correct_switch_origin(origin.expect("accepted switch has an inventory"));
         }
         let pawn_network = self.pawn_network();
         self.frame.predict(
@@ -946,19 +989,34 @@ impl Fixture {
             &self.owners,
             &mut self.pending,
             &mut self.open,
-            CLIENT,
+            self.shooter_client_id,
             self.tick,
             u64::from(self.tick) * 16_667,
         );
-        let resolved = netcode::host_resolve_remote_commands(&self.owners, &mut self.queues);
-        netcode::host_apply_switch_deliveries(
+        if let Some(before) = self.before_switch_resolution {
+            before(self);
+        }
+        let retained_before = self
+            .queues
+            .queue_state_for_test(self.shooter_client_id)
+            .map_or(0, |queue| queue.retained_switches);
+        let resolved = netcode::host_resolve_remote_commands_with_switches(
             &mut self.host.borrow_mut(),
             &mut self.server,
             &self.owners,
             &mut self.queues,
             &mut self.weapon_owners,
             false,
+            DT,
         );
+        let retained_after = self
+            .queues
+            .queue_state_for_test(self.shooter_client_id)
+            .map_or(0, |queue| queue.retained_switches);
+        if retained_after < retained_before {
+            self.switch_lane_drains
+                .push((self.tick, retained_before - retained_after));
+        }
         let active = self
             .host
             .borrow()
@@ -972,7 +1030,7 @@ impl Fixture {
             if let Some(start) = resolved.rejected_activation {
                 let why = self
                     .queues
-                    .lane_refusal(CLIENT, start)
+                    .lane_refusal(self.shooter_client_id, start)
                     .expect("the lane names why it refused a start");
                 self.lane_refusals.push((self.tick, start, why));
             }
@@ -1077,16 +1135,18 @@ impl Fixture {
         for progress in events.remote_activation_progress {
             record_activation_progress(&mut self.allocator, &mut self.queues, &progress, |fact| {
                 match fact {
-                    HostActivationFact::Outcome(outcome) => {
-                        netcode::send_activation_outcome(&mut self.server, CLIENT, outcome)
-                    }
+                    HostActivationFact::Outcome(outcome) => netcode::send_activation_outcome(
+                        &mut self.server,
+                        self.shooter_client_id,
+                        outcome,
+                    ),
                     HostActivationFact::ShotVerdict {
                         shot_id,
                         accept,
                         hit_accepted,
                     } => netcode::send_shot_verdict(
                         &mut self.server,
-                        CLIENT,
+                        self.shooter_client_id,
                         shot_id,
                         accept,
                         hit_accepted,
@@ -1116,6 +1176,14 @@ impl Fixture {
             |_| {},
             |_, _| {},
             |_| {},
+        );
+        self.resend_switch_tuning();
+        netcode::host_settle_switches(
+            &mut self.host.borrow_mut(),
+            &mut self.server,
+            &self.owners,
+            &mut self.queues,
+            &mut self.weapon_owners,
         );
         self.publish_receive_snapshots();
         self.tick = self.tick.wrapping_add(1);
@@ -3582,6 +3650,7 @@ mod receive_alternate;
 mod lane_delivery;
 // Weapon-switch declarations ordered by client tick with starts and presses.
 mod switch_order;
+mod switch_timing;
 
 // --- Vault fire gate on the host's remote path ---------------------------------
 

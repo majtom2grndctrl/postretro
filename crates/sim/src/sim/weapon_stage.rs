@@ -20,6 +20,27 @@ pub use impact::apply_authorized_weapon_impact_damage;
 pub(super) use resource::tick_weapon_resources;
 pub(crate) use state::{finish_lowering, transition_to_idle};
 
+/// Begin the canonical local/host lower, including reload abandonment and
+/// activation cancellation. Re-targeting an existing lower retains its timer.
+pub fn begin_wieldable_lower(
+    component: &mut postretro_entities::components::weapon::WeaponComponent,
+) {
+    let duration_ms = component.lower_ms;
+    state::transition_wieldable_state(
+        component,
+        state::WieldableStateEvent::BeginLower { duration_ms },
+        None,
+    );
+}
+
+/// End a lower at a named inventory/lane ending. Timer expiry alone deliberately
+/// leaves a host-held lower in place until the client's repoint resolves.
+pub fn finish_wieldable_lower(
+    component: &mut postretro_entities::components::weapon::WeaponComponent,
+) {
+    state::finish_lowering(component);
+}
+
 #[cfg(test)]
 pub(super) fn deliver_reload_to_weapon(
     registry: &mut postretro_entities::EntityRegistry,
@@ -91,6 +112,101 @@ mod tests {
     };
     use postretro_net::wire::NetworkId;
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+
+    #[test]
+    fn remote_equip_refusal_consumes_reload_until_a_new_press() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = spawn_reload_pair(&mut registry.borrow_mut(), 10, 8, 1000, 2);
+        let mut refused = remote_command(pawn, Some(weapon), 42, 1, false, true);
+        refused.equip.reload_refused = true;
+        assert!(
+            run_remote_only_tick(registry.clone(), &[refused])
+                .reload_deliveries
+                .is_empty()
+        );
+        assert!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .reload_press_consumed
+        );
+        let held = remote_command(pawn, Some(weapon), 42, 2, false, true);
+        assert!(
+            run_remote_only_tick(registry.clone(), &[held])
+                .reload_deliveries
+                .is_empty()
+        );
+        let released = remote_command(pawn, Some(weapon), 42, 3, false, false);
+        run_remote_only_tick(registry.clone(), &[released]);
+        let pressed = remote_command(pawn, Some(weapon), 42, 4, false, true);
+        assert_eq!(
+            run_remote_only_tick(registry, &[pressed]).reload_deliveries[0].outcome,
+            ReloadOutcome::Started
+        );
+    }
+
+    #[test]
+    fn remote_deferred_lower_completes_due_atomic_reload_and_refuses_new_intent() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = spawn_reload_pair(&mut registry.borrow_mut(), 10, 8, 1000, 2);
+        {
+            let mut registry = registry.borrow_mut();
+            let mut component = registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .clone();
+            component.state = WieldableState::Reloading;
+            component.state_remaining_ms = 10;
+            component.state_total_ms = 1000;
+            component.lower_ms = 100;
+            registry.set_component(weapon, component).unwrap();
+        }
+        let mut begin = remote_command(pawn, Some(weapon), 42, 1, true, true);
+        begin.equip.begin_lower_after_machine = true;
+        let events = run_remote_only_tick(registry.clone(), &[begin]);
+        assert!(events.authorized_shots.is_empty());
+        assert_eq!(events.reload_deliveries.len(), 1);
+        assert_eq!(
+            events.reload_deliveries[0].outcome,
+            ReloadOutcome::Completed { transferred: 8 }
+        );
+        let registry = registry.borrow();
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Lowering);
+        assert_eq!(component.state_remaining_ms, 100);
+        assert_eq!(component.magazine, 10);
+        assert!(component.reload_press_consumed);
+    }
+
+    #[test]
+    fn expired_lower_waits_for_its_named_ending() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 1000, 2);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.lower_ms = 1;
+        super::begin_wieldable_lower(&mut component);
+        for _ in 0..120 {
+            let result = tick_weapon_machine(
+                &mut registry,
+                Some(pawn),
+                weapon,
+                &mut component,
+                true,
+                &fire_command(true, true),
+                false,
+                1.0 / 60.0,
+            );
+            assert!(result.lowered);
+            assert!(result.deliveries.is_empty());
+            assert_eq!(component.state, WieldableState::Lowering);
+        }
+        super::finish_wieldable_lower(&mut component);
+        assert_eq!(component.state, WieldableState::Idle);
+    }
 
     fn fire_command(pressed: bool, active: bool) -> WeaponFireCommand {
         WeaponFireCommand {
@@ -351,6 +467,58 @@ mod tests {
         inventory.wieldables[1] = Some(incoming);
         registry.set_component(pawn, inventory).unwrap();
         (pawn, outgoing, incoming)
+    }
+
+    // Regression: host equip timing must follow client ticks, including the
+    // repoint pass that starts raising without advancing its timer yet.
+    #[test]
+    fn client_equip_ticks_pin_lower_repoint_and_raise_expiry_boundaries() {
+        const DT: f32 = 1.0 / 60.0;
+        for (lower_ms, repoint) in [(0, 0), (1, 0), (16, 0), (17, 1), (50, 2), (51, 3)] {
+            for (raise_ms, raise_steps) in [(0, 1), (1, 1), (16, 1), (17, 2), (50, 3), (51, 4)] {
+                let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+                let (pawn, _, incoming) =
+                    spawn_switch_pair(&mut registry.borrow_mut(), lower_ms, 0, 0, raise_ms);
+                let mut actual_repoint = None;
+                let mut actual_expiry = None;
+                for tick in 0..=repoint + raise_steps {
+                    super::commands::run_client_weapon_equip(
+                        &registry,
+                        Some(pawn),
+                        false,
+                        (tick == 0).then_some(1),
+                        &fire_command(false, false),
+                        &CollisionWorld::default(),
+                        &HitZoneStore::new(),
+                        0.0,
+                        DT,
+                    );
+                    let registry = registry.borrow();
+                    if registry
+                        .get_component::<Inventory>(pawn)
+                        .unwrap()
+                        .active_slot
+                        == 1
+                    {
+                        actual_repoint.get_or_insert(tick);
+                        if registry
+                            .get_component::<WeaponComponent>(incoming)
+                            .unwrap()
+                            .state
+                            == WieldableState::Idle
+                        {
+                            actual_expiry.get_or_insert(tick);
+                        }
+                    }
+                }
+                assert_eq!(actual_repoint, Some(repoint), "lowerMs={lower_ms}");
+                assert_eq!(
+                    actual_expiry,
+                    Some(repoint + raise_steps),
+                    "lowerMs={lower_ms}, raiseMs={raise_ms}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -383,6 +383,12 @@ impl ClientTimeSync {
         self.weapon_cues.drain(..)
     }
 
+    /// Facts retained by the real Input drain before owner settlement.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn switch_outcomes_for_test(&self) -> impl Iterator<Item = SwitchOutcome> + '_ {
+        self.switch_outcomes.iter().copied()
+    }
+
     pub(crate) fn retain_switch_outcome(&mut self, outcome: SwitchOutcome) {
         self.switch_outcomes.push_back(outcome);
     }

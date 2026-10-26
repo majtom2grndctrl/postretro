@@ -528,6 +528,8 @@ impl PersistentAtmosphereHarness {
             &[],
             &mut mover_states,
             &[RemotePawnCommand {
+                reload_press_tick: None,
+                equip: Default::default(),
                 real_command: true,
                 rejected_activation: None,
                 pawn: self.host_remote_pawn,

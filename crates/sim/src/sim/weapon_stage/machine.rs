@@ -82,7 +82,40 @@ pub(super) fn tick_weapon_machine_activation(
         suppress_fire,
         tick_dt,
         Some((activation_command, predicted)),
+        false,
     )
+}
+
+/// Host gate refuses entry while still consuming the raw reload level. A held
+/// refused press must not become a new edge when its client-tick gate opens.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tick_remote_weapon_machine(
+    registry: &mut EntityRegistry,
+    pawn: Option<EntityId>,
+    weapon: EntityId,
+    component: &mut WeaponComponent,
+    reload: bool,
+    command: &WeaponFireCommand,
+    tick_dt: f32,
+    activation_command: ActivationCommand,
+    equip: super::super::RemoteEquipGate,
+) -> WeaponMachineTick {
+    let machine = tick_weapon_machine_phases(
+        registry,
+        pawn,
+        weapon,
+        component,
+        reload,
+        command,
+        equip.begin_lower_after_machine,
+        tick_dt,
+        Some((activation_command, false)),
+        equip.reload_refused || equip.begin_lower_after_machine,
+    );
+    if equip.begin_lower_after_machine {
+        super::begin_wieldable_lower(component);
+    }
+    machine
 }
 
 /// Prediction owns activation/input/resource clocks. The client equip pass only
@@ -112,6 +145,7 @@ pub(super) fn tick_weapon_equip_only(
         true,
         tick_dt,
         None,
+        false,
     )
 }
 
@@ -126,6 +160,7 @@ fn tick_weapon_machine_phases(
     suppress_fire: bool,
     tick_dt: f32,
     activation_command: Option<(ActivationCommand, bool)>,
+    reload_refused: bool,
 ) -> WeaponMachineTick {
     let pawn = pawn.filter(|pawn| registry.exists(*pawn));
     let feedback_tick = component.begin_reload_feedback_tick();
@@ -139,7 +174,7 @@ fn tick_weapon_machine_phases(
     if activation_command.is_some()
         && let Some(pawn) = pawn
     {
-        let fresh_press = reload && !component.reload_press_consumed;
+        let fresh_press = reload && !component.reload_press_consumed && !reload_refused;
         fresh_reload = fresh_press;
         component.reload_press_consumed = reload;
         if fresh_press {

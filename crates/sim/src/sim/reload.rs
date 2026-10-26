@@ -87,24 +87,89 @@ pub(super) fn timer_expires_this_tick(component: &WeaponComponent, tick_dt: f32)
 /// when it expires. The carry remains strictly sub-millisecond; callers that
 /// restart a timed step apply the whole overshoot to that new step.
 pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) -> Option<f64> {
-    let carried_ms = component
-        .state_elapsed_sub_ms
+    advance_countdown(
+        &mut component.state_remaining_ms,
+        &mut component.state_elapsed_sub_ms,
+        tick_dt,
+    )
+}
+
+/// Plain countdown shared by live state and equip-duration derivation. No weapon
+/// descriptor or effective-stat graph is needed to step an equip timer.
+fn advance_countdown(remaining_ms: &mut u32, sub_ms: &mut f64, tick_dt: f32) -> Option<f64> {
+    let carried_ms = sub_ms
         .is_finite()
-        .then_some(component.state_elapsed_sub_ms)
+        .then_some(*sub_ms)
         .filter(|carried| (0.0..1.0).contains(carried))
         .unwrap_or(0.0);
     let elapsed_ms = carried_ms + tick_ms(tick_dt);
-    if reaches_millisecond_boundary(elapsed_ms, component.state_remaining_ms) {
-        let overshoot_ms = (elapsed_ms - f64::from(component.state_remaining_ms)).max(0.0);
-        component.state_remaining_ms = 0;
-        component.state_elapsed_sub_ms = 0.0;
+    if reaches_millisecond_boundary(elapsed_ms, *remaining_ms) {
+        let overshoot_ms = (elapsed_ms - f64::from(*remaining_ms)).max(0.0);
+        *remaining_ms = 0;
+        *sub_ms = 0.0;
         return Some(overshoot_ms);
     }
 
     let whole_ms = elapsed_ms.floor() as u32;
-    component.state_remaining_ms -= whole_ms;
-    component.state_elapsed_sub_ms = elapsed_ms - f64::from(whole_ms);
+    *remaining_ms -= whole_ms;
+    *sub_ms = elapsed_ms - f64::from(whole_ms);
     None
+}
+
+/// Count the machine passes needed to expire a newly begun equip state. Even a
+/// zero duration resolves on its first pass. Uses the live countdown's stepping
+/// and fractional carry, rather than a separately rounded duration formula.
+pub fn wieldable_equip_ticks(duration_ms: u32, tick_dt: f32) -> u32 {
+    if duration_ms > 0 && tick_ms(tick_dt) == 0.0 {
+        return u32::MAX;
+    }
+    let mut remaining_ms = duration_ms;
+    let mut sub_ms = 0.0;
+    let step_ms = tick_ms(tick_dt);
+    let mut ticks = 0u32;
+
+    // Common fixed ticks have at most 32 fractional binary digits. Adding their
+    // carry to a step below 2^20 ms is exact in f64 (at most 52 binary digits).
+    // Double exact countdown spans, then apply them only while safely before the
+    // final step. The final boundary still uses advance_countdown, including its
+    // f32 millisecond-boundary rule. No duration division or rounding is involved.
+    // Unusual tick values retain literal stepping rather than approximate carry.
+    if step_ms > 0.0 && step_ms < 1_048_576.0 && (step_ms * 4_294_967_296.0).fract() == 0.0 {
+        let mut spans = [(0u64, 0.0f64); 32];
+        spans[0] = (step_ms.floor() as u64, step_ms.fract());
+        for index in 1..spans.len() {
+            let (whole, fraction) = spans[index - 1];
+            let doubled = fraction + fraction;
+            spans[index] = (whole * 2 + doubled.floor() as u64, doubled.fract());
+        }
+        for index in (0..spans.len()).rev() {
+            let (whole, fraction) = spans[index];
+            let carried = sub_ms + fraction;
+            let elapsed = whole + carried.floor() as u64;
+            // Leaving more than a full step avoids skipping any canonical expiry,
+            // including the slightly early f32 boundary accepted by that step.
+            if elapsed < u64::from(remaining_ms)
+                && f64::from(remaining_ms) - elapsed as f64 > step_ms.ceil()
+            {
+                remaining_ms -= elapsed as u32;
+                sub_ms = carried.fract();
+                ticks += 1u32 << index;
+            }
+        }
+    }
+    while ticks < u32::MAX {
+        ticks += 1;
+        if advance_countdown(&mut remaining_ms, &mut sub_ms, tick_dt).is_some() {
+            return ticks;
+        }
+    }
+    u32::MAX
+}
+
+/// Only an atomic reload may complete before a switch begin this tick.
+pub fn wieldable_reload_due(component: &WeaponComponent, tick_dt: f32) -> bool {
+    component.state == postretro_entities::components::wieldable_state::WieldableState::Reloading
+        && timer_expires_this_tick(component, tick_dt)
 }
 
 /// Acknowledge only weapons actually sampled by owner-private projection.
@@ -183,6 +248,41 @@ mod tests {
             assert_eq!(component.state_remaining_ms, 0);
             assert!((component.state_elapsed_sub_ms - 0.0).abs() < f64::EPSILON);
         }
+    }
+
+    #[test]
+    fn equip_tick_spans_match_literal_countdown_steps() {
+        let reference = |duration, dt| {
+            let mut remaining = duration;
+            let mut fraction = 0.0;
+            for count in 1..=u32::MAX {
+                if advance_countdown(&mut remaining, &mut fraction, dt).is_some() {
+                    return count;
+                }
+            }
+            u32::MAX
+        };
+        let mut random = 0x17ae_421du32;
+        for dt in [1.0 / 60.0, 1.0 / 120.0, 0.01, 0.02, 0.1] {
+            for duration in [0, 1, 9, 10, 16, 17, 20, 33, 34, 1000, 10001] {
+                assert_eq!(wieldable_equip_ticks(duration, dt), reference(duration, dt));
+            }
+            for _ in 0..128 {
+                random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+                let duration = random % 100_000;
+                assert_eq!(wieldable_equip_ticks(duration, dt), reference(duration, dt));
+            }
+        }
+        // Large steps make literal stepping of the full authored u32 domain
+        // affordable while exercising the same binary-span path.
+        for duration in [u32::MAX, u32::MAX - 1, 1 << 31, (1 << 31) + 127] {
+            assert_eq!(
+                wieldable_equip_ticks(duration, 1000.0),
+                reference(duration, 1000.0)
+            );
+        }
+        assert_eq!(wieldable_equip_ticks(0, 0.0), 1);
+        assert_eq!(wieldable_equip_ticks(1, 0.0), u32::MAX);
     }
 
     #[test]

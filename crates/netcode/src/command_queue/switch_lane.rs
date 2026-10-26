@@ -17,6 +17,7 @@ use postretro_net::wire::ClientSwitchDeclaration;
 use super::press_edges::PressGate;
 use super::{CLIENT_TICK_HALF_RANGE, ClientCommandState};
 use crate::activation_edges::{MAX_RETAINED_ACTIVATION_EDGES, RETENTION_TICKS};
+use crate::host_switch_timing::{HostSwitchTiming, SwitchAction, SwitchApply, SwitchFrontier};
 use crate::prediction::client_tick_le;
 
 /// Per-client bound, the same as the start, edge and press lanes. A client
@@ -72,6 +73,7 @@ impl RetainedSwitch {
 /// front-first and ignores an outcome for any other declaration.
 #[derive(Debug, Default)]
 pub(super) struct SwitchLane {
+    pub(super) timing: HostSwitchTiming,
     retained: VecDeque<RetainedSwitch>,
     released: Vec<SwitchDelivery>,
 }
@@ -81,7 +83,7 @@ impl SwitchLane {
         std::mem::take(&mut self.released)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn retained_len(&self) -> usize {
         self.retained.len()
     }
@@ -116,7 +118,15 @@ impl ClientCommandState {
     ///
     /// Bound: a switch applies once its tick has resolved and nothing older is
     /// pending, and never later than `SWITCH_WAIT_TICKS` host ticks after intake.
-    pub(super) fn deliver_switches(&mut self, live: Option<ActivationToken>) {
+    pub(super) fn deliver_switches(
+        &mut self,
+        live: Option<ActivationToken>,
+        apply: Option<&mut SwitchApply<'_>>,
+    ) {
+        if let Some(apply) = apply {
+            self.apply_timed_switches(live, apply);
+            return;
+        }
         let mut applied = false;
         while let Some(front) = self.switches.retained.front().copied() {
             if !front.malformed && (applied || !self.switch_ready(front, live)) {
@@ -124,6 +134,79 @@ impl ClientCommandState {
             }
             self.switches.retained.pop_front();
             self.switches.released.push(front.delivery());
+            applied |= !front.malformed;
+        }
+    }
+
+    fn switch_frontier(&self, live: Option<ActivationToken>) -> SwitchFrontier {
+        SwitchFrontier {
+            cursor: self.resolved_cursor,
+            newest: self.newest_observed_tick(),
+            oldest_start: self.activation_edges.oldest_start_tick(),
+            oldest_press: self
+                .resolved_cursor
+                .and_then(|cursor| self.oldest_due_press(cursor)),
+            live_horizon: self.live_horizon(live),
+        }
+    }
+
+    fn apply_timed_switches(&mut self, live: Option<ActivationToken>, apply: &mut SwitchApply<'_>) {
+        let frontier = self.switch_frontier(live);
+        // Overflow releases owe replies before anything still retained. The
+        // callback settles a parked predecessor before a forced later delivery.
+        for delivery in self.switches.take_released() {
+            apply(
+                &mut self.switches.timing,
+                SwitchAction::Declaration(delivery),
+                frontier,
+            );
+        }
+        let mut applied = false;
+        loop {
+            let front = self.switches.retained.front().copied();
+            let lower = self.switches.timing.lower;
+            if let Some(lower) = lower {
+                if let Some(front) = front {
+                    let retarget =
+                        client_tick_le(front.declaration.client_tick, lower.repoint_tick);
+                    let forced = front.malformed
+                        || self.host_tick.wrapping_sub(front.retained_at) >= SWITCH_WAIT_TICKS;
+                    if forced || (retarget && self.switch_ready(front, live)) {
+                        self.switches.retained.pop_front();
+                        apply(
+                            &mut self.switches.timing,
+                            SwitchAction::Declaration(front.delivery()),
+                            frontier,
+                        );
+                        applied |= !front.malformed;
+                        continue;
+                    }
+                }
+                // With no command stream, only a zero-duration lower can land
+                // in the declaration's own resolution. Silence never expires a lower.
+                let immediate_without_stream = frontier.newest.is_none()
+                    && lower.repoint_tick == lower.declaration.client_tick;
+                if frontier.ready(lower.repoint_tick) || immediate_without_stream {
+                    apply(&mut self.switches.timing, SwitchAction::Repoint, frontier);
+                    if self.switches.timing.lower.is_some() {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+            let Some(front) = front else {
+                break;
+            };
+            if !front.malformed && (applied || !self.switch_ready(front, live)) {
+                break;
+            }
+            self.switches.retained.pop_front();
+            apply(
+                &mut self.switches.timing,
+                SwitchAction::Declaration(front.delivery()),
+                frontier,
+            );
             applied |= !front.malformed;
         }
     }
@@ -164,6 +247,7 @@ impl ClientCommandState {
             .iter()
             .filter(|switch| !switch.malformed)
             .map(|switch| switch.declaration.client_tick)
+            .chain(self.switches.timing.lower.map(|lower| lower.repoint_tick))
             .reduce(|oldest, tick| {
                 if client_tick_le(tick, oldest) {
                     tick
@@ -208,6 +292,7 @@ mod tests {
             declaration_id,
             slot,
             client_tick,
+            kind: postretro_net::wire::SwitchDeclarationKind::Switch,
         }
     }
 

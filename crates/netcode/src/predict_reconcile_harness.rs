@@ -1,9 +1,10 @@
-// Integrated, production-adjacent prediction/reconciliation tests. Every test drives
+// Integrated, production-adjacent prediction/reconciliation tests drive
 // the real production seams through `LoopbackHarness` (see the sibling
 // `predict_reconcile_harness_test_fixtures`), whose link is the production channel
 // configuration over the relay; the prototype `sim::predict_reconcile` type is never
 // instantiated. The own-pawn latency gate under the dev profile lives in
-// `predict_reconcile_relay_harness`.
+// `predict_reconcile_relay_harness`. The ordered switch-pair tests use an
+// immediate fixture solely to isolate client outcome-chain settlement.
 // See: context/lib/networking.md · context/lib/testing_guide.md
 //
 // Replay-purity guard: the production replay path (`prediction::replay`) is
@@ -32,10 +33,10 @@ use super::predict_reconcile_harness_test_fixtures::{
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
+use crate::host_switch::{SettlementOnlySwitchDecision, apply_settlement_only_switch_fixture};
 use crate::kinematic_mover::apply_mover_command;
 use crate::netcode::{
-    CurrentSwitchResolution, HostSwitchDecision, PendingSwitchDeclaration, SwitchOutcome,
-    apply_host_switch_declaration, resolve_switch_outcome,
+    CurrentSwitchResolution, PendingSwitchDeclaration, SwitchOutcome, resolve_switch_outcome,
 };
 use crate::sim::SimCommand;
 use postretro_entities::{
@@ -69,11 +70,11 @@ fn loopback_link() -> LinkConfig {
 // Section A — Integrated scenario tests (drive the real seams end to end)
 // ---------------------------------------------------------------------------
 
-/// Two switch declarations through the host's apply and their outcomes through
-/// the client's chain. The bytes cross a bare `PacketConditioner` with no loss or
-/// jitter, so they arrive in send order by construction: this pins the apply and
-/// the chain's resolution, not the transport's ordering. Switch order on the
-/// production Input channel under loss is `client_switch_relay_test`'s.
+/// Two switch declarations through an immediate settlement-only fixture, with
+/// outcomes through the client's chain. The bytes cross a bare
+/// `PacketConditioner` with no loss or jitter, so they arrive in send order by
+/// construction. This isolates chain settlement; equip timing and production
+/// Input ordering under loss are covered by `client_switch_relay_test`.
 fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<CurrentSwitchResolution>) {
     let mut host_registry = postretro_entities::EntityRegistry::new();
     let host_pawn = host_registry.spawn(Transform::default());
@@ -143,11 +144,13 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
             declaration_id: 41,
             slot: 1,
             client_tick: 10,
+            kind: postretro_net::wire::SwitchDeclarationKind::Switch,
         },
         ClientSwitchDeclaration {
             declaration_id: 42,
             slot: 2,
             client_tick: 11,
+            kind: postretro_net::wire::SwitchDeclarationKind::Switch,
         },
     ] {
         to_host.enqueue(postretro_net::wire::encode(
@@ -162,21 +165,25 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
         else {
             panic!("switch harness carries declarations only");
         };
-        let outcome = match apply_host_switch_declaration(
+        let outcome = match apply_settlement_only_switch_fixture(
             &mut host_registry,
             host_pawn,
             &mut weapon_owners,
             usize::from(declaration.slot),
             false,
         ) {
-            HostSwitchDecision::Accepted => ServerMessage::SwitchAccepted(ServerSwitchAccepted {
-                declaration_id: declaration.declaration_id,
-                slot: declaration.slot,
-            }),
-            HostSwitchDecision::Refused => ServerMessage::SwitchRefused(ServerSwitchRefused {
-                declaration_id: declaration.declaration_id,
-                slot: declaration.slot,
-            }),
+            SettlementOnlySwitchDecision::Accepted => {
+                ServerMessage::SwitchAccepted(ServerSwitchAccepted {
+                    declaration_id: declaration.declaration_id,
+                    slot: declaration.slot,
+                })
+            }
+            SettlementOnlySwitchDecision::Refused => {
+                ServerMessage::SwitchRefused(ServerSwitchRefused {
+                    declaration_id: declaration.declaration_id,
+                    slot: declaration.slot,
+                })
+            }
         };
         to_client.enqueue(postretro_net::wire::encode(&outcome));
     }

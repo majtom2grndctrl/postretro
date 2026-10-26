@@ -199,6 +199,9 @@ pub(super) fn transition_wieldable_state(
         (WieldableState::Lowering, WieldableStateEvent::BeginReload { .. }) => {
             StateTransition::Noop
         }
+        // Expiry reports the local repoint opportunity, but never exits Lowering.
+        // A remote pawn may hold here across many host ticks until its client-tick
+        // repoint or another named ending explicitly finishes the lower.
         (WieldableState::Lowering, WieldableStateEvent::Expired { .. }) => StateTransition::Lowered,
         (WieldableState::Lowering, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
         (WieldableState::Lowering, WieldableStateEvent::BeginLower { .. }) => {

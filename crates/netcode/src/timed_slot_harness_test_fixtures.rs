@@ -552,6 +552,8 @@ impl TimedSlotHarness {
             &[],
             &mut MoverTickStateTable::default(),
             &[RemotePawnCommand {
+                reload_press_tick: None,
+                equip: Default::default(),
                 real_command: true,
                 rejected_activation: None,
                 pawn: self.base.owner_pawn,

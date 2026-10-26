@@ -35,6 +35,8 @@ mod activation_cadence;
 mod departed_weapons;
 mod press_edges;
 mod switch_lane;
+#[cfg(test)]
+mod switch_timing_tests;
 pub use activation_cadence::CadenceVerdict;
 use press_edges::Press;
 pub use switch_lane::SwitchDelivery;
@@ -172,6 +174,22 @@ pub(crate) const INPUT_BUFFER_MAX: usize = 8;
 /// apart, so intake establishes this window before any serial reduction reads `pending`.
 const CLIENT_TICK_HALF_RANGE: u32 = 1 << 31;
 
+/// Read-only queue evidence for composed deterministic gameplay harnesses.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+pub struct CommandQueueTestState {
+    pub resolved_cursor: Option<u32>,
+    pub pending_ticks: Vec<u32>,
+    pub newest_tick: Option<u32>,
+    pub retained_switches: usize,
+    pub host_tick: u32,
+    pub lower_repoint_tick: Option<u32>,
+    pub wait_ticks: u32,
+    pub lead_ticks: u32,
+    pub max_retained_switches: usize,
+    pub max_pending_ticks: usize,
+}
+
 /// One client's resolved-command state on the host: its pending inbound queue and
 /// the gap-policy cursor. Keyed in [`HostCommandQueues`] by client id.
 #[derive(Debug, Default)]
@@ -231,6 +249,7 @@ struct ClientCommandState {
     /// press waits behind one false tick when necessary so the weapon's level-to-edge
     /// dedup sees a genuine rising edge.
     last_emitted_reload: bool,
+    delivered_reload_tick: Option<u32>,
     /// One-shot buildup latch for the standing playout floor. Armed at stream begin
     /// (`resolved_cursor == None`) and re-armed by a give-up that empties `pending`;
     /// disarmed the instant `pending.len()` first reaches [`INPUT_BUFFER_TARGET`].
@@ -379,6 +398,8 @@ pub struct HostCommandQueues {
 /// `resolve_tick`.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedCommand {
+    /// Original client tick of the reload edge delivered in this resolution.
+    pub(crate) reload_press_tick: Option<u32>,
     /// The sim command to feed the movement seam this tick.
     pub(crate) command: SimCommand,
     pub(crate) teleport_yaw_stamp: f32,
@@ -399,6 +420,10 @@ pub(crate) struct ResolvedCommand {
 /// weapon intent later in the sim weapon stage.
 #[derive(Debug, Clone)]
 pub struct ResolvedPawnCommand {
+    /// Original client tick of a delivered reload press, including recovered taps.
+    /// A high reload level without this stamp only maintains the held level; it
+    /// cannot start another reload when the command binds a different weapon.
+    pub reload_press_tick: Option<u32>,
     pub pawn: EntityId,
     pub client_id: u64,
     pub command: SimCommand,
@@ -504,12 +529,21 @@ impl HostCommandQueues {
     /// single far-future command after a silence does NOT trip it — the resume path stays
     /// intact.
     pub(crate) fn resolve_tick(&mut self, client_id: u64) -> Option<ResolvedCommand> {
+        self.resolve_tick_with_switches(client_id, None)
+    }
+
+    pub(crate) fn resolve_tick_with_switches(
+        &mut self,
+        client_id: u64,
+        apply: Option<&mut crate::host_switch_timing::SwitchApply<'_>>,
+    ) -> Option<ResolvedCommand> {
         let live_activation = self
             .activations
             .live_binding(client_id)
             .map(|(id, _)| id.token);
         let state = self.clients.get_mut(&client_id)?;
         state.host_tick = state.host_tick.wrapping_add(1);
+        state.delivered_reload_tick = None;
 
         // Diagnostics-only: whether this resolution performed a catch-up trim and how
         // many trimmed commands carried a pressed jump. Pure observability.
@@ -570,7 +604,7 @@ impl HostCommandQueues {
             // command is withheld until a small playout depth accumulates.
             None => {
                 let Some((oldest, _)) = state.serial_bounds() else {
-                    state.deliver_switches(live_activation);
+                    state.deliver_switches(live_activation, apply);
                     return None;
                 };
                 let first = state.pending[oldest].client_tick;
@@ -603,7 +637,7 @@ impl HostCommandQueues {
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
             state.drop_stale(expected);
-            state.deliver_switches(live_activation);
+            state.deliver_switches(live_activation, apply);
             let rejected_activation =
                 state.deliver_retained(expected, live_activation, true, &mut sim);
             state.deliver_edges(&mut sim.activation, live_activation);
@@ -620,6 +654,7 @@ impl HostCommandQueues {
                 trimmed_jump: diag_trimmed_jump,
             });
             return Some(ResolvedCommand {
+                reload_press_tick: state.delivered_reload_tick,
                 command: sim,
                 teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
@@ -656,7 +691,7 @@ impl HostCommandQueues {
                     ResolutionSource::Neutral,
                 ),
             };
-            state.deliver_switches(live_activation);
+            state.deliver_switches(live_activation, apply);
             state.deliver_edges(&mut sim.activation, live_activation);
             let diag_lead = state
                 .latest_observed_reload
@@ -671,6 +706,7 @@ impl HostCommandQueues {
                 trimmed_jump: diag_trimmed_jump,
             });
             return Some(ResolvedCommand {
+                reload_press_tick: state.delivered_reload_tick,
                 command: sim,
                 teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
@@ -715,7 +751,7 @@ impl HostCommandQueues {
                     .as_ref()
                     .expect("frontier freeze requires a command to hold"),
             );
-            state.deliver_switches(live_activation);
+            state.deliver_switches(live_activation, apply);
             state.hold_gated_reload(live_activation, &mut sim);
             let source = ResolutionSource::Held;
             state.deliver_edges(&mut sim.activation, live_activation);
@@ -732,6 +768,7 @@ impl HostCommandQueues {
                 trimmed_jump: diag_trimmed_jump,
             });
             return Some(ResolvedCommand {
+                reload_press_tick: state.delivered_reload_tick,
                 command: sim,
                 teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
@@ -780,7 +817,7 @@ impl HostCommandQueues {
         // disarms so the neutral-walk advances toward them. For a neutral-walk or a
         // deep-buffer yield, `pending` still holds commands, so this stays false.
         state.building_playout = state.pending.is_empty();
-        state.deliver_switches(live_activation);
+        state.deliver_switches(live_activation, apply);
         state.deliver_retained(expected, live_activation, false, &mut sim);
         state.deliver_edges(&mut sim.activation, live_activation);
         let diag_lead = state
@@ -796,12 +833,31 @@ impl HostCommandQueues {
             trimmed_jump: diag_trimmed_jump,
         });
         Some(ResolvedCommand {
+            reload_press_tick: state.delivered_reload_tick,
             command: sim,
             teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
             client_tick: expected,
             rejected_activation: None,
             source,
         })
+    }
+
+    pub(crate) fn switch_timing(
+        &self,
+        client_id: u64,
+    ) -> Option<&crate::host_switch_timing::HostSwitchTiming> {
+        self.clients
+            .get(&client_id)
+            .map(|state| &state.switches.timing)
+    }
+
+    pub(crate) fn switch_timing_mut(
+        &mut self,
+        client_id: u64,
+    ) -> Option<&mut crate::host_switch_timing::HostSwitchTiming> {
+        self.clients
+            .get_mut(&client_id)
+            .map(|state| &mut state.switches.timing)
     }
 
     /// Retain a client's weapon-switch declaration for in-order release on a
@@ -864,6 +920,43 @@ impl HostCommandQueues {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolved_cursor_for_test(&self, client_id: u64) -> Option<u32> {
+        self.resolved_cursor(client_id)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_pending_tick_for_test(&self, client_id: u64, tick: u32) -> bool {
+        self.clients.get(&client_id).is_some_and(|state| {
+            state
+                .pending
+                .iter()
+                .any(|command| command.client_tick == tick)
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn queue_state_for_test(&self, client_id: u64) -> Option<CommandQueueTestState> {
+        self.clients
+            .get(&client_id)
+            .map(|state| CommandQueueTestState {
+                resolved_cursor: state.resolved_cursor,
+                pending_ticks: state
+                    .pending
+                    .iter()
+                    .map(|command| command.client_tick)
+                    .collect(),
+                newest_tick: state.newest_observed_tick(),
+                retained_switches: state.switches.retained_len(),
+                host_tick: state.host_tick,
+                lower_repoint_tick: state.switches.timing.lower.map(|lower| lower.repoint_tick),
+                wait_ticks: switch_lane::SWITCH_WAIT_TICKS,
+                lead_ticks: switch_lane::SWITCH_LEAD_TICKS,
+                max_retained_switches: switch_lane::MAX_RETAINED_SWITCHES,
+                max_pending_ticks: INPUT_BUFFER_MAX,
+            })
+    }
+
     /// Latest finite aim pitch accepted by authoritative command playout. Input
     /// neutralization does not reset presentation orientation during an outage.
     pub(crate) fn current_aim_pitch(&self, client_id: u64) -> Option<f32> {
@@ -893,10 +986,9 @@ impl HostCommandQueues {
 /// explicitly, including the listen host's own pawn (which the caller appends
 /// separately with its locally-sampled input).
 ///
-/// Each command keeps the facing the client sampled, unrotated, beside its
-/// `teleport_yaw_stamp`. Test seam only: production resolves through
-/// [`host_resolve_remote_commands_in_registry`], which turns every command into its
-/// pawn's current teleport frame before movement or aim reads it.
+/// This sampled-frame resolver is a test seam. Production uses
+/// [`crate::host_resolve_remote_commands_with_switches`], which applies timed switch
+/// callbacks and converts each command's facing into its pawn's teleport frame.
 #[cfg(any(test, feature = "test-support"))]
 pub fn host_resolve_remote_commands(
     owners: &MovementOwners,
@@ -917,6 +1009,7 @@ fn resolve_remote_commands_in_sampled_frame(
         if let Some(resolved) = command_queues.resolve_tick(client_id) {
             let aim_pitch = command_queues.current_aim_pitch(client_id).unwrap_or(0.0);
             commands.push(ResolvedPawnCommand {
+                reload_press_tick: resolved.reload_press_tick,
                 pawn,
                 client_id,
                 command: resolved.command,

@@ -22,7 +22,8 @@ use crate::visibility::{FrustumPlane, VisibleCells, is_aabb_outside_planes};
 pub struct MirrorView {
     /// The reflected eye. It may lie in a solid cell: nothing locates it.
     pub eye: Vec3,
-    /// The mirror's cull view-projection. With D set, its far plane is D.
+    /// The mirror's cull view-projection, cropped to the selected plane
+    /// ([`crate::crop_mirror_view_proj`]). With D set, its far plane is D.
     pub view_proj: Mat4,
     /// The water plane, unit normal facing the reflected content. It
     /// replaces the view-projection's near plane.

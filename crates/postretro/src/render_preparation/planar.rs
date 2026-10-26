@@ -8,8 +8,9 @@ use postretro_render_cpu::planar_reflection::{
 };
 use postretro_stage_timing::StageFrame;
 use postretro_visibility::{
-    FrustumPlane, MirrorView, MirrorVisibility, MirrorVisibilityPath, PortalWalkScratch,
-    VisibilityPath, VisibilityStage, VisibleCells, determine_mirror_visible_cells,
+    FrustumPlane, MirrorCropScratch, MirrorView, MirrorVisibility, MirrorVisibilityPath,
+    PortalWalkScratch, VisibilityPath, VisibilityStage, VisibleCells,
+    determine_mirror_visible_cells,
 };
 
 use super::VisibleRenderPreparation;
@@ -31,9 +32,12 @@ pub(crate) struct PlanarRenderPreparation {
     /// The plane selected last frame: selection's hysteresis input. Cleared at
     /// install, so a new level or fluid table never inherits it.
     selected: Option<SelectedPlane>,
-    /// This frame's mirror view; `None` with no plane, below very high, or
-    /// with the eye under the plane or in its fog band.
+    /// This frame's mirror view, its cull cropped to the selected plane;
+    /// `None` with no plane, below very high, with the eye under the plane or
+    /// in its fog band, or with no part of the plane on screen.
     camera: Option<MirrorCamera>,
+    /// The crop's polygon clip buffers.
+    crop_scratch: MirrorCropScratch,
     /// The seed domain on a main view whose visible set is `DrawAll`.
     seed_domain: Vec<u32>,
     seed_cells: Vec<u32>,
@@ -55,6 +59,10 @@ pub(crate) struct PlanarRenderPreparation {
     /// A test-only step cap in place of the shared one, to force a trip.
     #[cfg(test)]
     step_cap: Option<u32>,
+    /// Whether the mirror's walk and cull are cropped to the selected plane:
+    /// always, except where a test or the crop-parity capture turns it off.
+    #[cfg(any(test, feature = "capture"))]
+    crop: bool,
 }
 
 impl Default for PlanarRenderPreparation {
@@ -63,6 +71,7 @@ impl Default for PlanarRenderPreparation {
             candidates: PlanarCandidates::default(),
             selected: None,
             camera: None,
+            crop_scratch: MirrorCropScratch::default(),
             seed_domain: Vec::new(),
             seed_cells: Vec::new(),
             seeds: Vec::new(),
@@ -75,6 +84,8 @@ impl Default for PlanarRenderPreparation {
             previous_diagnostic: None,
             #[cfg(test)]
             step_cap: None,
+            #[cfg(any(test, feature = "capture"))]
+            crop: true,
         }
     }
 }
@@ -82,13 +93,16 @@ impl Default for PlanarRenderPreparation {
 impl PlanarRenderPreparation {
     /// Install `world`'s candidate planes: the up-facing faces of
     /// `reflecting_volumes`, the volumes that reflect and bind a probe. Resets
-    /// selection history, at level install and at every fluid refresh.
+    /// selection history, at level install and at every fluid refresh. The
+    /// crop switch carries over, so a refresh mid-capture keeps it.
     pub(crate) fn install(&mut self, world: &LevelWorld, reflecting_volumes: &[u32]) {
         *self = Self {
             candidates: PlanarCandidates::from_volumes(
                 &world.environment_volumes.volumes,
                 reflecting_volumes,
             ),
+            #[cfg(any(test, feature = "capture"))]
+            crop: self.crop,
             ..Self::default()
         };
     }
@@ -146,6 +160,31 @@ impl PlanarRenderPreparation {
             self.previous_diagnostic = None;
             return;
         };
+        // The crop (O1: after selection, before the walk): the walk and the
+        // mirror cull take the plane's padded on-screen bounds, so the trip
+        // set filters against them too (O5). Raster and clip stay uncropped.
+        let camera = if self.crop_enabled() {
+            let cropped = self
+                .candidates
+                .planes
+                .get(selected.candidate_index)
+                .and_then(|plane| {
+                    camera.cropped_to_plane(
+                        plane,
+                        main_camera.view_projection,
+                        &mut self.crop_scratch,
+                    )
+                });
+            let Some(cropped) = cropped else {
+                // No face keeps any part on screen, so no mirror sample lands
+                // anywhere: no mirror view this frame, and selection holds.
+                self.previous_diagnostic = None;
+                return;
+            };
+            cropped
+        } else {
+            camera
+        };
 
         // Seeds come from this frame's camera reach; on a main-view fallback
         // the reach is its drawn set.
@@ -162,8 +201,6 @@ impl PlanarRenderPreparation {
         self.seeds
             .extend(self.seed_cells.iter().map(|&cell| cell as usize));
 
-        // The crop to the selected plane's projected bounds composes into
-        // `view_proj` here, for both the walk and the mirror cull.
         let view = MirrorView {
             eye: camera.eye,
             view_proj: camera.cull_vp,
@@ -266,8 +303,29 @@ impl PlanarRenderPreparation {
     }
 
     /// This frame's mirror view, for the renderer; `None` draws no planar.
+    /// Its `cull_vp` is cropped to the selected plane, so the renderer's
+    /// mirror cull covers only what the walk does.
     pub(crate) fn camera(&self) -> Option<MirrorCamera> {
         self.camera
+    }
+
+    fn crop_enabled(&self) -> bool {
+        #[cfg(any(test, feature = "capture"))]
+        {
+            self.crop
+        }
+        #[cfg(not(any(test, feature = "capture")))]
+        {
+            true
+        }
+    }
+
+    /// Turn the crop off, or back on, for the crop-parity capture row: the
+    /// mirror then walks and culls its whole frustum. On by default.
+    #[cfg(any(test, feature = "capture"))]
+    #[cfg_attr(not(test), allow(dead_code, reason = "capture's controls wire it"))]
+    pub(crate) fn set_crop(&mut self, on: bool) {
+        self.crop = on;
     }
 
     /// The selected plane this frame drew, if any.

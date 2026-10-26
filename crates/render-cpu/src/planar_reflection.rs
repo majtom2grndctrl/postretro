@@ -4,12 +4,17 @@
 use glam::{Mat4, Vec3, Vec4};
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_loader::LevelWorld;
-use postretro_visibility::{Frustum, extract_frustum_planes};
+use postretro_visibility::{
+    Frustum, MirrorCropScratch, crop_mirror_view_proj, extract_frustum_planes,
+};
 
 use crate::fluid_surface::{
     face_area_centroid, face_normal,
     fog::FLUID_FOG_BAND,
+    motion::{FLUID_RING_AMPLITUDE, FLUID_SHIMMER_AMPLITUDE},
+    reflection::FLUID_REFLECTION_RAY_MIN_Y,
     reflection_quality::{FluidReflectionQuality, reflection_target_extent},
+    reflection_style::FLUID_REFLECTION_PIXEL_TILT,
 };
 
 /// Faces, and fluid triangles, within this many metres of one height share a plane.
@@ -19,6 +24,31 @@ pub const PLANE_HEIGHT_TOLERANCE: f32 = 0.01;
 pub const PLANAR_CLIP_BIAS: f32 = 0.02;
 /// A challenger must score above this multiple of the held plane to switch.
 pub const PLANE_SELECTION_HYSTERESIS: f32 = 1.25;
+
+/// Largest per-axis whole-texel displayed offset a pixel-style cell shows:
+/// a shimmer plus a ring, each pinned at one texel per axis.
+pub const MIRROR_CROP_MAX_OFFSET_TEXELS: i32 = FLUID_SHIMMER_AMPLITUDE + FLUID_RING_AMPLITUDE;
+
+/// The mirror crop's pad: the largest angle between a pixel-style cell's
+/// reflected ray and the flat water's ray through the same point, which is
+/// the mirror eye's ray through it. Derivation:
+/// - The tilt is `unit(u)·ox + unit(v)·oy` times `FLUID_REFLECTION_PIXEL_TILT`,
+///   in the plane, so its tangent is at most `(|ox| + |oy|) · 0.05 = 4 · 0.05
+///   = 0.2` (skewed texture axes reach the sum; orthogonal ones 2√2 · 0.05),
+///   and the normal turns `atan(0.2) ≤ 0.2` rad.
+/// - Mirroring about two normals `θ` apart differs by a rotation of `2θ`
+///   (two half-turns compose to one), so the ray turns at most 0.4 rad.
+/// - The horizon clamp (`FLUID_REFLECTION_RAY_MIN_Y`) moves a grazing flat
+///   ray up to `asin(MIN_Y) ≤ π/2 · MIN_Y`, and moves the tilted ray no
+///   further from the clamped flat one, so it adds at most `π · MIN_Y`.
+///
+/// ≈ 0.4031 rad (23.1°). Seen from the mirror eye, a sample at any depth
+/// along such a ray lies within this angle of the eye's ray through its
+/// water point, so it holds at every depth. Smooth style tilts nothing but
+/// takes the same pad: the walk never depends on style.
+pub const MIRROR_CROP_PAD_RADIANS: f32 =
+    2.0 * (2 * MIRROR_CROP_MAX_OFFSET_TEXELS) as f32 * FLUID_REFLECTION_PIXEL_TILT
+        + std::f32::consts::PI * FLUID_REFLECTION_RAY_MIN_Y;
 
 /// One planar tier's engine-constant preset: the planar layer's per-axis
 /// scale of the scene extent and the absolute-metre distance limits. `None`
@@ -391,10 +421,46 @@ impl MirrorCamera {
     /// far) as `dot(plane, vec4(p, 1)) >= 0`, for [0, 1] depth. Unnormalized
     /// and allocation-free, for per-leaf tests on the frame path.
     pub fn cull_planes(&self) -> [Vec4; 6] {
-        let m = self.cull_vp;
-        let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
-        [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2]
+        view_proj_planes(self.cull_vp)
     }
+
+    /// This mirror with its cull view-projection cropped to `plane`
+    /// (`rendering_pipeline.md` §7.3a Visibility): the on-screen part of each
+    /// face that passes the main frustum (`main_vp`), padded by
+    /// [`MIRROR_CROP_PAD_RADIANS`]. Only faces in view count, so a coplanar
+    /// pool in another room never widens it. The plane is fixed under the
+    /// reflection, so its points project through `cull_vp` where the main
+    /// view shows them. `raster_vp` and `clip_plane` stay as they are: the
+    /// crop culls, it never moves a pixel. `None` when no face keeps any part
+    /// on screen; then no mirror sample lands anywhere.
+    pub fn cropped_to_plane(
+        &self,
+        plane: &PlanarCandidate,
+        main_vp: Mat4,
+        scratch: &mut MirrorCropScratch,
+    ) -> Option<Self> {
+        let main = view_proj_planes(main_vp);
+        let faces = plane
+            .faces
+            .iter()
+            .filter(|face| aabb_in_planes(face.bounds_min, face.bounds_max, &main))
+            .map(|face| face.vertices.as_slice());
+        let cull_vp = crop_mirror_view_proj(
+            self.cull_vp,
+            self.eye,
+            faces,
+            MIRROR_CROP_PAD_RADIANS,
+            scratch,
+        )?;
+        Some(Self { cull_vp, ..*self })
+    }
+}
+
+/// A [0, 1]-depth view-projection's six inward planes (left, right, bottom,
+/// top, near, far) as `dot(plane, vec4(p, 1)) >= 0`, unnormalized.
+fn view_proj_planes(m: Mat4) -> [Vec4; 6] {
+    let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
+    [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2]
 }
 
 /// Whether an AABB reaches inside every plane of `planes` (the p-vertex

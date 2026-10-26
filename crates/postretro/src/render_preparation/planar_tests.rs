@@ -3,6 +3,7 @@
 
 use super::test_fixtures::*;
 use super::*;
+use glam::Vec3;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_test_log_capture::LogCapture;
 
@@ -243,5 +244,81 @@ fn planar_mirror_cells_join_sample_regions_and_the_renderer_view_on_a_walk_path(
         assert!(sample_visible.contains(&room));
         assert!(sample_fog.contains(&room));
         assert!(cells(mirror.visible()).contains(&room));
+    }
+}
+
+// Task 4 (AC 17's app side, AC 36's seam, O5): at the corner pool the
+// cropped mirror reaches a strict subset of the uncropped walk at the same
+// pose, its cull is cropped while raster, clip plane and eye stay, a forced
+// trip draws only cells inside the cropped frustum, and turning the crop off
+// restores the uncropped walk.
+#[test]
+fn planar_crop_reaches_a_subset_of_the_uncropped_walk_and_crop_off_restores_it() {
+    let (min, max) = CORNER_POOL;
+    let world = world_with_water(WATER_ROOM, min, max);
+    let main = main_view(&world);
+    let mut mirror = installed(&world);
+    prepare(&mut mirror, &world, &main, PLANAR);
+    let cropped = mirror.camera().expect("the pool is on screen");
+    let cropped_reach = mirror.reach().to_vec();
+    assert_eq!(mirror.path(), Some(MirrorVisibilityPath::Walked));
+
+    mirror.set_crop(false);
+    mirror.install(&world, &[0]);
+    prepare(&mut mirror, &world, &main, PLANAR);
+    let whole = mirror.camera().unwrap();
+    let main_camera = camera();
+    let uncropped = MirrorCamera::new(
+        main_camera.eye_position,
+        main_camera.view_matrix,
+        main_camera.view_projection * main_camera.view_matrix.inverse(),
+        0.0,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        whole, uncropped,
+        "crop off is the uncropped mirror, kept across install"
+    );
+    assert_eq!(mirror.reach(), &[WATER_ROOM, 5, 6, EMPTY_ATTIC]);
+    assert_eq!(
+        (cropped.raster_vp, cropped.clip_plane, cropped.eye),
+        (whole.raster_vp, whole.clip_plane, whole.eye),
+        "the crop moves no pixel"
+    );
+    assert_ne!(cropped.cull_vp, whole.cull_vp);
+    assert!(
+        cropped_reach
+            .iter()
+            .all(|cell| mirror.reach().contains(cell)),
+        "cropped {cropped_reach:?} within uncropped {:?}",
+        mirror.reach()
+    );
+    // The pool's crop keeps the screen's right half: a box left of the eye,
+    // in the uncropped mirror view, falls outside it.
+    let (lo, hi) = (Vec3::new(-2.5, 0.2, -1.5), Vec3::new(-1.5, 0.3, -1.4));
+    let in_view = postretro_render_cpu::planar_reflection::aabb_in_planes;
+    assert!(in_view(lo, hi, &whole.cull_planes()));
+    assert!(!in_view(lo, hi, &cropped.cull_planes()));
+
+    mirror.set_crop(true);
+    mirror.set_step_cap(Some(0));
+    prepare(&mut mirror, &world, &main, PLANAR);
+    assert!(matches!(
+        mirror.path(),
+        Some(MirrorVisibilityPath::Tripped { .. })
+    ));
+    let planes = mirror.camera().unwrap().cull_planes();
+    assert!(!cells(mirror.visible()).is_empty());
+    for &cell in cells(mirror.visible()) {
+        let data = &world.cells[cell as usize];
+        assert!(
+            postretro_render_cpu::planar_reflection::aabb_in_planes(
+                data.bounds_min,
+                data.bounds_max,
+                &planes
+            ),
+            "O5: the trip set keeps to the cropped frustum"
+        );
     }
 }

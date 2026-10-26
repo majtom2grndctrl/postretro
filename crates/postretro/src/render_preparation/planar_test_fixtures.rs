@@ -47,6 +47,16 @@ fn cell(min: Vec3, max: Vec3, drawable: bool, solid: bool) -> CellData {
 /// solid filler far away, so cell ids line up with the lightmap corridor's.
 /// The locator answers `locator_cell` everywhere.
 pub(crate) fn world(locator_cell: u32) -> LevelWorld {
+    world_with_water(locator_cell, [-4.0, -4.0], [4.0, 4.0])
+}
+
+/// A pool in the water room's far right corner (x ∈ [3.5, 4], z ∈ [−4, −3]):
+/// seen from the mirror eye, every ray through it lies more than the crop pad
+/// right of room 5's ceiling portal, so the cropped mirror cannot reach room 5.
+pub(crate) const CORNER_POOL: ([f32; 2], [f32; 2]) = ([3.5, -4.0], [4.0, -3.0]);
+
+/// [`world`] with its water face covering `min..max` in x and z.
+pub(crate) fn world_with_water(locator_cell: u32, min: [f32; 2], max: [f32; 2]) -> LevelWorld {
     let filler = |x: f32| {
         cell(
             Vec3::new(x, -1.0, 100.0),
@@ -116,12 +126,12 @@ pub(crate) fn world(locator_cell: u32) -> LevelWorld {
         true,
     )
     .expect("planar fixture world is valid");
-    world.environment_volumes.volumes = vec![water_volume()];
+    world.environment_volumes.volumes = vec![water_volume(min, max)];
     world
 }
 
-/// One water volume whose surface covers cell 0's floor at y = 0, up-facing.
-fn water_volume() -> EnvironmentVolumeRecord {
+/// One up-facing water volume at y = 0 over `min..max` in x and z.
+fn water_volume(min: [f32; 2], max: [f32; 2]) -> EnvironmentVolumeRecord {
     EnvironmentVolumeRecord {
         source_entity: 0,
         priority: 0,
@@ -132,10 +142,10 @@ fn water_volume() -> EnvironmentVolumeRecord {
         surface_faces: vec![EnvironmentSurfaceFace {
             texture_index: 0,
             vertices: [
-                [-4.0, 0.0, -4.0],
-                [-4.0, 0.0, 4.0],
-                [4.0, 0.0, 4.0],
-                [4.0, 0.0, -4.0],
+                [min[0], 0.0, min[1]],
+                [min[0], 0.0, max[1]],
+                [max[0], 0.0, max[1]],
+                [max[0], 0.0, min[1]],
             ]
             .into_iter()
             .map(|position| EnvironmentSurfaceVertex {

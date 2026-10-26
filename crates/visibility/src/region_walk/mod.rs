@@ -41,7 +41,7 @@ use trace::Reject;
 
 pub(crate) use entries::walk_seeded;
 pub use entries::{PortalTraversal, SeededWalk, portal_traverse, portal_walk_seeded};
-pub(crate) use rect::ScreenRect;
+pub(crate) use rect::{SNAP_STEPS, ScreenRect};
 pub use scratch::PortalWalkScratch;
 pub(crate) use trace::{WalkTrace, trace_out_of_range};
 

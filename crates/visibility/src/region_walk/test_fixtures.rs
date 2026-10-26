@@ -7,6 +7,11 @@ use postretro_level_loader::{
     CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld, PortalData,
 };
 
+/// render-cpu's `MIRROR_CROP_PAD_RADIANS`, which this crate cannot depend
+/// on: twice the largest pixel-style normal tilt (4 texels × 0.05) plus π ×
+/// the horizon clamp's 1e-3, as the app crops the mirror.
+pub(crate) const MIRROR_CROP_PAD_RADIANS: f32 = 2.0 * 4.0 * 0.05 + std::f32::consts::PI * 1.0e-3;
+
 /// A rectilinear grid world: cell `(i, j, k)` spans `xs[i]..xs[i+1]`,
 /// `ys[j]..ys[j+1]`, `zs[k]..zs[k+1]`. Every face shared by two empty cells
 /// is a portal; solid cells keep their place in the locator. Portal winding

@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §Runtime visibility
 
 mod cpu_stages;
+mod mirror_crop;
 mod mirror_visibility;
 mod portal_vis;
 mod region_walk;
@@ -18,6 +19,9 @@ mod visibility;
 pub const PORTAL_WALK_EPOCH: u32 = 3;
 
 pub use cpu_stages::VisibilityStage;
+pub use mirror_crop::{
+    MirrorCropScratch, NdcRect, crop_mirror_view_proj, mirror_crop_rect, ndc_rect_to_full_screen,
+};
 #[cfg(any(test, feature = "test-seams"))]
 pub use mirror_visibility::determine_mirror_visible_cells_capped;
 pub use mirror_visibility::{

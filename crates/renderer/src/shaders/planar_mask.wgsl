@@ -16,6 +16,12 @@ struct PlanarInputs {
     limits: vec4<f32>,
     // Mirror target width and height, scene width and height.
     extent: vec4<f32>,
+    // The mod's reflection style: FLUID_REFLECTION_STYLE_SMOOTH, else pixel.
+    reflection_style: u32,
+    // The displayed offset's multiplier: 1, or 0 where a test forces it to zero.
+    offset_scale: i32,
+    // Padding to whole vec4s; carries nothing.
+    spare: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> planar: PlanarInputs;
 @group(0) @binding(1) var scene_depth: texture_depth_2d;

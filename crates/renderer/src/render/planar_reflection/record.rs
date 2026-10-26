@@ -34,6 +34,8 @@ fn depth_attachment(
 
 impl PlanarReflectionPass {
     /// The mask and resolve uniform for `camera`, as the shaders read it.
+    /// The style and the offset multiplier are integers stored by their bits.
+    #[allow(clippy::too_many_arguments)]
     fn inputs(
         camera: &MirrorCamera,
         preset: PlanarPreset,
@@ -41,6 +43,8 @@ impl PlanarReflectionPass {
         main_eye: Vec3,
         extent: (u32, u32),
         scene: (u32, u32),
+        style: FluidReflectionStyle,
+        offset_scale: i32,
     ) -> [f32; PLANAR_INPUT_FLOATS] {
         let mut inputs = [0.0f32; PLANAR_INPUT_FLOATS];
         inputs[..16].copy_from_slice(&main_vp.to_cols_array());
@@ -61,6 +65,8 @@ impl PlanarReflectionPass {
             scene.0 as f32,
             scene.1 as f32,
         ]);
+        inputs[64] = f32::from_bits(style.uniform_value());
+        inputs[65] = f32::from_bits(offset_scale as u32);
         inputs
     }
 
@@ -92,6 +98,7 @@ impl Renderer {
     ) {
         let quality = self.reflection_quality;
         let light_term_mask = self.frame_light_term_mask();
+        let style = self.fluid_reflection_style;
         let Self { queue, full, .. } = self;
         let full = full
             .as_mut()
@@ -124,6 +131,8 @@ impl Renderer {
             full.last_camera_position,
             extent,
             (scene.width, scene.height),
+            style,
+            pass.offset_scale(),
         );
         full.planar_reflection.upload_inputs(queue, &inputs);
         full.fluid_surface.upload_planar_inputs(queue);
@@ -209,7 +218,7 @@ fn record_planar_passes(
         mask.set_pipeline(&pass.pipelines.mask);
         mask.set_bind_group(0, &targets.mask_inputs, &[]);
         full.fluid_surface
-            .record_planar_parts(&mut mask, light_term_mask, quality, camera.h);
+            .record_planar_parts(&mut mask, light_term_mask, quality, camera.h, None);
     }
     let world = full.has_geometry && full.index_count > 0 && !pass.draws.draws().is_empty();
     if world {
@@ -318,10 +327,27 @@ fn record_planar_passes(
             }),
             ..Default::default()
         });
+        // The main camera's group 0, as the reflection pass binds it: the
+        // eye the reflection law reads and the animation clock the offset
+        // steps on.
         resolve.set_pipeline(&pass.pipelines.resolve);
-        resolve.set_bind_group(0, &targets.resolve_inputs, &[]);
-        full.fluid_surface
-            .record_planar_parts(&mut resolve, light_term_mask, quality, camera.h);
+        resolve.set_bind_group(
+            pipelines::RESOLVE_CAMERA_GROUP,
+            &full.uniform_bind_group,
+            &[],
+        );
+        resolve.set_bind_group(
+            pipelines::RESOLVE_INPUTS_GROUP,
+            &targets.resolve_inputs,
+            &[],
+        );
+        full.fluid_surface.record_planar_parts(
+            &mut resolve,
+            light_term_mask,
+            quality,
+            camera.h,
+            Some((pipelines::RESOLVE_MATERIAL_GROUP, &full.gpu_textures)),
+        );
     }
     if let Some(timing) = &full.frame_timing {
         timing.write_encoder_end(encoder, TIMING_PAIR_PLANAR_REFLECTION);

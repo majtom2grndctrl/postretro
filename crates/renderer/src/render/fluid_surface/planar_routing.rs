@@ -170,6 +170,15 @@ impl PlanarRouting {
 }
 
 impl FluidSurfacePass {
+    /// The fluid vertex stream alone (buffer 0: position, normal, UV), as the
+    /// planar resolve reads it: no drift, which tilts nothing, and no probe
+    /// index, since planar reads no probe resource.
+    pub(in crate::render) fn planar_resolve_vertex_stream()
+    -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
+        let [vertex, _drift, _probe] = fluid_vertex_buffer_layouts();
+        [vertex]
+    }
+
     /// Whether the installed level holds a candidate plane: a horizontal,
     /// up-facing, probe-bound face part.
     pub(in crate::render) fn has_planar_candidate(&self) -> bool {
@@ -396,24 +405,40 @@ impl FluidSurfacePass {
 
     /// Draw this frame's reflecting runs on the plane at `height` with the
     /// pipeline and groups the caller set: the planar mask and resolve raster
-    /// the selected plane's own fluid geometry, position stream only.
+    /// the selected plane's own fluid geometry, from the fluid vertex stream.
+    /// With `materials`, each range binds its world material at
+    /// `material_group` from the existing material bind groups, rebinding
+    /// only where it changes, as the reflection pass does: the resolve reads
+    /// the face texture's texel grid.
     pub(in crate::render) fn record_planar_parts(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         light_term_mask: LightTermMask,
         quality: FluidReflectionQuality,
         height: f32,
+        materials: Option<(u32, &[GpuTexture])>,
     ) {
         let Some(installed) = self.installed.as_ref() else {
             return;
         };
         pass.set_vertex_buffer(0, installed.vertex_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        let mut bound_material = None;
         for (slot, variant) in installed.slots.frame_draws(light_term_mask.bits(), quality) {
             if !variant.reflections() {
                 continue;
             }
             for range in &installed.volumes[slot as usize].material_ranges {
+                if let Some((group, materials)) = materials
+                    && bound_material != Some(range.material_index)
+                {
+                    let material = materials
+                        .get(range.material_index)
+                        .or_else(|| materials.first())
+                        .expect("renderer always keeps a placeholder material bind group");
+                    pass.set_bind_group(group, &material.bind_group, &[]);
+                    bound_material = Some(range.material_index);
+                }
                 for part in parts_of(installed, range) {
                     if same_plane(part.height, Some(height)) {
                         pass.draw_indexed(part.start..part.start + part.count, 0, 0..1);

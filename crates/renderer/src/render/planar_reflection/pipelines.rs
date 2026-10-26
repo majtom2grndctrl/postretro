@@ -5,10 +5,27 @@ use super::*;
 use postretro_render_cpu::fluid_surface::FLUID_SURFACE_VERTEX_STRIDE;
 
 pub(super) const MASK_SHADER_SOURCE: &str = include_str!("../../shaders/planar_mask.wgsl");
-pub(super) const RESOLVE_SHADER_SOURCE: &str = include_str!("../../shaders/planar_resolve.wgsl");
+/// The resolve's own text, which the IP scan reads: the composed helpers are
+/// pinned where SSR's pass composes them.
+#[cfg(test)]
+pub(super) const RESOLVE_AUTHORED_SOURCE: &str = include_str!("../../shaders/planar_resolve.wgsl");
+/// The resolve composed with the shared motion and ray helpers, as the
+/// reflection pass composes them, so a pixel-style cell's offset, tilted
+/// normal and ray are SSR's by construction.
+pub(super) const RESOLVE_SHADER_SOURCE: &str = concat!(
+    include_str!("../../shaders/planar_resolve.wgsl"),
+    "
+",
+    include_str!("../../shaders/fluid_motion.wgsl"),
+    "
+",
+    include_str!("../../shaders/fluid_reflection_ray.wgsl"),
+    "
+",
+);
 
-/// The fluid vertex stream's position alone (location 0): the planar passes
-/// read no normal, UV, drift or probe index.
+/// The fluid vertex stream's position alone (location 0): the mask reads no
+/// normal, UV, drift or probe index.
 const POSITION_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
     offset: 0,
     shader_location: 0,
@@ -58,8 +75,10 @@ pub(super) fn mask_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 2
     [uniform_entry(), texture_entry(1, true)]
 }
 
-/// The resolve's group 0 entries: the inputs uniform, mirror colour and
-/// mirror depth. No probe resource: planar reads none.
+/// The resolve's group 2 entries: the inputs uniform, mirror colour and
+/// mirror depth. Groups 0 and 1 are the shared camera and world material, as
+/// the reflection pass's; there is no probe group: planar reads no probe
+/// resource.
 pub(super) fn resolve_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
     [
         uniform_entry(),
@@ -75,8 +94,18 @@ pub(super) struct PlanarPipelines {
     pub resolve: wgpu::RenderPipeline,
 }
 
+/// The resolve pipeline layout's group indices: camera, world material (its
+/// texel grid), and the planar inputs with the mirror's colour and depth.
+pub(super) const RESOLVE_CAMERA_GROUP: u32 = 0;
+pub(super) const RESOLVE_MATERIAL_GROUP: u32 = 1;
+pub(super) const RESOLVE_INPUTS_GROUP: u32 = 2;
+
 impl PlanarPipelines {
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        camera_layout: &wgpu::BindGroupLayout,
+        material_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let mask_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Planar Mask BGL"),
             entries: &mask_bind_group_layout_entries(),
@@ -86,7 +115,7 @@ impl PlanarPipelines {
             entries: &resolve_bind_group_layout_entries(),
         });
         let mask = mask_pipeline(device, &mask_layout);
-        let resolve = resolve_pipeline(device, &resolve_layout);
+        let resolve = resolve_pipeline(device, camera_layout, material_layout, &resolve_layout);
         Self {
             mask_layout,
             resolve_layout,
@@ -143,16 +172,23 @@ fn mask_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu:
 }
 
 /// Rasters the selected plane's fluid draws into the planar layer at its own
-/// extent. Its own depth orders fluid against fluid, nearest wins; scene
-/// depth never occludes, as the SSR target's.
-fn resolve_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::RenderPipeline {
+/// extent, over the fluid vertex stream's position, normal and UV. Its own
+/// depth orders fluid against fluid, nearest wins; scene depth never
+/// occludes, as the SSR target's.
+fn resolve_pipeline(
+    device: &wgpu::Device,
+    camera_layout: &wgpu::BindGroupLayout,
+    material_layout: &wgpu::BindGroupLayout,
+    layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Planar Resolve Shader"),
         source: wgpu::ShaderSource::Wgsl(RESOLVE_SHADER_SOURCE.into()),
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Planar Resolve Pipeline Layout"),
-        bind_group_layouts: &[Some(layout)],
+        // RESOLVE_CAMERA_GROUP, RESOLVE_MATERIAL_GROUP, RESOLVE_INPUTS_GROUP.
+        bind_group_layouts: &[Some(camera_layout), Some(material_layout), Some(layout)],
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -161,7 +197,8 @@ fn resolve_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wg
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_planar_resolve"),
-            buffers: &position_stream(),
+            buffers: &crate::render::fluid_surface::FluidSurfacePass::planar_resolve_vertex_stream(
+            ),
             compilation_options: Default::default(),
         },
         primitive: wgpu::PrimitiveState {

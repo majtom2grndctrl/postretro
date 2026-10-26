@@ -83,10 +83,29 @@ impl Renderer {
         self.sync_planar_layer();
     }
 
+    /// Force the resolve's displayed offset to zero (or restore it), so a
+    /// proof can read a frame untilted at the same pose and clock. Reaches
+    /// the inputs uniform on the next planar frame, through its
+    /// change-driven upload.
+    #[cfg(test)]
+    pub(crate) fn set_planar_zero_offset(&mut self, zero: bool) {
+        self.full_mut().planar_reflection.zero_offset = zero;
+    }
+
     /// Frames that wrote the planar layer since full init.
     #[cfg(test)]
     pub(crate) fn planar_reflection_records(&self) -> u32 {
         self.full().planar_reflection.records
+    }
+
+    /// The mirror depth texture; `None` without the mirror targets.
+    #[cfg(test)]
+    pub(crate) fn planar_mirror_depth_texture(&self) -> Option<wgpu::Texture> {
+        self.full()
+            .planar_reflection
+            .targets
+            .as_ref()
+            .map(|targets| targets.depth.texture().clone())
     }
 
     /// The mirror targets' extent; `None` without them.

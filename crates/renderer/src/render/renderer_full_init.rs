@@ -537,8 +537,11 @@ pub(crate) fn build_full_renderer(
     );
     // Every planar pipeline builds here at every tier, so a tier change
     // compiles nothing. See: context/lib/rendering_pipeline.md §7.3a
-    let planar_reflection =
-        planar_reflection::PlanarReflectionPass::new(device, &uniform_bind_group_layout);
+    let planar_reflection = planar_reflection::PlanarReflectionPass::new(
+        device,
+        &uniform_bind_group_layout,
+        &texture_bind_group_layout,
+    );
     let rigid_occluder_depth = rigid_occluder_depth::RigidOccluderDepthPass::new(
         device,
         crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT,

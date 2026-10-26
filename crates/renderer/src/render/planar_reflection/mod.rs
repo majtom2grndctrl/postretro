@@ -8,6 +8,8 @@ mod frame_port_tests;
 mod frame_test_fixtures;
 #[cfg(test)]
 mod frame_tests;
+#[cfg(test)]
+mod frame_tilt_tests;
 mod mirror_draws;
 mod pipelines;
 mod record;
@@ -17,6 +19,7 @@ mod tests;
 
 use super::*;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
+use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::planar_reflection::{MirrorCamera, PlanarPreset, planar_preset};
 use targets::PlanarTargets;
 
@@ -26,10 +29,12 @@ pub(in crate::render) const PLANAR_LAYER_FORMAT: wgpu::TextureFormat =
     wgpu::TextureFormat::Rgba16Float;
 
 /// The mask and resolve uniform, `PlanarInputs` in both planar shaders, as
-/// floats: main view-projection, mirror raster view-projection and its
+/// 4-byte words: main view-projection, mirror raster view-projection and its
 /// inverse, the main eye with the plane height, the mirror eye, the D and R
-/// limits and bands, and the mirror and scene extents.
-const PLANAR_INPUT_FLOATS: usize = 64;
+/// limits and bands, the mirror and scene extents, then the reflection style
+/// (u32) and the displayed offset's multiplier (i32), stored by their bits,
+/// and two spare words.
+const PLANAR_INPUT_FLOATS: usize = 68;
 pub(super) const PLANAR_INPUT_BYTES: u64 = (PLANAR_INPUT_FLOATS * 4) as u64;
 
 pub(super) struct PlanarReflectionPass {
@@ -55,6 +60,10 @@ pub(super) struct PlanarReflectionPass {
     /// A test-only preset in place of the tier's, for the D and R proofs.
     #[cfg(test)]
     preset_override: Option<PlanarPreset>,
+    /// Test-only: the resolve's displayed offset forced to zero, so a proof
+    /// can read the same frame untilted. Production never sets it.
+    #[cfg(test)]
+    zero_offset: bool,
     /// Frames that wrote the planar layer; tests read it.
     #[cfg(test)]
     records: u32,
@@ -62,8 +71,13 @@ pub(super) struct PlanarReflectionPass {
 
 impl PlanarReflectionPass {
     /// Build the mirror's group 0 over the shared camera layout, the inputs
-    /// uniform, and every planar pipeline, at full init and at every tier.
-    pub fn new(device: &wgpu::Device, camera_layout: &wgpu::BindGroupLayout) -> Self {
+    /// uniform, and every planar pipeline (the resolve over the shared camera
+    /// and world-material layouts), at full init and at every tier.
+    pub fn new(
+        device: &wgpu::Device,
+        camera_layout: &wgpu::BindGroupLayout,
+        material_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Planar Mirror Camera Uniform"),
             size: UNIFORM_SIZE as u64,
@@ -93,11 +107,13 @@ impl PlanarReflectionPass {
             uploaded_camera: None,
             inputs_buffer,
             uploaded_inputs: None,
-            pipelines: pipelines::PlanarPipelines::new(device),
+            pipelines: pipelines::PlanarPipelines::new(device, camera_layout, material_layout),
             targets: None,
             draws: mirror_draws::MirrorDraws::default(),
             #[cfg(test)]
             preset_override: None,
+            #[cfg(test)]
+            zero_offset: false,
             #[cfg(test)]
             records: 0,
         }
@@ -111,6 +127,16 @@ impl PlanarReflectionPass {
             return Some(preset.sanitized());
         }
         Some(preset)
+    }
+
+    /// The resolve's displayed-offset multiplier: 1, so a pixel-style cell
+    /// tilts as SSR's does; 0 only under the test-only zero-offset seam.
+    fn offset_scale(&self) -> i32 {
+        #[cfg(test)]
+        if self.zero_offset {
+            return 0;
+        }
+        1
     }
 
     /// Write the mirror's group-0 uniform from this frame's main uniform,

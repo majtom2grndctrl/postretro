@@ -635,6 +635,8 @@ impl Level {
             partner_command.use_pressed = partner_use;
             partner_command.movement.use_pressed = partner_use;
             vec![RemotePawnCommand {
+                reload_press_tick: None,
+                equip: Default::default(),
                 real_command: true,
                 rejected_activation: None,
                 pawn: self.partner,

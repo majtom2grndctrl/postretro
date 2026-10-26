@@ -1,17 +1,21 @@
 // Host intake and application of client weapon-switch declarations.
 // See: context/lib/networking.md §Combat authority · §Host input command queue
 
+#[cfg(test)]
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
     self, ClientSwitchDeclaration, ServerMessage, ServerSwitchAccepted, ServerSwitchRefused,
 };
 
-use crate::command_queue::{HostCommandQueues, MovementOwners, SwitchDelivery, WeaponOwners};
+#[cfg(test)]
+use crate::command_queue::WeaponOwners;
+use crate::command_queue::{HostCommandQueues, MovementOwners};
 
 /// Retain a client's switch declaration in its command queue's switch lane.
 /// The lane releases it on a later fixed tick, in client-tick order with the
-/// client's retained starts and presses; see [`host_apply_switch_deliveries`].
+/// client's retained starts and presses; see
+/// [`crate::host_resolve_remote_commands_with_switches`].
 /// A client that owns no pawn gets an immediate refusal for the declaration's
 /// id and slot, through the same reply a refused slot uses: the client resolves
 /// its pending chain strictly in declaration order, so a dropped declaration
@@ -40,82 +44,37 @@ pub fn host_retain_switch_declaration(
     }
 }
 
-/// Apply every switch the lanes released this fixed tick, after command
-/// resolution and before the simulation, replying to each client in arrival
-/// order. Validation is the host's: the client owns its equip presentation,
-/// while the host owns the committed slot used by snapshots and server-side
-/// systems. Each outcome is owner-private reliable Input, in the same ordered
-/// stream as the client's commands, because a snapshot cannot recover a
-/// stationary client with no later baseline change to compare against.
-pub fn host_apply_switch_deliveries(
-    registry: &mut EntityRegistry,
-    server: &mut NetServer,
-    owners: &MovementOwners,
-    command_queues: &mut HostCommandQueues,
-    weapon_owners: &mut WeaponOwners,
-    mod_block_during_reload: bool,
-) {
-    let owned: Vec<(EntityId, u64)> = owners.iter().collect();
-    for (pawn, client_id) in owned {
-        for delivery in command_queues.take_switch_deliveries(client_id) {
-            let (declaration, accepted) = match delivery {
-                SwitchDelivery::Apply(declaration) => (
-                    declaration,
-                    apply_host_switch_declaration(
-                        registry,
-                        pawn,
-                        weapon_owners,
-                        usize::from(declaration.slot),
-                        mod_block_during_reload,
-                    ) == HostSwitchDecision::Accepted,
-                ),
-                SwitchDelivery::Refuse(declaration) => (declaration, false),
-            };
-            if accepted {
-                send_switch_accepted(
-                    server,
-                    client_id,
-                    declaration.declaration_id,
-                    declaration.slot,
-                );
-            } else {
-                send_switch_refusal(
-                    server,
-                    client_id,
-                    declaration.declaration_id,
-                    declaration.slot,
-                );
-            }
-        }
-    }
-}
-
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HostSwitchDecision {
+pub(crate) enum SettlementOnlySwitchDecision {
     Accepted,
     Refused,
 }
 
-pub(crate) fn apply_host_switch_declaration(
+/// Immediate fixture for client outcome-chain settlement tests only.
+/// It deliberately omits lower/raise timing and must never drive host timing
+/// proofs; those use `host_resolve_remote_commands_with_switches`.
+#[cfg(test)]
+pub(crate) fn apply_settlement_only_switch_fixture(
     registry: &mut EntityRegistry,
     pawn: EntityId,
     weapon_owners: &mut WeaponOwners,
     target_slot: usize,
     mod_block_during_reload: bool,
-) -> HostSwitchDecision {
+) -> SettlementOnlySwitchDecision {
     let Some((mut inventory, active_changed)) =
         crate::sim::normalize_wieldable_inventory(registry, pawn)
     else {
-        return HostSwitchDecision::Refused;
+        return SettlementOnlySwitchDecision::Refused;
     };
     if active_changed {
         weapon_owners.mark_attachment_dirty(pawn);
     }
     let Some(_target) = inventory.wieldables.get(target_slot).copied().flatten() else {
-        return HostSwitchDecision::Refused;
+        return SettlementOnlySwitchDecision::Refused;
     };
     if target_slot == inventory.active_slot {
-        return HostSwitchDecision::Accepted;
+        return SettlementOnlySwitchDecision::Accepted;
     }
 
     let reload_blocks_switch = inventory
@@ -132,7 +91,7 @@ pub(crate) fn apply_host_switch_declaration(
                 && weapon.state.is_reload_activity()
         });
     if reload_blocks_switch {
-        return HostSwitchDecision::Refused;
+        return SettlementOnlySwitchDecision::Refused;
     }
 
     if let Some(outgoing) = inventory.active_wieldable()
@@ -146,10 +105,15 @@ pub(crate) fn apply_host_switch_declaration(
     inventory.switch_origin = None;
     let _ = registry.set_component(pawn, inventory);
     weapon_owners.mark_attachment_dirty(pawn);
-    HostSwitchDecision::Accepted
+    SettlementOnlySwitchDecision::Accepted
 }
 
-fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
+pub(crate) fn send_switch_accepted(
+    server: &mut NetServer,
+    client_id: u64,
+    declaration_id: u32,
+    slot: u8,
+) {
     server.send_input(
         client_id,
         wire::encode(&ServerMessage::SwitchAccepted(ServerSwitchAccepted {
@@ -159,7 +123,12 @@ fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: 
     );
 }
 
-fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
+pub(crate) fn send_switch_refusal(
+    server: &mut NetServer,
+    client_id: u64,
+    declaration_id: u32,
+    slot: u8,
+) {
     server.send_input(
         client_id,
         wire::encode(&ServerMessage::SwitchRefused(ServerSwitchRefused {
@@ -207,6 +176,7 @@ mod tests {
                 declaration_id: 41,
                 slot: 3,
                 client_tick: 100,
+                kind: postretro_net::wire::SwitchDeclarationKind::Switch,
             },
         );
 

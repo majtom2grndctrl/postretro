@@ -1306,6 +1306,13 @@ pub enum ClientMessage {
     SwitchDeclaration(ClientSwitchDeclaration),
 }
 
+/// Whether selection began a local equip transition or repairs a diverged host slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum SwitchDeclarationKind {
+    Switch,
+    Resync,
+}
+
 /// Client -> host declaration of the inventory slot the client switched to.
 /// Registry-blind: the transport carries the slot; engine code validates the
 /// owned pawn and its inventory.
@@ -1317,6 +1324,7 @@ pub struct ClientSwitchDeclaration {
     /// orders the switch against that client's retained starts and presses by
     /// it; the transport passes it through unvalidated, like `slot`.
     pub client_tick: u32,
+    pub kind: SwitchDeclarationKind,
 }
 
 /// Host -> client acknowledgement for one accepted inventory slot.
@@ -1824,13 +1832,16 @@ mod tests {
 
     #[test]
     fn switch_declarations_and_outcomes_round_trip_on_the_input_envelopes() {
-        assert!(round_trips(&ClientMessage::SwitchDeclaration(
-            ClientSwitchDeclaration {
+        for kind in [SwitchDeclarationKind::Switch, SwitchDeclarationKind::Resync] {
+            let declaration = ClientSwitchDeclaration {
                 declaration_id: 7,
                 slot: 3,
                 client_tick: u32::MAX - 1,
-            }
-        )));
+                kind,
+            };
+            assert!(round_trips(&declaration));
+            assert!(round_trips(&ClientMessage::SwitchDeclaration(declaration)));
+        }
         assert!(round_trips(&ServerMessage::SwitchRefused(
             ServerSwitchRefused {
                 declaration_id: 7,

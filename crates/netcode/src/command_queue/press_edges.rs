@@ -202,6 +202,7 @@ impl ClientCommandState {
             } else {
                 command.reload = true;
                 self.pending_reload_presses.pop_front();
+                self.delivered_reload_tick = Some(press.tick);
                 delivered = Some(press.slot);
             }
         }

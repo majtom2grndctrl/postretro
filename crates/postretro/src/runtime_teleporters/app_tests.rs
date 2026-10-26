@@ -1261,6 +1261,8 @@ fn teleport_same_tick_yaw_reaches_presentation_aims_and_a_remote_start_aim() {
     };
     command.activation.initiation = Some(start);
     let remote_command = postretro_sim::sim::RemotePawnCommand {
+        reload_press_tick: None,
+        equip: Default::default(),
         real_command: true,
         rejected_activation: None,
         pawn: remote,

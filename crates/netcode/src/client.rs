@@ -908,6 +908,14 @@ impl ClientReplication {
             .and_then(|archetype| archetype.as_deref())
     }
 
+    /// Active weapon identity received in this client's snapshots for a pawn.
+    /// This reads replicated state, including remote pawns observed by this peer.
+    pub fn observed_active_weapon_archetype(&self, network_id: NetworkId) -> Option<&str> {
+        self.active_weapon_archetypes
+            .get(&network_id)
+            .and_then(|archetype| archetype.as_deref())
+    }
+
     /// Resolve a replicated `NetworkId` to the current client-local entity.
     /// Host-pushed presentation facts use this after snapshot apply.
     pub(crate) fn entity_for_network_id(&self, network_id: NetworkId) -> Option<EntityId> {

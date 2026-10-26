@@ -228,9 +228,8 @@ fn run_local_weapon_command_inner(
     // An atomic reload already due this tick resolves before the accepted switch
     // owns the state machine. This preserves its credit and terminal delivery;
     // non-expired reloads still take the normal preempt-to-lower path below.
-    let complete_reload_before_lower = begin_lower
-        && weapon_component.state == WieldableState::Reloading
-        && crate::sim::reload::timer_expires_this_tick(&weapon_component, tick_dt);
+    let complete_reload_before_lower =
+        begin_lower && crate::sim::wieldable_reload_due(&weapon_component, tick_dt);
     if begin_lower && let Some(inventory) = inventory.as_mut() {
         // Each accepted declaration supersedes the rollback origin retained for
         // the prior one. Correlated refusals ignore the older declaration.
@@ -238,14 +237,7 @@ fn run_local_weapon_command_inner(
         inventory.switch_target = select_slot;
     }
     if begin_lower && !complete_reload_before_lower {
-        let lower_ms = weapon_component.lower_ms;
-        let _ = transition_wieldable_state(
-            &mut weapon_component,
-            WieldableStateEvent::BeginLower {
-                duration_ms: lower_ms,
-            },
-            None,
-        );
+        crate::sim::begin_wieldable_lower(&mut weapon_component);
     }
     let mut machine = if equip_only {
         super::super::machine::tick_weapon_equip_only(
@@ -289,13 +281,7 @@ fn run_local_weapon_command_inner(
     );
     if complete_reload_before_lower {
         let lower_ms = weapon_component.lower_ms;
-        let _ = transition_wieldable_state(
-            &mut weapon_component,
-            WieldableStateEvent::BeginLower {
-                duration_ms: lower_ms,
-            },
-            None,
-        );
+        crate::sim::begin_wieldable_lower(&mut weapon_component);
         // The outgoing instance has not been ticked as Lowering yet. A zero
         // lower therefore resolves exactly once here, without a second machine
         // pass that would advance cooldown or fire input a second time.

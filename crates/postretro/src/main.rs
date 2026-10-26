@@ -5146,7 +5146,7 @@ impl App {
     /// Weapon switches the resolution released apply here, before the tick's
     /// simulation, so each reaches the inventory ahead of the starts and presses
     /// the client stamped after it.
-    fn host_resolve_remote_commands(&mut self) -> Vec<netcode::ResolvedPawnCommand> {
+    fn host_resolve_remote_commands(&mut self, tick_dt: f32) -> Vec<netcode::ResolvedPawnCommand> {
         let mod_block_during_reload = self.switching.block_during_reload;
         let Some(session) = self.session.as_mut() else {
             return Vec::new();
@@ -5161,20 +5161,38 @@ impl App {
         else {
             return Vec::new();
         };
-        let resolved = netcode::host_resolve_remote_commands_in_registry(
-            owners,
-            command_queues,
-            &session.scripting.script_ctx.registry.borrow(),
-        );
-        netcode::host_apply_switch_deliveries(
+        netcode::host_resolve_remote_commands_with_switches(
             &mut session.scripting.script_ctx.registry.borrow_mut(),
             server,
             owners,
             command_queues,
             weapon_owners,
             mod_block_during_reload,
+            tick_dt,
+        )
+    }
+
+    fn host_settle_switches(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            command_queues,
+            owners,
+            server,
+            weapon_owners,
+            ..
+        }) = session.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        netcode::host_settle_switches(
+            &mut session.scripting.script_ctx.registry.borrow_mut(),
+            server,
+            owners,
+            command_queues,
+            weapon_owners,
         );
-        resolved
     }
 
     fn host_prepare_remote_pawn_commands(
@@ -5274,6 +5292,8 @@ impl App {
                 )
             });
         sim::RemotePawnCommand {
+            reload_press_tick: resolved.reload_press_tick,
+            equip: Default::default(),
             real_command: resolved.source == netcode::ResolutionSource::Real,
             rejected_activation: resolved.rejected_activation,
             pawn: resolved.pawn,
@@ -5810,6 +5830,7 @@ impl App {
                 client_tick,
                 rollback_slot,
                 rollback_last_weapon_slot,
+                postretro_net::wire::SwitchDeclarationKind::Switch,
             );
         }
     }

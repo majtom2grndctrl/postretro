@@ -44,7 +44,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// and the snapshot envelope the level-scoped ghost-audio record (`SNAPSHOT_VERSION` 22).
 /// Projectile traps reserve component discriminant 25 but never replicate, so
 /// they need no bump of their own; the ghost-link record takes discriminant 26.
-pub const WIRE_VERSION: u32 = 34;
+/// A declaration kind separates a timed switch from an immediate active-slot resync.
+pub const WIRE_VERSION: u32 = 35;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -632,9 +633,11 @@ mod switch_tick_epoch_tests {
     // records, so both gates refuse it across the bump; the vocabulary did not
     // change, so the application protocol stays PRLC.
     #[test]
-    fn ghost_link_record_refuses_wire_33_peers_and_admits_wire_34() {
+    fn ghost_link_record_refuses_wire_33_peers_and_admits_current_wire() {
         const PRE_GHOST_WIRE_VERSION: u32 = 33;
-        assert_eq!(WIRE_VERSION, 34);
+        const {
+            assert!(WIRE_VERSION >= 34);
+        }
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 22);
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C43,
@@ -644,7 +647,10 @@ mod switch_tick_epoch_tests {
             app_protocol_id: PROTOCOL_ID,
             wire_version,
         };
-        assert_eq!(validate_handshake(protocol_version(), peer(34)), Ok(()));
+        assert_eq!(
+            validate_handshake(protocol_version(), peer(WIRE_VERSION)),
+            Ok(())
+        );
         assert!(matches!(
             validate_handshake(protocol_version(), peer(PRE_GHOST_WIRE_VERSION)),
             Err(ClosingCause::Protocol { .. })
@@ -658,6 +664,37 @@ mod switch_tick_epoch_tests {
             transport_protocol_id(),
             ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_GHOST_WIRE_VERSION),
             "gate 1 refuses the pre-ghost layout before any decode"
+        );
+    }
+
+    // A wire-34 declaration lacks the kind that distinguishes immediate resyncs
+    // from switches with authored lower/raise timing.
+    #[test]
+    fn switch_kind_refuses_wire_34_peers_and_admits_wire_35() {
+        const PRE_KIND_WIRE_VERSION: u32 = 34;
+        assert_eq!(WIRE_VERSION, 35);
+        assert_eq!(PROTOCOL_ID, 0x_5052_4C43);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 22);
+        let old_peer = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: PRE_KIND_WIRE_VERSION,
+        };
+        assert_eq!(
+            validate_handshake(protocol_version(), protocol_version()),
+            Ok(())
+        );
+        assert!(matches!(
+            validate_handshake(protocol_version(), old_peer),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert!(matches!(
+            validate_handshake(old_peer, protocol_version()),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_KIND_WIRE_VERSION),
+            "gate 1 refuses the declaration layout before decode"
         );
     }
 
@@ -754,6 +791,7 @@ mod switch_tick_epoch_tests {
             declaration_id: 9,
             slot: 2,
             client_tick: 0x0102_0304,
+            kind: crate::wire::SwitchDeclarationKind::Switch,
         });
         assert_ne!(before, after, "the added tick changes the layout");
         assert!(

@@ -794,7 +794,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // Host: resolve remote (owned) pawn inputs up front, then the
             // shared `simulate_tick` runs loaded movers and every player
             // movement consumer against the same combined collision query.
-            let resolved_remote_commands = app.host_resolve_remote_commands();
+            let resolved_remote_commands = app.host_resolve_remote_commands(tick_dt);
             let remote_pawn_commands =
                 app.host_prepare_remote_pawn_commands(&resolved_remote_commands);
             trigger_use_edges.extend(remote_pawn_commands.iter().filter_map(|remote| {
@@ -1016,6 +1016,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &mut session.scripting.slot_accumulator_bindings,
                 tick_dt,
             );
+            app.host_settle_switches();
             app.host_record_activation_progress(&tick_events.remote_activation_progress);
             app.host_record_authorized_shots(&tick_events.authorized_shots);
             app.host_spawn_projectile_presentations(

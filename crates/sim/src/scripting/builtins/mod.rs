@@ -4,6 +4,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg(any(test, feature = "test-support"))]
+use postretro_entities::registry::EntityId;
 use postretro_entities::registry::EntityRegistry;
 
 pub(crate) mod billboard_emitter;
@@ -47,6 +49,26 @@ pub use host_replicated::{
     descriptor_is_host_replicated, descriptor_materializes_ai_enemy,
     filter_out_client_host_replicated_placements, suppressed_client_host_replicated_mesh_models,
 };
+
+/// Use the real ownership chokepoints in cross-crate gameplay harnesses.
+#[cfg(any(test, feature = "test-support"))]
+pub fn release_wieldable_for_test(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    slot: usize,
+) -> Option<EntityId> {
+    wieldable_inventory::release_wieldable(registry, pawn, slot)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn acquire_wieldable_at_for_test(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    slot: usize,
+    item: EntityId,
+) -> bool {
+    wieldable_inventory::acquire_wieldable_at(registry, pawn, slot, item)
+}
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep
 // working unchanged. The struct itself lives in `scripting::map_entity`.

@@ -112,7 +112,13 @@ impl App {
             .gameplay_input_latch
             .wieldable_selection()
             .last_weapon_slot();
-        endpoint.send_client_switch_declaration(declared, client_tick, slot, last_weapon_slot);
+        endpoint.send_client_switch_declaration(
+            declared,
+            client_tick,
+            slot,
+            last_weapon_slot,
+            postretro_net::wire::SwitchDeclarationKind::Resync,
+        );
     }
 
     pub(crate) fn predict_client_weapon_command(

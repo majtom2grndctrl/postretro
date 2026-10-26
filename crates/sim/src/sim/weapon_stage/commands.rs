@@ -39,9 +39,7 @@ use super::super::{
 };
 use super::impact::apply_authorized_weapon_impact_damage;
 use super::machine::{tick_weapon_machine, tick_weapon_machine_activation};
-use super::state::{
-    WieldableStateEvent, begin_raising, finish_lowering, transition_wieldable_state,
-};
+use super::state::{begin_raising, finish_lowering};
 
 #[derive(Debug, Default)]
 pub(in crate::sim) struct LocalWeaponCommandResult {

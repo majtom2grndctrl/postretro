@@ -13,6 +13,8 @@ pub mod presentation_projection;
 mod projectile_stage;
 pub mod splash;
 pub mod touch;
+#[cfg(any(test, feature = "test-support"))]
+pub use crate::scripting::builtins::{acquire_wieldable_at_for_test, release_wieldable_for_test};
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -81,7 +83,11 @@ pub use projectile_stage::{
     projectile_static_contact_distance, resolve_projectile_impact,
     set_predicted_projectile_visible,
 };
-pub use weapon_stage::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};
+pub use reload::{wieldable_equip_ticks, wieldable_reload_due};
+pub use weapon_stage::{
+    ProjectileSource, begin_wieldable_lower, finish_wieldable_lower,
+    projectile_model_body_rotation, spawn_projectile,
+};
 
 #[derive(Debug, Clone)]
 pub struct SimCommand {
@@ -237,8 +243,18 @@ fn player_is_alive_for_trigger_occupancy(
             })
 }
 
+/// Host decisions in client-tick order, consumed by the remote weapon pass.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RemoteEquipGate {
+    pub reload_refused: bool,
+    pub begin_lower_after_machine: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct RemotePawnCommand {
+    /// Client tick of the recovered reload press, independent of playout trim.
+    pub reload_press_tick: Option<u32>,
+    pub equip: RemoteEquipGate,
     pub real_command: bool,
     pub rejected_activation: Option<postretro_foundation::ActivationToken>,
     pub pawn: EntityId,
@@ -3038,6 +3054,8 @@ mod tests {
         reload: bool,
     ) -> RemotePawnCommand {
         RemotePawnCommand {
+            reload_press_tick: None,
+            equip: RemoteEquipGate::default(),
             real_command: true,
             rejected_activation: None,
             pawn,

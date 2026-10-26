@@ -68,6 +68,19 @@ pub(crate) struct SettleSetSize {
     pub(crate) lightmap_blocks: Option<usize>,
 }
 
+/// The cells of `mirror_reach` that `main` does not draw: what only the
+/// planar mirror adds to the frame's drawn set. None when `main` draws all.
+pub(crate) fn mirror_only_cells<'a>(
+    main: &'a postretro_visibility::VisibleCells,
+    mirror_reach: &'a [u32],
+) -> impl Iterator<Item = u32> + 'a {
+    mirror_reach.iter().copied().filter(move |cell| match main {
+        // Ascending: the walk's and the fallbacks' sets both are.
+        postretro_visibility::VisibleCells::Culled(cells) => cells.binary_search(cell).is_err(),
+        postretro_visibility::VisibleCells::DrawAll => false,
+    })
+}
+
 impl crate::session::Session {
     /// The settle set's size per resource, from the same demand
     /// [`Self::settle_report`] reads.
@@ -82,6 +95,22 @@ impl crate::session::Session {
                 .lightmap()
                 .and_then(|lightmap| lightmap.settle_set_blocks()),
         }
+    }
+
+    /// The held pose's lightmap blocks that only the planar mirror draws and
+    /// the camera cell's baked set does not hold: blocks of the cells in
+    /// `mirror_reach` that `main` does not draw, outside the baked set and
+    /// the pins. `None` when the level's lightmap does not stream or has not
+    /// derived demand yet. Read after a Settling frame's streaming step, so
+    /// the baked set is the held pose's. Allocates nothing.
+    pub(crate) fn mirror_only_lightmap_blocks(
+        &self,
+        main: &postretro_visibility::VisibleCells,
+        mirror_reach: &[u32],
+    ) -> Option<usize> {
+        self.level_streaming
+            .lightmap()?
+            .blocks_outside_camera_set(mirror_only_cells(main, mirror_reach))
     }
 
     /// Lightmap blocks the latest frame drew while not installed; `None`

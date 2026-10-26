@@ -40,10 +40,7 @@ impl PresentedPose {
             Vec3::ZERO,
             0.0,
         );
-        HeldLevelView {
-            eye: camera.eye_position,
-            view_proj: camera.view_projection,
-        }
+        HeldLevelView { camera }
     }
 }
 

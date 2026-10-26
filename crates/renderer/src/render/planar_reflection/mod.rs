@@ -5,6 +5,8 @@ mod api;
 #[cfg(test)]
 mod frame_content_tests;
 #[cfg(test)]
+mod frame_light_tests;
+#[cfg(test)]
 mod frame_port_tests;
 #[cfg(test)]
 mod frame_test_fixtures;
@@ -12,6 +14,8 @@ mod frame_test_fixtures;
 mod frame_tests;
 #[cfg(test)]
 mod frame_tilt_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 mod mirror_draws;
 mod mirror_sprites;
 mod pipelines;
@@ -72,6 +76,9 @@ pub(super) struct PlanarReflectionPass {
     /// Frames that wrote the planar layer; tests read it.
     #[cfg(test)]
     records: u32,
+    /// Mirror target builds; tests read it.
+    #[cfg(test)]
+    target_builds: u32,
 }
 
 impl PlanarReflectionPass {
@@ -124,6 +131,8 @@ impl PlanarReflectionPass {
             zero_offset: false,
             #[cfg(test)]
             records: 0,
+            #[cfg(test)]
+            target_builds: 0,
         }
     }
 

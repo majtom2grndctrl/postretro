@@ -169,6 +169,13 @@ impl ExtentState {
     pub fn committed(&self) -> RenderExtents {
         self.committed
     }
+
+    /// Whether the next [`Self::commit`] moves the scene extent: a target
+    /// built now would be rebuilt by it.
+    pub fn scene_change_pending(&self) -> bool {
+        RenderExtents::derive(self.surface, self.scale_factor, self.policy).scene
+            != self.committed.scene
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +188,27 @@ mod tests {
 
     fn ext(width: u32, height: u32) -> Extent {
         Extent { width, height }
+    }
+
+    // A recorded change is pending until the commit that applies it, and
+    // only when it moves the scene: a surface change at the same scene, or a
+    // record of the committed value, is not.
+    #[test]
+    fn scene_change_is_pending_only_until_the_commit_that_moves_the_scene() {
+        let mut state = ExtentState::new(ext(64, 48), 1.0, RenderResolutionPolicy::default());
+        assert!(!state.scene_change_pending());
+        state.record_surface(80, 48);
+        assert!(state.scene_change_pending());
+        assert!(state.commit().is_some_and(|change| change.scene_changed));
+        assert!(!state.scene_change_pending());
+        state.record_surface(80, 48);
+        assert!(!state.scene_change_pending(), "the committed value");
+        state.record_policy(RenderResolutionPolicy::Fixed { divisor: 2 });
+        state.record_surface(160, 96);
+        assert!(
+            !state.scene_change_pending(),
+            "the same scene at another surface"
+        );
     }
 
     #[test]

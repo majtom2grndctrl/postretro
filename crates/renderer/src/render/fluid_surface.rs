@@ -263,6 +263,10 @@ struct InstalledFluidSurfaces {
     /// Every material range's triangles in runs by plane, for per-draw
     /// planar routing.
     planar_parts: Vec<planar_routing::PlanarIndexRange>,
+    /// Whether the level holds a candidate plane by the selection's own
+    /// install rule (`PlanarCandidates::from_volumes`, area floor included):
+    /// what holds the planar layer, with the app's verdict over it.
+    planar_candidate: bool,
     /// The planes the faces were cut along; tests read it.
     #[cfg(test)]
     grid: Option<postretro_render_cpu::fluid_surface::FluidGridPlanes>,
@@ -515,6 +519,7 @@ impl FluidSurfacePass {
             volumes: mesh.volumes,
             slots,
             planar_parts,
+            planar_candidate: planar_routing::has_candidate_plane(volumes, reflection_probes),
             #[cfg(test)]
             grid: mesh.grid,
             #[cfg(test)]

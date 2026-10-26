@@ -6,7 +6,9 @@ use postretro_render_cpu::fluid_surface::reflection::{
 };
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::fluid_surface::{FluidMaterialRange, FluidSurfaceMesh};
-use postretro_render_cpu::planar_reflection::{PLANE_HEIGHT_TOLERANCE, planar_preset};
+use postretro_render_cpu::planar_reflection::{
+    PLANE_HEIGHT_TOLERANCE, PlanarCandidates, planar_preset,
+};
 
 use super::*;
 use crate::render::planar_reflection::PLANAR_LAYER_FORMAT;
@@ -70,6 +72,22 @@ pub(super) fn split_planar_ranges(
         }
     }
     parts
+}
+
+/// Whether `volumes` hold a candidate plane by the selection's install rule:
+/// [`PlanarCandidates::from_volumes`] over every volume, so probe-bound flat
+/// faces grouped by height, planes under the area floor dropped. A level of
+/// puddles alone has none. The renderer cannot see fluid reflectivity, so it
+/// counts every volume; the app's verdict, which can, narrows it
+/// ([`FluidSurfacePass::set_planar_app_candidate`]). Install-time.
+pub(super) fn has_candidate_plane(
+    volumes: &[EnvironmentVolumeRecord],
+    probes: Option<&ReflectionProbesSection>,
+) -> bool {
+    let every_volume: Vec<u32> = (0..volumes.len() as u32).collect();
+    !PlanarCandidates::from_volumes(volumes, &every_volume, probes)
+        .planes
+        .is_empty()
 }
 
 /// Which group-5 bind group a pass currently holds.
@@ -149,6 +167,12 @@ pub(super) struct PlanarRouting {
     /// starts in step.
     fog_weight: Option<f32>,
     style: Option<FluidReflectionStyle>,
+    /// The app's candidate verdict for the installed level, which reads the
+    /// fluids' reflectivity: `None` until the app says (capture, renderer
+    /// tests), when the install rule alone decides. The app sets it at every
+    /// level install, before the fluid install, and at every fluid refresh,
+    /// so it outlives the fluid clear.
+    app_candidate: Option<bool>,
     #[cfg(test)]
     layer_builds: u32,
 }
@@ -179,15 +203,22 @@ impl FluidSurfacePass {
         [vertex]
     }
 
-    /// Whether the installed level holds a candidate plane: a horizontal,
-    /// up-facing, probe-bound face part.
+    /// Whether the installed level holds a candidate plane, the plane
+    /// selection could pick: the install rule over its volumes
+    /// ([`has_candidate_plane`]), narrowed by the app's verdict when it gave
+    /// one. Both build from `PlanarCandidates::from_volumes`, and the app's
+    /// reflecting volumes are a subset of every volume, so with the app
+    /// driving this is the app's candidate exactly.
     pub(in crate::render) fn has_planar_candidate(&self) -> bool {
-        self.installed.as_ref().is_some_and(|installed| {
-            installed
-                .planar_parts
-                .iter()
-                .any(|part| part.height.is_some())
-        })
+        self.installed
+            .as_ref()
+            .is_some_and(|installed| installed.planar_candidate)
+            && self.planar.app_candidate.unwrap_or(true)
+    }
+
+    /// Store the app's candidate verdict; the caller re-keys the layer.
+    pub(in crate::render) fn set_planar_app_candidate(&mut self, candidate: bool) {
+        self.planar.app_candidate = Some(candidate);
     }
 
     /// The planar layer's extent; `None` without one.

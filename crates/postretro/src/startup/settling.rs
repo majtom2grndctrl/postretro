@@ -145,9 +145,21 @@ impl App {
         // A load or unload request that arrived in this frame's transport
         // poll wins: no release is decided for a level about to unload.
         if self.level_requests.is_empty() {
+            // The plane the held pose's mirror drew, and the lightmap blocks
+            // only it demands past the camera cell's baked set.
+            let plane = held
+                .as_ref()
+                .and(self.planar_render.camera())
+                .map(|mirror| mirror.h);
+            let mirror_only_blocks = held.as_ref().and_then(|held| {
+                self.session
+                    .as_ref()?
+                    .mirror_only_lightmap_blocks(held.visible_cells(), self.planar_render.reach())
+            });
             if let Some(settle) = self.settle.as_mut() {
                 let path = held.as_ref().map(|held| held.path());
                 settle.log.observe_frame(path, report, set);
+                settle.log.observe_planar(plane, mirror_only_blocks);
             }
             self.advance_settle(report, frame_start);
         }
@@ -278,8 +290,9 @@ impl App {
     }
 
     /// The reveal frame's tail, after its lightmap drain counted the frame's
-    /// visible misses: logs the entry's one `[Settling]` line. An entry
-    /// abandoned before its reveal logs none.
+    /// visible misses: logs the entry's one `[Settling]` line, with the plane
+    /// the reveal frame's mirror drew. An entry abandoned before its reveal
+    /// logs none.
     pub(crate) fn log_settle_summary(&mut self) {
         let Some(summary) = self.settle_summary.take() else {
             return;
@@ -288,9 +301,14 @@ impl App {
             .session
             .as_ref()
             .and_then(|session| session.last_frame_lightmap_misses());
-        summary.log(reveal_misses);
+        let planar_reveal = self.planar_render.camera().map(|mirror| mirror.h);
+        summary.log(reveal_misses, planar_reveal);
     }
 }
+
+#[cfg(test)]
+#[path = "settling_planar_tests.rs"]
+mod planar_tests;
 
 #[cfg(test)]
 mod tests {
@@ -563,7 +581,8 @@ mod tests {
             log::Level::Info,
             "[Settling] entry outcome=timed_out hold_ms=10000 frames=2 walk_frames=1 \
              step_limit_frames=1 sh_set_peak=n/a lightmap_set_peak=n/a sh_unsettled_peak=3 \
-             lightmap_unsettled_peak=n/a reveal_misses=n/a",
+             lightmap_unsettled_peak=n/a reveal_misses=n/a planar_held=none \
+             planar_reveal=none mirror_only_blocks=n/a",
         );
     }
 

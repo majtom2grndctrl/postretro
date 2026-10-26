@@ -56,10 +56,31 @@ impl Renderer {
             .and_then(|full| full.planar_reflection.preset(self.reflection_quality))
     }
 
+    /// The app's verdict on whether the installed level holds a candidate
+    /// plane (`PlanarCandidates::from_volumes` over the volumes whose fluid
+    /// reflects): the planar layer and mirror targets exist only while it
+    /// holds, at a planar tier. Call at every level install, before the
+    /// fluid install, and at every fluid refresh; a refresh that removes the
+    /// last candidate releases them. Without a verdict (capture, renderer
+    /// tests) the same rule over every volume decides. Compiles nothing;
+    /// never per frame.
+    pub fn set_planar_candidate(&mut self, has_candidate: bool) {
+        let Some(full) = self.full.as_mut() else {
+            return;
+        };
+        full.fluid_surface.set_planar_app_candidate(has_candidate);
+        self.sync_planar_layer();
+    }
+
     /// Match the planar layer and the mirror targets to the kept tier and the
     /// installed level: allocated at the preset's scale of the scene extent
     /// while a level with a candidate plane is installed at a planar tier,
     /// released otherwise. The extent they already have builds nothing.
+    ///
+    /// O9: a scene extent recorded but not yet committed defers a build to
+    /// the commit, which rebuilds the layer at the new extent, so a tier
+    /// change or install on a resize frame allocates once, at the new
+    /// extent. A release never waits.
     pub(in crate::render) fn sync_planar_layer(&mut self) {
         self.apply_planar_layer(false);
     }
@@ -72,6 +93,7 @@ impl Renderer {
 
     fn apply_planar_layer(&mut self, rebuild: bool) {
         let quality = self.reflection_quality;
+        let commit_pending = self.extent_state.scene_change_pending();
         let Self { device, full, .. } = self;
         let Some(full) = full.as_mut() else {
             return;
@@ -82,6 +104,9 @@ impl Renderer {
             .preset(quality)
             .filter(|_| full.fluid_surface.has_planar_candidate())
             .map(|preset| preset.target_extent((scene.width, scene.height)));
+        if !rebuild && wanted.is_some() && commit_pending {
+            return;
+        }
         full.fluid_surface.set_planar_layer(device, wanted, rebuild);
         let pass = &mut full.planar_reflection;
         if !rebuild && pass.targets.as_ref().map(|targets| targets.extent) == wanted {
@@ -96,6 +121,10 @@ impl Renderer {
                 &full.depth_view,
                 extent,
             ));
+            #[cfg(test)]
+            {
+                pass.target_builds += 1;
+            }
         }
         pass.uploaded_inputs = None;
         pass.uploaded_camera = None;
@@ -132,6 +161,12 @@ impl Renderer {
             .targets
             .as_ref()
             .map(|targets| targets.depth.texture().clone())
+    }
+
+    /// Mirror target builds since full init.
+    #[cfg(test)]
+    pub(crate) fn planar_mirror_target_builds(&self) -> u32 {
+        self.full().planar_reflection.target_builds
     }
 
     /// The mirror targets' extent; `None` without them.

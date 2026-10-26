@@ -12,8 +12,14 @@ log.workspace = true
 postretro-level-loader = { path = "../level-loader", default-features = false }
 postretro-stage-timing.workspace = true
 
+[features]
+# Test-only seams for other crates' tests: the mirror entry under a caller's
+# step cap. Only dev-dependencies enable it; normal builds never compile it.
+test-seams = []
+
 [dev-dependencies]
 postretro-render-data.workspace = true
 postretro-level-format.workspace = true
+postretro-test-log-capture.workspace = true
 # The real-map sweep (`region_walk::real_map_sweep`) loads baked PRLs.
 postretro-level-loader = { path = "../level-loader", features = ["load-prl"] }

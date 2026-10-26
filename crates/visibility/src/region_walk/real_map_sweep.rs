@@ -71,16 +71,16 @@ fn hallway_regions(p: Vec3) -> u8 {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Pose {
-    eye: Vec3,
-    yaw_deg: f32,
-    pitch_deg: f32,
-    cell: usize,
+pub(super) struct Pose {
+    pub(super) eye: Vec3,
+    pub(super) yaw_deg: f32,
+    pub(super) pitch_deg: f32,
+    pub(super) cell: usize,
     groups: u8,
 }
 
 /// The prototype's generator, plus straight up and down at shaft poses.
-fn poses(world: &LevelWorld, hallway: bool) -> (Vec<Pose>, usize) {
+pub(super) fn poses(world: &LevelWorld, hallway: bool) -> (Vec<Pose>, usize) {
     let mut positions = Vec::new();
     let mut skipped = 0;
     for c in world.cells.iter() {
@@ -239,7 +239,7 @@ struct Failure {
     missed: Vec<usize>,
 }
 
-fn pct<T: Copy + PartialOrd + Default>(values: &mut [T], p: f64) -> T {
+pub(super) fn pct<T: Copy + PartialOrd + Default>(values: &mut [T], p: f64) -> T {
     if values.is_empty() {
         return T::default();
     }

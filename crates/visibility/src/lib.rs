@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §Runtime visibility
 
 mod cpu_stages;
+mod mirror_visibility;
 mod portal_vis;
 mod region_walk;
 mod visibility;
@@ -17,6 +18,11 @@ mod visibility;
 pub const PORTAL_WALK_EPOCH: u32 = 3;
 
 pub use cpu_stages::VisibilityStage;
+#[cfg(any(test, feature = "test-seams"))]
+pub use mirror_visibility::determine_mirror_visible_cells_capped;
+pub use mirror_visibility::{
+    MirrorView, MirrorVisibility, MirrorVisibilityPath, determine_mirror_visible_cells,
+};
 pub use postretro_stage_timing::TimingGate;
 pub use region_walk::{
     PortalTraversal, PortalWalkScratch, SeededWalk, portal_traverse, portal_walk_seeded,

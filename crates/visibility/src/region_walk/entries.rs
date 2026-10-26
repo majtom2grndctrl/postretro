@@ -4,8 +4,8 @@
 use glam::{Mat4, Vec3};
 
 use super::{
-    MAX_PORTAL_WALK_STEPS, PortalWalkScratch, WalkView, WalkWorld, walk_from_camera,
-    walk_from_seeds,
+    MAX_PORTAL_WALK_STEPS, PortalWalkScratch, RegionWalkStats, WalkView, WalkWorld,
+    walk_from_camera, walk_from_seeds,
 };
 use crate::visibility::FrustumPlane;
 use postretro_level_loader::LevelWorld;
@@ -99,19 +99,52 @@ pub fn portal_walk_seeded<'a>(
     blocked_portals: &[bool],
     scratch: &'a mut PortalWalkScratch,
 ) -> SeededWalk<'a> {
+    let stats = walk_seeded(
+        eye,
+        view_proj,
+        near_plane,
+        seeds,
+        world,
+        blocked_portals,
+        MAX_PORTAL_WALK_STEPS,
+        scratch,
+    );
+    SeededWalk::from_stats(&stats, scratch)
+}
+
+/// [`portal_walk_seeded`] under `step_limit`, returning the walk's counters;
+/// the reach stays in `scratch`. The mirror reads the counters, and its test
+/// seam lowers the cap.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn walk_seeded(
+    eye: Vec3,
+    view_proj: Mat4,
+    near_plane: FrustumPlane,
+    seeds: &[usize],
+    world: &LevelWorld,
+    blocked_portals: &[bool],
+    step_limit: u32,
+    scratch: &mut PortalWalkScratch,
+) -> RegionWalkStats {
     let input = WalkWorld {
         world,
         blocked_portals,
     };
     let view = WalkView::seeded(eye, view_proj, near_plane);
-    let stats = walk_from_seeds(input, &view, seeds, MAX_PORTAL_WALK_STEPS, scratch);
-    if stats.step_limit_hit {
-        SeededWalk::Tripped {
-            considered: stats.considered,
-        }
-    } else {
-        SeededWalk::Completed {
-            reached: scratch.reached(),
+    walk_from_seeds(input, &view, seeds, step_limit, scratch)
+}
+
+impl<'a> SeededWalk<'a> {
+    /// How the seeded walk that left `stats` in `scratch` ended.
+    pub(crate) fn from_stats(stats: &RegionWalkStats, scratch: &'a PortalWalkScratch) -> Self {
+        if stats.step_limit_hit {
+            SeededWalk::Tripped {
+                considered: stats.considered,
+            }
+        } else {
+            SeededWalk::Completed {
+                reached: scratch.reached(),
+            }
         }
     }
 }

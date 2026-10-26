@@ -138,6 +138,8 @@ postretro-ui = { workspace = true, features = ["test-fixtures"] }
 postretro-physics = { workspace = true, features = ["test-support"] }
 postretro-sim = { workspace = true, features = ["test-support"] }
 postretro-netcode = { workspace = true, features = ["test-support"] }
+# The mirror entry's capped test seam, for the app-side forced-trip test.
+postretro-visibility = { workspace = true, features = ["test-seams"] }
 # Exercise shipped TypeScript data scripts through the same SWC bundler used by
 # `scripts-build`, without spawning the sidecar process during unit tests.
 postretro-script-compiler = { path = "../script-compiler" }

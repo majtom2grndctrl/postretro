@@ -1,0 +1,46 @@
+=== stress-warren-hallway-inspection.prl: cells=5671 solid=3178 exterior=411 empty_interior=2082 drawable=2080 portals=5800
+empty-cell world bounds engine m: Vec3(-97.536, 1.6256, -118.6688) .. Vec3(97.536, 47.1424, 118.6688)
+portals total=5800; walkable (both cells empty interior)=4722; the rest touch solid/exterior cells (excluded below)
+portal area m^2 histogram (log decades):
+  <0.01 m2: 0
+  0.01-0.1 m2: 0
+  0.1-1 m2: 241
+  1-10 m2: 1042
+  10-100 m2: 2973
+  100-1000 m2: 466
+  >=1000 m2: 0
+
+portal aspect (diameter / min bounding width) histogram:
+  <1.5: 198
+  1.5-2: 1674
+  2-4: 1310
+  4-8: 832
+  8-16: 292
+  16-32: 227
+  32-64: 102
+  >=64: 87
+
+vertical-ish portals (|ny|<0.3): 3387; taller than 3x horizontal width: 153 (and >1 m tall: 148)
+vertical portals >=6.5 m tall and <=0.7 m wide: 15; >=3 m tall and <=1 m wide: 68
+portal normals: horizontal=1335 vertical=3387 oblique=0
+min width m: p5=0.279 p50=2.845 p95=10.008
+empty-cell AABB volume m^3 histogram:
+  <0.1 m3: 9
+  0.1-1 m3: 29
+  1-10 m3: 109
+  10-100 m3: 410
+  100-1000 m3: 1262
+  1000-10000 m3: 260
+  >=10000 m3: 3
+
+empty-cell AABB smallest dimension m histogram:
+  <0.1 m: 11
+  0.1-0.25 m: 32
+  0.25-0.5 m: 49
+  0.5-1 m: 153
+  1-2 m: 91
+  2-4 m: 1184
+  4-8 m: 479
+  >=8 m: 83
+
+cells with smallest dimension <0.5 m: 92

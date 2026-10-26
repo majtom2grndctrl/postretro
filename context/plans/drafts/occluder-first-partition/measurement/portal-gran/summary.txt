@@ -1,0 +1,15 @@
+all: n=168 meanR=33.6 E=29.3 S=19.9 R-E=4.2 E-S=9.5 | wR=223 wE=193 wS=138 wR-wE=30 wE-wS=55 | cell share of looseness=0.31 gran=0.69; weighted looseness share=0.35
+E>=20: n=33 meanR=147.3 E=127.6 S=80.8 R-E=19.7 E-S=46.8 | wR=946 wE=811 wS=538 wR-wE=135 wE-wS=273 | cell share of looseness=0.30 gran=0.70; weighted looseness share=0.33
+hall E>=20: n=17 meanR=128.1 E=102.2 S=82.6 R-E=25.9 E-S=19.6 | wR=817 wE=629 wS=534 wR-wE=187 wE-wS=96 | cell share of looseness=0.57 gran=0.43; weighted looseness share=0.66
+room2/pass E>=20: n=16 meanR=167.6 E=154.6 S=78.9 R-E=13.0 E-S=75.8 | wR=1084 wE=1004 wS=542 wR-wE=80 wE-wS=462 | cell share of looseness=0.15 gran=0.85; weighted looseness share=0.15
+E>=60: n=24 meanR=181.4 E=161.0 S=103.8 R-E=20.4 E-S=57.2 | wR=1181 wE=1039 wS=699 wR-wE=142 wE-wS=340 | cell share of looseness=0.26 gran=0.74; weighted looseness share=0.29
+R-E p50/p95/max 0 28 43  E-S 0 45 137
+max oracle steps 9796 trips 0
+pass(544;560) yaw98 p+15 R 168 E 158 S 21 R-E 10 E-S 137 1164 1098 168
+pass(544;560) yaw90 p+15 R 176 E 158 S 21 R-E 18 E-S 137 1228 1104 166
+pass(544;560) yaw90 p-15 R 161 E 158 S 21 R-E 3 E-S 137 842 828 160
+pass(544;560) yaw63 p+0 R 162 E 158 S 22 R-E 4 E-S 136 1106 1082 162
+pass(544;560) yaw98 p+0 R 161 E 158 S 22 R-E 3 E-S 136 1112 1092 172
+pass(544;560) yaw98 p-15 R 161 E 158 S 22 R-E 3 E-S 136 842 826 168
+pass(544;560) yaw90 p+0 R 161 E 158 S 22 R-E 3 E-S 136 1112 1092 166
+pass(544;560) yaw133 p+0 R 149 E 144 S 22 R-E 5 E-S 122 956 930 162

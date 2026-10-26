@@ -1,0 +1,41 @@
+resolve passes(frames) 488 span s 9.52
+ComputeUQ3   Fog Raymarch Pass                                n=  467 per-frame=  4.755 ms  mean=  4.969 max=  7.659
+GFX          Skinned Viewmodel Pass                           n=  465 per-frame=  3.247 ms  mean=  3.407 max=  3.779
+SDMA0        Page On 65536 bytes  ( postretro (26747) )       n=16487 per-frame=  3.174 ms  mean=  0.094 max=  3.521
+GFX          Textured Pass                                    n=  488 per-frame=  3.039 ms  mean=  3.039 max=  7.784
+SDMA1_PAGE   GPU Execution  ( postretro (26747) )             n= 4804 per-frame=  1.721 ms  mean=  0.175 max= 13.871
+ComputeUQ3   Streamed SH Compose                              n=  486 per-frame=  0.445 ms  mean=  0.447 max=  3.324
+ComputeUQ3   Streamed Animated Direct SH                      n=  486 per-frame=  0.435 ms  mean=  0.436 max=  2.970
+GFX          Screen Effects Resolve Pass                      n=  488 per-frame=  0.380 ms  mean=  0.380 max=  3.070
+GFX          Bloom Bright Pass                                n=  488 per-frame=  0.193 ms  mean=  0.193 max=  1.623
+SDMA1        Zero Fill  ( postretro (26747) )                 n=  352 per-frame=  0.147 ms  mean=  0.204 max= 15.795
+SDMA0        Per-frame Upload Copies                          n=  510 per-frame=  0.145 ms  mean=  0.139 max=  3.843
+ComputeUQ3   Animated LM Compose                              n=  466 per-frame=  0.139 ms  mean=  0.145 max=  0.240
+SDMA0        (wgpu internal) Pre Pass                         n=  930 per-frame=  0.108 ms  mean=  0.057 max=  3.709
+SDMA0        (wgpu internal) PendingWrites                    n=  511 per-frame=  0.088 ms  mean=  0.084 max= 12.338
+GFX          Depth Pre-Pass                                   n=  465 per-frame=  0.086 ms  mean=  0.090 max=  0.223
+GFX          Fog Composite Pass                               n=  444 per-frame=  0.071 ms  mean=  0.079 max=  0.123
+GFX          Bloom Horizontal Gaussian Pass                   n= 2437 per-frame=  0.070 ms  mean=  0.014 max=  0.417
+GFX          (wgpu internal) Signal                           n=   23 per-frame=  0.067 ms  mean=  1.419 max=  6.494
+GFX          UI Pass                                          n=  488 per-frame=  0.064 ms  mean=  0.064 max=  3.472
+GFX          (wgpu internal) Transit                          n=   27 per-frame=  0.055 ms  mean=  1.001 max=  3.595
+GFX          Bloom Vertical Gaussian Pass                     n= 2434 per-frame=  0.053 ms  mean=  0.011 max=  0.146
+ComputeUQ3   Streamed Direct SH Promotion                     n=   29 per-frame=  0.049 ms  mean=  0.817 max=  2.178
+GFX          Bloom Downsample Pass                            n= 1951 per-frame=  0.038 ms  mean=  0.010 max=  0.068
+GFX          Bloom Scene Composite Pass                       n=  487 per-frame=  0.038 ms  mean=  0.038 max=  0.199
+GFX          Bloom Upsample Pass                              n= 1951 per-frame=  0.037 ms  mean=  0.009 max=  0.116
+GFX          Frame Encoder                                    n=  466 per-frame=  0.036 ms  mean=  0.037 max=  0.141
+ComputeUQ3   (wgpu internal) Pre Pass                         n=  930 per-frame=  0.031 ms  mean=  0.016 max=  0.140
+ComputeUQ3   Candidate Cull Pass                              n=  466 per-frame=  0.030 ms  mean=  0.032 max=  0.141
+Channel 13   GPU Execution  ( postretro (26747) )             n=   22 per-frame=  0.028 ms  mean=  0.628 max= 11.795
+ComputeUQ3   Billboard Direct Scatter Compose                 n=  486 per-frame=  0.022 ms  mean=  0.022 max=  0.962
+SDMA1        Frame Encoder                                    n=  466 per-frame=  0.021 ms  mean=  0.022 max=  0.122
+GFX          Skinned Mesh Pass                                n=  465 per-frame=  0.020 ms  mean=  0.021 max=  0.387
+GFX          Streamed Lightmap Drain                          n=    4 per-frame=  0.015 ms  mean=  1.868 max=  4.356
+GFX          GPU Execution  ( postretro (26747) )             n=  185 per-frame=  0.013 ms  mean=  0.033 max=  0.486
+GFX          Streamed SH Upload Copies                        n=    6 per-frame=  0.008 ms  mean=  0.650 max=  1.360
+GFX          (wgpu internal) PendingWrites                    n=   19 per-frame=  0.007 ms  mean=  0.175 max=  1.746
+SDMA0        (wgpu internal) Signal                           n=   30 per-frame=  0.007 ms  mean=  0.107 max=  0.509
+SDMA0        Streamed SH Upload Copies                        n=   14 per-frame=  0.006 ms  mean=  0.199 max=  0.513
+Channel 12   Zero Fill  ( postretro (26747) )                 n=    4 per-frame=  0.005 ms  mean=  0.570 max=  1.313
+GFX          Promoted Spot Entity Shadow Depth Pass           n=   45 per-frame=  0.003 ms  mean=  0.032 max=  0.115

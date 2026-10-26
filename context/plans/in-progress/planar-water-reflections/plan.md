@@ -241,6 +241,63 @@ AC numbers follow the brief's Acceptance order.
 | 42 | Manual: Mac 5300M native bounded run | owner, Mac | manual |
 | 43 | Manual: resident memory at 4K ultra lake pose | executor computes from allocation sizes; owner confirms in-engine | manual |
 
+## Owner handoff (Task 12)
+
+Run from the worktree root. Maps are the main checkout's bakes: `M=C:/Users/danhi/Projects/Personal/postretro/content/dev/maps`. Poses are `--start-pose x,y,z,yaw,pitch`: capsule centre, engine metres, Y up. Options → Graphics → Reflection quality switches VERY HIGH and HIGH live.
+
+**AC 40 — motion read (presets).**
+```
+cargo run -p xtask -- run --features dev-tools -- $M/reflection-lake-test.prl
+cargo run -p xtask -- run --features dev-tools -- $M/e24-environment-test.prl
+cargo run -p xtask -- run --features dev-tools -- $M/reflection-probes-test.prl
+```
+- **Style:** there is no dev toggle; style comes from the author. Pixel is the default. For smooth, add `reflections: { style: "smooth" }` to the `render` block of `content/dev/start-script.ts`, then revert it after.
+- **Live tuning:** use the dev panel, Lighting tab → "Planar reflection": off, crop, scale ¼/½/1, D and R with bands, reset. Launch seeds (dev-tools): `POSTRETRO_PLANAR_SCALE`, `_D`, `_R`, `_BAND_D`, `_BAND_R`, `_OFF`, `_CROP`.
+- **Plane switch:** the lake and e24 each have one candidate plane. Read the switch on `reflection-probes-test`, between the canal (119 m²) and the pool-room pool (23.8 m²).
+- **Poses:**
+  - lake: spawn; `-16.87,1.7,-48.77,90,-10` (south shore looking north); `-48.77,1.7,-16.26,0,-3` (west shore looking east, grazing); `-79.25,1.0,-65.02,-90,-30` (boathouse).
+  - e24: spawn; `-6.50,1.6,-1.63,0,-25` (pool).
+- **Look for:**
+  - waterline seam, shimmer, grazing precision;
+  - posts and far walls as they leave the main screen;
+  - **known gaps:**
+    - SDF-shadowed static lights reflect unshadowed.
+    - Sprites over empty mirror texels are invisible.
+    - Mirror world draws are CPU-culled. The GPU indirect cull needs your sign-off on `indirect_contract_production_consumers_keep_guarded_ownership`.
+- **Movers, skinned meshes, sprites and particles:** e24 has none. Use `campaign-test` (dynamic spots, meshes near water) and `spawner-test` (particles) if either has water in reach; otherwise this half of the read waits on a fixture.
+- **Record here:** the fixed preset per tier (scale, D, band_d, R, band_r), and update `PLANAR_PRESET_START` / `PLANAR_PRESETS` in `render-cpu/src/planar_reflection.rs`.
+
+**AC 41 — GTX 1660 perf matrix** (release, VSync off, window 1600×900 windowed, render resolution Native, window unoccluded; report, don't gate).
+```
+cargo build --release -p postretro
+RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postretro.exe --windowed --start-pose <pose> $M/<map>.prl
+```
+- **Order:** very_high then high at each pose, then repeat in reverse order (high then very_high).
+- **Read:** frame time; the `mirror_walk` CPU stage (`[CpuTiming]`); the `planar_reflection` GPU pass and the SSR pass (GPU timing lines).
+- **Poses:** lake across `-48.77,1.7,-16.26,0,-3`; lake down `-16.87,1.7,-48.77,90,-30`; one movers-and-particles pose on the map chosen above.
+- **Pairing:** compare very_high with planar against very_high with SSR only. The latter is `POSTRETRO_PLANAR_OFF=1`, a dev-tools seed. So either run both sides on a release build with `--features dev-tools`, or compare against high and say so.
+
+**AC 42 — Mac 5300M native run.** On the Mac, check out this branch; it needs pushing first. Then `cargo run --release -p postretro -- --windowed content/dev/maps/reflection-lake-test.prl` (baked on the Mac) at VERY HIGH, and again at HIGH, with `POSTRETRO_CPU_TIMING=1`. Report whether world frames are reached and the frame time against SSR-only very_high. A failed native reveal is a finding.
+
+**AC 43 — 4K ultra resident memory (computed; owner confirms).**
+- **Basis:** scene extent 3840×2160 (Native, the worst case; Auto picks divisor 2 on a 4K panel, a 1920×1080 scene, which quarters every figure) at the ultra preset scale ½ gives 1920×1080 = 2,073,600 texels.
+
+| Allocation | Format | Bytes |
+|---|---|---|
+| Planar Mirror Color | Rgba16Float | 16,588,800 |
+| Planar Mirror Depth | Depth32Float | 8,294,400 |
+| Planar Reflection Layer | Rgba16Float | 16,588,800 |
+| Planar Reflection Layer Depth | Depth32Float | 8,294,400 |
+| **Total** | | **49,766,400 (47.5 MiB, 2.3% of 2 GB)** |
+
+- **At scale 1:** 199,065,600 B (189.8 MiB, 9.3%).
+- **Per-view cull buffers:** none on the GPU; the mirror cull runs on the CPU.
+- **Small buffers:**
+  - mirror lights: same size as the main light buffer, 64 B per record;
+  - mirror sprite instances: start at 1 KiB, grow monotonically;
+  - planar inputs: 272 B.
+- **Confirm in-engine:** at 4K ultra on the lake, check against a GPU memory readout.
+
 ## Tasks
 
 Workers never edit this file or commit. Cargo runs one at a time (disk-bound machine), so concurrent workers edit in parallel and the integrating executor builds and tests after they finish.
@@ -258,4 +315,4 @@ Workers never edit this file or commit. Cargo runs one at a time (disk-bound mac
 | 9 | **Settling and lifetime.** The held frame runs O1 from the held pose (O2, O3); add the `[Settling] entry` planar fields. Target lifecycle: candidate-plane install, tier changes compile nothing, keep across no-plane frames, resize incl. allocating frame, unload, fluid refresh. ACs 24, 29, 31–33. | integrating executor | 3, 5 | done: AC 24 (O3) and O2 app tests; `[Settling] entry` new fields with a log test; AC 29 app and GPU; AC 31, 32, 33 lifecycle tests; postretro 2,078 passed, 1 failed (pre-existing font test); renderer `planar_` 32, `fluid_` 103 unedited, extent 16; clippy (dev-tools, capture) clean |
 | 10 | **Scaffolding and gates.** Gate env seeds and the dev panel under dev-tools (panel renamed off "spike"); capture controls per Delegated answers; drop the `POSTRETRO_UNCAPPED` spike seed unless already on main; repoint source comments to `context/lib/`; move the spike records; grep-gate tests; FXC run. ACs 1, 4, 5, 6. | integrating executor | 1–9 | done: AC 1 tally, AC 4 grep gates, AC 5 review gate and AC 6 FXC recorded in Corrections; renderer lib single-threaded 1,086 passed, 2 failed (pre-existing ghost pair); postretro bin default 2,079, dev-tools 2,113, capture 2,151, each with only the pre-existing font failure; clippy (default, dev-tools, capture, level-compiler) clean; fmt clean; smoke capture on the lake at very_high reflects, High has no planar block |
 | 11 | **Instruments and measured runs.** `walk_measurement` mirror mode (second scratch, mirror pose, union demand); bake-gap pair; capture byte-match at High against a 25db4c78f binary; crop image parity; lake spawn settle; occupancy. Results recorded here. ACs 34–39. | integrating executor | 10 | done: AC 34 byte-identical at two lake poses; AC 35 cropped worst 1,416 (3.53×), 0 trips; AC 36 8 of 8 pairs byte-identical, plus 11 fewer-cell sweep poses; AC 37 0 vs 0 deferred on lake and e24 with the mirror view non-zero (unstressed: no fixture can defer); AC 38 e24 override pose passes, lake can't show the peak half (all blocks mandatory); AC 39 occupancy identical with and without the mirror, mirror-only 0 at every pose. Details in Task 11 notes. `walk_measurement` 7 passed; clippy and fmt clean |
-| 12 | **Manual handoff.** Commands and poses for the owner motion read, 1660 perf matrix, Mac run and 4K memory count; record the owner's presets. ACs 40–43. | integrating executor + owner | 11 | |
+| 12 | **Manual handoff.** Commands and poses for the owner motion read, 1660 perf matrix, Mac run and 4K memory count; record the owner's presets. ACs 40–43. | integrating executor + owner | 11 | prepared: commands, poses and the AC 43 count in §Owner handoff; owner runs and the preset record are outstanding |

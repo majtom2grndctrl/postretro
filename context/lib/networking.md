@@ -674,48 +674,41 @@ order with retained starts:
   A frozen hold never replays the raw reload level of a press still held back.
 - A retained start's own release and cancel edges do not age while it waits.
 
-**Switches keep the client's order.** A switch declaration rides Input in the same
-ordered stream as the commands, sent before its own tick's command, and names the client
-tick it was made on. Its outcome returns on Input. Participation scopes both directions
-without new framing: a declaration rides the participation frame, so the host's Input
-drain drops one from an earlier participation; and demotion and level unload clear the
-client's pending chain while declaration ids never reset within a connection, so a
-stale outcome meets an empty chain or a newer front and resolves nothing. Outside
-participation the client neither sends nor chains a declaration. The host retains a
-declaration and applies it once its own command has resolved and nothing stamped before
-it is pending: no older
-retained start, no older due press, and a live execution's clock at its tick. Starts and
-presses stamped at or after a waiting switch wait for it; one stamped on the switch's
-own command lands after it in the same resolution, as the client's equip pass runs
-before its fire. At most one switch applies per resolution. A switch stamped more than
-120 client ticks ahead of the newest command received is malformed and refused in order
-without touching the inventory. A client that has sent no command applies its switch on
-the next tick. Bounds: a switch applies no later than 240 host ticks after intake,
-whatever is still pending, and at the lane's 64-switch bound the oldest is released at
-once, unordered. On a clean link a switch applies on its own command's resolution, so
-ordering adds no latency. Known gaps: a drop pressed while the client is still lowering
-after a switch drops the new active slot (closed by the next paragraph, once built), and a
-reload squeezed by a stall can be interrupted by the following switch.
+**Switches keep the client's order.** Switch declarations and their outcomes ride
+reliable ordered Input, scoped to the current participation. A declaration precedes its
+own command and waits for older retained starts, due presses and live execution work.
+Starts and presses on its tick follow equip resolution. Demotion, disconnect and level
+unload retire both the host lane and the client's pending chain without replying;
+stale outcomes cannot settle a fresh chain. Declarations more than120 client ticks ahead
+are refused in order. The240-host-tick wait and64-declaration retention bounds release
+blocked declarations; a parked predecessor repoints and settles before a forced later one.
+These bounds never expire a silent client's lower by themselves. Reload duration squeezed
+by catch-up remains host-timed.
 
-**A remote switch follows the client's lower and raise (decided, not yet built).** The
-host mirrors the client's equip timing in client ticks and runs no equip timer of its own,
-so observers no longer see the new weapon before the shooter does.
-- **Begin.** At the declaration's tick the host lowers the outgoing weapon as the local
-  machine does: fire and reload are refused, a non-blocking reload is abandoned, and the
-  active slot stays put.
-- **Repoint.** The host derives the client's lower-end tick from its own tuning and
-  repoints there, in client-tick order, before touch. Declarations stamped on or before
-  that tick apply first; later ones wait. Observers and owner-private samples change at
-  the repoint, so a drop during the lower releases the weapon in hand.
-- **Endings.** A pending lower ends only at the repoint, when a declaration stamped on or
-  before it supersedes it, when the outgoing weapon or the target leaves the inventory,
-  when a lane bound releases a later declaration early (the repoint applies first), or
-  at level change and demotion. Each declaration gets one reply, in declaration order.
-- **Raise.** Reload presses and starts are judged on their own client tick as the
-  client's machine would judge them: a reload is refused through the tick the raise
-  expires, a start is admitted on it.
-- **Resync.** The declaration names its kind, switch or resync, so a resync repoints at
-  once with no lower. This is a wire-layout change.
+**Remote equip follows client ticks.** The client owns equip; the host mirrors its
+begin and repoint instead of letting independent equip timers choose different weapons.
+The outgoing weapon's lower duration fixes the repoint tick using the same countdown
+stepping as the client, including fractional carry and zero duration.
+
+- Begin refuses fire and reload, abandons a non-blocking reload, and keeps the outgoing
+  slot active. An atomic reload already due completes first only when begin and repoint
+  occupy different resolutions. A blocked reload refuses the switch at begin.
+- Repoint runs before touch once older work is settled. Declarations stamped through
+  the repoint tick retarget first, preserving that tick and refusing superseded choices;
+  later declarations start a fresh lower from their own stamp. Overdue repoints catch up
+  in the application resolution. Observer and owner-private selection follows the active
+  slot, so a drop on repoint releases the incoming weapon.
+- Outgoing release settles accepted when the shared release rule lands on the live target.
+  Target loss or replacement by another instance refuses and restores the origin. Death
+  does not end a lower. Expired host Lowering stays Lowering until a named ending; teardown
+  discards it. Replies settle exactly once in declaration order.
+- Raise admission uses the incoming weapon's duration in client ticks. Reload is refused
+  through its expiry tick; fire is admitted on that tick, including zero raise. Release,
+  removal or a new switch retires the old gate. Only a delivered reload press starts
+  reload: an unstamped held level maintains its latch across rebinding without creating
+  another press.
+- Declarations distinguish Switch from Resync. Resync repoints immediately without equip;
+  accepting the already-held slot preserves active charge, burst and existing timing.
 
 **A diverged active slot re-converges on the client's.** Nothing else replicates the
 host's active slot to its owner. The tuning payload's spawn active slot keeps
@@ -1146,6 +1139,9 @@ Ghost links advance `WIRE_VERSION` to 34 and `SNAPSHOT_VERSION` to 22: the link-
 record rides entity component payloads and the level-scoped ghost-audio record rides the
 snapshot envelope. Peers at 33 are refused at handshake. The application protocol remains
 PRLC.
+
+Switch/resync declaration kinds advance `WIRE_VERSION` to35. Peers at34 are refused
+before decoding the new layout. PRLC, `SNAPSHOT_VERSION`22 and tuning epochs stay unchanged.
 
 ## Current contract
 

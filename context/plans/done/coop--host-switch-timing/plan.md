@@ -1,14 +1,14 @@
 # coop--host-switch-timing — plan of record
 
 mode: compact
-status: test-ready
+status: complete
 read at: a363ea550 (source identical to b88a31f91)
 
 ## Execution checkpoint
 
 - Implementation and review fixes complete; root inspected the integrated diff. Focused gate47/42 passes. Final preflight passes: formatting, workspace lint and full tests12,927passed/0failed/68ignored across71 target result groups, including doc tests.
 - Independent panel complete: four slices and seam pass. Two runtime defects, four proof gaps and one stale comment addressed; resolution ledger in review.md. No fresh full panel needed absent a new concrete finding.
-- AC31 manual loopback remains external proof and blocks landing. Runbook: manual-test.md. No manual engine session, dev-map authoring bake, PR or landing request.
+- AC31 manual loopback passed by owner report on2026-10-26. Runbook: manual-test.md. A two-instance manual session is now running; owner results remain pending. No PR or landing request.
 - Owner explicitly requested pushing the feature branch to origin for flexible testing before manual proof. This publication is authorized; status remains test-ready and AC31 still blocks landing.
 - Owner requires pausing before a new step when either five-hour or weekly allowance remaining is5%or below. Query live usage at workflow boundaries. Never spend reset credits. Prior windows paused at cutoff; owner resumed each time.
 - Branch codex/coop-host-switch-timing. Claim a363ea550 is on main; implementation cf96a7503, acceptance05dd08f39; subsequent checkpoint commits record review progress. Original checkout's unrelated work untouched.
@@ -36,7 +36,7 @@ Compared source since brief read `08eb5c98` with current main, then reopened aff
 
 ## AC-to-proof
 
-Numbers follow index.md checkbox order. Conditioned profile is45ms one-way delay, up to60ms additive jitter and5%loss unless stated otherwise. Owner settlement and tuning installation use production paths; observer claims use actual second-peer snapshot receive. Focused proofs and final preflight pass. Manual proof remains external and outstanding.
+Numbers follow index.md checkbox order. Conditioned profile is45ms one-way delay, up to60ms additive jitter and5%loss unless stated otherwise. Owner settlement and tuning installation use production paths; observer claims use actual second-peer snapshot receive. Focused proofs and final preflight pass. Manual proof passed by owner report.
 
 | AC | Acceptance | Proof | Status | Result |
 |---|---|---|---|---|
@@ -70,7 +70,7 @@ Numbers follow index.md checkbox order. Conditioned profile is45ms one-way delay
 | 28 | Both declaration kinds round-trip through the wire codec, and the wire version advances. | Codec round trips for both declaration kinds plus handshake version test; WIRE_VERSION 35 with unchanged PRLC/snapshot/tuning gates. | both kinds round-trip and wire-35 gates pass | pass |
 | 29 | With `lowerMs` 0, the host repoints and replies in the declaration's own client-tick resolution, and observers see one change on that tick, under the conditioned link and through a stall with catch-up trim. | Conditioned zero lower with clean/stalled/trimmed stream; same-resolution reply, repoint and one observer swap. | zero-lower trimmed first resolution queues reply; transport-only drain proves no later resolution needed; focused pass | pass |
 | 30 | A client that repointed before the host-side drop of its outgoing weapon reaches it keeps holding the incoming weapon. | Conditioned delayed production inventory resend after owner already repointed; released outgoing slot cannot change incoming active selection. | held production outgoing-drop tuning after owner repoint preserves incoming selection; focused pass | pass |
-| 31 | Loopback recipe (`networking.md` §Manual loopback recipe) at 45/60/5, then 10% loss, with `lowerMs`/`raiseMs` authored on a dev weapon: switch, drop mid-lower, reload mid-lower and mid-raise, rapid re-targets. The observer sees one swap, at about the shooter's swap. | Owner manual loopback at 45/60/5 then 10% loss with authored non-zero equip durations and second observer; blocking external proof. | manual, outstanding; blocks landing | outstanding manual proof; blocks landing |
+| 31 | Loopback recipe (`networking.md` §Manual loopback recipe) at 45/60/5, then 10% loss, with `lowerMs`/`raiseMs` authored on a dev weapon: switch, drop mid-lower, reload mid-lower and mid-raise, rapid re-targets. The observer sees one swap, at about the shooter's swap. | Owner manual loopback at 45/60/5 then 10% loss with authored non-zero equip durations and second observer; blocking external proof. | owner verified manual loopback | pass (owner verified 2026-10-26) |
 
 ## Tasks
 
@@ -82,7 +82,7 @@ Numbers follow index.md checkbox order. Conditioned profile is45ms one-way delay
 | 4 | Add parked lower, fixed repoint and instance identity, ordered retarget/refusal/endings, lifecycle retirement and post-sim repair. | integrating executor | 2,3 | done; expanded conditioned proof passes |
 | 5 | Carry reload press stamp; gate reload/fire in client ticks, retire raise gate and preserve raw-level latch without manufacturing presses. | integrating executor | 4 | done; raise/trim and held-reload regression pass |
 | 6 | Complete acceptance matrix and strengthen exact death/late/rejoin timing and actual reconnect proof. | integrating executor | 4,5 | done; composed47/47 and netcode42/42 |
-| 7 | Readiness, independent review→fix→focused retest, final preflight, results and manual runbook. | integrating executor | 6 | automated work complete; final preflight passes; manual proof outstanding |
+| 7 | Readiness, independent review→fix→focused retest, final preflight, results and manual runbook. | integrating executor | 6 | automated work complete; final preflight passes; manual proof owner verified |
 
 ## Runtime and resource constraints
 
@@ -104,9 +104,9 @@ Numbers follow index.md checkbox order. Conditioned profile is45ms one-way delay
 | Gate | Result | Landing |
 |---|---|---|
 | Automated AC1–30, review fixes and final preflight | pass | clear |
-| Manual AC31 at45/60/5 and45/60/10 | outstanding | blocks landing |
+| Manual AC31 at45/60/5 and45/60/10 | owner verified | clear |
 
-Manual runbook: [manual-test.md](manual-test.md). Retain this brief in in-progress with status test-ready. Wait for owner's manual result and “land the plane” before durable context updates, done move, cleanup or landing.
+Manual runbook: [manual-test.md](manual-test.md). Brief is in done after owner-authorized landing. Owner verified manual results and requested landing on2026-10-26.
 
 ### Implementation corrections
 
@@ -118,3 +118,11 @@ Manual runbook: [manual-test.md](manual-test.md). Retain this brief in in-progre
 ### Existing-test clarification
 
 The former same-switch-tick forged-start ordering test explicitly bypassed honest client prediction and expected a host shot on the repoint tick. The approved raise Decision now refuses that start even at raiseMs 0, because fire opens on the following client machine pass. Updated its expected verdict while retaining same-resolution switch application and loss ordering assertions. The adjacent legitimate next-tick start still passes. No owner Decision/Acceptance changed.
+
+## Active manual session — 2026-10-26
+
+Owner requested a couple of running game instances. Existing wieldable-pickup-drop room compiled and launched through postretro-tool; host27025 and conditioned client45/60/5 are connected. Local-only test edits set lower600ms/raise250ms on shotgun, pistol, rifle and both fixture pickups. Four script files remain intentionally uncommitted; originals are backed up. Separate test profiles preserve normal player data. Session processes, logs and backup path are recorded in /private/tmp/postretro-switch-session.json. AC31 is still pending owner testing; launch does not imply a visual pass. Restore only these temporary fields after closing both instances; do not overwrite later owner edits.
+
+## Landing — 2026-10-26
+
+Owner reported consistent timing and explicitly verified the manual loopback check, then authorized landing. AC31 is passed by owner report. Temporary script timing fields restored and the two session-owned test instances stopped. Durable networking contract updated; brief moved to done. Automated proof remains the successful12,927passed/0failed/68ignored preflight; landing edits change documentation and restore temporary content only. Feature branch publication authorized; merge to main is a separate owner action. Worktree/cache removal may be completed manually after publication.

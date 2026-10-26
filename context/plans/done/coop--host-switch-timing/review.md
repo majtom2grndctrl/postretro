@@ -102,3 +102,5 @@ The final gate surfaced additional test/fixture integration defects after the re
 - Adversarial target replacement fills through canonical acquisition, retaining lower metadata so refusal still requires instance identity. Inventory ownership guard unchanged.
 
 Clean final gate: formatting, workspace all-target lint with dev-tools, and full workspace tests with dev-tools. Independent log aggregation:71 result groups,12,927passed,0failed,68ignored. No further source edits after this successful gate; subsequent changes record results only. ManualAC31 remains outstanding.
+
+Owner verified manual loopback and authorized landing on2026-10-26. Earlier outstanding-manual notes above record historical checkpoints.

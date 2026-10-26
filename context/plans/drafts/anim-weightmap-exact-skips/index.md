@@ -8,7 +8,7 @@ The `lightmap-exact-skips` brief left the animated weight-map bake out of scope 
 
 ## Decisions
 
-- **Measure first; build only if material.** Task 1 bakes the full-size maps with baked animated lights cold on the base commit (research §Maps with baked animated lights, §Measurement method). The build goes ahead only if a map passes the stop threshold (Open questions). Otherwise the brief stops, and the plan of record carries the numbers. The shaft cull saves at most the lit texels' share, and on `stress-warren-mini` the whole stage is 5.5% of the build.
+- **Build for the levels authors will make, not today's.** Owner ruling: assume bigger levels and more detail than current content, so an idea someone falls in love with just works. No stop threshold gates the build. Task 1 still bakes the full-size maps with baked animated lights cold on the base commit first (research §Maps with baked animated lights, §Measurement method): it picks the gate map, reports the lit / dark / uncovered split, and lets the plan of record pin the wall-time target. Today the whole stage is 5.5% of `stress-warren-mini`'s build; the cull is for the maps that come after it.
 - **Builds on `lightmap-exact-skips` as landed.** It starts after that brief merges, from main, not its branch. One implementation of the shaft test, its margins and the coverage predicate serves both walks. A second copy of a rounding proof would drift. If that code changes in review, this brief re-reads it before building.
 - **Exact by construction, verified by digest.** The standard is the precedent's (`plans/done/bake-ray-speed-contract.md`): byte identity by fixture parity and cold whole-PRL `cmp`, with the same accepted gaps (rays under the 2° angle floor, slivers past ρ_cap outside the query).
   - No byte moves, so `STAGE_VERSION` and the key stay, and base-built cache entries stay valid.
@@ -24,7 +24,7 @@ The `lightmap-exact-skips` brief left the animated weight-map bake out of scope 
   - Its verdict holds across every chunk of the face that lists the light.
   - The hull spans the whole tile, including texels in chunks that do not list the light. That costs only speed, and it keeps hulls independent of chunk splits, which move with light counts.
 - **Coverage cull only if the split pays.** Chunk lists filter by range alone, so lights behind a face and spots aimed away still reach the walk (research §What the chunk lists already drop). There an uncovered texel traces no ray, so the cull saves only arithmetic and task overhead.
-  - It is built only if task 1's split puts uncovered visits at ≥ 10% of stage CPU on a gate-passing map.
+  - It is built only if task 1's split puts uncovered visits at ≥ 10% of stage CPU on the gate map.
   - If built, it applies the precedent's predicate to the face's chart before the walk. A dropped (face, light) stores no entry and reports no step.
 - **Embedded emitters take the shaft test unchanged.** Their tiles never clear.
 - **Culls-off is a test seam only.** It adds no flag, env var or key input, and production always culls.
@@ -72,7 +72,7 @@ Coverage cull, if built. Each row asserts the (face, light) is dropped or kept, 
 
 ### Manual
 
-- [ ] Task 1, before any code: research §Measurement method on `stress-warren-hallway-inspection`, `stress-warren-showcase`, `stress-env-volumes` and `campaign-test`. Report AnimWeightMaps, Lightmap Bake, SH Bake and the total, with the animated light and chunk counts. Apply the stop threshold. If a map passes, report the split.
+- [ ] Task 1, before any code: research §Measurement method on `stress-warren-hallway-inspection`, `stress-warren-showcase`, `stress-env-volumes` and `campaign-test`. Report AnimWeightMaps, Lightmap Bake, SH Bake and the total, with the animated light and chunk counts. Report the split (lit, dark, uncovered) on each, and name the gate map: the one with the largest AnimWeightMaps time.
 - [ ] Cold whole-PRL `cmp`, base-commit binary against the new one, identical:
   - floored: `kinematic-platform`, `stress-warren-mini`, `campaign-test`, `animated-layer-spill`, every `test_animated_weight_maps_*` map, and each task-1 map that passed;
   - `--no-penumbra-floor`: `kinematic-platform`, `test_animated_weight_maps_occluded`.
@@ -102,6 +102,5 @@ Coverage cull, if built. Each row asserts the (face, light) is dropped or kept, 
 
 ## Open questions
 
-- Stop threshold — owner — **blocks build**. Recommended: build only if some measured map spends ≥ 30 s and ≥ 5% of its cold build in AnimWeightMaps. By that rule, today's two measured maps stop.
 - Shared code home — **delegated**.
 - Wall-time target on the gate map — **delegated**: the plan of record pins it from task 1's split, before building.

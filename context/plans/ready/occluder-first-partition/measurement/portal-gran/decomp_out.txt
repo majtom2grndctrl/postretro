@@ -1,0 +1,235 @@
+small(40,128) yaw41 p+0      R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    66 wE=    66 wS=    66 trisHit=   38 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(40,128) yaw76 p+0      R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    10 wE=    10 wS=    10 trisHit=   10 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(40,128) yaw76 p+15     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    10 wE=    10 wS=    10 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(40,128) yaw76 p-15     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    7 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(40,128) yaw111 p+0     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(40,128) yaw0 p+0       R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    70 wE=    70 wS=    70 trisHit=   42 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(40,128) yaw0 p+15      R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    70 wE=    70 wS=    70 trisHit=   39 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(40,128) yaw0 p-15      R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    70 wE=    70 wS=    70 trisHit=   41 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(128,40) yaw45 p+0      R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    36 wE=    36 wS=    36 trisHit=   23 | pillar E-S=  0 R-E=  0 | oracleSteps=7
+small(128,40) yaw80 p+0      R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    24 wE=    24 wS=    24 trisHit=   23 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(128,40) yaw80 p+15     R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    20 wE=    20 wS=    20 trisHit=   20 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(128,40) yaw80 p-15     R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    24 wE=    24 wS=    24 trisHit=   21 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(128,40) yaw115 p+0     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,40) yaw0 p+0       R=   4 E=   4 S=   3 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    36 wE=    36 wS=    28 trisHit=   23 | pillar E-S=  0 R-E=  0 | oracleSteps=7
+small(128,40) yaw0 p+15      R=   5 E=   4 S=   4 | R-E=  1 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    56 wE=    32 wS=    32 trisHit=   20 | pillar E-S=  0 R-E=  0 | oracleSteps=7
+small(128,40) yaw0 p-15      R=   5 E=   4 S=   4 | R-E=  1 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    58 wE=    34 wS=    34 trisHit=   24 | pillar E-S=  0 R-E=  0 | oracleSteps=7
+small(128,128) yaw45 p+0     R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    56 wE=    56 wS=    56 trisHit=   31 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(128,128) yaw80 p+0     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    6 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,128) yaw80 p+15    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     6 wE=     6 wS=     6 trisHit=    6 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,128) yaw80 p-15    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     6 wE=     6 wS=     6 trisHit=    6 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,128) yaw115 p+0    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,128) yaw0 p+0      R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    70 wE=    70 wS=    70 trisHit=   42 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(128,128) yaw0 p+15     R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    66 wE=    66 wS=    66 trisHit=   37 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(128,128) yaw0 p-15     R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    68 wE=    68 wS=    68 trisHit=   39 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(128,220) yaw44 p+0     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    6 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,220) yaw79 p+0     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     2 wE=     2 wS=     2 trisHit=    2 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,220) yaw79 p+15    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     2 wE=     2 wS=     2 trisHit=    2 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,220) yaw79 p-15    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     4 wE=     4 wS=     4 trisHit=    3 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,220) yaw114 p+0    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     2 wE=     2 wS=     2 trisHit=    2 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(128,220) yaw0 p+0      R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    28 wE=    28 wS=    28 trisHit=   21 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(128,220) yaw0 p+15     R=   5 E=   3 S=   3 | R-E=  2 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    64 wE=    24 wS=    24 trisHit=   18 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(128,220) yaw0 p-15     R=   5 E=   3 S=   3 | R-E=  2 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    66 wE=    26 wS=    26 trisHit=   18 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(220,128) yaw48 p+0     R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    52 wE=    52 wS=    52 trisHit=   26 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(220,128) yaw83 p+0     R=   2 E=   2 S=   2 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    10 wE=    10 wS=    10 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=3
+small(220,128) yaw83 p+15    R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    16 wE=    16 wS=    16 trisHit=   13 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(220,128) yaw83 p-15    R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    12 wE=    12 wS=    12 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(220,128) yaw118 p+0    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    10 wE=    10 wS=    10 trisHit=   10 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(220,128) yaw0 p+0      R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    48 wE=    48 wS=    48 trisHit=   27 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(220,128) yaw0 p+15     R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    52 wE=    52 wS=    52 trisHit=   32 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(220,128) yaw0 p-15     R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    48 wE=    48 wS=    48 trisHit=   30 | pillar E-S=  0 R-E=  0 | oracleSteps=9
+small(220,200) yaw48 p+0     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     4 wE=     4 wS=     4 trisHit=    3 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(220,200) yaw83 p+0     R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     4 wE=     4 wS=     4 trisHit=    3 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(220,200) yaw83 p+15    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     4 wE=     4 wS=     4 trisHit=    4 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(220,200) yaw83 p-15    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     6 wE=     6 wS=     6 trisHit=    3 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(220,200) yaw118 p+0    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=1
+small(220,200) yaw0 p+0      R=   3 E=   3 S=   2 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    12 wE=    12 wS=    10 trisHit=    6 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(220,200) yaw0 p+15     R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    18 wE=    18 wS=    18 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+small(220,200) yaw0 p-15     R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    16 wE=    16 wS=    16 trisHit=    7 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+corr(300,128) yaw51 p+0      R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    38 wE=    38 wS=    38 trisHit=   13 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(300,128) yaw86 p+0      R=   2 E=   2 S=   2 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     4 wE=     4 wS=     4 trisHit=    4 | pillar E-S=  0 R-E=  0 | oracleSteps=4
+corr(300,128) yaw86 p+15     R=   2 E=   2 S=   2 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     6 wE=     6 wS=     6 trisHit=    5 | pillar E-S=  0 R-E=  0 | oracleSteps=4
+corr(300,128) yaw86 p-15     R=   2 E=   2 S=   2 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     4 wE=     4 wS=     4 trisHit=    4 | pillar E-S=  0 R-E=  0 | oracleSteps=4
+corr(300,128) yaw121 p+0     R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    14 wE=    14 wS=    14 trisHit=   11 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+corr(300,128) yaw0 p+0       R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    36 wE=    36 wS=    36 trisHit=   21 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(300,128) yaw0 p+15      R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    32 wE=    32 wS=    32 trisHit=   17 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(300,128) yaw0 p-15      R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    34 wE=    34 wS=    34 trisHit=   19 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(380,128) yaw54 p+0      R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    30 wE=    30 wS=    30 trisHit=    9 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(380,128) yaw89 p+0      R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    30 wE=    30 wS=    30 trisHit=   10 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(380,128) yaw89 p+15     R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    34 wE=    34 wS=    34 trisHit=    9 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(380,128) yaw89 p-15     R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    30 wE=    30 wS=    30 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(380,128) yaw124 p+0     R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    22 wE=    22 wS=    22 trisHit=   16 | pillar E-S=  0 R-E=  0 | oracleSteps=5
+corr(380,128) yaw0 p+0       R=   3 E=   3 S=   2 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    16 wE=    16 wS=    16 trisHit=   12 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(380,128) yaw0 p+15      R=   3 E=   3 S=   2 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    24 wE=    24 wS=    20 trisHit=   14 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+corr(380,128) yaw0 p-15      R=   3 E=   3 S=   2 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    20 wE=    20 wS=    16 trisHit=   11 | pillar E-S=  0 R-E=  0 | oracleSteps=6
+room2(450,60) yaw57 p+0      R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    54 wE=    54 wS=    54 trisHit=   39 | pillar E-S=  0 R-E=  0 | oracleSteps=15
+room2(450,60) yaw92 p+0      R=   6 E=   6 S=   6 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    72 wE=    72 wS=    72 trisHit=   52 | pillar E-S=  0 R-E=  0 | oracleSteps=19
+room2(450,60) yaw92 p+15     R=   6 E=   6 S=   6 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    70 wE=    70 wS=    70 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=19
+room2(450,60) yaw92 p-15     R=   6 E=   6 S=   6 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    66 wE=    66 wS=    66 trisHit=   47 | pillar E-S=  0 R-E=  0 | oracleSteps=19
+room2(450,60) yaw127 p+0     R=   6 E=   6 S=   6 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    62 wE=    62 wS=    62 trisHit=   46 | pillar E-S=  0 R-E=  0 | oracleSteps=19
+room2(450,60) yaw90 p+0      R=   6 E=   6 S=   5 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    72 wE=    72 wS=    64 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=19
+room2(450,60) yaw90 p+15     R=   6 E=   6 S=   6 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    70 wE=    70 wS=    70 trisHit=   49 | pillar E-S=  0 R-E=  0 | oracleSteps=19
+room2(450,60) yaw90 p-15     R=   6 E=   6 S=   6 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    66 wE=    66 wS=    66 trisHit=   47 | pillar E-S=  0 R-E=  0 | oracleSteps=19
+room2(450,300) yaw57 p+0     R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    54 wE=    54 wS=    54 trisHit=   40 | pillar E-S=  0 R-E=  0 | oracleSteps=15
+room2(450,300) yaw92 p+0     R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    54 wE=    54 wS=    54 trisHit=   39 | pillar E-S=  0 R-E=  0 | oracleSteps=15
+room2(450,300) yaw92 p+15    R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    54 wE=    54 wS=    54 trisHit=   41 | pillar E-S=  0 R-E=  0 | oracleSteps=15
+room2(450,300) yaw92 p-15    R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    52 wE=    52 wS=    52 trisHit=   39 | pillar E-S=  0 R-E=  0 | oracleSteps=15
+room2(450,300) yaw127 p+0    R=   1 E=   1 S=   1 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    14 wE=    14 wS=    14 trisHit=   13 | pillar E-S=  0 R-E=  0 | oracleSteps=2
+room2(450,300) yaw90 p+0     R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    54 wE=    54 wS=    54 trisHit=   40 | pillar E-S=  0 R-E=  0 | oracleSteps=15
+room2(450,300) yaw90 p+15    R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    54 wE=    54 wS=    54 trisHit=   40 | pillar E-S=  0 R-E=  0 | oracleSteps=15
+room2(450,300) yaw90 p-15    R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    52 wE=    52 wS=    52 trisHit=   38 | pillar E-S=  0 R-E=  0 | oracleSteps=15
+room2(544,100) yaw60 p+0     R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    76 wE=    76 wS=    76 trisHit=   49 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,100) yaw95 p+0     R=   8 E=   8 S=   7 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    78 wE=    78 wS=    70 trisHit=   44 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,100) yaw95 p+15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    78 wE=    78 wS=    78 trisHit=   52 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,100) yaw95 p-15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    72 wE=    72 wS=    72 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,100) yaw130 p+0    R=  12 E=  12 S=  12 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=   106 wE=   106 wS=   106 trisHit=   74 | pillar E-S=  0 R-E=  0 | oracleSteps=88
+room2(544,100) yaw90 p+0     R=   8 E=   8 S=   7 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    78 wE=    78 wS=    70 trisHit=   44 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,100) yaw90 p+15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    78 wE=    78 wS=    78 trisHit=   46 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,100) yaw90 p-15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    72 wE=    72 wS=    72 trisHit=   48 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,300) yaw61 p+0     R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    74 wE=    74 wS=    74 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,300) yaw96 p+0     R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    76 wE=    76 wS=    76 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,300) yaw96 p+15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    78 wE=    78 wS=    78 trisHit=   53 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,300) yaw96 p-15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    72 wE=    72 wS=    72 trisHit=   51 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,300) yaw131 p+0    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    70 wE=    70 wS=    70 trisHit=   48 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,300) yaw90 p+0     R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    76 wE=    76 wS=    76 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,300) yaw90 p+15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    78 wE=    78 wS=    78 trisHit=   52 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,300) yaw90 p-15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    72 wE=    72 wS=    72 trisHit=   51 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,500) yaw62 p+0     R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    54 wE=    54 wS=    54 trisHit=   35 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,500) yaw97 p+0     R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    52 wE=    52 wS=    52 trisHit=   31 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,500) yaw97 p+15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    56 wE=    56 wS=    56 trisHit=   30 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,500) yaw97 p-15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    52 wE=    52 wS=    52 trisHit=   32 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,500) yaw132 p+0    R=  31 E=   8 S=   8 | R-E= 23 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=   206 wE=    50 wS=    50 trisHit=   35 | pillar E-S=  0 R-E= 19 | oracleSteps=81
+room2(544,500) yaw90 p+0     R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    54 wE=    54 wS=    54 trisHit=   31 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,500) yaw90 p+15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    52 wE=    52 wS=    52 trisHit=   29 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(544,500) yaw90 p-15    R=   8 E=   8 S=   8 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    52 wE=    52 wS=    52 trisHit=   31 | pillar E-S=  0 R-E=  0 | oracleSteps=81
+room2(620,300) yaw65 p+0     R=   9 E=   9 S=   9 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    74 wE=    74 wS=    74 trisHit=   40 | pillar E-S=  0 R-E=  0 | oracleSteps=73
+room2(620,300) yaw100 p+0    R=   9 E=   9 S=   9 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    88 wE=    88 wS=    88 trisHit=   49 | pillar E-S=  0 R-E=  0 | oracleSteps=73
+room2(620,300) yaw100 p+15   R=   9 E=   9 S=   9 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    90 wE=    90 wS=    90 trisHit=   49 | pillar E-S=  0 R-E=  0 | oracleSteps=73
+room2(620,300) yaw100 p-15   R=   9 E=   9 S=   9 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    82 wE=    82 wS=    82 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=73
+room2(620,300) yaw135 p+0    R=   9 E=   9 S=   9 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    84 wE=    84 wS=    84 trisHit=   48 | pillar E-S=  0 R-E=  0 | oracleSteps=73
+room2(620,300) yaw90 p+0     R=   9 E=   9 S=   9 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    88 wE=    88 wS=    88 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=73
+room2(620,300) yaw90 p+15    R=   9 E=   9 S=   9 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    90 wE=    90 wS=    90 trisHit=   50 | pillar E-S=  0 R-E=  0 | oracleSteps=73
+room2(620,300) yaw90 p-15    R=   9 E=   9 S=   9 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    82 wE=    82 wS=    82 trisHit=   49 | pillar E-S=  0 R-E=  0 | oracleSteps=73
+pass(544,560) yaw63 p+0      R= 162 E= 158 S=  22 | R-E=  4 E-R= 0 E-S= 136 S-E=0 S-R=0 | wR=  1106 wE=  1082 wS=   162 trisHit=   57 | pillar E-S=127 R-E=  2 | oracleSteps=7692
+pass(544,560) yaw98 p+0      R= 161 E= 158 S=  22 | R-E=  3 E-R= 0 E-S= 136 S-E=0 S-R=0 | wR=  1112 wE=  1092 wS=   172 trisHit=   56 | pillar E-S=127 R-E=  2 | oracleSteps=7692
+pass(544,560) yaw98 p+15     R= 168 E= 158 S=  21 | R-E= 10 E-R= 0 E-S= 137 S-E=0 S-R=0 | wR=  1164 wE=  1098 wS=   168 trisHit=   49 | pillar E-S=127 R-E=  9 | oracleSteps=7692
+pass(544,560) yaw98 p-15     R= 161 E= 158 S=  22 | R-E=  3 E-R= 0 E-S= 136 S-E=0 S-R=0 | wR=   842 wE=   826 wS=   168 trisHit=   57 | pillar E-S=127 R-E=  2 | oracleSteps=7692
+pass(544,560) yaw133 p+0     R= 149 E= 144 S=  22 | R-E=  5 E-R= 0 E-S= 122 S-E=0 S-R=0 | wR=   956 wE=   930 wS=   162 trisHit=   53 | pillar E-S=116 R-E=  3 | oracleSteps=6525
+pass(544,560) yaw90 p+0      R= 161 E= 158 S=  22 | R-E=  3 E-R= 0 E-S= 136 S-E=0 S-R=0 | wR=  1112 wE=  1092 wS=   166 trisHit=   57 | pillar E-S=127 R-E=  2 | oracleSteps=7692
+pass(544,560) yaw90 p+15     R= 176 E= 158 S=  21 | R-E= 18 E-R= 0 E-S= 137 S-E=0 S-R=0 | wR=  1228 wE=  1104 wS=   166 trisHit=   50 | pillar E-S=127 R-E= 17 | oracleSteps=7692
+pass(544,560) yaw90 p-15     R= 161 E= 158 S=  21 | R-E=  3 E-R= 0 E-S= 137 S-E=0 S-R=0 | wR=   842 wE=   828 wS=   160 trisHit=   54 | pillar E-S=127 R-E=  2 | oracleSteps=7692
+pass(544,640) yaw64 p+0      R= 194 E= 185 S= 153 | R-E=  9 E-R= 0 E-S=  32 S-E=0 S-R=0 | wR=  1250 wE=  1194 wS=  1036 trisHit=  315 | pillar E-S= 25 R-E=  5 | oracleSteps=8536
+pass(544,640) yaw99 p+0      R= 220 E= 201 S= 192 | R-E= 19 E-R= 0 E-S=   9 S-E=0 S-R=0 | wR=  1456 wE=  1334 wS=  1294 trisHit=  396 | pillar E-S=  0 R-E=  4 | oracleSteps=9796
+pass(544,640) yaw99 p+15     R= 223 E= 201 S= 199 | R-E= 22 E-R= 0 E-S=   2 S-E=0 S-R=0 | wR=  1506 wE=  1370 wS=  1362 trisHit=  430 | pillar E-S=  1 R-E=  2 | oracleSteps=9796
+pass(544,640) yaw99 p-15     R=  57 E=  35 S=  16 | R-E= 22 E-R= 0 E-S=  19 S-E=0 S-R=0 | wR=   312 wE=   174 wS=    78 trisHit=   46 | pillar E-S= 14 R-E=  4 | oracleSteps=1085
+pass(544,640) yaw134 p+0     R= 195 E= 177 S= 143 | R-E= 18 E-R= 0 E-S=  34 S-E=0 S-R=0 | wR=  1232 wE=  1122 wS=   956 trisHit=  291 | pillar E-S= 28 R-E=  4 | oracleSteps=8145
+pass(544,640) yaw90 p+0      R= 222 E= 201 S= 180 | R-E= 21 E-R= 0 E-S=  21 S-E=0 S-R=0 | wR=  1472 wE=  1336 wS=  1230 trisHit=  385 | pillar E-S=  8 R-E=  5 | oracleSteps=9796
+pass(544,640) yaw90 p+15     R= 232 E= 201 S= 191 | R-E= 31 E-R= 0 E-S=  10 S-E=0 S-R=0 | wR=  1566 wE=  1372 wS=  1322 trisHit=  417 | pillar E-S=  8 R-E=  8 | oracleSteps=9796
+pass(544,640) yaw90 p-15     R=  40 E=  23 S=  15 | R-E= 17 E-R= 0 E-S=   8 S-E=0 S-R=0 | wR=   194 wE=   114 wS=    78 trisHit=   48 | pillar E-S=  3 R-E=  8 | oracleSteps=201
+hall-s(544,700) yaw64 p+0    R= 195 E= 164 S= 119 | R-E= 31 E-R= 0 E-S=  45 S-E=0 S-R=0 | wR=  1226 wE=   996 wS=   786 trisHit=  275 | pillar E-S= 38 R-E= 27 | oracleSteps=6997
+hall-s(544,700) yaw99 p+0    R= 215 E= 177 S= 155 | R-E= 38 E-R= 0 E-S=  22 S-E=0 S-R=0 | wR=  1390 wE=  1110 wS=   996 trisHit=  342 | pillar E-S= 12 R-E= 24 | oracleSteps=8283
+hall-s(544,700) yaw99 p+15   R= 219 E= 179 S= 179 | R-E= 40 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=  1474 wE=  1180 wS=  1180 trisHit=  407 | pillar E-S=  0 R-E= 24 | oracleSteps=8332
+hall-s(544,700) yaw99 p-15   R=  21 E=  19 S=  18 | R-E=  2 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    96 wE=    84 wS=    82 trisHit=   57 | pillar E-S=  0 R-E=  2 | oracleSteps=610
+hall-s(544,700) yaw134 p+0   R= 196 E= 158 S= 113 | R-E= 38 E-R= 0 E-S=  45 S-E=0 S-R=0 | wR=  1240 wE=   968 wS=   738 trisHit=  284 | pillar E-S= 39 R-E= 24 | oracleSteps=7172
+hall-s(544,700) yaw90 p+0    R= 225 E= 183 S= 157 | R-E= 42 E-R= 0 E-S=  26 S-E=0 S-R=0 | wR=  1460 wE=  1150 wS=  1022 trisHit=  351 | pillar E-S= 16 R-E= 29 | oracleSteps=8593
+hall-s(544,700) yaw90 p+15   R= 227 E= 184 S= 181 | R-E= 43 E-R= 0 E-S=   3 S-E=0 S-R=0 | wR=  1534 wE=  1216 wS=  1204 trisHit=  412 | pillar E-S=  1 R-E= 29 | oracleSteps=8630
+hall-s(544,700) yaw90 p-15   R=  39 E=  33 S=  26 | R-E=  6 E-R= 0 E-S=   7 S-E=0 S-R=0 | wR=   188 wE=   152 wS=   128 trisHit=   63 | pillar E-S=  3 R-E=  6 | oracleSteps=662
+hall-s(544,900) yaw67 p+0    R=  37 E=  22 S=  15 | R-E= 15 E-R= 0 E-S=   7 S-E=0 S-R=0 | wR=   234 wE=   124 wS=    86 trisHit=   50 | pillar E-S=  6 R-E= 13 | oracleSteps=578
+hall-s(544,900) yaw102 p+0   R=  79 E=  59 S=  24 | R-E= 20 E-R= 0 E-S=  35 S-E=0 S-R=0 | wR=   446 wE=   310 wS=   136 trisHit=   49 | pillar E-S= 27 R-E= 20 | oracleSteps=2365
+hall-s(544,900) yaw102 p+15  R= 146 E= 103 S=  98 | R-E= 43 E-R= 0 E-S=   5 S-E=0 S-R=0 | wR=   952 wE=   644 wS=   626 trisHit=  185 | pillar E-S=  1 R-E= 37 | oracleSteps=4615
+hall-s(544,900) yaw102 p-15  R=   6 E=   6 S=   6 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    20 wE=    20 wS=    20 trisHit=   19 | pillar E-S=  0 R-E=  0 | oracleSteps=71
+hall-s(544,900) yaw137 p+0   R=  77 E=  50 S=  24 | R-E= 27 E-R= 0 E-S=  26 S-E=0 S-R=0 | wR=   466 wE=   280 wS=   150 trisHit=   67 | pillar E-S= 19 R-E= 15 | oracleSteps=2591
+hall-s(544,900) yaw90 p+0    R=   7 E=   7 S=   6 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    20 wE=    20 wS=    20 trisHit=   20 | pillar E-S=  0 R-E=  0 | oracleSteps=90
+hall-s(544,900) yaw90 p+15   R=  97 E=  97 S=  80 | R-E=  0 E-R= 0 E-S=  17 S-E=0 S-R=0 | wR=   618 wE=   618 wS=   532 trisHit=  166 | pillar E-S= 14 R-E=  0 | oracleSteps=4183
+hall-s(544,900) yaw90 p-15   R=   7 E=   7 S=   6 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    20 wE=    20 wS=    20 trisHit=   20 | pillar E-S=  0 R-E=  0 | oracleSteps=83
+hall-s(300,900) yaw47 p+0    R=  71 E=  46 S=  20 | R-E= 25 E-R= 0 E-S=  26 S-E=0 S-R=0 | wR=   454 wE=   274 wS=   142 trisHit=   50 | pillar E-S= 22 R-E= 21 | oracleSteps=1762
+hall-s(300,900) yaw82 p+0    R=  64 E=  54 S=  18 | R-E= 10 E-R= 0 E-S=  36 S-E=0 S-R=0 | wR=   346 wE=   276 wS=    94 trisHit=   36 | pillar E-S= 29 R-E= 10 | oracleSteps=1984
+hall-s(300,900) yaw82 p+15   R= 128 E= 100 S=  92 | R-E= 28 E-R= 0 E-S=   8 S-E=0 S-R=0 | wR=   834 wE=   626 wS=   596 trisHit=  175 | pillar E-S=  4 R-E= 28 | oracleSteps=3892
+hall-s(300,900) yaw82 p-15   R=   5 E=   5 S=   5 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    18 wE=    18 wS=    18 trisHit=   18 | pillar E-S=  0 R-E=  0 | oracleSteps=54
+hall-s(300,900) yaw117 p+0   R=  43 E=  26 S=  17 | R-E= 17 E-R= 0 E-S=   9 S-E=0 S-R=0 | wR=   242 wE=   122 wS=    84 trisHit=   61 | pillar E-S=  6 R-E=  5 | oracleSteps=1224
+hall-s(300,900) yaw90 p+0    R=  16 E=  15 S=  13 | R-E=  1 E-R= 0 E-S=   2 S-E=0 S-R=0 | wR=    72 wE=    64 wS=    58 trisHit=   40 | pillar E-S=  0 R-E=  1 | oracleSteps=489
+hall-s(300,900) yaw90 p+15   R= 120 E= 102 S=  86 | R-E= 18 E-R= 0 E-S=  16 S-E=0 S-R=0 | wR=   778 wE=   650 wS=   570 trisHit=  192 | pillar E-S= 13 R-E=  5 | oracleSteps=4148
+hall-s(300,900) yaw90 p-15   R=  18 E=  15 S=  12 | R-E=  3 E-R= 0 E-S=   3 S-E=0 S-R=0 | wR=    76 wE=    60 wS=    48 trisHit=   32 | pillar E-S=  1 R-E=  2 | oracleSteps=415
+hall-s(100,1100) yaw24 p+0   R=  24 E=  19 S=  12 | R-E=  5 E-R= 0 E-S=   7 S-E=0 S-R=0 | wR=   152 wE=   120 wS=    78 trisHit=   57 | pillar E-S=  3 R-E=  2 | oracleSteps=467
+hall-s(100,1100) yaw59 p+0   R=   8 E=   6 S=   5 | R-E=  2 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    40 wE=    26 wS=    22 trisHit=   16 | pillar E-S=  0 R-E=  2 | oracleSteps=65
+hall-s(100,1100) yaw59 p+15  R=  31 E=  16 S=  11 | R-E= 15 E-R= 0 E-S=   5 S-E=0 S-R=0 | wR=   202 wE=    98 wS=    68 trisHit=   30 | pillar E-S=  2 R-E= 13 | oracleSteps=389
+hall-s(100,1100) yaw59 p-15  R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    14 wE=    14 wS=    14 trisHit=   14 | pillar E-S=  0 R-E=  0 | oracleSteps=50
+hall-s(100,1100) yaw94 p+0   R=  12 E=  12 S=  11 | R-E=  0 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    50 wE=    50 wS=    48 trisHit=   25 | pillar E-S=  0 R-E=  0 | oracleSteps=291
+hall-s(100,1100) yaw90 p+0   R=  10 E=  10 S=   3 | R-E=  0 E-R= 0 E-S=   7 S-E=0 S-R=0 | wR=    38 wE=    38 wS=     6 trisHit=    6 | pillar E-S=  3 R-E=  0 | oracleSteps=119
+hall-s(100,1100) yaw90 p+15  R=  14 E=  12 S=   7 | R-E=  2 E-R= 0 E-S=   5 S-E=0 S-R=0 | wR=    64 wE=    48 wS=    32 trisHit=   18 | pillar E-S=  1 R-E=  2 | oracleSteps=353
+hall-s(100,1100) yaw90 p-15  R=   9 E=   6 S=   6 | R-E=  3 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    40 wE=    26 wS=    26 trisHit=   16 | pillar E-S=  0 R-E=  2 | oracleSteps=51
+hall-s(544,1100) yaw71 p+0   R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    5 | pillar E-S=  0 R-E=  0 | oracleSteps=25
+hall-s(544,1100) yaw106 p+0  R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    14 wE=    14 wS=    14 trisHit=   13 | pillar E-S=  0 R-E=  0 | oracleSteps=39
+hall-s(544,1100) yaw106 p+15 R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    8 | pillar E-S=  0 R-E=  0 | oracleSteps=39
+hall-s(544,1100) yaw106 p-15 R=   4 E=   4 S=   4 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=    14 wE=    14 wS=    14 trisHit=   13 | pillar E-S=  0 R-E=  0 | oracleSteps=33
+hall-s(544,1100) yaw141 p+0  R=  15 E=  13 S=  12 | R-E=  2 E-R= 0 E-S=   1 S-E=0 S-R=0 | wR=    72 wE=    58 wS=    56 trisHit=   46 | pillar E-S=  0 R-E=  0 | oracleSteps=560
+hall-s(544,1100) yaw90 p+0   R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     6 wE=     6 wS=     6 trisHit=    5 | pillar E-S=  0 R-E=  0 | oracleSteps=25
+hall-s(544,1100) yaw90 p+15  R=   3 E=   3 S=   3 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     6 wE=     6 wS=     6 trisHit=    6 | pillar E-S=  0 R-E=  0 | oracleSteps=25
+hall-s(544,1100) yaw90 p-15  R=   2 E=   2 S=   2 | R-E=  0 E-R= 0 E-S=   0 S-E=0 S-R=0 | wR=     8 wE=     8 wS=     8 trisHit=    7 | pillar E-S=  0 R-E=  0 | oracleSteps=13
+
+=== AGGREGATE over 168 poses (drawable cells; mean / median / max)
+|R|                    mean=    33.6 median=     6.0 max=     232
+|E|                    mean=    29.3 median=     6.0 max=     201
+|E clean|              mean=    29.3 median=     6.0 max=     201
+|S|                    mean=    19.9 median=     5.0 max=     199
+R-E (looseness)        mean=     4.2 median=     0.0 max=      43
+E-R (rect misses)      mean=     0.0 median=     0.0 max=       0
+E-S (granularity)      mean=     9.5 median=     0.0 max=     137
+R-S (total overdraw)   mean=    13.7 median=     0.0 max=     155
+S-E (oracle misses)    mean=     0.0 median=     0.0 max=       0
+S-R (rect misses seen) mean=     0.0 median=     0.0 max=       0
+wR tris                mean=   222.8 median=    56.0 max=    1566
+wE tris                mean=   193.2 median=    54.0 max=    1372
+wS tris                mean=   138.4 median=    54.0 max=    1362
+wR-wE                  mean=    29.7 median=     0.0 max=     318
+wE-wS                  mean=    54.8 median=     0.0 max=     938
+trisHit (distinct)     mean=    56.7 median=    35.0 max=     430
+pillar cells in E-S    mean=     8.0 median=     0.0 max=     127
+pillar cells in R-E    mean=     2.6 median=     0.0 max=      37
+oracle trips: 0  rect trips: 0
+[small room poses: 48 poses] mean R=2.9 E=2.7 S=2.7 R-E=0.1 E-S=0.0 | wR=28 wE=26 wS=25 | pillarE-S=0.0
+[corridor+room2+passage poses: 80 poses] mean R=38.7 E=35.8 S=20.6 R-E=2.9 E-S=15.2 | wR=264 wE=246 wS=153 | pillarE-S=13.7
+[hall-south poses: 40 poses] mean R=60.2 E=48.3 S=39.1 R-E=11.9 E-S=9.2 | wR=374 wE=288 wS=244 | pillarE-S=6.5
+E-S instances by band [south-of-wall, wall-band, behind-wall gap, pillar-field, beyond-pillars, outside hall]: [12, 57, 215, 1276, 16, 12]
+R-E instances by band (same order): [8, 5, 15, 403, 276, 6]
+E-S instances=1588: cell taller than the 6.5 m wall: 1514; geometry top < half cell height: 0; mean cell height 11.9 m vs mean geometry top 11.9 m above cell floor
+max oracle steps: 9796
+
+most frequent E-S cells (cell: poses, pillar?, tris, quake bounds):
+  cell 176: 25 poses pillar=false tris=4 Q[-0,1184,256]..[512,1216,512]
+  cell 140: 21 poses pillar=false tris=8 Q[448,1216,0]..[512,1312,512]
+  cell 45: 20 poses pillar=false tris=8 Q[608,1216,0]..[648,1312,512]
+  cell 49: 19 poses pillar=false tris=8 Q[528,1216,0]..[568,1312,512]
+  cell 58: 19 poses pillar=false tris=6 Q[512,1184,256]..[1536,1216,512]
+  cell 145: 19 poses pillar=false tris=8 Q[368,1216,0]..[408,1312,512]
+  cell 48: 18 poses pillar=true tris=8 Q[512,1216,0]..[528,1352,512]
+  cell 139: 18 poses pillar=true tris=10 Q[408,1216,0]..[448,1352,512]
+  cell 44: 17 poses pillar=true tris=10 Q[568,1216,0]..[608,1352,512]
+  cell 50: 16 poses pillar=true tris=4 Q[528,1312,72]..[568,1352,512]
+  cell 141: 16 poses pillar=true tris=4 Q[448,1312,64]..[512,1352,512]
+  cell 144: 16 poses pillar=true tris=10 Q[328,1216,0]..[368,1352,512]
+  cell 46: 15 poses pillar=true tris=4 Q[608,1312,80]..[648,1352,512]
+  cell 146: 15 poses pillar=true tris=4 Q[368,1312,56]..[408,1352,512]
+  cell 28: 14 poses pillar=true tris=8 Q[608,1352,0]..[648,1392,512]
+  cell 39: 14 poses pillar=true tris=10 Q[648,1216,0]..[688,1352,512]
+  cell 92: 14 poses pillar=true tris=8 Q[408,1352,0]..[448,1432,512]
+  cell 93: 14 poses pillar=true tris=8 Q[448,1352,0]..[512,1392,512]
+  cell 150: 14 poses pillar=true tris=4 Q[288,1312,48]..[328,1352,512]
+  cell 315: 14 poses pillar=true tris=4 Q[608,1552,104]..[648,1592,512]
+  cell 31: 13 poses pillar=true tris=6 Q[512,1352,0]..[528,1432,512]
+  cell 32: 13 poses pillar=true tris=8 Q[528,1352,0]..[568,1392,512]
+  cell 33: 13 poses pillar=true tris=4 Q[528,1392,80]..[568,1432,512]
+  cell 40: 13 poses pillar=false tris=10 Q[688,1216,0]..[1536,1312,512]
+  cell 98: 13 poses pillar=true tris=8 Q[368,1352,0]..[408,1392,512]
+
+most frequent R-E cells:
+  cell 448: 20 poses pillar=false Q[-228,2056,144]..[248,2720,512]
+  cell 447: 18 poses pillar=false Q[-228,1984,128]..[248,2056,512]
+  cell 116: 17 poses pillar=false Q[-412,1536,0]..[-348,1552,96]
+  cell 412: 17 poses pillar=false Q[-512,1912,0]..[248,1984,512]
+  cell 446: 15 poses pillar=false Q[-300,1984,128]..[-228,2720,512]
+  cell 454: 15 poses pillar=false Q[-512,1984,0]..[-412,2720,512]
+  cell 455: 15 poses pillar=false Q[-412,1984,0]..[-400,2072,512]
+  cell 110: 14 poses pillar=true Q[-12,1536,0]..[128,1552,96]
+  cell 111: 14 poses pillar=true Q[52,1472,0]..[128,1536,96]
+  cell 427: 14 poses pillar=false Q[-212,1984,0]..[248,2056,128]

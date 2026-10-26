@@ -1,0 +1,16 @@
+[package]
+name = "gran"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+glam = { version = "0.33", features = ["serde", "bytemuck"] }
+log = "0.4"
+postretro-level-loader = { path = "../../../../../../../crates/level-loader", features = ["load-prl"] }
+postretro-level-format = { path = "../../../../../../../crates/level-format" }
+postretro-stage-timing = { path = "../../../../../../../crates/stage-timing" }
+
+[profile.release]
+debug = false

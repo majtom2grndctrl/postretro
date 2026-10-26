@@ -1,0 +1,46 @@
+=== campaign-test.prl: cells=487 solid=166 exterior=114 empty_interior=207 drawable=207 portals=837
+empty-cell world bounds engine m: Vec3(-72.3392, -30.48, -65.8368) .. Vec3(-0.0, 16.256, 46.3296)
+portals total=837; walkable (both cells empty interior)=524; the rest touch solid/exterior cells (excluded below)
+portal area m^2 histogram (log decades):
+  <0.01 m2: 0
+  0.01-0.1 m2: 0
+  0.1-1 m2: 65
+  1-10 m2: 227
+  10-100 m2: 192
+  100-1000 m2: 40
+  >=1000 m2: 0
+
+portal aspect (diameter / min bounding width) histogram:
+  <1.5: 66
+  1.5-2: 110
+  2-4: 119
+  4-8: 92
+  8-16: 107
+  16-32: 22
+  32-64: 2
+  >=64: 6
+
+vertical-ish portals (|ny|<0.3): 421; taller than 3x horizontal width: 149 (and >1 m tall: 149)
+vertical portals >=6.5 m tall and <=0.7 m wide: 12; >=3 m tall and <=1 m wide: 117
+portal normals: horizontal=103 vertical=421 oblique=0
+min width m: p5=0.406 p50=1.626 p95=9.754
+empty-cell AABB volume m^3 histogram:
+  <0.1 m3: 6
+  0.1-1 m3: 10
+  1-10 m3: 42
+  10-100 m3: 59
+  100-1000 m3: 76
+  1000-10000 m3: 14
+  >=10000 m3: 0
+
+empty-cell AABB smallest dimension m histogram:
+  <0.1 m: 0
+  0.1-0.25 m: 6
+  0.25-0.5 m: 33
+  0.5-1 m: 75
+  1-2 m: 16
+  2-4 m: 42
+  4-8 m: 27
+  >=8 m: 8
+
+cells with smallest dimension <0.5 m: 39

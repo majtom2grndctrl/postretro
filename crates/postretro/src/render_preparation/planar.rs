@@ -4,7 +4,7 @@
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::planar_reflection::{
     MirrorCamera, PlanarCandidates, PlanarPreset, SelectedPlane, collect_mirror_seed_cells,
-    select_plane,
+    mark_seeded_planes, select_plane,
 };
 use postretro_stage_timing::StageFrame;
 use postretro_visibility::{
@@ -33,13 +33,18 @@ pub(crate) struct PlanarRenderPreparation {
     /// install, so a new level or fluid table never inherits it.
     selected: Option<SelectedPlane>,
     /// This frame's mirror view, its cull cropped to the selected plane;
-    /// `None` with no plane, below very high, with the eye under the plane or
-    /// in its fog band, or with no part of the plane on screen.
+    /// `None` with no plane (none above the area floor, seeded in the
+    /// camera's reach and above the eye's fog band), below very high, with
+    /// no part of the plane on screen, or with no seed in the cropped mirror
+    /// frustum. With `None` every water surface reads SSR at the tier.
     camera: Option<MirrorCamera>,
     /// The crop's polygon clip buffers.
     crop_scratch: MirrorCropScratch,
     /// The seed domain on a main view whose visible set is `DrawAll`.
     seed_domain: Vec<u32>,
+    /// Per candidate: a seed cell in this frame's camera reach. Selection's
+    /// seed-in-reach filter reads it.
+    seeded: Vec<bool>,
     seed_cells: Vec<u32>,
     seeds: Vec<usize>,
     /// The mirror's own walk state, never the camera's.
@@ -73,6 +78,7 @@ impl Default for PlanarRenderPreparation {
             camera: None,
             crop_scratch: MirrorCropScratch::default(),
             seed_domain: Vec::new(),
+            seeded: Vec::new(),
             seed_cells: Vec::new(),
             seeds: Vec::new(),
             scratch: PortalWalkScratch::new(),
@@ -91,15 +97,18 @@ impl Default for PlanarRenderPreparation {
 }
 
 impl PlanarRenderPreparation {
-    /// Install `world`'s candidate planes: the up-facing faces of
-    /// `reflecting_volumes`, the volumes that reflect and bind a probe. Resets
-    /// selection history, at level install and at every fluid refresh. The
-    /// crop switch carries over, so a refresh mid-capture keeps it.
+    /// Install `world`'s candidate planes: the probe-bound up-facing faces
+    /// of `reflecting_volumes`, the volumes whose fluid reflects, grouped by
+    /// height, less planes under the area floor. Resets selection history
+    /// (O11), at level install and at every fluid refresh, so the first frame
+    /// selects without hysteresis. The crop switch carries over, so a refresh
+    /// mid-capture keeps it.
     pub(crate) fn install(&mut self, world: &LevelWorld, reflecting_volumes: &[u32]) {
         *self = Self {
             candidates: PlanarCandidates::from_volumes(
                 &world.environment_volumes.volumes,
                 reflecting_volumes,
+                world.reflection_probes.as_ref(),
             ),
             #[cfg(any(test, feature = "capture"))]
             crop: self.crop,
@@ -136,12 +145,25 @@ impl PlanarRenderPreparation {
             self.previous_diagnostic = None;
             return;
         };
-        // Selection filters that need this frame's reach (the area floor and
-        // the seed-in-reach candidate filter) join here, before scoring.
+        let crop = self.crop_enabled();
+        // O12, O14: the seed-in-reach filter, from this frame's camera reach
+        // (the fog reach on a walk path, the drawn set on a fallback), before
+        // scoring and hysteresis. The area floor applied at install; the eye
+        // band applies inside selection, before scoring too.
+        let domain = seed_domain(main, world, &mut self.seed_domain);
+        mark_seeded_planes(
+            &self.candidates,
+            domain,
+            world,
+            main_camera.eye_position,
+            preset.r,
+            &mut self.seeded,
+        );
         self.selected = select_plane(
             &self.candidates,
             main_camera.eye_position,
             main_camera.view_projection,
+            &self.seeded,
             self.selected,
         );
         let Some(selected) = self.selected else {
@@ -163,7 +185,7 @@ impl PlanarRenderPreparation {
         // The crop (O1: after selection, before the walk): the walk and the
         // mirror cull take the plane's padded on-screen bounds, so the trip
         // set filters against them too (O5). Raster and clip stay uncropped.
-        let camera = if self.crop_enabled() {
+        let camera = if crop {
             let cropped = self
                 .candidates
                 .planes
@@ -186,9 +208,8 @@ impl PlanarRenderPreparation {
             camera
         };
 
-        // Seeds come from this frame's camera reach; on a main-view fallback
-        // the reach is its drawn set.
-        let domain = seed_domain(main, world, &mut self.seed_domain);
+        // Seeds come from the reach the filter read, so the selected plane
+        // has at least one.
         collect_mirror_seed_cells(
             domain,
             world,
@@ -212,6 +233,13 @@ impl PlanarRenderPreparation {
             },
         };
         self.walk(&view, main, world, blocked_portals, cpu);
+        if self.mirror.path == MirrorVisibilityPath::NoSeeds {
+            // Every seed missed the cropped mirror frustum: no mirror sample
+            // lands, so no mirror view, and the water reads SSR at the tier.
+            // Selection holds, as with an empty crop.
+            self.previous_diagnostic = None;
+            return;
+        }
         self.camera = Some(camera);
         match &mut self.visible {
             VisibleCells::Culled(cells) => cells.clone_from(&self.mirror.visible_cells),

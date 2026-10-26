@@ -4,6 +4,7 @@
 use super::test_fixtures::*;
 use super::*;
 use glam::Vec3;
+use postretro_render_cpu::fluid_surface::fog::FLUID_FOG_BAND;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_test_log_capture::LogCapture;
 
@@ -251,11 +252,11 @@ fn planar_mirror_cells_join_sample_regions_and_the_renderer_view_on_a_walk_path(
 // cropped mirror reaches a strict subset of the uncropped walk at the same
 // pose, its cull is cropped while raster, clip plane and eye stay, a forced
 // trip draws only cells inside the cropped frustum, and turning the crop off
-// restores the uncropped walk.
+// restores the uncropped walk. The pool's plane clears the area floor through
+// a coplanar pool behind the camera, which the crop leaves out.
 #[test]
 fn planar_crop_reaches_a_subset_of_the_uncropped_walk_and_crop_off_restores_it() {
-    let (min, max) = CORNER_POOL;
-    let world = world_with_water(WATER_ROOM, min, max);
+    let world = world_with_waters(WATER_ROOM, &[(0.0, &[CORNER_POOL, BEHIND_POOL])]);
     let main = main_view(&world);
     let mut mirror = installed(&world);
     prepare(&mut mirror, &world, &main, PLANAR);
@@ -321,4 +322,190 @@ fn planar_crop_reaches_a_subset_of_the_uncropped_walk_and_crop_off_restores_it()
             "O5: the trip set keeps to the cropped frustum"
         );
     }
+}
+
+/// A lake past the water room's far wall (z < −4): in the main frustum, but
+/// no cell of the camera's reach straddles it.
+const LAKE_BEHIND_WALL: WaterRect = ([-30.0, -40.0], [30.0, -6.0]);
+/// A 16 m² pool in the water room's near-left quarter: just over the area
+/// floor, and outscored by the lake.
+const ROOM_POOL: WaterRect = ([0.0, -4.0], [4.0, 0.0]);
+/// The water room's whole floor.
+const ROOM_WATER: WaterRect = ([-4.0, -4.0], [4.0, 4.0]);
+
+// AC 26 (O12) and Task 3's open item: the lake behind the wall is in the
+// frustum and outscores the room's pool, but has no seed cell in the camera's
+// reach, so the pool is selected and walks its mirror. With the pool gone no
+// plane is selected and no mirror camera reaches the renderer, so the water
+// reads SSR; unfiltered, the lake would have been selected and walked from no
+// seed (`NoSeeds`), handing the renderer an empty planar layer.
+#[test]
+fn planar_selection_skips_a_plane_with_no_seed_in_the_cameras_reach() {
+    let world = world_with_waters(
+        WATER_ROOM,
+        &[(-0.5, &[LAKE_BEHIND_WALL]), (0.0, &[ROOM_POOL])],
+    );
+    let main = main_view(&world);
+    let mut mirror = installed(&world);
+    assert_eq!(mirror.candidate_planes(), 2);
+    let eye = camera().eye_position;
+    let vp = camera().view_projection;
+    let unfiltered = select_plane(&mirror.candidates, eye, vp, &[true, true], None).unwrap();
+    assert_eq!(unfiltered.h, -0.5, "the lake outscores the pool");
+
+    prepare(&mut mirror, &world, &main, PLANAR);
+    assert_eq!(mirror.held_selection().map(|plane| plane.h), Some(0.0));
+    assert!(mirror.camera().is_some());
+    assert_eq!(mirror.path(), Some(MirrorVisibilityPath::Walked));
+    assert!(!mirror.seed_cells.is_empty());
+
+    let world = world_with_waters(WATER_ROOM, &[(-0.5, &[LAKE_BEHIND_WALL])]);
+    let main = main_view(&world);
+    let mut mirror = installed(&world);
+    assert_eq!(mirror.candidate_planes(), 1);
+    for _ in 0..2 {
+        prepare(&mut mirror, &world, &main, PLANAR);
+        assert!(mirror.held_selection().is_none(), "no seeded plane");
+        assert!(mirror.camera().is_none(), "no mirror on NoSeeds");
+        assert_eq!(mirror.path(), None);
+        assert!(cells(mirror.visible()).is_empty());
+        assert!(std::ptr::eq(
+            mirror.drawn_cells(&main.visible_cells),
+            &main.visible_cells
+        ));
+        assert!(mirror.reach().is_empty());
+    }
+}
+
+// AC 26 (O14): on a main-view fallback the camera's reach is its drawn set.
+// The solid-cell fallback has no fog reach, and a level with no portals walks
+// nothing, yet the water room each draws seeds the plane, so it stays
+// selectable and its mirror draws.
+#[test]
+fn planar_selection_reads_the_drawn_set_as_reach_on_a_main_fallback() {
+    let mut no_portals = world(WATER_ROOM);
+    no_portals.has_portals = false;
+    for (world, main_path, mirror_path) in [
+        (
+            world(SOLID_CAMERA_CELL),
+            VisibilityPath::SolidCellFallback,
+            MirrorVisibilityPath::Walked,
+        ),
+        (
+            no_portals,
+            VisibilityPath::NoPortalsFallback,
+            MirrorVisibilityPath::NoPortals,
+        ),
+    ] {
+        let main = main_view(&world);
+        assert_eq!(
+            std::mem::discriminant(&main.stats.path),
+            std::mem::discriminant(&main_path)
+        );
+        assert!(cells(&main.visible_cells).contains(&WATER_ROOM));
+        let mut mirror = installed(&world);
+        prepare(&mut mirror, &world, &main, PLANAR);
+        assert_eq!(
+            mirror.held_selection().map(|plane| plane.h),
+            Some(0.0),
+            "{main_path:?}"
+        );
+        assert!(mirror.camera().is_some(), "{main_path:?}");
+        assert_eq!(mirror.path(), Some(mirror_path));
+    }
+}
+
+// AC 26 (probe gate): planar keeps the reflecting gate's probe requirement.
+// Water whose faces bind no probe, or a level with no probe section, installs
+// no candidate, so it is never selected and draws no mirror.
+#[test]
+fn planar_selection_never_takes_a_plane_with_no_bound_probe() {
+    let mut unbound = world(WATER_ROOM);
+    unbound
+        .reflection_probes
+        .as_mut()
+        .expect("the fixture binds its water")
+        .bindings
+        .clear();
+    let mut no_section = world(WATER_ROOM);
+    no_section.reflection_probes = None;
+    for world in [unbound, no_section] {
+        let main = main_view(&world);
+        let mut mirror = installed(&world);
+        assert_eq!(mirror.candidate_planes(), 0);
+        prepare(&mut mirror, &world, &main, PLANAR);
+        assert!(mirror.held_selection().is_none());
+        assert!(mirror.camera().is_none());
+    }
+    let world = world(WATER_ROOM);
+    assert_eq!(
+        installed(&world).candidate_planes(),
+        1,
+        "bound, it competes"
+    );
+}
+
+// AC 27 at the app: with the eye inside the room water's fog band, or below
+// it, that plane is not selected and no mirror camera reaches the renderer,
+// so its water reads SSR at the tier. A plane well below the eye still is;
+// with none qualifying, none is.
+#[test]
+fn planar_preparation_selects_no_plane_the_eye_is_below_or_in_the_band_of() {
+    let low = (-0.9, &[ROOM_WATER][..]);
+    let room = (0.0, &[ROOM_WATER][..]);
+    for eye_y in [FLUID_FOG_BAND * 0.5, FLUID_FOG_BAND, -0.5] {
+        let camera = camera_at(Vec3::new(0.0, eye_y, 3.0));
+        let only_room = world_with_waters(WATER_ROOM, &[room]);
+        let main = main_view_from(&only_room, &camera);
+        let mut mirror = installed(&only_room);
+        prepare_from(&mut mirror, &only_room, &camera, &main, PLANAR);
+        assert!(mirror.held_selection().is_none(), "eye at {eye_y}");
+        assert!(mirror.camera().is_none(), "eye at {eye_y}: SSR at the tier");
+
+        let both = world_with_waters(WATER_ROOM, &[low, room]);
+        let main = main_view_from(&both, &camera);
+        let mut mirror = installed(&both);
+        prepare_from(&mut mirror, &both, &camera, &main, PLANAR);
+        assert_eq!(
+            mirror.held_selection().map(|plane| plane.h),
+            Some(-0.9),
+            "eye at {eye_y}: the low plane qualifies"
+        );
+        assert_eq!(mirror.camera().map(|mirror| mirror.h), Some(-0.9));
+    }
+}
+
+// AC 30 (O11): after a level change the first frame selects without
+// hysteresis, from the new level's candidates. Level A holds its index 1;
+// level B's index 0 scores just over its index 1, under the hysteresis
+// margin, so A's history kept would hold index 1 (the control), while the
+// install reset selects index 0.
+#[test]
+fn planar_install_resets_selection_history() {
+    let level_a = world_with_waters(WATER_ROOM, &[(0.0, &[ROOM_POOL]), (0.05, &[ROOM_WATER])]);
+    let level_b = world_with_waters(WATER_ROOM, &[(0.0, &[ROOM_WATER]), (0.05, &[ROOM_WATER])]);
+    let mut mirror = installed(&level_a);
+    prepare(&mut mirror, &level_a, &main_view(&level_a), PLANAR);
+    let held = mirror.held_selection().expect("level A holds a plane");
+    assert_eq!(held.candidate_index, 1);
+
+    let main_b = main_view(&level_b);
+    let mut kept = installed(&level_b);
+    kept.selected = Some(held);
+    prepare(&mut kept, &level_b, &main_b, PLANAR);
+    assert_eq!(
+        kept.held_selection().map(|plane| plane.candidate_index),
+        Some(1),
+        "control: A's history would hold index 1 on level B"
+    );
+
+    mirror.install(&level_b, &[0, 1]);
+    assert!(mirror.held_selection().is_none(), "install resets history");
+    prepare(&mut mirror, &level_b, &main_b, PLANAR);
+    assert_eq!(
+        mirror.held_selection().map(|plane| plane.candidate_index),
+        Some(0),
+        "the first frame selects by score alone"
+    );
+    assert_eq!(mirror.camera().map(|mirror| mirror.h), Some(0.0));
 }

@@ -3,7 +3,8 @@
 
 use glam::{Mat4, Vec3, Vec4};
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
-use postretro_level_loader::LevelWorld;
+use postretro_level_format::reflection_probes::ReflectionProbesSection;
+use postretro_level_loader::{CellData, LevelWorld};
 use postretro_visibility::{
     Frustum, MirrorCropScratch, crop_mirror_view_proj, extract_frustum_planes,
 };
@@ -12,7 +13,7 @@ use crate::fluid_surface::{
     face_area_centroid, face_normal,
     fog::FLUID_FOG_BAND,
     motion::{FLUID_RING_AMPLITUDE, FLUID_SHIMMER_AMPLITUDE},
-    reflection::FLUID_REFLECTION_RAY_MIN_Y,
+    reflection::{FLUID_REFLECTION_RAY_MIN_Y, usable_probe_section},
     reflection_quality::{FluidReflectionQuality, reflection_target_extent},
     reflection_style::FLUID_REFLECTION_PIXEL_TILT,
 };
@@ -24,6 +25,16 @@ pub const PLANE_HEIGHT_TOLERANCE: f32 = 0.01;
 pub const PLANAR_CLIP_BIAS: f32 = 0.02;
 /// A challenger must score above this multiple of the held plane to switch.
 pub const PLANE_SELECTION_HYSTERESIS: f32 = 1.25;
+/// The area floor, in m²: a plane whose total reflecting, probe-bound,
+/// up-facing area (summed over its faces) falls below it never becomes a
+/// candidate, so a puddle near the eye never outscores the lake. An engine
+/// constant, never a map key, option or override (`rendering_pipeline.md`
+/// §7.3a Selection). Placed from the baked fixtures' planes: the largest
+/// puddle-scale plane is e24's floating block top, 7.9 m² (2.4 × 3.3 m),
+/// and the smallest pool-scale one is reflection-probes' pool room, 23.8 m²
+/// (4.9 × 4.9 m). 14 m², near their geometric mean, clears each by about
+/// 1.7×.
+pub const PLANAR_MIN_PLANE_AREA: f32 = 14.0;
 
 /// Largest per-axis whole-texel displayed offset a pixel-style cell shows:
 /// a shimmer plus a ring, each pinned at one texel per axis.
@@ -148,6 +159,8 @@ pub struct PlanarCandidate {
     pub h: f32,
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
+    /// Total area of `faces`, in m²: what the area floor reads.
+    pub area: f32,
     pub faces: Vec<PlanarFace>,
 }
 
@@ -157,81 +170,115 @@ pub struct PlanarCandidates {
 }
 
 impl PlanarCandidates {
-    /// Only probe-bound, reflecting-variant volumes belong in the input ids.
+    /// The install-time candidate planes: flat up-facing faces of
+    /// `reflecting_volume_indices` (the volumes whose fluid reflects) that
+    /// bind a probe in `probes`, grouped by height. Planar keeps the
+    /// reflecting gate's probe requirement per face: a face with no bound
+    /// probe adds no area and no score, and a plane with none never forms.
+    /// Planes under [`PLANAR_MIN_PLANE_AREA`] are dropped. Ascending by
+    /// height, so a candidate's index is stable for one install.
     pub fn from_volumes(
         volumes: &[EnvironmentVolumeRecord],
         reflecting_volume_indices: &[u32],
+        probes: Option<&ReflectionProbesSection>,
     ) -> Self {
-        let mut faces = Vec::new();
-        for (volume_index, volume) in volumes.iter().enumerate() {
-            if !reflecting_volume_indices.contains(&(volume_index as u32)) {
-                continue;
-            }
-            for (face_index, face) in volume.surface_faces.iter().enumerate() {
-                let Some(normal) = face_normal(face).filter(|n| n.y > 0.9999) else {
-                    continue;
-                };
-                let vertices: Vec<Vec3> = face
-                    .vertices
-                    .iter()
-                    .map(|v| Vec3::from(v.position))
-                    .collect();
-                let bounds_min = vertices
-                    .iter()
-                    .copied()
-                    .fold(Vec3::splat(f32::INFINITY), Vec3::min);
-                let bounds_max = vertices
-                    .iter()
-                    .copied()
-                    .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
-                if bounds_max.y - bounds_min.y > PLANE_HEIGHT_TOLERANCE {
-                    continue;
-                }
-                let first = vertices[0];
-                let area = (1..vertices.len() - 1)
-                    .map(|i| {
-                        (vertices[i] - first)
-                            .cross(vertices[i + 1] - first)
-                            .dot(normal)
-                            * 0.5
-                    })
-                    .sum::<f32>()
-                    .abs();
-                if !area.is_finite() || area <= 0.0 {
-                    continue;
-                }
-                faces.push(PlanarFace {
-                    volume_index: volume_index as u32,
-                    face_index: face_index as u32,
-                    centroid: face_area_centroid(face, normal).as_vec3(),
-                    vertices,
-                    bounds_min,
-                    bounds_max,
-                    area,
-                });
-            }
-        }
-        faces.sort_by(|a, b| a.centroid.y.total_cmp(&b.centroid.y));
-        let mut planes: Vec<PlanarCandidate> = Vec::new();
-        for face in faces {
-            if let Some(plane) = planes
-                .last_mut()
-                .filter(|p| (p.h - face.centroid.y).abs() <= PLANE_HEIGHT_TOLERANCE)
-            {
-                plane.bounds_min = plane.bounds_min.min(face.bounds_min);
-                plane.bounds_max = plane.bounds_max.max(face.bounds_max);
-                plane.faces.push(face);
-            } else {
-                planes.push(PlanarCandidate {
-                    h: face.centroid.y,
-                    bounds_min: face.bounds_min,
-                    bounds_max: face.bounds_max,
-                    faces: vec![face],
-                });
-            }
-        }
+        let Some(probes) = usable_probe_section(probes) else {
+            return Self::default();
+        };
+        let mut planes = group_planes(volumes, |volume, face| {
+            reflecting_volume_indices.contains(&volume) && face_binds_probe(probes, volume, face)
+        });
+        planes.retain(|plane| plane.area >= PLANAR_MIN_PLANE_AREA);
         Self { planes }
     }
+}
+
+/// Whether surface face `face` of volume `volume` binds a probe the section
+/// holds. Bindings ascend by (volume, face), so this is one binary search.
+fn face_binds_probe(section: &ReflectionProbesSection, volume: u32, face: u32) -> bool {
+    section
+        .bindings
+        .binary_search_by(|binding| (binding.volume, binding.face).cmp(&(volume, face)))
+        .is_ok_and(|index| (section.bindings[index].probe as usize) < section.probes.len())
+}
+
+/// Every flat up-facing face `keep` accepts, grouped into planes by height,
+/// before the area floor. The floor's measurement reads it too.
+fn group_planes(
+    volumes: &[EnvironmentVolumeRecord],
+    mut keep: impl FnMut(u32, u32) -> bool,
+) -> Vec<PlanarCandidate> {
+    let mut faces = Vec::new();
+    for (volume_index, volume) in volumes.iter().enumerate() {
+        for (face_index, face) in volume.surface_faces.iter().enumerate() {
+            if !keep(volume_index as u32, face_index as u32) {
+                continue;
+            }
+            let Some(normal) = face_normal(face).filter(|n| n.y > 0.9999) else {
+                continue;
+            };
+            let vertices: Vec<Vec3> = face
+                .vertices
+                .iter()
+                .map(|v| Vec3::from(v.position))
+                .collect();
+            let bounds_min = vertices
+                .iter()
+                .copied()
+                .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+            let bounds_max = vertices
+                .iter()
+                .copied()
+                .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+            if bounds_max.y - bounds_min.y > PLANE_HEIGHT_TOLERANCE {
+                continue;
+            }
+            let first = vertices[0];
+            let area = (1..vertices.len() - 1)
+                .map(|i| {
+                    (vertices[i] - first)
+                        .cross(vertices[i + 1] - first)
+                        .dot(normal)
+                        * 0.5
+                })
+                .sum::<f32>()
+                .abs();
+            if !area.is_finite() || area <= 0.0 {
+                continue;
+            }
+            faces.push(PlanarFace {
+                volume_index: volume_index as u32,
+                face_index: face_index as u32,
+                centroid: face_area_centroid(face, normal).as_vec3(),
+                vertices,
+                bounds_min,
+                bounds_max,
+                area,
+            });
+        }
+    }
+    faces.sort_by(|a, b| a.centroid.y.total_cmp(&b.centroid.y));
+    let mut planes: Vec<PlanarCandidate> = Vec::new();
+    for face in faces {
+        if let Some(plane) = planes
+            .last_mut()
+            .filter(|p| (p.h - face.centroid.y).abs() <= PLANE_HEIGHT_TOLERANCE)
+        {
+            plane.bounds_min = plane.bounds_min.min(face.bounds_min);
+            plane.bounds_max = plane.bounds_max.max(face.bounds_max);
+            plane.area += face.area;
+            plane.faces.push(face);
+        } else {
+            planes.push(PlanarCandidate {
+                h: face.centroid.y,
+                bounds_min: face.bounds_min,
+                bounds_max: face.bounds_max,
+                area: face.area,
+                faces: vec![face],
+            });
+        }
+    }
+    planes
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -243,16 +290,30 @@ pub struct SelectedPlane {
     pub score: f32,
 }
 
-/// Estimated projected solid angle, with 1.25× persistence for the prior plane.
+/// This frame's plane (`rendering_pipeline.md` §7.3a Selection), by plane
+/// identity, from world geometry and the eye position; the main frustum
+/// only decides which faces count. In order:
+/// - **Filters, before scoring.** A plane competes only when `seeded` marks
+///   it (a seed cell in this frame's camera reach, from
+///   [`mark_seeded_planes`]; a missing entry reads as unseeded) and the eye
+///   sits more than `FLUID_FOG_BAND` above it. The area floor applied at
+///   install. A filtered plane scores zero.
+/// - **Score.** Estimated projected solid angle of its faces that pass the
+///   main frustum; ties keep the lower candidate index.
+/// - **Hysteresis.** The held plane (`previous`) keeps selection while it
+///   scores above zero and no challenger beats it by more than
+///   [`PLANE_SELECTION_HYSTERESIS`] ([`challenger_switches`]). A held plane
+///   scoring zero (filtered, or out of the frustum) yields that frame.
 pub fn select_plane(
     candidates: &PlanarCandidates,
     eye: Vec3,
     main_vp: Mat4,
+    seeded: &[bool],
     previous: Option<SelectedPlane>,
 ) -> Option<SelectedPlane> {
     let frustum = extract_frustum_planes(main_vp);
-    let score = |plane: &PlanarCandidate| -> f32 {
-        if eye.y - plane.h <= FLUID_FOG_BAND {
+    let score = |index: usize, plane: &PlanarCandidate| -> f32 {
+        if !seeded.get(index).copied().unwrap_or(false) || eye.y - plane.h <= FLUID_FOG_BAND {
             return 0.0;
         }
         plane
@@ -265,34 +326,68 @@ pub fn select_plane(
             })
             .sum()
     };
+    let selected = |candidate_index: usize, plane: &PlanarCandidate, score: f32| SelectedPlane {
+        candidate_index,
+        h: plane.h,
+        bounds_min: plane.bounds_min,
+        bounds_max: plane.bounds_max,
+        score,
+    };
     let mut best: Option<SelectedPlane> = None;
     for (candidate_index, plane) in candidates.planes.iter().enumerate() {
-        let score = score(plane);
+        let score = score(candidate_index, plane);
         if score > 0.0 && best.is_none_or(|best| score > best.score) {
-            best = Some(SelectedPlane {
-                candidate_index,
-                h: plane.h,
-                bounds_min: plane.bounds_min,
-                bounds_max: plane.bounds_max,
-                score,
-            });
+            best = Some(selected(candidate_index, plane, score));
         }
     }
     if let (Some(best), Some(previous)) = (best, previous)
         && let Some(plane) = candidates.planes.get(previous.candidate_index)
     {
-        let previous_score = score(plane);
-        if previous_score > 0.0 && best.score <= previous_score * PLANE_SELECTION_HYSTERESIS {
-            return Some(SelectedPlane {
-                candidate_index: previous.candidate_index,
-                h: plane.h,
-                bounds_min: plane.bounds_min,
-                bounds_max: plane.bounds_max,
-                score: previous_score,
-            });
+        let held = score(previous.candidate_index, plane);
+        if held > 0.0 && !challenger_switches(held, best.score) {
+            return Some(selected(previous.candidate_index, plane, held));
         }
     }
     best
+}
+
+/// Whether a challenger scoring `challenger` takes selection from a held
+/// plane scoring `held` above zero: only above [`PLANE_SELECTION_HYSTERESIS`]
+/// times the held score. At or below it, the held plane stays.
+pub fn challenger_switches(held: f32, challenger: f32) -> bool {
+    challenger > held * PLANE_SELECTION_HYSTERESIS
+}
+
+/// Mark, one flag per candidate in `seeded` (reused across frames), each
+/// plane with a seed cell in `reach`: this frame's camera reach, the walk's
+/// fog reach on a walk path and the drawn set on a fallback. A seed cell is
+/// one [`collect_mirror_seed_cells`] takes for that plane, so a selected
+/// plane always seeds its mirror walk. Stops once every plane is marked.
+pub fn mark_seeded_planes(
+    candidates: &PlanarCandidates,
+    reach: &[u32],
+    world: &LevelWorld,
+    eye: Vec3,
+    r: Option<f32>,
+    seeded: &mut Vec<bool>,
+) {
+    seeded.clear();
+    seeded.resize(candidates.planes.len(), false);
+    let mut unmarked = candidates.planes.len();
+    for &id in reach {
+        if unmarked == 0 {
+            return;
+        }
+        let Some(cell) = world.cells.get(id as usize) else {
+            continue;
+        };
+        for (plane, flag) in candidates.planes.iter().zip(seeded.iter_mut()) {
+            if !*flag && seeds_plane(cell, plane.h, plane.bounds_min, plane.bounds_max, eye, r) {
+                *flag = true;
+                unmarked -= 1;
+            }
+        }
+    }
 }
 
 fn bounds_in_frustum(min: Vec3, max: Vec3, frustum: &Frustum) -> bool {
@@ -318,37 +413,50 @@ pub fn collect_mirror_seed_cells(
 ) {
     output.clear();
     for &id in main_cells {
-        let Some(cell) = world.cells.get(id as usize) else {
-            continue;
-        };
-        if cell.is_solid
-            || cell.is_exterior
-            || cell.bounds_max.y < plane.h - FLUID_FOG_BAND
-            || cell.bounds_min.y > plane.h + FLUID_FOG_BAND
-            || cell.bounds_max.x < plane.bounds_min.x
-            || cell.bounds_min.x > plane.bounds_max.x
-            || cell.bounds_max.z < plane.bounds_min.z
-            || cell.bounds_min.z > plane.bounds_max.z
-        {
-            continue;
+        if world.cells.get(id as usize).is_some_and(|cell| {
+            seeds_plane(cell, plane.h, plane.bounds_min, plane.bounds_max, eye, r)
+        }) {
+            output.push(id);
         }
-        let water_min = Vec3::new(
-            cell.bounds_min.x.max(plane.bounds_min.x),
-            plane.h,
-            cell.bounds_min.z.max(plane.bounds_min.z),
-        );
-        let water_max = Vec3::new(
-            cell.bounds_max.x.min(plane.bounds_max.x),
-            plane.h,
-            cell.bounds_max.z.min(plane.bounds_max.z),
-        );
-        if r.is_some_and(|r| eye.distance_squared(eye.clamp(water_min, water_max)) > r * r) {
-            continue;
-        }
-        output.push(id);
     }
     output.sort_unstable();
     output.dedup();
+}
+
+/// Whether `cell` seeds the mirror of the plane at height `h` over
+/// `bounds_min..bounds_max`: non-solid, interior, straddling the water
+/// within the fog band, overlapping the plane in x and z, and, with a
+/// receiver reach `r`, holding water within `r` of the eye.
+fn seeds_plane(
+    cell: &CellData,
+    h: f32,
+    bounds_min: Vec3,
+    bounds_max: Vec3,
+    eye: Vec3,
+    r: Option<f32>,
+) -> bool {
+    if cell.is_solid
+        || cell.is_exterior
+        || cell.bounds_max.y < h - FLUID_FOG_BAND
+        || cell.bounds_min.y > h + FLUID_FOG_BAND
+        || cell.bounds_max.x < bounds_min.x
+        || cell.bounds_min.x > bounds_max.x
+        || cell.bounds_max.z < bounds_min.z
+        || cell.bounds_min.z > bounds_max.z
+    {
+        return false;
+    }
+    let water_min = Vec3::new(
+        cell.bounds_min.x.max(bounds_min.x),
+        h,
+        cell.bounds_min.z.max(bounds_min.z),
+    );
+    let water_max = Vec3::new(
+        cell.bounds_max.x.min(bounds_max.x),
+        h,
+        cell.bounds_max.z.min(bounds_max.z),
+    );
+    !r.is_some_and(|r| eye.distance_squared(eye.clamp(water_min, water_max)) > r * r)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

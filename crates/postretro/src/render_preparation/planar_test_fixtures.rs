@@ -5,6 +5,12 @@ use glam::{Vec3, camera::rh};
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
 };
+use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+use postretro_level_format::reflection_probes::{
+    REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
+    ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+    ReflectionProbesSection, reflection_probe_zero_distances,
+};
 use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld, PortalData};
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::planar_reflection::planar_preset;
@@ -26,6 +32,9 @@ pub(crate) const EMPTY_ATTIC: u32 = 8;
 /// A solid cell; a locator answering it puts the main view on the solid-cell
 /// fallback at the same pose.
 pub(crate) const SOLID_CAMERA_CELL: u32 = 7;
+
+/// One water face's `min..max` in x and z.
+pub(crate) type WaterRect = ([f32; 2], [f32; 2]);
 
 fn cell(min: Vec3, max: Vec3, drawable: bool, solid: bool) -> CellData {
     CellData {
@@ -53,10 +62,21 @@ pub(crate) fn world(locator_cell: u32) -> LevelWorld {
 /// A pool in the water room's far right corner (x ∈ [3.5, 4], z ∈ [−4, −3]):
 /// seen from the mirror eye, every ray through it lies more than the crop pad
 /// right of room 5's ceiling portal, so the cropped mirror cannot reach room 5.
-pub(crate) const CORNER_POOL: ([f32; 2], [f32; 2]) = ([3.5, -4.0], [4.0, -3.0]);
+pub(crate) const CORNER_POOL: WaterRect = ([3.5, -4.0], [4.0, -3.0]);
+
+/// A coplanar pool far behind the camera, out of the main frustum and out of
+/// every cell: it lifts a small on-screen pool's plane over the area floor
+/// without widening the crop, which projects only faces in view.
+pub(crate) const BEHIND_POOL: WaterRect = ([-4.0, 40.0], [4.0, 48.0]);
 
 /// [`world`] with its water face covering `min..max` in x and z.
 pub(crate) fn world_with_water(locator_cell: u32, min: [f32; 2], max: [f32; 2]) -> LevelWorld {
+    world_with_waters(locator_cell, &[(0.0, &[(min, max)])])
+}
+
+/// [`world`] with one water volume per `(height, faces)` entry, and every
+/// face bound to one probe.
+pub(crate) fn world_with_waters(locator_cell: u32, volumes: &[(f32, &[WaterRect])]) -> LevelWorld {
     let filler = |x: f32| {
         cell(
             Vec3::new(x, -1.0, 100.0),
@@ -126,12 +146,33 @@ pub(crate) fn world_with_water(locator_cell: u32, min: [f32; 2], max: [f32; 2]) 
         true,
     )
     .expect("planar fixture world is valid");
-    world.environment_volumes.volumes = vec![water_volume(min, max)];
+    world.environment_volumes.volumes = volumes
+        .iter()
+        .map(|&(h, faces)| water_volume(h, faces))
+        .collect();
+    world.reflection_probes = Some(probes_binding_every_face(
+        &world.environment_volumes.volumes,
+    ));
     world
 }
 
-/// One up-facing water volume at y = 0 over `min..max` in x and z.
-fn water_volume(min: [f32; 2], max: [f32; 2]) -> EnvironmentVolumeRecord {
+/// One water volume with an up-facing face at height `h` over each rect.
+fn water_volume(h: f32, faces: &[WaterRect]) -> EnvironmentVolumeRecord {
+    let face = |(min, max): WaterRect| EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: [
+            [min[0], h, min[1]],
+            [min[0], h, max[1]],
+            [max[0], h, max[1]],
+            [max[0], h, min[1]],
+        ]
+        .into_iter()
+        .map(|position| EnvironmentSurfaceVertex {
+            position,
+            uv: [0.0; 2],
+        })
+        .collect(),
+    };
     EnvironmentVolumeRecord {
         source_entity: 0,
         priority: 0,
@@ -139,28 +180,53 @@ fn water_volume(min: [f32; 2], max: [f32; 2]) -> EnvironmentVolumeRecord {
         push: None,
         fluid: "water".into(),
         brushes: Vec::new(),
-        surface_faces: vec![EnvironmentSurfaceFace {
-            texture_index: 0,
-            vertices: [
-                [min[0], 0.0, min[1]],
-                [min[0], 0.0, max[1]],
-                [max[0], 0.0, max[1]],
-                [max[0], 0.0, min[1]],
-            ]
-            .into_iter()
-            .map(|position| EnvironmentSurfaceVertex {
-                position,
-                uv: [0.0; 2],
+        surface_faces: faces.iter().copied().map(face).collect(),
+    }
+}
+
+/// A usable one-probe section binding every surface face of `volumes`:
+/// planar keeps the reflecting gate's probe requirement per face.
+pub(crate) fn probes_binding_every_face(
+    volumes: &[EnvironmentVolumeRecord],
+) -> ReflectionProbesSection {
+    let bindings = volumes
+        .iter()
+        .enumerate()
+        .flat_map(|(volume, record)| {
+            (0..record.surface_faces.len()).map(move |face| ReflectionProbeBinding {
+                volume: volume as u32,
+                face: face as u32,
+                probe: 0,
             })
-            .collect(),
+        })
+        .collect();
+    ReflectionProbesSection {
+        tile_dimension: 4,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_BC6H,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 0,
+            box_min: [-50.0, -1.0, -50.0],
+            box_max: [50.0, 10.0, 50.0],
+            capture_point: [0.0, 0.01, 0.0],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
         }],
+        bindings,
+        tiles: vec![0; 16],
+        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: reflection_probe_zero_distances(1, 4),
     }
 }
 
 /// The main camera: 2 m above the water, pitched down at it, so the ceiling
 /// portals lie above its frustum while their reflections fill the mirror's.
 pub(crate) fn camera() -> RenderCamera {
-    let eye = Vec3::new(0.0, 2.0, 3.0);
+    camera_at(Vec3::new(0.0, 2.0, 3.0))
+}
+
+/// The main camera from `eye`, aimed where [`camera`] aims.
+pub(crate) fn camera_at(eye: Vec3) -> RenderCamera {
     let target = Vec3::new(0.0, 0.0, -1.0);
     let view_matrix = rh::view::look_at_mat4(eye, target, Vec3::Y);
     RenderCamera {
@@ -174,7 +240,14 @@ pub(crate) fn camera() -> RenderCamera {
 
 /// The app's camera preparation at the fixture pose, from the real walk.
 pub(crate) fn main_view(world: &LevelWorld) -> VisibleRenderPreparation {
-    let camera = camera();
+    main_view_from(world, &camera())
+}
+
+/// The app's camera preparation from `camera`, from the real walk.
+pub(crate) fn main_view_from(
+    world: &LevelWorld,
+    camera: &RenderCamera,
+) -> VisibleRenderPreparation {
     VisibleRenderPreparation::for_level(
         world,
         camera.eye_position,
@@ -186,10 +259,12 @@ pub(crate) fn main_view(world: &LevelWorld) -> VisibleRenderPreparation {
     )
 }
 
-/// A preparation with the fixture's water installed as a candidate.
+/// A preparation with every one of the fixture's water volumes installed as
+/// reflecting.
 pub(crate) fn installed(world: &LevelWorld) -> PlanarRenderPreparation {
     let mut mirror = PlanarRenderPreparation::default();
-    mirror.install(world, &[0]);
+    let volumes: Vec<u32> = (0..world.environment_volumes.volumes.len() as u32).collect();
+    mirror.install(world, &volumes);
     mirror
 }
 
@@ -200,9 +275,20 @@ pub(crate) fn prepare(
     main: &VisibleRenderPreparation,
     quality: FluidReflectionQuality,
 ) {
+    prepare_from(mirror, world, &camera(), main, quality);
+}
+
+/// One frame's mirror from `camera` at `quality`'s preset, after `main`.
+pub(crate) fn prepare_from(
+    mirror: &mut PlanarRenderPreparation,
+    world: &LevelWorld,
+    camera: &RenderCamera,
+    main: &VisibleRenderPreparation,
+    quality: FluidReflectionQuality,
+) {
     mirror.prepare(
         world,
-        &camera(),
+        camera,
         main,
         planar_preset(quality),
         &[],

@@ -3,6 +3,12 @@ use glam::Vec2;
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
 };
+use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+use postretro_level_format::reflection_probes::{
+    REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
+    ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+    reflection_probe_zero_distances,
+};
 use postretro_level_loader::{CellData, CellLocatorChild};
 use proptest::prelude::*;
 
@@ -14,19 +20,13 @@ fn view(eye: Vec3) -> Mat4 {
     glam::camera::rh::view::look_at_mat4(eye, Vec3::new(0.0, 0.0, -8.0), Vec3::Y)
 }
 
+/// A 4 × 4 m water face at height `h`, centred at `x`, 4 to 8 m ahead.
 fn water(h: f32, x: f32) -> EnvironmentVolumeRecord {
-    let vertices = [
-        [x - 2.0, h, -8.0],
-        [x - 2.0, h, -4.0],
-        [x + 2.0, h, -4.0],
-        [x + 2.0, h, -8.0],
-    ]
-    .into_iter()
-    .map(|position| EnvironmentSurfaceVertex {
-        position,
-        uv: [0.0; 2],
-    })
-    .collect();
+    water_rect(h, Vec2::new(x - 2.0, -8.0), Vec2::new(x + 2.0, -4.0))
+}
+
+/// One up-facing water face at height `h` over `min..max` in x and z.
+fn water_rect(h: f32, min: Vec2, max: Vec2) -> EnvironmentVolumeRecord {
     EnvironmentVolumeRecord {
         source_entity: 0,
         priority: 0,
@@ -34,12 +34,86 @@ fn water(h: f32, x: f32) -> EnvironmentVolumeRecord {
         push: None,
         fluid: "water".into(),
         brushes: Vec::new(),
-        surface_faces: vec![EnvironmentSurfaceFace {
-            texture_index: 0,
-            vertices,
-        }],
+        surface_faces: vec![water_face(h, min, max)],
     }
 }
+
+fn water_face(h: f32, min: Vec2, max: Vec2) -> EnvironmentSurfaceFace {
+    EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: [
+            [min.x, h, min.y],
+            [min.x, h, max.y],
+            [max.x, h, max.y],
+            [max.x, h, min.y],
+        ]
+        .into_iter()
+        .map(|position| EnvironmentSurfaceVertex {
+            position,
+            uv: [0.0; 2],
+        })
+        .collect(),
+    }
+}
+
+/// A square water face of `area` m² at height `h`, centred on `centre`.
+fn water_square(h: f32, centre: Vec2, area: f32) -> EnvironmentSurfaceFace {
+    let half = Vec2::splat(area.sqrt() * 0.5);
+    water_face(h, centre - half, centre + half)
+}
+
+/// A usable one-probe section binding every surface face of `volumes`.
+fn bind_every_face(volumes: &[EnvironmentVolumeRecord]) -> ReflectionProbesSection {
+    let mut section = probe_section();
+    for (volume, record) in volumes.iter().enumerate() {
+        for face in 0..record.surface_faces.len() {
+            section.bindings.push(ReflectionProbeBinding {
+                volume: volume as u32,
+                face: face as u32,
+                probe: 0,
+            });
+        }
+    }
+    section
+}
+
+/// A usable one-probe section with no bindings.
+fn probe_section() -> ReflectionProbesSection {
+    ReflectionProbesSection {
+        tile_dimension: 4,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_BC6H,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 0,
+            box_min: [-100.0; 3],
+            box_max: [100.0; 3],
+            capture_point: [0.0, 0.01, -6.0],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: Vec::new(),
+        tiles: vec![0; 16],
+        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: reflection_probe_zero_distances(1, 4),
+    }
+}
+
+/// `volumes`' candidates with every volume reflecting and every face bound.
+fn candidates_of(volumes: &[EnvironmentVolumeRecord]) -> PlanarCandidates {
+    let all: Vec<u32> = (0..volumes.len() as u32).collect();
+    PlanarCandidates::from_volumes(volumes, &all, Some(&bind_every_face(volumes)))
+}
+
+/// One candidate plane as given, the area floor not applied, for scoring a
+/// plane alone.
+fn plane_alone(volume: EnvironmentVolumeRecord) -> PlanarCandidates {
+    PlanarCandidates {
+        planes: group_planes(&[volume], |_, _| true),
+    }
+}
+
+/// Every plane seeded: for selection tests whose seeds are not the subject.
+const SEEDED: [bool; 8] = [true; 8];
 
 fn ndc(matrix: Mat4, p: Vec3) -> Vec3 {
     let clip = matrix * p.extend(1.0);
@@ -153,52 +227,293 @@ fn planar_reflection_groups_only_horizontal_reflecting_up_faces() {
         down,
         water(2.0, 0.0),
     ];
-    let candidates = PlanarCandidates::from_volumes(&volumes, &[0, 1, 2, 3]);
-    assert_eq!(candidates.planes.len(), 2);
-    assert_eq!(candidates.planes[0].faces.len(), 2);
-    assert_eq!(candidates.planes[0].faces[1].volume_index, 1);
-    assert_eq!(candidates.planes[0].faces[0].area, 16.0);
+    let planes = group_planes(&volumes, |volume, _| volume < 4);
+    assert_eq!(planes.len(), 2);
+    assert_eq!(planes[0].faces.len(), 2);
+    assert_eq!(planes[0].faces[1].volume_index, 1);
+    assert_eq!(planes[0].faces[0].area, 16.0);
+    assert_eq!(planes[0].area, 32.0, "a plane's area sums its faces");
 }
 
+// AC 26 (probe gate): planar keeps the reflecting gate's probe requirement
+// per face. A face with no bound probe adds nothing to a plane, a plane whose
+// faces bind none never becomes a candidate, and no usable probe section
+// means no candidate at all, even for a lake far above the area floor.
 #[test]
-fn planar_reflection_selection_hysteresis_and_eye_band() {
+fn planar_candidates_count_only_probe_bound_reflecting_faces() {
+    let lake = |h| water_rect(h, Vec2::new(-20.0, -40.0), Vec2::new(20.0, -10.0));
+    let mut two_faced = lake(0.0);
+    two_faced.surface_faces.push(water_face(
+        0.0,
+        Vec2::new(30.0, -40.0),
+        Vec2::new(70.0, -10.0),
+    ));
+    let volumes = [two_faced, lake(3.0), lake(-3.0)];
+    let mut section = probe_section();
+    section.bindings = vec![
+        ReflectionProbeBinding {
+            volume: 0,
+            face: 1,
+            probe: 0,
+        },
+        // A binding naming a probe the section lacks binds nothing.
+        ReflectionProbeBinding {
+            volume: 1,
+            face: 0,
+            probe: 7,
+        },
+        ReflectionProbeBinding {
+            volume: 2,
+            face: 0,
+            probe: 0,
+        },
+    ];
+    let candidates = PlanarCandidates::from_volumes(&volumes, &[0, 1, 2], Some(&section));
+    let heights: Vec<f32> = candidates.planes.iter().map(|plane| plane.h).collect();
+    assert_eq!(
+        heights,
+        vec![-3.0, 0.0],
+        "the unbound lake at 3 m never forms"
+    );
+    let plane = &candidates.planes[1];
+    assert_eq!(plane.faces.len(), 1);
+    assert_eq!(plane.faces[0].face_index, 1, "only the bound face counts");
+    assert_eq!(plane.area, 1200.0);
+    assert_eq!(plane.bounds_min.x, 30.0, "the unbound face widens nothing");
+
+    let unreflecting = PlanarCandidates::from_volumes(&volumes, &[0, 1], Some(&section));
+    assert_eq!(unreflecting.planes.len(), 1, "volume 2 does not reflect");
+    assert!(
+        PlanarCandidates::from_volumes(&volumes, &[0, 1, 2], None)
+            .planes
+            .is_empty()
+    );
+    let mut unusable = section.clone();
+    unusable.tiles.clear();
+    assert!(
+        PlanarCandidates::from_volumes(&volumes, &[0, 1, 2], Some(&unusable))
+            .planes
+            .is_empty(),
+        "a section the renderer cannot install binds no face"
+    );
     let eye = Vec3::new(0.0, 2.0, 2.0);
     let vp = projection() * view(eye);
-    let mut candidates =
-        PlanarCandidates::from_volumes(&[water(0.0, 0.0), water(0.1, 0.0)], &[0, 1]);
-    let original = select_plane(&candidates, eye, vp, None).unwrap();
+    let none = PlanarCandidates::from_volumes(&volumes[1..2], &[0], Some(&section));
+    assert!(select_plane(&none, eye, vp, &SEEDED, None).is_none());
+}
+
+// AC 25: the floor reads a plane's total area. A puddle just under it never
+// becomes a candidate, though alone it outscores the lake in projected solid
+// angle; one just over it, or two coplanar faces each under it that sum over
+// it, is a candidate and wins.
+#[test]
+fn planar_selection_respects_the_area_floor() {
+    let eye = Vec3::new(0.0, 2.0, 2.0);
+    let vp = projection() * view(eye);
+    let lake = water_rect(0.0, Vec2::new(-20.0, -40.0), Vec2::new(20.0, -10.0));
+    let puddle = |area: f32| EnvironmentVolumeRecord {
+        surface_faces: vec![water_square(1.0, Vec2::ZERO, area)],
+        ..lake.clone()
+    };
+    let below = PLANAR_MIN_PLANE_AREA * 0.99;
+    let above = PLANAR_MIN_PLANE_AREA * 1.01;
+    let score = |volume| {
+        select_plane(&plane_alone(volume), eye, vp, &SEEDED, None)
+            .expect("in view")
+            .score
+    };
+    assert!(
+        score(puddle(below)) > score(lake.clone()),
+        "the sub-floor puddle is nearer and larger in projected solid angle"
+    );
+
+    let candidates = candidates_of(&[lake.clone(), puddle(below)]);
+    assert_eq!(candidates.planes.len(), 1, "the puddle never competes");
+    assert_eq!(candidates.planes[0].h, 0.0);
+    let selected = select_plane(&candidates, eye, vp, &SEEDED, None).unwrap();
+    assert_eq!(selected.h, 0.0, "the lake is selected");
+    assert!(candidates_of(&[puddle(below)]).planes.is_empty());
+
+    let candidates = candidates_of(&[lake.clone(), puddle(above)]);
+    assert_eq!(candidates.planes.len(), 2);
+    let selected = select_plane(&candidates, eye, vp, &SEEDED, None).unwrap();
+    assert_eq!(selected.h, 1.0, "a plane just over the floor is selectable");
+
+    let mut split = puddle(PLANAR_MIN_PLANE_AREA * 0.6);
+    split.surface_faces.push(water_square(
+        1.0,
+        Vec2::new(-1.0, -9.0),
+        PLANAR_MIN_PLANE_AREA * 0.6,
+    ));
+    let candidates = candidates_of(&[lake, split]);
+    assert_eq!(
+        candidates.planes.len(),
+        2,
+        "the floor sums the plane's faces, not each face"
+    );
+}
+
+// AC 26 (O12): seeds filter candidates before scoring and hysteresis. A
+// higher-scoring plane in the frustum with no seed cell in the camera's reach
+// is not selected and a lower-scoring seeded one is; a held plane that loses
+// its seeds yields that frame; with no seeded plane none is selected.
+#[test]
+fn planar_selection_takes_only_planes_seeded_in_the_cameras_reach() {
+    let eye = Vec3::new(0.0, 2.0, 2.0);
+    let vp = projection() * view(eye);
+    let candidates = candidates_of(&[
+        water_rect(0.0, Vec2::new(-20.0, -40.0), Vec2::new(20.0, -10.0)),
+        water_rect(0.5, Vec2::new(-3.0, -9.0), Vec2::new(3.0, -5.0)),
+    ]);
+    let (lake, pool) = (0, 1);
+    let both = select_plane(&candidates, eye, vp, &[true, true], None).unwrap();
+    assert_eq!(both.candidate_index, lake, "the lake outscores the pool");
+    let pool_only = select_plane(&candidates, eye, vp, &[false, true], None).unwrap();
+    assert_eq!(pool_only.candidate_index, pool);
+    assert!(pool_only.score < both.score);
+    // A short flag slice reads the missing planes as unseeded.
+    assert_eq!(
+        select_plane(&candidates, eye, vp, &[true], None)
+            .unwrap()
+            .candidate_index,
+        lake
+    );
+    // Held without seeds: yields, whatever its score.
+    let held = select_plane(&candidates, eye, vp, &[false, true], Some(both)).unwrap();
+    assert_eq!(held.candidate_index, pool);
+    assert!(select_plane(&candidates, eye, vp, &[false, false], Some(both)).is_none());
+    assert!(select_plane(&candidates, eye, vp, &[], None).is_none());
+}
+
+// AC 27: with the eye below a plane, or above it but within its fog band, the
+// plane is not selected, before scoring: no mirror camera forms for it, so
+// its water reads SSR at the tier. Another plane well below the eye still
+// is; with none qualifying, none is selected.
+#[test]
+fn planar_selection_refuses_eye_below_or_in_band() {
+    let eye = Vec3::new(0.0, 2.0, 2.0);
+    let vp = projection() * view(eye);
+    let low = water_rect(0.0, Vec2::new(-20.0, -40.0), Vec2::new(20.0, -10.0));
+    for h in [
+        eye.y + 0.5,
+        eye.y,
+        eye.y - FLUID_FOG_BAND * 0.5,
+        // At the band's edge; the app test holds the exact edge, where f32
+        // keeps 0.08 above a plane at 0 exact.
+        eye.y - FLUID_FOG_BAND * 0.999,
+    ] {
+        let near = water_rect(h, Vec2::new(-6.0, -10.0), Vec2::new(6.0, -2.0));
+        let only = candidates_of(std::slice::from_ref(&near));
+        assert_eq!(only.planes.len(), 1);
+        assert!(
+            select_plane(&only, eye, vp, &SEEDED, None).is_none(),
+            "plane at {h}: none qualifies, none is selected"
+        );
+        assert!(MirrorCamera::new(eye, view(eye), projection(), h, None).is_none());
+        let held = SelectedPlane {
+            candidate_index: 0,
+            h,
+            bounds_min: only.planes[0].bounds_min,
+            bounds_max: only.planes[0].bounds_max,
+            score: 1.0,
+        };
+        assert!(
+            select_plane(&only, eye, vp, &SEEDED, Some(held)).is_none(),
+            "a held plane the eye drops into does not hold"
+        );
+
+        let two = candidates_of(&[low.clone(), near]);
+        let held = SelectedPlane {
+            candidate_index: 1,
+            ..held
+        };
+        let selected = select_plane(&two, eye, vp, &SEEDED, Some(held)).unwrap();
+        assert_eq!(selected.h, 0.0, "plane at {h}: the low plane qualifies");
+    }
+    let just_above = eye.y - FLUID_FOG_BAND * 1.5;
+    let near = water_rect(just_above, Vec2::new(-6.0, -10.0), Vec2::new(6.0, -2.0));
+    assert!(select_plane(&candidates_of(&[near]), eye, vp, &SEEDED, None).is_some());
+}
+
+// AC 28 (O13), the rewrite of the spike's hysteresis test with the floor and
+// seed rules in place: a challenger at or below 1.25× the held score does not
+// switch and one above it does; hysteresis applies only to a held plane with
+// a non-zero score, so a held plane out of the frustum yields that frame.
+#[test]
+fn planar_selection_hysteresis_holds_at_the_margin_and_yields_when_the_held_plane_scores_zero() {
+    assert!(!challenger_switches(4.0, 5.0), "exactly 1.25× holds");
+    assert!(challenger_switches(
+        4.0,
+        f32::from_bits(5.0_f32.to_bits() + 1)
+    ));
+    assert!(!challenger_switches(4.0, 3.0));
+
+    let eye = Vec3::new(0.0, 2.0, 2.0);
+    let vp = projection() * view(eye);
+    let mut candidates = candidates_of(&[water(0.0, 0.0), water(0.1, 0.0)]);
+    assert_eq!(candidates.planes.len(), 2, "both pools clear the floor");
+    let original = select_plane(&candidates, eye, vp, &SEEDED, None).unwrap();
     let challenger = 1 - original.candidate_index;
-    candidates.planes[challenger].faces[0].area *= original.score
-        / select_plane(
+    let alone = |candidates: &PlanarCandidates| {
+        select_plane(
             &PlanarCandidates {
                 planes: vec![candidates.planes[challenger].clone()],
             },
             eye,
             vp,
+            &SEEDED,
             None,
         )
         .unwrap()
         .score
-        * 1.2;
+    };
+    let scale = |candidates: &mut PlanarCandidates, ratio: f32| {
+        let factor = original.score * ratio / alone(candidates);
+        candidates.planes[challenger].faces[0].area *= factor;
+    };
+    scale(&mut candidates, PLANE_SELECTION_HYSTERESIS * (1.0 - 1.0e-4));
     assert_eq!(
-        select_plane(&candidates, eye, vp, Some(original))
+        select_plane(&candidates, eye, vp, &SEEDED, Some(original))
             .unwrap()
             .candidate_index,
-        original.candidate_index
+        original.candidate_index,
+        "at the margin the held plane stays"
     );
-    candidates.planes[challenger].faces[0].area *= 1.1;
     assert_eq!(
-        select_plane(&candidates, eye, vp, Some(original))
+        select_plane(&candidates, eye, vp, &SEEDED, None)
             .unwrap()
             .candidate_index,
-        challenger
+        challenger,
+        "without history the challenger wins"
     );
-    let only = PlanarCandidates::from_volumes(&[water(0.0, 0.0)], &[0]);
-    for y in [-1.0, 0.0, FLUID_FOG_BAND * 0.5, FLUID_FOG_BAND] {
-        let eye = Vec3::new(0.0, y, 2.0);
-        assert!(select_plane(&only, eye, projection() * view(eye), None).is_none());
-        assert!(MirrorCamera::new(eye, view(eye), projection(), 0.0, None).is_none());
-    }
+    scale(&mut candidates, PLANE_SELECTION_HYSTERESIS * (1.0 + 1.0e-3));
+    assert_eq!(
+        select_plane(&candidates, eye, vp, &SEEDED, Some(original))
+            .unwrap()
+            .candidate_index,
+        challenger,
+        "past the margin the challenger switches"
+    );
+
+    // O13: the held lake leaves the frustum while a far smaller pool, out of
+    // view when the lake was held, scores.
+    let candidates = candidates_of(&[
+        water_rect(0.0, Vec2::new(-40.0, -15.0), Vec2::new(-10.0, 15.0)),
+        water_rect(0.5, Vec2::new(10.0, -2.0), Vec2::new(14.0, 2.0)),
+    ]);
+    let toward =
+        |target: Vec3| projection() * glam::camera::rh::view::look_at_mat4(eye, target, Vec3::Y);
+    let left = toward(Vec3::new(-25.0, 0.0, 0.0));
+    let right = toward(Vec3::new(12.0, 0.5, 0.0));
+    let held = select_plane(&candidates, eye, left, &SEEDED, None).unwrap();
+    assert_eq!(held.candidate_index, 0);
+    assert!(
+        select_plane(&candidates, eye, right, &SEEDED, None)
+            .is_some_and(|p| p.candidate_index == 1)
+    );
+    let ahead = select_plane(&candidates, eye, right, &SEEDED, Some(held)).unwrap();
+    assert_eq!(ahead.candidate_index, 1, "the held plane yields that frame");
+    assert!(ahead.score < held.score * PLANE_SELECTION_HYSTERESIS);
 }
 
 #[test]
@@ -228,14 +543,35 @@ fn planar_reflection_seed_cells_intersect_water_and_receiver_sphere() {
         false,
     )
     .unwrap();
-    let candidates = PlanarCandidates::from_volumes(&[water(0.0, 0.0)], &[0]);
+    let candidates = candidates_of(&[water(0.0, 0.0)]);
     let eye = Vec3::new(0.0, 2.0, 2.0);
-    let plane = select_plane(&candidates, eye, projection() * view(eye), None).unwrap();
+    let plane = select_plane(&candidates, eye, projection() * view(eye), &SEEDED, None).unwrap();
     let mut seeds = Vec::new();
+    let mut seeded = vec![true; 3];
     collect_mirror_seed_cells(&[0, 1, 2, 3], &world, &plane, eye, None, &mut seeds);
     assert_eq!(seeds, vec![0, 3]);
+    mark_seeded_planes(&candidates, &[0, 1, 2, 3], &world, eye, None, &mut seeded);
+    assert_eq!(seeded, vec![true], "the filter takes the seeds' own rule");
+    for reach in [&[1u32, 2][..], &[][..], &[99][..]] {
+        collect_mirror_seed_cells(reach, &world, &plane, eye, None, &mut seeds);
+        mark_seeded_planes(&candidates, reach, &world, eye, None, &mut seeded);
+        assert!(seeds.is_empty() && seeded == [false], "{reach:?}");
+    }
     collect_mirror_seed_cells(&[0, 1, 2, 3], &world, &plane, eye, Some(1.0), &mut seeds);
+    mark_seeded_planes(
+        &candidates,
+        &[0, 1, 2, 3],
+        &world,
+        eye,
+        Some(1.0),
+        &mut seeded,
+    );
     assert!(seeds.is_empty());
+    assert_eq!(
+        seeded,
+        vec![false],
+        "receiver reach applies to the filter too"
+    );
 }
 
 // The allocation-free cull planes agree with the visibility crate's frustum
@@ -316,6 +652,7 @@ impl CropCase {
             h: self.h,
             bounds_min,
             bounds_max,
+            area: face.area,
             faces: vec![face],
         }
     }
@@ -537,4 +874,56 @@ fn mirror_crop_pad_covers_twice_the_largest_normal_tilt_and_the_horizon_clamp() 
         MIRROR_CROP_PAD_RADIANS < exact * 1.05,
         "the pad stays tight"
     );
+}
+
+/// The area floor's measurement (`POSTRETRO_PLANAR_AREA_PRL`, a comma list of
+/// baked `.prl` paths): every height group of flat up-facing fluid faces, its
+/// total area over every face, and over its probe-bound faces only (what
+/// install keeps, before each fluid's reflectivity). Reads the environment
+/// volumes and reflection probes sections straight from the file.
+#[test]
+#[ignore = "measurement over local baked maps; set POSTRETRO_PLANAR_AREA_PRL"]
+fn planar_plane_areas_on_baked_maps() {
+    use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
+    use postretro_level_format::{SectionId, read_container, read_section_data};
+    let paths = std::env::var("POSTRETRO_PLANAR_AREA_PRL").expect("set POSTRETRO_PLANAR_AREA_PRL");
+    for path in paths.split(',').filter(|path| !path.is_empty()) {
+        let mut file = std::fs::File::open(path).expect("open prl");
+        let meta = read_container(&mut file).expect("prl container");
+        let mut section =
+            |id: SectionId| read_section_data(&mut file, &meta, id as u32).expect("section read");
+        let volumes = section(SectionId::EnvironmentVolumes)
+            .map(|data| EnvironmentVolumesSection::from_bytes(&data).expect("volumes"))
+            .map(|section| section.volumes)
+            .unwrap_or_default();
+        let probes = section(SectionId::ReflectionProbes)
+            .map(|data| ReflectionProbesSection::from_bytes(&data).expect("probes"));
+        let probes = usable_probe_section(probes.as_ref());
+        let faces: usize = volumes.iter().map(|v| v.surface_faces.len()).sum();
+        eprintln!(
+            "[planar area] {path}: volumes={} surface_faces={faces} usable_probes={}",
+            volumes.len(),
+            probes.map_or(0, |section| section.probes.len()),
+        );
+        let bound = group_planes(&volumes, |volume, face| {
+            probes.is_some_and(|section| face_binds_probe(section, volume, face))
+        });
+        for plane in group_planes(&volumes, |_, _| true) {
+            let kept = bound
+                .iter()
+                .find(|b| (b.h - plane.h).abs() <= PLANE_HEIGHT_TOLERANCE)
+                .map_or(0.0, |b| b.area);
+            let extent = plane.bounds_max - plane.bounds_min;
+            eprintln!(
+                "[planar area]   h={:.3} faces={} area={:.1} m2 probe_bound={kept:.1} m2 \
+                 extent={:.1}x{:.1} m candidate={}",
+                plane.h,
+                plane.faces.len(),
+                plane.area,
+                extent.x,
+                extent.z,
+                kept >= PLANAR_MIN_PLANE_AREA,
+            );
+        }
+    }
 }

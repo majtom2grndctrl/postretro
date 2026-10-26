@@ -17,8 +17,9 @@ fn mirror_only() -> Vec<u32> {
 }
 
 // AC 16 (O1): the sets the main draw cull and fog pass receive are identical
-// with planar on and off at the same pose, while the mirror reaches cells
-// the main view does not and widens only the lighting inputs.
+// with planar on and off at the same pose, and so is the main view's light
+// reach; the cells only the mirror reaches come as their own tagged set
+// (O15: frame N's reaches, before ranking).
 #[test]
 fn planar_preparation_leaves_main_visibility_unchanged() {
     let world = world(WATER_ROOM);
@@ -38,19 +39,25 @@ fn planar_preparation_leaves_main_visibility_unchanged() {
     assert_eq!(cells(&on.visible_cells), &[WATER_ROOM]);
     assert_eq!(on.fog_reachable, off.fog_reachable);
     assert_eq!(cells(on.camera_cull().cells), cells(&off.visible_cells));
-    assert_ne!(
+    assert_eq!(
         on.light_reachable_cell_mask, off.light_reachable_cell_mask,
-        "only lighting widens"
+        "the main view's light reach is the planar-off one"
+    );
+    assert_eq!(on.reachable_cell_aabbs, off.reachable_cell_aabbs);
+    assert!(off.mirror_light_cell_aabbs.is_empty());
+    assert!(
+        !on.mirror_light_cell_aabbs.is_empty(),
+        "the mirror's light reach is tagged apart"
     );
 }
 
 // Rewrite of the spike's union test: a completed mirror walk with the main
 // view on a walk path unions the mirror's reach (an empty cell included, for
-// entities) into collection, residency and SH sets, and into lighting
-// untagged, while the main sets stay the main view's.
+// entities) into collection, residency and SH sets, and hands its lighting
+// reach over tagged mirror-only (Task 8), while the main sets, light reach
+// included, stay the main view's.
 #[test]
-fn planar_walk_path_unions_mirror_reach_with_empty_cells_into_collection_residency_sh_and_lighting()
-{
+fn planar_walk_path_unions_mirror_reach_into_collection_residency_and_sh_and_tags_its_lighting() {
     let world = world(WATER_ROOM);
     let mut main = main_view(&world);
     let mut mirror = installed(&world);
@@ -71,8 +78,24 @@ fn planar_walk_path_unions_mirror_reach_with_empty_cells_into_collection_residen
     let lit: Vec<u32> = (0..world.cell_count() as u32)
         .filter(|&cell| main.light_reachable_cell_mask[cell as usize])
         .collect();
-    assert_eq!(lit, drawn);
-    assert_eq!(main.reachable_cell_aabbs.len(), drawn.len());
+    assert_eq!(lit, &[WATER_ROOM], "the main view's light reach");
+    assert_eq!(main.reachable_cell_aabbs.len(), 1);
+    let mirror_only_bounds: Vec<_> = mirror_only()
+        .iter()
+        .map(|&cell| {
+            let cell = &world.cells[cell as usize];
+            (cell.bounds_min, cell.bounds_max)
+        })
+        .collect();
+    // Every cell only the mirror reaches, the empty attic included, and no
+    // main-view cell.
+    assert_eq!(main.mirror_light_cell_aabbs.len(), mirror_only_bounds.len());
+    for bounds in &mirror_only_bounds {
+        assert!(main.mirror_light_cell_aabbs.contains(bounds), "{bounds:?}");
+    }
+    // A second frame replaces the set rather than growing it.
+    main.include_mirror_lighting(&world, &mirror);
+    assert_eq!(main.mirror_light_cell_aabbs.len(), mirror_only_bounds.len());
     assert_eq!(cells(&main.visible_cells), &[WATER_ROOM]);
     assert_eq!(main.fog_reachable, vec![WATER_ROOM]);
 }
@@ -109,6 +132,10 @@ fn planar_preparation_preserves_unisolated_fog_sentinel_and_adds_no_sh_reads_on_
     main.include_mirror_lighting(&world, &mirror);
     assert!(main.light_reachable_cell_mask.is_empty());
     assert!(main.reachable_cell_aabbs.is_empty());
+    assert!(
+        main.mirror_light_cell_aabbs.is_empty(),
+        "every cell-assigned light is main-view on the sentinel"
+    );
 }
 
 // Rewrite of the spike's off-switch test, with the tier as the switch: below
@@ -182,6 +209,7 @@ fn planar_preparation_at_high_selects_nothing_walks_nothing_and_adds_no_demand()
             main.light_reachable_cell_mask,
             off.light_reachable_cell_mask
         );
+        assert!(main.mirror_light_cell_aabbs.is_empty(), "{quality:?}");
         assert!(mirror.reach().is_empty());
     }
     let main = main_view(&world);

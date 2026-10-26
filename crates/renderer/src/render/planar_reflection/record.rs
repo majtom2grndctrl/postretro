@@ -260,7 +260,14 @@ fn record_planar_passes(
         if world {
             forward.set_pipeline(&full.pipeline);
             forward.set_bind_group(0, &pass.uniform_bind_group, &[]);
-            forward.set_bind_group(2, &full.lighting_bind_group, &[]);
+            // The mirror's light records while a mirror-only light holds a
+            // shadow slot: only the reflection shows that light's shadow.
+            forward.set_bind_group(
+                2,
+                full.mirror_lighting
+                    .lighting_bind_group(&full.lighting_bind_group),
+                &[],
+            );
             forward.set_bind_group(3, sh, &[]);
             forward.set_bind_group(4, &full.lightmap_resources.bind_group, &[]);
             forward.set_bind_group(5, &full.spot_shadow_pool.bind_group, &[]);
@@ -296,7 +303,7 @@ fn record_planar_passes(
         movers.set_bind_group(0, &pass.uniform_bind_group, &[]);
         movers.set_bind_group(4, sh_mesh, &[]);
         full.kinematic_brush
-            .record_draws(&mut movers, &full.gpu_textures);
+            .record_mirror_draws(&mut movers, &full.gpu_textures);
     }
     if let Some(plan) = meshes {
         let mut skinned = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

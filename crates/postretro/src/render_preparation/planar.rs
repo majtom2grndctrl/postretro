@@ -366,6 +366,12 @@ impl PlanarRenderPreparation {
             .and_then(|selected| self.candidates.planes.get(selected.candidate_index))
     }
 
+    /// Whether the installed level holds a candidate plane: the verdict the
+    /// renderer's planar target lifetime follows.
+    pub(crate) fn has_candidate(&self) -> bool {
+        !self.candidates.planes.is_empty()
+    }
+
     /// How many candidate planes the installed level holds.
     #[cfg(test)]
     pub(crate) fn candidate_planes(&self) -> usize {
@@ -441,29 +447,35 @@ impl PlanarRenderPreparation {
 }
 
 impl VisibleRenderPreparation {
-    /// Join the mirror's reach to light reachability, untagged, so lights the
-    /// mirror reaches rank and draw. `visible_cells` and `fog_reachable` stay
-    /// the main view's. The unisolated sentinel (an empty fog set on a main
-    /// fallback) stays empty: every cell-assigned light is already eligible.
+    /// Tag the mirror's light reach (`rendering_pipeline.md` §7.3a, Pool
+    /// rank): the bounds of the cells the mirror reaches and the main view
+    /// does not go to `mirror_light_cell_aabbs`, a separate set, so lights
+    /// only the mirror reaches rank after every main-view light and light only
+    /// the reflection. The main view's light reach, `visible_cells` and
+    /// `fog_reachable` stay exactly as without the mirror, and a cell both
+    /// reach is the main view's. The unisolated sentinel (an empty fog set on
+    /// a main fallback) adds nothing: every cell-assigned light is main-view
+    /// already.
     pub(crate) fn include_mirror_lighting(
         &mut self,
         world: &LevelWorld,
         mirror: &PlanarRenderPreparation,
     ) {
+        self.mirror_light_cell_aabbs.clear();
         if self.fog_reachable.is_empty() {
             return;
         }
         for &cell in mirror.reach() {
             let index = cell as usize;
-            let Some(reachable) = self.light_reachable_cell_mask.get_mut(index) else {
-                continue;
-            };
-            if *reachable {
+            if self
+                .light_reachable_cell_mask
+                .get(index)
+                .is_none_or(|&main| main)
+            {
                 continue;
             }
-            *reachable = true;
             if let Some(cell) = world.cells.get(index) {
-                self.reachable_cell_aabbs
+                self.mirror_light_cell_aabbs
                     .push((cell.bounds_min, cell.bounds_max));
             }
         }

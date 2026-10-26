@@ -20,6 +20,11 @@ pub(crate) struct VisibleRenderPreparation {
     pub(crate) fog_reachable: Vec<u32>,
     pub(crate) light_reachable_cell_mask: Vec<bool>,
     pub(crate) reachable_cell_aabbs: Vec<(Vec3, Vec3)>,
+    /// Bounds of the cells only the planar mirror reaches, a separate tagged
+    /// set beside the main view's light reach, which stays as without the
+    /// mirror: lights reaching only these rank and light as mirror-only
+    /// (`rendering_pipeline.md` §7.3a, Pool rank). Empty without a mirror.
+    pub(crate) mirror_light_cell_aabbs: Vec<(Vec3, Vec3)>,
     pub(crate) stats: VisibilityStats,
 }
 
@@ -54,6 +59,7 @@ impl VisibleRenderPreparation {
             fog_reachable,
             light_reachable_cell_mask,
             reachable_cell_aabbs,
+            mirror_light_cell_aabbs: Vec::new(),
             stats: visibility.stats,
         }
     }
@@ -66,6 +72,7 @@ impl VisibleRenderPreparation {
             fog_reachable: Vec::new(),
             light_reachable_cell_mask: Vec::new(),
             reachable_cell_aabbs: Vec::new(),
+            mirror_light_cell_aabbs: Vec::new(),
             stats: VisibilityStats {
                 camera_cell: 0,
                 total_faces: 0,

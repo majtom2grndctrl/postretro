@@ -74,6 +74,12 @@ pub(crate) struct KinematicBrushPass {
     instance_bind_group: wgpu::BindGroup,
     light_bind_group_layout: wgpu::BindGroupLayout,
     light_bind_group: Option<wgpu::BindGroup>,
+    /// Group 2 for the planar mirror's draws, over the mirror's light records
+    /// (`rendering_pipeline.md` §7.3a, Pool rank); built beside
+    /// `light_bind_group`.
+    mirror_light_bind_group: Option<wgpu::BindGroup>,
+    /// Whether this frame's mirror draws read the mirror's light records.
+    mirror_light_records: bool,
     light_params_buffer: wgpu::Buffer,
     cube_array_supported: bool,
     movers: Vec<UploadedMoverDraw>,
@@ -503,6 +509,8 @@ impl KinematicBrushPass {
             instance_bind_group,
             light_bind_group_layout,
             light_bind_group: None,
+            mirror_light_bind_group: None,
+            mirror_light_records: false,
             light_params_buffer,
             cube_array_supported,
             movers: Vec::new(),
@@ -712,6 +720,7 @@ impl KinematicBrushPass {
         &mut self,
         device: &wgpu::Device,
         lights: &wgpu::Buffer,
+        mirror_lights: &wgpu::Buffer,
         influence: &wgpu::Buffer,
         scripted_descriptors: &wgpu::Buffer,
         anim_samples: &wgpu::Buffer,
@@ -787,6 +796,18 @@ impl KinematicBrushPass {
             layout: &self.light_bind_group_layout,
             entries: &entries,
         }));
+        // The mirror's group differs only in b0.
+        entries[0].resource = mirror_lights.as_entire_binding();
+        self.mirror_light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Kinematic Brush Mirror Light Bind Group (group 2)"),
+            layout: &self.light_bind_group_layout,
+            entries: &entries,
+        }));
+    }
+
+    /// Whether this frame's mirror draws read the mirror's light records.
+    pub(crate) fn set_mirror_light_records(&mut self, mirror: bool) {
+        self.mirror_light_records = mirror;
     }
 
     pub fn upload_instances(
@@ -909,13 +930,31 @@ impl KinematicBrushPass {
     }
 
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
+        self.record_draws_with(pass, materials, false);
+    }
+
+    /// The planar mirror's mover draws: [`Self::record_draws`] with group 2
+    /// over the mirror's light records on a frame a mirror-only light holds
+    /// a shadow slot.
+    pub fn record_mirror_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
+        self.record_draws_with(pass, materials, self.mirror_light_records);
+    }
+
+    fn record_draws_with(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        materials: &[GpuTexture],
+        mirror_light_records: bool,
+    ) {
         if !self.has_draws() {
             return;
         }
-        let light_bind_group = self
-            .light_bind_group
-            .as_ref()
-            .expect("kinematic brush light bind group must be built before recording draws");
+        let light_bind_group = if mirror_light_records {
+            self.mirror_light_bind_group.as_ref()
+        } else {
+            self.light_bind_group.as_ref()
+        }
+        .expect("kinematic brush light bind group must be built before recording draws");
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(2, light_bind_group, &[]);
         pass.set_bind_group(3, &self.instance_bind_group, &[]);

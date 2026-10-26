@@ -122,6 +122,7 @@ mod renderer_init;
 mod renderer_init_pipelines;
 mod renderer_init_resources;
 mod renderer_light_slots;
+mod renderer_mirror_lights;
 mod renderer_light_terms;
 mod renderer_lighting;
 mod renderer_models;
@@ -256,6 +257,7 @@ pub(crate) use renderer_geometry::{
 /// animated-light brightness lookahead window, so a candidate starts ramping
 /// before its next bright interval.
 pub use renderer_light_slots::PROMOTE_SECONDS;
+pub use renderer_mirror_lights::{AdmissionOccupancy, ShadowPoolOccupancy};
 pub(crate) use renderer_lighting::*;
 #[cfg(feature = "dev-tools")]
 pub use renderer_types::AgentOverlayState;

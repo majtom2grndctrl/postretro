@@ -1724,6 +1724,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         fog_reachable,
         light_reachable_cell_mask,
         reachable_cell_aabbs,
+        mirror_light_cell_aabbs,
         stats,
     } = visible_render;
     // Walk time and counters (or the fallback marker) sit under the
@@ -1958,6 +1959,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
         renderer
             .set_planar_reflection_view(app.planar_render.camera(), app.planar_render.visible());
+        renderer.set_planar_mirror_light_reach(&mirror_light_cell_aabbs);
         renderer.update_per_frame_uniforms(view_proj, render_eye_position, app.script_time as f32);
         renderer.update_viewmodel_view_projection(app.camera.aspect(), render_camera.view_matrix);
 

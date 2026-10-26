@@ -832,6 +832,10 @@ pub(super) struct FullRenderer {
     /// Always bound; maps with zero lights get a 1-element dummy buffer —
     /// wgpu rejects zero-sized storage buffer bindings.
     pub(super) lighting_bind_group: wgpu::BindGroup,
+    /// The planar mirror's light records and their bind group, the frame's
+    /// mirror light reach and its admission tags (`rendering_pipeline.md`
+    /// §7.3a, Pool rank).
+    pub(super) mirror_lighting: renderer_mirror_lights::MirrorLighting,
     pub(super) influence_buffer: wgpu::Buffer,
     /// Maximum dynamic-direct prefix accepted from the scripting bridge.
     /// Promoted static records occupy a separate reserved tail.

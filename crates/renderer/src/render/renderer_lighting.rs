@@ -937,6 +937,11 @@ impl Renderer {
             ) {
                 continue;
             }
+            // Fog is main-view only: a light the planar mirror alone holds a
+            // slot for stays out, as an unslotted spot does.
+            if full.mirror_lighting.is_mirror_only(light_idx) {
+                continue;
+            }
             let Some(light) = full.shadow_candidate_lights.get(light_idx) else {
                 continue;
             };

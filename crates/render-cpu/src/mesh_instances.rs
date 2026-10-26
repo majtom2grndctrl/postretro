@@ -331,6 +331,46 @@ pub struct MeshFramePlans {
     pub world: MeshFramePlan,
     pub viewmodel: MeshFramePlan,
     pub ghost: MeshFramePlan,
+    /// The part of `world.dropped` that only the planar mirror reached.
+    pub dropped_mirror_only: u32,
+}
+
+/// The frame's mesh-instance cap occupancy split by admission rank
+/// (`rendering_pipeline.md` §7.3a, Pool rank): instances admitted for the
+/// main view (forward draws, shadow casters, viewmodels and ghosts), those
+/// only the planar mirror reaches, and what the cap dropped of each.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MeshCapOccupancy {
+    pub main: u32,
+    pub mirror_only: u32,
+    pub dropped_main: u32,
+    pub dropped_mirror_only: u32,
+}
+
+impl MeshFramePlans {
+    /// This frame's cap occupancy, from the plans alone.
+    pub fn occupancy(&self) -> MeshCapOccupancy {
+        let planned =
+            self.world.instance_count + self.viewmodel.instance_count + self.ghost.instance_count;
+        let mirror_only = self
+            .world
+            .groups
+            .iter()
+            .flat_map(|group| &group.instances)
+            .filter(|instance| instance.mirror.is_only())
+            .count() as u32;
+        let dropped = self
+            .world
+            .dropped
+            .saturating_add(self.viewmodel.dropped)
+            .saturating_add(self.ghost.dropped);
+        MeshCapOccupancy {
+            main: planned - mirror_only,
+            mirror_only,
+            dropped_main: dropped - self.dropped_mirror_only,
+            dropped_mirror_only: self.dropped_mirror_only,
+        }
+    }
 }
 
 /// World-space bounds for receivers admitted by the shared mesh-frame budget:
@@ -533,12 +573,14 @@ pub fn plan_mesh_frame_plans(
     // World instances only the planar mirror reaches plan last, after every
     // main-view admission and every ghost, so a full pool drops them first and
     // they never evict anything the main view draws or casts.
+    let dropped_before_mirror = world.dropped;
     plan_world(
         MIRROR_ONLY_PRIORITY,
         &mut palette_cursor,
         &mut instance_cursor,
         &mut world,
     );
+    let dropped_mirror_only = world.dropped - dropped_before_mirror;
 
     let mut offset_cursor = 0;
     assign_dense_instance_offsets(&mut world, &mut offset_cursor);
@@ -548,6 +590,7 @@ pub fn plan_mesh_frame_plans(
         world,
         viewmodel,
         ghost,
+        dropped_mirror_only,
     }
 }
 
@@ -1861,5 +1904,89 @@ mod tests {
                 "a viewmodel never carries a mirror reach"
             );
         }
+    }
+
+    // AC 22, the instance cap: a cap full of main-view admissions — forward
+    // draws, a dynamic shadow-only caster, a promoted-static-only caster and a
+    // ghost, at one palette run each so the instance cap binds — evicts none
+    // of them for mirror-only instances, which all drop; the occupancy splits
+    // the admissions and the drops by rank (AC 39).
+    #[test]
+    fn plan_instance_cap_full_of_main_view_admissions_drops_every_mirror_only_instance() {
+        let joints = joints(&[("prop", 1), ("pawn", 1), ("mirror", 1)]);
+        let mut main: Vec<MeshInstanceInput> = (0..MAX_INSTANCES as u32 - 3)
+            .map(|seed| instance("prop", seed as f32, seed))
+            .collect();
+        main.push(dynamic_shadow_instance("prop", -1.0, 100_000));
+        main.push(non_forward_instance("prop", -2.0, 100_001));
+        let ghosts = [ghost_of(instance("pawn", -3.0, 100_002), 0, 1.0)];
+        let mut with_mirror: Vec<MeshInstanceInput> = (0..3)
+            .map(|offset| mirror_only_instance("mirror", 10.0, 200_000 + offset))
+            .collect();
+        with_mirror.extend(main.iter().cloned());
+
+        let before = plan_mesh_frame_plans(&main, &ghosts, &joints);
+        let after = plan_mesh_frame_plans(&with_mirror, &ghosts, &joints);
+
+        assert_eq!(
+            before.world.instance_count + before.ghost.instance_count,
+            MAX_INSTANCES as u32,
+            "the main view fills the cap"
+        );
+        assert_eq!(admissions(&after), admissions(&before));
+        assert_eq!(
+            after.occupancy(),
+            MeshCapOccupancy {
+                main: MAX_INSTANCES as u32,
+                mirror_only: 0,
+                dropped_main: 0,
+                dropped_mirror_only: 3,
+            }
+        );
+
+        // With room, the mirror-only instances plan and count as the mirror's.
+        let room = plan_mesh_frame_plans(&with_mirror[..10], &ghosts, &joints);
+        assert_eq!(
+            room.occupancy(),
+            MeshCapOccupancy {
+                main: 8,
+                mirror_only: 3,
+                dropped_main: 0,
+                dropped_mirror_only: 0,
+            }
+        );
+    }
+
+    // O15: an instance the main view reaches only as a shadow caster, which
+    // the mirror also draws, keeps its main-view rank: listed after
+    // mirror-only instances in a pool with room for one more run, it takes
+    // the run and keeps its mirror reach, and the mirror-only instance drops.
+    #[test]
+    fn plan_keeps_main_rank_for_a_shadow_caster_the_mirror_also_draws() {
+        let per = (MAX_PALETTE_ENTRIES / 2) as u32;
+        let joints = joints(&[("grunt", per), ("mirror", per)]);
+        let mut caster = dynamic_shadow_instance("grunt", 1.0, 2);
+        caster.mirror = MirrorReach::AlsoMain;
+        let inputs = [
+            mirror_only_instance("mirror", 0.0, 5),
+            instance("grunt", 2.0, 1),
+            caster,
+        ];
+
+        let plans = plan_mesh_frame_plans(&inputs, &[], &joints);
+
+        let order: Vec<u32> = admissions(&plans).iter().map(|&(seed, _)| seed).collect();
+        assert_eq!(order, [1, 2], "forward, then the shared shadow caster");
+        let caster = plans
+            .world
+            .groups
+            .iter()
+            .flat_map(|group| &group.instances)
+            .find(|instance| instance.phase_seed == 2)
+            .expect("the caster keeps its main-view run");
+        assert_eq!(caster.mirror, MirrorReach::AlsoMain);
+        assert!(caster.dynamic_shadow_visible && !caster.forward_visible);
+        assert_eq!(plans.dropped_mirror_only, 1);
+        assert_eq!(plans.occupancy().dropped_main, 0);
     }
 }

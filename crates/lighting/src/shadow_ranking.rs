@@ -142,11 +142,17 @@ fn rank_candidates(
 /// (subject to `promoted_cap`) — a dynamic-tier light has it `false`. Both
 /// tiers score through [`slot_score`] and compete on that score alone; no tier
 /// is reserved ahead of the sort.
+///
+/// `mirror_only` tags a light only the planar water mirror reaches this frame
+/// (`rendering_pipeline.md` §7.3a, Pool rank). Mirror-only candidates rank
+/// after every main-view admission and take only slots the main view leaves
+/// free; without a mirror every candidate is main-view.
 #[derive(Clone, Copy, Debug)]
 pub struct SlotCandidate {
     pub candidate_index: usize,
     pub score: f32,
     pub is_promoted_baked: bool,
+    pub mirror_only: bool,
 }
 
 /// The previous frame's occupant of a shadow slot, supplied so eviction
@@ -157,12 +163,18 @@ pub struct SlotCandidate {
 /// window, when the light is no longer a candidate); dynamic incumbents are
 /// the still-eligible lights that held a slot last frame. `score` is the
 /// incumbent's current-frame score.
+///
+/// A `mirror_only` incumbent holds its slot only against other mirror-only
+/// lights: it is seated after every main-view admission, so a slot held from
+/// an earlier frame gives it no claim against a main-view light, whatever the
+/// eviction margin.
 #[derive(Clone, Copy, Debug)]
 pub struct SlotIncumbent {
     pub slot: usize,
     pub candidate_index: usize,
     pub score: f32,
     pub is_promoted_baked: bool,
+    pub mirror_only: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -170,6 +182,7 @@ struct SlotOccupant {
     candidate_index: usize,
     score: f32,
     is_promoted_baked: bool,
+    mirror_only: bool,
 }
 
 /// Assign shadow-pool slots from a unified candidate set with tier-neutral
@@ -184,6 +197,14 @@ struct SlotOccupant {
 /// baked light's slot, never grow the promoted population through a free or
 /// dynamic-held slot.
 ///
+/// Ranking runs in two phases. The main-view phase seats main-view incumbents
+/// and ranks main-view candidates exactly as if no mirror-only light existed,
+/// so its result is the assignment without the mirror. The mirror-only phase
+/// then seats mirror-only incumbents and ranks mirror-only candidates into
+/// the slots the main view left free, under the promoted budget it left: it
+/// may evict only another mirror-only occupant (hysteresis applies among
+/// them), never a main-view one.
+///
 /// The handoff errs dark: an evicted baked light simply loses its slot here; its
 /// weight ramp-down (the SH-delta subtraction) is the renderer's job.
 ///
@@ -197,110 +218,158 @@ pub fn assign_slots_with_hysteresis(
     candidate_count: usize,
     eviction_margin: f32,
 ) -> Vec<u32> {
-    let mut assignment = vec![NO_SHADOW_SLOT; candidate_count];
-    let mut slots: Vec<Option<SlotOccupant>> = vec![None; capacity];
-    let mut promoted_count = 0usize;
+    let mut table = SlotTable {
+        assignment: vec![NO_SHADOW_SLOT; candidate_count],
+        slots: vec![None; capacity],
+        promoted_count: 0,
+        promoted_cap,
+    };
 
-    // Seed prior-frame occupants. A held slot is the incumbent's until a stronger
-    // challenger displaces it — this is the hysteresis. Baked sticky-window
-    // incumbents that are no longer candidates hold their slot here too (their
-    // weight ramps down while the slot stays assigned).
-    for inc in incumbents {
-        if inc.slot >= capacity || inc.candidate_index >= candidate_count {
-            continue;
-        }
-        if slots[inc.slot].is_some() || assignment[inc.candidate_index] != NO_SHADOW_SLOT {
-            continue;
-        }
-        if inc.is_promoted_baked && promoted_count >= promoted_cap {
-            // Defensive: a prior frame already honoured the cap, so this should
-            // not fire — but never seed more baked lights than the budget.
-            continue;
-        }
-        slots[inc.slot] = Some(SlotOccupant {
-            candidate_index: inc.candidate_index,
-            score: inc.score,
-            is_promoted_baked: inc.is_promoted_baked,
-        });
-        assignment[inc.candidate_index] = inc.slot as u32;
-        if inc.is_promoted_baked {
-            promoted_count += 1;
-        }
-    }
-
+    // Main view first, mirror-only after, each in score order (ties by
+    // candidate index). One sort serves both phases.
     let mut ranked: Vec<SlotCandidate> = candidates.to_vec();
     ranked.sort_by(candidate_order);
+    let mirror_start = ranked.partition_point(|cand| !cand.mirror_only);
+    let (main_ranked, mirror_ranked) = ranked.split_at(mirror_start);
 
-    for cand in ranked {
-        if cand.candidate_index >= candidate_count
-            || assignment[cand.candidate_index] != NO_SHADOW_SLOT
-        {
-            // Already holds a slot (an incumbent) — hysteresis keeps it.
-            continue;
-        }
-        let cand_baked = cand.is_promoted_baked;
-        // A baked light already at the cap may not grow the promoted population;
-        // it can only swap into another baked light's slot below.
-        let may_grow_promoted = !cand_baked || promoted_count < promoted_cap;
+    table.seat_incumbents(incumbents, false);
+    table.rank(main_ranked, eviction_margin, false);
+    table.seat_incumbents(incumbents, true);
+    table.rank(mirror_ranked, eviction_margin, true);
 
-        if may_grow_promoted && let Some(free) = slots.iter().position(|slot| slot.is_none()) {
-            slots[free] = Some(SlotOccupant {
-                candidate_index: cand.candidate_index,
-                score: cand.score,
-                is_promoted_baked: cand_baked,
-            });
-            assignment[cand.candidate_index] = free as u32;
-            if cand_baked {
-                promoted_count += 1;
-            }
-            continue;
-        }
+    table.assignment
+}
 
-        // No free slot the candidate may take — try to evict the weakest
-        // incumbent it is allowed to displace. A capped baked light may only
-        // take a slot another baked light holds (swap; net count unchanged); every other
-        // candidate may evict any tier.
-        let promoted_only = cand_baked && promoted_count >= promoted_cap;
-        let target = slots
+/// The pool while one ranking runs: the candidate-indexed assignment, each
+/// slot's occupant, and the promoted-baked population against its cap.
+struct SlotTable {
+    assignment: Vec<u32>,
+    slots: Vec<Option<SlotOccupant>>,
+    promoted_count: usize,
+    promoted_cap: usize,
+}
+
+impl SlotTable {
+    /// Seat one phase's prior-frame occupants. A held slot is the
+    /// incumbent's until a stronger challenger of its phase displaces it —
+    /// this is the hysteresis. Baked sticky-window incumbents that are no
+    /// longer candidates hold their slot here too (their weight ramps down
+    /// while the slot stays assigned). A mirror-only incumbent whose slot or
+    /// promoted seat a main-view light took is not seated; as a candidate it
+    /// may still take a free slot.
+    fn seat_incumbents(&mut self, incumbents: &[SlotIncumbent], mirror_only: bool) {
+        let capacity = self.slots.len();
+        let candidate_count = self.assignment.len();
+        for inc in incumbents
             .iter()
-            .enumerate()
-            .filter_map(|(slot, occ)| occ.as_ref().map(|occ| (slot, *occ)))
-            .filter(|(_, occ)| !promoted_only || occ.is_promoted_baked)
-            .min_by(|(_, a), (_, b)| {
-                a.score
-                    .partial_cmp(&b.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        if let Some((slot, occ)) = target
-            && challenger_can_evict(cand.score, occ.score, eviction_margin)
+            .filter(|inc| inc.mirror_only == mirror_only)
         {
-            assignment[occ.candidate_index] = NO_SHADOW_SLOT;
-            if occ.is_promoted_baked {
-                promoted_count -= 1;
+            if inc.slot >= capacity || inc.candidate_index >= candidate_count {
+                continue;
             }
-            slots[slot] = Some(SlotOccupant {
-                candidate_index: cand.candidate_index,
-                score: cand.score,
-                is_promoted_baked: cand_baked,
+            if self.slots[inc.slot].is_some()
+                || self.assignment[inc.candidate_index] != NO_SHADOW_SLOT
+            {
+                continue;
+            }
+            if inc.is_promoted_baked && self.promoted_count >= self.promoted_cap {
+                // In the main-view phase a prior frame honoured the cap, so
+                // this is defensive there; in the mirror-only phase it is the
+                // seat a main-view baked light took. Never seed more baked
+                // lights than the budget.
+                continue;
+            }
+            self.slots[inc.slot] = Some(SlotOccupant {
+                candidate_index: inc.candidate_index,
+                score: inc.score,
+                is_promoted_baked: inc.is_promoted_baked,
+                mirror_only: inc.mirror_only,
             });
-            assignment[cand.candidate_index] = slot as u32;
-            if cand_baked {
-                promoted_count += 1;
+            self.assignment[inc.candidate_index] = inc.slot as u32;
+            if inc.is_promoted_baked {
+                self.promoted_count += 1;
             }
         }
     }
 
-    assignment
+    /// Rank one phase's candidates, already in score order. Only occupants of
+    /// the same phase may be evicted, so the mirror-only phase never
+    /// displaces a main-view admission.
+    fn rank(&mut self, ranked: &[SlotCandidate], eviction_margin: f32, mirror_only: bool) {
+        let candidate_count = self.assignment.len();
+        for cand in ranked {
+            if cand.candidate_index >= candidate_count
+                || self.assignment[cand.candidate_index] != NO_SHADOW_SLOT
+            {
+                // Already holds a slot (an incumbent) — hysteresis keeps it.
+                continue;
+            }
+            let cand_baked = cand.is_promoted_baked;
+            // A baked light already at the cap may not grow the promoted
+            // population; it can only swap into another baked light's slot below.
+            let may_grow_promoted = !cand_baked || self.promoted_count < self.promoted_cap;
+
+            if may_grow_promoted
+                && let Some(free) = self.slots.iter().position(|slot| slot.is_none())
+            {
+                self.seat(free, cand);
+                continue;
+            }
+
+            // No free slot the candidate may take — try to evict the weakest
+            // incumbent it is allowed to displace. A capped baked light may only
+            // take a slot another baked light holds (swap; net count unchanged);
+            // every other candidate may evict any tier of its own phase.
+            let promoted_only = cand_baked && self.promoted_count >= self.promoted_cap;
+            let target = self
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, occ)| occ.as_ref().map(|occ| (slot, *occ)))
+                .filter(|(_, occ)| occ.mirror_only == mirror_only)
+                .filter(|(_, occ)| !promoted_only || occ.is_promoted_baked)
+                .min_by(|(_, a), (_, b)| {
+                    a.score
+                        .partial_cmp(&b.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            if let Some((slot, occ)) = target
+                && challenger_can_evict(cand.score, occ.score, eviction_margin)
+            {
+                self.assignment[occ.candidate_index] = NO_SHADOW_SLOT;
+                if occ.is_promoted_baked {
+                    self.promoted_count -= 1;
+                }
+                self.seat(slot, cand);
+            }
+        }
+    }
+
+    fn seat(&mut self, slot: usize, cand: &SlotCandidate) {
+        self.slots[slot] = Some(SlotOccupant {
+            candidate_index: cand.candidate_index,
+            score: cand.score,
+            is_promoted_baked: cand.is_promoted_baked,
+            mirror_only: cand.mirror_only,
+        });
+        self.assignment[cand.candidate_index] = slot as u32;
+        if cand.is_promoted_baked {
+            self.promoted_count += 1;
+        }
+    }
 }
 
+/// Main-view candidates before mirror-only ones; within a phase, score
+/// descending, then ascending candidate index for determinism.
 fn candidate_order(a: &SlotCandidate, b: &SlotCandidate) -> std::cmp::Ordering {
-    b.score
-        .partial_cmp(&a.score)
-        .unwrap_or(std::cmp::Ordering::Equal)
-        .then(a.candidate_index.cmp(&b.candidate_index))
+    a.mirror_only.cmp(&b.mirror_only).then_with(|| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.candidate_index.cmp(&b.candidate_index))
+    })
 }
-
-/// A challenger displaces an incumbent only when it out-scores it by `margin`.
+// A challenger displaces an incumbent only when it out-scores it by `margin`.
 /// The incumbent score is floored at zero so a degenerate negative score cannot
 /// invert the comparison.
 fn challenger_can_evict(challenger_score: f32, incumbent_score: f32, margin: f32) -> bool {
@@ -636,6 +705,7 @@ mod tests {
             candidate_index,
             score,
             is_promoted_baked: false,
+            mirror_only: false,
         }
     }
 
@@ -644,6 +714,7 @@ mod tests {
             candidate_index,
             score,
             is_promoted_baked: true,
+            mirror_only: false,
         }
     }
 
@@ -664,6 +735,7 @@ mod tests {
             candidate_index: 0,
             score: 1.0,
             is_promoted_baked: true,
+            mirror_only: false,
         }];
         let challengers = [static_candidate(1, 1.251)];
 
@@ -685,6 +757,7 @@ mod tests {
             candidate_index: 0,
             score: 1.0,
             is_promoted_baked: true,
+            mirror_only: false,
         }];
         let challengers = [dynamic_candidate(1, 1.251)];
 
@@ -704,6 +777,7 @@ mod tests {
             candidate_index: 0,
             score: 1.0,
             is_promoted_baked: false,
+            mirror_only: false,
         }];
         let challengers = [static_candidate(1, 1.251)];
 
@@ -724,6 +798,7 @@ mod tests {
             candidate_index: 0,
             score: 1.0,
             is_promoted_baked: false,
+            mirror_only: false,
         }];
         let challengers = [dynamic_candidate(1, 1.1)];
 
@@ -748,12 +823,14 @@ mod tests {
                 candidate_index: 0,
                 score: 1.0,
                 is_promoted_baked: true,
+                mirror_only: false,
             },
             SlotIncumbent {
                 slot: 1,
                 candidate_index: 1,
                 score: 0.5,
                 is_promoted_baked: false,
+                mirror_only: false,
             },
         ];
         let challengers = [static_candidate(2, 5.0)];
@@ -781,6 +858,388 @@ mod tests {
         // Higher-scored dynamic takes the first free slot; static takes the next.
         assert_eq!(assignment[1], 0);
         assert_eq!(assignment[0], 1);
+    }
+
+    // --- Admission rank: mirror-only lights yield to the main view ----------
+
+    fn mirror_only(candidate: SlotCandidate) -> SlotCandidate {
+        SlotCandidate {
+            mirror_only: true,
+            ..candidate
+        }
+    }
+
+    fn incumbent(
+        slot: usize,
+        candidate_index: usize,
+        score: f32,
+        is_promoted_baked: bool,
+        mirror_only: bool,
+    ) -> SlotIncumbent {
+        SlotIncumbent {
+            slot,
+            candidate_index,
+            score,
+            is_promoted_baked,
+            mirror_only,
+        }
+    }
+
+    /// The assignment restricted to `indices`.
+    fn assigned(assignment: &[u32], indices: impl IntoIterator<Item = usize>) -> Vec<(usize, u32)> {
+        indices
+            .into_iter()
+            .map(|index| (index, assignment[index]))
+            .collect()
+    }
+
+    // AC 22: a pool full of main-view admissions (dynamic and promoted, the
+    // main view's incumbents included) keeps every one of them, slot for slot,
+    // when far stronger mirror-only lights and mirror-only incumbents join; the
+    // mirror-only ones drop.
+    #[test]
+    fn mirror_only_lights_evict_no_main_view_admission_from_a_full_pool() {
+        let main = [
+            dynamic_candidate(0, 1.0),
+            static_candidate(1, 2.0),
+            dynamic_candidate(2, 3.0),
+            static_candidate(3, 4.0),
+        ];
+        let main_incumbents = [incumbent(2, 0, 1.0, false, false)];
+        let without =
+            assign_slots_with_hysteresis(&main, &main_incumbents, 4, 2, 8, EVICTION_MARGIN);
+        assert!(without[..4].iter().all(|&slot| slot != NO_SHADOW_SLOT));
+
+        let mut candidates = main.to_vec();
+        candidates.extend([
+            mirror_only(dynamic_candidate(4, 100.0)),
+            mirror_only(static_candidate(5, 100.0)),
+            mirror_only(dynamic_candidate(6, 50.0)),
+        ]);
+        let mut incumbents = main_incumbents.to_vec();
+        // Mirror-only incumbents from last frame, including one in the slot a
+        // main-view light now holds and a sticky baked one that is no longer a
+        // candidate.
+        incumbents.extend([
+            incumbent(0, 4, 100.0, false, true),
+            incumbent(1, 5, 100.0, true, true),
+            incumbent(3, 7, 100.0, true, true),
+        ]);
+        let with = assign_slots_with_hysteresis(&candidates, &incumbents, 4, 2, 8, EVICTION_MARGIN);
+
+        assert_eq!(assigned(&with, 0..4), assigned(&without, 0..4));
+        assert!(
+            with[4..].iter().all(|&slot| slot == NO_SHADOW_SLOT),
+            "a full pool drops every mirror-only light: {with:?}"
+        );
+    }
+
+    // AC 22: with room, mirror-only lights take the slots and the promoted
+    // seats the main view leaves free, strongest first, and never a main-view
+    // light's.
+    #[test]
+    fn mirror_only_lights_take_slots_the_main_view_leaves_free() {
+        let candidates = [
+            dynamic_candidate(0, 1.0),
+            static_candidate(1, 1.5),
+            mirror_only(static_candidate(2, 9.0)),
+            mirror_only(static_candidate(3, 8.0)),
+            mirror_only(dynamic_candidate(4, 7.0)),
+            mirror_only(dynamic_candidate(5, 6.0)),
+        ];
+        let assignment = assign_slots_with_hysteresis(&candidates, &[], 4, 2, 6, EVICTION_MARGIN);
+
+        assert_eq!(assignment[0], 1, "main view first, by score");
+        assert_eq!(assignment[1], 0);
+        assert_eq!(
+            assignment[2], 2,
+            "the strongest mirror-only baked light takes the promoted seat left"
+        );
+        assert_eq!(
+            assignment[3], NO_SHADOW_SLOT,
+            "the main view holds one of the two promoted seats"
+        );
+        assert_eq!(
+            assignment[4], 3,
+            "a mirror-only dynamic takes the last slot"
+        );
+        assert_eq!(assignment[5], NO_SHADOW_SLOT);
+    }
+
+    // O7: a mirror-only light holding a slot from frame N−1 yields it on frame
+    // N to a main-view light scoring under the eviction margin (here even
+    // under the incumbent itself), for dynamic and baked incumbents and
+    // challengers alike, and for a baked incumbent in its sticky window (no
+    // longer a candidate). The same incumbent tagged main-view keeps its slot.
+    #[test]
+    fn mirror_only_incumbent_yields_to_a_main_challenger_under_the_margin() {
+        for incumbent_baked in [false, true] {
+            for challenger_baked in [false, true] {
+                for sticky in [false, true] {
+                    if sticky && !incumbent_baked {
+                        // Only promoted-baked lights have a sticky window.
+                        continue;
+                    }
+                    let challenger = SlotCandidate {
+                        candidate_index: 1,
+                        score: 0.9,
+                        is_promoted_baked: challenger_baked,
+                        mirror_only: false,
+                    };
+                    let held = SlotCandidate {
+                        candidate_index: 0,
+                        score: 1.0,
+                        is_promoted_baked: incumbent_baked,
+                        mirror_only: true,
+                    };
+                    let mut candidates = vec![challenger];
+                    if !sticky {
+                        candidates.push(held);
+                    }
+                    let case = format!(
+                        "incumbent baked {incumbent_baked}, challenger baked {challenger_baked}, sticky {sticky}"
+                    );
+
+                    let yielded = assign_slots_with_hysteresis(
+                        &candidates,
+                        &[incumbent(0, 0, 1.0, incumbent_baked, true)],
+                        1,
+                        1,
+                        2,
+                        EVICTION_MARGIN,
+                    );
+                    assert_eq!(yielded[1], 0, "{case}: the main-view light takes the slot");
+                    assert_eq!(yielded[0], NO_SHADOW_SLOT, "{case}");
+
+                    // Control: a main-view incumbent keeps its slot under the margin.
+                    let main_candidates: Vec<_> = candidates
+                        .iter()
+                        .map(|candidate| SlotCandidate {
+                            mirror_only: false,
+                            ..*candidate
+                        })
+                        .collect();
+                    let kept = assign_slots_with_hysteresis(
+                        &main_candidates,
+                        &[incumbent(0, 0, 1.0, incumbent_baked, false)],
+                        1,
+                        1,
+                        2,
+                        EVICTION_MARGIN,
+                    );
+                    assert_eq!(
+                        kept[0], 0,
+                        "{case}: hysteresis holds among main-view lights"
+                    );
+                    assert_eq!(kept[1], NO_SHADOW_SLOT, "{case}");
+                }
+            }
+        }
+    }
+
+    // O7, promoted cap: mirror-only baked lights hold every promoted seat from
+    // frame N−1; a main-view baked light still gets one on frame N, even
+    // scoring under them, and the mirror-only lights keep only the seats left.
+    #[test]
+    fn main_view_baked_light_takes_a_promoted_seat_mirror_only_baked_lights_hold() {
+        let candidates = [
+            static_candidate(2, 0.5),
+            mirror_only(static_candidate(0, 1.0)),
+            mirror_only(static_candidate(1, 1.0)),
+        ];
+        let incumbents = [
+            incumbent(0, 0, 1.0, true, true),
+            incumbent(1, 1, 1.0, true, true),
+        ];
+        let assignment =
+            assign_slots_with_hysteresis(&candidates, &incumbents, 4, 2, 3, EVICTION_MARGIN);
+
+        assert_ne!(
+            assignment[2], NO_SHADOW_SLOT,
+            "the main-view baked light promotes"
+        );
+        let mirror_seats = assignment[..2]
+            .iter()
+            .filter(|&&slot| slot != NO_SHADOW_SLOT)
+            .count();
+        assert_eq!(mirror_seats, 1, "one promoted seat is left for the mirror");
+        let promoted: Vec<u32> = assignment
+            .iter()
+            .copied()
+            .filter(|&slot| slot != NO_SHADOW_SLOT)
+            .collect();
+        assert_eq!(promoted.len(), 2, "the promoted cap holds: {assignment:?}");
+    }
+
+    // Hysteresis still holds among mirror-only lights: a mirror-only
+    // challenger within the margin leaves a mirror-only incumbent its slot,
+    // and one past it takes the slot.
+    #[test]
+    fn mirror_only_lights_keep_hysteresis_among_themselves() {
+        for (score, takes) in [(1.2, false), (1.3, true)] {
+            let assignment = assign_slots_with_hysteresis(
+                &[
+                    mirror_only(dynamic_candidate(0, 1.0)),
+                    mirror_only(dynamic_candidate(1, score)),
+                ],
+                &[incumbent(0, 0, 1.0, false, true)],
+                1,
+                1,
+                2,
+                EVICTION_MARGIN,
+            );
+            assert_eq!(assignment[1] == 0, takes, "challenger at {score}");
+            assert_eq!(assignment[0] == 0, !takes, "incumbent against {score}");
+        }
+    }
+
+    /// Distinct slots and candidates for generated incumbents.
+    fn generated_incumbents(
+        slots: &[usize],
+        scores: &[f32],
+        baked: &[bool],
+        first_candidate: usize,
+        mirror_only: bool,
+    ) -> Vec<SlotIncumbent> {
+        slots
+            .iter()
+            .enumerate()
+            .map(|(offset, &slot)| SlotIncumbent {
+                slot,
+                candidate_index: first_candidate + offset,
+                score: scores[offset % scores.len()],
+                is_promoted_baked: baked[offset % baked.len()],
+                mirror_only,
+            })
+            .collect()
+    }
+
+    proptest! {
+        /// AC 22: the main-view assignment is the assignment without the
+        /// mirror, for any pool, cap and mix of main-view and mirror-only
+        /// candidates and incumbents; every mirror-only light lands only on a
+        /// slot no main-view light holds, and the promoted cap holds overall.
+        #[test]
+        fn main_view_assignment_matches_the_frame_without_mirror_only_lights(
+            capacity in 1usize..8,
+            promoted_cap in 0usize..4,
+            main_scores in proptest::collection::vec(0.0f32..10.0, 0..10),
+            main_baked in proptest::collection::vec(any::<bool>(), 1..10),
+            mirror_scores in proptest::collection::vec(0.0f32..10.0, 0..10),
+            mirror_baked in proptest::collection::vec(any::<bool>(), 1..10),
+            held in proptest::sample::subsequence((0..8usize).collect::<Vec<_>>(), 0..8),
+            split in 0usize..8,
+        ) {
+            let main_count = main_scores.len();
+            let mirror_count = mirror_scores.len();
+            let candidate_count = main_count + mirror_count + 8;
+            let main: Vec<SlotCandidate> = main_scores
+                .iter()
+                .enumerate()
+                .map(|(index, &score)| SlotCandidate {
+                    candidate_index: index,
+                    score,
+                    is_promoted_baked: main_baked[index % main_baked.len()],
+                    mirror_only: false,
+                })
+                .collect();
+            let mirror: Vec<SlotCandidate> = mirror_scores
+                .iter()
+                .enumerate()
+                .map(|(offset, &score)| SlotCandidate {
+                    candidate_index: main_count + offset,
+                    score,
+                    is_promoted_baked: mirror_baked[offset % mirror_baked.len()],
+                    mirror_only: true,
+                })
+                .collect();
+            // Prior-frame slots split between main-view incumbents (seated
+            // within the cap) and mirror-only ones (some sticky, past the
+            // candidate list).
+            let held: Vec<usize> = held.into_iter().filter(|&slot| slot < capacity).collect();
+            let split = split.min(held.len());
+            let mut main_incumbents = Vec::new();
+            let mut promoted = 0;
+            for (offset, &slot) in held[..split].iter().enumerate() {
+                if offset >= main_count {
+                    break;
+                }
+                let baked = main[offset].is_promoted_baked;
+                if baked {
+                    if promoted >= promoted_cap {
+                        continue;
+                    }
+                    promoted += 1;
+                }
+                main_incumbents.push(SlotIncumbent {
+                    slot,
+                    candidate_index: offset,
+                    score: main[offset].score,
+                    is_promoted_baked: baked,
+                    mirror_only: false,
+                });
+            }
+            let mirror_incumbents = generated_incumbents(
+                &held[split..],
+                &[1.0, 20.0],
+                &mirror_baked,
+                main_count + mirror_count,
+                true,
+            );
+
+            let without = assign_slots_with_hysteresis(
+                &main,
+                &main_incumbents,
+                capacity,
+                promoted_cap,
+                candidate_count,
+                EVICTION_MARGIN,
+            );
+            let mut candidates = main.clone();
+            candidates.extend(&mirror);
+            let mut incumbents = main_incumbents.clone();
+            incumbents.extend(&mirror_incumbents);
+            let with = assign_slots_with_hysteresis(
+                &candidates,
+                &incumbents,
+                capacity,
+                promoted_cap,
+                candidate_count,
+                EVICTION_MARGIN,
+            );
+
+            prop_assert_eq!(&with[..main_count], &without[..main_count]);
+            let main_slots: Vec<u32> = without[..main_count]
+                .iter()
+                .copied()
+                .filter(|&slot| slot != NO_SHADOW_SLOT)
+                .collect();
+            let mut taken = std::collections::BTreeSet::new();
+            for &slot in with.iter().filter(|&&slot| slot != NO_SHADOW_SLOT) {
+                prop_assert!((slot as usize) < capacity);
+                prop_assert!(taken.insert(slot), "slot {} assigned twice", slot);
+            }
+            for &slot in &with[main_count..] {
+                prop_assert!(slot == NO_SHADOW_SLOT || !main_slots.contains(&slot));
+            }
+            let baked_of = |index: usize| {
+                candidates
+                    .iter()
+                    .find(|candidate| candidate.candidate_index == index)
+                    .map(|candidate| candidate.is_promoted_baked)
+                    .or_else(|| {
+                        incumbents
+                            .iter()
+                            .find(|incumbent| incumbent.candidate_index == index)
+                            .map(|incumbent| incumbent.is_promoted_baked)
+                    })
+                    .unwrap_or(false)
+            };
+            let promoted_seats = (0..candidate_count)
+                .filter(|&index| with[index] != NO_SHADOW_SLOT && baked_of(index))
+                .count();
+            prop_assert!(promoted_seats <= promoted_cap.max(promoted));
+        }
     }
 
     // --- Restored camera-orientation regressions (Task 1 move) ---------------

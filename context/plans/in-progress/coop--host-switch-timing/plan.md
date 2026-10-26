@@ -7,10 +7,17 @@ read at: a363ea550 (source identical to b88a31f91)
 ## Execution checkpoint
 
 - Owner released the performance-run hold and freed disk with cargo clean on 2026-10-25. Continue in this isolated worktree; no original-checkout branch switch was needed or authorized.
-- Core timing integration and task6 focused acceptance coverage are implemented. Review-readiness fmt/check/focused tests pass; required review-panel/fixes and final preflight remain. No landing request or feature-branch push.
+- Core timing integration and task6 focused acceptance coverage are implemented. Review-readiness fmt/check/focused tests pass; required review-panel/fixes and final preflight remain. Review started; see review.md for partial coverage. No landing request or feature-branch push.
 - User requires pausing before a new step when either five-hour or weekly usage remaining reaches 5%. Query live usage before each new workflow task/review dispatch. Do not spend reset credits. Previous window paused at 4% remaining after all active checks finished. Owner resumed in a fresh window; initial check: 100% five-hour and 78% weekly remaining.
 - Claim `a363ea550` is on main; feature branch `codex/coop-host-switch-timing`; original checkout's unrelated work remains untouched.
 - Build path `/Users/dhiester/.codex/worktrees/coop-host-switch-timing/postretro/target`, `CARGO_INCREMENTAL=0`, dev profile and dev-tools features. Space is now approximately 62 GiB; recheck after each task. Never share another checkout's target.
+
+## Usage-cutoff checkpoint — 2026-10-25
+
+- Paused new work at live5% five-hour remaining (weekly63%). No reset credits used. Root let only active review steps wrap and persist partial findings.
+- Acceptance milestone05dd08f39 contains all expanded scenarios and current plan. Composed switch45/45 and netcode switch42/42 pass. Earlier sim105+reload3 and wire13 pass; readiness fmt/touched-crate check pass. No full workspace suite or preflight run.
+- Review is INCOMPLETE. See review.md for partitioning, completed coverage, findings and next lenses. Do not treat passing tests or partial review as approval. No findings fixed yet.
+- Resume with live usage query; finish panel, invoke fix-review-findings, focused retest, then final preflight once. ManualAC31 still blocks landing; no feature push/PR/landing request.
 
 ## Corrections
 
@@ -92,7 +99,7 @@ AC numbers follow the checkbox order in `index.md`: 1–30 automated, 31 manual.
 
 ## Verification and landing
 
-Compilation and focused tests have run. No engine execution, bake or preflight has run. Independent review-panel is the next step. AC proof is interim; passing cells do not cover untested variants automatically.
+Compilation and focused tests have run. No engine execution, bake or preflight has run. Independent review-panel started and is incomplete; see review.md. AC proof is interim; passing cells do not cover untested variants automatically.
 
 ### Focused verification so far
 

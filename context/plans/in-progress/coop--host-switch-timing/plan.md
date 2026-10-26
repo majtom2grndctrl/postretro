@@ -8,7 +8,8 @@ read at: a363ea550 (source identical to b88a31f91)
 
 - Implementation and review fixes complete; root inspected the integrated diff. Focused gate47/42 passes. Final preflight passes: formatting, workspace lint and full tests12,927passed/0failed/68ignored across71 target result groups, including doc tests.
 - Independent panel complete: four slices and seam pass. Two runtime defects, four proof gaps and one stale comment addressed; resolution ledger in review.md. No fresh full panel needed absent a new concrete finding.
-- AC31 manual loopback remains external proof and blocks landing. Runbook: manual-test.md. No manual engine session, dev-map authoring bake, feature push, PR or landing request.
+- AC31 manual loopback remains external proof and blocks landing. Runbook: manual-test.md. No manual engine session, dev-map authoring bake, PR or landing request.
+- Owner explicitly requested pushing the feature branch to origin for flexible testing before manual proof. This publication is authorized; status remains test-ready and AC31 still blocks landing.
 - Owner requires pausing before a new step when either five-hour or weekly allowance remaining is5%or below. Query live usage at workflow boundaries. Never spend reset credits. Prior windows paused at cutoff; owner resumed each time.
 - Branch codex/coop-host-switch-timing. Claim a363ea550 is on main; implementation cf96a7503, acceptance05dd08f39; subsequent checkpoint commits record review progress. Original checkout's unrelated work untouched.
 - Isolated worktree target only, default dev profile and dev-tools, CARGO_INCREMENTAL=0. Last free space64GiB. No cache sharing or original-checkout branch switch.
@@ -105,7 +106,7 @@ Numbers follow index.md checkbox order. Conditioned profile is45ms one-way delay
 | Automated AC1–30, review fixes and final preflight | pass | clear |
 | Manual AC31 at45/60/5 and45/60/10 | outstanding | blocks landing |
 
-Manual runbook: [manual-test.md](manual-test.md). Retain this brief in in-progress with status test-ready. Wait for owner's manual result and “land the plane” before durable context updates, done move, cleanup or feature push.
+Manual runbook: [manual-test.md](manual-test.md). Retain this brief in in-progress with status test-ready. Wait for owner's manual result and “land the plane” before durable context updates, done move, cleanup or landing.
 
 ### Implementation corrections
 

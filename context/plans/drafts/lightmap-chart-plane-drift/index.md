@@ -4,7 +4,7 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Compiler pipeline
 
 ## Problem
 
-The `lightmap-exact-skips` review (`plans/drafts/lightmap-exact-skips/research.md` §Receiver drift) found an anticipated defect, not one seen in content: lightmap texel centres drift off the face they light.
+The `lightmap-exact-skips` review (`plans/done/lightmap-exact-skips/research.md` §Receiver drift) found an anticipated defect, not one seen in content: lightmap texel centres drift off the face they light.
 
 The cause is that the bake treats a shading attribute as geometry. Chart planning builds `v_axis` from the stored vertex normal, which octahedral quantisation tilts slightly off the true face normal. Every reader that derives a plane or a position from the chart frame then sits on a tilted plane: texel-centre reconstruction, the footprint clip band, and others. Texel centres leave the face plane linearly with distance along v from the chart origin.
 

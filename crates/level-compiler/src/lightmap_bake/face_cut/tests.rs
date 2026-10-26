@@ -597,7 +597,7 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
     use crate::bvh_build::build_bvh;
     use crate::light_namespaces::StaticBakedLights;
     use crate::lightmap_bake::{BlockOrdering, DEFAULT_AREA_SAMPLE_COUNT, reference};
-    use crate::lightmap_layer::{SharedAtlas, bake_light_layer_controlled};
+    use crate::lightmap_layer::{ExactSkips, SharedAtlas, bake_light_layer_controlled};
 
     let (mut geometry, lights) = penumbra_floor();
     let static_lights = StaticBakedLights::from_lights(&lights);
@@ -717,6 +717,7 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
                 layer,
                 DEFAULT_AREA_SAMPLE_COUNT,
                 true,
+                ExactSkips::ON,
                 &BakeControl::unrestricted(),
             );
             for texel in &partition.texels {

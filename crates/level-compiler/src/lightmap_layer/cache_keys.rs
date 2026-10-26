@@ -262,7 +262,9 @@ impl LayerKeyContext {
 
     /// The largest footprint radius among the charts `light` may reach, or
     /// zero with the floor off. Taken per light, not per bake, so one coarse
-    /// region widens only the lights that reach it.
+    /// region widens only the lights that reach it. "Reach" is range only
+    /// (`light_may_reach`), never the static bake's coverage cull
+    /// (`chart_may_cover`), so layer keys do not move with that cull.
     pub(super) fn footprint_radius(&self, light: &MapLight) -> f32 {
         self.footprint_reach
             .iter()

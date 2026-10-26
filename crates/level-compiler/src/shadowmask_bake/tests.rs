@@ -1546,6 +1546,7 @@ fn the_cut_face_estimate_reads_the_visibility_the_walk_bakes() {
                     layer,
                     DEFAULT_AREA_SAMPLE_COUNT,
                     floor,
+                    lightmap_layer::ExactSkips::ON,
                     &BakeControl::unrestricted(),
                 );
                 for texel in partition.texels {

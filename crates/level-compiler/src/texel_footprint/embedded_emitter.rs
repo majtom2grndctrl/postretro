@@ -83,7 +83,9 @@ pub(crate) fn embedded_emitter_fraction(
 /// Whether [`embedded_emitter_fraction`] reaches
 /// [`EMBEDDED_EMITTER_MIN_FRACTION`], stopping at the
 /// [`EMBEDDED_EMITTER_MIN_DIRECTIONS`]th embedded direction: for callers that
-/// need only the light's flag, not the warning's fraction.
+/// need only the light's flag, not the warning's fraction. The stage flags
+/// lights through [`EmbeddedEmitters`]; only test bakes call this directly.
+#[cfg(test)]
 pub(crate) fn has_embedded_emitter(
     light: &MapLight,
     bvh: &Bvh<f32, 3>,

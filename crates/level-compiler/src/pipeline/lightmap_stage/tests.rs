@@ -1221,6 +1221,8 @@ const FLOOR: (f32, f32, f32, f32) = (0.0, 0.0, 24.0, 0.0);
 struct CutBake {
     owners: Vec<[u16; 4]>,
     section: Vec<u8>,
+    /// Lightmap (id 22) bytes.
+    lightmap: Vec<u8>,
     raw: Vec<u8>,
     cut: crate::lightmap_bake::CutParent,
     charts: Vec<crate::lightmap_bake::Chart>,
@@ -1251,6 +1253,7 @@ struct CutRun<'a> {
     window: usize,
     cache: Option<&'a StageCache>,
     selection: Option<&'a EntityShadowLightsSection>,
+    exact_skips: lightmap_layer::ExactSkips,
 }
 
 impl Default for CutRun<'_> {
@@ -1260,6 +1263,7 @@ impl Default for CutRun<'_> {
             window: LIGHTMAP_PARTITION_WINDOW,
             cache: None,
             selection: None,
+            exact_skips: lightmap_layer::ExactSkips::ON,
         }
     }
 }
@@ -1300,6 +1304,7 @@ fn bake_cut_geometry(
         let (bvh, primitives, _) = build_bvh(&geometry).expect("cut fixture BVH");
         let window = PartitionWindow {
             size: run.window,
+            exact_skips: run.exact_skips,
             ..PartitionWindow::default()
         };
         let output = bake_fused_windowed(
@@ -1324,6 +1329,7 @@ fn bake_cut_geometry(
         CutBake {
             owners: section.owners.clone(),
             section: section.to_bytes(),
+            lightmap: output.lightmap.section.to_bytes(),
             raw,
             cut,
             charts: output.lightmap.charts,
@@ -1683,3 +1689,5 @@ mod penumbra_floor_energy_tests;
 mod penumbra_floor_animated_energy_tests;
 
 mod texel_step_tests;
+
+mod cut_skip_tests;

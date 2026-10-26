@@ -206,6 +206,7 @@ impl Prepared {
             self.atlas.placements[face].layer,
             test_args().soft_shadow_samples,
             penumbra_floor,
+            lightmap_layer::ExactSkips::ON,
             &BakeControl::unrestricted(),
         )
         .texels
@@ -426,6 +427,45 @@ fn production_stage_matches_the_reference_bake_at_each_floor_setting() {
         references[0], references[1],
         "the floor must reach the reference"
     );
+}
+
+// Permit side of the exact skips. The reference bake takes neither cull, so
+// the parity above checks both only where they fire. With one more light, in
+// the gap under the plate and so behind the plate's plane, at each floor
+// setting the stage drops at least one (light, chart) pair through the chart
+// cull and clears at least one tile through the shaft cull, verified, and
+// still equals the reference.
+#[test]
+fn reference_parity_fixture_drops_a_pair_and_clears_a_tile_at_each_floor_setting() {
+    let mut lights = mixed_lights();
+    let mut under_plate = point_light(DVec3::new(3.0, 0.5, 3.0), [0.5, 0.6, 1.0]);
+    under_plate.falloff_range = 8.0;
+    lights.push(under_plate);
+    for on in [true, false] {
+        let config = floored(false, on);
+        let reference = reference_lightmap_of(mixed_geometry(), &lights, &config);
+        let stats = lightmap_layer::SkipStats::leak();
+        let window = PartitionWindow {
+            exact_skips: lightmap_layer::ExactSkips::ON.tallied(stats),
+            ..PartitionWindow::default()
+        };
+        let baked = bake_with(
+            &BakeControl::unrestricted(),
+            None,
+            &lights,
+            &config,
+            mixed_geometry(),
+            &[],
+            &window,
+        );
+        assert_eq!(baked.0, reference, "floor {on}: tallied stage differs");
+        assert!(stats.dropped_pairs() > 0, "floor {on}: no pair dropped");
+        assert!(stats.tiles_cleared() > 0, "floor {on}: no tile cleared");
+        assert!(
+            stats.verified_texels() > 0,
+            "floor {on}: verify traced nothing"
+        );
+    }
 }
 
 /// A default-size light 0.2 m under the plate of [`mixed_geometry`], so a

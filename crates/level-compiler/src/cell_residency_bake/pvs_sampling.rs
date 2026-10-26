@@ -4,22 +4,28 @@
 //! `lightmap_residency_dry_run` measures the same sets.
 //!
 //! The engine bakes no PVS (id 14 is retired): the runtime walks portals from
-//! the eye every frame. This estimates a cell's PVS by running that same walk
+//! the eye every frame. This samples that same walk
 //! (`postretro_visibility::determine_visible_cells`) from a lattice of eye
-//! points inside the cell, six cube faces per point. A sample can only miss
-//! cells, never invent them, so every set is a lower bound on what the cell
-//! can see.
+//! points inside the cell, six cube faces per point, and unions what it
+//! reaches. The walk's visible set is a conservative superset of true
+//! visibility per projection, and how far it over-includes depends on FOV,
+//! aspect and view direction (`rendering_pipeline.md` §2). A sampled set is
+//! therefore neither a bound on true visibility nor FOV-independent: it is
+//! what these cube faces reach from these eye points, and a runtime view at
+//! another projection or pose can draw cells it lacks.
 //!
-//! The bound is per cell volume, a free-fly camera anywhere in the cell, not
-//! a standing player's eye: the lattice spans 10–90% of the AABB on every
-//! axis, ceiling bands included. It holds for any runtime FOV up to the
-//! maximum, since the cube faces tile every view direction. A cell with no
-//! accepted eye point keeps the set {cell} alone, a much weaker bound.
+//! The lattice spans the cell volume, a free-fly camera anywhere in the cell,
+//! not a standing player's eye: 10–90% of the AABB on every axis, ceiling
+//! bands included. A cell with no accepted eye point keeps the set {cell}
+//! alone.
+//!
+//! See: context/lib/rendering_pipeline.md §2
 
 use glam::Vec3;
 use postretro_level_loader::LevelWorld;
 use postretro_visibility::{
-    TimingGate, VisibilityPath, VisibleCells, determine_visible_cells, portal_traverse,
+    PortalWalkScratch, TimingGate, VisibilityPath, VisibleCells, determine_visible_cells,
+    portal_traverse,
 };
 use rayon::prelude::*;
 
@@ -38,7 +44,7 @@ const INSET_SCALES: [f32; 2] = [0.5, 0.25];
 /// both neighbouring frusta rather than clipped by both.
 pub(crate) const CUBE_FACE_FOV_DEGREES: f32 = 94.0;
 /// Must match `MAX_FOV_DEG` in `crates/postretro/src/camera.rs`; the test-only
-/// dry-run report states it as the widest camera the bound covers.
+/// dry-run report states it as the widest runtime camera.
 #[cfg(test)]
 pub(crate) const RUNTIME_MAX_FOV_DEGREES: f32 = 130.0;
 /// Must match `NEAR` / `FAR` in `crates/postretro/src/camera.rs`: the engine
@@ -99,8 +105,9 @@ pub(crate) struct SamplingStats {
     /// Camera cells with no accepted eye point: their PVS is the cell alone.
     pub cells_without_eye: usize,
     pub walks: usize,
-    /// Walks that exceeded `MAX_PORTAL_WALK_STEPS`. The runtime would draw a
-    /// frustum-culled superset; the sample keeps the truncated walk instead.
+    /// Walks that hit the portal walk's step cap. The runtime would draw a
+    /// frustum-culled fallback; the sample keeps the capped walk's partial
+    /// reach instead.
     pub step_limit_walks: usize,
     /// Walks the runtime answered with any other frustum-all fallback
     /// (solid, exterior, no portals). Their cells are not added.
@@ -144,7 +151,7 @@ pub(crate) fn sample_pvs(
 ) -> SampledPvs {
     let samples: Vec<CellSample> = camera_cells
         .par_iter()
-        .map_init(Vec::new, |scratch, &cell| {
+        .map_init(PortalWalkScratch::new, |scratch, &cell| {
             let _permit = control.governor().enter();
             let sample = sample_cell(world, cell, scratch);
             control.advance(1);
@@ -170,7 +177,7 @@ struct CellSample {
     stats: SamplingStats,
 }
 
-fn sample_cell(world: &LevelWorld, cell: u32, scratch: &mut Vec<u32>) -> CellSample {
+fn sample_cell(world: &LevelWorld, cell: u32, scratch: &mut PortalWalkScratch) -> CellSample {
     let mut stats = SamplingStats::default();
     let mut sparse = vec![false; world.cell_count()];
     let mut dense = vec![false; world.cell_count()];
@@ -258,12 +265,12 @@ pub(crate) fn eye_points(
 }
 
 /// Mark every drawable cell the runtime walk reaches from `eye` across the six
-/// cube faces.
+/// cube faces. `scratch` is this thread's own walk state.
 fn walk_cube_faces(
     world: &LevelWorld,
     cell: u32,
     eye: Vec3,
-    scratch: &mut Vec<u32>,
+    scratch: &mut PortalWalkScratch,
     visible: &mut [bool],
     stats: &mut SamplingStats,
 ) {
@@ -276,33 +283,30 @@ fn walk_cube_faces(
     for (direction, up) in CUBE_FACES {
         stats.walks += 1;
         let view = glam::camera::rh::view::look_at_mat4(eye, eye + direction, up);
-        let (result, frustum) = determine_visible_cells(
-            eye,
-            projection * view,
-            world,
-            &[],
-            false,
-            scratch,
-            TimingGate::OFF,
-        );
+        let view_proj = projection * view;
+        let (result, _) =
+            determine_visible_cells(eye, view_proj, world, &[], false, scratch, TimingGate::OFF);
         match result.stats.path {
             VisibilityPath::PrlPortal { .. } => {
-                if let VisibleCells::Culled(cells) = result.visible_cells {
-                    for &visible_cell in &cells {
+                if let VisibleCells::Culled(cells) = &result.visible_cells {
+                    for &visible_cell in cells {
                         visible[visible_cell as usize] = true;
                     }
-                    // Hand the allocation back for the next walk.
-                    *scratch = cells;
                 }
             }
             VisibilityPath::PortalStepLimitFallback { .. } => {
                 stats.step_limit_walks += 1;
-                // The truncated walk: a subset of the full walk, so the PVS
-                // stays a lower bound, unlike the runtime's frustum superset.
-                let reached = portal_traverse(eye, cell as usize, &frustum, world, false);
-                for (index, &seen) in reached.iter().enumerate() {
-                    if seen && world.cells[index].is_drawable {
-                        visible[index] = true;
+                // The capped walk's partial reach, not the runtime's frustum
+                // fallback: it holds only cells the uncapped walk reaches.
+                // Re-walked with the same inputs as the call above (eye,
+                // view_proj, no blocked portals, same cap; `cell` is the
+                // located cell, since eye points are accepted only where the
+                // locator agrees), so this capped reach is a prefix of that
+                // same walk.
+                let walk = portal_traverse(eye, view_proj, cell as usize, world, scratch);
+                for &reached in walk.reached {
+                    if world.cells[reached as usize].is_drawable {
+                        visible[reached as usize] = true;
                     }
                 }
             }
@@ -310,6 +314,10 @@ fn walk_cube_faces(
             | VisibilityPath::SolidCellFallback
             | VisibilityPath::ExteriorCellFallback
             | VisibilityPath::NoPortalsFallback => stats.frustum_all_walks += 1,
+        }
+        // Hand the allocation back for the next walk.
+        if let VisibleCells::Culled(cells) = result.visible_cells {
+            scratch.recycle_cells(cells);
         }
     }
 }

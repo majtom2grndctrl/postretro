@@ -312,6 +312,12 @@ impl ShStreamingSession {
         self.controller.unsettled_targets()
     }
 
+    /// Settle-set targets, Sampleable or not; `None` before the first target
+    /// update. See the controller's `settle_set_targets`.
+    pub(crate) fn settle_set_targets(&self) -> Option<usize> {
+        self.controller.settle_set_targets()
+    }
+
     #[cfg(test)]
     pub(in crate::session) fn set_mode_for_test(&mut self, mode: ShStreamingMode) {
         self.mode = mode;

@@ -136,6 +136,7 @@ fn draw_data(app: &mut App) -> UiDrawData {
         &session.modal_stack,
         &mut session.presentation_cells,
         &session.scripting.script_ctx.slot_table.borrow(),
+        session.net_endpoint.as_ref(),
         app.script_time,
         session.ui_input_mode,
         app.ui_focused_id.clone(),

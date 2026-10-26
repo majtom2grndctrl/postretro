@@ -8,8 +8,9 @@
 //! `M(c) = cluster(c) ∪ pinned ∪ ⋃_{c' ∈ {c} ∪ within(c, L)} ({c'} ∪ PVS(c'))`
 //!
 //! `within` is the untruncated hub-metric neighbourhood and `PVS` the sampled
-//! set from `pvs_sampling`, so every figure here is a lower bound (per cell
-//! volume; see `pvs_sampling`).
+//! set from `pvs_sampling`: a sample of the runtime walk per cell volume,
+//! neither a bound on true visibility nor FOV-independent (see
+//! `pvs_sampling`). Every figure here inherits that.
 
 use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 use postretro_level_loader::LevelWorld;

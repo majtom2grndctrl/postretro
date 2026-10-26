@@ -20,15 +20,15 @@ pub(crate) struct VisibleRenderPreparation {
 
 impl VisibleRenderPreparation {
     /// Determine the drawable and wider light/fog-reachable sets for a loaded
-    /// level. `scratch` remains caller-owned to preserve the windowed frame's
-    /// allocation behavior.
+    /// level. `scratch` is the caller's portal-walk state, kept across frames
+    /// so the walk allocates nothing once grown.
     pub(crate) fn for_level(
         world: &LevelWorld,
         eye: Vec3,
         view_proj: Mat4,
         blocked_portals: &[bool],
         capture_portal_walk: bool,
-        scratch: &mut Vec<u32>,
+        scratch: &mut postretro_visibility::PortalWalkScratch,
         timing: postretro_visibility::TimingGate,
     ) -> Self {
         let (visibility, _) = determine_visible_cells(

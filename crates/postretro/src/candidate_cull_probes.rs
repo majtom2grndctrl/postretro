@@ -149,7 +149,7 @@ mod tests {
             let view_proj = probe_view_proj(probe);
             let position = Vec3::from_array(probe.origin);
 
-            let mut scratch = Vec::new();
+            let mut scratch = postretro_visibility::PortalWalkScratch::new();
             let (vis, _frustum) = postretro_visibility::determine_visible_cells(
                 position,
                 view_proj,
@@ -281,7 +281,7 @@ mod tests {
                 let yaw = step as f32 * std::f32::consts::FRAC_PI_4;
                 let look = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
                 let view = glam::camera::rh::view::look_at_mat4(eye, eye + look, Vec3::Y);
-                let mut scratch = Vec::new();
+                let mut scratch = postretro_visibility::PortalWalkScratch::new();
                 let (vis, _) = postretro_visibility::determine_visible_cells(
                     eye,
                     proj * view,

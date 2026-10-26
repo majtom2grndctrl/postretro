@@ -26,6 +26,9 @@ mod player_slot_lookup_test;
 mod resource_projection;
 #[cfg(test)]
 mod swim_slots_test;
+#[cfg(feature = "test-support")]
+mod test_support;
+mod timed_slot_targets;
 use resource_projection::{ResourceSlotProjection, record_resource_sample};
 
 /// Version prefix folded into the schema fingerprint. Bump when the canonical byte
@@ -1171,6 +1174,8 @@ const STATE_REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 /// was rejected whole.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct StateApplyOutcome {
+    /// Accepted state batch, including empty batches and held-id resends.
+    pub(crate) state_batch_applied: bool,
     pub(crate) slot_baselines: Vec<(u16, u32)>,
     /// Complete faction-sentiment overlay baseline successfully applied from this
     /// snapshot. It is fed into the existing reliable `AckMessage`, not a new input
@@ -1214,6 +1219,10 @@ pub struct ClientStateApply {
     /// describes, committed with that value. A reset clears it, so a value kept
     /// across the reset names no slot until its next baseline.
     weapon_projection: ReplicatedWeaponProjection,
+    timed_slot_targets: timed_slot_targets::TimedSlotTargets,
+    /// Ordered accepted raw batches awaiting the frame's crossing stage. Outer
+    /// None excludes a refresh-held slot; Some(None) observes a genuine absence.
+    timed_slot_observations: Vec<[Option<Option<f32>>; 4]>,
 }
 
 impl ClientStateApply {
@@ -1224,6 +1233,8 @@ impl ClientStateApply {
             held_baselines: HashMap::new(),
             held_faction_sentiment_baseline: None,
             weapon_projection: ReplicatedWeaponProjection::default(),
+            timed_slot_targets: timed_slot_targets::TimedSlotTargets::default(),
+            timed_slot_observations: Vec::new(),
         }
     }
 
@@ -1234,6 +1245,7 @@ impl ClientStateApply {
         self.held_baselines.clear();
         self.held_faction_sentiment_baseline = None;
         self.weapon_projection = ReplicatedWeaponProjection::default();
+        self.reset_timed_slot_targets();
     }
 
     #[cfg(test)]
@@ -1243,6 +1255,8 @@ impl ClientStateApply {
             && self.held_baselines.is_empty()
             && self.held_faction_sentiment_baseline.is_none()
             && self.weapon_projection == ReplicatedWeaponProjection::default()
+            && self.timed_slot_targets.is_reset()
+            && self.timed_slot_observations.is_empty()
     }
 
     /// The owner-private weapon values as last committed, each with the host
@@ -1390,10 +1404,6 @@ impl ClientStateApply {
         snapshot_fingerprint: &[u8; 32],
         records: &[RawStateSlotRecord],
     ) -> StateApplyOutcome {
-        if records.is_empty() {
-            return StateApplyOutcome::default();
-        }
-
         // Validate the whole batch against the local schema. The schema borrow is
         // released before the slot-table mutation below.
         let typed = {
@@ -1412,7 +1422,10 @@ impl ClientStateApply {
         // an older id).
         let mut writes: Vec<PendingSlotWrite> = Vec::new();
         let mut pending_baselines: Vec<(StateSlotId, u32)> = Vec::new();
-        let mut outcome = StateApplyOutcome::default();
+        let mut outcome = StateApplyOutcome {
+            state_batch_applied: true,
+            ..StateApplyOutcome::default()
+        };
 
         for record in &typed {
             match record {

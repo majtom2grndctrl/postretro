@@ -59,7 +59,40 @@ impl SettleReport {
     }
 }
 
+/// How many units each streamed resource's settle set holds, usable or not:
+/// what the Settling log's peaks read. `None` for a resource that does not
+/// stream or has not derived demand from a view yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SettleSetSize {
+    pub(crate) sh_targets: Option<usize>,
+    pub(crate) lightmap_blocks: Option<usize>,
+}
+
 impl crate::session::Session {
+    /// The settle set's size per resource, from the same demand
+    /// [`Self::settle_report`] reads.
+    pub(crate) fn settle_set_size(&self) -> SettleSetSize {
+        SettleSetSize {
+            sh_targets: self
+                .sh_streaming
+                .as_ref()
+                .and_then(|streaming| streaming.settle_set_targets()),
+            lightmap_blocks: self
+                .level_streaming
+                .lightmap()
+                .and_then(|lightmap| lightmap.settle_set_blocks()),
+        }
+    }
+
+    /// Lightmap blocks the latest frame drew while not installed; `None`
+    /// when the level's lightmap does not stream. Read after the reveal
+    /// frame's drain, it is that frame's misses.
+    pub(crate) fn last_frame_lightmap_misses(&self) -> Option<u32> {
+        self.level_streaming
+            .lightmap()
+            .map(|lightmap| lightmap.last_frame_drawn_not_resident())
+    }
+
     /// The one settle chokepoint. Asks each streamed resource whether the
     /// settle pose's set is usable: SH clusters Sampleable, lightmap blocks
     /// installed. Call only after the level's sessions exist (install creates

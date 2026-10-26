@@ -550,6 +550,25 @@ impl LightmapResidencyController {
         })
     }
 
+    /// The settle set's size: every mandatory and visible block, installed
+    /// or not, as of the latest demand update; `None` before the first. The
+    /// Settling log reports its peak.
+    pub(crate) fn settle_set_blocks(&self) -> Option<usize> {
+        self.demand_updated.then(|| {
+            self.slots
+                .iter()
+                .filter(|slot| {
+                    slot.target.is_some_and(|target| {
+                        matches!(
+                            target.class,
+                            LightmapBlockClass::Mandatory | LightmapBlockClass::Visible
+                        )
+                    })
+                })
+                .count()
+        })
+    }
+
     fn retarget_dirty(&mut self) {
         for index in 0..self.demand.dirty_len() {
             let block = self.demand.dirty_at(index);

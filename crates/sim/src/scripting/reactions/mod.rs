@@ -12,7 +12,7 @@ use postretro_scripting_core::reaction_registry::{
     ReactionPrimitiveRegistry, SystemReactionRegistry,
 };
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
-use postretro_scripting_core::state_crossings::CrossingDetector;
+use postretro_scripting_core::state_crossings::{CrossingDetector, CrossingFire};
 
 pub(crate) use crate::fx::emitter_reactions::{set_emitter_rate, set_spin_rate};
 pub(crate) use crate::fx::fog_reactions::{
@@ -43,7 +43,26 @@ pub fn dispatch_state_crossings_with_sequences(
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) -> Vec<String> {
-    let crossing_events = crossing_detector.detect(slot_table);
+    dispatch_crossing_fires_with_sequences(
+        crossing_detector.detect(slot_table),
+        data_registry,
+        sequence_registry,
+        reaction_registry,
+        system_registry,
+        script_ctx,
+    )
+}
+
+/// Dispatch captured direction/source records against the frame's settled store.
+/// Raw sample observation never runs reactions inside snapshot apply.
+pub fn dispatch_crossing_fires_with_sequences(
+    crossing_events: Vec<CrossingFire>,
+    data_registry: &DataRegistry,
+    sequence_registry: &SequencedPrimitiveRegistry,
+    reaction_registry: &ReactionPrimitiveRegistry,
+    system_registry: &SystemReactionRegistry,
+    script_ctx: &ScriptCtx,
+) -> Vec<String> {
     // Chained names from a `fire` step or a fired `Primitive`'s `on_complete`.
     // Previously discarded (`let _ =`); capturing them activates `on_complete`
     // chaining and `fire` steps for crossing-fired reactions.

@@ -2982,6 +2982,7 @@ pub(crate) fn load_prl_from_container(
         cell_locator_nodes,
         portals,
         has_portals,
+        portal_planes: Default::default(),
         cell_visibility,
         texture_names,
         texture_cache_keys,

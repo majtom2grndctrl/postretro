@@ -234,6 +234,9 @@ pub struct UiReadSnapshot {
     pub trees: Vec<UiTreeEntry>,
     /// Resolved state-store values for this frame, keyed by dotted slot name.
     /// Cloned out of the live `SlotTable` once per frame (see the type doc).
+    /// On connected clients, timed weapon slots carry client-derived display
+    /// targets. Bindings, predicates, Bar maxima, focus, hit-testing and
+    /// accessibility all resolve against this map; the live store stays sampled.
     /// Only slots that currently hold a value appear; value-less slots are
     /// skipped. Empty on the splash path.
     pub slot_values: std::collections::HashMap<String, postretro_entities::SlotValue>,

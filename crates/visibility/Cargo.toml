@@ -15,3 +15,5 @@ postretro-stage-timing.workspace = true
 [dev-dependencies]
 postretro-render-data.workspace = true
 postretro-level-format.workspace = true
+# The real-map sweep (`region_walk::real_map_sweep`) loads baked PRLs.
+postretro-level-loader = { path = "../level-loader", features = ["load-prl"] }

@@ -872,7 +872,9 @@ pub(crate) struct App {
     /// `postretro::portal_trace` for that one frame only.
     capture_portal_walk_next_frame: bool,
 
-    scratch_cells: Vec<u32>,
+    /// Walk state reused across frames; also lends each frame's draw-set
+    /// buffer, handed back after the frame.
+    portal_walk_scratch: postretro_visibility::PortalWalkScratch,
     /// Render-only portal blockers rebuilt from live mover phase every frame.
     blocked_portals: Vec<bool>,
 
@@ -1049,6 +1051,10 @@ pub(crate) struct App {
 
     /// The current level entry's Settling stretch; `Some` only in Settling.
     settle: Option<crate::startup::settling::SettleState>,
+
+    /// The revealed entry's Settling record, set at the reveal edge and
+    /// logged at the end of the reveal frame, once its misses are counted.
+    settle_summary: Option<crate::startup::settle_log::SettleSummary>,
 
     /// Set during `mod_init` if a mod registers a `SplashSource` override.
     /// The consume path in `run_splash_frame` frame 1 is wired; today the field
@@ -2463,6 +2469,22 @@ impl ApplicationHandler for App {
 impl frame_order::ReplicatedStateFrame for App {
     fn apply_received_snapshots(&mut self, frame_dt: f32) {
         self.net_poll_and_apply(frame_dt);
+        // UI targets advance on every client frame, including frames without an
+        // accepted snapshot. The store remains the host's sampled state.
+        if let Some(netcode::NetEndpoint::Client {
+            state_slots,
+            time_sync,
+            ..
+        }) = self.session.as_mut().and_then(|s| s.net_endpoint.as_mut())
+        {
+            let sample_tick = time_sync
+                .estimated_server_tick()
+                .zip(time_sync.rtt_micros())
+                .map(|(tick, rtt)| {
+                    tick - rtt / (2.0 * postretro_net::timesync::DEFAULT_MICROS_PER_TICK as f64)
+                });
+            state_slots.advance_timed_slot_targets(sample_tick, f64::from(frame_dt));
+        }
     }
 
     fn dispatch_state_crossings(&mut self) -> Vec<String> {
@@ -2479,9 +2501,18 @@ impl frame_order::ReplicatedStateFrame for App {
         let Some(session) = self.session.as_mut() else {
             return Vec::new();
         };
-        crate::scripting::reactions::dispatch_state_crossings_with_sequences(
-            &mut session.crossing_detector,
-            &script_ctx.slot_table.borrow(),
+        let crossing_events = {
+            let slot_table = script_ctx.slot_table.borrow();
+            if let Some(netcode::NetEndpoint::Client { state_slots, .. }) =
+                session.net_endpoint.as_mut()
+            {
+                state_slots.detect_state_crossings(&mut session.crossing_detector, &slot_table)
+            } else {
+                session.crossing_detector.detect(&slot_table)
+            }
+        };
+        crate::scripting::reactions::dispatch_crossing_fires_with_sequences(
+            crossing_events,
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -3033,16 +3064,18 @@ impl App {
         apply_menu_camera_pose(&mut self.camera, &mut self.frame_timing, &frontend.camera);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_ui_read_snapshot(
         modal_stack: &postretro_ui::modal_stack::ModalStack,
         presentation_cells: &mut scripting_systems::presentation_cells::PresentationCellStore,
         slot_table: &postretro_entities::SlotTable,
+        net_endpoint: Option<&netcode::NetEndpoint>,
         script_time: f64,
         ui_input_mode: input::InputMode,
         ui_focused_id: Option<String>,
         frontend_menu_is_present: bool,
     ) -> postretro_ui::UiReadSnapshot {
-        let slot_values = Self::build_ui_slot_snapshot(slot_table);
+        let slot_values = Self::build_ui_display_slot_snapshot(slot_table, net_endpoint);
         let base_layers: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_present {
             Vec::new()
         } else {
@@ -3332,6 +3365,7 @@ impl App {
             &session.modal_stack,
             &mut session.presentation_cells,
             &session.scripting.script_ctx.slot_table.borrow(),
+            session.net_endpoint.as_ref(),
             self.script_time,
             session.ui_input_mode,
             self.ui_focused_id.clone(),
@@ -3365,8 +3399,8 @@ impl App {
     /// borrow of `self.renderer`, and a `&self` receiver here would conflict with
     /// it. Borrowing only the script slot table keeps the two field borrows disjoint.
     ///
-    /// `pub(crate)` so the netcode state-slot apply tests can drive the REAL UI read
-    /// path (the replicated value must surface here), not a hand-mirrored copy.
+    /// Raw snapshot helper shared by store-isolation tests and the display snapshot
+    /// builder below, which substitutes connected-client timer targets for the UI.
     pub(crate) fn build_ui_slot_snapshot(
         slot_table: &postretro_entities::SlotTable,
     ) -> std::collections::HashMap<String, postretro_entities::SlotValue> {
@@ -3376,6 +3410,20 @@ impl App {
                 record.value.clone().map(|value| (name.to_string(), value))
             })
             .collect()
+    }
+
+    /// Resolve the UI's display targets at the store-to-UI boundary. Every UI
+    /// consumer (bindings, predicates, focus, hit-testing and accessibility) sees
+    /// this same map; gameplay and crossing detection keep reading the store.
+    pub(crate) fn build_ui_display_slot_snapshot(
+        slot_table: &postretro_entities::SlotTable,
+        net_endpoint: Option<&netcode::NetEndpoint>,
+    ) -> std::collections::HashMap<String, postretro_entities::SlotValue> {
+        let mut values = Self::build_ui_slot_snapshot(slot_table);
+        if let Some(netcode::NetEndpoint::Client { state_slots, .. }) = net_endpoint {
+            state_slots.apply_timed_slot_targets(&mut values);
+        }
+        values
     }
 
     /// Drain the system-reaction command queue and route each typed command to
@@ -6706,7 +6754,7 @@ mod tests {
                 &world,
                 blocked_portals,
                 false,
-                &mut Vec::new(),
+                &mut postretro_visibility::PortalWalkScratch::new(),
                 postretro_visibility::TimingGate::OFF,
             );
             result
@@ -12554,6 +12602,7 @@ mod tests {
             &stack,
             &mut cells,
             &slots,
+            None,
             0.0,
             input::InputMode::Focus,
             None,
@@ -12570,6 +12619,7 @@ mod tests {
             &stack,
             &mut cells,
             &slots,
+            None,
             0.0,
             input::InputMode::Focus,
             None,
@@ -12596,6 +12646,7 @@ mod tests {
             &stack,
             &mut cells,
             &slots,
+            None,
             0.0,
             input::InputMode::Focus,
             None,

@@ -626,6 +626,7 @@ mod tests {
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
+            portal_planes: Default::default(),
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },

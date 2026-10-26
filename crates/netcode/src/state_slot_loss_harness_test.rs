@@ -16,6 +16,9 @@
 
 #![cfg(test)]
 
+#[path = "timed_slot_harness_test.rs"]
+mod timed_slot_harness_test;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -9,8 +9,26 @@
 //
 // Time model: the camera dwells in each walk cell for the frames it takes to
 // reach the next cell's centre at `RUN_SPEED` m/s at 60 Hz, turning 90° per
-// frame. A frame with reads in flight sleeps to its 16.7 ms deadline, so disk
-// reads race real time. Paths and eyes are seeded; misses depend on latency.
+// frame at a fixed pitch. Paths and eyes are seeded, so frame i is the same
+// pose in every run, mode and build over one cell layout.
+//
+// Read modes (`POSTRETRO_LIGHTMAP_WALK_READS`):
+// - `realtime` (default): one drain per frame; a frame with reads in flight
+//   sleeps to its 16.7 ms deadline, so misses race disk reads. The pool
+//   mirror retires a grown-out generation per drain call.
+// - `completed`: the residency gate's mode (O17, O29). Every read in flight
+//   completes before each of the frame's two drains, so the reads issued in
+//   drain 0 land in drain 1; no wall clock is involved. Reads held back by
+//   the 32-permit cap or the in-hand byte cap are issued in drain 1 instead,
+//   and land next frame, or are dropped if their block has left demand.
+//   Misses are counted once per drawn block, after the last drain, and
+//   retirement advances once per frame.
+//
+// After the last drain a drawn, non-resident block counts as deferred behind
+// a retiring generation when the frame's latest drain that carried it
+// deferred it, and as left behind by admission otherwise, undemanded
+// included. The mirror's pool has no device limit, so every deferral is
+// behind a retiring generation (O18).
 //
 // Run from the workspace root (debug is fine; the heavy part is the walk):
 //
@@ -21,29 +39,57 @@
 // Optional: `POSTRETRO_LIGHTMAP_WALK_STEPS` (default 2000),
 // `POSTRETRO_LIGHTMAP_WALK_RUNS` = `default` | `all` (default `all`: the
 // default levers plus the cap and lead sweeps). Leave
-// `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`.
+// `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
+// `POSTRETRO_LIGHTMAP_WALK_HFOV` (degrees, default 100),
+// `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
+// stays fixed) and `POSTRETRO_LIGHTMAP_WALK_PITCH` (degrees, up positive,
+// default 0).
+//
+// Residency gate, per projection and pitch: run the pre-change build with
+// `POSTRETRO_LIGHTMAP_WALK_READS=completed` and
+// `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT=<file>`, which writes each run's
+// per-frame trip record; then the rect build, on its own bake, with the same
+// modes and `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_IN=<file>`. The rect run
+// splits its frames by the recorded trips (O28, O38) and prints both builds'
+// totals in and outside the gate. A pair whose poses or locate mismatches
+// differ, or that read the same id 51 under different walk epochs, prints
+// INVALID and no verdict (O14). Each run also prints the bake it read. A run's
+// split against its own record prints totals only; the verdict is the paired
+// split's.
 
+mod baked_set;
+mod completed_reads;
+mod frame_driver;
+mod modes;
 mod paths;
 mod pool_mirror;
+mod report;
+#[cfg(test)]
+mod tests;
+mod trip_record;
 
-use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use glam::{Mat4, Vec3};
+use glam::Vec3;
 use postretro_level_format::SectionId;
-use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_loader::{LevelWorld, PrlReadCounters};
-use postretro_stage_timing::StageFrame;
 use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells, determine_visible_cells};
 
 use super::{LightmapLevelView, LightmapStreamingSession};
-use crate::cpu_timing::StreamingStage;
-use crate::session::level_streaming::{LevelStreaming, StreamingFrame};
+use crate::session::level_streaming::LevelStreaming;
 use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 use crate::streaming::cluster_hints::decode_level_hints;
+use baked_set::{
+    bake_identity, bake_token, cell_block_ranges, mandatory_blocks, mandatory_cells,
+    mandatory_set_sizes,
+};
+use frame_driver::{FrameDriver, FrameInput};
+use modes::{ReadsMode, WalkModes, view_projection};
 use paths::{SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path};
-use pool_mirror::{PoolMirror, PoolStats};
+use pool_mirror::{PoolMirror, RetireClock};
+use report::{RunReport, mib, print_run, print_split};
+use trip_record::{FrameRecord, RunRecord, pose_fingerprint};
 
 const PRL_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PRL";
 const STEPS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_STEPS";
@@ -53,11 +99,7 @@ const FRAME_SECONDS: f64 = 1.0 / 60.0;
 /// A brisk boomer-shooter run speed, metres per second.
 const RUN_SPEED: f32 = 8.0;
 const MAX_DWELL_FRAMES: u32 = 60;
-/// Default camera: `camera.rs` HFOV at 16:9.
-const HFOV_DEGREES: f32 = 100.0;
-const ASPECT: f32 = 16.0 / 9.0;
 const EYE_TRIES: usize = 32;
-const MIB: f64 = 1024.0 * 1024.0;
 
 #[derive(Debug, Clone, Copy)]
 struct Levers {
@@ -155,103 +197,6 @@ fn eye_point(world: &LevelWorld, cell: u32, rng: &mut SplitMix64) -> Vec3 {
     (data.bounds_min + data.bounds_max) * 0.5
 }
 
-fn view_projection(eye: Vec3, yaw: f32) -> Mat4 {
-    let look = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-    let view = glam::camera::rh::view::look_at_mat4(eye, eye + look, Vec3::Y);
-    let vfov = 2.0 * ((HFOV_DEGREES.to_radians() / 2.0).tan() / ASPECT).atan();
-    glam::camera::rh::proj::directx::perspective(vfov, ASPECT, 0.1, 4096.0) * view
-}
-
-/// Visible-miss block-frames, one bucket pair per step kind.
-#[derive(Debug, Default, Clone, Copy)]
-struct Misses {
-    frames: u64,
-    outside: u64,
-    not_resident: u64,
-    frames_outside: u64,
-    frames_not_resident: u64,
-    max_outside: u32,
-    max_not_resident: u32,
-    /// Of `outside`: drawn while not resident after the frame's drain, so
-    /// sampled SH-only (the harness's own count, over the same drawn set).
-    outside_missing: u64,
-    frames_outside_missing: u64,
-}
-
-impl Misses {
-    fn add(&mut self, outside: u32, not_resident: u32, outside_missing: u32) {
-        self.frames += 1;
-        self.outside += u64::from(outside);
-        self.not_resident += u64::from(not_resident);
-        self.frames_outside += u64::from(outside > 0);
-        self.frames_not_resident += u64::from(not_resident > 0);
-        self.max_outside = self.max_outside.max(outside);
-        self.max_not_resident = self.max_not_resident.max(not_resident);
-        self.outside_missing += u64::from(outside_missing);
-        self.frames_outside_missing += u64::from(outside_missing > 0);
-    }
-
-    fn line(&self) -> String {
-        format!(
-            "{} frames: outside baked set {} block-frames in {} frames (max {}/frame), of which \
-             drawn non-resident {} in {} frames; not resident {} block-frames in {} frames \
-             (max {}/frame)",
-            self.frames,
-            self.outside,
-            self.frames_outside,
-            self.max_outside,
-            self.outside_missing,
-            self.frames_outside_missing,
-            self.not_resident,
-            self.frames_not_resident,
-            self.max_not_resident,
-        )
-    }
-}
-
-#[derive(Debug, Default)]
-struct RunReport {
-    frames: u64,
-    wall: Duration,
-    paced_frames: u64,
-    locate_mismatch_frames: u64,
-    path_portal: u64,
-    path_step_limit: u64,
-    path_other: u64,
-    preload_pairs: u32,
-    preload_bytes: u64,
-    preload_millis: f64,
-    /// Per step end: (resident id 22, resident id 42, mandatory id 22,
-    /// mandatory id 42) bytes.
-    step_bytes: Vec<[u64; 4]>,
-    /// Per step: id-22 and id-42 bytes read at the positional reader.
-    step_reads: Vec<(u64, u64)>,
-    entering_blocks: u64,
-    entering_resident: u64,
-    spawn: Misses,
-    adjacent: Misses,
-    /// Adjacent-step frames split: the frame the camera cell changed, and
-    /// the rest.
-    adjacent_change_frames: Misses,
-    teleport: Misses,
-    residency_nanos_change: Vec<u64>,
-    residency_nanos_steady: Vec<u64>,
-    /// Steady frames' wall time per part: `prepare_drains` (demand,
-    /// completions, batch, reads), `apply_outcome`, `finish_frame`.
-    steady_parts: [Vec<u64>; 3],
-    /// Steady frames' `prepare_drains` time, split by whether the frame
-    /// admitted delivered read bytes (completions), and the most admitted.
-    prepare_with_completions: Vec<u64>,
-    prepare_without_completions: Vec<u64>,
-    max_admitted_bytes: u64,
-    counters: Option<crate::lightmap_streaming::controller::LightmapResidencyCounters>,
-    physical_reads: u64,
-    pool: PoolStats,
-    layer_bytes: u64,
-    first_not_resident: Vec<(usize, u32, u32)>,
-    first_outside: Vec<(usize, u32, u32)>,
-}
-
 fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
     (
         counters.section_bytes(SectionId::Lightmap as u32),
@@ -259,52 +204,23 @@ fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
     )
 }
 
-/// Each cell's blocks from the owning cell of every block in block order: a
-/// contiguous run, as the loader validates, empty for a cell without charts.
-fn cell_block_ranges(
-    block_cells: impl IntoIterator<Item = u32>,
-    cell_count: usize,
-) -> Vec<Range<u32>> {
-    let mut ranges = vec![0..0; cell_count];
-    for (block, cell) in (0u32..).zip(block_cells) {
-        let run = &mut ranges[cell as usize];
-        if run.start == run.end {
-            *run = block..block + 1;
-        } else {
-            assert_eq!(run.end, block, "cell {cell}'s blocks are contiguous");
-            run.end += 1;
-        }
-    }
-    ranges
+fn run_label(walk: &Walk, levers: Levers, modes: &WalkModes) -> String {
+    format!(
+        "{} | L {} m | cap {} | {}",
+        walk.kind.label(),
+        levers.lead_metres,
+        levers.cap_layers,
+        modes.label()
+    )
 }
 
-/// Every block of the camera cell's mandatory cells at `lead` (fixed point),
-/// sorted.
-fn mandatory_blocks(
-    residency_set: &CellResidencySetSection,
-    cell_blocks: &[Range<u32>],
-    camera_cell: u32,
-    lead: u32,
-    out: &mut Vec<u32>,
-) {
-    out.clear();
-    out.extend(
-        residency_set
-            .entries_for(camera_cell as usize)
-            .iter()
-            .filter(|entry| entry.lead <= lead)
-            .flat_map(|entry| {
-                cell_blocks
-                    .get(entry.cell_id as usize)
-                    .cloned()
-                    .unwrap_or(0..0)
-            }),
-    );
-    out.sort_unstable();
-    out.dedup();
-}
-
-fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
+fn run(
+    world: &LevelWorld,
+    walk: &Walk,
+    levers: Levers,
+    modes: &WalkModes,
+    bake: &str,
+) -> RunReport {
     let view = LightmapLevelView::of(world).expect("the PRL streams its lightmap");
     let read_counters = view.manifest.read_counters().clone();
     let cell_blocks = cell_block_ranges(
@@ -329,13 +245,20 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
     stage.set_lead_metres(levers.lead_metres);
     let lead = stage.lead();
     session.controller.set_lead(lead);
-    let mut mirror = PoolMirror::new(view.manifest, levers.cap_layers);
+    let mirror = PoolMirror::new(view.manifest, levers.cap_layers, modes.reads.retire_clock());
     let mut level = LevelStreaming::default();
     level.install_cell_demand(stage);
     level.install_lightmap(session);
+    let mut driver = FrameDriver::new(level, mirror, modes.reads, cell_blocks.clone());
 
     let mut report = RunReport {
-        layer_bytes: mirror.layer_bytes(),
+        layer_bytes: driver.mirror().layer_bytes(),
+        mandatory_set: mandatory_set_sizes(world, view.residency_set, &cell_blocks, lead),
+        record: RunRecord {
+            label: run_label(walk, levers, modes),
+            bake: bake.to_string(),
+            ..RunRecord::default()
+        },
         ..RunReport::default()
     };
     let started = Instant::now();
@@ -347,7 +270,7 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
     let spawn_cell = world.locate_cell(spawn_eye) as u32;
     let before = section_reads(&read_counters);
     {
-        let session = level.lightmap_mut().expect("installed");
+        let (session, mirror) = driver.session_and_mirror();
         session.update_camera_set(view.residency_set, spawn_cell);
         let summary = session
             .preload(&[], |batch| Ok(mirror.drain(batch)))
@@ -356,15 +279,15 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
         assert!(session.settled(), "spawn set resident after preload");
         report.preload_pairs = summary.reads.pairs;
         report.preload_millis = summary.elapsed.as_secs_f64() * 1000.0;
+        mirror.begin_play();
     }
     let after = section_reads(&read_counters);
     report.preload_bytes = (after.0 - before.0) + (after.1 - before.1);
-    mirror.begin_play();
 
-    let mut no_sh = None;
-    let mut scratch = Vec::new();
+    let mut scratch = postretro_visibility::PortalWalkScratch::new();
     let mut mandatory_now = Vec::new();
     let mut mandatory_prev = Vec::new();
+    let mut mandatory_cells_now = Vec::new();
     let mut previous_cell = spawn_cell;
     mandatory_blocks(
         view.residency_set,
@@ -373,8 +296,15 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
         lead,
         &mut mandatory_prev,
     );
+    mandatory_cells(
+        view.residency_set,
+        spawn_cell,
+        lead,
+        &mut mandatory_cells_now,
+    );
     let mut seconds = 0.0f64;
     let frame_budget = Duration::from_secs_f64(FRAME_SECONDS);
+    let projection = (modes.projection.hfov_degrees, modes.projection.aspect);
 
     for (step, &cell) in walk.cells.iter().enumerate() {
         let step_reads_before = section_reads(&read_counters);
@@ -382,9 +312,10 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
             let frame_started = Instant::now();
             let eye = eye_point(world, cell, &mut rng);
             let yaw = walk.travel_yaw[step] + frame as f32 * std::f32::consts::FRAC_PI_2;
+            let view_proj = view_projection(eye, yaw, modes.pitch, modes.projection);
             let (visibility, _) = determine_visible_cells(
                 eye,
-                view_projection(eye, yaw),
+                view_proj,
                 world,
                 &[],
                 false,
@@ -412,53 +343,29 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
                 for &block in &mandatory_now {
                     if mandatory_prev.binary_search(&block).is_err() {
                         report.entering_blocks += 1;
-                        report.entering_resident += u64::from(mirror.model().is_resident(block));
+                        report.entering_resident +=
+                            u64::from(driver.mirror().model().is_resident(block));
                     }
                 }
                 std::mem::swap(&mut mandatory_now, &mut mandatory_prev);
+                mandatory_cells(
+                    view.residency_set,
+                    camera_cell,
+                    lead,
+                    &mut mandatory_cells_now,
+                );
                 previous_cell = camera_cell;
             }
 
-            let cpu = StageFrame::<StreamingStage>::new(TimingGate::ON);
-            let delivered = level
-                .lightmap_mut()
-                .expect("installed")
-                .ledger()
-                .in_memory_bytes();
-            let part = Instant::now();
-            level
-                .prepare_drains(
-                    &mut no_sh,
-                    Some(view.residency_set),
-                    StreamingFrame {
-                        visible_cells: &visibility.visible_cells,
-                        camera_cell: Some(camera_cell as usize),
-                        path: visibility.stats.path,
-                        monotonic_seconds: seconds,
-                        settling: false,
-                        cpu: &cpu,
-                    },
-                )
-                .expect("prepare streaming drains");
-            let prepare_nanos = elapsed_nanos(part);
-            let session = level.lightmap_mut().expect("installed");
-            let mut apply_nanos = 0;
-            if let Some(batch) = session.take_drain_batch_for_renderer() {
-                let outcome = {
-                    let _scope = cpu.scope(StreamingStage::LightmapDrain);
-                    mirror.drain(batch)
-                };
-                let part = Instant::now();
-                let _scope = cpu.scope(StreamingStage::LightmapResidency);
-                session.apply_outcome(outcome).expect("apply outcome");
-                apply_nanos = elapsed_nanos(part);
-            }
-            let part = Instant::now();
-            {
-                let _scope = cpu.scope(StreamingStage::LightmapResidency);
-                session.finish_frame(None, seconds);
-            }
-            let finish_nanos = elapsed_nanos(part);
+            let outcome = driver.frame(
+                FrameInput {
+                    visible_cells: &visibility.visible_cells,
+                    camera_cell,
+                    path: visibility.stats.path,
+                    seconds,
+                },
+                view.residency_set,
+            );
             // Drawn blocks outside M(c, L) that are still not resident after
             // this frame's drain: the frame samples them SH-only.
             let mut outside_missing = 0u32;
@@ -467,31 +374,51 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
             {
                 for &drawn in cells {
                     for block in cell_blocks[drawn as usize].clone() {
+                        // After the swap above, `mandatory_prev` holds the
+                        // current camera cell's set.
                         if mandatory_prev.binary_search(&block).is_err()
-                            && !mirror.model().is_resident(block)
+                            && !driver.mirror().model().is_resident(block)
                         {
                             outside_missing += 1;
                         }
                     }
                 }
             }
-            let counters = session.controller.counters();
-            let (outside, not_resident) = (
-                counters.last_frame_drawn_outside_baked_set,
-                counters.last_frame_drawn_not_resident,
-            );
-            if step == 0 {
-                report.spawn.add(outside, not_resident, outside_missing);
-            } else if walk.teleport[step] {
-                report.teleport.add(outside, not_resident, outside_missing);
-            } else {
-                report.adjacent.add(outside, not_resident, outside_missing);
-                if cell_changed {
-                    report
-                        .adjacent_change_frames
-                        .add(outside, not_resident, outside_missing);
+            if let VisibleCells::Culled(cells) = &visibility.visible_cells {
+                for &drawn in cells {
+                    let blocks = cell_blocks[drawn as usize].len() as u32;
+                    if blocks > 0 && mandatory_cells_now.binary_search(&drawn).is_err() {
+                        report.outside_cells.add(blocks);
+                    }
                 }
             }
+            let (outside, not_resident) = (outcome.outside, outcome.not_resident);
+            if step == 0 {
+                report.spawn.add(outside, not_resident, outside_missing);
+                report
+                    .causes_spawn
+                    .add(outcome.deferred, outcome.left_behind);
+            } else {
+                report
+                    .causes_play
+                    .add(outcome.deferred, outcome.left_behind);
+                if walk.teleport[step] {
+                    report.teleport.add(outside, not_resident, outside_missing);
+                } else {
+                    report.adjacent.add(outside, not_resident, outside_missing);
+                    if cell_changed {
+                        report
+                            .adjacent_change_frames
+                            .add(outside, not_resident, outside_missing);
+                    }
+                }
+            }
+            report.record.frames.push(FrameRecord::of(
+                pose_fingerprint(step, cell, eye, yaw, modes.pitch, projection),
+                step == 0,
+                visibility.stats.path,
+                &outcome,
+            ));
             if outside > 0 && report.first_outside.len() < 8 {
                 report.first_outside.push((step, camera_cell, outside));
             }
@@ -500,40 +427,39 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
                     .first_not_resident
                     .push((step, camera_cell, not_resident));
             }
-            let nanos = cpu.value(StreamingStage::LightmapResidency).unwrap_or(0);
             if cell_changed {
-                report.residency_nanos_change.push(nanos);
+                report.residency_nanos_change.push(outcome.residency_nanos);
             } else {
-                report.residency_nanos_steady.push(nanos);
-                if delivered > 0 {
-                    report.prepare_with_completions.push(prepare_nanos);
-                    report.max_admitted_bytes = report.max_admitted_bytes.max(delivered);
+                report.residency_nanos_steady.push(outcome.residency_nanos);
+                if outcome.delivered > 0 {
+                    report.prepare_with_completions.push(outcome.prepare_nanos);
+                    report.max_admitted_bytes = report.max_admitted_bytes.max(outcome.delivered);
                 } else {
-                    report.prepare_without_completions.push(prepare_nanos);
-                }
-                for (parts, value) in
                     report
-                        .steady_parts
-                        .iter_mut()
-                        .zip([prepare_nanos, apply_nanos, finish_nanos])
-                {
+                        .prepare_without_completions
+                        .push(outcome.prepare_nanos);
+                }
+                for (parts, value) in report.steady_parts.iter_mut().zip([
+                    outcome.prepare_nanos,
+                    outcome.apply_nanos,
+                    outcome.finish_nanos,
+                ]) {
                     parts.push(value);
                 }
             }
             report.frames += 1;
             seconds += FRAME_SECONDS;
             if let VisibleCells::Culled(cells) = visibility.visible_cells {
-                scratch = cells;
+                scratch.recycle_cells(cells);
             }
-            if session.controller.permits_in_use() > 0 {
+            if modes.reads == ReadsMode::RealTime && driver.permits_in_use() > 0 {
                 report.paced_frames += 1;
                 if let Some(rest) = frame_budget.checked_sub(frame_started.elapsed()) {
                     std::thread::sleep(rest);
                 }
             }
         }
-        let session = level.lightmap_mut().expect("installed");
-        let bytes = session.controller.residency_bytes();
+        let bytes = driver.session().controller.residency_bytes();
         report.step_bytes.push([
             bytes.resident_lightmap_bytes,
             bytes.resident_shadowmask_bytes,
@@ -546,227 +472,13 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
             .push((after.0 - step_reads_before.0, after.1 - step_reads_before.1));
     }
 
-    let session = level.lightmap_mut().expect("installed");
-    report.counters = Some(session.controller.counters());
-    report.physical_reads = session.ledger().physical_reads();
+    report.record.locate_mismatches = report.locate_mismatch_frames;
+    let (counters, physical_reads, mirror) = driver.finish();
+    report.counters = Some(counters);
+    report.physical_reads = physical_reads;
     report.wall = started.elapsed();
     report.pool = mirror.stats.clone();
-    level.retire(&mut no_sh);
-    drop(level);
     report
-}
-
-fn elapsed_nanos(since: Instant) -> u64 {
-    u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX)
-}
-
-fn max_and_p95(mut values: Vec<u64>) -> (u64, u64) {
-    if values.is_empty() {
-        return (0, 0);
-    }
-    values.sort_unstable();
-    let p95 = values[((values.len() as f64 * 0.95).ceil() as usize).clamp(1, values.len()) - 1];
-    (*values.last().expect("non-empty"), p95)
-}
-
-fn mib(bytes: u64) -> f64 {
-    bytes as f64 / MIB
-}
-
-fn micros_line(label: &str, nanos: &[u64]) -> String {
-    if nanos.is_empty() {
-        return format!("{label}: no frames");
-    }
-    let mut sorted = nanos.to_vec();
-    sorted.sort_unstable();
-    let at = |q: f64| {
-        sorted[((sorted.len() as f64 * q).ceil() as usize).clamp(1, sorted.len()) - 1] as f64
-            / 1000.0
-    };
-    let mean = sorted.iter().sum::<u64>() as f64 / sorted.len() as f64 / 1000.0;
-    format!(
-        "{label}: {} frames, mean {mean:.1} us, p50 {:.1}, p95 {:.1}, p99 {:.1}, max {:.1} us",
-        sorted.len(),
-        at(0.5),
-        at(0.95),
-        at(0.99),
-        at(1.0),
-    )
-}
-
-fn print_run(walk: &Walk, levers: Levers, report: &RunReport) {
-    let steps = report.step_bytes.len().max(1) as u64;
-    let column = |i: usize| report.step_bytes.iter().map(|b| b[i]).collect::<Vec<_>>();
-    let total = |a: usize, b: usize| {
-        report
-            .step_bytes
-            .iter()
-            .map(|v| v[a] + v[b])
-            .collect::<Vec<_>>()
-    };
-    let (res_max, res_p95) = max_and_p95(total(0, 1));
-    let (res22_max, res22_p95) = max_and_p95(column(0));
-    let (res42_max, res42_p95) = max_and_p95(column(1));
-    let (man_max, man_p95) = max_and_p95(total(2, 3));
-    let (man22_max, man22_p95) = max_and_p95(column(2));
-    let (man42_max, man42_p95) = max_and_p95(column(3));
-    let reads22: u64 = report.step_reads.iter().map(|r| r.0).sum();
-    let reads42: u64 = report.step_reads.iter().map(|r| r.1).sum();
-    let (step_read_max, step_read_p95) =
-        max_and_p95(report.step_reads.iter().map(|r| r.0 + r.1).collect());
-    let pool = &report.pool;
-    let c = report.counters.unwrap_or_default();
-    let (drain_bytes_max, drain_bytes_p95) = max_and_p95(pool.drain_install_bytes.clone());
-    println!(
-        "== {} | L = {} m | cap {} | {} steps, {} teleports, {} frames ({} paced), wall {:.1} s",
-        walk.kind.label(),
-        levers.lead_metres,
-        levers.cap_layers,
-        report.step_bytes.len(),
-        walk.teleports(),
-        report.frames,
-        report.paced_frames,
-        report.wall.as_secs_f64(),
-    );
-    println!(
-        "   settled-entry preload: {} pairs, {:.1} MiB read, {:.1} MiB uploaded in one drain, {:.1} ms \
-         (positional reads + model plan)",
-        report.preload_pairs,
-        mib(report.preload_bytes),
-        mib(pool.preload_install_bytes),
-        report.preload_millis,
-    );
-    println!(
-        "   resident MiB max / p95: total {:.1} / {:.1} (id 22 {:.1} / {:.1}, id 42 {:.1} / {:.1})",
-        mib(res_max),
-        mib(res_p95),
-        mib(res22_max),
-        mib(res22_p95),
-        mib(res42_max),
-        mib(res42_p95),
-    );
-    println!(
-        "   mandatory MiB max / p95: total {:.1} / {:.1} (id 22 {:.1} / {:.1}, id 42 {:.1} / {:.1})",
-        mib(man_max),
-        mib(man_p95),
-        mib(man22_max),
-        mib(man22_p95),
-        mib(man42_max),
-        mib(man42_p95),
-    );
-    println!(
-        "   pool: first {} layers, peak {} layers ({} occupied), layer {:.1} MiB; peak held \
-         {:.1} MiB (spare and retiring included); growths {}, growth transient peak {:.1} MiB; \
-         repacks {} ({:.2}% of steps, {} copies); deferred {}; evictions {}; refusals {}; \
-         failed {}",
-        pool.first_layers,
-        pool.peak_layers,
-        pool.peak_occupied_layers,
-        mib(report.layer_bytes),
-        mib(pool.peak_pool_bytes),
-        pool.growths,
-        mib(pool.growth_transient_peak_bytes),
-        pool.repacks,
-        pool.repacks as f64 * 100.0 / steps as f64,
-        pool.repack_copies,
-        pool.deferred,
-        pool.evictions,
-        pool.refusals,
-        pool.failed,
-    );
-    println!(
-        "   reads (after spawn): id 22 {:.1} MiB, id 42 {:.1} MiB; per step mean {:.2} MiB, \
-         p95 {:.2}, max {:.2}; {} pairs requested, {} physical reads; installs {} ({:.1} MiB \
-         uploaded over {} submitted drains, per drain p95 {:.2} MiB, max {:.2} MiB); \
-         cancelled {}, departed {}, failed reads {}",
-        mib(reads22),
-        mib(reads42),
-        mib(reads22 + reads42) / steps as f64,
-        mib(step_read_p95),
-        mib(step_read_max),
-        c.reads_requested,
-        report.physical_reads,
-        pool.uploads,
-        mib(pool.install_bytes),
-        pool.submissions,
-        mib(drain_bytes_p95),
-        mib(drain_bytes_max),
-        c.cancelled_reads,
-        c.departed_reads,
-        c.failed_reads,
-    );
-    println!(
-        "   hit rate: {} of {} blocks joining M(c, L) already resident ({:.1}%)",
-        report.entering_resident,
-        report.entering_blocks,
-        report.entering_resident as f64 * 100.0 / report.entering_blocks.max(1) as f64,
-    );
-    println!("   misses, spawn step: {}", report.spawn.line());
-    println!("   misses, adjacent steps: {}", report.adjacent.line());
-    println!(
-        "   misses, adjacent steps, cell-change frames only: {}",
-        report.adjacent_change_frames.line()
-    );
-    println!("   misses, teleport steps: {}", report.teleport.line());
-    if !report.first_outside.is_empty() {
-        println!(
-            "   first outside-baked-set frames (step, camera cell, blocks): {:?}",
-            report.first_outside
-        );
-    }
-    if !report.first_not_resident.is_empty() {
-        println!(
-            "   first not-resident frames (step, camera cell, blocks): {:?}",
-            report.first_not_resident
-        );
-    }
-    println!(
-        "   visibility paths: portal {}, step-limit {}, other {}; eye-locate mismatches {}",
-        report.path_portal,
-        report.path_step_limit,
-        report.path_other,
-        report.locate_mismatch_frames,
-    );
-    println!(
-        "   cpu {}",
-        micros_line(
-            "lightmap_residency, camera-cell change",
-            &report.residency_nanos_change
-        )
-    );
-    println!(
-        "   cpu {}",
-        micros_line("lightmap_residency, steady", &report.residency_nanos_steady)
-    );
-    for (label, parts) in [
-        "steady part prepare_drains",
-        "steady part apply_outcome",
-        "steady part finish_frame",
-    ]
-    .into_iter()
-    .zip(&report.steady_parts)
-    {
-        println!("   wall {}", micros_line(label, parts));
-    }
-    println!(
-        "   wall {}",
-        micros_line(
-            "steady prepare_drains, frames admitting completions",
-            &report.prepare_with_completions
-        )
-    );
-    println!(
-        "   wall {} (most admitted in one frame {:.2} MiB)",
-        micros_line(
-            "steady prepare_drains, frames admitting none",
-            &report.prepare_without_completions
-        ),
-        mib(report.max_admitted_bytes),
-    );
-    println!(
-        "   cpu {}",
-        micros_line("pool model plan per submitted drain", &pool.plan_nanos)
-    );
 }
 
 #[test]
@@ -778,22 +490,29 @@ fn lightmap_residency_walks_from_prl() {
         .map(|s| s.parse::<usize>().expect("steps"))
         .unwrap_or(DEFAULT_STEPS);
     let runs = std::env::var(RUNS_ENV).unwrap_or_else(|_| "all".to_string());
+    let modes = WalkModes::from_env();
+    let recorded = modes.record_in.as_deref().map(|record| {
+        let runs = trip_record::read_records(record).unwrap_or_else(|why| panic!("{why}"));
+        (record, runs)
+    });
 
     let load_started = Instant::now();
     let world = postretro_level_loader::load_prl(&path).expect("load PRL");
+    let bake = bake_identity(&path, &world);
     println!(
-        "PRL: {path}\nloaded in {:.1} s",
+        "PRL: {path}\nloaded in {:.1} s\nbake read: {bake}",
         load_started.elapsed().as_secs_f64()
     );
     let view = LightmapLevelView::of(&world)
         .expect("the PRL must stream its lightmap: id 51, portals, POSTRETRO_LIGHTMAP_STREAMING");
     println!(
         "{} blocks, {} cells, max lead {:.1} m; steps {steps}, {RUN_SPEED} m/s at 60 Hz, \
-         dwell capped at {MAX_DWELL_FRAMES} frames, 4 headings 90 deg apart, HFOV \
-         {HFOV_DEGREES} deg at 16:9, seed {WALK_SEED:#x}",
+         dwell capped at {MAX_DWELL_FRAMES} frames, 4 headings 90 deg apart, {}, seed \
+         {WALK_SEED:#x}",
         view.manifest.block_count(),
         world.cells.len(),
         view.residency_set.max_lead as f32 / LEAD_UNITS_PER_METRE as f32,
+        modes.label(),
     );
 
     let default = Levers {
@@ -815,6 +534,7 @@ fn lightmap_residency_walks_from_prl() {
             });
         }
     }
+    let mut records = Vec::new();
     for kind in WalkKind::ALL {
         let walk = Walk::build(&world, kind, steps);
         println!(
@@ -826,13 +546,46 @@ fn lightmap_residency_walks_from_prl() {
             walk.frames() as f64 * FRAME_SECONDS,
         );
         for &levers in &configs {
-            let report = run(&world, &walk, levers);
+            let report = run(&world, &walk, levers, &modes, &bake);
             print_run(&walk, levers, &report);
+            let own = &report.record;
+            print_split("its own trip record", &trip_record::split(own, own), false);
+            if let Some((file, runs)) = &recorded {
+                let pair = runs
+                    .iter()
+                    .find(|run| run.label == own.label)
+                    .ok_or_else(|| format!("{file} holds no run labelled {:?}", own.label))
+                    .and_then(|run| {
+                        println!("   recorded run read: {}", run.bake);
+                        // Only a real id-51 hash both runs share proves the
+                        // same bake; two `id51=none` runs prove nothing.
+                        let id51 = bake_token(&run.bake, "id51").filter(|id| *id != "none");
+                        if id51.is_some()
+                            && id51 == bake_token(&own.bake, "id51")
+                            && bake_token(&run.bake, "walk_epoch")
+                                != bake_token(&own.bake, "walk_epoch")
+                        {
+                            return Err(
+                                "this build's walk epoch differs from the recorded run's but \
+                                 both read the same id 51: a rect run on a pre-bump bake is \
+                                 invalid (O14)"
+                                    .to_string(),
+                            );
+                        }
+                        trip_record::split(run, own)
+                    });
+                print_split(&format!("{file}'s trip record"), &pair, true);
+            }
+            records.push(report.record);
         }
+    }
+    if let Some(file) = &modes.record_out {
+        trip_record::write_records(file, &records).expect("write the trip record");
+        println!("\ntrip record written: {file} ({} runs)", records.len());
     }
 }
 
-/// AC 24, CPU half: level load time under the process's
+/// CPU half of the install-timing check: level load time under the process's
 /// `POSTRETRO_LIGHTMAP_STREAMING` mode, then (streaming only) a synchronous
 /// preload at `POSTRETRO_LIGHTMAP_WALK_SPAWN` = `x,y,z`, approximating a
 /// settled entry: positional reads plus the pool model's plan. GPU upload is
@@ -887,8 +640,11 @@ fn lightmap_install_timing_from_prl() {
         let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
         let mut session =
             LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
-        let mut mirror =
-            PoolMirror::new(view.manifest, session.controller.levers().pool_cap_layers());
+        let mut mirror = PoolMirror::new(
+            view.manifest,
+            session.controller.levers().pool_cap_layers(),
+            RetireClock::Drains,
+        );
         let camera_cell = world.locate_cell(spawn_eye) as u32;
         let preload_started = Instant::now();
         session.update_camera_set(view.residency_set, camera_cell);
@@ -906,23 +662,4 @@ fn lightmap_install_timing_from_prl() {
             mirror.model().layers(),
         );
     }
-}
-
-#[test]
-fn mandatory_blocks_include_every_block_of_a_multi_block_cell() {
-    use crate::lightmap_streaming::test_fixtures::{M, residency_set};
-
-    // Cell 0 owns blocks 0 and 1, cell 1 owns block 2, cell 2 owns none.
-    let cell_blocks = cell_block_ranges([0, 0, 1], 3);
-    assert_eq!(cell_blocks, [0..2, 2..3, 0..0]);
-
-    // Camera 1 reaches cell 1 at 0 m, cell 0 at 8 m and cell 2 at 20 m.
-    let set = residency_set(3, &[(1, 1, 0), (1, 0, 8), (1, 2, 20)], 32);
-    let mut blocks = Vec::new();
-    mandatory_blocks(&set, &cell_blocks, 1, 0, &mut blocks);
-    assert_eq!(blocks, [2]);
-    mandatory_blocks(&set, &cell_blocks, 1, 8 * M, &mut blocks);
-    assert_eq!(blocks, [0, 1, 2], "cell 0 brings both of its blocks");
-    mandatory_blocks(&set, &cell_blocks, 1, 32 * M, &mut blocks);
-    assert_eq!(blocks, [0, 1, 2], "a chartless cell adds none");
 }

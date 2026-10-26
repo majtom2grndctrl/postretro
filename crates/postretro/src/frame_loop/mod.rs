@@ -1701,7 +1701,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         rebuild_blocked_portals(&mut app.blocked_portals, app.level.as_ref(), &registry);
     }
 
-    // Portal DFS → cell IDs → renderer inputs. This stays after
+    // Portal walk → cell IDs → renderer inputs. This stays after
     // game and audio work; the shared preparation seam also feeds
     // VM-free capture without changing frame order.
     let visible_render = match app.level.as_ref() {
@@ -1711,7 +1711,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             view_proj,
             &app.blocked_portals,
             capture_portal_walk,
-            &mut app.scratch_cells,
+            &mut app.portal_walk_scratch,
             app.cpu_timer.gate(),
         ),
         None => render_preparation::VisibleRenderPreparation::empty_world(),
@@ -2549,6 +2549,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             &session.modal_stack,
             &mut session.presentation_cells,
             &script_ctx.slot_table.borrow(),
+            session.net_endpoint.as_ref(),
             app.script_time,
             session.ui_input_mode,
             app.ui_focused_id.clone(),
@@ -2693,11 +2694,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FrameTail);
+    if reveal_frame {
+        // The frame's lightmap drain has counted its visible misses.
+        app.log_settle_summary();
+    }
     app.poll_staged_manifest_results();
 
-    if let VisibleCells::Culled(mut cells) = visible_cells {
-        cells.clear();
-        app.scratch_cells = cells;
+    if let VisibleCells::Culled(cells) = visible_cells {
+        app.portal_walk_scratch.recycle_cells(cells);
     }
 
     let pos = render_eye_position;

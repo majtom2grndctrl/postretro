@@ -247,3 +247,21 @@ fn cache_key_ignores_face_ranges() {
         "face ranges must not reach the bake either",
     );
 }
+
+/// The L-corridor fixture's id-51 cache key on the last build before the
+/// bounded-region walk (`PORTAL_WALK_EPOCH` 1).
+const PRE_REGION_WALK_CACHE_KEY: &str =
+    "f20c4934693e2d31d8faeeb4d9e763087579899a051266a996669a038fdc6c16";
+
+#[test]
+fn cache_key_differs_from_pre_region_walk_key_and_pins_sampling_projection() {
+    // The region walk's epoch moves the key; the sampling projection and stage
+    // version keep their pre-change values.
+    let (cells, portals, locator) = l_corridor_sections();
+    let key = cell_residency_set_cache_key(&cells, &portals, &locator, &Default::default(), None)
+        .as_filename();
+    assert_ne!(key, PRE_REGION_WALK_CACHE_KEY);
+    assert_eq!(super::pvs_sampling::CUBE_FACE_FOV_DEGREES, 94.0);
+    assert_eq!(super::pvs_sampling::LATTICE_FRACTIONS, [0.1, 0.5, 0.9]);
+    assert_eq!(super::CELL_RESIDENCY_SET_STAGE_VERSION, 3);
+}

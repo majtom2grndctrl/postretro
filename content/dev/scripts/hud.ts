@@ -174,6 +174,21 @@ const cellBar = Bar({
   },
 });
 
+// A heat weapon fills on shots and cools toward empty between them.
+const heatBar = Bar({
+  bind: bindState(player.heat),
+  max: player.overheatAt,
+  width: 160.0,
+  height: 12.0,
+  visibleWhen: stateEquals(player.weaponResource, "heat"),
+  fill: color.warning,
+  background: color.hud.health.background,
+  styleRanges: {
+    max: 1.0,
+    entries: [{ upTo: 0.75, color: color.warning }, { color: color.critical }],
+  },
+});
+
 const chargeMeter = VStack(
   {
     gap: spacing.hud.rowGap,
@@ -222,6 +237,7 @@ export const ammoReadout = defineUiTree({
           [ammo, ammoReserve],
         ),
         cellBar,
+        heatBar,
         chargeMeter,
       ],
     ),

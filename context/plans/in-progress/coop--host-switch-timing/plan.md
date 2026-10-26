@@ -7,7 +7,7 @@ read at: a363ea550 (source identical to b88a31f91)
 ## Execution checkpoint
 
 - Owner released the performance-run hold and freed disk with cargo clean on 2026-10-25. Continue in this isolated worktree; no original-checkout branch switch was needed or authorized.
-- Core timing integration and task6 focused acceptance coverage are implemented. Review-readiness fmt/check/focused tests pass; required review-panel/fixes and final preflight remain. Review started; see review.md for partial coverage. No landing request or feature-branch push.
+- Core timing integration and expanded focused tests are implemented. Readiness passed. Independent panel is complete and requests changes: two runtime defects, four acceptance-proof gaps and one stale comment. See review.md; fixes and final preflight remain. No landing request or feature-branch push.
 - User requires pausing before a new step when either five-hour or weekly usage remaining reaches 5%. Query live usage before each new workflow task/review dispatch. Do not spend reset credits. Previous window paused at 4% remaining after all active checks finished. Owner resumed in a fresh window; initial check: 100% five-hour and 78% weekly remaining.
 - Claim `a363ea550` is on main; feature branch `codex/coop-host-switch-timing`; original checkout's unrelated work remains untouched.
 - Build path `/Users/dhiester/.codex/worktrees/coop-host-switch-timing/postretro/target`, `CARGO_INCREMENTAL=0`, dev profile and dev-tools features. Space is now approximately 62 GiB; recheck after each task. Never share another checkout's target.
@@ -16,8 +16,25 @@ read at: a363ea550 (source identical to b88a31f91)
 
 - Paused new work at live5% five-hour remaining (weekly63%). No reset credits used. Root let only active review steps wrap and persist partial findings.
 - Acceptance milestone05dd08f39 contains all expanded scenarios and current plan. Composed switch45/45 and netcode switch42/42 pass. Earlier sim105+reload3 and wire13 pass; readiness fmt/touched-crate check pass. No full workspace suite or preflight run.
-- Review is INCOMPLETE. See review.md for partitioning, completed coverage, findings and next lenses. Do not treat passing tests or partial review as approval. No findings fixed yet.
+- Historical cutoff: review was incomplete; resumed2026-10-26 and all mandatory lenses/seam now completed. See review.md for findings. Do not treat passing tests or partial review as approval. No findings fixed yet.
 - Resume with live usage query; finish panel, invoke fix-review-findings, focused retest, then final preflight once. ManualAC31 still blocks landing; no feature push/PR/landing request.
+
+## Review-fix checkpoint — 2026-10-26
+
+- Fresh-window initial usage100%remaining in both allowances; independent panel completed without reset credits. All four slices and seam reviewed; request changes, no approval.
+- Runtime fixes: same-slot resync must preserve active charge/burst; held refused reload across trim must not become a fresh reload on incoming weapon. Findings1–2 in review.md.
+- Proof repairs: death must repoint exactly125; first rejoined switch exactly306 with pre-repoint lower; overdue late retarget must catch up in its application resolution; disconnect must close old transport and admit a replacement. Findings3–6.
+- Comment drift: legacy command-queue resolver documentation must name timed production resolver.
+- fix-review-findings started with bounded Sol/high same-slot resync worker; no Cargo by workers. Root must inspect edits and run focused regression before claiming fixed. Held-reload and all proof/drift fixes still pending.
+- Manual runbook prepared in manual-test.md. AC31 still outstanding; no manual run, final preflight, feature push or landing request.
+
+## Usage-cutoff checkpoint — 2026-10-26
+
+- Paused new steps at live5%five-hour remaining (weekly85%). No reset credits. Independent panel is COMPLETE; review.md lists two runtime defects, four proof repairs and one comment fix.
+- Same-slot fix worker completed UNVERIFIED edits in host_switch_timing.rs and conditioned_tests/switch_order.rs: split idempotent current-slot acceptance, preserve active charge/burst, add same_slot_resync_preserves_active_charge_and_burst. No Cargo, formatting or tests run after these edits; root has not inspected the diff. Source edits remain uncommitted intentionally.
+- Resume: check live usage, inspect worker diff, then run the exact focused postretro test filter same_slot_resync_preserves_active_charge_and_burst with dev-tools. Continue fix-review-findings for held reload, four proof gaps and drift. Full suite/preflight still NOT run; run once after fixes/focused proof pass.
+- Last passing baseline: composed45/netcode42 (before resync fix); earlier sim105+reload3/wire13. Do not claim new regression passes.
+- Manual-test.md contains owner runbook; AC31 outstanding and blocks landing. No feature push/PR/landing request.
 
 ## Corrections
 

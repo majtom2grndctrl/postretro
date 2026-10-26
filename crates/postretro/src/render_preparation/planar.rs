@@ -65,8 +65,9 @@ pub(crate) struct PlanarRenderPreparation {
     #[cfg(test)]
     step_cap: Option<u32>,
     /// Whether the mirror's walk and cull are cropped to the selected plane:
-    /// always, except where a test or the crop-parity capture turns it off.
-    #[cfg(any(test, feature = "capture"))]
+    /// always, except where a test, the crop-parity capture or the
+    /// diagnostics panel turns it off.
+    #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
     crop: bool,
 }
 
@@ -90,7 +91,7 @@ impl Default for PlanarRenderPreparation {
             previous_diagnostic: None,
             #[cfg(test)]
             step_cap: None,
-            #[cfg(any(test, feature = "capture"))]
+            #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
             crop: true,
         }
     }
@@ -110,7 +111,7 @@ impl PlanarRenderPreparation {
                 reflecting_volumes,
                 world.reflection_probes.as_ref(),
             ),
-            #[cfg(any(test, feature = "capture"))]
+            #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
             crop: self.crop,
             ..Self::default()
         };
@@ -338,26 +339,26 @@ impl PlanarRenderPreparation {
     }
 
     fn crop_enabled(&self) -> bool {
-        #[cfg(any(test, feature = "capture"))]
+        #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
         {
             self.crop
         }
-        #[cfg(not(any(test, feature = "capture")))]
+        #[cfg(not(any(test, feature = "capture", feature = "dev-tools")))]
         {
             true
         }
     }
 
-    /// Turn the crop off, or back on, for the crop-parity capture row: the
-    /// mirror then walks and culls its whole frustum. On by default.
-    #[cfg(any(test, feature = "capture"))]
-    #[cfg_attr(not(test), allow(dead_code, reason = "capture's controls wire it"))]
+    /// Turn the crop off, or back on, for the crop-parity capture row and
+    /// the diagnostics panel's crop switch: the mirror then walks and culls
+    /// its whole frustum. On by default.
+    #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
     pub(crate) fn set_crop(&mut self, on: bool) {
         self.crop = on;
     }
 
     /// The selected plane this frame drew, if any.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn plane(
         &self,
     ) -> Option<&postretro_render_cpu::planar_reflection::PlanarCandidate> {
@@ -385,9 +386,21 @@ impl PlanarRenderPreparation {
     }
 
     /// How this frame's mirror visibility formed; `None` with no mirror.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn path(&self) -> Option<MirrorVisibilityPath> {
         self.camera.map(|_| self.mirror.path)
+    }
+
+    /// Cells the frame draws only for the mirror: its reach less the main
+    /// view's visible set. Zero with no mirror or a main view drawing all.
+    #[cfg(feature = "capture")]
+    pub(crate) fn mirror_only_cells(&self, main: &VisibleCells) -> usize {
+        match (self.drawn_cells(main), main) {
+            (VisibleCells::Culled(drawn), VisibleCells::Culled(main)) => {
+                drawn.len().saturating_sub(main.len())
+            }
+            _ => 0,
+        }
     }
 
     /// Force this frame's mirror walk to trip after `step_cap` portal tests.
@@ -523,6 +536,10 @@ fn union_cells(main: &VisibleCells, extra: &[u32], out: &mut VisibleCells) {
 #[cfg(test)]
 #[path = "planar_test_fixtures.rs"]
 pub(crate) mod test_fixtures;
+
+#[cfg(test)]
+#[path = "planar_gate_tests.rs"]
+mod gate_tests;
 
 #[cfg(test)]
 #[path = "planar_tests.rs"]

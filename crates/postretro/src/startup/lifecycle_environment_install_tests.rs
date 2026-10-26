@@ -1357,9 +1357,9 @@ fn level_with_reflecting_pool() -> LevelWorld {
     world
 }
 
-// Rewrite of the spike's candidate test: planar candidates follow the local
-// fluid's reflectivity and probe binding at level install, and a fluid
-// refresh re-installs them, dropping a plane whose fluid stopped reflecting.
+// Planar candidates follow the local fluid's reflectivity and probe binding
+// at level install, and a fluid refresh re-installs them, dropping a plane
+// whose fluid stopped reflecting.
 #[test]
 fn planar_candidates_install_and_refresh_with_local_fluid_reflectivity_and_probe_binding() {
     let mut app = test_app();

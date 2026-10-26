@@ -76,6 +76,7 @@ pub(super) fn measurement_report(
         renderer_accounted_sh: sh_residency.map(ShResidencyReportJson::from),
         renderer_accounted_lightmap: lightmap_residency.map(LightmapResidencyReportJson::from),
         lightmap_streaming: None,
+        planar_reflection: None,
         cpu_completion: CpuCompletionReport {
             unit: "milliseconds".into(),
             strategy: CPU_COMPLETION_STRATEGY.into(),
@@ -97,6 +98,16 @@ pub(super) fn measurement_report(
 impl MeasurementReport {
     pub(super) fn with_lightmap_streaming(mut self, residency: CaptureLightmapResidency) -> Self {
         self.lightmap_streaming = Some(LightmapStreamingReportJson::from(residency));
+        self
+    }
+
+    /// Attach the planar block; `None` (below very high) leaves the report
+    /// as it was without planar.
+    pub(super) fn with_planar_reflection(
+        mut self,
+        planar: Option<super::planar::CapturePlanarReport>,
+    ) -> Self {
+        self.planar_reflection = planar;
         self
     }
 }
@@ -177,6 +188,9 @@ pub(super) struct MeasurementReport {
     /// How the capture owned its lightmap blocks and how many were resident.
     #[serde(skip_serializing_if = "Option::is_none")]
     lightmap_streaming: Option<LightmapStreamingReportJson>,
+    /// The planar mirror the capture ran: present at very high and ultra.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planar_reflection: Option<super::planar::CapturePlanarReport>,
     cpu_completion: CpuCompletionReport,
     gpu_timing: GpuTimingReport,
     /// Renderer recording stages over complete post-warmup windows. Capture
@@ -740,6 +754,7 @@ mod tests {
             reflection_quality: None,
             reflection_style: None,
             reflection_march: None,
+            planar_reflection: None,
             ghost_styles: None,
             ghost_transparency: None,
             measurement: Some(CaptureMeasurement {

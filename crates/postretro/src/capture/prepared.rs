@@ -36,9 +36,10 @@ use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use super::lightmap::{
     CaptureLightmapResidency, preload_capture_lightmap, validate_lightmap_overrides,
 };
+use super::planar::{CapturePlanar, CapturePlanarReport};
 use super::scene::CaptureScene;
 use super::setup::{
-    capture_level_geometry, capture_static_lights_and_shadow_selection, capture_view_projection,
+    capture_camera, capture_level_geometry, capture_static_lights_and_shadow_selection,
     derive_texture_materials, install_capture_animated_promotion_bridge,
     install_forced_active_animation_descriptors,
     resolve_forced_animated_promotion_rows_from_metadata,
@@ -82,6 +83,8 @@ pub(super) struct PreparedCapture {
     renderer: Renderer,
     sh_streaming: Option<ShStreamingSession>,
     visible_render: VisibleRenderPreparation,
+    /// The planar mirror at the scene's tier; inert below very high.
+    planar: CapturePlanar,
     view_proj: Mat4,
     eye: Vec3,
     forced_promotion_weights: Vec<(usize, f32)>,
@@ -174,10 +177,11 @@ impl PreparedCapture {
             scene.force_promotion.as_deref(),
         )?;
 
-        let eye = Vec3::from_array(scene.camera.position);
-        let view_proj = capture_view_projection(&scene.camera, width, height);
+        let camera = capture_camera(&scene.camera, width, height);
+        let eye = camera.eye_position;
+        let view_proj = camera.view_projection;
         let mut scratch = postretro_visibility::PortalWalkScratch::new();
-        let visible_render = VisibleRenderPreparation::for_level(
+        let mut visible_render = VisibleRenderPreparation::for_level(
             &world,
             eye,
             view_proj,
@@ -186,6 +190,10 @@ impl PreparedCapture {
             &mut scratch,
             postretro_visibility::TimingGate::OFF,
         );
+        // O1: the mirror step after the camera walk, before any consumer
+        // reads visibility, and before the first frame (the preloads below).
+        let planar =
+            CapturePlanar::prepare(&world, &mut renderer, scene, &camera, &mut visible_render);
         // The level's id 49, decoded once for SH and lightmaps.
         let hints = decode_level_hints(world.cluster_directory())
             .context("[Capture] id-49 cluster hints")?;
@@ -193,6 +201,7 @@ impl PreparedCapture {
             &world,
             &mut renderer,
             &visible_render,
+            planar.drawn_cells(&visible_render.visible_cells),
             scene,
             hints.as_deref(),
         )?;
@@ -241,10 +250,14 @@ impl PreparedCapture {
         }
         let mut ghost_collector = GhostRenderCollector::new();
         let mut mover_ghost_collector = MoverGhostRenderCollector::new();
-        collect_capture_receiver_draws(
+        collect_capture_receiver_draws_with_mirror(
             &registry,
             &world,
-            &visible_render.visible_cells,
+            CaptureCullViews {
+                main: &visible_render.visible_cells,
+                drawn: planar.drawn_cells(&visible_render.visible_cells),
+                mirror: planar.mirror_cells(),
+            },
             eye,
             &mut mover_collector,
             &mut mesh_collector,
@@ -287,6 +300,7 @@ impl PreparedCapture {
             renderer,
             sh_streaming,
             visible_render,
+            planar,
             view_proj,
             eye,
             forced_promotion_weights,
@@ -317,12 +331,17 @@ impl PreparedCapture {
                 set,
                 self.visible_render.stats.camera_cell,
                 self.visible_render.stats.path,
-                &self.visible_render.visible_cells,
+                self.planar.drawn_cells(&self.visible_render.visible_cells),
             )
         });
         // Like Settling, the preload presents nothing: it counts no miss.
         streaming.suspend_visible_misses(true);
-        streaming.update_targets(&self.visible_render.visible_cells, reach, 0.0)?;
+        streaming.update_targets(
+            self.planar
+                .sh_visible_cells(&self.visible_render.visible_cells),
+            reach,
+            0.0,
+        )?;
         for _ in 0..max_frames {
             if self
                 .sh_streaming
@@ -378,8 +397,10 @@ impl PreparedCapture {
             &self.visible_render.reachable_cell_aabbs,
             &self.visible_render.fog_reachable,
             postretro_renderer::ShSampleRegionSets {
-                visible_cells: &self.visible_render.visible_cells,
-                fog_cells: &self.visible_render.fog_reachable,
+                visible_cells: self.planar.drawn_cells(&self.visible_render.visible_cells),
+                fog_cells: self
+                    .planar
+                    .sample_fog_cells(&self.visible_render.fog_reachable),
                 movers: &self.mover_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),
@@ -437,8 +458,10 @@ impl PreparedCapture {
             &self.visible_render.reachable_cell_aabbs,
             &self.visible_render.fog_reachable,
             postretro_renderer::ShSampleRegionSets {
-                visible_cells: &self.visible_render.visible_cells,
-                fog_cells: &self.visible_render.fog_reachable,
+                visible_cells: self.planar.drawn_cells(&self.visible_render.visible_cells),
+                fog_cells: self
+                    .planar
+                    .sample_fog_cells(&self.visible_render.fog_reachable),
                 movers: &self.mover_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),
@@ -501,6 +524,11 @@ impl PreparedCapture {
 
     pub(super) const fn resolution(&self) -> [u32; 2] {
         self.resolution
+    }
+
+    /// The report's planar block; `None` below very high.
+    pub(super) fn planar_report(&self) -> Option<CapturePlanarReport> {
+        self.planar.report(&self.visible_render.visible_cells)
     }
 }
 
@@ -600,6 +628,7 @@ pub(super) fn capture_mesh_models(registry: &EntityRegistry) -> Result<Vec<Strin
 /// rest and present each link's style from the scene's own table, or the floor
 /// style without one (capture loads no manifest), never through the flash
 /// clamp.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_capture_receiver_draws(
     registry: &EntityRegistry,
@@ -612,14 +641,56 @@ pub(super) fn collect_capture_receiver_draws(
     ghost_collector: &mut GhostRenderCollector,
     mover_ghost_collector: &mut MoverGhostRenderCollector,
 ) {
-    mover_collector.collect(registry, world, visible_cells, 1.0);
+    collect_capture_receiver_draws_with_mirror(
+        registry,
+        world,
+        CaptureCullViews {
+            main: visible_cells,
+            drawn: visible_cells,
+            mirror: None,
+        },
+        eye,
+        mover_collector,
+        mesh_collector,
+        ghost_links,
+        ghost_collector,
+        mover_ghost_collector,
+    );
+}
+
+/// The cell sets capture's receivers collect against, as the play frame's:
+/// the main view's (meshes' forward draws and shadows, ghosts), every drawn
+/// cell (movers), and the planar mirror's (mirror-reached meshes), `None`
+/// with no mirror.
+pub(super) struct CaptureCullViews<'a> {
+    pub(super) main: &'a VisibleCells,
+    pub(super) drawn: &'a VisibleCells,
+    pub(super) mirror: Option<&'a VisibleCells>,
+}
+
+/// [`collect_capture_receiver_draws`] with the planar mirror's sets.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn collect_capture_receiver_draws_with_mirror(
+    registry: &EntityRegistry,
+    world: &postretro_level_loader::LevelWorld,
+    views: CaptureCullViews<'_>,
+    eye: Vec3,
+    mover_collector: &mut KinematicMoverRenderCollector,
+    mesh_collector: &mut MeshRenderCollector,
+    ghost_links: &mut crate::ghost_links::GhostLinks,
+    ghost_collector: &mut GhostRenderCollector,
+    mover_ghost_collector: &mut MoverGhostRenderCollector,
+) {
+    let visible_cells = views.main;
+    mover_collector.collect(registry, world, views.drawn, 1.0);
 
     let clip_tables = MeshClipTables::new();
     let hit_zones = HitZoneStore::new();
-    mesh_collector.collect_with_hit_zones(
+    mesh_collector.collect_with_mirror(
         registry,
         world,
         visible_cells,
+        views.mirror,
         1.0,
         0.0,
         &clip_tables,

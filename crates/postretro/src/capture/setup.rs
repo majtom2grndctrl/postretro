@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::mem::size_of;
 
 use anyhow::{Context, Result, anyhow, bail};
-use glam::{Mat4, Vec3};
+#[cfg(test)]
+use glam::Mat4;
+use glam::Vec3;
 use postretro_entities::ComponentKind;
 use postretro_entities::EntityRegistry;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
@@ -445,9 +447,20 @@ pub(super) fn derive_texture_materials(
         .collect()
 }
 
+/// The static capture camera's view-projection; see [`capture_camera`].
+#[cfg(test)]
+pub(super) fn capture_view_projection(camera: &CameraPose, width: u32, height: u32) -> Mat4 {
+    capture_camera(camera, width, height).view_projection
+}
+
 /// Build the static capture camera directly so the scene's independently
 /// authored FOV is honored rather than adding a transient presentation offset.
-pub(super) fn capture_view_projection(camera: &CameraPose, width: u32, height: u32) -> Mat4 {
+/// Its view matrix feeds the planar mirror, as the play frame's does.
+pub(super) fn capture_camera(
+    camera: &CameraPose,
+    width: u32,
+    height: u32,
+) -> crate::camera::RenderCamera {
     let aspect = width as f32 / height as f32;
     let fov = camera.fov_deg.to_radians();
     let vfov = 2.0 * ((fov / 2.0).tan() / aspect).atan();
@@ -459,6 +472,16 @@ pub(super) fn capture_view_projection(camera: &CameraPose, width: u32, height: u
         -yaw.cos() * pitch.cos(),
     );
     let eye = Vec3::from_array(camera.position);
-    glam::camera::rh::proj::directx::perspective(vfov, aspect, camera::NEAR, camera::FAR)
-        * glam::camera::rh::view::look_at_mat4(eye, eye + look_dir, Vec3::Y)
+    let view_matrix = glam::camera::rh::view::look_at_mat4(eye, eye + look_dir, Vec3::Y);
+    crate::camera::RenderCamera {
+        eye_position: eye,
+        forward: look_dir,
+        view_matrix,
+        view_projection: glam::camera::rh::proj::directx::perspective(
+            vfov,
+            aspect,
+            camera::NEAR,
+            camera::FAR,
+        ) * view_matrix,
+    }
 }

@@ -105,9 +105,8 @@ fn planar_mirror_adds_no_lightmap_reads_on_main_fallback() {
     );
 }
 
-// Rewrite of the spike's fallback test, inverted: on every main-view
-// fallback the mirror's drawn rooms request no lightmap read, and only the
-// camera cell's baked set is read.
+// On every main-view fallback the mirror's drawn rooms request no lightmap
+// read, and only the camera cell's baked set is read.
 #[test]
 fn planar_mirror_cells_request_no_lightmaps_on_main_visibility_fallbacks() {
     let world = world(SOLID_CAMERA_CELL);

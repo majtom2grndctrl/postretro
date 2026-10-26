@@ -435,10 +435,10 @@ fn planar_selection_refuses_eye_below_or_in_band() {
     assert!(select_plane(&candidates_of(&[near]), eye, vp, &SEEDED, None).is_some());
 }
 
-// AC 28 (O13), the rewrite of the spike's hysteresis test with the floor and
-// seed rules in place: a challenger at or below 1.25× the held score does not
-// switch and one above it does; hysteresis applies only to a held plane with
-// a non-zero score, so a held plane out of the frustum yields that frame.
+// AC 28 (O13), with the floor and seed rules in place: a challenger at or
+// below 1.25× the held score does not switch and one above it does;
+// hysteresis applies only to a held plane with a non-zero score, so a held
+// plane out of the frustum yields that frame.
 #[test]
 fn planar_selection_hysteresis_holds_at_the_margin_and_yields_when_the_held_plane_scores_zero() {
     assert!(!challenger_switches(4.0, 5.0), "exactly 1.25× holds");

@@ -39,6 +39,12 @@ impl App {
         let Some(world) = self.level.as_ref() else {
             return;
         };
+        // The diagnostics panel's crop switch; its planar-off switch already
+        // reads as no preset.
+        #[cfg(feature = "dev-tools")]
+        if let Some(renderer) = self.renderer.as_ref() {
+            self.planar_render.set_crop(renderer.planar_dev_crop());
+        }
         self.planar_render.prepare(
             world,
             camera,

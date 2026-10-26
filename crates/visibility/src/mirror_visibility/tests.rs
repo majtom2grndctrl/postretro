@@ -190,8 +190,7 @@ fn mirror_seeded_walk_honors_blocked_portals_and_keeps_empty_lighting_cells() {
     assert_eq!(blocked.reach_cells, vec![1]);
 }
 
-// Rewrites the spike's `mirror_distance_far_plane_and_water_halfspace_bound_
-// step_limit_fallback`: a trip draws camera visible ∩ mirror frustum.
+// A trip draws camera visible ∩ mirror frustum.
 #[test]
 fn mirror_trip_draws_only_camera_visible_cells_inside_the_far_plane_and_water_halfspace() {
     let world = world();
@@ -223,8 +222,8 @@ fn mirror_trip_draws_only_camera_visible_cells_inside_the_far_plane_and_water_ha
     assert_eq!(all.visible_cells, [1, 2]);
 }
 
-// Rewrites the spike's `mirror_multiple_seeds_share_a_step_budget_and_no_
-// portals_fallback_stays_bounded`.
+// Seeds share one step cap, and a world with no portals takes the
+// camera-bounded set.
 #[test]
 fn mirror_seeds_share_one_step_cap_and_no_portal_worlds_take_the_camera_bounded_set() {
     let mut world = world();
@@ -246,8 +245,7 @@ fn mirror_seeds_share_one_step_cap_and_no_portal_worlds_take_the_camera_bounded_
     }
 }
 
-// Rewrites the spike's `mirror_walk_budget_zero_and_small_take_the_bounded_
-// frustum_fallback`: the mirror has no budget of its own, only the shared cap.
+// The mirror has no budget of its own, only the shared cap.
 #[test]
 fn mirror_forced_trips_take_the_camera_bounded_set_and_the_default_is_the_shared_cap() {
     let world = world();

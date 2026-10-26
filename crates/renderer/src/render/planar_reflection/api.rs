@@ -49,11 +49,16 @@ impl Renderer {
         );
     }
 
-    /// The planar preset the next frame draws by: `None` below very high.
+    /// The planar preset the next frame draws by: `None` below very high,
+    /// and with dev-tools while the panel's planar-off switch holds, so the
+    /// app selects no plane and SSR covers that water.
     pub fn planar_reflection_preset(&self) -> Option<PlanarPreset> {
-        self.full
-            .as_ref()
-            .and_then(|full| full.planar_reflection.preset(self.reflection_quality))
+        let full = self.full.as_ref()?;
+        #[cfg(feature = "dev-tools")]
+        if full.planar_reflection.dev.off {
+            return None;
+        }
+        full.planar_reflection.preset(self.reflection_quality)
     }
 
     /// The app's verdict on whether the installed level holds a candidate
@@ -92,6 +97,8 @@ impl Renderer {
     }
 
     fn apply_planar_layer(&mut self, rebuild: bool) {
+        #[cfg(any(test, feature = "dev-tools", feature = "capture"))]
+        self.follow_planar_tier();
         let quality = self.reflection_quality;
         let commit_pending = self.extent_state.scene_change_pending();
         let Self { device, full, .. } = self;
@@ -128,14 +135,6 @@ impl Renderer {
         }
         pass.uploaded_inputs = None;
         pass.uploaded_camera = None;
-    }
-
-    /// Replace the tier's preset with `preset` until cleared, for the D, R
-    /// and scale proofs; the layer follows a scale change at once.
-    #[cfg(test)]
-    pub(crate) fn set_planar_preset_override(&mut self, preset: Option<PlanarPreset>) {
-        self.full_mut().planar_reflection.preset_override = preset;
-        self.sync_planar_layer();
     }
 
     /// Force the resolve's displayed offset to zero (or restore it), so a

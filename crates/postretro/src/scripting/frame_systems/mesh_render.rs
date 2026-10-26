@@ -233,9 +233,9 @@ impl MeshRenderCollector {
     /// authoritative capsule samples. A non-empty pose stack also forces a
     /// resample because its presentation inputs may change independently of
     /// animation timing. Pose modifiers intentionally leave authoritative
-    /// capsules unmodified. Capture's path, with no mirror; the frame loop
-    /// collects through [`Self::collect_with_mirror`].
-    #[cfg(any(test, feature = "capture"))]
+    /// capsules unmodified. The tests' path, with no mirror; the frame loop
+    /// and capture collect through [`Self::collect_with_mirror`].
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect_with_hit_zones(
         &mut self,

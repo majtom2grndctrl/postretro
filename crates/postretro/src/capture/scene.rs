@@ -70,6 +70,10 @@ pub(crate) struct CaptureScene {
     /// after `reflection_quality`. Every member is optional. Ignored, with a
     /// warning, at a tier that runs no screen-space layer (off, low).
     pub(crate) reflection_march: Option<CaptureReflectionMarch>,
+    /// Capture-only overrides on the tier's planar preset, plus the mirror
+    /// crop switch. Planar runs exactly when `reflection_quality` is
+    /// `very_high` or `ultra`, as in play; ignored, with a warning, below.
+    pub(crate) planar_reflection: Option<super::planar::CapturePlanarReflection>,
     /// Capture-only ghost styles the map's `ghost_link` styles resolve
     /// against. Capture loads no mod manifest, so this stands in for
     /// `ghostStyles`. Omitted, every link presents the floor style with no
@@ -260,6 +264,8 @@ pub(crate) enum SceneError {
     NonFiniteReflectionThickness,
     #[error("invalid capture scene: reflection_march thickness must be at least 0, got {value}")]
     ReflectionThicknessNegative { value: f32 },
+    #[error("invalid capture scene: planar_reflection {0}")]
+    InvalidPlanarReflection(&'static str),
     #[error("invalid capture scene: ghost_styles[{index}].{field} {requirement}, got {got}")]
     GhostStyleField {
         index: usize,
@@ -370,6 +376,11 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     }
     if let Some(march) = &scene.reflection_march {
         validate_reflection_march(march)?;
+    }
+    if let Some(planar) = scene.planar_reflection {
+        planar
+            .validate()
+            .map_err(SceneError::InvalidPlanarReflection)?;
     }
     if let Some(styles) = &scene.ghost_styles {
         validate_ghost_styles(styles)?;
@@ -878,6 +889,7 @@ mod tests {
             reflection_quality: None,
             reflection_style: None,
             reflection_march: None,
+            planar_reflection: None,
             ghost_styles: None,
             ghost_transparency: None,
         };

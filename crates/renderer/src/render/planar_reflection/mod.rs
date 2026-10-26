@@ -15,6 +15,10 @@ mod frame_tests;
 #[cfg(test)]
 mod frame_tilt_tests;
 #[cfg(test)]
+mod gate_tests;
+#[cfg(feature = "dev-tools")]
+mod launch_settings;
+#[cfg(test)]
 mod lifecycle_tests;
 mod mirror_draws;
 mod mirror_sprites;
@@ -23,6 +27,8 @@ mod record;
 mod targets;
 #[cfg(test)]
 mod tests;
+#[cfg(any(test, feature = "dev-tools", feature = "capture"))]
+mod tuning;
 
 use super::*;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
@@ -66,9 +72,14 @@ pub(super) struct PlanarReflectionPass {
     draws: mirror_draws::MirrorDraws,
     /// The mirror's billboards and particles, in their own instance store.
     sprites: mirror_sprites::MirrorSprites,
-    /// A test-only preset in place of the tier's, for the D and R proofs.
-    #[cfg(test)]
-    preset_override: Option<PlanarPreset>,
+    /// A preset in place of the tier's, held at the tier it was set at: the
+    /// diagnostics panel, the launch seed, a capture scene, the D and R
+    /// proofs.
+    #[cfg(any(test, feature = "dev-tools", feature = "capture"))]
+    preset_override: Option<tuning::PresetOverride>,
+    /// The panel's planar-off and crop switches and the pending launch seed.
+    #[cfg(feature = "dev-tools")]
+    dev: tuning::PlanarDevState,
     /// Test-only: the resolve's displayed offset forced to zero, so a proof
     /// can read the same frame untilted. Production never sets it.
     #[cfg(test)]
@@ -125,8 +136,10 @@ impl PlanarReflectionPass {
             targets: None,
             draws: mirror_draws::MirrorDraws::default(),
             sprites: mirror_sprites::MirrorSprites::new(device, sprite_instance_layout),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "dev-tools", feature = "capture"))]
             preset_override: None,
+            #[cfg(feature = "dev-tools")]
+            dev: tuning::PlanarDevState::from_environment(),
             #[cfg(test)]
             zero_offset: false,
             #[cfg(test)]
@@ -136,12 +149,13 @@ impl PlanarReflectionPass {
         }
     }
 
-    /// The preset `quality` runs: `None` below very high.
+    /// The preset `quality` runs, with an override set at that tier: `None`
+    /// below very high.
     fn preset(&self, quality: FluidReflectionQuality) -> Option<PlanarPreset> {
         let preset = planar_preset(quality)?;
-        #[cfg(test)]
-        if let Some(preset) = self.preset_override {
-            return Some(preset.sanitized());
+        #[cfg(any(test, feature = "dev-tools", feature = "capture"))]
+        if let Some(tuned) = self.preset_override.filter(|tuned| tuned.tier == quality) {
+            return Some(tuned.preset);
         }
         Some(preset)
     }

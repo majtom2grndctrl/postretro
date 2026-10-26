@@ -73,7 +73,8 @@ pub(super) fn validate_lightmap_overrides(scene: &CaptureScene, world: &LevelWor
 }
 
 /// Make the view's mandatory and visible lightmap blocks resident before any
-/// captured frame, as capture preloads SH. Every block the view draws is
+/// captured frame, as capture preloads SH. `drawn_cells` is every cell the
+/// capture draws: the main view's, plus the planar mirror's reach. Every block the view draws is
 /// targeted visible, whatever its visibility path, since capture renders the
 /// full view. Reads are synchronous through the level's positional reader
 /// and install in one renderer drain, so no async timing can reach a
@@ -85,6 +86,7 @@ pub(super) fn preload_capture_lightmap(
     world: &LevelWorld,
     renderer: &mut Renderer,
     visible_render: &VisibleRenderPreparation,
+    drawn_cells: &postretro_visibility::VisibleCells,
     scene: &CaptureScene,
     hints: Option<&ClusterHints>,
 ) -> Result<CaptureLightmapResidency> {
@@ -123,7 +125,7 @@ pub(super) fn preload_capture_lightmap(
             view.residency_set,
             visible_render.stats.camera_cell,
             visible_render.stats.path,
-            &visible_render.visible_cells,
+            drawn_cells,
         ),
     );
     let summary = session

@@ -25,6 +25,7 @@ use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 mod cpu_timing_block;
 mod network_tab;
 mod pending_textures;
+mod planar_reflection;
 mod streaming_tab;
 
 pub use cpu_timing_block::CpuTimingPanel;
@@ -792,6 +793,7 @@ fn draw_volumes_tab(
                 );
             }
         });
+    planar_reflection::draw(ui, renderer);
 }
 
 /// GPU and CPU windows sit side by side but never align: the GPU window counts

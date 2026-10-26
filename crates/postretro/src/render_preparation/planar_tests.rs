@@ -51,11 +51,11 @@ fn planar_preparation_leaves_main_visibility_unchanged() {
     );
 }
 
-// Rewrite of the spike's union test: a completed mirror walk with the main
-// view on a walk path unions the mirror's reach (an empty cell included, for
-// entities) into collection, residency and SH sets, and hands its lighting
-// reach over tagged mirror-only (Task 8), while the main sets, light reach
-// included, stay the main view's.
+// A completed mirror walk with the main view on a walk path unions the
+// mirror's reach (an empty cell included, for entities) into collection,
+// residency and SH sets, and hands its lighting reach over tagged
+// mirror-only, while the main sets, light reach included, stay the main
+// view's.
 #[test]
 fn planar_walk_path_unions_mirror_reach_into_collection_residency_and_sh_and_tags_its_lighting() {
     let world = world(WATER_ROOM);
@@ -100,10 +100,10 @@ fn planar_walk_path_unions_mirror_reach_into_collection_residency_and_sh_and_tag
     assert_eq!(main.fog_reachable, vec![WATER_ROOM]);
 }
 
-// Rewrite of the spike's sentinel test, now from the real solid-cell
-// fallback: the main view's empty fog set means "no portal isolation", so
-// neither SH fog regions nor lighting gain a cell list, and the mirror's
-// cells stay out of SH visible targeting (they add no SH reads).
+// From the real solid-cell fallback: the main view's empty fog set means
+// "no portal isolation", so neither SH fog regions nor lighting gain a cell
+// list, and the mirror's cells stay out of SH visible targeting (they add no
+// SH reads).
 #[test]
 fn planar_preparation_preserves_unisolated_fog_sentinel_and_adds_no_sh_reads_on_main_fallback() {
     let world = world(SOLID_CAMERA_CELL);
@@ -138,9 +138,9 @@ fn planar_preparation_preserves_unisolated_fog_sentinel_and_adds_no_sh_reads_on_
     );
 }
 
-// Rewrite of the spike's off-switch test, with the tier as the switch: below
-// very high the mirror's sets fall back to the main view's, the held plane
-// drops, and a reinstall clears selection history.
+// The tier is the switch: below very high the mirror's sets fall back to
+// the main view's, the held plane drops, and a reinstall clears selection
+// history.
 #[test]
 fn planar_preparation_below_very_high_restores_main_inputs_and_reinstall_drops_selection() {
     let world = world(WATER_ROOM);

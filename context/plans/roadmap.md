@@ -62,7 +62,7 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
   - [ ] **Per-entity interpolation delay** — the starvation-driven delay is global today (one starved moving remote adds latency to every remote); make it per-entity. Tradeoff: per-entity delay introduces per-entity time offsets.
   - [ ] **Smoothed interpolation-delay transitions** — a delay *increase* currently pauses the remote render target (the monotonic no-rewind clamp) until the server estimate catches up, which can read as a brief freeze on a sustained-jitter link. Rate-limit the transition instead. Delicate: trades directly against the no-rewind guarantee.
 
-- [ ] **Network lag simulator** — inject latency, jitter and loss into a session from a dev-toolbar control or CLI flag, so co-op playtests at realistic RTT need no OS-level link conditioning.
+- [x] **Network lag simulator** — inject latency, jitter and loss into a session from a dev-toolbar control or CLI flag, so co-op playtests at realistic RTT need no OS-level link conditioning.
 
 - [x] **coop--lossy-link-delivery** — under the dev lag profile a connected client's own pawn rubber-bands, worst in slides and vaults, because one lost datagram stalls reliable-ordered gameplay traffic for a 300 ms resend. Input resends at most one tick later and carries every gameplay family, switches included; Control resends at about 100 ms; the harness runs production channel semantics. Brief: `context/plans/done/coop--lossy-link-delivery/`.
 

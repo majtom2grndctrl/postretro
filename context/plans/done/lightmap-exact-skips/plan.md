@@ -1,7 +1,7 @@
 # lightmap-exact-skips — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 1e84f1dd2
 
 ## Corrections
@@ -91,3 +91,4 @@ Fixtures live in the lightmap stage and layer test modules; "on/off" means the c
 - review-panel findings: round 1 — 0 🔴, ~12 🟡/🟢 acted on, 1 declined (lead-in guard relaxation); round 2 — 0 🔴/🟡, 2 🟢 acted on
 - Decision premises found false: 0
 - Path claims corrected: 2 (planner location; seam path landed in two steps)
+- Landed: merged with main at e48c60108 (no conflicts; clippy, release check and the `--ignored` cold-bake determinism gates pass; remaining failures are environment-only). `build_pipeline.md` step 12 gains §Exact skips.

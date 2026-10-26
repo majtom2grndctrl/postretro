@@ -33,6 +33,7 @@ mod loaded_texture;
 mod mesh_depth;
 mod mesh_ghost;
 mod mesh_pass;
+mod planar_reflection;
 mod promoted_depth_cache;
 pub(crate) mod residency;
 mod rigid_occluder_depth;

@@ -147,5 +147,8 @@ impl Renderer {
             &full.depth_view,
             cube_sampling_view,
         );
+        // After fluid group 5 holds the new scene depth: the planar layer, its
+        // group 5 and the mirror targets follow it at the new extent.
+        self.rebuild_planar_layer();
     }
 }

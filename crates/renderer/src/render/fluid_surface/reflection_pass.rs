@@ -701,7 +701,8 @@ impl FluidSurfacePass {
     /// `quality`, the frame's group-0 mask and tier, the ones the fluid pass
     /// picks variants by. Off, Low (whose reflecting draws read the
     /// placeholder), a level with no fluid, a frame with no reflecting draw
-    /// and an isolating mask each record none.
+    /// and an isolating mask each record none; so does a frame whose only
+    /// reflecting runs lie on the plane the planar layer covers.
     pub fn has_reflecting_draws(
         &self,
         light_term_mask: LightTermMask,
@@ -710,18 +711,22 @@ impl FluidSurfacePass {
         quality.runs_screen_space()
             && self.reflection.target.is_some()
             && self.installed.as_ref().is_some_and(|installed| {
+                let route = self.planar_route(quality);
                 installed.reflection_probe_bind_group.is_some()
                     && installed
                         .slots
                         .frame_draws(light_term_mask.bits(), quality)
-                        .any(|(_, variant)| variant.reflections())
+                        .any(|(slot, variant)| {
+                            variant.reflections()
+                                && self.slot_reflects_off_route(installed, slot, route)
+                        })
             })
     }
 
     /// Record this frame's reflecting draws into the target. The caller binds
     /// group 0; this binds 1, 2 and 3, with the vertex streams, parameter
     /// windows and materials `record_draws` uses, and skips every
-    /// reflection-free draw.
+    /// reflection-free draw and the runs on the plane the planar layer covers.
     pub fn record_reflection_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -746,6 +751,7 @@ impl FluidSurfacePass {
         pass.set_vertex_buffer(2, installed.probe_index_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
+        let route = self.planar_route(quality);
         let mut bound_window = None;
         let mut bound_material = None;
         for (slot, variant) in installed.slots.frame_draws(light_term_mask.bits(), quality) {
@@ -771,11 +777,7 @@ impl FluidSurfacePass {
                     pass.set_bind_group(1, &material.bind_group, &[]);
                     bound_material = Some(range.material_index);
                 }
-                pass.draw_indexed(
-                    range.index_start..range.index_start + range.index_count,
-                    0,
-                    element..element + 1,
-                );
+                self.draw_ssr_range(pass, installed, range, element, route);
             }
         }
     }

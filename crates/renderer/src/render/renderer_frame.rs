@@ -247,6 +247,7 @@ impl Renderer {
             static_spec_mask_present: full.shadowmask_present,
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);
+        full.planar_reflection.upload_camera(queue, &data);
         full.last_camera_position = camera_position;
         full.last_view_proj = view_proj;
         // Cache this frame's `time` so the skinned-mesh group-2 params uniform

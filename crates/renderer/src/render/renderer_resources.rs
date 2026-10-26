@@ -800,6 +800,7 @@ impl Renderer {
         // every geometry install (unload included) drops the previous level's,
         // its reflection target with them.
         full.fluid_surface.clear(device);
+        full.planar_reflection.clear_level();
         clear_kinematic_mover_frame_state(
             &mut full.kinematic_mover_draws,
             &mut full.kinematic_mover_shadow_draws,

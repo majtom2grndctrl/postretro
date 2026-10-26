@@ -731,6 +731,13 @@ impl Renderer {
             );
         }
 
+        // Planar water reflection: one mirror view of the selected plane at
+        // very high and ultra, then its resolve into the planar layer, before
+        // the fluid pass samples it this frame. Ghosts and the viewmodel stay
+        // out of the mirror. It reads the frame's tier itself and records
+        // nothing at lower tiers or with no selected plane.
+        self.record_planar_reflection_pass(encoder, render_world, world_mesh_frame_plan);
+
         // Fluid surfaces: translucent, after every opaque pass and before
         // billboards, so smoke above the water draws over it undimmed (and
         // smoke below it does too, the accepted draw-order limit). Gated on

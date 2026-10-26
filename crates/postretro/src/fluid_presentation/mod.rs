@@ -5,6 +5,7 @@
 
 mod drift;
 mod eye;
+mod planar;
 
 #[cfg(test)]
 mod tests;

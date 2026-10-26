@@ -32,7 +32,14 @@ use crate::streaming::shared_drain::SharedDrain;
 /// One frame's visibility, as every streamed resource reads it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StreamingFrame<'a> {
+    /// Every cell the frame draws, the planar mirror's included. Lightmap
+    /// demand reads it under the visibility path's rules.
     pub(crate) visible_cells: &'a VisibleCells,
+    /// The cells SH visible targeting reads. SH reads every visible cluster on
+    /// any path, so the mirror's cells join only where they may add reads
+    /// (`PlanarRenderPreparation::sh_visible_cells`); otherwise the same set as
+    /// `visible_cells`.
+    pub(crate) sh_visible_cells: &'a VisibleCells,
     /// The locator's camera cell; `None` without a level.
     pub(crate) camera_cell: Option<usize>,
     pub(crate) path: VisibilityPath,
@@ -186,7 +193,7 @@ impl LevelStreaming {
             });
         let sh_pending = match sh.as_mut() {
             Some(streaming) => Some(streaming.begin_drain(
-                frame.visible_cells,
+                frame.sh_visible_cells,
                 demand_frame,
                 frame.settling,
                 frame.monotonic_seconds,

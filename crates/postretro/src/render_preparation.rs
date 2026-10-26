@@ -1,11 +1,16 @@
 // CPU-side visibility and light-reachability inputs for one render frame.
-// See: context/lib/rendering_pipeline.md §§1–2
+// See: context/lib/rendering_pipeline.md §§1–2, §7.3a
 
 use glam::{Mat4, Vec3};
 use postretro_level_loader::LevelWorld;
 use postretro_visibility::{
     CameraCullVisibility, VisibilityPath, VisibilityStats, VisibleCells, determine_visible_cells,
 };
+
+mod planar;
+pub(crate) use planar::PlanarRenderPreparation;
+#[cfg(test)]
+pub(crate) use planar::test_fixtures as planar_test_fixtures;
 
 /// Plain render inputs derived from one visibility walk. The app and static
 /// capture share this seam so a future SH-storage choice reaches the renderer

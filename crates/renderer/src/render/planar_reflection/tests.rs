@@ -181,3 +181,27 @@ fn planar_pass_records_between_the_ghost_pass_and_the_fluid_gate() {
         );
     }
 }
+
+// Animated-lightmap compose covers the mirror's drawn cells beside the main
+// view's, ascending and without repeats, so a reflected animated face shows
+// its current light; a draw-all side keeps the union draw-all.
+#[test]
+fn planar_compose_union_adds_mirror_cells_to_the_main_view() {
+    use postretro_visibility::VisibleCells;
+    let mut out = VisibleCells::DrawAll;
+    super::union_cells(
+        &VisibleCells::Culled(vec![4, 0]),
+        &VisibleCells::Culled(vec![6, 0, 5]),
+        &mut out,
+    );
+    let VisibleCells::Culled(union) = &out else {
+        panic!("two culled sets compose a culled union");
+    };
+    assert_eq!(union, &[0, 4, 5, 6]);
+    super::union_cells(
+        &VisibleCells::DrawAll,
+        &VisibleCells::Culled(vec![1]),
+        &mut out,
+    );
+    assert!(matches!(out, VisibleCells::DrawAll));
+}

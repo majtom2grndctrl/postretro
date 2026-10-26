@@ -970,6 +970,10 @@ pub(crate) struct App {
     fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector,
     /// The camera eye's fluid presentation: view tint and world muffle.
     fluid_eye: fluid_presentation::FluidEye,
+    /// The planar water mirror: candidate planes installed with the level's
+    /// fluids, this frame's selection, the mirror's own walk state, and the
+    /// cell sets its demand joins.
+    planar_render: render_preparation::PlanarRenderPreparation,
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,

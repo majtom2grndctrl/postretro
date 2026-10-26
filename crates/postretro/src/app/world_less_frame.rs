@@ -104,6 +104,8 @@ impl App {
             renderer,
             crate::session::level_streaming::StreamingFrame {
                 visible_cells: &visible_render.visible_cells,
+                // Settling and held frames run no mirror.
+                sh_visible_cells: &visible_render.visible_cells,
                 camera_cell: Some(visible_render.stats.camera_cell as usize),
                 path: visible_render.stats.path,
                 monotonic_seconds: self.script_time,

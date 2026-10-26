@@ -37,6 +37,9 @@ pub(super) struct PlanarReflectionPass {
     camera: Option<MirrorCamera>,
     /// The mirror's visible cells, copied into reused storage.
     visible: VisibleCells,
+    /// Main visible ∪ mirror visible, rebuilt in place each frame the mirror
+    /// draws: the cells animated-lightmap compose covers.
+    compose_union: VisibleCells,
     /// The mirror's group 0: the main camera uniform with the mirror's
     /// raster view-projection and eye.
     uniform_buffer: wgpu::Buffer,
@@ -84,6 +87,7 @@ impl PlanarReflectionPass {
         Self {
             camera: None,
             visible: VisibleCells::Culled(Vec::new()),
+            compose_union: VisibleCells::Culled(Vec::new()),
             uniform_buffer,
             uniform_bind_group,
             uploaded_camera: None,
@@ -135,6 +139,22 @@ impl PlanarReflectionPass {
         self.uploaded_camera = Some(data);
     }
 
+    /// The cells animated-lightmap compose covers this frame: `main`, plus the
+    /// mirror's visible cells on a frame the mirror draws at `quality`, so a
+    /// reflected animated face shows its current light. Compose reads no
+    /// block, so this adds no residency demand.
+    pub fn compose_cells<'a>(
+        &'a mut self,
+        main: &'a VisibleCells,
+        quality: FluidReflectionQuality,
+    ) -> &'a VisibleCells {
+        if self.camera.is_none() || self.targets.is_none() || self.preset(quality).is_none() {
+            return main;
+        }
+        union_cells(main, &self.visible, &mut self.compose_union);
+        &self.compose_union
+    }
+
     /// Drop the level's mirror view, visible cells and targets. Every
     /// geometry install, unload included, starts here.
     pub fn clear_level(&mut self) {
@@ -147,4 +167,24 @@ impl PlanarReflectionPass {
         self.targets = None;
         self.draws.clear();
     }
+}
+
+/// `main ∪ mirror` into `out`, ascending, allocation-free once grown. Either
+/// side drawing all makes the union draw all.
+fn union_cells(main: &VisibleCells, mirror: &VisibleCells, out: &mut VisibleCells) {
+    let (VisibleCells::Culled(main), VisibleCells::Culled(mirror)) = (main, mirror) else {
+        *out = VisibleCells::DrawAll;
+        return;
+    };
+    if !matches!(out, VisibleCells::Culled(_)) {
+        *out = VisibleCells::Culled(Vec::new());
+    }
+    let VisibleCells::Culled(union) = out else {
+        return;
+    };
+    union.clear();
+    union.extend_from_slice(main);
+    union.extend_from_slice(mirror);
+    union.sort_unstable();
+    union.dedup();
 }

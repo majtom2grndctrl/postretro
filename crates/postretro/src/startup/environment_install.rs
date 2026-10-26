@@ -136,6 +136,7 @@ impl App {
         self.environment_volumes = environment_volumes_for(world, fluids.names(), source);
         self.environment_fluids = fluids;
         self.environment_fluid_source = source;
+        self.install_planar_candidates(world);
     }
 
     /// Re-read the active fluid table and, when its names or source differ
@@ -169,6 +170,7 @@ impl App {
                 environment_volumes_for(world, self.environment_fluids.names(), source);
         }
         self.resolve_fluid_surface_drift();
+        self.reinstall_planar_candidates();
     }
 
     /// Point every `Swim { fluid }` pawn at `next`'s index for the name its

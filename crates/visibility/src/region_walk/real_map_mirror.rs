@@ -13,7 +13,8 @@
 // or not, and no area floor applies, so the sweep covers more planes than
 // selection can pick. Poses are the camera sweep's; each plane the eye stands
 // more than the fog band above gets a mirror pose: the eye reflected across
-// the plane, pitch negated, near plane the water plane. Seeds: non-solid,
+// the plane, pitch negated, near plane the water plane lowered by the clip
+// bias, as the app's mirror walk takes it. Seeds: non-solid,
 // non-exterior cells straddling the plane (within the fog band) over its XZ
 // bounds, in that pose's camera reach, and inside the mirror frustum. The
 // walk and its CPU time (best of 2) run uncropped; `Crop` is where the
@@ -173,11 +174,17 @@ fn water_planes(world: &LevelWorld, environment: &EnvironmentVolumesSection) -> 
     planes
 }
 
-/// The water plane, facing the reflected content above it.
+/// How far the mirror's near plane sits beneath the water: render-cpu's
+/// `PLANAR_CLIP_BIAS`, which this crate cannot depend on. The app's mirror
+/// walk takes `MirrorCamera`'s clip plane, so the sweep measures that walk.
+const MIRROR_CLIP_BIAS: f32 = 0.02;
+
+/// The mirror's near plane: the water plane lowered by the clip bias, facing
+/// the reflected content above it.
 fn water_plane(h: f32) -> FrustumPlane {
     FrustumPlane {
         normal: Vec3::Y,
-        dist: -h,
+        dist: -(h - MIRROR_CLIP_BIAS),
     }
 }
 

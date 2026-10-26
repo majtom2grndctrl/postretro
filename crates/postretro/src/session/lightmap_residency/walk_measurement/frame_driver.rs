@@ -155,6 +155,7 @@ impl FrameDriver {
                     Some(residency_set),
                     StreamingFrame {
                         visible_cells: input.visible_cells,
+                        sh_visible_cells: input.visible_cells,
                         camera_cell: Some(input.camera_cell as usize),
                         path: input.path,
                         monotonic_seconds: input.seconds,

@@ -457,6 +457,7 @@ mod tests {
                 None,
                 StreamingFrame {
                     visible_cells: &visible,
+                    sh_visible_cells: &visible,
                     camera_cell: Some(0),
                     path: VisibilityPath::PrlPortal { walk_reach: 0 },
                     monotonic_seconds: 0.0,

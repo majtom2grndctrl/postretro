@@ -1357,6 +1357,40 @@ fn level_with_reflecting_pool() -> LevelWorld {
     world
 }
 
+// Rewrite of the spike's candidate test: planar candidates follow the local
+// fluid's reflectivity and probe binding at level install, and a fluid
+// refresh re-installs them, dropping a plane whose fluid stopped reflecting.
+#[test]
+fn planar_candidates_install_and_refresh_with_local_fluid_reflectivity_and_probe_binding() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_reflecting_pool(), PathBuf::from("baked"))
+        .expect("reflecting fixture installs");
+    let world = app.level.as_ref().expect("installed level");
+    assert_eq!(app.planar_reflecting_volumes(world), vec![0]);
+    assert_eq!(app.planar_render.candidate_planes(), 1);
+
+    let mut unbound = level_with_reflecting_pool();
+    unbound.reflection_probes = None;
+    assert!(app.planar_reflecting_volumes(&unbound).is_empty());
+
+    let mut water = fluid("water");
+    water.surface_reflectivity = 0.0;
+    script_ctx(&app).data_registry.borrow_mut().replace_fluids(
+        postretro_foundation::FluidRegistry::from_declarations("test", [Ok(water)]),
+    );
+    app.refresh_environment_fluids();
+    assert!(
+        app.planar_reflecting_volumes(app.level.as_ref().expect("installed level"))
+            .is_empty()
+    );
+    assert_eq!(
+        app.planar_render.candidate_planes(),
+        0,
+        "the refresh re-installs the candidates"
+    );
+}
+
 /// This frame's fluid draws, as the app collects them for the renderer.
 fn collect_draws(app: &mut App) -> Vec<postretro_render_cpu::fluid_surface::FluidSurfaceDraw> {
     let local = script_ctx(app).data_registry.borrow().fluids.clone();

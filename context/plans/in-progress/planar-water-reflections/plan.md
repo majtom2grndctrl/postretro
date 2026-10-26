@@ -1,10 +1,10 @@
 # planar-water-reflections — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: 25db4c78f (crates/ identical to main 8ea68d8be; spike `claude/planar-water-spike` 8201dfb8e, base 473185e88)
 
-**Blocked on:** one Acceptance row needs restatement (AC 10 below; proposed wording under *Needs restatement*). Once the owner resolves it, this plan also needs the resumable skim. One answer can cover both: approve the wording and the task order, and status moves to `approved`.
+**Approved 2026-10-25** by the owner, with the AC 10 restatement below applied to the brief as proposed.
 
 ## Corrections
 
@@ -49,7 +49,7 @@ read at: 25db4c78f (crates/ identical to main 8ea68d8be; spike `claude/planar-wa
   - `planar_reflection_selection_hysteresis_and_eye_band`: gains the floor and seed rules.
 - Doc ahead of code: `rendering_pipeline.md` §7.3a, SSR Reflection pass paragraph (line 614), already says it "skips the selected plane's draws". The code catches up in Task 1, and landing updates the "decided, not yet built" labels.
 
-## Needs restatement
+## Restated (owner-approved 2026-10-25)
 
 - **AC 10** (Pixel style, tilted ray equals SSR's ray). Under IP rule D3 the planar ray must start from the *unpulled* cell centre, and must never call `fluid_reflection_cell_within_box` or read the probe box. SSR and the probe term start from the centre after `reflection_cell_within_box` (`render-cpu/src/fluid_surface/reflection_style.rs:172`, `fluid_reflection_pass.wgsl:144`). That function pulls rim cells, those within the inset margin of a box face, toward the box. The tilted normal is identical for every cell. The ray direction differs at rim cells, because the view vector starts from a different point. As written the row fails at rim cells, by design. The Decision ("tilts each water cell's ray exactly as SSR and the probe term do") holds as worded: the tilt is identical. Proposed wording:
 
@@ -90,7 +90,7 @@ AC numbers follow the brief's Acceptance order.
 | 7 | Two layers: large plane planar, second plane SSR (very_high, ultra) | GPU test `planar_gpu_two_planes_read_planar_and_ssr_in_one_frame` (both tiers) | achievable as stated |
 | 8 | SSR records for second plane, nothing for selected; selected-only → no SSR pass | GPU test `planar_gpu_ssr_skips_the_selected_plane_and_records_only_for_others` | achievable as stated |
 | 9 | Pixel: each layer read at its own scale | GPU test `planar_gpu_layers_read_at_their_own_scale` | achievable as stated |
-| 10 | Pixel tilt ray parity (CPU) + GPU edge shift | — | **needs restatement** (see above) |
+| 10 | Pixel tilt: normal parity everywhere, ray parity off the rim (CPU) + GPU edge shift away from rim | CPU test `planar_tilt_matches_ssr_normal_and_unpulled_ray`; GPU test `planar_gpu_edge_shifts_like_ssr` with test-only planar-off seam | achievable as restated |
 | 11 | Tilt never changes c (offset forced zero) | GPU test with test-only zero-offset seam `planar_gpu_tilt_moves_samples_not_confidence` | achievable as stated |
 | 12 | Same-frame mirror (O6) | GPU test `planar_gpu_mirror_shows_this_frames_object` | achievable as stated |
 | 13 | Billboard + particle mirrored, facing mirror camera, incl. off main view | GPU test `planar_gpu_billboards_and_particles_face_the_mirror` | achievable as stated |

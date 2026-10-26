@@ -48,12 +48,16 @@ pub(super) fn draw(ui: &mut egui::Ui, renderer: &mut Renderer) {
     });
 }
 
+/// Where a distance limit starts when switched on: mid-slider and past a
+/// room's depth, so turning a limit on never blanks the near reflection.
+const SWITCHED_ON_LIMIT_METRES: f32 = 30.0;
+
 /// A distance limit's on/off checkbox and its metres slider.
 fn distance(ui: &mut egui::Ui, label: &str, limit: &mut Option<f32>) {
     let mut enabled = limit.is_some();
     ui.checkbox(&mut enabled, label);
     if enabled {
-        let value = limit.get_or_insert(30.0);
+        let value = limit.get_or_insert(SWITCHED_ON_LIMIT_METRES);
         ui.add(egui::Slider::new(value, 1.0..=100.0).suffix(" m"));
     } else {
         *limit = None;

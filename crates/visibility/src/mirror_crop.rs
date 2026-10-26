@@ -15,22 +15,33 @@ use crate::visibility::{FrustumPlane, NEAR_PLANE_INDEX, frustum_plane_array};
 /// a screen edge crop to exactly that edge.
 const CROP_SLACK: f64 = 1.0e-4;
 
+/// The pad the app crops the mirror with: render-cpu's
+/// `planar_reflection::MIRROR_CROP_PAD_RADIANS`, which documents the
+/// derivation and whose test pins this copy equal. Twice the largest
+/// pixel-style normal tilt (a 2 + 2 texel displayed offset × 0.05 tangent
+/// per texel, so 0.4 rad of ray turn) plus π × the horizon clamp's 1e-3.
+/// This crate cannot depend on render-cpu; its mirror sweep and cropped
+/// headroom test read this copy, so they measure the walk the app runs.
+pub const MIRROR_CROP_PAD_RADIANS: f32 = 2.0 * 4.0 * 0.05 + std::f32::consts::PI * 1.0e-3;
+
 /// An NDC rectangle, `min` ≤ `max` on both axes.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NdcRect {
+pub(crate) struct NdcRect {
     pub min: Vec2,
     pub max: Vec2,
 }
 
 impl NdcRect {
     /// The whole screen.
-    pub const FULL: Self = Self {
+    #[cfg(test)]
+    pub(crate) const FULL: Self = Self {
         min: Vec2::NEG_ONE,
         max: Vec2::ONE,
     };
 
     /// The fraction of the full screen this rect covers.
-    pub fn screen_fraction(&self) -> f32 {
+    #[cfg(test)]
+    pub(crate) fn screen_fraction(&self) -> f32 {
         let size = (self.max - self.min).max(Vec2::ZERO);
         size.x * size.y / 4.0
     }
@@ -48,7 +59,7 @@ pub struct MirrorCropScratch {
 /// [`mirror_crop_bounds`] widened by [`align_to_walk_grid`], so a walk
 /// under the cropped view-projection never reaches a cell the uncropped walk
 /// does not. `None` when no face keeps any part on screen.
-pub fn mirror_crop_rect<'a>(
+pub(crate) fn mirror_crop_rect<'a>(
     view_proj: Mat4,
     eye: Vec3,
     faces: impl IntoIterator<Item = &'a [Vec3]>,
@@ -174,7 +185,7 @@ fn align_axis(lo: f32, hi: f32) -> (f32, f32) {
 /// `view_proj` followed by the NDC remap that stretches `rect` to the full
 /// screen: its frustum's side planes become the rect's edges, and its near
 /// and far planes are unchanged. The full rect returns `view_proj` exactly.
-pub fn ndc_rect_to_full_screen(view_proj: Mat4, rect: NdcRect) -> Mat4 {
+pub(crate) fn ndc_rect_to_full_screen(view_proj: Mat4, rect: NdcRect) -> Mat4 {
     let size = rect.max - rect.min;
     let scale = Vec2::splat(2.0) / size;
     let offset = -(rect.max + rect.min) / size;
@@ -187,8 +198,9 @@ pub fn ndc_rect_to_full_screen(view_proj: Mat4, rect: NdcRect) -> Mat4 {
     remap * view_proj
 }
 
-/// [`mirror_crop_rect`] composed into `view_proj` by
-/// [`ndc_rect_to_full_screen`]: the view-projection the mirror walk and cull
+/// The mirror crop rect (`mirror_crop_rect`) composed into `view_proj` by
+/// the NDC remap that stretches it to the full screen
+/// (`ndc_rect_to_full_screen`): the view-projection the mirror walk and cull
 /// take. `None` when nothing of `faces` projects.
 pub fn crop_mirror_view_proj<'a>(
     view_proj: Mat4,

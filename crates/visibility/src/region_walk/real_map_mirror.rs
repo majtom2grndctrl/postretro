@@ -9,15 +9,16 @@
 //
 // Water planes: the flat, up-facing (n.y > 0.9999) surface faces of the
 // PRL's environment volumes (id 52), grouped by height within 0.01 m, as
-// planar selection groups them. Every reflecting fluid counts, probe-bound
-// or not, and no area floor applies, so the sweep covers more planes than
-// selection can pick. Poses are the camera sweep's; each plane the eye stands
-// more than the fog band above gets a mirror pose: the eye reflected across
-// the plane, pitch negated, near plane the water plane lowered by the clip
-// bias, as the app's mirror walk takes it. Seeds: non-solid,
-// non-exterior cells straddling the plane (within the fog band) over its XZ
-// bounds, in that pose's camera reach, and inside the mirror frustum. Each
-// pose walks twice, CPU time best of 2 each: uncropped, and cropped as the
+// planar selection groups them. Every fluid volume's up-facing faces count,
+// probe-bound or not, and no area floor applies, so the sweep covers more
+// planes than selection can pick. Poses are the camera sweep's; each plane
+// the eye stands more than the fog band above gets a mirror pose: the eye
+// reflected across the plane, pitch negated, near plane the water plane
+// lowered by the clip bias, as the app's mirror walk takes it. Seeds:
+// non-solid, non-exterior cells straddling the plane (within the fog band)
+// over one of its faces' XZ bounds, as the app's seed rule takes them, in
+// that pose's camera reach, and inside the mirror frustum. Each pose walks
+// twice, CPU time best of 2 each: uncropped, and cropped as the
 // app crops it (the plane's faces in the camera's view, clipped, projected
 // and padded by the crop pad), seeds filtered by the cropped frustum.
 
@@ -26,12 +27,15 @@ use std::time::Instant;
 use glam::{DVec3, Mat4, Vec2, Vec3};
 
 use super::real_map_sweep::{Pose, load_world, map_name, pct, poses, sweep_paths};
-use super::test_fixtures::{MIRROR_CROP_PAD_RADIANS, camera_view_proj};
+use super::test_fixtures::camera_view_proj;
 use super::{
     MAX_PORTAL_WALK_STEPS, PortalWalkScratch, WalkView, WalkWorld, seeded_view_planes,
     walk_from_camera, walk_from_seeds,
 };
-use crate::mirror_crop::{MirrorCropScratch, crop_mirror_view_proj, mirror_crop_bounds};
+use crate::mirror_crop::{
+    MIRROR_CROP_PAD_RADIANS, MirrorCropScratch, crop_mirror_view_proj, mirror_crop_bounds,
+};
+use crate::mirror_visibility::{MIRROR_CLIP_BIAS, MIRROR_FOG_BAND};
 use crate::visibility::{FrustumPlane, frustum_plane_array, is_aabb_outside_planes};
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentVolumesSection,
@@ -39,9 +43,6 @@ use postretro_level_format::environment_volumes::{
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_level_loader::LevelWorld;
 
-/// render-cpu's `FLUID_FOG_BAND`: an eye this close above the water selects
-/// no plane, and seed cells straddle the plane within it.
-const FLUID_FOG_BAND: f32 = 0.08;
 /// A face joins a plane within this height of the plane's first face.
 const PLANE_HEIGHT_TOLERANCE: f32 = 0.01;
 const UP_FACING_MIN_Y: f64 = 0.9999;
@@ -55,8 +56,10 @@ pub(super) struct WaterPlane {
     pub(super) area: f32,
     /// Each face's polygon, for a crop built from the faces in view.
     pub(super) faces: Vec<Vec<Vec3>>,
-    /// Non-solid, non-exterior cells straddling the plane over its XZ
-    /// bounds: the seed candidates before the per-pose filters.
+    /// Each face's XZ bounds, in `faces` order: what the seed rule tests.
+    face_xz: Vec<(Vec2, Vec2)>,
+    /// Non-solid, non-exterior cells straddling the plane over one of its
+    /// faces' XZ bounds: the seed candidates before the per-pose filters.
     seed_cells: Vec<usize>,
 }
 
@@ -155,6 +158,7 @@ fn water_planes(world: &LevelWorld, environment: &EnvironmentVolumesSection) -> 
                 plane.xz_max = plane.xz_max.max(xz_max);
                 plane.area += area;
                 plane.faces.push(polygon);
+                plane.face_xz.push((xz_min, xz_max));
             }
             _ => planes.push(WaterPlane {
                 h,
@@ -162,6 +166,7 @@ fn water_planes(world: &LevelWorld, environment: &EnvironmentVolumesSection) -> 
                 xz_max,
                 area,
                 faces: vec![polygon],
+                face_xz: vec![(xz_min, xz_max)],
                 seed_cells: Vec::new(),
             }),
         }
@@ -172,25 +177,24 @@ fn water_planes(world: &LevelWorld, environment: &EnvironmentVolumesSection) -> 
                 let cell = &world.cells[c];
                 !cell.is_solid
                     && !cell.is_exterior
-                    && cell.bounds_max.y >= plane.h - FLUID_FOG_BAND
-                    && cell.bounds_min.y <= plane.h + FLUID_FOG_BAND
-                    && cell.bounds_max.x >= plane.xz_min.x
-                    && cell.bounds_min.x <= plane.xz_max.x
-                    && cell.bounds_max.z >= plane.xz_min.y
-                    && cell.bounds_min.z <= plane.xz_max.y
+                    && cell.bounds_max.y >= plane.h - MIRROR_FOG_BAND
+                    && cell.bounds_min.y <= plane.h + MIRROR_FOG_BAND
+                    && plane.face_xz.iter().any(|(lo, hi)| {
+                        cell.bounds_max.x >= lo.x
+                            && cell.bounds_min.x <= hi.x
+                            && cell.bounds_max.z >= lo.y
+                            && cell.bounds_min.z <= hi.y
+                    })
             })
             .collect();
     }
     planes
 }
 
-/// How far the mirror's near plane sits beneath the water: render-cpu's
-/// `PLANAR_CLIP_BIAS`, which this crate cannot depend on. The app's mirror
-/// walk takes `MirrorCamera`'s clip plane, so the sweep measures that walk.
-const MIRROR_CLIP_BIAS: f32 = 0.02;
-
 /// The mirror's near plane: the water plane lowered by the clip bias, facing
-/// the reflected content above it.
+/// the reflected content above it. The app's mirror walk takes
+/// `MirrorCamera`'s clip plane, this same plane, so the sweep measures that
+/// walk.
 fn water_plane(h: f32) -> FrustumPlane {
     FrustumPlane {
         normal: Vec3::Y,
@@ -406,7 +410,7 @@ pub(super) fn sweep_mirror_map(path: &str) -> MirrorMapResult {
         );
         camera_trips += usize::from(camera_stats.step_limit_hit);
         for (plane_index, plane) in planes.iter().enumerate() {
-            if pose.eye.y - plane.h <= FLUID_FOG_BAND {
+            if pose.eye.y - plane.h <= MIRROR_FOG_BAND {
                 continue;
             }
             above += 1;

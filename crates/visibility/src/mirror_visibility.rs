@@ -17,6 +17,18 @@ use crate::region_walk::{
 };
 use crate::visibility::{FrustumPlane, VisibleCells, is_aabb_outside_planes};
 
+/// The fluid fog band, render-cpu's `fluid_surface::fog::FLUID_FOG_BAND`:
+/// an eye this close above a plane selects no mirror, and a seed cell
+/// straddles the plane within it. This crate cannot depend on render-cpu;
+/// its mirror sweep reads this copy, which a render-cpu test pins equal.
+pub const MIRROR_FOG_BAND: f32 = 0.08;
+
+/// How far the mirror's near plane sits beneath the water: render-cpu's
+/// `planar_reflection::PLANAR_CLIP_BIAS`, the clip plane `MirrorCamera`
+/// rasters with and the app's mirror walk takes as its near plane. This
+/// crate's mirror sweep reads this copy, which a render-cpu test pins equal.
+pub const MIRROR_CLIP_BIAS: f32 = 0.02;
+
 /// The mirror view the seeded walk and the mirror cull take, as given.
 #[derive(Debug, Clone, Copy)]
 pub struct MirrorView {

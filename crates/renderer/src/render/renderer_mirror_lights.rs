@@ -1,6 +1,8 @@
-// Mirror-only light admission: the planar mirror's own light records, its light reach, and the frame's admission counts.
+// Planar mirror light admission: its light records and reach, admission tags, held seats, counts.
 // See: context/lib/rendering_pipeline.md §7.3a (Pool rank), §4
 
+use super::renderer_light_slots::PromotionCandidateLookup;
+use super::renderer_types::FullRenderer;
 use super::*;
 use postretro_render_cpu::mesh_instances::MeshCapOccupancy;
 
@@ -41,6 +43,10 @@ pub(super) struct MirrorLighting {
     uploaded: Vec<u8>,
     /// The copy's bytes, built in place each frame it is read.
     pub(super) scratch: Vec<u8>,
+    /// The copy's spot and cube slots in level-light space, reused so a
+    /// frame that builds the copy allocates nothing for them.
+    pub(super) spot_level_slots: Vec<u32>,
+    pub(super) cube_level_slots: Vec<u32>,
     /// Whether this frame's mirror passes read the copy.
     active: bool,
     /// AABBs of the cells only the mirror reaches this frame, set by the
@@ -82,6 +88,8 @@ impl MirrorLighting {
             lighting_bind_group,
             uploaded: Vec::new(),
             scratch: Vec::new(),
+            spot_level_slots: Vec::new(),
+            cube_level_slots: Vec::new(),
             active: false,
             reach: Vec::new(),
             tags: Vec::new(),
@@ -110,6 +118,10 @@ impl MirrorLighting {
         self.tags.clear();
         self.held.clear();
         self.occupancy = AdmissionOccupancy::default();
+        // The frame clock restarts with the level, so a report time kept
+        // from the old one would silence the line until the clock caught up.
+        self.reported = None;
+        self.reported_at = f64::NEG_INFINITY;
     }
 
     fn build(
@@ -201,6 +213,11 @@ impl MirrorLighting {
         self.reach = reach;
     }
 
+    /// Spend this frame's reach unread, as a frame with no candidate does.
+    pub(super) fn clear_reach(&mut self) {
+        self.reach.clear();
+    }
+
     /// Whether candidate `index` holds its slot as a mirror-only admission.
     pub(super) fn is_mirror_only(&self, index: usize) -> bool {
         self.held.get(index).copied().unwrap_or(false)
@@ -282,6 +299,164 @@ pub(super) fn describe(occupancy: &AdmissionOccupancy) -> String {
         pool(&occupancy.spot),
         pool(&occupancy.cube),
     )
+}
+
+/// Each shadow candidate's admission rank (`rendering_pipeline.md` §7.3a,
+/// Pool rank), candidate-indexed. Empty slices rank every light main-view,
+/// as without a mirror.
+#[derive(Clone, Copy, Default)]
+pub(super) struct AdmissionTags<'a> {
+    /// This frame has a mirror reach: some cell only the planar mirror
+    /// reaches. Without one, no seat the mirror held carries over.
+    pub(super) mirror_present: bool,
+    /// This frame: reached by the planar mirror alone. Any main-view reach,
+    /// shadow casting onto a visible receiver included, ranks a light
+    /// main-view (§7.3a, Pool rank).
+    pub(super) mirror_only: &'a [bool],
+    /// Last frame: held its slot as a mirror-only admission.
+    pub(super) held_mirror_only: &'a [bool],
+}
+
+impl AdmissionTags<'_> {
+    pub(super) fn mirror_only(&self, candidate_index: usize) -> bool {
+        self.mirror_only
+            .get(candidate_index)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn held_mirror_only(&self, candidate_index: usize) -> bool {
+        self.held_mirror_only
+            .get(candidate_index)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The rank an incumbent holds its prior slot at this frame, or `None`
+    /// when it holds no claim. A slot held as the mirror's gives no claim
+    /// against a main-view light: a light that held it as the mirror's and
+    /// is main-view now competes as a fresh main-view candidate, as it would
+    /// without the mirror. With no mirror reach this frame (the mirror is
+    /// gone, as on a tier drop), a seat held as the mirror's gives no claim
+    /// at all, so the light loses it and its promotion resets. A light that
+    /// turned mirror-only this frame keeps its claim only against other
+    /// mirror-only lights. A main-view incumbent no reach keeps (a promoted
+    /// light's sticky window) stays main-view, as without the mirror
+    /// (§7.3a, Pool rank).
+    pub(super) fn incumbent_mirror_only(
+        &self,
+        candidate_index: usize,
+        eligible: bool,
+    ) -> Option<bool> {
+        let mirror_only = self.mirror_only(candidate_index);
+        let held = self.held_mirror_only(candidate_index);
+        if held && (!self.mirror_present || (eligible && !mirror_only)) {
+            return None;
+        }
+        Some(mirror_only || held)
+    }
+}
+
+/// After this frame's assignment: which candidates hold their slot as a
+/// mirror-only admission. A light the main view reaches holds its slot as
+/// the main view's; a mirror-only light as the mirror's; a light neither
+/// reaches (a promoted light's sticky window) at the rank it was seated by.
+/// `held` enters as last frame's ranks and leaves as this frame's: each
+/// entry reads only its own previous value, so the update runs in place.
+pub(super) fn update_held_as_mirror_only(
+    spot_assignment: &[u32],
+    cube_assignment: &[u32],
+    eligible_lights: &[bool],
+    mirror_only: &[bool],
+    held: &mut Vec<bool>,
+) {
+    let count = spot_assignment.len().max(cube_assignment.len());
+    held.resize(count, false);
+    for (index, held) in held.iter_mut().enumerate() {
+        let assigned = [spot_assignment, cube_assignment].iter().any(|assignment| {
+            assignment
+                .get(index)
+                .is_some_and(|&slot| slot != postretro_lighting::NO_SHADOW_SLOT)
+        });
+        let tagged = mirror_only.get(index).copied().unwrap_or(false);
+        let main_view = eligible_lights.get(index).copied().unwrap_or(false) && !tagged;
+        *held = assigned && !main_view && (tagged || *held);
+    }
+}
+
+/// The main view's light records never carry a mirror-only light's shadow
+/// slot. The dynamic prefix takes the main view's level slots directly; this
+/// clears the slot on the animated-tail record and the appended
+/// selected-static record of each promoted light the mirror alone holds a
+/// slot for, so main-view movers and meshes shade it unshadowed.
+pub(super) fn clear_mirror_only_promoted_slots(
+    bytes: &mut [u8],
+    full: &FullRenderer,
+    lookup: &PromotionCandidateLookup,
+    held: &[bool],
+) {
+    let size = postretro_lighting::GPU_LIGHT_SIZE;
+    let mirror_only = |candidate: Option<&Option<usize>>| {
+        candidate
+            .copied()
+            .flatten()
+            .is_some_and(|candidate| held.get(candidate).copied().unwrap_or(false))
+    };
+    let clear = |bytes: &mut [u8], record: usize| {
+        if let Some(record) = bytes.get_mut(record * size..(record + 1) * size) {
+            postretro_lighting::patch_shadow_slots(record, &[postretro_lighting::NO_SHADOW_SLOT]);
+            postretro_lighting::patch_cube_slots(record, &[postretro_lighting::NO_SHADOW_SLOT]);
+        }
+    };
+    let dynamic = full.light_count as usize;
+    for animated_index in 0..full.animated_baked_light_count {
+        if mirror_only(lookup.animated_baked.get(animated_index)) {
+            clear(bytes, dynamic + animated_index);
+        }
+    }
+    let suffix = dynamic + full.animated_baked_light_count;
+    for (appended, selection_index) in full
+        .promoted_baked_records
+        .iter()
+        .filter_map(|record| record.source.selected_static_index())
+        .enumerate()
+    {
+        if mirror_only(lookup.selected_static.get(selection_index)) {
+            clear(bytes, suffix + appended);
+        }
+    }
+}
+
+/// One pool's occupancy by admission rank, from its candidate-indexed
+/// assignment.
+pub(super) fn pool_occupancy(
+    assignment: &[u32],
+    capacity: usize,
+    full: &FullRenderer,
+    held: &[bool],
+) -> ShadowPoolOccupancy {
+    let mut occupancy = ShadowPoolOccupancy {
+        capacity: capacity as u32,
+        ..ShadowPoolOccupancy::default()
+    };
+    for (candidate_index, &slot) in assignment.iter().enumerate() {
+        if slot == postretro_lighting::NO_SHADOW_SLOT {
+            continue;
+        }
+        let promoted = shadow_candidate_is_promoted_baked(
+            &full.shadow_candidate_selection_indices,
+            &full.shadow_candidate_animated_baked_indices,
+            candidate_index,
+        );
+        if held.get(candidate_index).copied().unwrap_or(false) {
+            occupancy.mirror_only += 1;
+            occupancy.promoted_mirror_only += u32::from(promoted);
+        } else {
+            occupancy.main += 1;
+            occupancy.promoted_main += u32::from(promoted);
+        }
+    }
+    occupancy
 }
 
 impl Renderer {

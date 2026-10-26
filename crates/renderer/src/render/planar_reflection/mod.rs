@@ -69,6 +69,10 @@ pub(super) struct PlanarReflectionPass {
     /// Mirror colour and depth at the planar layer's extent; they exist
     /// exactly while the planar layer does.
     targets: Option<PlanarTargets>,
+    /// A layer build waits for the next extent commit: a scene extent was
+    /// recorded but not committed when the build was asked for. Every commit
+    /// path consumes it, so a commit that moves no scene still builds.
+    build_deferred: bool,
     draws: mirror_draws::MirrorDraws,
     /// The mirror's billboards and particles, in their own instance store.
     sprites: mirror_sprites::MirrorSprites,
@@ -134,6 +138,7 @@ impl PlanarReflectionPass {
             uploaded_inputs: None,
             pipelines: pipelines::PlanarPipelines::new(device, camera_layout, material_layout),
             targets: None,
+            build_deferred: false,
             draws: mirror_draws::MirrorDraws::default(),
             sprites: mirror_sprites::MirrorSprites::new(device, sprite_instance_layout),
             #[cfg(any(test, feature = "dev-tools", feature = "capture"))]
@@ -204,8 +209,8 @@ impl PlanarReflectionPass {
         &self.compose_union
     }
 
-    /// Drop the level's mirror view, visible cells and targets. Every
-    /// geometry install, unload included, starts here.
+    /// Drop the level's mirror view, visible cells, targets, world draws and
+    /// sprites. Every geometry install, unload included, starts here.
     pub fn clear_level(&mut self) {
         self.camera = None;
         if let VisibleCells::Culled(cells) = &mut self.visible {

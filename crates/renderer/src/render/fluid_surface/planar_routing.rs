@@ -7,7 +7,7 @@ use postretro_render_cpu::fluid_surface::reflection::{
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::fluid_surface::{FluidMaterialRange, FluidSurfaceMesh};
 use postretro_render_cpu::planar_reflection::{
-    PLANE_HEIGHT_TOLERANCE, PlanarCandidates, planar_preset,
+    PLANE_HEIGHT_TOLERANCE, PLANE_UP_NORMAL_MIN, PlanarCandidates, planar_preset,
 };
 
 use super::*;
@@ -53,7 +53,7 @@ pub(super) fn split_planar_ranges(
                     .iter()
                     .all(|&corner| {
                         let vertex = &mesh.vertices[corner];
-                        vertex.normal[1] > 0.9999
+                        vertex.normal[1] > PLANE_UP_NORMAL_MIN
                             && (vertex.position[1] - h).abs() <= PLANE_HEIGHT_TOLERANCE
                             && probe[corner] != FLUID_REFLECTION_NO_PROBE
                     })
@@ -243,7 +243,6 @@ impl FluidSurfacePass {
         self.planar.route = None;
         let Some(extent) = wanted else {
             self.planar.group = None;
-            drop(released);
             return;
         };
         let layer = PlanarLayer::new(device, extent);
@@ -272,6 +271,8 @@ impl FluidSurfacePass {
         {
             self.planar.layer_builds += 1;
         }
+        // The old layer drops only once the group holds the new view, as a
+        // superseded SSR target drops only after group 5 holds its successor.
         drop(released);
     }
 
@@ -321,6 +322,9 @@ impl FluidSurfacePass {
         route: Option<f32>,
         bound: &mut BoundSceneInputs,
     ) {
+        // A non-reflecting draw after a planar run may keep the planar group 5
+        // bound: its plain entry reads only the fog weight and scene depth,
+        // which both groups hold identically.
         let (Some(height), Some(planar)) = (route, self.planar.group.as_ref()) else {
             pass.draw_indexed(
                 range.index_start..range.index_start + range.index_count,

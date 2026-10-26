@@ -2,7 +2,8 @@
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // Planar passes bind no probe resource: the mask reads the main view's own
-// depth for occlusion and the main eye for R, nothing else.
+// depth for occlusion and the main eye for R, nothing else. Both entry
+// points are pinned whole by text snapshot, so no cut lands unreviewed.
 
 struct PlanarInputs {
     main_vp: mat4x4<f32>,

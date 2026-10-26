@@ -253,14 +253,18 @@ impl Renderer {
         let promotion_mesh_frame_plan = selected_static_needs_mesh_gate
             .then(|| mesh_frame_plans.as_ref().map(|plans| &plans.world))
             .flatten();
-        // The mesh-instance cap's occupancy by admission rank (§7.3a, Pool rank).
-        let mesh_occupancy = mesh_frame_plans
-            .as_ref()
-            .map(mesh_instances::MeshFramePlans::occupancy)
-            .unwrap_or_default();
-        self.full_mut()
-            .mirror_lighting
-            .set_mesh_occupancy(mesh_occupancy);
+        // The mesh-instance cap's occupancy by admission rank (§7.3a, Pool
+        // rank). A frame that draws no world plans nothing, so it keeps the
+        // last world frame's count.
+        if render_world {
+            let mesh_occupancy = mesh_frame_plans
+                .as_ref()
+                .map(mesh_instances::MeshFramePlans::occupancy)
+                .unwrap_or_default();
+            self.full_mut()
+                .mirror_lighting
+                .set_mesh_occupancy(mesh_occupancy);
+        }
         drop(mesh_plan_scope);
         if render_world {
             let light_slots_scope = cpu.scope(RenderStage::LightSlots);

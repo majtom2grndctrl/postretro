@@ -2,6 +2,8 @@
 //! entry's first frame draws from the presented pose.
 //! See: context/lib/boot_sequence.md §1 · context/lib/rendering_pipeline.md §4
 
+use postretro_visibility::VisibleCells;
+
 /// One streamed resource's answer for the settle pose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResourceSettle {
@@ -68,16 +70,17 @@ pub(crate) struct SettleSetSize {
     pub(crate) lightmap_blocks: Option<usize>,
 }
 
-/// The cells of `mirror_reach` that `main` does not draw: what only the
-/// planar mirror adds to the frame's drawn set. None when `main` draws all.
+/// The cells of `mirror_cells` (the mirror's drawable visible cells) that
+/// `main` does not draw: what only the planar mirror adds to the frame's
+/// drawn set. Empty when `main` draws all.
 pub(crate) fn mirror_only_cells<'a>(
-    main: &'a postretro_visibility::VisibleCells,
-    mirror_reach: &'a [u32],
+    main: &'a VisibleCells,
+    mirror_cells: &'a [u32],
 ) -> impl Iterator<Item = u32> + 'a {
-    mirror_reach.iter().copied().filter(move |cell| match main {
+    mirror_cells.iter().copied().filter(move |cell| match main {
         // Ascending: the walk's and the fallbacks' sets both are.
-        postretro_visibility::VisibleCells::Culled(cells) => cells.binary_search(cell).is_err(),
-        postretro_visibility::VisibleCells::DrawAll => false,
+        VisibleCells::Culled(cells) => cells.binary_search(cell).is_err(),
+        VisibleCells::DrawAll => false,
     })
 }
 
@@ -99,18 +102,18 @@ impl crate::session::Session {
 
     /// The held pose's lightmap blocks that only the planar mirror draws and
     /// the camera cell's baked set does not hold: blocks of the cells in
-    /// `mirror_reach` that `main` does not draw, outside the baked set and
-    /// the pins. `None` when the level's lightmap does not stream or has not
+    /// `mirror_cells`, the mirror's drawable visible cells, that `main` does
+    /// not draw, outside the baked set and the pins. `None` when the level's lightmap does not stream or has not
     /// derived demand yet. Read after a Settling frame's streaming step, so
     /// the baked set is the held pose's. Allocates nothing.
     pub(crate) fn mirror_only_lightmap_blocks(
         &self,
-        main: &postretro_visibility::VisibleCells,
-        mirror_reach: &[u32],
+        main: &VisibleCells,
+        mirror_cells: &[u32],
     ) -> Option<usize> {
         self.level_streaming
             .lightmap()?
-            .blocks_outside_camera_set(mirror_only_cells(main, mirror_reach))
+            .blocks_outside_camera_set(mirror_only_cells(main, mirror_cells))
     }
 
     /// Lightmap blocks the latest frame drew while not installed; `None`

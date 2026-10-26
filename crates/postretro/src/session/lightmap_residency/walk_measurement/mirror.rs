@@ -5,21 +5,22 @@
 // the app's own `PlanarRenderPreparation` at the very high tier's preset:
 // selection over the level's candidate planes, the cropped mirror camera
 // from the walk's eye, and the mirror's seeded walk on its own scratch. The
-// frame then streams main visible ∪ mirror reach and SH's gated set, exactly
-// the sets the play frame hands `StreamingFrame`, so the lightmap's §4 path
-// rules decide reads as in play. Light ranking is not modelled: it reads no
-// lightmap block. Off, the run is the plain camera walk.
+// frame then streams main visible ∪ the mirror's drawable visible cells, and
+// SH's gated set, exactly the sets the play frame hands `StreamingFrame`, so
+// the lightmap's §4 path rules decide reads as in play. Light ranking is not
+// modelled: it reads no lightmap block. Off, the run is the plain camera walk.
 
 use std::ops::Range;
 
 use postretro_level_loader::LevelWorld;
-use postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::planar_reflection::{PlanarPreset, planar_preset};
 use postretro_visibility::{MirrorVisibilityPath, VisibilityPath, VisibleCells};
 
 use crate::camera::RenderCamera;
-use crate::render_preparation::{PlanarRenderPreparation, VisibleRenderPreparation};
+use crate::render_preparation::{
+    PlanarRenderPreparation, VisibleRenderPreparation, probe_bound_fluid_volumes,
+};
 
 /// The play frame's planar mirror step, held across one run's frames so
 /// selection keeps its hysteresis, as in play.
@@ -37,19 +38,8 @@ impl WalkMirror {
     /// fluid volume that has a probe-bound face reflecting: the walk loads no
     /// manifest, so it takes capture's rule, the widest the app can select.
     pub(super) fn install(world: &LevelWorld) -> Self {
-        let reflecting: Vec<u32> = world
-            .environment_volumes
-            .volumes
-            .iter()
-            .enumerate()
-            .filter(|(index, volume)| {
-                !volume.fluid.is_empty()
-                    && volume_has_bound_face(world.reflection_probes.as_ref(), *index)
-            })
-            .map(|(index, _)| index as u32)
-            .collect();
         let mut render = PlanarRenderPreparation::default();
-        render.install(world, &reflecting);
+        render.install(world, &probe_bound_fluid_volumes(world));
         Self {
             render,
             preset: planar_preset(FluidReflectionQuality::VeryHigh)
@@ -63,8 +53,8 @@ impl WalkMirror {
         self.render.candidate_planes()
     }
 
-    /// O1 after the camera walk (`main`): select, crop, seed and walk the
-    /// mirror, then tally this frame into `stats`.
+    /// The mirror step after the camera walk (`main`): select, crop, seed
+    /// and walk the mirror, then tally this frame into `stats`.
     pub(super) fn prepare(
         &mut self,
         world: &LevelWorld,
@@ -76,7 +66,6 @@ impl WalkMirror {
         self.render
             .prepare(world, camera, main, Some(self.preset), &[], &main.stats.cpu);
         stats.frames += 1;
-        stats.held_frames += u64::from(self.render.held_selection().is_some());
         let Some(path) = self.render.path() else {
             return;
         };
@@ -121,14 +110,14 @@ impl WalkMirror {
     }
 }
 
-/// One run's mirror, per frame of the walk.
+/// One run's mirror, per frame of the walk. Mirror-only cells are drawable
+/// cells: the mirror's drawable visible cells the main view does not draw,
+/// never the empty cells its reach adds.
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct MirrorStats {
     pub(super) frames: u64,
-    /// Frames ending with a plane selected, a mirror view or not (an empty
-    /// crop or no seed in the cropped frustum holds selection, drawing none).
-    pub(super) held_frames: u64,
-    /// Frames with a selected plane and a mirror view.
+    /// Frames with a selected plane and a mirror view. A plane that yields
+    /// (an empty crop, or no seed in the cropped frustum) is not selected.
     pub(super) selected_frames: u64,
     pub(super) walked: u64,
     pub(super) tripped: u64,
@@ -136,8 +125,8 @@ pub(super) struct MirrorStats {
     /// Completed mirror walks with the main view on a walk path: the frames
     /// whose mirror cells may add reads.
     pub(super) read_frames: u64,
-    /// Mirror-only cells (mirror reach the main view does not draw), summed
-    /// over frames.
+    /// Mirror-only cells (the mirror's drawable visible cells the main view
+    /// does not draw), summed over frames.
     pub(super) mirror_only_cell_frames: u64,
     pub(super) frames_with_mirror_only: u64,
     pub(super) max_mirror_only_cells: u32,
@@ -150,12 +139,11 @@ pub(super) struct MirrorStats {
 impl MirrorStats {
     pub(super) fn line(&self) -> String {
         format!(
-            "{} frames: selected plane with a mirror view {} frames ({} held selection; mirror \
-             walked {}, tripped {}, other {}; reads allowed {}); mirror-only cells {} \
-             cell-frames in {} frames (max {}/frame, {} distinct cells), {} block-frames",
+            "{} frames: selected plane with a mirror view {} frames (mirror walked {}, \
+             tripped {}, other {}; reads allowed {}); mirror-only cells {} cell-frames in {} \
+             frames (max {}/frame, {} distinct cells), {} block-frames",
             self.frames,
             self.selected_frames,
-            self.held_frames,
             self.walked,
             self.tripped,
             self.other,
@@ -190,8 +178,8 @@ fn mirror_only_cells(main: &VisibleCells, drawn: &VisibleCells, out: &mut Vec<u3
 mod tests {
     use super::*;
 
-    // The mirror-only count is the mirror's reach the main view does not
-    // draw: cells both draw count once, as the main view's.
+    // The mirror-only count is the mirror's drawn cells the main view does
+    // not draw: cells both draw count once, as the main view's.
     #[test]
     fn mirror_only_cells_keep_only_cells_the_main_view_does_not_draw() {
         let main = VisibleCells::Culled(vec![1, 3, 5]);

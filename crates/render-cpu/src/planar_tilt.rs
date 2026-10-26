@@ -1,16 +1,24 @@
 // Planar pixel tilt, GPU-free: the planar resolve's cell ray, mirror reprojection and lookup.
 // See: context/lib/rendering_pipeline.md §7.3a
 
-// The CPU reference for `planar_resolve.wgsl`'s `planar_` functions, which
-// mirror these statement for statement; a renderer test pins both texts.
-// A pixel-style cell composes the shared fluid helpers, so its offset,
-// tilted normal and ray are SSR's and the probe term's, from the unpulled
-// cell centre: the planar layer reads no probe box, capture point, Fresnel,
-// capture shadow or probe colour. The ray enters only the reflection law and
-// the reprojection, which clamps (clip w to a floor, the texel to the
-// target), so no direction quantity is ever branched on, selected by or
-// weighted. The tilt moves where the layer samples; c is the sampled
-// texel's coverage, D and R.
+// The CPU reference for `planar_resolve.wgsl`'s tilt: `planar_tilt_ray`,
+// `planar_mirror_texel`, `planar_mirror_surface`, `planar_covered` and
+// `planar_tilted_point` mirror the WGSL functions of the same names statement
+// for statement, and `planar_resolve_texel` mirrors the fragment's style
+// switch and lookup; a renderer test pins both texts. A pixel-style cell
+// composes the shared fluid helpers, so its offset, tilted normal and ray are
+// SSR's and the probe term's, from the unpulled cell centre: the planar layer
+// reads no probe box, capture point, Fresnel, capture shadow or probe colour.
+// The ray enters only the reflection law and the reprojection, which clamps
+// (clip w to a floor, the texel to the target). Nothing here branches on,
+// selects by or weights a direction quantity. The composed shared helpers
+// hold the only such branch and select, both placements SSR and the probe
+// term share that never route, cut or weight: the horizon floor in
+// `fluid_reflection_above_horizon` (`reflection_above_horizon` here) and the
+// zero-length guard on the texel axes in `fluid_reflection_cell_normal`. The
+// tilt moves where the layer samples: c is 0 where the untilted texel holds
+// no content, else the sampled texel's coverage times its D fade times the
+// fragment's R fade.
 
 use glam::{IVec2, Mat4, Vec2, Vec3, Vec4};
 

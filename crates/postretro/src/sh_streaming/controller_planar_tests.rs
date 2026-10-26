@@ -1,14 +1,11 @@
 // Planar mirror SH visible targeting from the app's real preparation (AC 19, 20, 21).
 // See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
-use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_visibility::VisibleCells;
 
 use super::tests::{controller, topology};
 use super::*;
 use crate::render_preparation::planar_test_fixtures::*;
-
-const PLANAR: FluidReflectionQuality = FluidReflectionQuality::VeryHigh;
 
 /// One cluster per fixture cell, so a cell's cluster id is its cell id.
 fn per_cell_clusters() -> ShResidencyController {
@@ -40,6 +37,10 @@ fn planar_mirror_cells_join_sh_visible_targeting_on_a_walk_path() {
     for room in MIRROR_ROOMS {
         assert!(controller.is_targeted(room), "room {room}");
     }
+    assert!(
+        !controller.is_targeted(EMPTY_ATTIC),
+        "the mirror's empty reach draws nothing and adds no SH read"
+    );
 }
 
 // AC 19 (SH half): with the main view on its solid-cell fallback, SH

@@ -1,6 +1,7 @@
 // Fluid surface pass: environment-volume surface faces drawn translucent,
 // two-sided and moving in whole texels, after skinned meshes and before billboards.
-// The screen-space reflection pass lives in the submodule `fluid_surface/reflection_pass.rs`.
+// Submodules: the screen-space reflection pass (`fluid_surface/reflection_pass.rs`) and
+// planar routing (`fluid_surface/planar_routing.rs`: per-draw plane split, planar group 5).
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use std::num::NonZeroU64;
@@ -31,8 +32,9 @@ pub(crate) use super::fluid_scene_inputs::{FLUID_SCENE_INPUTS_GROUP, FluidSceneI
 
 use super::*;
 
-// The reflection pass reaches the installed level's buffers, so it lives
-// beneath this module.
+// The reflection pass and planar routing (the per-draw plane split and the
+// planar group 5) reach the installed level's buffers, so they live beneath
+// this module.
 mod planar_routing;
 mod reflection_pass;
 pub(crate) use reflection_pass::FluidReflectionMarchTuning;
@@ -290,9 +292,10 @@ pub(crate) struct FluidSurfacePass {
     /// reflecting one. Each draw takes its row's variant.
     pipelines: [wgpu::RenderPipeline; 2],
     params_bind_group_layout: wgpu::BindGroupLayout,
-    /// Group 5. Built at full init, level or not, and rebuilt only by the
-    /// scene-target rebuild, when a fluid install or a tier change creates,
-    /// resizes or releases the reflection target, and at unload.
+    /// The SSR group 5; planar routing binds its own group 5 for the routed
+    /// plane's runs. Built at full init, level or not, and rebuilt only by
+    /// the scene-target rebuild, when a fluid install or a tier change
+    /// creates, resizes or releases the reflection target, and at unload.
     scene_inputs: FluidSceneInputs,
     /// The screen-space reflection pass, its pipeline built at full init at
     /// every tier; its target exists only while a level with a probe-bound
@@ -640,7 +643,8 @@ impl FluidSurfacePass {
 
     /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
     /// binds 1, 4 and the scene inputs (5), built with the scene targets and
-    /// the reflection target.
+    /// the reflection target. Group 5 starts as the SSR group; the routed
+    /// plane's reflecting runs rebind the planar group (`planar_routing.rs`).
     /// Each draw takes its row's shader variant under `light_term_mask` and
     /// `quality`, the frame's group-0 mask and tier, the ones the reflection
     /// pass took its draws by; the pipeline is set only where it changes

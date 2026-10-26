@@ -7,16 +7,15 @@ use glam::{Mat4, Vec3};
 
 use super::oracle::{oracle_from_camera, oracle_from_seeds};
 use super::test_fixtures::{
-    GridWorld, MIRROR_CROP_PAD_RADIANS, SplitMix64, axis_node, axis_rect, boxes_world,
-    camera_view_proj, cyclic_rings, look_at_view_proj, open_lattice, portal, sample_cameras,
-    stacked_slab_shaft,
+    GridWorld, SplitMix64, axis_node, axis_rect, boxes_world, camera_view_proj, cyclic_rings,
+    look_at_view_proj, open_lattice, portal, sample_cameras, stacked_slab_shaft,
 };
 use super::tests::{SWEEP_CAMERAS, SWEEP_SEED, fixtures, input, unclassified_misses};
 use super::{
     MAX_PORTAL_WALK_STEPS, PORTAL_BYPASS_DISTANCE, PortalWalkScratch, RegionWalkStats, WalkView,
     walk_from_camera, walk_from_seeds,
 };
-use crate::mirror_crop::{MirrorCropScratch, crop_mirror_view_proj};
+use crate::mirror_crop::{MIRROR_CROP_PAD_RADIANS, MirrorCropScratch, crop_mirror_view_proj};
 use crate::visibility::{
     FrustumPlane, NEAR_PLANE_INDEX, extract_frustum_planes, is_aabb_outside_frustum,
 };

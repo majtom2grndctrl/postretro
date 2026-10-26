@@ -3,10 +3,16 @@
 
 // Composed with fluid_motion.wgsl and fluid_reflection_ray.wgsl, as the
 // reflection pass composes them, so a pixel-style cell takes the same offset,
-// tilted normal and ray SSR and the probe term take. Mirrors
-// `postretro_render_cpu::planar_tilt`; each planar_ function here is pinned
-// to it. Coverage, D and R are the only weights: c is 0 where the mirror
-// holds no content, else the distance fades, and the tilt moves only where
+// tilted normal and ray SSR and the probe term take. `planar_tilt_ray`,
+// `planar_mirror_texel`, `planar_mirror_surface`, `planar_covered`,
+// `planar_tilted_point` and the fragment's style switch and lookup mirror
+// `postretro_render_cpu::planar_tilt` statement for statement, both texts
+// pinned; the vertex entry, the fade and the layer value are pinned whole by
+// text snapshot, the fade following
+// `postretro_render_cpu::planar_reflection::planar_fade` (a zero limit is its
+// unlimited). Coverage, D and R are the only weights: c is 0 where the
+// untilted or the sampled mirror texel holds no content, else the sampled
+// texel's D fade times the fragment's R fade, and the tilt moves only where
 // the layer samples. Planar binds no probe resource.
 
 // --- Group 0: camera uniforms (shared with forward, fluid and reflection) ---

@@ -111,9 +111,9 @@ impl<T: Display> Display for Count<T> {
 }
 
 /// A planar plane's height to the millimetre, or `none` with no mirror view.
-struct Plane(Option<f32>);
+struct PlaneHeight(Option<f32>);
 
-impl Display for Plane {
+impl Display for PlaneHeight {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             Some(h) => write!(f, "{h:.3}"),
@@ -154,8 +154,8 @@ impl SettleSummary {
             Count(log.sh_unsettled_peak),
             Count(log.lightmap_unsettled_peak),
             Count(reveal_misses),
-            Plane(log.planar_held),
-            Plane(planar_reveal),
+            PlaneHeight(log.planar_held),
+            PlaneHeight(planar_reveal),
             Count(log.mirror_only_blocks),
         )
     }

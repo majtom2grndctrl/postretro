@@ -76,12 +76,12 @@ impl App {
     /// The level's streaming sessions survive; the frame that presents the
     /// result composes the SH it made resident.
     ///
-    /// O2, O3: visibility runs O1's order from the held pose at the tier the
-    /// renderer draws with, the planar mirror included, and its drawn cells
-    /// (main and mirror) are what Settling demands on any path: the lightmap
-    /// settles every block the pose draws. SH visible targeting takes the
-    /// play frame's gate, and SH settles its mandatory tier only. From
-    /// reveal the play frame's path rules apply.
+    /// Visibility runs the play frame's order from the held pose at the tier
+    /// the renderer draws with, the planar mirror included, and its drawn
+    /// cells (main and mirror) are what Settling demands on any path, a main
+    /// fallback included: the lightmap settles every block the pose draws.
+    /// SH visible targeting takes the play frame's gate, and SH settles its
+    /// mandatory tier only. From reveal the play frame's path rules apply.
     pub(crate) fn prepare_held_level_frame(
         &mut self,
         view: HeldLevelView,
@@ -131,13 +131,13 @@ impl App {
         }))
     }
 
-    /// The held pose's visibility in O1's order: the camera walk, then the
-    /// planar mirror at `preset` (`None` below very high), which selects,
-    /// crops and walks from the held pose and gathers its mirror-only light
-    /// reach. The mirror's state stays in `planar_render`, whose selection
-    /// history carries into the reveal frame, so at the same pose the reveal
-    /// selects the plane the held frames did. `None` without a level or
-    /// session.
+    /// The held pose's visibility in the play frame's order: the camera
+    /// walk, then the planar mirror at `preset` (`None` below very high),
+    /// which selects, crops and walks from the held pose and tags its
+    /// mirror-only light reach. The mirror's state stays in `planar_render`,
+    /// whose selection history carries into the reveal frame, so at the same
+    /// pose the reveal selects the plane the held frames did. `None` without
+    /// a level or session.
     pub(crate) fn held_level_visibility(
         &mut self,
         view: &HeldLevelView,
@@ -150,7 +150,7 @@ impl App {
             let registry = session.scripting.script_ctx.registry.borrow();
             crate::rebuild_blocked_portals(&mut self.blocked_portals, Some(world), &registry);
         }
-        let mut visible_render = VisibleRenderPreparation::for_level(
+        let visible_render = VisibleRenderPreparation::for_level(
             world,
             view.camera.eye_position,
             view.camera.view_projection,
@@ -159,7 +159,7 @@ impl App {
             &mut self.portal_walk_scratch,
             self.cpu_timer.gate(),
         );
-        self.prepare_planar_mirror_at(&view.camera, &mut visible_render, preset);
+        self.prepare_planar_mirror_at(&view.camera, &visible_render, preset);
         Some(visible_render)
     }
 
@@ -222,10 +222,11 @@ impl App {
                     self.planar_render.camera(),
                     self.planar_render.visible(),
                 );
-                // Mirror-only light reach, so held frames rank the lights the
-                // reveal frame's mirror reaches, as the play frame does.
+                // Set for symmetry with the play frame, and harmless: a
+                // compose-only frame ranks no light, and the next world frame
+                // sets its own reach before it ranks.
                 renderer
-                    .set_planar_mirror_light_reach(&held.visible_render.mirror_light_cell_aabbs);
+                    .set_planar_mirror_light_reach(self.planar_render.mirror_light_cell_aabbs());
                 renderer.update_per_frame_uniforms(
                     held.view.camera.view_projection,
                     held.view.camera.eye_position,

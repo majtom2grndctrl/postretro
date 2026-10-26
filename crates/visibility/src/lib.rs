@@ -1,5 +1,5 @@
-// CPU-side runtime portal traversal and frustum visibility.
-// See: context/lib/build_pipeline.md §Runtime visibility
+// CPU-side runtime portal traversal and frustum visibility, and the planar water mirror's crop and walk.
+// See: context/lib/build_pipeline.md §Runtime visibility · context/lib/rendering_pipeline.md §2, §7.3a
 
 mod cpu_stages;
 mod mirror_crop;
@@ -19,13 +19,12 @@ mod visibility;
 pub const PORTAL_WALK_EPOCH: u32 = 3;
 
 pub use cpu_stages::VisibilityStage;
-pub use mirror_crop::{
-    MirrorCropScratch, NdcRect, crop_mirror_view_proj, mirror_crop_rect, ndc_rect_to_full_screen,
-};
+pub use mirror_crop::{MIRROR_CROP_PAD_RADIANS, MirrorCropScratch, crop_mirror_view_proj};
 #[cfg(any(test, feature = "test-seams"))]
 pub use mirror_visibility::determine_mirror_visible_cells_capped;
 pub use mirror_visibility::{
-    MirrorView, MirrorVisibility, MirrorVisibilityPath, determine_mirror_visible_cells,
+    MIRROR_CLIP_BIAS, MIRROR_FOG_BAND, MirrorView, MirrorVisibility, MirrorVisibilityPath,
+    determine_mirror_visible_cells,
 };
 pub use postretro_stage_timing::TimingGate;
 pub use region_walk::{

@@ -64,13 +64,17 @@ impl Renderer {
     /// layer follows a scale change at once, through the target lifecycle;
     /// D and R reach the mirror and the planar uniform on the next frame.
     /// Builds no pipeline. A tier with no planar layer has nothing to
-    /// override: it drops `preset` and returns false. Any call discards a
+    /// override: it drops `preset` and returns false, as does a renderer
+    /// before full init, which has no planar layer. Any call discards a
     /// launch seed not yet taken. Never a player setting or map key: the
     /// diagnostics panel, capture scenes and proofs only.
     pub fn set_planar_preset_override(&mut self, preset: Option<PlanarPreset>) -> bool {
         let tier = self.reflection_quality;
         let applies = planar_preset(tier).is_some();
-        let pass = &mut self.full_mut().planar_reflection;
+        let Some(full) = self.full.as_mut() else {
+            return false;
+        };
+        let pass = &mut full.planar_reflection;
         #[cfg(feature = "dev-tools")]
         {
             pass.dev.launch_seed = None;

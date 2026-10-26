@@ -187,7 +187,6 @@ fn resolve_pipeline(
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Planar Resolve Pipeline Layout"),
-        // RESOLVE_CAMERA_GROUP, RESOLVE_MATERIAL_GROUP, RESOLVE_INPUTS_GROUP.
         bind_group_layouts: &[Some(camera_layout), Some(material_layout), Some(layout)],
         immediate_size: 0,
     });

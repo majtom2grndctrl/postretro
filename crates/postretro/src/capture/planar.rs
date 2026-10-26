@@ -1,4 +1,4 @@
-// Capture's planar mirror: the scene's preset overrides and crop switch, and the play frame's mirror step.
+// Capture's planar mirror: scene preset overrides, crop switch and the play frame's mirror step.
 // See: context/lib/rendering_pipeline.md §7.3a, §7.8
 
 use postretro_level_loader::LevelWorld;
@@ -9,7 +9,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::scene::CaptureScene;
 use crate::camera::RenderCamera;
 use crate::render::Renderer;
-use crate::render_preparation::{PlanarRenderPreparation, VisibleRenderPreparation};
+use crate::render_preparation::{
+    PlanarRenderPreparation, VisibleRenderPreparation, probe_bound_fluid_volumes,
+};
 
 /// A capture scene's `planar_reflection` block: overrides on the tier's
 /// engine-constant planar preset, each optional, and the mirror crop switch.
@@ -95,16 +97,18 @@ pub(super) struct CapturePlanar {
 
 impl CapturePlanar {
     /// Apply the scene's planar block over the kept tier's preset, then run
-    /// O1's mirror step after the camera walk (`main`): install the level's
-    /// candidates, select, crop, seed and walk, tag the mirror's light reach,
-    /// and hand the renderer its mirror view and light reach. Call after the
-    /// fluid install and before the first frame, preloads included.
+    /// the play frame's mirror step after the camera walk (`main`): install
+    /// the level's candidates, select, crop, seed and walk, tag the mirror's
+    /// light reach, and hand the renderer its mirror view. The light reach is
+    /// handed over before each world frame instead (`mirror_light_cell_aabbs`),
+    /// since each frame's light ranking consumes it. Call after the fluid
+    /// install and before the first frame, preloads included.
     pub(super) fn prepare(
         world: &LevelWorld,
         renderer: &mut Renderer,
         scene: &CaptureScene,
         camera: &RenderCamera,
-        main: &mut VisibleRenderPreparation,
+        main: &VisibleRenderPreparation,
     ) -> Self {
         let crop = scene.planar_reflection.is_none_or(|planar| planar.crop);
         let mut render = PlanarRenderPreparation::default();
@@ -117,12 +121,12 @@ impl CapturePlanar {
             };
         };
         render.set_crop(crop);
-        render.install(world, &reflecting_volumes(world));
+        // Capture loads no manifest, so every probe-bound fluid volume
+        // reflects (its surface look).
+        render.install(world, &probe_bound_fluid_volumes(world));
         renderer.set_planar_candidate(render.has_candidate());
         render.prepare(world, camera, main, Some(preset), &[], &main.stats.cpu);
-        main.include_mirror_lighting(world, &render);
         renderer.set_planar_reflection_view(render.camera(), render.visible());
-        renderer.set_planar_mirror_light_reach(&main.mirror_light_cell_aabbs);
         Self {
             render,
             preset: Some(preset),
@@ -130,7 +134,13 @@ impl CapturePlanar {
         }
     }
 
-    /// Every cell the capture draws: the main view's plus the mirror's reach.
+    /// Bounds of the mirror-only light reach, which the renderer's light
+    /// ranking consumes each world frame.
+    pub(super) fn mirror_light_cell_aabbs(&self) -> &[(glam::Vec3, glam::Vec3)] {
+        self.render.mirror_light_cell_aabbs()
+    }
+
+    /// Every drawable cell the capture draws: the main view's plus the mirror's.
     pub(super) fn drawn_cells<'a>(&'a self, main: &'a VisibleCells) -> &'a VisibleCells {
         self.render.drawn_cells(main)
     }
@@ -197,25 +207,6 @@ fn path_label(path: MirrorVisibilityPath) -> String {
         MirrorVisibilityPath::NoSeeds => "no_seeds".into(),
         MirrorVisibilityPath::NoPortals => "no_portals".into(),
     }
-}
-
-/// The volumes whose fluid reflects in capture: capture loads no manifest, so
-/// every fluid volume with a probe-bound face reflects (its surface look).
-fn reflecting_volumes(world: &LevelWorld) -> Vec<u32> {
-    world
-        .environment_volumes
-        .volumes
-        .iter()
-        .enumerate()
-        .filter(|(index, volume)| {
-            !volume.fluid.is_empty()
-                && postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face(
-                    world.reflection_probes.as_ref(),
-                    *index,
-                )
-        })
-        .map(|(index, _)| index as u32)
-        .collect()
 }
 
 /// The scene's planar block over the kept tier's preset, then the preset the

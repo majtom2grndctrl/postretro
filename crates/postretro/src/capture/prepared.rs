@@ -1,30 +1,17 @@
-// Prepared static offscreen capture workload: level install, visibility, and receivers.
+// Prepared static offscreen capture: level install, visibility, preloads and frame submission.
 // See: context/lib/rendering_pipeline.md §7.8
-
-use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
-use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
 use postretro_level_loader::requested_streaming_mode;
-use postretro_visibility::VisibleCells;
 
 use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor,
     LightmapResidencyReport, Renderer, ShResidencyReport, ShSampleRegion,
 };
 use crate::render_preparation::VisibleRenderPreparation;
-use crate::runtime_movers::{
-    ENGINE_AUTO_CLOSE_MS, KinematicMoverRenderCollector, spawn_loaded_kinematic_movers,
-};
-use crate::scripting::builtins::{ClassnameDispatch, apply_classname_dispatch, register_builtins};
-use crate::scripting::map_entity::MapEntity;
-use crate::scripting_systems::attachments::SocketPoseResolver;
-use crate::scripting_systems::ghost_render::{GhostDrawFrame, GhostRenderCollector};
-use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::scripting_systems::mesh_anim::MeshClipTables;
-use crate::scripting_systems::mesh_render::MeshRenderCollector;
-use crate::scripting_systems::mover_ghost_render::{MoverGhostFrame, MoverGhostRenderCollector};
+use crate::scripting_systems::ghost_render::GhostRenderCollector;
+use crate::scripting_systems::mover_ghost_render::MoverGhostRenderCollector;
 use crate::session::sh_residency::{ShStreamingSession, require_sync_proof_mode};
 use crate::sh_streaming::controller::SyncReadResult;
 use crate::startup::session::content_root_from_map;
@@ -37,11 +24,15 @@ use super::lightmap::{
     CaptureLightmapResidency, preload_capture_lightmap, validate_lightmap_overrides,
 };
 use super::planar::{CapturePlanar, CapturePlanarReport};
+use super::receivers::{
+    CaptureCullViews, capture_mesh_models, collect_capture_receiver_draws_with_mirror,
+    spawn_capture_receiver_registry,
+};
 use super::scene::CaptureScene;
 use super::setup::{
-    capture_camera, capture_level_geometry, capture_static_lights_and_shadow_selection,
-    derive_texture_materials, install_capture_animated_promotion_bridge,
-    install_forced_active_animation_descriptors,
+    apply_scene_reflection, capture_camera, capture_level_geometry,
+    capture_static_lights_and_shadow_selection, derive_texture_materials,
+    install_capture_animated_promotion_bridge, install_forced_active_animation_descriptors,
     resolve_forced_animated_promotion_rows_from_metadata,
 };
 
@@ -181,7 +172,7 @@ impl PreparedCapture {
         let eye = camera.eye_position;
         let view_proj = camera.view_projection;
         let mut scratch = postretro_visibility::PortalWalkScratch::new();
-        let mut visible_render = VisibleRenderPreparation::for_level(
+        let visible_render = VisibleRenderPreparation::for_level(
             &world,
             eye,
             view_proj,
@@ -190,10 +181,9 @@ impl PreparedCapture {
             &mut scratch,
             postretro_visibility::TimingGate::OFF,
         );
-        // O1: the mirror step after the camera walk, before any consumer
+        // The mirror step runs after the camera walk, before any consumer
         // reads visibility, and before the first frame (the preloads below).
-        let planar =
-            CapturePlanar::prepare(&world, &mut renderer, scene, &camera, &mut visible_render);
+        let planar = CapturePlanar::prepare(&world, &mut renderer, scene, &camera, &visible_render);
         // The level's id 49, decoded once for SH and lightmaps.
         let hints = decode_level_hints(world.cluster_directory())
             .context("[Capture] id-49 cluster hints")?;
@@ -389,8 +379,19 @@ impl PreparedCapture {
         self.capture_frame_at(self.measurement_animation.time_seconds())
     }
 
+    /// Hand the renderer the planar mirror's light reach for the next world
+    /// frame. Each frame's light-slot update consumes it, so every frame
+    /// capture renders (SH preload, warmup, samples, the PNG) sets it again,
+    /// as play does; set once, every frame after the first would rank no
+    /// mirror-only light.
+    fn set_mirror_light_reach(&mut self) {
+        self.renderer
+            .set_planar_mirror_light_reach(self.planar.mirror_light_cell_aabbs());
+    }
+
     fn capture_frame_at(&mut self, animation_time_seconds: f32) -> Result<Vec<u8>> {
         let sh_drain_batch = self.take_sh_drain_batch()?;
+        self.set_mirror_light_reach();
         let result = self.renderer.capture_frame_indirect(
             self.visible_render.camera_cull(),
             &self.visible_render.light_reachable_cell_mask,
@@ -447,6 +448,7 @@ impl PreparedCapture {
         animation_time_seconds: f32,
     ) -> Result<Option<CaptureGpuTimingWindow>> {
         let sh_drain_batch = self.take_sh_drain_batch()?;
+        self.set_mirror_light_reach();
         let forced_promotion_weights: &[(usize, f32)] = if pin_promotion {
             &self.forced_promotion_weights
         } else {
@@ -532,202 +534,6 @@ impl PreparedCapture {
     }
 }
 
-/// Materialize just the VM-free receivers capture can render at a loaded
-/// instant. This deliberately does not call `install_world_cpu`: that path
-/// also runs data scripts and fires `levelLoad`.
-/// The scene file's own reflection settings, never player options or a mod
-/// manifest: the style, then the tier, then the march overrides over the
-/// tier's preset (steps, divisor, thickness, then the target fraction).
-/// Applied before the fluid install, so the install sizes the target once.
-/// Absent fields keep the renderer's defaults: pixel, high, high's preset.
-/// At a tier that runs no screen-space layer (off, low) the march overrides
-/// have nothing to override and are ignored with a warning.
-fn apply_scene_reflection(renderer: &mut Renderer, scene: &CaptureScene) {
-    if let Some(style) = scene.reflection_style {
-        renderer.set_fluid_reflection_style(style.renderer());
-    }
-    if let Some(quality) = scene.reflection_quality {
-        renderer.set_reflection_quality(quality.renderer());
-    }
-    let quality = renderer.reflection_quality();
-    if let Some(march) = scene.reflection_march {
-        if quality.runs_screen_space() {
-            if let Some(steps) = march.steps {
-                renderer.set_reflection_march_step_budget(steps);
-            }
-            if let Some(divisor) = march.divisor {
-                renderer.set_reflection_march_rows_per_stride_pixel(divisor);
-            }
-            if let Some(thickness) = march.thickness {
-                renderer.set_reflection_march_thickness(thickness);
-            }
-            if let Some(fraction) = march.fraction {
-                let applied = renderer.set_reflection_target_fraction(fraction);
-                debug_assert!(applied, "a validated fraction applies at {quality:?}");
-            }
-        } else {
-            log::warn!(
-                "[Capture] reflection_march ignored: reflection tier {quality:?} runs no \
-                 screen-space layer"
-            );
-        }
-    }
-    log::info!(
-        "[Capture] Fluid reflections: {quality:?}, {:?} style, target fraction {:?}, \
-         {} steps, divisor {}, thickness {} m",
-        renderer.fluid_reflection_style(),
-        renderer.reflection_target_fraction(),
-        renderer.reflection_march_step_budget(),
-        renderer.reflection_march_rows_per_stride_pixel(),
-        renderer.reflection_march_thickness(),
-    );
-}
-
-pub(super) fn spawn_capture_receiver_registry(
-    world: &postretro_level_loader::LevelWorld,
-) -> Result<EntityRegistry> {
-    let mut registry = EntityRegistry::new();
-    spawn_loaded_kinematic_movers(&mut registry, world, ENGINE_AUTO_CLOSE_MS)
-        .context("failed to spawn capture kinematic movers")?;
-
-    // `MapEntity` is the scripting-facing adapter over PRL records. Built-in
-    // dispatch is VM-free, so this gives capture the exact map-authored
-    // `prop_mesh` spawn contract without admitting the data-script sweep.
-    let map_entities: Vec<MapEntity> = world.map_entities.iter().cloned().map(Into::into).collect();
-    let mut dispatch = ClassnameDispatch::new();
-    register_builtins(&mut dispatch);
-    apply_classname_dispatch(&map_entities, &dispatch, &mut registry);
-
-    Ok(registry)
-}
-
-/// Validate model handles placed by capture's built-in map dispatch. An empty
-/// prop handle must fail capture instead of silently removing its draw.
-/// The renderer cache key is this verbatim string, so load it before the mesh
-/// collector submits an instance using the same handle.
-pub(super) fn capture_mesh_models(registry: &EntityRegistry) -> Result<Vec<String>> {
-    let mut seen = HashSet::new();
-    let mut models = Vec::new();
-    for (id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
-        let ComponentValue::Mesh(mesh) = value else {
-            continue;
-        };
-        if mesh.model.is_empty() {
-            bail!("capture prop_mesh receiver {id:?} has an absent or empty `model` key");
-        }
-        if seen.insert(mesh.model.clone()) {
-            models.push(mesh.model.clone());
-        }
-    }
-    Ok(models)
-}
-
-/// Mirror the windowed render-frame collector calls for capture's spawned
-/// receivers. A single-instant capture has no tick history or animation clock:
-/// alpha is therefore 1.0 and animation time is 0.0. Ghosts evaluate once at
-/// rest and present each link's style from the scene's own table, or the floor
-/// style without one (capture loads no manifest), never through the flash
-/// clamp.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn collect_capture_receiver_draws(
-    registry: &EntityRegistry,
-    world: &postretro_level_loader::LevelWorld,
-    visible_cells: &VisibleCells,
-    eye: Vec3,
-    mover_collector: &mut KinematicMoverRenderCollector,
-    mesh_collector: &mut MeshRenderCollector,
-    ghost_links: &mut crate::ghost_links::GhostLinks,
-    ghost_collector: &mut GhostRenderCollector,
-    mover_ghost_collector: &mut MoverGhostRenderCollector,
-) {
-    collect_capture_receiver_draws_with_mirror(
-        registry,
-        world,
-        CaptureCullViews {
-            main: visible_cells,
-            drawn: visible_cells,
-            mirror: None,
-        },
-        eye,
-        mover_collector,
-        mesh_collector,
-        ghost_links,
-        ghost_collector,
-        mover_ghost_collector,
-    );
-}
-
-/// The cell sets capture's receivers collect against, as the play frame's:
-/// the main view's (meshes' forward draws and shadows, ghosts), every drawn
-/// cell (movers), and the planar mirror's (mirror-reached meshes), `None`
-/// with no mirror.
-pub(super) struct CaptureCullViews<'a> {
-    pub(super) main: &'a VisibleCells,
-    pub(super) drawn: &'a VisibleCells,
-    pub(super) mirror: Option<&'a VisibleCells>,
-}
-
-/// [`collect_capture_receiver_draws`] with the planar mirror's sets.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn collect_capture_receiver_draws_with_mirror(
-    registry: &EntityRegistry,
-    world: &postretro_level_loader::LevelWorld,
-    views: CaptureCullViews<'_>,
-    eye: Vec3,
-    mover_collector: &mut KinematicMoverRenderCollector,
-    mesh_collector: &mut MeshRenderCollector,
-    ghost_links: &mut crate::ghost_links::GhostLinks,
-    ghost_collector: &mut GhostRenderCollector,
-    mover_ghost_collector: &mut MoverGhostRenderCollector,
-) {
-    let visible_cells = views.main;
-    mover_collector.collect(registry, world, views.drawn, 1.0);
-
-    let clip_tables = MeshClipTables::new();
-    let hit_zones = HitZoneStore::new();
-    mesh_collector.collect_with_mirror(
-        registry,
-        world,
-        visible_cells,
-        views.mirror,
-        1.0,
-        0.0,
-        &clip_tables,
-        eye,
-        &hit_zones,
-    );
-
-    ghost_links.evaluate_for_capture(registry);
-    ghost_collector.collect(
-        registry,
-        ghost_links.members(),
-        &GhostDrawFrame {
-            world,
-            visible: visible_cells,
-            anim_time: 0.0,
-            camera_pos: eye,
-            tables: &clip_tables,
-            socket_poses: &SocketPoseResolver::new(&hit_zones),
-            force_resample_model: &|_| false,
-            limiter: None,
-            // A capture never involves the limiter.
-            transparency: Default::default(),
-        },
-    );
-    mover_ghost_collector.collect(
-        registry,
-        ghost_links.members(),
-        &MoverGhostFrame {
-            world,
-            visible: visible_cells,
-            movers: mover_collector,
-            limiter: None,
-            transparency: Default::default(),
-        },
-    );
-}
-
 #[cfg(test)]
 mod measurement_animation_tests {
     use super::*;
@@ -759,5 +565,44 @@ mod measurement_animation_tests {
         assert_eq!(clock.ticks, total);
         assert_eq!(actual, expected);
         assert_eq!(clock.time_seconds(), expected);
+    }
+}
+
+#[cfg(test)]
+mod mirror_light_reach_tests {
+    // Regression: capture set the planar mirror's light reach once, and the
+    // first world frame's light-slot update consumed it, so every later
+    // frame (SH preload, warmup, samples, the PNG) ranked no mirror-only
+    // light. Every world-frame entry sets it again before rendering.
+    #[test]
+    fn capture_world_frames_each_set_the_mirror_light_reach_before_rendering() {
+        let source = include_str!("prepared.rs")
+            .split("#[cfg(test)]\nmod ")
+            .next()
+            .expect("production code precedes the test modules");
+        for (entry, render) in [
+            (
+                "fn capture_frame_at(",
+                "self.renderer.capture_frame_indirect(",
+            ),
+            (
+                "fn submit_frame_without_readback(",
+                "self.renderer.capture_measurement_frame_indirect(",
+            ),
+        ] {
+            assert_eq!(source.matches(render).count(), 1, "{render}");
+            let body = source
+                .split(entry)
+                .nth(1)
+                .and_then(|rest| rest.split("\n    }\n").next())
+                .unwrap_or_else(|| panic!("{entry} exists"));
+            let set = body
+                .find("self.set_mirror_light_reach();")
+                .unwrap_or_else(|| panic!("{entry} sets the mirror light reach"));
+            let rendered = body
+                .find(render)
+                .unwrap_or_else(|| panic!("{entry} renders through {render}"));
+            assert!(set < rendered, "{entry} sets the reach before it renders");
+        }
     }
 }

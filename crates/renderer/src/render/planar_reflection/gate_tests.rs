@@ -59,10 +59,104 @@ fn test_only_modules(mod_rs: &str) -> Vec<&str> {
         .collect()
 }
 
+/// What a second recording thread, bundle or encoder needs.
+const SECOND_ENCODER: [&str; 6] = [
+    "std::thread",
+    "thread::spawn",
+    "rayon",
+    "RenderBundle",
+    "create_render_bundle_encoder",
+    "create_command_encoder",
+];
+
+/// Whether `ch` continues an identifier.
+fn word_char(ch: Option<char>) -> bool {
+    ch.is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+}
+
+/// Every `fn name` item in `source`, from `fn` to its closing brace.
+fn rust_fns<'a>(source: &'a str, name: &str) -> Vec<&'a str> {
+    let needle = format!("fn {name}");
+    source
+        .match_indices(&needle)
+        .filter(|(at, _)| {
+            !word_char(source[..*at].chars().next_back())
+                && source[at + needle.len()..].starts_with(['(', '<'])
+        })
+        .map(|(at, _)| {
+            let open = at + source[at..].find('{').expect("a body");
+            let mut depth = 0i32;
+            let close = source[open..]
+                .char_indices()
+                .find_map(|(offset, ch)| {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    (depth == 0).then_some(open + offset)
+                })
+                .expect("the body closes");
+            &source[at..=close]
+        })
+        .collect()
+}
+
+/// The callees `body` names bare or through `self.`: the calls that can
+/// reach another function of the same file.
+fn local_calls(body: &str) -> Vec<&str> {
+    let mut calls = Vec::new();
+    let mut start = None;
+    for (at, ch) in body.char_indices().chain([(body.len(), ' ')]) {
+        if ch.is_alphanumeric() || ch == '_' {
+            start.get_or_insert(at);
+            continue;
+        }
+        let Some(first) = start.take() else {
+            continue;
+        };
+        if !body[at..].trim_start().starts_with('(') {
+            continue;
+        }
+        let before = &body[..first];
+        if before.ends_with("self.") || !before.ends_with(['.', ':']) {
+            calls.push(&body[first..at]);
+        }
+    }
+    calls
+}
+
+/// `roots` in `source`'s production text and every function of it they reach
+/// through local calls, each name once.
+fn reached_functions(source: &str, roots: &[&str]) -> Vec<String> {
+    let text = production_text(source);
+    let mut names: Vec<&str> = roots.to_vec();
+    let mut bodies = Vec::new();
+    let mut next = 0;
+    while next < names.len() {
+        let found = rust_fns(text, names[next]);
+        assert!(!found.is_empty(), "declares fn {}", names[next]);
+        for body in found {
+            for callee in local_calls(body) {
+                if !names.contains(&callee) && !rust_fns(text, callee).is_empty() {
+                    names.push(callee);
+                }
+            }
+            bodies.push(body.to_string());
+        }
+        next += 1;
+    }
+    bodies
+}
+
 // AC 4: every planar pass source records on the frame's one encoder, single
 // threaded (Tencent CN116778049B): no thread, no rayon, no render bundle and
 // no second command encoder in the planar pass module's production files,
-// the per-draw plane routing, the mirror's light records or its sprites.
+// the per-draw plane routing, the mirror's light records or its sprites, nor
+// in the mirror recording that lives in shared files: the movers' and
+// skinned meshes' `record_mirror_draws` and the billboard pass functions the
+// mirror's sprites draw through, each with every same-file function it
+// reaches, found by name so their bodies may change.
 #[test]
 fn planar_recording_uses_only_the_frame_encoder() {
     let render = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/render");
@@ -95,19 +189,46 @@ fn planar_recording_uses_only_the_frame_encoder() {
     for file in &sources {
         let source = read(file);
         let text = production_text(&source);
-        for forbidden in [
-            "std::thread",
-            "thread::spawn",
-            "rayon",
-            "RenderBundle",
-            "create_render_bundle_encoder",
-            "create_command_encoder",
-        ] {
+        for forbidden in SECOND_ENCODER {
             assert!(
                 !text.contains(forbidden),
                 "{}: planar recording stays on the frame encoder, found `{forbidden}`",
                 file.display()
             );
+        }
+    }
+    // The shared files' mirror recording, by function. Movers and skinned
+    // meshes reach a draw call, so the extraction followed the recording.
+    let shared: [(&str, &[&str], bool); 3] = [
+        ("kinematic_brush.rs", &["record_mirror_draws"], true),
+        ("mesh_pass.rs", &["record_mirror_draws"], true),
+        (
+            "smoke.rs",
+            &[
+                "pipeline",
+                "sheet_bind_group",
+                "has_any_sheet",
+                "instance_bind_group_layout",
+                "align_up_to_dynamic_offset",
+                "build_instance_bind_group",
+            ],
+            false,
+        ),
+    ];
+    for (file, roots, draws) in shared {
+        let source = read(&render.join(file)).replace("\r\n", "\n");
+        let bodies = reached_functions(&source, roots);
+        assert!(
+            !draws || bodies.iter().any(|body| body.contains(".draw_indexed(")),
+            "{file}: the mirror recording reaches its draws"
+        );
+        for body in &bodies {
+            for forbidden in SECOND_ENCODER {
+                assert!(
+                    !body.contains(forbidden),
+                    "{file}: mirror recording stays on the frame encoder, found `{forbidden}`"
+                );
+            }
         }
     }
 }

@@ -20,6 +20,9 @@ use super::PlanarRenderPreparation;
 use crate::camera::RenderCamera;
 use crate::render_preparation::VisibleRenderPreparation;
 
+/// The lowest tier that runs planar.
+pub(crate) const PLANAR: FluidReflectionQuality = FluidReflectionQuality::VeryHigh;
+
 /// The water room: it holds the camera and the water at y = 0.
 pub(crate) const WATER_ROOM: u32 = 0;
 /// Rooms above the water room's ceiling portals: behind the main camera's
@@ -35,6 +38,9 @@ pub(crate) const SOLID_CAMERA_CELL: u32 = 7;
 
 /// One water face's `min..max` in x and z.
 pub(crate) type WaterRect = ([f32; 2], [f32; 2]);
+
+/// The water room's whole floor.
+pub(crate) const ROOM_WATER: WaterRect = ([-4.0, -4.0], [4.0, 4.0]);
 
 fn cell(min: Vec3, max: Vec3, drawable: bool, solid: bool) -> CellData {
     CellData {
@@ -186,9 +192,7 @@ fn water_volume(h: f32, faces: &[WaterRect]) -> EnvironmentVolumeRecord {
 
 /// A usable one-probe section binding every surface face of `volumes`:
 /// planar keeps the reflecting gate's probe requirement per face.
-pub(crate) fn probes_binding_every_face(
-    volumes: &[EnvironmentVolumeRecord],
-) -> ReflectionProbesSection {
+fn probes_binding_every_face(volumes: &[EnvironmentVolumeRecord]) -> ReflectionProbesSection {
     let bindings = volumes
         .iter()
         .enumerate()
@@ -227,7 +231,11 @@ pub(crate) fn camera() -> RenderCamera {
 
 /// The main camera from `eye`, aimed where [`camera`] aims.
 pub(crate) fn camera_at(eye: Vec3) -> RenderCamera {
-    let target = Vec3::new(0.0, 0.0, -1.0);
+    camera_aimed(eye, Vec3::new(0.0, 0.0, -1.0))
+}
+
+/// The main camera from `eye`, aimed at `target`.
+pub(crate) fn camera_aimed(eye: Vec3, target: Vec3) -> RenderCamera {
     let view_matrix = rh::view::look_at_mat4(eye, target, Vec3::Y);
     RenderCamera {
         eye_position: eye,
@@ -294,6 +302,12 @@ pub(crate) fn prepare_from(
         &[],
         &main.stats.cpu,
     );
+}
+
+/// Whether `h`, a plane height computed from face centroids, is `expected`
+/// to within rounding.
+pub(crate) fn is_height(h: Option<f32>, expected: f32) -> bool {
+    h.is_some_and(|h| (h - expected).abs() <= 1.0e-4)
 }
 
 pub(crate) fn cells(visible: &VisibleCells) -> &[u32] {

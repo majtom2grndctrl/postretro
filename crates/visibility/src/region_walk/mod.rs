@@ -144,7 +144,8 @@ impl WalkView {
 }
 
 /// The seeded entry's view frustum: `view_proj`'s planes with `near` in
-/// place of its near plane. Its off-screen seed test, and the mirror's cull.
+/// place of its near plane. Used by the seeded entry's off-screen seed test
+/// and by the mirror's cull.
 pub(crate) fn seeded_view_planes(view_proj: Mat4, near: FrustumPlane) -> [FrustumPlane; 6] {
     let mut planes = frustum_plane_array(view_proj);
     planes[NEAR_PLANE_INDEX] = near;

@@ -10,15 +10,12 @@ use postretro_visibility::{MirrorVisibilityPath, VisibilityStage, VisibleCells};
 use crate::App;
 use crate::camera::RenderCamera;
 use crate::render_preparation::planar_test_fixtures::{
-    MIRROR_ROOMS, WATER_ROOM, WaterRect, camera, camera_at, cells, installed, main_view_from,
-    prepare_from, world, world_with_waters,
+    MIRROR_ROOMS, PLANAR, ROOM_WATER, WATER_ROOM, camera, camera_at, cells, installed, is_height,
+    main_view_from, prepare_from, world, world_with_waters,
 };
 use crate::render_preparation::{PlanarRenderPreparation, VisibleRenderPreparation};
 use crate::startup::lifecycle::tests::test_app;
 
-const PLANAR: FluidReflectionQuality = FluidReflectionQuality::VeryHigh;
-/// The water room's whole floor.
-const ROOM_WATER: WaterRect = ([-4.0, -4.0], [4.0, 4.0]);
 const PLANE_A: f32 = 0.0;
 const PLANE_B: f32 = -0.9;
 
@@ -47,8 +44,11 @@ fn holding_a(world: &postretro_level_loader::LevelWorld) -> PlanarRenderPreparat
     let before = before_switch();
     let main = main_view_from(world, &before);
     prepare_from(&mut mirror, world, &before, &main, PLANAR);
-    assert_eq!(mirror.held_selection().map(|plane| plane.h), Some(PLANE_A));
-    assert_eq!(mirror.camera().map(|mirror| mirror.h), Some(PLANE_A));
+    assert!(is_height(
+        mirror.held_selection().map(|plane| plane.h),
+        PLANE_A
+    ));
+    assert!(is_height(mirror.camera().map(|mirror| mirror.h), PLANE_A));
     mirror
 }
 
@@ -69,14 +69,17 @@ fn planar_switch_frame_routes_new_plane_to_this_mirror() {
     prepare_from(&mut switched, &world, &pose, &main, PLANAR);
     let mut fresh = installed(&world);
     prepare_from(&mut fresh, &world, &pose, &main, PLANAR);
-    assert_eq!(
+    assert!(is_height(
         switched.held_selection().map(|plane| plane.h),
-        Some(PLANE_B)
-    );
+        PLANE_B
+    ));
     let mirror = switched
         .camera()
         .expect("B's mirror draws on the switch frame");
-    assert_eq!(mirror.h, PLANE_B, "routing reads frame N's plane");
+    assert!(
+        is_height(Some(mirror.h), PLANE_B),
+        "routing reads frame N's plane"
+    );
     assert_eq!(
         Some(mirror),
         fresh.camera(),
@@ -95,7 +98,7 @@ fn planar_switch_frame_routes_new_plane_to_this_mirror() {
         Some(MirrorVisibilityPath::Tripped { .. })
     ));
     let mirror = tripped.camera().expect("a tripped mirror still draws");
-    assert_eq!(mirror.h, PLANE_B);
+    assert!(is_height(Some(mirror.h), PLANE_B));
     assert_eq!(Some(mirror), fresh.camera(), "O5: B's cropped frustum");
     let planes = mirror.cull_planes();
     assert!(!cells(tripped.visible()).is_empty());
@@ -126,7 +129,7 @@ fn app_with(world: postretro_level_loader::LevelWorld) -> App {
 fn frame(app: &mut App, quality: FluidReflectionQuality) -> VisibleRenderPreparation {
     let pose = camera();
     let world = app.level.as_ref().unwrap();
-    let mut main = VisibleRenderPreparation::for_level(
+    let main = VisibleRenderPreparation::for_level(
         world,
         pose.eye_position,
         pose.view_projection,
@@ -135,7 +138,7 @@ fn frame(app: &mut App, quality: FluidReflectionQuality) -> VisibleRenderPrepara
         &mut app.portal_walk_scratch,
         postretro_visibility::TimingGate::ON,
     );
-    app.prepare_planar_mirror_at(&pose, &mut main, planar_preset(quality));
+    app.prepare_planar_mirror_at(&pose, &main, planar_preset(quality));
     main
 }
 
@@ -158,7 +161,7 @@ fn planar_tier_drop_frame_walks_no_mirror_and_adds_no_demand() {
     );
     // The mirror's light reach comes tagged apart from the main view's (Task 8).
     assert!(
-        !planar.mirror_light_cell_aabbs.is_empty(),
+        !app.planar_render.mirror_light_cell_aabbs().is_empty(),
         "the mirror lights its rooms"
     );
 
@@ -196,8 +199,11 @@ fn planar_tier_drop_frame_walks_no_mirror_and_adds_no_demand() {
                 "{quality:?}: no light ranking reaches room {room}"
             );
         }
-        assert!(dropped.mirror_light_cell_aabbs.is_empty(), "{quality:?}");
+        assert!(mirror.mirror_light_cell_aabbs().is_empty(), "{quality:?}");
     }
     frame(&mut app, PLANAR);
-    assert_eq!(app.planar_render.camera().map(|mirror| mirror.h), Some(0.0));
+    assert!(is_height(
+        app.planar_render.camera().map(|mirror| mirror.h),
+        0.0
+    ));
 }

@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 
+use postretro_visibility::VisibleCells;
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
@@ -146,20 +147,29 @@ impl App {
         // poll wins: no release is decided for a level about to unload.
         if self.level_requests.is_empty() {
             // The plane the held pose's mirror drew, and the lightmap blocks
-            // only it demands past the camera cell's baked set.
-            let plane = held
-                .as_ref()
-                .and(self.planar_render.camera())
-                .map(|mirror| mirror.h);
-            let mirror_only_blocks = held.as_ref().and_then(|held| {
-                self.session
-                    .as_ref()?
-                    .mirror_only_lightmap_blocks(held.visible_cells(), self.planar_render.reach())
+            // only it demands past the camera cell's baked set. A frame with
+            // no held level frame walked nothing, so it leaves the last held
+            // frame's values standing.
+            let planar = held.as_ref().map(|held| {
+                let plane = self.planar_render.camera().map(|mirror| mirror.h);
+                // The mirror's drawable cells: what its draw adds to the
+                // drawn set, and so to lightmap demand. Its empty reach
+                // demands no block.
+                let mirror_cells: &[u32] = match self.planar_render.visible() {
+                    VisibleCells::Culled(cells) if self.planar_render.camera().is_some() => cells,
+                    _ => &[],
+                };
+                let mirror_only_blocks = self.session.as_ref().and_then(|session| {
+                    session.mirror_only_lightmap_blocks(held.visible_cells(), mirror_cells)
+                });
+                (plane, mirror_only_blocks)
             });
             if let Some(settle) = self.settle.as_mut() {
                 let path = held.as_ref().map(|held| held.path());
                 settle.log.observe_frame(path, report, set);
-                settle.log.observe_planar(plane, mirror_only_blocks);
+                if let Some((plane, mirror_only_blocks)) = planar {
+                    settle.log.observe_planar(plane, mirror_only_blocks);
+                }
             }
             self.advance_settle(report, frame_start);
         }

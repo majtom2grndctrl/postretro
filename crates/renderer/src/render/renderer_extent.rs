@@ -41,9 +41,14 @@ impl Renderer {
     /// it builds the camera; render entries call it again, which is a no-op
     /// unless something was recorded since.
     pub fn commit_extents(&mut self) -> Option<ExtentChange> {
-        let change = self.extent_state.commit()?;
-        self.apply_extent_change(change);
-        Some(change)
+        let change = self.extent_state.commit();
+        if let Some(change) = change {
+            self.apply_extent_change(change);
+        }
+        // On every path, so a planar build deferred to this commit lands even
+        // when the recorded size settled back on the committed scene.
+        self.resume_deferred_planar_build();
+        change
     }
 
     /// Capture renders at the offscreen renderer's surface extent (whatever it

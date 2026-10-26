@@ -82,12 +82,26 @@ impl Renderer {
     /// while a level with a candidate plane is installed at a planar tier,
     /// released otherwise. The extent they already have builds nothing.
     ///
-    /// O9: a scene extent recorded but not yet committed defers a build to
-    /// the commit, which rebuilds the layer at the new extent, so a tier
-    /// change or install on a resize frame allocates once, at the new
-    /// extent. A release never waits.
+    /// A scene extent recorded but not yet committed defers a build to the
+    /// next commit, so a tier change or install on a resize frame allocates
+    /// once, at the extent that commit settles on. A release never waits.
     pub(in crate::render) fn sync_planar_layer(&mut self) {
         self.apply_planar_layer(false);
+    }
+
+    /// Run a layer build an earlier sync deferred to this extent commit. A
+    /// commit that moved the scene already rebuilt the layer and cleared the
+    /// deferral; this covers the commit that moved nothing, or only the
+    /// surface, after the recorded size returned to the committed scene.
+    /// Every commit calls it; with nothing deferred it builds nothing.
+    pub(in crate::render) fn resume_deferred_planar_build(&mut self) {
+        if self
+            .full
+            .as_ref()
+            .is_some_and(|full| full.planar_reflection.build_deferred)
+        {
+            self.sync_planar_layer();
+        }
     }
 
     /// Follow recreated scene targets: the planar layer, its group 5 and the
@@ -111,7 +125,9 @@ impl Renderer {
             .preset(quality)
             .filter(|_| full.fluid_surface.has_planar_candidate())
             .map(|preset| preset.target_extent((scene.width, scene.height)));
-        if !rebuild && wanted.is_some() && commit_pending {
+        let defer = !rebuild && wanted.is_some() && commit_pending;
+        full.planar_reflection.build_deferred = defer;
+        if defer {
             return;
         }
         full.fluid_surface.set_planar_layer(device, wanted, rebuild);

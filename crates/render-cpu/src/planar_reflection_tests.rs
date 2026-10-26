@@ -1,16 +1,25 @@
+use super::candidates::{face_binds_probe, group_planes};
 use super::*;
+use crate::fluid_surface::fog::FLUID_FOG_BAND;
+use crate::fluid_surface::reflection::usable_probe_section;
 use glam::Vec2;
 use postretro_level_format::environment_volumes::{
-    EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
+    EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
 };
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
     ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
-    reflection_probe_zero_distances,
+    ReflectionProbesSection, reflection_probe_zero_distances,
 };
-use postretro_level_loader::{CellData, CellLocatorChild};
+use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
+use postretro_visibility::MirrorCropScratch;
 use proptest::prelude::*;
+
+/// Relative float comparison for computed values.
+fn close(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 1.0e-5 * b.abs().max(1.0)
+}
 
 fn projection() -> Mat4 {
     glam::camera::rh::proj::directx::perspective(75.0_f32.to_radians(), 1.5, 0.1, 128.0)
@@ -130,7 +139,13 @@ fn planar_reflection_plane_points_keep_screen_xy_after_resolve_flip() {
         let view = view(eye);
         let mirror =
             MirrorCamera::new(eye, view, projection(), 0.0, Some(15.0)).expect("valid water view");
-        assert_eq!(mirror.eye, Vec3::new(eye.x, -eye.y, eye.z));
+        assert!(
+            mirror
+                .eye
+                .abs_diff_eq(Vec3::new(eye.x, -eye.y, eye.z), 1.0e-5),
+            "{}",
+            mirror.eye
+        );
         for p in [Vec3::new(-1.0, 0.0, -7.0), Vec3::new(1.5, 0.0, -5.0)] {
             let main = ndc(projection() * view, p);
             let reflected = ndc(mirror.raster_vp, p);
@@ -174,11 +189,16 @@ fn planar_reflection_two_flips_preserve_pipeline_winding() {
 // keep absolute metres.
 #[test]
 fn planar_reflection_fade_and_settings_use_absolute_metres() {
-    assert_eq!(planar_fade(1.0e6, None, 4.0), 1.0);
-    assert_eq!(planar_fade(26.0, Some(30.0), 4.0), 1.0);
-    assert_eq!(planar_fade(28.0, Some(30.0), 4.0), 0.5);
-    assert_eq!(planar_fade(30.0, Some(30.0), 4.0), 0.0);
-    assert_eq!(planar_fade(31.0, Some(30.0), 4.0), 0.0);
+    for (distance, limit, expected) in [
+        (1.0e6, None, 1.0),
+        (26.0, Some(30.0), 1.0),
+        (28.0, Some(30.0), 0.5),
+        (30.0, Some(30.0), 0.0),
+        (31.0, Some(30.0), 0.0),
+    ] {
+        let fade = planar_fade(distance, limit, 4.0);
+        assert!(close(fade, expected), "{distance} {limit:?}: {fade}");
+    }
     for quality in [
         FluidReflectionQuality::VeryHigh,
         FluidReflectionQuality::Ultra,
@@ -231,8 +251,8 @@ fn planar_reflection_groups_only_horizontal_reflecting_up_faces() {
     assert_eq!(planes.len(), 2);
     assert_eq!(planes[0].faces.len(), 2);
     assert_eq!(planes[0].faces[1].volume_index, 1);
-    assert_eq!(planes[0].faces[0].area, 16.0);
-    assert_eq!(planes[0].area, 32.0, "a plane's area sums its faces");
+    assert!(close(planes[0].faces[0].area, 16.0));
+    assert!(close(planes[0].area, 32.0), "a plane's area sums its faces");
 }
 
 // AC 26 (probe gate): planar keeps the reflecting gate's probe requirement
@@ -270,15 +290,14 @@ fn planar_candidates_count_only_probe_bound_reflecting_faces() {
     ];
     let candidates = PlanarCandidates::from_volumes(&volumes, &[0, 1, 2], Some(&section));
     let heights: Vec<f32> = candidates.planes.iter().map(|plane| plane.h).collect();
-    assert_eq!(
-        heights,
-        vec![-3.0, 0.0],
-        "the unbound lake at 3 m never forms"
+    assert!(
+        heights.len() == 2 && close(heights[0], -3.0) && close(heights[1], 0.0),
+        "the unbound lake at 3 m never forms: {heights:?}"
     );
     let plane = &candidates.planes[1];
     assert_eq!(plane.faces.len(), 1);
     assert_eq!(plane.faces[0].face_index, 1, "only the bound face counts");
-    assert_eq!(plane.area, 1200.0);
+    assert!(close(plane.area, 1200.0), "{}", plane.area);
     assert_eq!(plane.bounds_min.x, 30.0, "the unbound face widens nothing");
 
     let unreflecting = PlanarCandidates::from_volumes(&volumes, &[0, 1], Some(&section));
@@ -329,15 +348,18 @@ fn planar_selection_respects_the_area_floor() {
 
     let candidates = candidates_of(&[lake.clone(), puddle(below)]);
     assert_eq!(candidates.planes.len(), 1, "the puddle never competes");
-    assert_eq!(candidates.planes[0].h, 0.0);
+    assert!(close(candidates.planes[0].h, 0.0));
     let selected = select_plane(&candidates, eye, vp, &SEEDED, None).unwrap();
-    assert_eq!(selected.h, 0.0, "the lake is selected");
+    assert!(close(selected.h, 0.0), "the lake is selected");
     assert!(candidates_of(&[puddle(below)]).planes.is_empty());
 
     let candidates = candidates_of(&[lake.clone(), puddle(above)]);
     assert_eq!(candidates.planes.len(), 2);
     let selected = select_plane(&candidates, eye, vp, &SEEDED, None).unwrap();
-    assert_eq!(selected.h, 1.0, "a plane just over the floor is selectable");
+    assert!(
+        close(selected.h, 1.0),
+        "a plane just over the floor is selectable"
+    );
 
     let mut split = puddle(PLANAR_MIN_PLANE_AREA * 0.6);
     split.surface_faces.push(water_square(
@@ -398,8 +420,10 @@ fn planar_selection_refuses_eye_below_or_in_band() {
         eye.y + 0.5,
         eye.y,
         eye.y - FLUID_FOG_BAND * 0.5,
-        // At the band's edge; the app test holds the exact edge, where f32
-        // keeps 0.08 above a plane at 0 exact.
+        // Just inside the band's edge. The exact edge is held by
+        // `planar_preparation_selects_no_plane_the_eye_is_below_or_in_the_band_of`
+        // in the app crate, where the eye sits exactly `FLUID_FOG_BAND` over
+        // a plane at 0; here `eye.y − h` would round.
         eye.y - FLUID_FOG_BAND * 0.999,
     ] {
         let near = water_rect(h, Vec2::new(-6.0, -10.0), Vec2::new(6.0, -2.0));
@@ -428,7 +452,10 @@ fn planar_selection_refuses_eye_below_or_in_band() {
             ..held
         };
         let selected = select_plane(&two, eye, vp, &SEEDED, Some(held)).unwrap();
-        assert_eq!(selected.h, 0.0, "plane at {h}: the low plane qualifies");
+        assert!(
+            close(selected.h, 0.0),
+            "plane at {h}: the low plane qualifies"
+        );
     }
     let just_above = eye.y - FLUID_FOG_BAND * 1.5;
     let near = water_rect(just_above, Vec2::new(-6.0, -10.0), Vec2::new(6.0, -2.0));
@@ -545,19 +572,20 @@ fn planar_reflection_seed_cells_intersect_water_and_receiver_sphere() {
     .unwrap();
     let candidates = candidates_of(&[water(0.0, 0.0)]);
     let eye = Vec3::new(0.0, 2.0, 2.0);
-    let plane = select_plane(&candidates, eye, projection() * view(eye), &SEEDED, None).unwrap();
+    let pick = select_plane(&candidates, eye, projection() * view(eye), &SEEDED, None).unwrap();
+    let plane = &candidates.planes[pick.candidate_index];
     let mut seeds = Vec::new();
     let mut seeded = vec![true; 3];
-    collect_mirror_seed_cells(&[0, 1, 2, 3], &world, &plane, eye, None, &mut seeds);
+    collect_mirror_seed_cells(&[0, 1, 2, 3], &world, plane, eye, None, &mut seeds);
     assert_eq!(seeds, vec![0, 3]);
     mark_seeded_planes(&candidates, &[0, 1, 2, 3], &world, eye, None, &mut seeded);
     assert_eq!(seeded, vec![true], "the filter takes the seeds' own rule");
     for reach in [&[1u32, 2][..], &[][..], &[99][..]] {
-        collect_mirror_seed_cells(reach, &world, &plane, eye, None, &mut seeds);
+        collect_mirror_seed_cells(reach, &world, plane, eye, None, &mut seeds);
         mark_seeded_planes(&candidates, reach, &world, eye, None, &mut seeded);
         assert!(seeds.is_empty() && seeded == [false], "{reach:?}");
     }
-    collect_mirror_seed_cells(&[0, 1, 2, 3], &world, &plane, eye, Some(1.0), &mut seeds);
+    collect_mirror_seed_cells(&[0, 1, 2, 3], &world, plane, eye, Some(1.0), &mut seeds);
     mark_seeded_planes(
         &candidates,
         &[0, 1, 2, 3],
@@ -574,28 +602,153 @@ fn planar_reflection_seed_cells_intersect_water_and_receiver_sphere() {
     );
 }
 
-// The allocation-free cull planes agree with the visibility crate's frustum
-// on boxes inside, outside and straddling the mirror's cull frustum.
-#[test]
-fn planar_reflection_cull_planes_match_the_frustum_extraction() {
-    let eye = Vec3::new(0.0, 2.0, 2.0);
-    let mirror = MirrorCamera::new(eye, view(eye), projection(), 0.0, Some(20.0)).unwrap();
-    let planes = mirror.cull_planes();
-    let frustum = extract_frustum_planes(mirror.cull_vp);
-    let boxes = [
-        (Vec3::new(-0.5, 0.5, -6.5), Vec3::new(0.5, 1.5, -5.5)),
-        (Vec3::new(-0.5, 0.5, 30.0), Vec3::new(0.5, 1.5, 31.0)),
-        (Vec3::new(-0.5, 0.5, -60.0), Vec3::new(0.5, 1.5, -59.0)),
-        (Vec3::new(-50.0, 0.5, -6.5), Vec3::new(-49.0, 1.5, -5.5)),
-        (Vec3::new(-50.0, -1.0, -10.0), Vec3::new(50.0, 1.0, -9.0)),
-    ];
-    let mut inside = 0;
-    for (min, max) in boxes {
-        let ours = aabb_in_planes(min, max, &planes);
-        assert_eq!(ours, bounds_in_frustum(min, max, &frustum), "{min} {max}");
-        inside += usize::from(ours);
+/// A non-solid interior cell over `min..max`.
+fn open_cell(min: Vec3, max: Vec3) -> CellData {
+    CellData {
+        bounds_min: min,
+        bounds_max: max,
+        face_start: 0,
+        face_count: 0,
+        portal_ref_start: 0,
+        portal_ref_count: 0,
+        is_solid: false,
+        is_exterior: false,
+        is_drawable: false,
     }
-    assert!(inside >= 2 && inside < boxes.len(), "{inside}");
+}
+
+/// A portal-free world of `cells`, for seed tests.
+fn cells_world(cells: Vec<CellData>) -> LevelWorld {
+    LevelWorld::new_visibility_only(
+        cells,
+        Vec::new(),
+        CellLocatorChild::Cell(0),
+        Vec::new(),
+        Vec::new(),
+        false,
+    )
+    .unwrap()
+}
+
+// O12, per face: an L-shaped lake's union bounds hold a dry cell that
+// overlaps none of its faces. That cell seeds the pool it holds but never
+// the lake, so with only it in reach the lower-scoring pool wins; once a cell
+// over the lake's water is in reach, the lake wins.
+#[test]
+fn planar_selection_seeds_a_plane_only_from_cells_over_its_faces() {
+    let mut lake = water_rect(0.0, Vec2::new(-20.0, -40.0), Vec2::new(20.0, -30.0));
+    lake.surface_faces.push(water_face(
+        0.0,
+        Vec2::new(-20.0, -30.0),
+        Vec2::new(-10.0, -10.0),
+    ));
+    let pool = water_rect(0.5, Vec2::new(2.0, -24.0), Vec2::new(8.0, -16.0));
+    let candidates = candidates_of(&[lake, pool]);
+    let (lake, pool) = (0, 1);
+    assert_eq!(candidates.planes.len(), 2);
+    assert_eq!(candidates.planes[lake].faces.len(), 2);
+
+    let dry = open_cell(Vec3::new(0.0, -1.0, -25.0), Vec3::new(10.0, 1.0, -15.0));
+    let plane = &candidates.planes[lake];
+    assert!(
+        dry.bounds_min.x >= plane.bounds_min.x
+            && dry.bounds_max.x <= plane.bounds_max.x
+            && dry.bounds_min.z >= plane.bounds_min.z
+            && dry.bounds_max.z <= plane.bounds_max.z,
+        "the dry cell lies inside the lake's union bounds"
+    );
+    let wet = open_cell(Vec3::new(-20.0, -1.0, -40.0), Vec3::new(20.0, 1.0, -30.0));
+    let world = cells_world(vec![dry, wet]);
+    let eye = Vec3::new(0.0, 2.0, 2.0);
+    let vp = projection() * view(eye);
+
+    let mut seeded = Vec::new();
+    mark_seeded_planes(&candidates, &[0], &world, eye, None, &mut seeded);
+    assert_eq!(
+        seeded,
+        vec![false, true],
+        "the dry cell seeds the pool alone"
+    );
+    let selected = select_plane(&candidates, eye, vp, &seeded, None).unwrap();
+    assert_eq!(selected.candidate_index, pool);
+    let mut seeds = Vec::new();
+    collect_mirror_seed_cells(&[0, 1], &world, plane, eye, None, &mut seeds);
+    assert_eq!(seeds, vec![1], "only the wet cell seeds the lake's mirror");
+
+    mark_seeded_planes(&candidates, &[0, 1], &world, eye, None, &mut seeded);
+    assert_eq!(seeded, vec![true, true]);
+    let both = select_plane(&candidates, eye, vp, &seeded, None).unwrap();
+    assert_eq!(both.candidate_index, lake, "the lake outscores the pool");
+    assert!(selected.score < both.score);
+}
+
+// The cull frustum's near plane is the biased water plane the walk takes:
+// with the eye barely above the fog band, content just above the water and
+// closer to the mirror eye than the projection's near distance is kept,
+// and content below the bias is still culled.
+#[test]
+fn planar_reflection_cull_planes_keep_content_above_the_water_inside_the_near_distance() {
+    let eye = Vec3::new(0.0, FLUID_FOG_BAND + 0.01, 0.0);
+    let pitch = 60.0_f32.to_radians();
+    let forward = Vec3::new(0.0, -pitch.sin(), -pitch.cos());
+    let main_view = glam::camera::rh::view::look_at_mat4(eye, eye + forward, Vec3::Y);
+    let mirror = MirrorCamera::new(eye, main_view, projection(), 0.0, None).unwrap();
+    let planes = mirror.cull_planes();
+    assert_eq!(planes[4], mirror.clip_plane);
+
+    // Along the mirror's forward ray, 0.095 m out: inside the 0.1 m near
+    // distance, above the water.
+    let mirror_forward = Vec3::new(forward.x, -forward.y, forward.z);
+    let above = mirror.eye + mirror_forward * 0.095;
+    assert!(above.y > -PLANAR_CLIP_BIAS + 0.005, "{above}");
+    let half = Vec3::splat(0.002);
+    assert!(
+        !aabb_in_planes(
+            above - half,
+            above + half,
+            &view_proj_planes(mirror.cull_vp)
+        ),
+        "the projection's own near plane would drop it"
+    );
+    assert!(aabb_in_planes(above - half, above + half, &planes));
+
+    let below = mirror.eye + mirror_forward * 0.05;
+    assert!(below.y + 0.002 < -PLANAR_CLIP_BIAS, "{below}");
+    assert!(!aabb_in_planes(below - half, below + half, &planes));
+
+    // The side planes still bound it to in front of the eye, and the far
+    // plane still culls.
+    let behind = mirror.eye + Vec3::new(0.0, 0.5, 3.0);
+    assert!(behind.y > 0.0 && (behind - mirror.eye).dot(mirror_forward) < -1.0);
+    assert!(!aabb_in_planes(behind - half, behind + half, &planes));
+    let far = mirror.eye + mirror_forward * 500.0;
+    assert!(!aabb_in_planes(far - half, far + half, &planes));
+}
+
+// The visibility crate keeps copies of these values for its mirror sweep and
+// cropped headroom test, which cannot depend on render-cpu; they must match
+// the values the app's mirror walk takes.
+#[test]
+fn planar_reflection_constants_match_the_visibility_crate_copies() {
+    for (name, ours, copy) in [
+        (
+            "fog band",
+            FLUID_FOG_BAND,
+            postretro_visibility::MIRROR_FOG_BAND,
+        ),
+        (
+            "clip bias",
+            PLANAR_CLIP_BIAS,
+            postretro_visibility::MIRROR_CLIP_BIAS,
+        ),
+        (
+            "crop pad",
+            MIRROR_CROP_PAD_RADIANS,
+            postretro_visibility::MIRROR_CROP_PAD_RADIANS,
+        ),
+    ] {
+        assert!((ours - copy).abs() <= 1.0e-6, "{name}: {ours} != {copy}");
+    }
 }
 
 /// One crop case: a main camera over one rectangular water face.

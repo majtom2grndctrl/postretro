@@ -87,7 +87,8 @@ pub(super) struct WalkModes {
     /// A pre-change run's record this run is paired with.
     pub(super) record_in: Option<String>,
     /// Run the play frame's planar mirror step each frame, at the very high
-    /// tier's preset, and stream main visible ∪ mirror reach (`mirror`).
+    /// tier's preset, and stream main visible ∪ the mirror's drawable
+    /// visible cells (`mirror`).
     pub(super) planar: bool,
 }
 
@@ -135,7 +136,7 @@ impl WalkModes {
             modes.planar = match planar.trim() {
                 "1" | "on" => true,
                 "0" | "off" => false,
-                other => panic!("{PLANAR_ENV} = 1 | 0, not {other:?}"),
+                other => panic!("{PLANAR_ENV} = 1 | on | 0 | off, not {other:?}"),
             };
         }
         modes

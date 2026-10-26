@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
+use crate::render::cpu_stages::RenderStage;
 
 fn color_attachment(
     view: &wgpu::TextureView,
@@ -35,7 +36,7 @@ fn depth_attachment(
 impl PlanarReflectionPass {
     /// The mask and resolve uniform for `camera`, as the shaders read it.
     /// The style and the offset multiplier are integers stored by their bits.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // One argument per field group of the fixed uniform.
     fn inputs(
         camera: &MirrorCamera,
         preset: PlanarPreset,
@@ -99,6 +100,7 @@ impl Renderer {
         let quality = self.reflection_quality;
         let light_term_mask = self.frame_light_term_mask();
         let style = self.fluid_reflection_style;
+        let cpu = std::rc::Rc::clone(&self.cpu_frame);
         let Self { queue, full, .. } = self;
         let full = full
             .as_mut()
@@ -121,6 +123,9 @@ impl Renderer {
         {
             return;
         }
+        // Only a recording frame opens the stage, so a frame with no planar
+        // pass reports it absent, never as zero.
+        let _planar_scope = cpu.scope(RenderStage::PlanarReflection);
 
         // Uploads and the world draw list, before the passes borrow the targets.
         let scene = full.depth_view.texture().size();
@@ -233,8 +238,8 @@ fn record_planar_passes(
         depth.set_bind_group(0, &pass.uniform_bind_group, &[]);
         depth.set_vertex_buffer(0, full.vertex_buffer.slice(..));
         depth.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        for draw in pass.draws.draws() {
-            depth.draw_indexed(draw.first_index..draw.end_index, 0, 0..1);
+        for run in pass.draws.depth_runs() {
+            depth.draw_indexed(run.clone(), 0, 0..1);
         }
     }
     {
@@ -260,8 +265,8 @@ fn record_planar_passes(
         if world {
             forward.set_pipeline(&full.pipeline);
             forward.set_bind_group(0, &pass.uniform_bind_group, &[]);
-            // The mirror's light records while a mirror-only light holds a
-            // shadow slot: only the reflection shows that light's shadow.
+            // Group 2 swaps to the mirror's light records while a mirror-only
+            // light holds a shadow slot; only the reflection shows that shadow.
             forward.set_bind_group(
                 2,
                 full.mirror_lighting
@@ -302,8 +307,12 @@ fn record_planar_passes(
         });
         movers.set_bind_group(0, &pass.uniform_bind_group, &[]);
         movers.set_bind_group(4, sh_mesh, &[]);
-        full.kinematic_brush
-            .record_mirror_draws(&mut movers, &full.gpu_textures);
+        full.kinematic_brush.record_mirror_draws(
+            &mut movers,
+            &full.gpu_textures,
+            &camera.cull_planes(),
+            camera.clip_plane,
+        );
     }
     if let Some(plan) = meshes {
         let mut skinned = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -354,10 +363,10 @@ fn record_planar_passes(
             }),
             ..Default::default()
         });
+        resolve.set_pipeline(&pass.pipelines.resolve);
         // The main camera's group 0, as the reflection pass binds it: the
         // eye the reflection law reads and the animation clock the offset
         // steps on.
-        resolve.set_pipeline(&pass.pipelines.resolve);
         resolve.set_bind_group(
             pipelines::RESOLVE_CAMERA_GROUP,
             &full.uniform_bind_group,

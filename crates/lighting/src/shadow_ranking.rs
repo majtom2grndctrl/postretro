@@ -1,3 +1,6 @@
+// Shadow-slot scoring and ranking: one score formula, the dynamic rankers, the hysteresis assigner.
+// See: context/lib/rendering_pipeline.md §4, §7.3a (Pool rank)
+
 use glam::Vec3;
 use postretro_level_loader::{LightType, MapLight};
 
@@ -189,9 +192,9 @@ struct SlotOccupant {
 /// eviction hysteresis and a promoted-baked cap.
 ///
 /// Dynamic and promoted-baked candidates compete on `score` alone. Prior-frame
-/// `incumbents` seed the slots: a held
-/// slot stays the incumbent's until a challenger out-scores its occupant by
-/// `eviction_margin`, applied regardless of tier and in both directions.
+/// `incumbents` seed the slots: a held slot stays the incumbent's until a
+/// challenger out-scores its occupant by `eviction_margin`, applied regardless
+/// of tier and in both directions.
 /// `promoted_cap` bounds how many promoted-baked lights may occupy the pool at
 /// once. A baked challenger already at the cap may only swap into another
 /// baked light's slot, never grow the promoted population through a free or
@@ -225,12 +228,16 @@ pub fn assign_slots_with_hysteresis(
         promoted_cap,
     };
 
-    // Main view first, mirror-only after, each in score order (ties by
-    // candidate index). One sort serves both phases.
-    let mut ranked: Vec<SlotCandidate> = candidates.to_vec();
-    ranked.sort_by(candidate_order);
-    let mirror_start = ranked.partition_point(|cand| !cand.mirror_only);
-    let (main_ranked, mirror_ranked) = ranked.split_at(mirror_start);
+    // Main view first, mirror-only after. The split is by tag before any
+    // sort, so no score — NaN included — can carry a candidate across it;
+    // each phase then sorts in score order.
+    let mut ranked: Vec<SlotCandidate> = Vec::with_capacity(candidates.len());
+    ranked.extend(candidates.iter().filter(|cand| !cand.mirror_only));
+    let mirror_start = ranked.len();
+    ranked.extend(candidates.iter().filter(|cand| cand.mirror_only));
+    let (main_ranked, mirror_ranked) = ranked.split_at_mut(mirror_start);
+    main_ranked.sort_by(score_order);
+    mirror_ranked.sort_by(score_order);
 
     table.seat_incumbents(incumbents, false);
     table.rank(main_ranked, eviction_margin, false);
@@ -359,17 +366,24 @@ impl SlotTable {
     }
 }
 
-/// Main-view candidates before mirror-only ones; within a phase, score
-/// descending, then ascending candidate index for determinism.
-fn candidate_order(a: &SlotCandidate, b: &SlotCandidate) -> std::cmp::Ordering {
-    a.mirror_only.cmp(&b.mirror_only).then_with(|| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.candidate_index.cmp(&b.candidate_index))
-    })
+/// Score descending, then ascending candidate index for determinism. A total
+/// order, so a NaN score cannot break the sort; NaN of either sign ranks as
+/// negative infinity, last, so a degenerate score never takes a free slot
+/// ahead of a finite one.
+fn score_order(a: &SlotCandidate, b: &SlotCandidate) -> std::cmp::Ordering {
+    let key = |score: f32| {
+        if score.is_nan() {
+            f32::NEG_INFINITY
+        } else {
+            score
+        }
+    };
+    key(b.score)
+        .total_cmp(&key(a.score))
+        .then(a.candidate_index.cmp(&b.candidate_index))
 }
-// A challenger displaces an incumbent only when it out-scores it by `margin`.
+
+/// A challenger displaces an incumbent only when it out-scores it by `margin`.
 /// The incumbent score is floored at zero so a degenerate negative score cannot
 /// invert the comparison.
 fn challenger_can_evict(challenger_score: f32, incumbent_score: f32, margin: f32) -> bool {
@@ -964,6 +978,58 @@ mod tests {
             "a mirror-only dynamic takes the last slot"
         );
         assert_eq!(assignment[5], NO_SHADOW_SLOT);
+    }
+
+    // Regression: the phase split followed one sort whose comparator called a
+    // NaN score equal to every score, which is not a total order, so a
+    // mirror-only light could be placed among the main view's.
+    #[test]
+    fn nan_scored_mirror_only_lights_stay_after_the_main_view() {
+        let main = [dynamic_candidate(0, 1.0), dynamic_candidate(2, 2.0)];
+        let without = assign_slots_with_hysteresis(&main, &[], 2, 1, 5, EVICTION_MARGIN);
+
+        let candidates = [
+            mirror_only(dynamic_candidate(1, f32::NAN)),
+            main[0],
+            mirror_only(dynamic_candidate(3, 9.0)),
+            main[1],
+            mirror_only(dynamic_candidate(4, f32::NAN)),
+        ];
+        let with = assign_slots_with_hysteresis(&candidates, &[], 2, 1, 5, EVICTION_MARGIN);
+
+        assert_eq!(assigned(&with, [0, 2]), assigned(&without, [0, 2]));
+        assert!(
+            [1, 3, 4].iter().all(|&index| with[index] == NO_SHADOW_SLOT),
+            "a full pool drops every mirror-only light: {with:?}"
+        );
+    }
+
+    // A NaN score of either sign ranks after every finite one in its phase:
+    // a positive NaN sorts above infinity under `total_cmp`, which would seat
+    // it first and take a free slot from a finite main-view light.
+    #[test]
+    fn nan_scored_main_candidate_ranks_after_finite_main_candidates() {
+        for nan in [f32::NAN, -f32::NAN] {
+            let candidates = [
+                dynamic_candidate(0, nan),
+                dynamic_candidate(1, 1.0),
+                dynamic_candidate(2, 2.0),
+            ];
+            let assignment =
+                assign_slots_with_hysteresis(&candidates, &[], 2, 1, 3, EVICTION_MARGIN);
+            assert_eq!(
+                assignment[0],
+                NO_SHADOW_SLOT,
+                "NaN sign negative {}: {assignment:?}",
+                nan.is_sign_negative()
+            );
+            assert!(
+                [1, 2]
+                    .iter()
+                    .all(|&index| assignment[index] != NO_SHADOW_SLOT),
+                "the finite lights hold the pool: {assignment:?}"
+            );
+        }
     }
 
     // O7: a mirror-only light holding a slot from frame N−1 yields it on frame

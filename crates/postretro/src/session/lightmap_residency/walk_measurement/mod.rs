@@ -44,7 +44,8 @@
 // `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
 // stays fixed) and `POSTRETRO_LIGHTMAP_WALK_PITCH` (degrees, up positive,
 // default 0). `POSTRETRO_LIGHTMAP_WALK_PLANAR=1` runs the play frame's planar
-// mirror step each frame and streams main visible ∪ mirror reach (`mirror`).
+// mirror step each frame and streams main visible ∪ the mirror's drawable
+// visible cells (`mirror`).
 //
 // Bake gap with planar on (§4): on a water map, run planar off with
 // `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT`, then planar on with the same
@@ -66,6 +67,7 @@
 mod baked_set;
 mod completed_reads;
 mod frame_driver;
+mod install_timing;
 mod mirror;
 mod modes;
 mod paths;
@@ -74,10 +76,10 @@ mod report;
 #[cfg(test)]
 mod tests;
 mod trip_record;
+mod walk;
 
 use std::time::{Duration, Instant};
 
-use glam::Vec3;
 use postretro_level_format::SectionId;
 use postretro_level_loader::{LevelWorld, PrlReadCounters};
 use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells};
@@ -95,115 +97,22 @@ use baked_set::{
 use frame_driver::{FrameDriver, FrameInput};
 use mirror::{MirrorStats, WalkMirror};
 use modes::{ReadsMode, WalkModes, render_camera};
-use paths::{SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path};
-use pool_mirror::{PoolMirror, RetireClock};
-use report::{RunReport, mib, print_run, print_split};
+use paths::{SplitMix64, WALK_SEED, WalkKind};
+use pool_mirror::PoolMirror;
+use report::{RunReport, print_run, print_split};
 use trip_record::{FrameRecord, RunRecord, pose_fingerprint};
+use walk::{MAX_DWELL_FRAMES, RUN_SPEED, Walk, eye_point};
 
 const PRL_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PRL";
 const STEPS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_STEPS";
 const RUNS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_RUNS";
 const DEFAULT_STEPS: usize = 2_000;
 const FRAME_SECONDS: f64 = 1.0 / 60.0;
-/// A brisk boomer-shooter run speed, metres per second.
-const RUN_SPEED: f32 = 8.0;
-const MAX_DWELL_FRAMES: u32 = 60;
-const EYE_TRIES: usize = 32;
 
 #[derive(Debug, Clone, Copy)]
 struct Levers {
     lead_metres: f32,
     cap_layers: u32,
-}
-
-/// One walk, resolved to cell ids, with its teleports marked and each step's
-/// dwell in frames.
-struct Walk {
-    kind: WalkKind,
-    cells: Vec<u32>,
-    /// Step `i` arrived by teleport: not portal-adjacent to step `i - 1`.
-    teleport: Vec<bool>,
-    dwell: Vec<u32>,
-    travel_yaw: Vec<f32>,
-}
-
-impl Walk {
-    fn build(world: &LevelWorld, kind: WalkKind, steps: usize) -> Self {
-        let camera_cells: Vec<u32> = (0..world.cells.len() as u32)
-            .filter(|&cell| {
-                let data = &world.cells[cell as usize];
-                !data.is_solid && !data.is_exterior
-            })
-            .collect();
-        let adjacency = camera_adjacency(
-            world.cells.len(),
-            world.portals.iter().map(|p| (p.front_cell, p.back_cell)),
-            &camera_cells,
-        );
-        let (path, _) = walk_path(kind, &adjacency, steps, WALK_SEED);
-        let teleport = (0..path.len())
-            .map(|i| {
-                i > 0
-                    && path[i] != path[i - 1]
-                    && adjacency[path[i - 1] as usize]
-                        .binary_search(&path[i])
-                        .is_err()
-            })
-            .collect();
-        let cells: Vec<u32> = path.iter().map(|&i| camera_cells[i as usize]).collect();
-        let centre = |cell: u32| {
-            let data = &world.cells[cell as usize];
-            (data.bounds_min + data.bounds_max) * 0.5
-        };
-        let mut dwell = Vec::with_capacity(cells.len());
-        let mut travel_yaw = Vec::with_capacity(cells.len());
-        let mut yaw = 0.0f32;
-        for i in 0..cells.len() {
-            let Some(&next) = cells.get(i + 1) else {
-                dwell.push(1);
-                travel_yaw.push(yaw);
-                continue;
-            };
-            let delta = centre(next) - centre(cells[i]);
-            let frames = (delta.length() / (RUN_SPEED * FRAME_SECONDS as f32)).ceil() as u32;
-            dwell.push(frames.clamp(1, MAX_DWELL_FRAMES));
-            if delta.x != 0.0 || delta.z != 0.0 {
-                yaw = (-delta.x).atan2(-delta.z);
-            }
-            travel_yaw.push(yaw);
-        }
-        Self {
-            kind,
-            cells,
-            teleport,
-            dwell,
-            travel_yaw,
-        }
-    }
-
-    fn teleports(&self) -> usize {
-        self.teleport.iter().filter(|&&t| t).count()
-    }
-
-    fn frames(&self) -> u64 {
-        self.dwell.iter().map(|&d| u64::from(d)).sum()
-    }
-}
-
-/// A seeded eye point inside `cell` (10–90% of its AABB per axis, off the
-/// bake's sampling lattice), accepted only where the locator agrees; the
-/// AABB centre after `EYE_TRIES` misses.
-fn eye_point(world: &LevelWorld, cell: u32, rng: &mut SplitMix64) -> Vec3 {
-    let data = &world.cells[cell as usize];
-    let extent = data.bounds_max - data.bounds_min;
-    for _ in 0..EYE_TRIES {
-        let fraction = Vec3::new(rng.unit(), rng.unit(), rng.unit()) * 0.8 + Vec3::splat(0.1);
-        let point = data.bounds_min + extent * fraction;
-        if world.locate_cell(point) == cell as usize {
-            return point;
-        }
-    }
-    (data.bounds_min + data.bounds_max) * 0.5
 }
 
 fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
@@ -223,12 +132,15 @@ fn run_label(walk: &Walk, levers: Levers, modes: &WalkModes) -> String {
     )
 }
 
+/// One run of `walk` at `levers`. `planar` is this run's own freshly
+/// installed mirror in planar mode, so selection's hysteresis starts clean.
 fn run(
     world: &LevelWorld,
     walk: &Walk,
     levers: Levers,
     modes: &WalkModes,
     bake: &str,
+    mut planar: Option<WalkMirror>,
 ) -> RunReport {
     let view = LightmapLevelView::of(world).expect("the PRL streams its lightmap");
     let read_counters = view.manifest.read_counters().clone();
@@ -268,10 +180,9 @@ fn run(
             bake: bake.to_string(),
             ..RunRecord::default()
         },
-        mirror: modes.planar.then(MirrorStats::default),
+        mirror: planar.is_some().then(MirrorStats::default),
         ..RunReport::default()
     };
-    let mut planar = modes.planar.then(|| WalkMirror::install(world));
     let started = Instant::now();
     let mut rng = SplitMix64(WALK_SEED ^ 0xE7E5);
 
@@ -333,7 +244,7 @@ fn run(
                 &mut scratch,
                 TimingGate::OFF,
             );
-            // O1: the mirror step after the camera walk; the main view's sets
+            // The mirror step runs after the camera walk; the main view's sets
             // stay as without it.
             if let (Some(planar), Some(stats)) = (&mut planar, &mut report.mirror) {
                 planar.prepare(world, &camera, &main, &cell_blocks, stats);
@@ -395,8 +306,8 @@ fn run(
             if let (VisibilityPath::PrlPortal { .. }, VisibleCells::Culled(cells)) =
                 (main.stats.path, drawn)
             {
-                for &drawn in cells {
-                    for block in cell_blocks[drawn as usize].clone() {
+                for &drawn_cell in cells {
+                    for block in cell_blocks[drawn_cell as usize].clone() {
                         // After the swap above, `mandatory_prev` holds the
                         // current camera cell's set.
                         if mandatory_prev.binary_search(&block).is_err()
@@ -408,9 +319,9 @@ fn run(
                 }
             }
             if let VisibleCells::Culled(cells) = drawn {
-                for &drawn in cells {
-                    let blocks = cell_blocks[drawn as usize].len() as u32;
-                    if blocks > 0 && mandatory_cells_now.binary_search(&drawn).is_err() {
+                for &drawn_cell in cells {
+                    let blocks = cell_blocks[drawn_cell as usize].len() as u32;
+                    if blocks > 0 && mandatory_cells_now.binary_search(&drawn_cell).is_err() {
                         report.outside_cells.add(blocks);
                     }
                 }
@@ -537,14 +448,16 @@ fn lightmap_residency_walks_from_prl() {
         view.residency_set.max_lead as f32 / LEAD_UNITS_PER_METRE as f32,
         modes.label(),
     );
-    if modes.planar {
-        println!(
+    // One install serves the header's count and the first run; each later
+    // run installs its own.
+    let mut first_mirror = modes.planar.then(|| WalkMirror::install(&world));
+    match &first_mirror {
+        Some(mirror) => println!(
             "planar on: the play frame's mirror step at the very high preset, {} candidate \
-             planes; drawn cells = main visible ∪ mirror reach",
-            WalkMirror::install(&world).candidate_planes(),
-        );
-    } else {
-        println!("planar off: camera walk only");
+             planes; drawn cells = main visible ∪ the mirror's drawable visible cells",
+            mirror.candidate_planes(),
+        ),
+        None => println!("planar off: camera walk only"),
     }
 
     let default = Levers {
@@ -578,7 +491,10 @@ fn lightmap_residency_walks_from_prl() {
             walk.frames() as f64 * FRAME_SECONDS,
         );
         for &levers in &configs {
-            let report = run(&world, &walk, levers, &modes, &bake);
+            let planar = first_mirror
+                .take()
+                .or_else(|| modes.planar.then(|| WalkMirror::install(&world)));
+            let report = run(&world, &walk, levers, &modes, &bake, planar);
             print_run(&walk, levers, &report);
             let own = &report.record;
             print_split("its own trip record", &trip_record::split(own, own), false);
@@ -614,84 +530,5 @@ fn lightmap_residency_walks_from_prl() {
     if let Some(file) = &modes.record_out {
         trip_record::write_records(file, &records).expect("write the trip record");
         println!("\ntrip record written: {file} ({} runs)", records.len());
-    }
-}
-
-/// CPU half of the install-timing check: level load time under the process's
-/// `POSTRETRO_LIGHTMAP_STREAMING` mode, then (streaming only) a synchronous
-/// preload at `POSTRETRO_LIGHTMAP_WALK_SPAWN` = `x,y,z`, approximating a
-/// settled entry: positional reads plus the pool model's plan. GPU upload is
-/// not timed here; headless captures carry it. Run once per mode:
-///
-/// ```text
-/// POSTRETRO_LIGHTMAP_STREAMING=all-resident \
-/// POSTRETRO_LIGHTMAP_WALK_PRL=$PWD/content/dev/maps/campaign-test.prl \
-/// POSTRETRO_LIGHTMAP_WALK_SPAWN=-65.84,2.6,-45.92 \
-///   cargo test -p postretro --bin postretro lightmap_install_timing_from_prl \
-///   -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore = "measurement helper; set POSTRETRO_LIGHTMAP_WALK_PRL"]
-fn lightmap_install_timing_from_prl() {
-    const REPEATS: usize = 3;
-    let path = std::env::var(PRL_ENV).unwrap_or_else(|_| panic!("{PRL_ENV} must name a PRL"));
-    let spawn: Vec<f32> = std::env::var("POSTRETRO_LIGHTMAP_WALK_SPAWN")
-        .expect("POSTRETRO_LIGHTMAP_WALK_SPAWN = x,y,z")
-        .split(',')
-        .map(|v| v.trim().parse().expect("spawn coordinate"))
-        .collect();
-    let spawn_eye = Vec3::new(spawn[0], spawn[1], spawn[2]);
-    println!("PRL: {path}");
-    for repeat in 0..REPEATS {
-        let started = Instant::now();
-        let mut world = postretro_level_loader::load_prl(&path).expect("load PRL");
-        let load = started.elapsed();
-        if LightmapLevelView::of(&world).is_none() {
-            let payloads: u64 = world
-                .take_gpu_lighting_payloads()
-                .blocks
-                .iter()
-                .map(|block| {
-                    (block.irradiance.len()
-                        + block.direction.len()
-                        + block
-                            .shadowmask
-                            .as_ref()
-                            .map_or(0, |[a, b]| a.len() + b.len())) as u64
-                })
-                .sum();
-            println!(
-                "repeat {repeat}: all-resident load {:.1} ms; whole lightmap payloads held for \
-                 upload {:.1} MiB",
-                load.as_secs_f64() * 1000.0,
-                mib(payloads),
-            );
-            continue;
-        }
-        let view = LightmapLevelView::of(&world).expect("streams");
-        let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
-        let mut session =
-            LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
-        let mut mirror = PoolMirror::new(
-            view.manifest,
-            session.controller.levers().pool_cap_layers(),
-            RetireClock::Drains,
-        );
-        let camera_cell = world.locate_cell(spawn_eye) as u32;
-        let preload_started = Instant::now();
-        session.update_camera_set(view.residency_set, camera_cell);
-        let summary = session
-            .preload(&[], |batch| Ok(mirror.drain(batch)))
-            .expect("settled-entry preload");
-        let preload = preload_started.elapsed();
-        println!(
-            "repeat {repeat}: stream load {:.1} ms; settled-entry preload (cell {camera_cell}) {} pairs, \
-             {:.1} MiB, {:.1} ms; pool first generation {} layers",
-            load.as_secs_f64() * 1000.0,
-            summary.reads.pairs,
-            mib(summary.reads.bytes),
-            preload.as_secs_f64() * 1000.0,
-            mirror.model().layers(),
-        );
     }
 }

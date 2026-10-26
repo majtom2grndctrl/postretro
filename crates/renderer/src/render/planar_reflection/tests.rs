@@ -27,28 +27,29 @@ fn code(source: &str) -> String {
         .join("\n")
 }
 
+/// Whether `ch` continues an identifier.
+fn word_char(ch: Option<char>) -> bool {
+    ch.is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+}
+
 /// Whether `text` names `identifier` as a whole word.
 fn names(text: &str, identifier: &str) -> bool {
     text.match_indices(identifier).any(|(at, _)| {
-        let before = text[..at].chars().next_back();
-        let after = text[at + identifier.len()..].chars().next();
-        let word = |ch: Option<char>| ch.is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
-        !word(before) && !word(after)
+        !word_char(text[..at].chars().next_back())
+            && !word_char(text[at + identifier.len()..].chars().next())
     })
 }
 
-/// The argument text of each call to `function` in `text`.
+/// The argument text of each call to `function` in `text`: the whole word,
+/// then any whitespace, then `(`.
 fn call_arguments<'a>(text: &'a str, function: &str) -> Vec<&'a str> {
-    let needle = format!("{function}(");
-    text.match_indices(&needle)
-        .filter(|(at, _)| {
-            !text[..*at]
-                .chars()
-                .next_back()
-                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+    text.match_indices(function)
+        .filter(|(at, _)| !word_char(text[..*at].chars().next_back()))
+        .filter_map(|(at, _)| {
+            let rest = text[at + function.len()..].trim_start();
+            rest.starts_with('(').then_some(text.len() - rest.len() + 1)
         })
-        .map(|(at, _)| {
-            let open = at + needle.len();
+        .map(|open| {
             let mut depth = 1;
             let close = text[open..]
                 .char_indices()
@@ -66,18 +67,32 @@ fn call_arguments<'a>(text: &'a str, function: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// The condition text of each `if` in `text`, up to its opening brace.
+/// The condition text of each `if` (the whole word, however spaced) in
+/// `text`, up to its opening brace.
 fn if_conditions(text: &str) -> Vec<&str> {
-    text.match_indices("if ")
+    text.match_indices("if")
         .filter(|(at, _)| {
-            !text[..*at]
-                .chars()
-                .next_back()
-                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+            !word_char(text[..*at].chars().next_back()) && !word_char(text[at + 2..].chars().next())
         })
         .map(|(at, _)| {
-            let start = at + 3;
+            let start = at + 2;
             &text[start..start + text[start..].find('{').expect("if body")]
+        })
+        .collect()
+}
+
+/// The names `text` declares with `fn`, in order.
+fn declared_functions(text: &str) -> Vec<&str> {
+    text.match_indices("fn")
+        .filter(|(at, _)| {
+            !word_char(text[..*at].chars().next_back())
+                && text[at + 2..].starts_with(char::is_whitespace)
+        })
+        .map(|(at, _)| {
+            let rest = text[at + 2..].trim_start();
+            &rest[..rest
+                .find(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                .unwrap_or(rest.len())]
         })
         .collect()
 }
@@ -182,95 +197,163 @@ fn comparisons(text: &str) -> Vec<String> {
         .collect()
 }
 
-// AC 3: the IP gate on the planar-authored shader text (rendering_pipeline.md
-// §7.3a Planar layer IP rules; ip-check.md D1-D9, path P2). No Fresnel term,
-// no probe binding or name; every `fluid_reflection_` or `fluid_displayed_`
-// call names a D4 helper, so the reflecting gate, seen-from-above, the box
-// pull, `fluid_reflection_point` and every capture-shadow, tile, lookup and
-// ratio helper never appear; no `dot(` (the reflection law's dot lives in the
-// composed, pinned helpers). The direction-valued identifiers (view vector,
-// reflected and tilted rays, cell and flat normals) and the reprojected clip
-// w appear in no comparison, `if`, `select(`, `step(` or `smoothstep(`: the
-// mask, resolve and weight cut on coverage, occlusion and distance alone, and
-// an off-frustum reprojection clamps.
-#[test]
-fn planar_shaders_preserve_ip_boundaries() {
-    const D4_HELPERS: [&str; 6] = [
-        "fluid_displayed_offset",
-        "fluid_reflection_texel_axes",
-        "fluid_reflection_cell_centre",
-        "fluid_reflection_cell_normal",
-        "fluid_reflection_mirror",
-        "fluid_reflection_above_horizon",
-    ];
-    // The resolve's own direction-valued names, and generic names a later
-    // edit might reach for. Eye positions are positions: R cuts on the eye's
-    // distance.
-    const DIRECTION: [&str; 17] = [
-        "view_vector",
-        "reflected_ray",
-        "tilted_ray",
-        "cell_normal",
-        "flat_normal",
-        "world_normal",
-        "tilt",
-        "normal",
-        "view",
-        "view_dir",
-        "ray",
-        "reflected",
-        "tilted",
-        "outward",
-        "direction",
-        "dir",
-        "incident",
-    ];
-    const CLIP_W: [&str; 2] = ["mirror_clip.w", "clip.w"];
-    for (name, source) in PLANAR_AUTHORED {
-        let code = code(source);
-        let lower = code.to_lowercase();
-        for banned in [
-            "fresnel", "schlick", "probe", "capture", "tile", "ratio", "lookup", "dot(",
-        ] {
-            assert!(!lower.contains(banned), "{name} names `{banned}`");
-        }
-        for prefix in ["fluid_reflection_", "fluid_displayed_"] {
-            for callee in callees(&code, prefix) {
-                assert!(
-                    D4_HELPERS.contains(&callee),
-                    "{name} calls `{callee}`, not a D4 helper"
-                );
-            }
-        }
-        let mut guarded: Vec<String> = comparisons(&code);
-        for function in ["select", "step", "smoothstep"] {
-            guarded.extend(
-                call_arguments(&code, function)
-                    .into_iter()
-                    .map(str::to_string),
-            );
-        }
-        guarded.extend(if_conditions(&code).into_iter().map(str::to_string));
-        for text in &guarded {
-            for identifier in DIRECTION {
-                assert!(
-                    !names(text, identifier),
-                    "{name}: `{identifier}` inside a decision: {text}"
-                );
-            }
-            for clip_w in CLIP_W {
-                assert!(
-                    !text.contains(clip_w),
-                    "{name}: the reprojected clip w inside a decision: {text}"
-                );
-            }
-        }
-        // The full-screen view-ray reconstruction is gone: the resolve's world
-        // position is the fragment's own.
-        for retired in ["abs(ray", "inverse_main_vp"] {
-            assert!(!code.contains(retired), "{name} keeps `{retired}`");
+/// The shared helpers planar code may compose (ip-check.md D4). Every other
+/// `fluid_` function the composed modules declare stays out of planar text.
+const D4_HELPERS: [&str; 6] = [
+    "fluid_displayed_offset",
+    "fluid_reflection_texel_axes",
+    "fluid_reflection_cell_centre",
+    "fluid_reflection_cell_normal",
+    "fluid_reflection_mirror",
+    "fluid_reflection_above_horizon",
+];
+
+/// The resolve's own direction-valued names, and generic names a later edit
+/// might reach for. Eye positions are positions: R cuts on the eye's
+/// distance.
+const DIRECTION: [&str; 17] = [
+    "view_vector",
+    "reflected_ray",
+    "tilted_ray",
+    "cell_normal",
+    "flat_normal",
+    "world_normal",
+    "tilt",
+    "normal",
+    "view",
+    "view_dir",
+    "ray",
+    "reflected",
+    "tilted",
+    "outward",
+    "direction",
+    "dir",
+    "incident",
+];
+
+/// The resolve's reprojected clip position and its NDC: a clamp may place
+/// with them, no decision may read them.
+const REPROJECTION: [&str; 2] = ["mirror_clip", "mirror_ndc"];
+
+/// Built-ins whose arguments scale or shape a value: a direction quantity
+/// inside one would weight by direction.
+const WEIGHTING: [&str; 7] = ["max", "min", "clamp", "sign", "abs", "saturate", "pow"];
+
+/// Every IP-scan finding in planar-authored `source`, empty when it passes.
+/// `reprojects` marks the resolve, whose reprojected clip position stays out
+/// of every decision; the mask's depth test reads the main view's own.
+fn ip_findings(source: &str, reprojects: bool) -> Vec<String> {
+    let code = code(source);
+    let lower = code.to_lowercase();
+    let mut findings = Vec::new();
+    for banned in [
+        "fresnel", "schlick", "probe", "capture", "tile", "ratio", "lookup",
+    ] {
+        if lower.contains(banned) {
+            findings.push(format!("names `{banned}`"));
         }
     }
+    if callees(&code, "dot").contains(&"dot") {
+        findings.push("calls `dot`".to_string());
+    }
+    for callee in callees(&code, "fluid_") {
+        if !D4_HELPERS.contains(&callee) {
+            findings.push(format!("calls `{callee}`, not a D4 helper"));
+        }
+    }
+    let mut decisions: Vec<String> = comparisons(&code);
+    for function in ["select", "step", "smoothstep"] {
+        decisions.extend(
+            call_arguments(&code, function)
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    decisions.extend(if_conditions(&code).into_iter().map(str::to_string));
+    let weights: Vec<&str> = WEIGHTING
+        .iter()
+        .flat_map(|function| call_arguments(&code, function))
+        .collect();
+    for text in decisions.iter().map(String::as_str).chain(weights) {
+        for identifier in DIRECTION {
+            if names(text, identifier) {
+                findings.push(format!(
+                    "`{identifier}` inside a decision or weight: {text}"
+                ));
+            }
+        }
+    }
+    if reprojects {
+        for text in &decisions {
+            for identifier in REPROJECTION {
+                if names(text, identifier) {
+                    findings.push(format!(
+                        "the reprojected `{identifier}` inside a decision: {text}"
+                    ));
+                }
+            }
+        }
+    }
+    // The full-screen view-ray reconstruction is gone: the resolve's world
+    // position is the fragment's own.
+    for retired in ["abs(ray", "inverse_main_vp"] {
+        if code.contains(retired) {
+            findings.push(format!("keeps `{retired}`"));
+        }
+    }
+    findings
+}
+
+// AC 3: the IP gate on the planar-authored shader text (rendering_pipeline.md
+// §7.3a Planar layer IP rules; ip-check.md D1-D9, path P2). No Fresnel term,
+// no probe binding or name; every `fluid_` call names a D4 helper, so the
+// reflecting gate, seen-from-above, the box pull, `fluid_reflection_point`,
+// every capture-shadow, tile, lookup and ratio helper and the composed
+// motion module's wave, drift, warp and hash functions never appear; no
+// `dot` call (the reflection law's dot lives in the composed, pinned
+// helpers). The direction-valued identifiers (view vector, reflected and
+// tilted rays, cell and flat normals) appear in no comparison, `if`,
+// `select`, `step` or `smoothstep`, nor inside `max`, `min`, `clamp`, `sign`,
+// `abs`, `saturate` or `pow`; the resolve's reprojected clip position and NDC
+// appear in no decision: the mask, resolve and weight cut on coverage,
+// occlusion and distance alone, and an off-frustum reprojection clamps. Calls
+// match however they are spaced. The scan cannot see a direction quantity
+// under a new name: the snapshot and CPU pins below fix every function's
+// text, and the GPU c proof reads c itself.
+#[test]
+fn planar_shaders_preserve_ip_boundaries() {
+    for (name, source) in PLANAR_AUTHORED {
+        let findings = ip_findings(source, name == "planar_resolve.wgsl");
+        assert!(findings.is_empty(), "{name}: {findings:#?}");
+    }
+    // The scan catches each shape a later edit might take, spaced or not.
+    for escape in [
+        "let c = select(0.0, 1.0, tilted_ray.y > 0.0);",
+        "let c = select (0.0, 1.0, tilted_ray.y);",
+        "fn f() { if(all(view_vector)) { return; } }",
+        "let c = step (0.0, reflected_ray.y);",
+        "let w = dot (a, b);",
+        "let c = max(tilted_ray.y, 0.0);",
+        "let c = pow (abs(cell_normal.y), 5.0);",
+        "let o = fluid_wave_offset(uv, t, wave);",
+        "let g = fluid_reflection_gate(p, n, v, mask);",
+    ] {
+        assert!(
+            !ip_findings(escape, false).is_empty(),
+            "the scan misses: {escape}"
+        );
+    }
+    for escape in [
+        "fn f() { if mirror_clip.w <= 0.0 { return; } }",
+        "let k = select(0.0, 1.0, mirror_ndc.x);",
+    ] {
+        assert!(
+            !ip_findings(escape, true).is_empty(),
+            "the scan misses: {escape}"
+        );
+    }
+    // A clamp placing with the reprojection is no decision.
+    assert!(ip_findings("let w = max(mirror_clip.w, PLANAR_W_FLOOR);", true).is_empty());
     // The scan names what the resolve really computes, so a rename cannot
     // slip past it, and the resolve composes every D4 helper.
     let resolve = code(RESOLVE_AUTHORED_SOURCE);
@@ -281,6 +364,8 @@ fn planar_shaders_preserve_ip_boundaries() {
         "cell_normal",
         "flat_normal",
         "world_normal",
+        "mirror_clip",
+        "mirror_ndc",
     ] {
         assert!(
             names(&resolve, identifier),
@@ -528,6 +613,129 @@ fn planar_tilt_wgsl_bodies_match_the_cpu_reference() {
     // One floor on both sides.
     assert!(wgsl.contains("const PLANAR_W_FLOOR: f32 = 1.0e-6;"));
     assert!(cpu.contains("pub const PLANAR_W_FLOOR: f32 = 1.0e-6;"));
+}
+
+// AC 3, AC 11 (ip-check.md D1-D2). The planar functions no CPU reference
+// mirrors statement for statement, pinned whole as written: the layer value
+// (c from coverage, D at the surface the texel shows and R at the receiving
+// fragment, nothing else), the fade, the resolve's vertex entry and the whole
+// mask. A direction factor in c under any name, e.g.
+// `* max(normalize(planar.main_eye.xyz - receiver).y, 0.0)`, passes the IP
+// scan but fails here; any edit to these bodies updates this pin under review
+// against rendering_pipeline.md §7.3a's planar IP rules.
+#[test]
+fn planar_unmirrored_shader_bodies_match_their_snapshots() {
+    let snapshots: [(&str, &str, &str); 5] = [
+        (
+            RESOLVE_AUTHORED_SOURCE,
+            "planar_layer_value",
+            "fn planar_layer_value(texel: vec2<i32>, receiver: vec3<f32>) -> vec4<f32> {
+             let depth = textureLoad(mirror_depth, texel, 0);
+             if !planar_covered(depth) { return vec4<f32>(0.0); }
+             let surface = planar_mirror_surface(texel, depth);
+             let c = planar_distance_fade(distance(planar.mirror_eye.xyz, surface), planar.limits.x,
+             planar.limits.y)
+             * planar_distance_fade(distance(planar.main_eye.xyz, receiver), planar.limits.z,
+             planar.limits.w);
+             let colour = clamp(textureLoad(mirror_color, texel, 0).rgb, vec3<f32>(0.0),
+             vec3<f32>(65504.0));
+             return vec4<f32>(colour * c, c); }",
+        ),
+        (
+            RESOLVE_AUTHORED_SOURCE,
+            "planar_distance_fade",
+            "fn planar_distance_fade(metres: f32, limit: f32, band: f32) -> f32 {
+             if limit <= 0.0 { return 1.0; }
+             return clamp((limit - metres) / max(band, 0.001), 0.0, 1.0); }",
+        ),
+        (
+            RESOLVE_AUTHORED_SOURCE,
+            "vs_planar_resolve",
+            "fn vs_planar_resolve(in: ResolveVertexInput) -> ResolveVertex {
+             var out: ResolveVertex;
+             out.clip_position = planar.main_vp * vec4<f32>(in.position, 1.0);
+             out.world_position = in.position;
+             out.world_normal = in.normal;
+             out.uv = in.uv;
+             return out; }",
+        ),
+        (
+            MASK_SHADER_SOURCE,
+            "vs_planar_mask",
+            "fn vs_planar_mask(@location(0) position: vec3<f32>) -> MaskVertex {
+             var out: MaskVertex;
+             let clip = planar.main_vp * vec4<f32>(position, 1.0);
+             out.clip_position = vec4<f32>(-clip.x, clip.y, clip.z, clip.w);
+             out.world_position = position;
+             return out; }",
+        ),
+        (
+            MASK_SHADER_SOURCE,
+            "fs_planar_mask",
+            "fn fs_planar_mask(in: MaskVertex) -> MaskFragment {
+             let clip = planar.main_vp * vec4<f32>(in.world_position, 1.0);
+             let ndc = clip.xyz / max(clip.w, PLANAR_W_FLOOR);
+             let scene = planar.extent.zw;
+             let last = vec2<i32>(scene) - vec2<i32>(1);
+             let pixel = clamp(vec2<i32>(floor(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5)
+             * scene)), vec2<i32>(0), last);
+             if ndc.z > textureLoad(scene_depth, pixel, 0) + PLANAR_MASK_DEPTH_SLACK { discard; }
+             if planar.limits.z > 0.0
+             && distance(planar.main_eye.xyz, in.world_position) >= planar.limits.z { discard; }
+             var out: MaskFragment;
+             out.depth = 1.0;
+             return out; }",
+        ),
+    ];
+    for (source, name, body) in snapshots {
+        assert_eq!(
+            compact(wgsl_item(source, "fn", name)),
+            pinned(body),
+            "`{name}` drifted from its snapshot"
+        );
+    }
+    // The fade follows render-cpu's `planar_fade`: the same clamped ramp; a
+    // zero limit is the CPU's unlimited (the writer stores `unwrap_or(0.0)`);
+    // the band is sanitized to at least 0.001, so the shader's
+    // `max(band, 0.001)` never changes a band the writer sends.
+    let cpu = include_str!("../../../../render-cpu/src/planar_reflection.rs");
+    assert!(
+        compact(wgsl_item(cpu, "pub fn", "planar_fade"))
+            .contains("((limit-distance)/band).clamp(0.0,1.0)"),
+        "render-cpu's planar_fade keeps the shader's ramp"
+    );
+    assert!(compact(wgsl_item(cpu, "pub fn", "sanitized")).contains("value.max(0.001)"));
+    assert!(
+        compact(include_str!("record.rs")).contains(
+            "preset.d.unwrap_or(0.0),preset.band_d,preset.r.unwrap_or(0.0),preset.band_r,"
+        )
+    );
+}
+
+// AC 3. Every function the planar-authored text declares is on this reviewed
+// list, and each is pinned whole: the tilt functions and the fragment against
+// planar_tilt.rs, the rest by snapshot. A new helper fails here until it is
+// reviewed against the planar IP rules and pinned.
+#[test]
+fn planar_shader_functions_match_the_reviewed_list() {
+    assert_eq!(
+        declared_functions(&code(MASK_SHADER_SOURCE)),
+        ["vs_planar_mask", "fs_planar_mask"]
+    );
+    assert_eq!(
+        declared_functions(&code(RESOLVE_AUTHORED_SOURCE)),
+        [
+            "vs_planar_resolve",
+            "planar_distance_fade",
+            "planar_tilt_ray",
+            "planar_mirror_texel",
+            "planar_mirror_surface",
+            "planar_covered",
+            "planar_tilted_point",
+            "planar_layer_value",
+            "fs_planar_resolve",
+        ]
+    );
 }
 
 // The frame records the planar pass once, after the ghost pass and before

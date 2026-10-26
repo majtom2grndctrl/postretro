@@ -573,16 +573,39 @@ pub(crate) fn level_brightness_for_candidate_indexed(
 /// `level_lights`-index space. Returns a Vec the size of `level_lights`,
 /// each entry either a slot or `NO_SHADOW_SLOT`. Used to pack the GPU
 /// lights buffer (`pack_lights_with_slots_into`), which is keyed on the
-/// filtered `level_lights` order.
+/// filtered `level_lights` order. Production fills a reused buffer through
+/// [`fill_level_light_slots`]; this allocating form serves the tests.
+#[cfg(test)]
 pub(crate) fn slot_assignment_for_level_lights(
     level_light_source_indices: &[usize],
     candidate_source_indices: &[usize],
     candidate_slot_assignment: &[u32],
 ) -> Vec<u32> {
+    let mut out = Vec::new();
+    fill_level_light_slots(
+        level_light_source_indices,
+        candidate_source_indices,
+        candidate_slot_assignment,
+        &[],
+        &mut out,
+    );
+    out
+}
+
+/// Translate a candidate-space slot assignment into `level_lights` order in
+/// a reused buffer, with every candidate `skipped` marks left without a slot.
+pub(crate) fn fill_level_light_slots(
+    level_light_source_indices: &[usize],
+    candidate_source_indices: &[usize],
+    candidate_slot_assignment: &[u32],
+    skipped: &[bool],
+    out: &mut Vec<u32>,
+) {
     use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
-    let mut out = vec![NO_SHADOW_SLOT; level_light_source_indices.len()];
+    out.clear();
+    out.resize(level_light_source_indices.len(), NO_SHADOW_SLOT);
     for (cand_idx, &slot) in candidate_slot_assignment.iter().enumerate() {
-        if slot == NO_SHADOW_SLOT {
+        if slot == NO_SHADOW_SLOT || skipped.get(cand_idx).copied().unwrap_or(false) {
             continue;
         }
         let Some(&candidate_source_index) = candidate_source_indices.get(cand_idx) else {
@@ -596,7 +619,6 @@ pub(crate) fn slot_assignment_for_level_lights(
             out[level_idx] = slot;
         }
     }
-    out
 }
 
 pub(crate) fn shadow_candidate_is_promoted_static(
@@ -910,6 +932,8 @@ impl Renderer {
 
     /// Collects dynamic spots with a shadow slot this frame.
     /// Unslotted spots excluded — no usable light-space matrix in the shader.
+    /// Spots whose slot only the planar mirror holds are skipped too: fog is
+    /// main-view only (`rendering_pipeline.md` §7.3a, Pool rank).
     /// Pre-multiplies color × intensity × brightness; mirrors `FogVolumeBridge::update_points`.
     pub(super) fn collect_fog_spot_lights(
         &self,

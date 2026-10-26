@@ -11,13 +11,14 @@ use crate::lightmap_streaming::controller::BlockPhase;
 use crate::lightmap_streaming::test_fixtures::{Rig, headroom};
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::render_preparation::planar_test_fixtures::{
-    EMPTY_ATTIC, MIRROR_ROOMS, SOLID_CAMERA_CELL, WATER_ROOM, camera, cells, world,
+    EMPTY_ATTIC, MIRROR_ROOMS, PLANAR, SOLID_CAMERA_CELL, WATER_ROOM, camera, cells, is_height,
+    world,
 };
 use crate::session::level_streaming::settle::mirror_only_cells;
 use crate::startup::lifecycle::tests::test_app;
 
 fn planar() -> Option<PlanarPreset> {
-    planar_preset(FluidReflectionQuality::VeryHigh)
+    planar_preset(PLANAR)
 }
 
 /// An app holding the planar fixture level, its water installed as a
@@ -38,7 +39,7 @@ fn held_view() -> HeldLevelView {
 /// the camera walk, then the mirror step at the tier's preset.
 fn reveal_frame(app: &mut App, view: &HeldLevelView) -> VisibleRenderPreparation {
     let world = app.level.as_ref().expect("a held level");
-    let mut main = VisibleRenderPreparation::for_level(
+    let main = VisibleRenderPreparation::for_level(
         world,
         view.camera.eye_position,
         view.camera.view_projection,
@@ -47,7 +48,7 @@ fn reveal_frame(app: &mut App, view: &HeldLevelView) -> VisibleRenderPreparation
         &mut app.portal_walk_scratch,
         app.cpu_timer.gate(),
     );
-    app.prepare_planar_mirror_at(&view.camera, &mut main, planar());
+    app.prepare_planar_mirror_at(&view.camera, &main, planar());
     main
 }
 
@@ -98,22 +99,31 @@ fn settle(app: &mut App, rig: &mut Rig, path: fn(&VisibilityPath) -> bool) -> Op
     plane
 }
 
+/// The mirror's drawable cells, as the `[Settling]` line reads them: none
+/// without a mirror view.
+fn mirror_cells(app: &App) -> &[u32] {
+    match app.planar_render.visible() {
+        VisibleCells::Culled(cells) if app.planar_render.camera().is_some() => cells,
+        _ => &[],
+    }
+}
+
 /// The held pose's mirror-only blocks outside the camera cell's baked set,
 /// as the `[Settling]` line counts them.
 fn mirror_only_blocks(app: &mut App, rig: &Rig) -> Option<usize> {
     let held = app.held_level_visibility(&held_view(), planar()).unwrap();
-    let only: Vec<u32> =
-        mirror_only_cells(&held.visible_cells, app.planar_render.reach()).collect();
-    let mut expected = MIRROR_ROOMS.to_vec();
-    expected.push(EMPTY_ATTIC);
-    assert_eq!(
-        only, expected,
-        "the mirror reaches what the camera does not"
+    let only: Vec<u32> = mirror_only_cells(&held.visible_cells, mirror_cells(app)).collect();
+    assert!(
+        app.planar_render.reach().contains(&EMPTY_ATTIC),
+        "the mirror reaches the empty attic"
     );
-    rig.controller.blocks_outside_camera_set(mirror_only_cells(
-        &held.visible_cells,
-        app.planar_render.reach(),
-    ))
+    assert_eq!(
+        only,
+        MIRROR_ROOMS.to_vec(),
+        "the mirror draws what the camera does not; its empty reach adds no cell"
+    );
+    rig.controller
+        .blocks_outside_camera_set(mirror_only_cells(&held.visible_cells, mirror_cells(app)))
 }
 
 /// The first world frame at the held pose: no new read, no visible miss,
@@ -164,7 +174,7 @@ fn planar_settling_on_a_main_fallback_settles_the_mirror_blocks_and_the_reveal_r
     let held_plane = settle(&mut app, &mut rig, |path| {
         matches!(path, VisibilityPath::SolidCellFallback)
     });
-    assert_eq!(held_plane, Some(0.0));
+    assert!(is_height(held_plane, 0.0));
     // The solid camera cell has no baked set: both mirror rooms' blocks lie
     // outside it; the attic has none.
     assert_eq!(mirror_only_blocks(&mut app, &rig), Some(2));
@@ -184,7 +194,7 @@ fn planar_settling_on_a_walk_path_settles_the_mirror_blocks_and_reveals_the_same
     let held_plane = settle(&mut app, &mut rig, |path| {
         matches!(path, VisibilityPath::PrlPortal { .. })
     });
-    assert_eq!(held_plane, Some(0.0));
+    assert!(is_height(held_plane, 0.0));
     assert_eq!(
         mirror_only_blocks(&mut app, &rig),
         Some(2),
@@ -212,7 +222,7 @@ fn planar_settling_below_very_high_settles_the_main_view_alone() {
         "{requested:?}"
     );
     assert!(
-        mirror_only_cells(&held.visible_cells, app.planar_render.reach())
+        mirror_only_cells(&held.visible_cells, mirror_cells(&app))
             .next()
             .is_none()
     );

@@ -414,8 +414,10 @@ fn planar_gpu_edge_shifts_like_ssr() {
 // plane matches the same frame with the displayed offset forced to zero,
 // texel for texel, except where the tilted lookup lands on an empty mirror
 // texel (by the CPU reference over the frame's own mirror depth), and there
-// the tilted frame reads c = 0. Most water texels are compared, and the tilt
-// moves the colour many of them sample.
+// the tilted frame reads c = 0. Every compared c is exactly 0 or 1, so no
+// ray- or view-dependent factor reaches c on the GPU (ip-check.md D1). Most
+// water texels are compared, and the tilt moves the colour many of them
+// sample.
 #[test]
 fn planar_gpu_tilt_moves_samples_not_confidence() {
     let Some((mut renderer, view)) =
@@ -494,6 +496,15 @@ fn planar_gpu_tilt_moves_samples_not_confidence() {
             "{pixel}: tilt changed c ({} untilted, {} tilted)",
             before.w, after.w
         );
+        // With D and R off, c is coverage alone: exactly 0 or 1 (both exact
+        // in the layer's half floats). A ray-, view- or offset-dependent
+        // factor in c would leave a fraction here in either frame.
+        for c in [before.w, after.w] {
+            assert!(
+                c == 0.0 || c == 1.0,
+                "{pixel}: c is coverage alone with D and R off, read {c}"
+            );
+        }
         covered += usize::from(after.w > 0.0);
         moved += usize::from(after.truncate() != before.truncate());
     }

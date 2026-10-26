@@ -1,6 +1,7 @@
 // Planar water mirror preparation: plane selection, the mirror's seeded walk, and its demand sets.
 // See: context/lib/rendering_pipeline.md §2, §4, §7.3a
 
+use glam::Vec3;
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::planar_reflection::{
     MirrorCamera, PlanarCandidates, PlanarPreset, SelectedPlane, collect_mirror_seed_cells,
@@ -16,27 +17,32 @@ use postretro_visibility::{
 use super::VisibleRenderPreparation;
 use crate::camera::RenderCamera;
 
+mod cell_sets;
+use cell_sets::{culled_list, merge_ascending, seed_domain};
+
 /// The frame's planar mirror, prepared after the camera walk and before any
 /// consumer reads visibility (`rendering_pipeline.md` §7.3a). Every buffer is
 /// reused across frames, so a steady state allocates nothing.
 ///
-/// The main view's visible and fog sets are never written: the main cull and
-/// fog read them unchanged with planar on and off. The mirror adds cells only
-/// to the sets this type hands out, under the §4 path rules: cells it draws
-/// join collection, lightmap demand and SH sample regions on every path
-/// (lightmap demand holds rather than reads on a non-walk path), and join SH
-/// visible targeting only on a completed mirror walk with the main view on a
-/// walk path.
+/// The main view's visible, fog and light-reach sets are never written: the
+/// main cull, fog and light ranking read them unchanged with planar on and
+/// off. The mirror adds cells only to the sets this type hands out, under the
+/// §4 path rules: cells it draws join collection, lightmap demand and SH
+/// sample regions on every path (lightmap demand holds rather than reads on a
+/// non-walk path), and join SH visible targeting only on a completed mirror
+/// walk with the main view on a walk path.
 pub(crate) struct PlanarRenderPreparation {
     candidates: PlanarCandidates,
     /// The plane selected last frame: selection's hysteresis input. Cleared at
     /// install, so a new level or fluid table never inherits it.
     selected: Option<SelectedPlane>,
-    /// This frame's mirror view, its cull cropped to the selected plane;
-    /// `None` with no plane (none above the area floor, seeded in the
-    /// camera's reach and above the eye's fog band), below very high, with
-    /// no part of the plane on screen, or with no seed in the cropped mirror
-    /// frustum. With `None` every water surface reads SSR at the tier.
+    /// This frame's mirror view, its cull cropped to the selected plane.
+    /// `None` below very high, or with no qualifying plane: none above the
+    /// area floor, seeded in the camera's reach and above the eye's fog band.
+    /// Also `None` when the selected plane yields after selection (no part of
+    /// it on screen, or no seed in the cropped mirror frustum) and no
+    /// challenger draws in its place. With `None` every water surface reads
+    /// SSR at the tier.
     camera: Option<MirrorCamera>,
     /// The crop's polygon clip buffers.
     crop_scratch: MirrorCropScratch,
@@ -51,12 +57,18 @@ pub(crate) struct PlanarRenderPreparation {
     scratch: PortalWalkScratch,
     mirror: MirrorVisibility,
     /// The mirror's drawn cells, as the renderer's mirror cull takes them.
+    /// Always an explicit list.
     visible: VisibleCells,
-    /// Main visible ∪ mirror reach, ascending: what the frame draws.
+    /// Main visible ∪ mirror visible, ascending: the drawable cells the frame
+    /// draws in either view.
     drawn: VisibleCells,
     /// Main fog reach ∪ mirror reach, ascending; empty on the main view's
     /// unisolated sentinel.
     fog: Vec<u32>,
+    /// Bounds of the cells only the mirror reaches, a separate tagged set
+    /// beside the main view's light reach: lights reaching only these rank
+    /// and light as mirror-only (`rendering_pipeline.md` §7.3a, Pool rank).
+    mirror_light_cells: Vec<(Vec3, Vec3)>,
     /// A completed mirror walk with the main view on a walk path: the one
     /// case where mirror cells may add reads.
     reads: bool,
@@ -87,6 +99,7 @@ impl Default for PlanarRenderPreparation {
             visible: VisibleCells::Culled(Vec::new()),
             drawn: VisibleCells::Culled(Vec::new()),
             fog: Vec::new(),
+            mirror_light_cells: Vec::new(),
             reads: false,
             previous_diagnostic: None,
             #[cfg(test)]
@@ -97,13 +110,26 @@ impl Default for PlanarRenderPreparation {
     }
 }
 
+/// How one selected plane's mirror step ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MirrorStep {
+    /// The mirror walked and draws this frame.
+    Drawn,
+    /// The plane qualified at selection but no mirror sample of it lands this
+    /// frame: no face keeps any part on screen, or every seed missed the
+    /// cropped mirror frustum. It scores zero for the rest of the frame.
+    Yielded,
+    /// No mirror camera forms for the plane.
+    NoView,
+}
+
 impl PlanarRenderPreparation {
     /// Install `world`'s candidate planes: the probe-bound up-facing faces
     /// of `reflecting_volumes`, the volumes whose fluid reflects, grouped by
-    /// height, less planes under the area floor. Resets selection history
-    /// (O11), at level install and at every fluid refresh, so the first frame
-    /// selects without hysteresis. The crop switch carries over, so a refresh
-    /// mid-capture keeps it.
+    /// height, less planes under the area floor. Resets selection history,
+    /// at level install and at every fluid refresh, so the first frame
+    /// selects without hysteresis from an old candidate index. The crop
+    /// switch carries over, so a refresh mid-capture keeps it.
     pub(crate) fn install(&mut self, world: &LevelWorld, reflecting_volumes: &[u32]) {
         *self = Self {
             candidates: PlanarCandidates::from_volumes(
@@ -127,6 +153,13 @@ impl PlanarRenderPreparation {
     /// draws with: `None` below very high runs no selection and no walk, and
     /// adds nothing to any set. The mirror walk's time goes into `cpu`, the
     /// frame's visibility stages.
+    ///
+    /// Order (`rendering_pipeline.md` §7.3a): seed filter, selection, crop,
+    /// mirror walk on its own scratch, then the unions. A selected plane that
+    /// yields after selection scores zero for the frame, and selection runs
+    /// once more, against last frame's held plane, so an on-screen
+    /// challenger draws rather than SSR standing in for a plane nothing of
+    /// which shows, and hysteresis still holds between the planes left.
     pub(crate) fn prepare(
         &mut self,
         world: &LevelWorld,
@@ -138,38 +171,87 @@ impl PlanarRenderPreparation {
     ) {
         self.camera = None;
         self.reads = false;
-        if let VisibleCells::Culled(cells) = &mut self.visible {
-            cells.clear();
-        }
+        culled_list(&mut self.visible).clear();
+        self.mirror_light_cells.clear();
         let Some(preset) = preset else {
             self.selected = None;
             self.previous_diagnostic = None;
             return;
         };
-        let crop = self.crop_enabled();
-        // O12, O14: the seed-in-reach filter, from this frame's camera reach
-        // (the fog reach on a walk path, the drawn set on a fallback), before
-        // scoring and hysteresis. The area floor applied at install; the eye
-        // band applies inside selection, before scoring too.
-        let domain = seed_domain(main, world, &mut self.seed_domain);
+        let eye = main_camera.eye_position;
+        let main_vp = main_camera.view_projection;
+        // The seed-in-reach filter reads this frame's camera reach (the fog
+        // reach on a walk path, the drawn set on a fallback), before scoring
+        // and hysteresis. The area floor applied at install; the eye band
+        // applies inside selection, before scoring too.
+        let mut domain_cells = std::mem::take(&mut self.seed_domain);
+        let domain = seed_domain(main, world, &mut domain_cells);
         mark_seeded_planes(
             &self.candidates,
             domain,
             world,
-            main_camera.eye_position,
+            eye,
             preset.r,
             &mut self.seeded,
         );
-        self.selected = select_plane(
-            &self.candidates,
-            main_camera.eye_position,
-            main_camera.view_projection,
-            &self.seeded,
-            self.selected,
-        );
-        let Some(selected) = self.selected else {
-            self.previous_diagnostic = None;
-            return;
+        let step = |this: &mut Self, plane: SelectedPlane| {
+            this.mirror_step(
+                plane,
+                domain,
+                world,
+                main_camera,
+                main,
+                preset,
+                blocked_portals,
+                cpu,
+            )
+        };
+        let first = select_plane(&self.candidates, eye, main_vp, &self.seeded, self.selected);
+        let selected = match first {
+            None => None,
+            Some(plane) => match step(&mut *self, plane) {
+                MirrorStep::Drawn => Some(plane),
+                MirrorStep::NoView => None,
+                // At most one retry, never more. The retry still holds last
+                // frame's plane, so among the planes left a challenger needs
+                // the hysteresis margin to take over, and a plane that keeps
+                // yielding cannot make the rest pop by raw score. The
+                // yielded plane scores zero, so even when it is the held one
+                // hysteresis cannot keep it. A plane the retry picks that
+                // yields too leaves no plane selected.
+                MirrorStep::Yielded => {
+                    if let Some(seeded) = self.seeded.get_mut(plane.candidate_index) {
+                        *seeded = false;
+                    }
+                    select_plane(&self.candidates, eye, main_vp, &self.seeded, self.selected)
+                        .filter(|&challenger| step(&mut *self, challenger) == MirrorStep::Drawn)
+                }
+            },
+        };
+        self.seed_domain = domain_cells;
+        self.selected = selected;
+        match selected {
+            Some(selected) => self.log_change(selected, main),
+            None => self.previous_diagnostic = None,
+        }
+    }
+
+    /// The mirror for `selected`: camera, crop, seeds, walk and unions. Sets
+    /// this frame's mirror state only when it returns [`MirrorStep::Drawn`].
+    #[allow(clippy::too_many_arguments)]
+    fn mirror_step(
+        &mut self,
+        selected: SelectedPlane,
+        domain: &[u32],
+        world: &LevelWorld,
+        main_camera: &RenderCamera,
+        main: &VisibleRenderPreparation,
+        preset: PlanarPreset,
+        blocked_portals: &[bool],
+        cpu: &StageFrame<VisibilityStage>,
+    ) -> MirrorStep {
+        let Some(plane) = self.candidates.planes.get(selected.candidate_index) else {
+            return MirrorStep::NoView;
         };
         let projection = main_camera.view_projection * main_camera.view_matrix.inverse();
         let Some(camera) = MirrorCamera::new(
@@ -179,32 +261,22 @@ impl PlanarRenderPreparation {
             selected.h,
             preset.d,
         ) else {
-            self.selected = None;
-            self.previous_diagnostic = None;
-            return;
+            return MirrorStep::NoView;
         };
-        // The crop (O1: after selection, before the walk): the walk and the
-        // mirror cull take the plane's padded on-screen bounds, so the trip
-        // set filters against them too (O5). Raster and clip stay uncropped.
-        let camera = if crop {
-            let cropped = self
-                .candidates
-                .planes
-                .get(selected.candidate_index)
-                .and_then(|plane| {
-                    camera.cropped_to_plane(
-                        plane,
-                        main_camera.view_projection,
-                        &mut self.crop_scratch,
-                    )
-                });
-            let Some(cropped) = cropped else {
-                // No face keeps any part on screen, so no mirror sample lands
-                // anywhere: no mirror view this frame, and selection holds.
-                self.previous_diagnostic = None;
-                return;
-            };
-            cropped
+        // The crop, after selection and before the walk: the walk and the
+        // mirror cull take the plane's padded on-screen bounds, so a trip set
+        // filters against them too. Raster and clip stay uncropped.
+        let camera = if self.crop_enabled() {
+            match camera.cropped_to_plane(
+                plane,
+                main_camera.view_projection,
+                &mut self.crop_scratch,
+            ) {
+                Some(cropped) => cropped,
+                // No face keeps any part on screen, so no mirror sample of
+                // this plane lands anywhere: it leaves the frustum this frame.
+                None => return MirrorStep::Yielded,
+            }
         } else {
             camera
         };
@@ -214,7 +286,7 @@ impl PlanarRenderPreparation {
         collect_mirror_seed_cells(
             domain,
             world,
-            &selected,
+            plane,
             main_camera.eye_position,
             preset.r,
             &mut self.seed_cells,
@@ -236,31 +308,31 @@ impl PlanarRenderPreparation {
         self.walk(&view, main, world, blocked_portals, cpu);
         if self.mirror.path == MirrorVisibilityPath::NoSeeds {
             // Every seed missed the cropped mirror frustum: no mirror sample
-            // lands, so no mirror view, and the water reads SSR at the tier.
-            // Selection holds, as with an empty crop.
-            self.previous_diagnostic = None;
-            return;
+            // lands, so this plane draws no mirror view this frame.
+            return MirrorStep::Yielded;
         }
+
         self.camera = Some(camera);
-        match &mut self.visible {
-            VisibleCells::Culled(cells) => cells.clone_from(&self.mirror.visible_cells),
-            visible => *visible = VisibleCells::Culled(self.mirror.visible_cells.clone()),
-        }
+        culled_list(&mut self.visible).clone_from(&self.mirror.visible_cells);
         self.reads = matches!(main.stats.path, VisibilityPath::PrlPortal { .. })
             && self.mirror.path == MirrorVisibilityPath::Walked;
-        union_cells(
-            &main.visible_cells,
-            &self.mirror.reach_cells,
-            &mut self.drawn,
-        );
-        self.fog.clear();
-        if !main.fog_reachable.is_empty() {
-            self.fog.extend_from_slice(&main.fog_reachable);
-            self.fog.extend_from_slice(&self.mirror.reach_cells);
-            self.fog.sort_unstable();
-            self.fog.dedup();
+        // What the mirror draws joins the drawn set; its whole reach, empty
+        // cells included, joins only the fog cells and the light tag.
+        let drawn = culled_list(&mut self.drawn);
+        match &main.visible_cells {
+            VisibleCells::Culled(main_cells) => {
+                merge_ascending(main_cells, &self.mirror.visible_cells, drawn);
+            }
+            // `drawn_cells` hands out `main` itself then.
+            VisibleCells::DrawAll => drawn.clear(),
         }
-        self.log_change(selected, main);
+        if main.fog_reachable.is_empty() {
+            self.fog.clear();
+        } else {
+            merge_ascending(&main.fog_reachable, &self.mirror.reach_cells, &mut self.fog);
+        }
+        self.tag_mirror_light_reach(world, main);
+        MirrorStep::Drawn
     }
 
     fn walk(
@@ -298,15 +370,38 @@ impl PlanarRenderPreparation {
         );
     }
 
+    /// Tag the mirror's light reach (`rendering_pipeline.md` §7.3a, Pool
+    /// rank): the bounds of the cells the mirror reaches and the main view
+    /// does not, a set apart from the main view's light reach, so lights only
+    /// the mirror reaches rank after every main-view light and light only the
+    /// reflection. A cell both reach is the main view's. The unisolated
+    /// sentinel (an empty fog set on a main fallback) adds nothing: every
+    /// cell-assigned light is main-view already.
+    fn tag_mirror_light_reach(&mut self, world: &LevelWorld, main: &VisibleRenderPreparation) {
+        self.mirror_light_cells.clear();
+        if main.fog_reachable.is_empty() {
+            return;
+        }
+        for &cell in &self.mirror.reach_cells {
+            let index = cell as usize;
+            if main
+                .light_reachable_cell_mask
+                .get(index)
+                .is_none_or(|&main| main)
+            {
+                continue;
+            }
+            if let Some(cell) = world.cells.get(index) {
+                self.mirror_light_cells
+                    .push((cell.bounds_min, cell.bounds_max));
+            }
+        }
+    }
+
     /// One debug line whenever the plane, the mirror's set sizes or its path
     /// change; nothing in a steady frame.
     fn log_change(&mut self, selected: SelectedPlane, main: &VisibleRenderPreparation) {
-        let mirror_only = match (&self.drawn, &main.visible_cells) {
-            (VisibleCells::Culled(drawn), VisibleCells::Culled(main)) => {
-                drawn.len().saturating_sub(main.len())
-            }
-            _ => 0,
-        };
+        let mirror_only = self.mirror_only_cells(&main.visible_cells);
         let diagnostic = (
             selected.candidate_index,
             self.mirror.visible_cells.len(),
@@ -391,9 +486,9 @@ impl PlanarRenderPreparation {
         self.camera.map(|_| self.mirror.path)
     }
 
-    /// Cells the frame draws only for the mirror: its reach less the main
-    /// view's visible set. Zero with no mirror or a main view drawing all.
-    #[cfg(feature = "capture")]
+    /// How many drawable cells the frame draws only for the mirror: its
+    /// drawn set less the main view's visible set. Zero with no mirror or a
+    /// main view drawing all.
     pub(crate) fn mirror_only_cells(&self, main: &VisibleCells) -> usize {
         match (self.drawn_cells(main), main) {
             (VisibleCells::Culled(drawn), VisibleCells::Culled(main)) => {
@@ -409,14 +504,18 @@ impl PlanarRenderPreparation {
         self.step_cap = step_cap;
     }
 
-    /// The mirror's drawn cells, for the renderer's mirror cull and the
-    /// animated-lightmap compose union.
+    /// The mirror's drawn cells, for the renderer's mirror cull, the
+    /// animated-lightmap compose union and Settling's mirror-only block count.
     pub(crate) fn visible(&self) -> &VisibleCells {
         &self.visible
     }
 
-    /// Non-solid cells the mirror reaches, empty ones included: the cells
-    /// mirror lighting joins.
+    /// Non-solid cells the mirror reaches, empty ones included, for the
+    /// capture report's reach count. Mirror lighting and SH fog sample
+    /// regions take the reach through [`Self::mirror_light_cell_aabbs`] and
+    /// [`Self::sample_fog_cells`]; lightmap demand takes only the drawable
+    /// cells, [`Self::visible`].
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn reach(&self) -> &[u32] {
         match self.camera {
             Some(_) => &self.mirror.reach_cells,
@@ -424,11 +523,20 @@ impl PlanarRenderPreparation {
         }
     }
 
-    /// Every cell the frame draws: the main view's, plus the mirror's reach.
-    /// Mover collection, lightmap demand and SH sample regions read it; mesh
-    /// collection reads the main and mirror sets apart, to tag mirror-only
-    /// instances. The lightmap's path rules keep it read-free on a non-walk path:
-    /// there its blocks are held, resident ones still draw, and misses count.
+    /// Bounds of this frame's mirror-only light reach, for the renderer's
+    /// light ranking: empty with no mirror, or on the main view's unisolated
+    /// sentinel.
+    pub(crate) fn mirror_light_cell_aabbs(&self) -> &[(Vec3, Vec3)] {
+        &self.mirror_light_cells
+    }
+
+    /// Every drawable cell the frame draws: the main view's visible cells
+    /// plus the mirror's ([`Self::visible`]), never the mirror's empty reach.
+    /// Lightmap demand, mover beauty admission and SH sample regions read it;
+    /// mesh collection reads the main and mirror sets apart, to tag
+    /// mirror-only instances. The lightmap's path rules keep it read-free on
+    /// a non-walk path: there its blocks are held, resident ones still draw,
+    /// and misses count.
     pub(crate) fn drawn_cells<'a>(&'a self, main: &'a VisibleCells) -> &'a VisibleCells {
         if self.camera.is_none() || matches!(main, VisibleCells::DrawAll) {
             return main;
@@ -459,78 +567,25 @@ impl PlanarRenderPreparation {
     }
 }
 
-impl VisibleRenderPreparation {
-    /// Tag the mirror's light reach (`rendering_pipeline.md` §7.3a, Pool
-    /// rank): the bounds of the cells the mirror reaches and the main view
-    /// does not go to `mirror_light_cell_aabbs`, a separate set, so lights
-    /// only the mirror reaches rank after every main-view light and light only
-    /// the reflection. The main view's light reach, `visible_cells` and
-    /// `fog_reachable` stay exactly as without the mirror, and a cell both
-    /// reach is the main view's. The unisolated sentinel (an empty fog set on
-    /// a main fallback) adds nothing: every cell-assigned light is main-view
-    /// already.
-    pub(crate) fn include_mirror_lighting(
-        &mut self,
-        world: &LevelWorld,
-        mirror: &PlanarRenderPreparation,
-    ) {
-        self.mirror_light_cell_aabbs.clear();
-        if self.fog_reachable.is_empty() {
-            return;
-        }
-        for &cell in mirror.reach() {
-            let index = cell as usize;
-            if self
-                .light_reachable_cell_mask
-                .get(index)
-                .is_none_or(|&main| main)
-            {
-                continue;
-            }
-            if let Some(cell) = world.cells.get(index) {
-                self.mirror_light_cell_aabbs
-                    .push((cell.bounds_min, cell.bounds_max));
-            }
-        }
-    }
-}
-
-/// The camera's reach the seeds come from: the walk's fog reach on a walk
-/// path, the drawn set on a fallback (every cell when it draws all).
-fn seed_domain<'a>(
-    main: &'a VisibleRenderPreparation,
-    world: &LevelWorld,
-    all_cells: &'a mut Vec<u32>,
-) -> &'a [u32] {
-    if matches!(main.stats.path, VisibilityPath::PrlPortal { .. }) {
-        return &main.fog_reachable;
-    }
-    match &main.visible_cells {
-        VisibleCells::Culled(cells) => cells,
-        VisibleCells::DrawAll => {
-            all_cells.clear();
-            all_cells.extend(0..world.cell_count() as u32);
-            all_cells
-        }
-    }
-}
-
-/// `main ∪ extra` into `out`, ascending. A `DrawAll` main leaves `out` empty:
-/// callers hand out `main` itself then.
-fn union_cells(main: &VisibleCells, extra: &[u32], out: &mut VisibleCells) {
-    if !matches!(out, VisibleCells::Culled(_)) {
-        *out = VisibleCells::Culled(Vec::new());
-    }
-    let VisibleCells::Culled(out) = out else {
-        return;
-    };
-    out.clear();
-    if let VisibleCells::Culled(main) = main {
-        out.extend_from_slice(main);
-        out.extend_from_slice(extra);
-        out.sort_unstable();
-        out.dedup();
-    }
+/// The volumes whose fluid reflects for a caller with no fluid manifest
+/// (capture, the walk measurement): every fluid volume with a probe-bound
+/// face, the reflecting gate planar keeps.
+#[cfg(any(test, feature = "capture"))]
+pub(crate) fn probe_bound_fluid_volumes(world: &LevelWorld) -> Vec<u32> {
+    world
+        .environment_volumes
+        .volumes
+        .iter()
+        .enumerate()
+        .filter(|(index, volume)| {
+            !volume.fluid.is_empty()
+                && postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face(
+                    world.reflection_probes.as_ref(),
+                    *index,
+                )
+        })
+        .map(|(index, _)| index as u32)
+        .collect()
 }
 
 #[cfg(test)]

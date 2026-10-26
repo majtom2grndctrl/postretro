@@ -59,7 +59,7 @@ read at: 25db4c78f (crates/ identical to main 8ea68d8be; spike `claude/planar-wa
 - Path "Lightmap demand … `StreamingFrame` extra cells" (Task 3) → no spike `additional_cells` seam was needed. Passing main visible ∪ mirror reach as the frame's drawn cells already gives Visible demand on a walk path and held, read-free demand on every fallback, through the existing `PathDemand` rules (`demand.rs` and the controller are unchanged). The one new seam is `StreamingFrame::sh_visible_cells`, the SH gate: the union only on main `PrlPortal` plus mirror `Walked`, else the main set.
 - Open until Task 5: a selected plane with no usable seed (`NoSeeds`) still keeps a mirror camera, so that water reads an empty planar layer (probe only, not SSR). Task 5's seed-in-reach candidate filter removes such planes before scoring and closes it; its tests must cover it.
 - The spike's light-term-mask gate on the app side is dropped: the renderer already records no planar pass without a reflecting selected-plane draw. Under a dev lighting mask the app may still walk the mirror and add its demand; dev-only.
-- `include_mirror_lighting` appends the mirror's cell AABBs to `reachable_cell_aabbs`, which `for_level` already allocates fresh each frame. Frames where the mirror adds cells grow it once. All the mirror's own buffers are reused.
+- `include_mirror_lighting` appends the mirror's cell AABBs to `reachable_cell_aabbs`, which `for_level` already allocates fresh each frame. Frames where the mirror adds cells grow it once. All the mirror's own buffers are reused. *Superseded (Task 8, review):* `include_mirror_lighting` is gone; `PlanarRenderPreparation` fills a reused `mirror_light_cell_aabbs` buffer.
 - Pre-existing, machine-specific: `startup::ghost_links_surface_tests::ghost_link_twins_install_the_scripting_surface_with_zero_warnings` fails on this machine because `fontdb` warns that `C:\Windows\Fonts\mstmc.ttf` (4 KB) is malformed. Not this branch; reported as a finding.
 - Task 6 clarifications (same meaning as AC 10 and AC 11):
   - The pixel-style resolve takes c = 0 where the *untilted* texel holds no mirror content, because d is undefined there. This is a coverage cut, independent of the offset, so D1 holds.
@@ -71,7 +71,7 @@ read at: 25db4c78f (crates/ identical to main 8ea68d8be; spike `claude/planar-wa
   - **Pad.** `MIRROR_CROP_PAD_RADIANS` ≈ 0.4031 rad (23.1°): twice the largest normal tilt, (2 + 2) texels × 0.05 = 0.4 rad of ray turn, plus π·`FLUID_REFLECTION_RAY_MIN_Y` for the horizon clamp. The same pad applies in both styles, so the walk never depends on style.
   - **Grid alignment (Path addition).** The crop rect is widened to an integer zoom of the walk's 1/256 snap grid (`align_to_walk_grid`), so the cropped walk's snapped rects nest in the uncropped walk's. Without it, the lake sweep reached 8 cells outside the uncropped walk (one cell each). §7.3a records this at landing.
   - **Crop source.** The crop projects the selected plane's faces that pass the main frustum, not its union bounds. One implementation lives in `visibility/src/mirror_crop.rs`, used by render-cpu (`MirrorCamera::cropped_to_plane`, which replaces only `cull_vp`) and by both sweeps. The renderer's mirror cull takes it through `cull_planes()`, unedited.
-  - **Empty crop.** When no in-frustum face of the selected plane projects on screen, no mirror camera is kept that frame and the held selection is kept. No pixel of that plane is on screen, so routing it to SSR shows nothing different, and the planar pass records nothing.
+  - **Empty crop.** When no in-frustum face of the selected plane projects on screen, no mirror camera is kept that frame and the held selection is kept. No pixel of that plane is on screen, so routing it to SSR shows nothing different, and the planar pass records nothing. *Superseded in review:* the plane now yields that frame (empty crop or no seed in the crop). It scores zero, and selection retries once, still holding last frame's plane, so an on-screen challenger draws instead.
   - **Measured effect is small on today's maps.** Cropped vs uncropped over lake, e24 and probes: summed portal tests −1.1% to −1.8%, summed reached cells about −1.5%. 11 of 3,258 poses where the plane covers under half the screen reach fewer cells, which satisfies AC 36's row. 648 walks with nothing of the plane on screen are skipped outright. The 23° pad covers most of the screen. The reduction in mirror draws from the cropped cull is not measured yet (perf rows).
   - **Residual edge case.** At the screen edge a cell centre can sit up to half a texel off screen while its fragment is on screen, so the crop can miss by up to half a texel's angle along that edge. This could only matter for a very coarse texture right at the screen edge.
   - The crop-off seam `set_crop(bool)` is compiled under `cfg(any(test, feature = "capture"))`; Task 10 wires it into capture as the `crop` field.
@@ -93,7 +93,7 @@ read at: 25db4c78f (crates/ identical to main 8ea68d8be; spike `claude/planar-wa
 - Task 9 notes:
   - **Held frame.** The Settling held frame runs the play frame's mirror step (`prepare_planar_mirror_at`) from the held pose before the streaming step.
   - **Settle set.** Lightmap blocks reach it on any path through `drawn_cells` and `update_capture_view`. SH stays on its gate and mandatory tier.
-  - **Entry line.** `[Settling] entry` gains `planar_held=<h|none> planar_reveal=<h|none> mirror_only_blocks=<n|n/a>`, appended. `mirror_only_blocks` counts blocks of mirror-reach cells the main view does not draw that lie outside the camera cell's baked set and the pins: stricter than the brief, since it also excludes blocks the main view draws.
+  - **Entry line.** `[Settling] entry` gains `planar_held=<h|none> planar_reveal=<h|none> mirror_only_blocks=<n|n/a>`, appended. `mirror_only_blocks` counts blocks of mirror cells the main view does not draw (since review: the mirror's drawable cells, not its whole reach) that lie outside the camera cell's baked set and the pins: stricter than the brief, since it also excludes blocks the main view draws.
   - **Candidate verdict.** The renderer's candidate default is `PlanarCandidates::from_volumes` over all volumes, so the probe gate and the 14 m² floor give one source. The app's verdict (`set_planar_candidate`, at install and fluid refresh) narrows it to reflecting volumes.
   - **O9 resize.** A layer build while a scene-extent change is recorded but uncommitted waits for the commit, so the build happens once at the new extent.
   - **Pipeline creation.** It is pinned by a source scan of the lifecycle call graph, since wgpu exposes no counter.
@@ -195,51 +195,51 @@ read at: 25db4c78f (crates/ identical to main 8ea68d8be; spike `claude/planar-wa
 
 AC numbers follow the brief's Acceptance order.
 
-| AC | Row (short) | Proof | Status |
-|---|---|---|---|
-| 1 | Spike planar tests pass, non-zero per filter; replaced-Decision tests rewritten | `cargo test` filters `planar_` in render-cpu, visibility (`mirror_`), renderer, postretro; rewrites listed in Corrections | achievable as stated |
-| 2 | Existing `fluid_` renderer tests pass unedited; protected paths untouched | `cargo test -p postretro-renderer fluid_` (~101) + `git diff --stat main -- <protected paths>` empty | achievable as stated (Task 1 proves the pins) |
-| 3 | Shader source-scan IP tests (D4 helpers, no Fresnel/probe, direction identifiers not in comparisons) | `planar_shaders_preserve_ip_boundaries` rewritten over planar-authored text | achievable as stated |
-| 4 | Grep gates: frame-encoder only; no spike-contract citation; seeds/panel dev-tools or capture only; no option/map key | `planar_recording_uses_only_the_frame_encoder`, `planar_sources_cite_no_spike_contract`, `planar_seeds_and_panel_compile_only_under_dev_tools`, options-catalog scan | achievable as stated |
-| 5 | id-51 bake and format untouched; no PRL section | review gate: `git diff main -- crates/level-compiler crates/level-format` shows no id-51 or section change | achievable as stated |
-| 6 | FXC compiles every full-init pipeline incl. planar | `cargo test -p postretro-renderer --lib dx12_fxc -- --ignored` on this Windows machine, output pasted here | achievable as stated |
-| 7 | Two layers: large plane planar, second plane SSR (very_high, ultra) | GPU test `planar_gpu_two_planes_read_planar_and_ssr_in_one_frame` (both tiers) | achievable as stated |
-| 8 | SSR records for second plane, nothing for selected; selected-only → no SSR pass | GPU test `planar_gpu_ssr_skips_the_selected_plane_and_records_only_for_others` | achievable as stated |
-| 9 | Pixel: each layer read at its own scale | GPU test `planar_gpu_layers_read_at_their_own_scale` | achievable as stated |
-| 10 | Pixel tilt: normal parity everywhere, ray parity off the rim (CPU) + GPU edge shift away from rim | CPU test `planar_tilt_matches_ssr_normal_and_unpulled_ray`; GPU test `planar_gpu_edge_shifts_like_ssr` with test-only planar-off seam | achievable as restated |
-| 11 | Tilt never changes c (offset forced zero) | GPU test with test-only zero-offset seam `planar_gpu_tilt_moves_samples_not_confidence` | achievable as stated |
-| 12 | Same-frame mirror (O6) | GPU test `planar_gpu_mirror_shows_this_frames_object` | achievable as stated |
-| 13 | Billboard + particle mirrored, facing mirror camera, incl. off main view | GPU test `planar_gpu_billboards_and_particles_face_the_mirror` | achievable as stated |
-| 14 | Mover + skinned in mirror-only cells off screen | GPU test `planar_gpu_mirror_only_mover_and_skinned_mesh_reflect` | achievable as stated |
-| 15 | Ghost + viewmodel absent; real mesh at ghost pose present | GPU test `planar_gpu_ghosts_and_viewmodel_stay_out_of_the_mirror` | achievable as stated |
-| 16 | Main visible + fog sets identical planar on/off (O1) | app test `planar_preparation_leaves_main_visibility_unchanged` | achievable as stated |
-| 17 | Synthetic headroom: uncropped + cropped modes, cap ≥ 2× worst, cropped ⊆ uncropped, one strictly smaller | `seeded_walk_cap_keeps_double_headroom_over_seeded_sweeps` extended | achievable as stated |
-| 18 | Crop pad covers every tilted ray (CPU), near-clipped planes included | proptest `mirror_crop_pad_contains_every_tilted_reflection` | achievable as stated |
-| 19 | Main on fallback: mirror adds no LM/SH reads; resident blocks draw; misses counted | app tests `planar_mirror_adds_no_reads_on_main_fallback` (lightmap controller + SH targeting) | achievable as stated |
-| 20 | Forced mirror trip: camera-visible ∩ cropped frustum, no new reads, no SolidCellFallback log | app test via `test-seams` cap + `test-log-capture` negative assertion | achievable as stated |
-| 21 | Mirror-only cells on walk path reach LM, SH regions, compose; no probe; drained pose zero misses | app test `planar_mirror_cells_join_demand_on_a_walk_path` + controller drain loop | achievable as stated (no-probe holds by construction) |
-| 22 | Pool yield: no main eviction; room → mirror admits; yield vs incumbency across light kinds and promoted cap (O7, O15) | lighting/render-cpu tests on `assign_slots_with_hysteresis` inputs + `plan_mesh_frame_plans` | achievable as stated |
-| 23 | Mirror-only light slot: pixels off selected plane match mirror-lighting-excluded frame | GPU test `planar_gpu_mirror_only_light_shows_only_in_the_reflection` | achievable as stated |
-| 24 | Settling on main fallback + completed mirror walk (O3): settle set holds mirror blocks; first world frame requests no new block | app test over `prepare_held_level_frame` + `BlockDemand::update_capture_view` | achievable as stated |
-| 25 | Area floor: below never selected; just above selectable | render-cpu test `planar_selection_respects_the_area_floor` | achievable as stated |
-| 26 | No seed in reach → not selected; fallback drawn-set reach (O12, O14); no probe → never | render-cpu + app tests | achievable as stated |
-| 27 | Eye below / in fog band → not selected, SSR at tier; none qualifying → none | render-cpu test `planar_selection_refuses_eye_below_or_in_band` | achievable as stated |
-| 28 | Hysteresis 1.25×; held plane leaving frustum yields (O13) | render-cpu test | achievable as stated |
-| 29 | Plane switch frame (O4, O5), incl. trip on that frame | app + GPU test `planar_switch_frame_routes_new_plane_to_this_mirror` | achievable as stated |
-| 30 | Level change ignores old held plane (O11) | app test `planar_install_resets_selection_history` | achievable as stated |
-| 31 | High and below: no selection, walk, demand, pass, target (O8) | app + renderer tests | achievable as stated |
-| 32 | high → very_high → high: no pipeline, target alloc/release, no walk on drop frame; no-plane frames keep target (O10); resize incl. allocating frame (O9); unload | renderer tests with pipeline-creation counters + app tier test | achievable as stated |
-| 33 | Zero selected → nothing records; no candidate → no target; candidate → target from install; refresh removing last → release | renderer + app tests | achievable as stated |
-| 34 | M: capture at high byte-identical to base commit | capture A/B, base binary built from 25db4c78f | achievable as stated |
-| 35 | M: cropped real-map mirror sweep worst ≤ ½ cap, no ordinary trip | `real_map_sweep` mirror mode on lake, e24, probes | achievable as stated |
-| 36 | M: cropped image matches uncropped (pixel, smooth); under-half-screen pose reaches fewer cells | capture with `crop: false` vs true; sweep cell counts | achievable as stated |
-| 37 | M: bake-gap with planar on ≤ planar off, completed-reads; per-walk selected frames + mirror-only counts non-zero | `walk_measurement` mirror mode, lake + second fixture | achievable as stated |
-| 38 | M: lake spawn settle: zero reveal misses, same plane, settle peak > planar off; mirror-only blocks outside baked set non-zero (or spawn override) | `[Settling] entry` new fields | achievable as stated |
-| 39 | M: mesh-instance cap and shadow occupancy with/without mirror | capture report / instrumented run, same poses | achievable as stated |
-| 40 | Manual: owner motion read, presets fixed and recorded | owner, in-engine | manual |
-| 41 | Manual: Windows 1660 release perf matrix | owner run (`long-bake`/timed runs are owner-launched); executor prepares commands | manual |
-| 42 | Manual: Mac 5300M native bounded run | owner, Mac | manual |
-| 43 | Manual: resident memory at 4K ultra lake pose | executor computes from allocation sizes; owner confirms in-engine | manual |
+| AC | Row (short) | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Spike planar tests pass, non-zero per filter; replaced-Decision tests rewritten | `cargo test` filters `planar_` in render-cpu, visibility (`mirror_`), renderer, postretro; rewrites listed in Corrections | achievable as stated | pass: final gate; `planar_` filters non-zero in render-cpu, visibility (`mirror_`), renderer, postretro, level-compiler |
+| 2 | Existing `fluid_` renderer tests pass unedited; protected paths untouched | `cargo test -p postretro-renderer fluid_` (~101) + `git diff --stat main -- <protected paths>` empty | achievable as stated (Task 1 proves the pins) | pass: `fluid_` unedited and green; `git diff` on the protected paths is empty |
+| 3 | Shader source-scan IP tests (D4 helpers, no Fresnel/probe, direction identifiers not in comparisons) | `planar_shaders_preserve_ip_boundaries` rewritten over planar-authored text | achievable as stated | pass: scan hardened in review (snapshot pins on c, fade and mask; fn-name list; weight-argument check) |
+| 4 | Grep gates: frame-encoder only; no spike-contract citation; seeds/panel dev-tools or capture only; no option/map key | `planar_recording_uses_only_the_frame_encoder`, `planar_sources_cite_no_spike_contract`, `planar_seeds_and_panel_compile_only_under_dev_tools`, options-catalog scan | achievable as stated | pass: grep gates green; the frame-encoder gate now also walks the shared mirror record functions |
+| 5 | id-51 bake and format untouched; no PRL section | review gate: `git diff main -- crates/level-compiler crates/level-format` shows no id-51 or section change | achievable as stated | pass: review gate (Task 10 notes) |
+| 6 | FXC compiles every full-init pipeline incl. planar | `cargo test -p postretro-renderer --lib dx12_fxc -- --ignored` on this Windows machine, output pasted here | achievable as stated | pass: FXC on the final tree, "every full-init pipeline compiled" |
+| 7 | Two layers: large plane planar, second plane SSR (very_high, ultra) | GPU test `planar_gpu_two_planes_read_planar_and_ssr_in_one_frame` (both tiers) | achievable as stated | pass |
+| 8 | SSR records for second plane, nothing for selected; selected-only → no SSR pass | GPU test `planar_gpu_ssr_skips_the_selected_plane_and_records_only_for_others` | achievable as stated | pass |
+| 9 | Pixel: each layer read at its own scale | GPU test `planar_gpu_layers_read_at_their_own_scale` | achievable as stated | pass |
+| 10 | Pixel tilt: normal parity everywhere, ray parity off the rim (CPU) + GPU edge shift away from rim | CPU test `planar_tilt_matches_ssr_normal_and_unpulled_ray`; GPU test `planar_gpu_edge_shifts_like_ssr` with test-only planar-off seam | achievable as restated | pass (as restated) |
+| 11 | Tilt never changes c (offset forced zero) | GPU test with test-only zero-offset seam `planar_gpu_tilt_moves_samples_not_confidence` | achievable as stated | pass (plus c ∈ {0, 1} on every compared texel) |
+| 12 | Same-frame mirror (O6) | GPU test `planar_gpu_mirror_shows_this_frames_object` | achievable as stated | pass |
+| 13 | Billboard + particle mirrored, facing mirror camera, incl. off main view | GPU test `planar_gpu_billboards_and_particles_face_the_mirror` | achievable as stated | pass |
+| 14 | Mover + skinned in mirror-only cells off screen | GPU test `planar_gpu_mirror_only_mover_and_skinned_mesh_reflect` | achievable as stated | pass |
+| 15 | Ghost + viewmodel absent; real mesh at ghost pose present | GPU test `planar_gpu_ghosts_and_viewmodel_stay_out_of_the_mirror` | achievable as stated | pass |
+| 16 | Main visible + fog sets identical planar on/off (O1) | app test `planar_preparation_leaves_main_visibility_unchanged` | achievable as stated | pass |
+| 17 | Synthetic headroom: uncropped + cropped modes, cap ≥ 2× worst, cropped ⊆ uncropped, one strictly smaller | `seeded_walk_cap_keeps_double_headroom_over_seeded_sweeps` extended | achievable as stated | pass |
+| 18 | Crop pad covers every tilted ray (CPU), near-clipped planes included | proptest `mirror_crop_pad_contains_every_tilted_reflection` | achievable as stated | pass |
+| 19 | Main on fallback: mirror adds no LM/SH reads; resident blocks draw; misses counted | app tests `planar_mirror_adds_no_reads_on_main_fallback` (lightmap controller + SH targeting) | achievable as stated | pass |
+| 20 | Forced mirror trip: camera-visible ∩ cropped frustum, no new reads, no SolidCellFallback log | app test via `test-seams` cap + `test-log-capture` negative assertion | achievable as stated | pass |
+| 21 | Mirror-only cells on walk path reach LM, SH regions, compose; no probe; drained pose zero misses | app test `planar_mirror_cells_join_demand_on_a_walk_path` + controller drain loop | achievable as stated (no-probe holds by construction) | pass |
+| 22 | Pool yield: no main eviction; room → mirror admits; yield vs incumbency across light kinds and promoted cap (O7, O15) | lighting/render-cpu tests on `assign_slots_with_hysteresis` inputs + `plan_mesh_frame_plans` | achievable as stated | pass, after the review fix: a mirror-only instance is no longer a promotion receiver |
+| 23 | Mirror-only light slot: pixels off selected plane match mirror-lighting-excluded frame | GPU test `planar_gpu_mirror_only_light_shows_only_in_the_reflection` | achievable as stated | pass |
+| 24 | Settling on main fallback + completed mirror walk (O3): settle set holds mirror blocks; first world frame requests no new block | app test over `prepare_held_level_frame` + `BlockDemand::update_capture_view` | achievable as stated | pass |
+| 25 | Area floor: below never selected; just above selectable | render-cpu test `planar_selection_respects_the_area_floor` | achievable as stated | pass |
+| 26 | No seed in reach → not selected; fallback drawn-set reach (O12, O14); no probe → never | render-cpu + app tests | achievable as stated | pass (per-face seeds since review) |
+| 27 | Eye below / in fog band → not selected, SSR at tier; none qualifying → none | render-cpu test `planar_selection_refuses_eye_below_or_in_band` | achievable as stated | pass |
+| 28 | Hysteresis 1.25×; held plane leaving frustum yields (O13) | render-cpu test | achievable as stated | pass (hysteresis kept through a yield since review) |
+| 29 | Plane switch frame (O4, O5), incl. trip on that frame | app + GPU test `planar_switch_frame_routes_new_plane_to_this_mirror` | achievable as stated | pass |
+| 30 | Level change ignores old held plane (O11) | app test `planar_install_resets_selection_history` | achievable as stated | pass |
+| 31 | High and below: no selection, walk, demand, pass, target (O8) | app + renderer tests | achievable as stated | pass (a held mirror-only slot is released the frame the mirror reach is empty, since review) |
+| 32 | high → very_high → high: no pipeline, target alloc/release, no walk on drop frame; no-plane frames keep target (O10); resize incl. allocating frame (O9); unload | renderer tests with pipeline-creation counters + app tier test | achievable as stated | pass (the deferred build survives a resize that commits no scene change, since review) |
+| 33 | Zero selected → nothing records; no candidate → no target; candidate → target from install; refresh removing last → release | renderer + app tests | achievable as stated | pass |
+| 34 | M: capture at high byte-identical to base commit | capture A/B, base binary built from 25db4c78f | achievable as stated | pass: byte-identical at two lake poses, rerun on the final tree |
+| 35 | M: cropped real-map mirror sweep worst ≤ ½ cap, no ordinary trip | `real_map_sweep` mirror mode on lake, e24, probes | achievable as stated | pass: worst 1,416 (3.53×), 0 trips, rerun on the final tree |
+| 36 | M: cropped image matches uncropped (pixel, smooth); under-half-screen pose reaches fewer cells | capture with `crop: false` vs true; sweep cell counts | achievable as stated | pass: 8 of 8 pairs byte-identical, rerun on the final tree |
+| 37 | M: bake-gap with planar on ≤ planar off, completed-reads; per-walk selected frames + mirror-only counts non-zero | `walk_measurement` mirror mode, lake + second fixture | achievable as stated | pass, unstressed: 0 vs 0 on lake and e24; neither fixture can defer a block |
+| 38 | M: lake spawn settle: zero reveal misses, same plane, settle peak > planar off; mirror-only blocks outside baked set non-zero (or spawn override) | `[Settling] entry` new fields | achievable as stated | pass at the e24 override pose; the lake can't show the peak half (all 144 blocks mandatory). **Owner: accept e24 for this row?** |
+| 39 | M: mesh-instance cap and shadow occupancy with/without mirror | capture report / instrumented run, same poses | achievable as stated | reported: identical with and without the mirror at every pose; no pose on today's maps admits a mirror-only light or instance |
+| 40 | Manual: owner motion read, presets fixed and recorded | owner, in-engine | manual | outstanding: owner |
+| 41 | Manual: Windows 1660 release perf matrix | owner run (`long-bake`/timed runs are owner-launched); executor prepares commands | manual | outstanding: owner |
+| 42 | Manual: Mac 5300M native bounded run | owner, Mac | manual | outstanding: owner |
+| 43 | Manual: resident memory at 4K ultra lake pose | executor computes from allocation sizes; owner confirms in-engine | manual | computed (47.5 MiB at 4K ultra, scale ½); owner confirms |
 
 ## Owner handoff (Task 12)
 
@@ -273,7 +273,7 @@ cargo build --release -p postretro
 RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postretro.exe --windowed --start-pose <pose> $M/<map>.prl
 ```
 - **Order:** very_high then high at each pose, then repeat in reverse order (high then very_high).
-- **Read:** frame time; the `mirror_walk` CPU stage (`[CpuTiming]`); the `planar_reflection` GPU pass and the SSR pass (GPU timing lines).
+- **Read:** frame time; the `mirror_walk` CPU stage (app) and the `rec_planar` CPU stage (renderer: the mirror's CPU cull and recording), both in `[CpuTiming]`; the `planar_reflection` GPU pass and the SSR pass (GPU timing lines).
 - **Poses:** lake across `-48.77,1.7,-16.26,0,-3`; lake down `-16.87,1.7,-48.77,90,-30`; one movers-and-particles pose on the map chosen above.
 - **Pairing:** compare very_high with planar against very_high with SSR only. The latter is `POSTRETRO_PLANAR_OFF=1`, a dev-tools seed. So either run both sides on a release build with `--features dev-tools`, or compare against high and say so.
 
@@ -297,6 +297,75 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
   - mirror sprite instances: start at 1 KiB, grow monotonically;
   - planar inputs: 272 B.
 - **Confirm in-engine:** at 4K ultra on the lake, check against a GPU memory readout.
+
+## Review loop
+
+**Preflight.** On the branch after the merge of `origin/main` (0c5116ba3): fmt clean; clippy clean in default, dev-tools and capture.
+
+**Round 1.** A 12-agent panel. Depth reviewers (opus): IP contract verifier; five tracers (frame record, target lifecycle, selection/crop/walk, app preparation/demand/Settling, the app→renderer reach seam); an adversarial pass on admission yield; and a performance pass the owner asked for. Plus four hygiene reviewers (sonnet).
+- **🔴 Fixed.** A `MirrorReach::Only` mesh instance counted as a promotion receiver. Turning planar on could promote a main-view baked light and evict another (AC 22). Two reviewers found it independently.
+- **🟡 Fixed (correctness):**
+  - Seeds tested the plane's union box rather than its faces.
+  - The empty-crop and NoSeeds guards held a stale selection.
+  - A deferred target build was lost when the pending resize committed no scene change.
+  - A held mirror-only slot persisted about 0.8 s after the mirror went away.
+  - The mover-ghost cull read mirror-widened bounds.
+  - Capture handed the mirror light reach over once per prepare.
+  - The drawn set included the mirror's empty reach cells.
+  - The IP scans left c, the fade and the mask unpinned.
+- **Performance, done:**
+  - a `rec_planar` CPU stage;
+  - merged depth-prepass runs;
+  - a mirror frustum cull for movers;
+  - one fused particle collection for both views;
+  - binary-search cell membership;
+  - linear unions;
+  - mirror-only occupancy counted during planning;
+  - reused buffers instead of per-frame allocations.
+- **Splits.** Each kept its public paths: `render-cpu/mesh_instances/`, `render-cpu/planar_reflection/`, `capture/receivers.rs`, and `walk_measurement/{walk,install_timing}.rs`. The mirror-admission items moved to `renderer_mirror_lights.rs`. Shared constants are now pinned between visibility and render-cpu.
+
+**Round 2.** Three agents over the fix diff.
+- **🟡 Fixed:** the retry after a yield dropped hysteresis between the remaining planes.
+- **🟢 Fixed:**
+  - the Settling count now reads the mirror's drawable cells;
+  - NaN scores rank last;
+  - comment drift.
+- **Left alone:** the main view's two level-slot Vecs allocate per frame (this predates the branch); the mover cull has a redundant clip test.
+
+**Gate on the final tree (2026-10-26).**
+- fmt clean.
+- clippy clean in default, dev-tools and capture.
+- Renderer lib, single-threaded with GPU required: 1,095 passed, 2 failed (the pre-existing ghost pair).
+- `postretro` bin: default 2,120 passed, dev-tools 2,154, capture 2,194, each with 1 failure, the pre-existing font test.
+- The other 67 test binaries: 9,816 passed, 0 failed.
+- FXC: every full-init pipeline compiled.
+- `cargo check --release` clean; crate graph up to date.
+
+**Measured rows rerun on the final tree.**
+- AC 34: byte-identical to the base, with the same hashes.
+- AC 35: unchanged.
+- AC 36: 8 of 8 pairs byte-identical, with the same hashes.
+- AC 37: 0 vs 0. Mirror-only cell-frames are now drawable cells only: lake random walk 63,731, e24 123,057.
+- AC 38: unchanged (e24 override: peak 74 vs 72, `mirror_only_blocks=2`).
+- AC 39: unchanged.
+
+**For the owner (not done; each is a decision):**
+- **D at very_high only.** A finite D cuts the mirror walk (research: D15 took it from 2.69 to 0.06 ms). Take it only if the Mac run shows `mirror_walk` matters.
+- **Per-style crop pad.** Smooth style tilts nothing, so it could crop nearly tight. This reverses Task 4's single-pad choice and needs AC 17, 18 and 35 rerun.
+- **GPU indirect mirror cull: not recommended on perf grounds.** On Metal every indirect slot is a driver draw, so the CPU cull's merged runs are likely cheaper. Reopen it only if the `rec_planar` numbers argue for it.
+- **AC 38 row.** Accept the e24 override pose in place of the lake? The lake makes all 144 blocks mandatory.
+
+**Follow-ups (not this branch):**
+- `renderer_light_slots.rs` is about 2,245 non-test lines (pre-existing); it needs a responsibility split.
+- The renderer's planar compose `union_cells` re-sorts main ∪ mirror; the app's merged drawn set could be handed over instead.
+- Cluster a huge plane's faces into rectangles for the crop (bench at about 1k faces first).
+- The layer depth target may be redundant (8 MB at 4K ultra ½).
+- Seven render passes per planar frame; measure before merging.
+- A fixture that admits mirror-only lights and instances, so AC 39 reads a non-zero yield in a live run.
+
+**For landing (`context/lib`):** besides the items already listed:
+- **§7.3a** names the shared horizon floor in `fluid_reflection_above_horizon` as the one direction-conditioned placement composed from the pinned helper. It also words "never c" as ip-check D1 does, including the empty-texel cut, and scopes "reads no probe table" to the planar passes: routing and selection read only whether a face binds a probe.
+- **§12** gains `rec_planar` beside `mirror_walk`.
 
 ## Tasks
 

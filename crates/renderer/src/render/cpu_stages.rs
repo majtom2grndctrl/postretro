@@ -52,6 +52,10 @@ pub enum RenderStage {
     /// ghosts, each a depth-only draw then its colour draw), then the
     /// billboard ghost pass.
     GhostMesh,
+    /// The planar water mirror (`rendering_pipeline.md` §7.3a): its CPU world
+    /// cull and every mirror and resolve pass it records. Absent on a frame
+    /// that records no planar pass.
+    PlanarReflection,
     FluidSurface,
     Smoke,
     Fog,
@@ -91,6 +95,7 @@ impl StageSet for RenderStage {
         Self::KinematicBrush,
         Self::SkinnedMesh,
         Self::GhostMesh,
+        Self::PlanarReflection,
         Self::FluidSurface,
         Self::Smoke,
         Self::Fog,
@@ -130,6 +135,7 @@ impl StageSet for RenderStage {
             Self::KinematicBrush => "rec_kinematic_brush",
             Self::SkinnedMesh => "rec_skinned_mesh",
             Self::GhostMesh => "rec_ghost_mesh",
+            Self::PlanarReflection => "rec_planar",
             Self::FluidSurface => "rec_fluid_surface",
             Self::Smoke => "rec_smoke",
             Self::Fog => "rec_fog",
@@ -186,6 +192,20 @@ mod tests {
         let source = include_str!("mesh_pass.rs");
         assert!(!source.contains("POSTRETRO_GPU_TIMING"));
         assert!(source.contains("RenderStage::MeshPoseSampling"));
+    }
+
+    #[test]
+    fn planar_reflection_stage_records_under_render_recording() {
+        assert_eq!(RenderStage::PlanarReflection.label(), "rec_planar");
+        assert_eq!(
+            RenderStage::PlanarReflection.parent(),
+            Some(RenderStage::Record)
+        );
+        assert_eq!(RenderStage::PlanarReflection.kind(), StageKind::Time);
+        // Opened inside the planar pass itself, so the frame's pinned call
+        // site stays one line.
+        let record = include_str!("planar_reflection/record.rs");
+        assert!(record.contains("cpu.scope(RenderStage::PlanarReflection)"));
     }
 
     #[test]

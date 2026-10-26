@@ -7,6 +7,7 @@ mod ghosts;
 mod lightmap;
 mod planar;
 mod prepared;
+mod receivers;
 mod report;
 mod scene;
 mod setup;

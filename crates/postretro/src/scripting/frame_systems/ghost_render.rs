@@ -17,7 +17,7 @@ use postretro_render_cpu::flash_limiter::{
 use postretro_render_cpu::ghost_instance::GhostInstanceLook;
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::{
-    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
+    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation, MirrorReach,
 };
 use postretro_render_cpu::mesh_pass::mesh_visible;
 use postretro_visibility::VisibleCells;
@@ -268,7 +268,9 @@ impl GhostRenderCollector {
             resample: false,
             forward_visible: true,
             dynamic_shadow_visible: false,
-            mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
+            // Ghosts never draw in the mirror (`rendering_pipeline.md` §7.3a
+            // Content).
+            mirror: MirrorReach::Hidden,
             presentation: MeshPresentation::World,
         });
         let has_skinned_attachment = attachments::emit_for_holder(
@@ -284,7 +286,7 @@ impl GhostRenderCollector {
             seed,
             true,
             false,
-            postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
+            MirrorReach::Hidden,
             &mesh.attachments,
         );
 

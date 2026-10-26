@@ -7,16 +7,17 @@ use crate::App;
 use crate::camera::RenderCamera;
 use crate::render_preparation::VisibleRenderPreparation;
 
-/// O1: the camera walk (`main`) has run. Read the tier once, from the tier
-/// the renderer draws this frame with; then select, seed from this frame's
-/// camera reach, walk the mirror on its own scratch, and gather its
-/// mirror-only light reach. The walk's time lands in `main`'s visibility
-/// stages, which the frame folds under `visibility`. Below very high nothing
-/// runs.
+/// The camera walk (`main`) has run, and no consumer has read visibility
+/// yet, so the main view's sets are the same with planar on and off. Read the
+/// tier once, from the tier the renderer draws this frame with; then select,
+/// seed from this frame's camera reach, walk the mirror on its own scratch,
+/// and tag its mirror-only light reach. The walk's time lands in `main`'s
+/// visibility stages, which the frame folds under `visibility`. Below very
+/// high nothing runs.
 pub(super) fn prepare_planar_mirror(
     app: &mut App,
     camera: &RenderCamera,
-    main: &mut VisibleRenderPreparation,
+    main: &VisibleRenderPreparation,
 ) {
     let preset = app
         .renderer
@@ -29,11 +30,12 @@ impl App {
     /// The mirror step at `preset`, the tier's planar preset read once this
     /// frame (`None` below very high). The play frame and Settling's held
     /// frame both run it after their camera walk, so a held pose selects,
-    /// crops and walks exactly as the reveal frame at that pose does (O2).
+    /// crops and walks exactly as the reveal frame at that pose does, and the
+    /// settle set holds what the reveal frame's mirror draws.
     pub(crate) fn prepare_planar_mirror_at(
         &mut self,
         camera: &RenderCamera,
-        main: &mut VisibleRenderPreparation,
+        main: &VisibleRenderPreparation,
         preset: Option<PlanarPreset>,
     ) {
         let Some(world) = self.level.as_ref() else {
@@ -53,7 +55,6 @@ impl App {
             &self.blocked_portals,
             &main.stats.cpu,
         );
-        main.include_mirror_lighting(world, &self.planar_render);
     }
 }
 

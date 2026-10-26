@@ -1,4 +1,4 @@
-// Planar water candidates at the App: the volumes that reflect and bind a probe, at install and refresh.
+// Planar water candidates at the App: reflecting, probe-bound volumes, at install and refresh.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use postretro_level_loader::LevelWorld;

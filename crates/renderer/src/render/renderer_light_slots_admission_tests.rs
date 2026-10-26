@@ -56,6 +56,8 @@ struct Frame<'a> {
     eligible: &'a [bool],
     mirror_only: &'a [bool],
     held: &'a [bool],
+    /// This frame has a mirror reach.
+    mirror_present: bool,
     capacity: usize,
     promoted_cap: usize,
 }
@@ -86,6 +88,7 @@ impl Frame<'_> {
                 promoted_cap: self.promoted_cap,
                 promotion_candidate_lookup: &lookup,
                 admission: AdmissionTags {
+                    mirror_present: self.mirror_present,
                     mirror_only: self.mirror_only,
                     held_mirror_only: self.held,
                 },
@@ -112,6 +115,8 @@ fn dynamic_frame<'a>(
         eligible,
         mirror_only,
         held,
+        // Planar-off frames pass no tags.
+        mirror_present: !mirror_only.is_empty(),
         capacity,
         promoted_cap: 0,
     }
@@ -242,6 +247,7 @@ fn mirror_only_sticky_promoted_and_animated_incumbents_yield_to_main_lights() {
             eligible: &[false, true],
             mirror_only: &[false, false],
             held,
+            mirror_present: true,
             capacity: 1,
             promoted_cap: 1,
         };
@@ -283,6 +289,7 @@ fn main_baked_light_takes_a_promoted_seat_mirror_only_baked_lights_hold() {
         eligible: &[true, true, true],
         mirror_only: &[true, true, false],
         held: &[true, true, false],
+        mirror_present: true,
         capacity: 4,
         promoted_cap: 2,
     }
@@ -354,4 +361,206 @@ fn held_seats_follow_frame_n_reach_and_keep_a_sticky_lights_rank() {
         &mut held,
     );
     assert_eq!(held, [false, true, true, false, false]);
+}
+
+// Regression: after the mirror went away (a tier drop to high, or no selected
+// plane), a light held as mirror-only kept its slot through its sticky window
+// and demote ramp, so the mirror's light copy still uploaded and `[Admission]`
+// reported mirror seats at high (AC 31, 32). With no mirror reach, a seat held
+// as the mirror's carries no claim: the light loses it and its promotion
+// resets.
+#[test]
+fn mirror_held_seat_carries_no_claim_once_the_mirror_reach_is_empty() {
+    let lights = [spot(2.0, 10.0, false)];
+    for animated in [false, true] {
+        let (selection, animated_indices): (&[Option<usize>], &[Option<usize>]) = if animated {
+            (&[None], &[Some(0)])
+        } else {
+            (&[Some(0)], &[None])
+        };
+        let states = [promoted(0, 0.5)];
+        let frame = |mirror_present: bool| Frame {
+            lights: &lights,
+            selection,
+            animated: animated_indices,
+            static_states: if animated { &states[..0] } else { &states[..] },
+            animated_states: if animated { &states[..] } else { &states[..0] },
+            prior: &[0],
+            eligible: &[false],
+            mirror_only: &[false],
+            held: &[true],
+            mirror_present,
+            capacity: 1,
+            promoted_cap: 1,
+        };
+        assert_eq!(
+            frame(true).rank(),
+            vec![0],
+            "animated {animated}: while the mirror has a reach, its sticky seat holds"
+        );
+        let gone = frame(false).rank();
+        assert_eq!(
+            gone,
+            vec![NO_SHADOW_SLOT],
+            "animated {animated}: with no mirror reach, the mirror's seat is released"
+        );
+
+        let mut held = vec![true];
+        update_held_as_mirror_only(&gone, &[], &[false], &[false], &mut held);
+        assert_eq!(held, [false], "animated {animated}: no mirror seat is left");
+
+        let mut state = states[0];
+        if animated {
+            advance_animated_promoted_baked_state(&mut state, None, 1.0 / 60.0);
+        } else {
+            advance_selected_static_promoted_baked_state(&mut state, None, 1.0 / 60.0);
+        }
+        assert!(
+            state.pool_kind.is_none() && state.weight <= 0.0,
+            "animated {animated}: the released promotion resets: {state:?}"
+        );
+    }
+}
+
+/// One planned world instance with unit bounds at `at`, reached by the
+/// mirror as `mirror` says.
+fn planned_instance(
+    at: Vec3,
+    mirror: postretro_render_cpu::mesh_instances::MirrorReach,
+) -> postretro_render_cpu::mesh_instances::PlannedInstance {
+    postretro_render_cpu::mesh_instances::PlannedInstance {
+        transform: glam::Mat4::from_translation(at),
+        shadow_bias_scale: 1.0,
+        palette_base: 0,
+        phase_seed: 1,
+        palette_cache_key: postretro_render_cpu::mesh_instances::MeshPaletteCacheKey::Entity(1),
+        bounds: postretro_render_data::cone_frustum::Aabb {
+            min: Vec3::splat(-0.5),
+            max: Vec3::splat(0.5),
+        },
+        sample: postretro_model::sample_params::MeshSampleParams::stateless(0.0),
+        pose_inputs: None,
+        capture: None,
+        resample: true,
+        forward_visible: !mirror.is_only(),
+        dynamic_shadow_visible: !mirror.is_only(),
+        mirror,
+        ghost_look: None,
+    }
+}
+
+fn world_plan(
+    instances: Vec<postretro_render_cpu::mesh_instances::PlannedInstance>,
+) -> postretro_render_cpu::mesh_instances::MeshFramePlan {
+    postretro_render_cpu::mesh_instances::MeshFramePlan {
+        instance_count: instances.len() as u32,
+        groups: vec![postretro_render_cpu::mesh_instances::ModelDrawGroup {
+            model: postretro_model::ModelHandle::from("grunt"),
+            instance_offset: 0,
+            instances,
+        }],
+        dropped: 0,
+    }
+}
+
+// AC 22, regression: the promoted-baked receiver gate counted world instances
+// only the planar mirror reaches, so turning planar on could promote a baked
+// light whose only receiver was mirror-only and evict a main-view admission.
+// A mirror-only instance gives a selected-static or animated-baked light no
+// receiver, the frame ranks exactly as without that instance, and a held
+// animated promotion whose only receiver it is resets before ranking.
+#[test]
+fn mirror_only_instance_gives_a_promoted_light_no_shadow_receiver() {
+    use postretro_render_cpu::mesh_instances::MirrorReach;
+    use postretro_render_data::influence::LightInfluence;
+
+    let baked = spot(2.0, 4.0, false);
+    let influence = LightInfluence {
+        center: Vec3::new(2.0, 0.0, 0.0),
+        radius: 4.0,
+    };
+    let receiver_at = Vec3::new(3.0, 0.0, 0.0);
+    let has_receiver = |plan: &postretro_render_cpu::mesh_instances::MeshFramePlan| {
+        selected_static_light_has_shadow_entity(&baked, Some(&influence), Some(plan))
+    };
+    let only = world_plan(vec![planned_instance(receiver_at, MirrorReach::Only)]);
+    let also_main = world_plan(vec![planned_instance(receiver_at, MirrorReach::AlsoMain)]);
+    let without = world_plan(Vec::new());
+    assert!(
+        !has_receiver(&only),
+        "a mirror-only instance is no receiver"
+    );
+    assert!(
+        has_receiver(&also_main),
+        "control: the same instance the main view reaches is one"
+    );
+
+    // The baked light outscores the dynamic one, so it would take the single
+    // slot if the gate let it in.
+    let lights = [baked.clone(), spot(4.0, 4.0, true)];
+    assert!(score(&lights[0]) > score(&lights[1]) * EVICTION_MARGIN);
+    let no_state = [PromotedBakedLightState::default()];
+    for animated in [false, true] {
+        let (selection, animated_indices): (&[Option<usize>], &[Option<usize>]) = if animated {
+            (&[None, None], &[Some(0), None])
+        } else {
+            (&[Some(0), None], &[None, None])
+        };
+        let rank = |plan: &postretro_render_cpu::mesh_instances::MeshFramePlan| {
+            let eligible = [has_receiver(plan), true];
+            Frame {
+                lights: &lights,
+                selection,
+                animated: animated_indices,
+                static_states: if animated {
+                    &no_state[..0]
+                } else {
+                    &no_state[..]
+                },
+                animated_states: if animated {
+                    &no_state[..]
+                } else {
+                    &no_state[..0]
+                },
+                prior: &[NO_SHADOW_SLOT, NO_SHADOW_SLOT],
+                eligible: &eligible,
+                mirror_only: &[false, false],
+                held: &[false, false],
+                mirror_present: true,
+                capacity: 1,
+                promoted_cap: 1,
+            }
+            .rank()
+        };
+        assert_eq!(
+            rank(&only),
+            rank(&without),
+            "animated {animated}: the mirror-only instance changes nothing"
+        );
+        assert_eq!(
+            rank(&only),
+            vec![NO_SHADOW_SLOT, 0],
+            "animated {animated}: the main-view dynamic light keeps the slot"
+        );
+        assert_eq!(
+            rank(&also_main),
+            vec![0, NO_SHADOW_SLOT],
+            "animated {animated}: control, a main-view receiver promotes the light"
+        );
+    }
+
+    let lookup = build_promotion_candidate_lookup(&[None], &[Some(0)], 0, 1);
+    let mut animated_states = [promoted(0, 1.0)];
+    release_promoted_baked_incumbents_before_ranking(
+        &mut [],
+        &mut animated_states,
+        &lookup,
+        &[true],
+        &[has_receiver(&only)],
+        1.0 / 60.0,
+    );
+    assert!(
+        animated_states[0].pool_kind.is_none(),
+        "a held animated promotion with only a mirror-only receiver resets"
+    );
 }

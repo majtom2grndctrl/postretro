@@ -159,6 +159,61 @@ fn planar_gpu_tier_round_trip_keeps_no_plane_frames_and_rebuilds_on_resize() {
     assert_targets(&renderer, None, "unload");
 }
 
+// Regression: a build deferred to a pending scene-moving resize was lost when
+// the next recorded size settled back on the committed scene, since only a
+// scene-moving commit rebuilt the layer. O9's deferral must land on any
+// commit: the layer and mirror targets exist after it, built once.
+#[test]
+fn planar_gpu_deferred_build_lands_when_the_commit_moves_no_scene() {
+    let Some((mut renderer, view)) = standing_quad_renderer() else {
+        return;
+    };
+    renderer.set_reflection_quality(FluidReflectionQuality::High);
+    assert_targets(&renderer, None, "high");
+    let before = builds(&renderer);
+
+    renderer.record_surface_size(96, 48);
+    renderer.set_reflection_quality(FluidReflectionQuality::VeryHigh);
+    assert_targets(&renderer, None, "deferred to the commit");
+    renderer.record_surface_size(FRAME, FRAME);
+    assert!(
+        renderer.commit_extents().is_none(),
+        "the recorded size is the committed one"
+    );
+    assert_targets(
+        &renderer,
+        Some((FRAME / 2, FRAME / 2)),
+        "built on a commit that moved nothing",
+    );
+    assert_eq!(builds(&renderer), (before.0 + 1, before.1 + 1), "once");
+    assert!(renderer.commit_extents().is_none());
+    assert_eq!(
+        builds(&renderer),
+        (before.0 + 1, before.1 + 1),
+        "a later commit builds nothing"
+    );
+
+    select(&mut renderer, view, 0.0);
+    let records = renderer.planar_reflection_records();
+    capture_checked(&mut renderer, view);
+    assert_eq!(renderer.planar_reflection_records(), records + 1);
+    renderer.release_level_resources();
+}
+
+// The preset override reaches the planar layer only on a full renderer;
+// without one it changes nothing and reports nothing applied, as its sibling
+// setters no-op.
+#[test]
+fn planar_preset_override_without_a_full_renderer_applies_nothing() {
+    let Some(mut renderer) = fixture::ssr_renderer() else {
+        return;
+    };
+    renderer.set_reflection_quality(FluidReflectionQuality::VeryHigh);
+    renderer.full = None;
+    assert!(!renderer.set_planar_preset_override(Some(full_scale())));
+    assert!(!renderer.set_planar_preset_override(None));
+}
+
 /// The planar group 5 is built over the current scene depth and carries the
 /// layer's scale against the scene.
 fn assert_group_follows(renderer: &Renderer, extent: (u32, u32)) {
@@ -351,18 +406,24 @@ fn body<'a>(source: &'a str, from: &str, name: &str) -> &'a str {
 
 // AC 32 (no pipeline) and the hot-path rule: the planar lifecycle paths a
 // tier change, an install, a candidate verdict, a resize or an unload take
-// build textures, views and bind groups only, never a pipeline, shader or
-// layout (those build at full init, at every tier), and nothing per frame
-// reaches them.
+// create no pipeline, pipeline layout or shader module (those build at full
+// init, at every tier), and nothing per frame reaches them but the extent
+// commit's check for a deferred build. They build textures, views and bind
+// groups, and `FluidSceneInputs::new` builds one group-5 bind-group layout
+// each time the planar group is allocated after a release: sharing the main
+// group's layout would need a constructor the `fluid_scene_inputs.rs` pin
+// forbids.
 #[test]
 fn planar_lifecycle_compiles_nothing_and_never_runs_per_frame() {
     let api = include_str!("api.rs");
     let routing = include_str!("../fluid_surface/planar_routing.rs");
     let targets = include_str!("targets.rs");
     let fluid = include_str!("../fluid_surface.rs");
+    let inputs = include_str!("../fluid_scene_inputs.rs");
     let bodies = [
         body(api, "impl Renderer", "set_planar_candidate"),
         body(api, "impl Renderer", "sync_planar_layer"),
+        body(api, "impl Renderer", "resume_deferred_planar_build"),
         body(api, "impl Renderer", "rebuild_planar_layer"),
         body(api, "impl Renderer", "apply_planar_layer"),
         body(routing, "impl FluidSurfacePass", "set_planar_layer"),
@@ -370,6 +431,8 @@ fn planar_lifecycle_compiles_nothing_and_never_runs_per_frame() {
         body(routing, "impl FluidSurfacePass", "set_planar_app_candidate"),
         body(routing, "", "has_candidate_plane"),
         body(routing, "impl PlanarLayer", "new"),
+        body(inputs, "impl FluidSceneInputs", "new"),
+        body(inputs, "impl FluidSceneInputs", "rebuild"),
         body(targets, "impl PlanarTargets", "new"),
         body(fluid, "impl Renderer", "set_reflection_quality"),
         body(fluid, "impl Renderer", "install_fluid_surfaces"),
@@ -406,8 +469,16 @@ fn planar_lifecycle_compiles_nothing_and_never_runs_per_frame() {
         }
     }
     // The rebuild follows the scene targets alone; the sync follows the
-    // tier, the fluid install and the app's verdict.
+    // tier, the fluid install and the app's verdict, and the commit reaches
+    // it only through a deferred build.
     let extent = include_str!("../renderer_extent.rs");
     assert_eq!(extent.matches("self.rebuild_planar_layer();").count(), 1);
+    assert_eq!(
+        extent
+            .matches("self.resume_deferred_planar_build();")
+            .count(),
+        1
+    );
+    assert!(!extent.contains("sync_planar_layer("));
     assert_eq!(fluid.matches("self.sync_planar_layer();").count(), 2);
 }

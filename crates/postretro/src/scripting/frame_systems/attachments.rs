@@ -55,10 +55,9 @@ impl<'a> SocketPoseResolver<'a> {
 /// Emit attachment draw inputs for one already-collected holder.
 ///
 /// Every attachment inherits the holder's cull decision, its mirror reach
-/// included. Skinned bindings share
-/// a single modifier-applied world-pose sample; rigid bindings consume their
-/// load-resolved rest matrix directly. No attachment independently looks up its
-/// socket table or cell.
+/// included. Skinned bindings share a single modifier-applied world-pose
+/// sample; rigid bindings consume their load-resolved rest matrix directly. No
+/// attachment independently looks up its socket table or cell.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_for_holder(
     instances: &mut Vec<MeshInstanceInput>,

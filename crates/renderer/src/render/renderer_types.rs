@@ -1237,10 +1237,11 @@ pub(super) struct FullRenderer {
     /// Per-frame skinned-mesh instance list: surviving (model handle,
     /// interpolated transform, phase seed) tuples. Refilled each frame via
     /// `set_mesh_draws` from the render-frame mesh collector (which classifies
-    /// forward visibility via `mesh_pass::mesh_visible` and may retain additional
-    /// selected-static-light shadow casters as non-forward instances). Empty when
-    /// no mesh entity is visible or shadow-relevant. Planned into per-model draw
-    /// groups + palette runs each frame by `mesh_instances::plan_mesh_frame`.
+    /// forward visibility per view via `mesh_pass::mesh_visible_in_cell` and may
+    /// retain additional selected-static-light shadow casters as non-forward
+    /// instances). Empty when no mesh entity is visible or shadow-relevant.
+    /// Planned into per-model draw groups + palette runs each frame by
+    /// `mesh_instances::plan_mesh_frame`.
     pub(super) mesh_draws: Vec<mesh_instances::MeshInstanceInput>,
 
     /// Per-frame ghost instances (`rendering_pipeline.md` §7.9): unlit,

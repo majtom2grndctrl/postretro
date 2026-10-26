@@ -2,14 +2,12 @@
 //! preparation (AC 19, 20, 21). See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
-use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_visibility::VisibilityPath;
 
 use crate::lightmap_streaming::controller::BlockPhase;
 use crate::lightmap_streaming::test_fixtures::*;
 use crate::render_preparation::planar_test_fixtures::*;
 
-const PLANAR: FluidReflectionQuality = FluidReflectionQuality::VeryHigh;
 const ROOM_A: u32 = MIRROR_ROOMS[0];
 const ROOM_B: u32 = MIRROR_ROOMS[1];
 

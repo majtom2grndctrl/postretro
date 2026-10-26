@@ -176,7 +176,7 @@ impl PreparedCapture {
 
         let eye = Vec3::from_array(scene.camera.position);
         let view_proj = capture_view_projection(&scene.camera, width, height);
-        let mut scratch = Vec::new();
+        let mut scratch = postretro_visibility::PortalWalkScratch::new();
         let visible_render = VisibleRenderPreparation::for_level(
             &world,
             eye,

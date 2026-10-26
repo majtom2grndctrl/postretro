@@ -28,6 +28,7 @@ pub(crate) mod presented_pose;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
 pub(crate) mod session;
+pub(crate) mod settle_log;
 pub(crate) mod settling;
 pub(crate) mod splash_lifecycle;
 pub(crate) mod staged_manifest_lifecycle;

@@ -872,7 +872,9 @@ pub(crate) struct App {
     /// `postretro::portal_trace` for that one frame only.
     capture_portal_walk_next_frame: bool,
 
-    scratch_cells: Vec<u32>,
+    /// Walk state reused across frames; also lends each frame's draw-set
+    /// buffer, handed back after the frame.
+    portal_walk_scratch: postretro_visibility::PortalWalkScratch,
     /// Render-only portal blockers rebuilt from live mover phase every frame.
     blocked_portals: Vec<bool>,
 
@@ -1049,6 +1051,10 @@ pub(crate) struct App {
 
     /// The current level entry's Settling stretch; `Some` only in Settling.
     settle: Option<crate::startup::settling::SettleState>,
+
+    /// The revealed entry's Settling record, set at the reveal edge and
+    /// logged at the end of the reveal frame, once its misses are counted.
+    settle_summary: Option<crate::startup::settle_log::SettleSummary>,
 
     /// Set during `mod_init` if a mod registers a `SplashSource` override.
     /// The consume path in `run_splash_frame` frame 1 is wired; today the field
@@ -6748,7 +6754,7 @@ mod tests {
                 &world,
                 blocked_portals,
                 false,
-                &mut Vec::new(),
+                &mut postretro_visibility::PortalWalkScratch::new(),
                 postretro_visibility::TimingGate::OFF,
             );
             result

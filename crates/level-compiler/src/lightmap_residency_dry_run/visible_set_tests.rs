@@ -258,13 +258,17 @@ fn sightline_is_the_farthest_hub_distance_to_a_sampled_visible_cell() {
 }
 
 #[test]
-fn visible_set_report_is_deterministic_and_states_its_lower_bound() {
+fn visible_set_report_is_deterministic_and_states_it_samples_the_walk() {
     let first = run_dry_run(&u_turn_input());
     let second = run_dry_run(&u_turn_input());
     assert_eq!(first, second);
     let rendered = first.render();
     assert_eq!(rendered, second.render());
-    assert!(rendered.contains("lower bound on true visibility"));
+    assert!(rendered.contains(
+        "is a sample of the runtime walk, neither a bound on true visibility nor FOV-independent"
+    ));
+    assert!(rendered.contains("a sample of the runtime walk rather than a bound"));
+    assert!(!rendered.contains("lower bound"));
     assert!(rendered.contains("visible-set mandatory bytes per camera cell"));
     assert!(rendered.contains("convergence at L=0"));
     // Fixtures without a visibility world skip the pass entirely.

@@ -1,0 +1,371 @@
+# portal-walk-bounded-regions — plan of record
+
+mode: resumable
+status: landed
+read at: d23959def
+
+Branch: `portal-walk-bounded-regions`, cut from the claim commit d23959def. No `crates/`
+commit lands between the brief's read commit 800bbe186 and d23959def, so every cited
+symbol reads as the assessment recorded it (`portal_vis.rs` `flood` :281,
+`camera_on_polygon_plane` :671, `narrow_frustum` :693, `MAX_PORTAL_WALK_STEPS` = 20,000
+:26; `visibility.rs` fallback :435–469; `PORTAL_WALK_EPOCH` = 1; the step-limit branch in
+`pvs_sampling.rs` :296–306; `CELL_RESIDENCY_SET_STAGE_VERSION` = 3).
+
+## Corrections
+
+- **Orientation data lives on `LevelWorld`.** Brief: "runtime traversal in the visibility
+  crate" (Placement), and "each portal's source side is settled before any walk, from data
+  every fixture and shipped map carries" (O1) → the walk's facing filter needs each
+  portal's plane and which side its front cell lies on. That is static per world, and the
+  scratch can't tell two worlds apart reliably. Planning around it by computing per-portal
+  plane and front-side sign once in the `LevelWorld` constructors in `level-loader`, next
+  to the existing portal validation. Every fixture builds through `new_visibility_only`,
+  so fixtures get it too. The evidence is geometric, not the locator. Cells are convex BSP
+  leaves, so a cell's other off-plane portal centroids lie on its side. The fallbacks are
+  the opposite cell's evidence, reversed, and then a cell box lying wholly on one side. A portal with
+  no evidence is unoriented: the facing filter skips it, which is superset-safe and still
+  terminates. This is the prototype's locator-probe failure (O1), avoided. The traversal
+  itself stays in the visibility crate.
+- **The walk core lands early, test-only.** Brief: commit order is split → instruments →
+  walk with the epoch bump, and the pre-change build carries the old walk and epoch (O19).
+  The Path also puts the walk first, as the risk-first slice. Planning around both by
+  landing the region walk, oracle and fixtures in the visibility crate under
+  `#[cfg(test)]` before the instrument commits. Nothing calls the walk until the wiring
+  task, which also bumps the epoch. So the pre-change build (the last instrument commit)
+  carries the new code only as test code: its runtime walk, epoch and bake are the old
+  ones. That keeps O19's meaning and needs no rebase.
+- **The test build still breaks.** The brief says `cargo test -p postretro-visibility`
+  doesn't build. At d23959def, `crates/level-loader/src/prl.rs:64` still imports
+  `TeleportersSection` without the `load-prl` gate. Task 1 fixes it, as the Path asks.
+- **Retired counters.** `VisibilityStage` carries `walk_rejected_narrow`,
+  `walk_rejected_cycle` and `walk_rejected_depth`. These are chain-walk concepts with no
+  meaning in the region walk. They retire with the wiring task, and the oracle keeps its
+  own counters. `walk_considered` keeps O11's meaning.
+
+## Delegated answers
+
+- **Snap grid and cap.** Q = 256 steps per NDC unit, the prototype's measured choice
+  (`research.md` §Variant results). The target cap is 5,000, which gives 2.5× headroom
+  over the worst prototype walk (1,987). Task 8's sweep fixes the final value: at least 2×
+  the worst portal-test count over every fixture and swept map. If the tightened walk's
+  worst count passes 2,500, the cap rises with it.
+- **"Near the polygon."** The bypass applies when the eye's 3D distance to the closed
+  portal polygon is at most `PORTAL_BYPASS_DISTANCE` = 0.01 m. That covers locator and
+  float disagreement at a shared plane. Distant coplanar portals, the sweep's worst
+  over-inclusion, then clip normally. The fallback's keep test only has to add cells
+  touching the eye.
+- **Facing sign rule.** A walk crosses portal P out of cell C only when the eye's signed
+  distance to P's plane, positive on C's side, exceeds `FACING_EPSILON` (1e-4 since
+  review round 1; first set at 1e-3). The superset check classifies backward crossings with this same predicate (O36).
+  Unoriented portals skip it.
+- **Order of rejection tests.** Per outbound portal:
+  1. count it (O11);
+  2. blocked;
+  3. invalid or solid neighbour;
+  4. seeded entry only: wholly behind the caller's near plane (O31);
+  5. bypass;
+  6. facing;
+  7. 3D clip against near, rect and far, then project.
+
+  The camera entry never runs step 4, so the bypass reaches neighbours behind or beside
+  the eye (O6, O26).
+- **Sweep instrument.** An `#[ignore]`-gated test in the visibility crate. It reads `.prl`
+  paths from an env var and reaches the test-only oracle directly, so no oracle code ships.
+  It runs single-threaded in release:
+  `cargo test --release -p postretro-visibility <filter> -- --ignored --test-threads=1`.
+  Its rerun command goes in `context/`, not `docs/`.
+- **Constant k.** Taken from the worst portal tests per summed degree of reached cells over
+  the fixture sweep, rounded up, with at most 2× headroom, and never above 32. Fixed in
+  Task 2, rechecked in Task 6.
+
+- **Tangent portals need a clip pad.** Row 13: with the clipper's on-plane rule, a portal
+  touching a rect only along an edge clips to two vertices and drops. The walk clips
+  against its rect pushed out by half a snap step, then intersects the result with the
+  rect, so the pad never widens a region.
+
+- **A step-limit fixture outgrew the walk.** `candidate_cull_mirror`'s
+  `visible_span_coverage_on_every_concrete_visibility_path` tripped the chain walk with 8
+  parallel portals; the region walk tests those 16 times. Its fixture now builds 20,001
+  portals so it trips any cap up to 20,000, and its assertions are unchanged.
+
+- **Review round 1 moved the epoch to 3.** Epoch 2 was never landed. Facing tolerance
+  1e-3 → 1e-4 (f32 error at map scale, not a slab: an eye 0.5 mm above a floor dropped
+  truly visible cells), and the orientation bounds tier takes a side only when a cell's
+  whole box lies on one side (a box centre mis-orients slanted planes). The fallback's fog
+  test now uses the walk's own padded clip planes, so it holds cells the walk reaches
+  through the half-step clip pad at the screen edge. R1 and the R2/R3 gate ran at
+  `006c79512` (epoch 2); the round-1 changes alter only sub-millimetre and degenerate
+  cases, and R1 reruns at the final commit. Round 2 checked the orientation premise on
+  every gate and sweep map (`real_map_portal_orientation_report`): the means tier orients
+  all 8,228 portals, so the old and new bounds rules differ on none, and every oriented
+  portal agrees with locator probes.
+- **Portal planes build lazily.** Correction 1 said the constructors build them; they
+  build on first `portal_planes()` call through a `OnceLock`, which works for the
+  struct-literal construction sites. `determine_visible_cells` touches them before its
+  walk timer.
+
+## AC-to-proof
+
+Report sets R1–R4 are in `research.md` §Report sets. "Fixtures" means the synthetic
+stacked-slab shaft, the open 3D lattice and the cyclic rings, plus the named cases. Each
+fixture has its own locator.
+
+| AC | Row | Proof | Status |
+|---|---|---|---|
+| 1 | Superset over randomized cameras, two exception classes only | `region_walk` superset sweep test vs oracle, classifier | achievable as stated |
+| 2 | Fixed seed and count; oracle cap far above today's; a slab camera exceeds today's cap and completes under the oracle; oracle cap and depth hits reported | same sweep test, asserts and report | achievable as stated |
+| 3 | *Guard:* existing positive traversal tests pass on their current fixtures (O1) | existing `portal_vis` tests rerun against the new walk | achievable as stated |
+| 4 | *Guard:* two paths, wider opening wins, both portal orders | `two_paths…` test, both orders | achievable as stated |
+| 5 | Portal crossing the camera plane includes its neighbour | focused test | achievable as stated |
+| 6 | *Guard:* camera on polygon or just inside the wall sees through | existing regression probes | achievable as stated |
+| 7 | On plane just outside the edge: inside distance both ways, beyond it clipped; shared slab plane (O8, O10) | focused tests | achievable as stated |
+| 8 | Eye on a distant portal's plane: misses are classified (O36) | focused test vs oracle | achievable as stated |
+| 9 | Within render near of two consecutive portals (O9) | focused test | achievable as stated |
+| 10 | Bypass off the camera cell hands at most the near cell's rect; no re-expansion (O23) | focused test, expansion counter | achievable as stated |
+| 11 | Late rect growth re-expands descendants (O2) | diamond fixture test | achievable as stated |
+| 12 | One-grid-step growth re-expands; a no-op doesn't (O3) | focused test | achievable as stated |
+| 13 | Portal tangent to a rect edge or snap boundary included | focused test | achievable as stated |
+| 14 | *Guard:* camera cell always visible on the camera entry | sweep assert | achievable as stated |
+| 15 | Seeded walk from several cells under an oblique near plane ⊇ seeded oracle; locator cell no seed reaches stays hidden; seed shuffle changes neither set nor tests (O27, O33) | seeded tests | achievable as stated |
+| 16 | Cell only behind the caller's near plane stays hidden, even within bypass distance (O31) | seeded test, walk and oracle | achievable as stated |
+| 17 | Seeded from the camera cell under the slid frustum equals the camera entry (O27) | test | achievable as stated |
+| 18 | No or unusable seeds: empty, no trip; repeated seed is a no-op; each unusable kind skipped (O32) | tests | achievable as stated |
+| 19 | Seeded cap trip reported to the caller, distinct, no fallback set (O34) | test | achievable as stated |
+| 20 | *Guard:* set shape at every sweep camera; draw set = drawable part of fog reach on walk frames (O4, O12) | sweep asserts through `determine_visible_cells` | achievable as stated |
+| 21 | Back-to-back walks match fresh state: door toggle, cell change, larger world, seeded walk between, generation wrap, threads (O7, O25, O35) | scratch tests with a test-only generation setter | achievable as stated |
+| 22 | *Guard:* L-corridor far end and straddling side branch stay hidden | existing tests | achievable as stated |
+| 23 | *Guard:* small opening whose rect misses the portal stays hidden | focused test | achievable as stated |
+| 24 | *Guard:* portal wholly behind the camera rejected | existing or focused test | achievable as stated |
+| 25 | *Guard:* blocked portal blocks both ways; closed closet out of draw and fog sets, camera against the door (O37) | existing blocked test plus pressed-camera case | achievable as stated |
+| 26 | Distant coplanar portal clipped normally; cell hidden when the opening is outside the source rect | focused test | achievable as stated |
+| 27 | Slab fixture: the exact walk exceeds today's cap; new walk ≤ k × summed degree, never trips | cost test | achievable as stated |
+| 28 | No cell expands more than 32 times on any fixture | test-only expansion counter | achievable as stated |
+| 29 | A rect grown twice while queued expands once (O22) | focused test | achievable as stated |
+| 30 | Open lattice finishes under the cap on a thread with a small fixed stack | spawned thread with a fixed stack size | achievable as stated |
+| 31 | Every outbound portal counts once, facing, blocked and solid included (O11) | counter test, test-only facing counter | achievable as stated |
+| 32 | Exactly cap tests completes; one more trips; no portals never trips (O24) | cap-boundary test | achievable as stated |
+| 33 | Cap ≥ 2× worst portal tests on every fixture, seeded included | fixture sweep assert | achievable as stated |
+| 34 | *Guard:* portal-list shuffle gives an identical set and fog reach | sweep shuffle assert | achievable as stated |
+| 35 | *Guard:* forced trip takes the bounded fallback, not draw-all | existing step-limit test | achievable as stated |
+| 36 | *Guard:* a capped walk returns only cells the uncapped walk reaches, plus the camera cell (O5) | test on the bake-facing entry | achievable as stated |
+| 37 | Fallback fog reach ⊇ uncapped walk: looking away, bypassed neighbour behind or beside the eye (O6, O26, O30) | fallback tests | achievable as stated |
+| 38 | id-51 key differs from its pinned pre-change value; projections and stage version unchanged | key-pin test; key captured at the pre-change commit (Task 5) | achievable as stated |
+| 39 | *Guard:* outside-baked-set never-refused demand tests pass unchanged | existing tests | achievable as stated |
+| 40 | Dry-run report and `pvs_sampling` restated in every section, the tiles note included; test asserts the string | dry-run test | achievable as stated |
+| 41 | Completed-reads mode: deferral counts once per frame; second drain doesn't advance retirement; undemanded block counts as left behind; per-frame trip record splits paired runs (O29, O38) | `walk_measurement` unit tests on a small fixture | achievable as stated |
+| 42 | Manual sweep (R1) | sweep instrument, integrating executor, this Mac | measurement |
+| 43 | Residency gate (R2, R3) | `walk_measurement`, both builds, integrating executor | measurement |
+| 44 | SH reach | SH reach measurement, both bakes, integrating executor | measurement |
+| 45 | Settle (R4) | Settling log, fresh launches, integrating executor | measurement, needs the engine |
+| 46 | Live: no step-limit marker; frame, walk time and mesh instances vs pre-change | owner, in-engine, CPU timing | manual |
+| 47 | Visual: no pops; shadow drops reported | owner, in-engine | manual |
+
+## Tasks
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | Split `portal_vis.rs` by responsibility, behaviour-preserving: entry, chain walk and clipping each in its own module, tests beside them. Gate the `TeleportersSection` import. Prove it: the same visibility test count passes before and after. | integrating executor | — | done: 54/54 visibility tests before and after; clippy clean |
+| 2 | **Risk-first slice, test-only.** Add per-portal plane and front-side orientation to `LevelWorld` (Correction 1). Add the region walk core under `#[cfg(test)]`: a rect region type behind one seam, outward snap at Q = 256, the front-to-back worklist with ties by cell id, the facing filter, the tightened bypass, 3D clip before projection, and caller-owned scratch with generation stamps. Add the test-only oracle: today's chain walk with the tightened bypass, keeping parent side planes at bypass hops. Add the slab, lattice and ring fixtures with locators. Prove rows 1–14, 22–34 on the core, and fix k. | integrating executor, case tests delegated | 1 | done: `region_walk` 25 tests (sweep + `tests_cases`); 1,800 sweep cameras, 0 unclassified misses; worst 1,093 tests, 1.56 per degree → k = 2, worst 5 expansions; slab oracle 57,888 > 20,000. Rows 3, 4, 22 run on the existing `portal_vis` tests once Task 6 points them at the walk. |
+| 3 | Seeded entry on the core and the oracle: seeds queued before expansion, the caller's near plane gating the bypass, skips for unusable seeds, a trip result. Prove rows 15–19. | integrating executor, tests delegated | 2 | done: `region_walk::tests_seeded` 9 tests, incl. rows 21 (seeded part) and 33; worst seeded 771 tests |
+| 4 | `walk_measurement` modes: projection and pitch, completed reads, frame-counted retirement, per-drawn-block causes, the per-frame trip record and paired-run split. Prove row 41. | delegated worker (`walk_measurement/`), integrating executor reviews | 1 | done: `walk_measurement` 6 passed (5 new); env vars `POSTRETRO_LIGHTMAP_WALK_{HFOV,ASPECT,PITCH,READS,TRIP_RECORD_OUT,TRIP_RECORD_IN}`; default run unchanged. R2's id-51 stage time comes from the bake log. |
+| 5 | Settling log: step-limit frames, the settle set's peak in lightmap blocks and SH targets, hold time and reveal-frame misses, per entry. Capture the pre-change id-51 key for row 38. Mark this commit as the **pre-change build** in the plan. Build and copy out the pre-change release binary. | integrating executor, log delegated | 4 | done: this commit is the **pre-change build**. R4 line: `[Settling] entry outcome= hold_ms= frames= walk_frames= step_limit_frames= sh_set_peak= lightmap_set_peak= sh_unsettled_peak= lightmap_unsettled_peak= reveal_misses=`, logged once per entry at the reveal frame; 51 settle tests pass. Pre-change id-51 key on the L-corridor fixture pinned (`cache_key_pins_the_walk_epoch_and_sampling_projection`). On a timed-out entry `reveal_misses` also counts still-missing settle-set blocks. |
+| 6 | Wire the walk:<br>• The camera entry goes behind `determine_visible_cells`, with a caller-owned `PortalWalkScratch` through every caller (frame loop, bake threads, `walk_measurement`, probes, mirror, tests).<br>• Lift the `#[cfg(test)]` gate and keep the oracle test-only.<br>• Set the cap and bump `PORTAL_WALK_EPOCH`.<br>• Widen the fallback's fog test with the bypass-distance keep test, and drop the retired counters.<br>• Point the bake's step-limit branch at the new walk.<br>• Restate `pvs_sampling`, the dry run's `visible_set` and the tiles note, and pin the key.<br>Prove rows 20, 21, 35–40. | integrating executor, wiring delegated | 3, 5 | done: visibility 93 passed (14 traversal tests ported unchanged in geometry, two-paths also reversed; none retired); `prl-build cell_residency` 17, `lightmap_residency_dry_run` 52; `postretro` bin 2,041 passed; guards (outside-baked-set demand, closet reveal ×2, SH doorway, settle on every path) unchanged and passing; clippy clean with and without dev-tools. Public: `determine_visible_cells(…, &mut PortalWalkScratch, …)`, `portal_traverse(eye, view_proj, cell, world, scratch) -> PortalTraversal`, `portal_walk_seeded(…) -> SeededWalk`. |
+| 7 | Rebake the swept and measured maps after the bump: hallway, lake, occlusion-test, movement-feel, campaign-test. Check the id-51 bake reports no step-limit walks. | integrating executor | 6 | |
+| 8 | Sweep instrument as an ignored test, then run R1 on the hallway, lake and occlusion-test, plus straight up and down at the shaft poses. Finalize the cap (2× rule) and recheck k. | integrating executor, instrument delegated | 6, 7 | done (R1 below). Cap stays 5,000: worst 2,021 (occlusion-test), 2.47×. k = 2 holds on the fixtures (worst 1.56); real maps reach 3.77 tests per summed degree (hallway), which the fixture row does not bound. Worst expansions per cell 18 (≤ 32). CPU µs taken under load (a bake and a measurement run concurrently); quiet rerun pending. |
+| 9 | Measurements: the residency gate R2 and R3 on both builds, SH reach, and Settle R4. A failed gate stops for an owner decision. | integrating executor | 5, 7 | |
+| 10 | Preflight, then review-panel → fix → retest loop | integrating executor | 8, 9 | round 1 done: preflight green (12,780 / 12,883 with dev-tools; one unreproduced `reflection_probe_exclusion_compile` failure under a concurrent bake, 3/3 on rerun). Panel of 9 (3 slices + seam), 0 must-fix; fixes in `59118db28`, gate 13/13 green. Round 2 (adversarial + hygiene on the fix commit): 0 must-fix; orientation premise checked on real maps, facing-tolerance regression test, fallback keep slack, comment wraps. Loop closed: round 3 changes are covered by focused tests. |
+| 11 | Owner: Live and Visual rows | owner | 10 | manual |
+
+Hot-path constraints carried into Task 6: no per-frame allocation once the scratch has
+grown to the world (rects, stamps and the heap reuse capacity, and the output reuses the
+caller's `Vec<u32>`); the walk is iterative, with no recursion; cost is bounded per
+reached cell by the snap lattice, with the cap as backstop; walk time is measured through
+`record_walk`.
+
+## R1 — sweep (Task 8, 2026-10-25, i9-9980HK, release, single-threaded, loaded machine)
+
+Instrument: `region_walk/real_map_sweep.rs` (`#[ignore]`); rerun in its header. 8 yaws ×
+pitch 0/±45°, plus pitch ±89.9° at the hallway shafts. Extra cells are vs the tightened
+oracle. µs best of 2, indicative only (load average 13–17).
+
+| map | walks | trips | unclassified | tests p50/95/99/max | µs p50/p99/p99.9/max | extra p50/95/max |
+|---|---|---|---|---|---|---|
+| hallway | 94,440 + 5,200 | 0 | 0 | 32/226/707/1,903 | 9.3/226/467/2,529 | 0/4/71 |
+| reflection-lake-test | 5,208 | 0 | 0 | 221/952/1,240/1,511 | 70.7/557/740/1,264 | 0/5/51 |
+| occlusion-test | 13,128 | 0 | 0 | 304/1,299/1,623/2,021 | 101/755/933/1,577 | 0/20/182 |
+
+Hallway regions: shaft A max 1,903 tests, extra p95/max 13/59 (up/down 16/36); B 1,132,
+13/43; C 1,247, 16/45; arena 430, 2/13. SH clusters drawn per pose, walk vs exact (mean):
+shaft A 4.65 vs 4.36, B 3.62 vs 3.44, C 4.62 vs 4.27, arena 2.08 vs 2.03 (delta p95 0–2,
+max 6). Shadow-eligible lights (influence sphere reaches a reached cell; brightness and
+receiver gates omitted): shaft A 48.0 vs 46.8 (p95 +9, max +29), B 18.6 vs 18.2, C 29.6 vs
+28.9, arena 31.5 vs 31.2 (max +45). occlusion-test's `.prl` predates the current loader,
+so it has no light or SH data; its walk sweep reads cells, portals and locator only.
+
+## R2/R3 — residency gate (Task 9, 2026-10-25, i9-9980HK, frozen binaries)
+
+Builds: pre-change `e31209623` (epoch 1) and rect `006c79512` (epoch 2), each on its own
+warm bake made with its own `prl-build` and identical flags. The `content/dev/maps/`
+originals were an older toolchain's bakes (2–4.5× larger; occlusion-test no longer loads),
+so a first pre-change batch on them was discarded. Pair bakes differ only in id-51 bytes and
+epoch; no INVALID pair. `READS=completed`, `RUNS=default`, 2,000 steps, random walk (RW) and
+far-point tour (FT). Logs: scratchpad `measure/pair/`.
+
+- **Gate: passes in all 36 passes.** Deferred-behind-retiring block-frames in gate 0 pre,
+  0 rect, every projection and pitch, both maps. Rect step-limit frames 0 everywhere. Rect
+  deferrals are 0 over every frame, so the verdict holds under any O28 window (the review
+  panel's stricter-window question is moot for this run).
+- Frames outside the gate (pre-change trip frames): hallway RW 652–2,662, FT 18–73;
+  movement-feel 0–12 / 0–4. On them the pre-change build left 3.2k–2.16M drawn blocks
+  non-resident (held, never read); the rect build 0 deferred, 0 non-resident.
+- Hallway mandatory set per camera cell p50/p95/max: pre 96/211/267, rect 105/230/283.
+  movement-feel 73/73/73 both. Hallway pre bake: 941 of 335,898 sampling walks
+  step-limited; rect bake 0.
+- Growths / peak layers: hallway RW 0 / 15 both; FT pre 1 / 16, rect 2 / 17 (1 / 16 at
+  130° p+45). movement-feel 0 / 6 both.
+- Outside-baked-set block-frames in gate (rect over-inclusion, never refused): hallway
+  100° 1–129, 130° 3.6k–23.7k; pre 415 (RW) / 1,056 (FT), 0 at 100° ±45°. movement-feel
+  rect 0–7, pre 0.
+- Left-behind in gate: pre 0; rect 4 at 130° p0 RW (16:9 and 4:3), 0 elsewhere.
+
+## SH reach (Task 9)
+
+| map | build | L 16 m p95 / max MiB | L 32 m p95 / max MiB |
+|---|---|---|---|
+| hallway | pre | 125.4 / 147.0 | 140.0 / 172.1 |
+| hallway | rect | 131.9 / 147.3 | 141.1 / 172.1 |
+| campaign-test | pre | 12.3 / 12.9 | 16.0 / 16.4 |
+| campaign-test | rect | 12.3 / 12.9 | 16.0 / 16.4 |
+
+No refusals. Worst cell 172 MiB, under the 256 MiB floor.
+
+## R1 — quiet rerun at `a8e4a2a63` (epoch 3)
+
+Same instrument and poses; machine quiet (`pgrep` empty before and after). 0 cap trips, 0
+unclassified misses on every map; worst 2,021 tests (occlusion-test), cap 2.47×.
+Orientation: means tier orients every portal on all three maps; 0 unoriented, 0 probe
+mismatches. Log: scratchpad `measure/sweep-final.log`. These µs supersede the loaded run.
+
+| map / region | tests p50/95/99/max | µs p50/p99/p99.9/max | extra p50/95/max |
+|---|---|---|---|
+| hallway | 32/226/707/1,903 | 4.9/126/220/524 | 0/4/71 |
+| hallway incl. vertical | 33/335/793/1,903 | 5.1/141/227/524 | 0/4/71 |
+| shaft A | 319/1,033/1,350/1,903 | 50.9/256/391/524 | 1/13/59 |
+| shaft A up/down | 259/1,075/1,189/1,311 | 42.0/229/275/363 | 0/16/36 |
+| shaft B | 188/715/928/1,132 | 30.9/182/233/325 | 0/13/43 |
+| shaft C | 199/737/982/1,247 | 30.5/175/244/307 | 1/16/45 |
+| arena | 25/137/238/430 | 3.7/36/55/103 | 0/2/13 |
+| reflection-lake-test | 221/952/1,240/1,511 | 38.8/238/361/449 | 0/5/51 |
+| occlusion-test | 304/1,299/1,623/2,021 | 52.3/299/459/644 | 0/20/182 |
+
+Epoch-3 bakes (`a8e4a2a63` `prl-build`): CellResidencySet sampling 0 step-limited walks on
+lake (20,736), movement-feel (11,808) and hallway (335,898). The pre-change lake bake
+logged 1,070 of 20,736 step-limited.
+
+## R4 — Settle (fresh launches, release, `POSTRETRO_CPU_TIMING=1`)
+
+Pre-change `e31209623` on its own bakes vs rect `a8e4a2a63` on epoch-3 bakes. Launch
+recipe: scratchpad `measure/settle/launch.sh` (`--mod dev --app-name postretro-dev
+--baked-root <repo>/baked --core-root <repo>/core <abs .prl> --start-pose=x,y,z,yaw,pitch`).
+Shaft A pose `-42.27,18.88,21.13,90,±45`; arena `35,2.63,-15,0,0`. No timeout, warning,
+ERROR or panic.
+
+| entry | build | step-limit / walk frames | SH / LM set peak | hold ms | reveal misses |
+|---|---|---|---|---|---|
+| hallway spawn | pre / rect | 0/60 · 0/57 | 70/58 · 70/58 | 1,304 · 1,227 | 0 · 0 |
+| shaft A 0° | pre / rect | 0/47 · 0/45 | 85/198 · 86/220 | 1,072 · 1,108 | 0 · 0 |
+| shaft A +45° | pre / rect | 0/45 · 0/47 | 85/198 · 86/220 | 1,063 · 1,056 | 0 · 0 |
+| shaft A −45° | pre / rect | 0/46 · 0/45 | 85/198 · 86/220 | 1,046 · 1,123 | 0 · 0 |
+| arena 0° | pre / rect | 0/64 · 0/70 | 79/95 · 79/96 | 1,395 · 1,492 | 0 · 0 |
+| lake spawn | pre / rect | **16/0** · 0/16 | 7/128 · 7/128 | 383 · 371 | 0 · 0 |
+
+Rect: no step-limit frames on any entry, and no `walk_step_limit` marker after reveal. The
+pre-change lake spawn tripped on every Settling frame and every post-reveal frame (120/120).
+The chosen shaft A pose did not trip the pre-change walk (8,416 portal tests at +45° vs rect
+802); a known trip pose from the research sweep would be needed to show the old walk's
+fallback there. Settle-set peaks don't move with pitch (camera-cell mandatory tier).
+
+## Visual — offscreen capture A/B (row 47, partial)
+
+Both builds rebuilt with `--features capture` (pre-change from a detached worktree at
+`e31209623`, rect at `b3310f1bc` = `a8e4a2a63` source), each on its own bake. 1280×720,
+default HFOV 100°, `measurement` 180 warm-up frames + 1 sample so animation time and
+promotion ramps match, `POSTRETRO_SH_STREAMING=sync-proof`. The capture derives its
+texture root from the map path, so scratch bakes need `<scratch>/../baked` linked to the
+repo's `baked/`. Scenes, PNGs and reports: scratchpad
+`846ad593…/cap/`; contact sheet `…/sheet/`.
+
+19 poses: shaft A at 4 yaws, ±45° high, and R1's worst pose (`-37.90,18.49,16.97`, yaw 90
+pitch 45); shafts B and C at 2 yaws; arena at 4 yaws; lake spawn (`-16.87,1.6,-48.77`) at
+yaws 90 and 270, plus z offsets.
+
+| result | poses |
+|---|---|
+| byte-identical | 11 |
+| ≤ 1/255 on ≤ 127 px | shaft A ±45° high, arena × 4 |
+| 1,510 px at 1/255 + 1 px at 32/255 | shaft A worst; light-term masks put it in static indirect (SH); full-resident SH compose doesn't change it; the 32/255 px is an isolated speck both builds show |
+| 9 px (18 with the reflection) at 3F3F50, the capture clear colour | lake spawn yaw 90, column x = 640 |
+
+**Lake spawn: classified, not a walk defect.** The camera looks edge-on down a 10 cm slot
+(cell 166, x ∈ [−76.5048, −76.4032], z ∈ [−48.8696, −48.768]) beside a pillar; the slot
+fills one column at 59.6 m. The true line of sight enters through the slot's open end at
+x = −76.4032, which has neither face nor portal: `MIN_PORTAL_AREA_M2 = 0.1`
+(`level-compiler/src/portals.rs`) dropped the 3↔166 (0.083 m²) and 2↔166 (0.021 m²)
+portals. Only side portals 425/426 (z = −48.768) and 409/410 (z = −48.8696) remain, and
+with the eye inside the slot's z range every crossing of them is from the far side. The
+walk rejects those under the facing rule; the oracle reaches 166/167 through them on
+`CLIP_EPSILON` slop and classifies both as backward crossings (superset row, O36):
+`unclassified_misses` = []. The walk's miss band is eye z ∈ [−48.8696, −48.7680] (sign
+flips at 0.1 mm steps); the pixel differs only for about [−48.816, −48.768]. The
+pre-change build drew 166 by accident (its lake spawn also trips the step limit every
+frame, R4). Loosening `FACING_EPSILON` would restore the slop leak; the walk needs no
+change. The same gap exists at the matching slots, cells 162 and 169.
+
+**Follow-up outside this brief:** the compiler's area cut makes the portal graph
+non-conservative for every consumer (draw, fog reach, lightmap and SH demand, bake
+sampling walks) wherever an open gap is under about 0.1 m². Direction: stop the area cut
+when both leaves are non-solid (keep a degenerate-winding check), bump the portal cache
+epoch, rebake. To be routed through `/draft-session`. Replay test source:
+`prototype/lake_spawn_replay.rs` (an `#[ignore]` test module for
+`crates/visibility/src/region_walk/`; its PRL paths point at session scratch, so rebake
+reflection-lake-test and repoint them before reuse).
+
+**Not covered by capture:** the dynamic-direct term is identical to all-terms-off at all
+19 poses, so no shadow-slot competition was exercised; pops are temporal. Both stay with
+the owner's in-engine run, along with row 46.
+
+## Live and Visual — owner run (rows 46, 47), 2026-10-25
+
+Frozen pair builds on their own bakes, `POSTRETRO_CPU_TIMING=1`, this Mac (i9-9980HK,
+5300M), vsync on. occlusion-test baked for the pair this session (rect 0 of 45,522
+sampling walks step-limited, pre-change 1,641). Logs: scratchpad `846ad593…/play-*.log`.
+
+| run | length | frame mean | `portal_walk` mean / max | portal tests mean / max |
+|---|---|---|---|---|
+| pre-change hallway | ~36 s | 17.2 ms | 2.01 / 3.69 ms | 13,026 / 20,000 (cap) |
+| rect hallway | ~18 s | 16.4 ms | 0.21 / 0.39 ms | 1,005 / 2,125 |
+| rect lake | ~4 min | 16.8 ms | 0.18 / 0.53 ms | 736 / 1,703 |
+| rect occlusion-test | ~4 min | 17.4 ms | 0.22 / 0.77 ms | 819 / 1,931 |
+
+- **Row 46: pass.** No step-limit marker on any rect run; every Settling entry 0
+  step-limit frames, 0 reveal misses. Slow windows (a frame > 33 ms) on lake and
+  occlusion-test are `wait_acquire` (GPU-bound) in 102 of 106; one 836 ms frame on
+  occlusion-test is `script_drain` (824 ms) at a menu `setState`, not visibility. These
+  builds log no mesh-instance count, so that comparison has no numbers.
+- **Row 47: pass, owner.** Hallway perfect: no pops or missing geometry. Offscreen
+  capture A/B above. No dynamic-shadow drop reported.
+- **Owner-carved follow-ups, outside this brief:**
+  - occlusion-test: walking from the small room back toward the big room slows down;
+    the cull-status wireframe shows the pillars rendered (green) behind the big retaining
+    wall, returning to not submitted (cyan, outside the CPU-visible cells) and recovering
+    frame rate nearer the wall.
+    Consistent with R1's occlusion-test over-inclusion (extra cells p95 20, max 182). The
+    owner's portal overlay shows the slowdown begins as the pillar cells' portals come into
+    view: tall sliver portals that run from the floor up past the top of the retaining
+    wall, so the pillar cells are seen over the wall. Start by separating how much is rect
+    looseness and how much is cell granularity (the brief's detail-brush / cell-merging
+    non-goal); the exact oracle at the overlay's pose answers it. The pillars are an
+    intentional portal-renderer stress case.
+  - reflection-lake-test: slowdown standing on top of structures and looking across the
+    lake (GPU-bound windows above).
+  - Compiler portal area cut (`MIN_PORTAL_AREA_M2`), from the capture A/B section.

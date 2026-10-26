@@ -1112,6 +1112,7 @@ fn settle_check_waits_on_drawn_blocks_on_every_visibility_path() {
     ] {
         let mut rig = Rig::corridor(None);
         assert_eq!(rig.controller.unsettled_blocks(), None, "not yet asked");
+        assert_eq!(rig.controller.settle_set_blocks(), None, "not yet asked");
         // Mandatory at L = 16 m: blocks 0, 1, 2. Drawn outside the baked set:
         // 5 and 6. Band: 3 (20 m) and 4 (30 m).
         let first = rig
@@ -1124,6 +1125,11 @@ fn settle_check_waits_on_drawn_blocks_on_every_visibility_path() {
         rig.complete_all();
         settle_lightmap(&mut rig, path, &[0, 5, 6]);
         assert_eq!(rig.controller.unsettled_blocks(), Some(0), "{path:?}");
+        assert_eq!(
+            rig.controller.settle_set_blocks(),
+            Some(5),
+            "installed blocks stay in the set, bands stay out: {path:?}"
+        );
         assert!(
             rig.controller.target(3).is_some() && rig.controller.target(4).is_some(),
             "band blocks stay targeted"

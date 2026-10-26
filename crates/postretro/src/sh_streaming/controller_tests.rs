@@ -400,7 +400,7 @@ fn closed_door_visibility_promotes_only_the_loader_resolved_seam_endpoint() {
         &world,
         &[true],
         false,
-        &mut Vec::new(),
+        &mut postretro_visibility::PortalWalkScratch::new(),
         postretro_visibility::TimingGate::OFF,
     );
     assert_eq!(culled_ids(&visibility.visible_cells), &[0]);
@@ -500,7 +500,7 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         view_proj,
         &closed_portals,
         false,
-        &mut Vec::new(),
+        &mut postretro_visibility::PortalWalkScratch::new(),
         postretro_visibility::TimingGate::OFF,
     )
     .visible_cells;
@@ -805,7 +805,7 @@ fn real_visible_cells(drawable_cell_count: usize) -> VisibleCells {
         view_proj,
         &[],
         false,
-        &mut Vec::new(),
+        &mut postretro_visibility::PortalWalkScratch::new(),
         postretro_visibility::TimingGate::OFF,
     )
     .visible_cells
@@ -1825,6 +1825,11 @@ fn settle_check_waits_on_each_sh_settle_tier_and_ignores_optional_targets() {
     for (cluster_id, remaining) in [(0, 2), (2, 1), (3, 0)] {
         mark_sampleable(&mut controller, cluster_id);
         assert_eq!(controller.unsettled_targets(), Some(remaining));
+        assert_eq!(
+            controller.settle_set_targets(),
+            Some(3),
+            "sampleable targets stay in the set; the optional one stays out"
+        );
     }
     assert_ne!(
         controller.state(1),

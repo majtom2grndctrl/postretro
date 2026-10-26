@@ -267,6 +267,18 @@ impl LightmapStreamingSession {
         self.controller.unsettled_blocks()
     }
 
+    /// Settle-set blocks, installed or not; `None` before the first demand
+    /// update. See [`LightmapResidencyController::settle_set_blocks`].
+    pub(crate) fn settle_set_blocks(&self) -> Option<usize> {
+        self.controller.settle_set_blocks()
+    }
+
+    /// Blocks the latest counted frame drew while not installed, whatever
+    /// their class: the gauge behind the `not resident` visible-miss bucket.
+    pub(crate) fn last_frame_drawn_not_resident(&self) -> u32 {
+        self.controller.counters().last_frame_drawn_not_resident
+    }
+
     /// Whether the camera cell's mandatory set is resident, as of the latest
     /// demand update. See [`LightmapResidencyController::settled`].
     #[cfg(test)]

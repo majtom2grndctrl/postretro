@@ -2552,7 +2552,7 @@ mod tests {
                 &world,
                 blocked_portals,
                 false,
-                &mut Vec::new(),
+                &mut postretro_visibility::PortalWalkScratch::new(),
                 postretro_visibility::TimingGate::OFF,
             );
             match result.visible_cells {

@@ -36,8 +36,8 @@ use super::state_slots::{ClientStateApply, HostStateReplication};
 use super::{
     CurrentSwitchResolution, NetworkIdAllocator, OpenAuthorizedShots, PendingHitDeclarations,
     SlotPawns, client::ClientReplication, client_drive_time_sync, client_resolve_switch_outcomes,
-    host_apply_switch_deliveries, host_handle_accept, host_handle_client_messages,
-    host_handle_lifecycle, host_resolve_remote_commands,
+    host_handle_accept, host_handle_client_messages, host_handle_lifecycle,
+    host_resolve_remote_commands_with_switches,
 };
 
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -331,19 +331,19 @@ impl SwitchRelay {
             );
         }
         self.retained_after_dispatch = self.command_queues.retained_switch_count(CLIENT_ID);
-        for resolved in host_resolve_remote_commands(&self.owners, &mut self.command_queues) {
-            if resolved.source == ResolutionSource::Real {
-                self.resolved_real.push(resolved.client_tick);
-            }
-        }
-        host_apply_switch_deliveries(
+        for resolved in host_resolve_remote_commands_with_switches(
             &mut self.host_registry,
             &mut self.server,
             &self.owners,
             &mut self.command_queues,
             &mut self.weapon_owners,
             false,
-        );
+            FRAME.as_secs_f32(),
+        ) {
+            if resolved.source == ResolutionSource::Real {
+                self.resolved_real.push(resolved.client_tick);
+            }
+        }
         for packet in self.server.packets_to_send(CLIENT_ID) {
             self.outcomes_flushed.extend(switch_outcome_ids(&packet));
             let input = renet_packet_channel(&packet) == Some(u8::from(Channel::Input));
@@ -786,7 +786,7 @@ fn switch_send_sites_put_declarations_and_outcomes_on_input_never_control() {
         ("host_switch.rs", include_str!("host_switch.rs"), 2),
     ] {
         let production = source
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("split yields the production half");
         for control in ["send_control(", "Channel::Control", "ControlMessage"] {

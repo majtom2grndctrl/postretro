@@ -174,6 +174,22 @@ pub(crate) const INPUT_BUFFER_MAX: usize = 8;
 /// apart, so intake establishes this window before any serial reduction reads `pending`.
 const CLIENT_TICK_HALF_RANGE: u32 = 1 << 31;
 
+/// Read-only queue evidence for composed deterministic gameplay harnesses.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+pub struct CommandQueueTestState {
+    pub resolved_cursor: Option<u32>,
+    pub pending_ticks: Vec<u32>,
+    pub newest_tick: Option<u32>,
+    pub retained_switches: usize,
+    pub host_tick: u32,
+    pub lower_repoint_tick: Option<u32>,
+    pub wait_ticks: u32,
+    pub lead_ticks: u32,
+    pub max_retained_switches: usize,
+    pub max_pending_ticks: usize,
+}
+
 /// One client's resolved-command state on the host: its pending inbound queue and
 /// the gap-policy cursor. Keyed in [`HostCommandQueues`] by client id.
 #[derive(Debug, Default)]
@@ -900,6 +916,43 @@ impl HostCommandQueues {
                 .iter()
                 .any(|command| command.client_tick == tick)
         })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolved_cursor_for_test(&self, client_id: u64) -> Option<u32> {
+        self.resolved_cursor(client_id)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_pending_tick_for_test(&self, client_id: u64, tick: u32) -> bool {
+        self.clients.get(&client_id).is_some_and(|state| {
+            state
+                .pending
+                .iter()
+                .any(|command| command.client_tick == tick)
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn queue_state_for_test(&self, client_id: u64) -> Option<CommandQueueTestState> {
+        self.clients
+            .get(&client_id)
+            .map(|state| CommandQueueTestState {
+                resolved_cursor: state.resolved_cursor,
+                pending_ticks: state
+                    .pending
+                    .iter()
+                    .map(|command| command.client_tick)
+                    .collect(),
+                newest_tick: state.newest_observed_tick(),
+                retained_switches: state.switches.retained_len(),
+                host_tick: state.host_tick,
+                lower_repoint_tick: state.switches.timing.lower.map(|lower| lower.repoint_tick),
+                wait_ticks: switch_lane::SWITCH_WAIT_TICKS,
+                lead_ticks: switch_lane::SWITCH_LEAD_TICKS,
+                max_retained_switches: switch_lane::MAX_RETAINED_SWITCHES,
+                max_pending_ticks: INPUT_BUFFER_MAX,
+            })
     }
 
     /// Latest finite aim pitch accepted by authoritative command playout. Input

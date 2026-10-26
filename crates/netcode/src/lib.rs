@@ -36,6 +36,8 @@ use std::collections::VecDeque;
 mod client;
 mod client_switch;
 mod command_queue;
+#[cfg(any(test, feature = "test-support"))]
+pub use command_queue::CommandQueueTestState;
 mod descriptor_class;
 pub use descriptor_class::{ReplicatedDescriptorClass, is_host_replicated_descriptor_entity};
 mod presentation_state;
@@ -216,9 +218,13 @@ pub use host_presentation::{
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
     take_client_pawn_teleports as host_take_client_pawn_teleports,
 };
+// Legacy names below are confined to settlement fixture tests.
+pub use host_switch::host_retain_switch_declaration;
 #[cfg(test)]
-use host_switch::{HostSwitchDecision, apply_host_switch_declaration};
-pub use host_switch::{host_apply_switch_deliveries, host_retain_switch_declaration};
+use host_switch::{
+    SettlementOnlySwitchDecision as HostSwitchDecision,
+    apply_settlement_only_switch_fixture as apply_host_switch_declaration,
+};
 #[cfg(feature = "dev-tools")]
 pub use lag_seed::seed_lag_profile_from_environment;
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
@@ -228,6 +234,8 @@ pub use interpolation::ObservedTeleport;
 pub use interpolation::RemoteInterpolationBuffer;
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState};
 pub use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
+#[cfg(any(test, feature = "test-support"))]
+pub use lifecycle::SlotPawns as TestSlotPawns;
 pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };

@@ -38,8 +38,8 @@ pub(super) struct SnapshotReceive {
     /// as when its resend is still in flight on a lossy link.
     hold_tuning: bool,
     held_tuning: Vec<Vec<u8>>,
-    set: netcode::ReplicableSet,
-    last_snapshot_tick: Option<u32>,
+    pub(super) set: netcode::ReplicableSet,
+    pub(super) last_snapshot_tick: Option<u32>,
     ctx: ScriptCtx,
     hud: PlayerHudStatePublisher,
     pub(super) control_installs: usize,
@@ -60,6 +60,12 @@ impl SnapshotReceive {
         message: &wire::ServerControlMessage,
         registry: &mut EntityRegistry,
     ) {
+        if matches!(
+            message,
+            wire::ServerControlMessage::Divergence(wire::DivergenceReason::Holding(_))
+        ) {
+            self.endpoint.demote_client_state(registry);
+        }
         if let wire::ServerControlMessage::Tuning(bytes) = message {
             if self.hold_tuning {
                 self.held_tuning.push(bytes.clone());
@@ -174,7 +180,7 @@ impl Fixture {
             &mut fixture.host.borrow_mut(),
             &mut fixture.allocator,
             &mut set,
-            &mut Default::default(),
+            &mut fixture.slot_pawns,
             &mut fixture.queues,
             &mut fixture.owners,
             &mut fixture.weapon_owners,
@@ -293,6 +299,10 @@ impl Fixture {
             .replication
             .current_baseline_id(fixture.pawn_network());
         fixture
+    }
+
+    pub(super) fn hold_tuning_updates(&mut self) {
+        self.receive.as_mut().unwrap().hold_tuning = true;
     }
 
     /// Install every held tuning payload through the client endpoint, as the

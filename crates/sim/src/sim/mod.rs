@@ -13,6 +13,8 @@ pub mod presentation_projection;
 mod projectile_stage;
 pub mod splash;
 pub mod touch;
+#[cfg(any(test, feature = "test-support"))]
+pub use crate::scripting::builtins::{acquire_wieldable_at_for_test, release_wieldable_for_test};
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};

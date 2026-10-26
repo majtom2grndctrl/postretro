@@ -875,3 +875,13 @@ fn conditioned_outgoing_start_during_lower_is_refused_and_death_keeps_repoint() 
         );
     }
 }
+
+#[path = "switch_timing_boundaries.rs"]
+mod boundaries;
+#[path = "switch_timing_lifecycle.rs"]
+mod lifecycle;
+#[path = "switch_timing_ordering.rs"]
+mod ordering;
+
+#[path = "switch_timing_teardown.rs"]
+mod teardown;

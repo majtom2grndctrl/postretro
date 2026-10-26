@@ -236,17 +236,20 @@ struct Actors {
     target: EntityId,
 }
 
+fn mark_unarmed_host_seat(registry: &mut EntityRegistry) {
+    // Keep remote pawns out of the legacy local-movement fallback.
+    let local = registry.spawn(Transform {
+        position: Vec3::new(20.0, 0.0, 0.0),
+        ..Default::default()
+    });
+    registry.set_component(local, movement()).unwrap();
+    registry.set_component(local, health(None)).unwrap();
+    registry.mark_local_player_pawn(local).unwrap();
+}
+
 fn actors(registry: &mut EntityRegistry, descriptor: &WeaponDescriptor, host: bool) -> Actors {
     if host {
-        // The listen-host local seat is intentionally unarmed. The owned remote
-        // pawn must never be selected by the legacy local-movement fallback.
-        let local = registry.spawn(Transform {
-            position: Vec3::new(20.0, 0.0, 0.0),
-            ..Default::default()
-        });
-        registry.set_component(local, movement()).unwrap();
-        registry.set_component(local, health(None)).unwrap();
-        registry.mark_local_player_pawn(local).unwrap();
+        mark_unarmed_host_seat(registry);
     }
     let pawn = registry.spawn(Transform::default());
     registry.set_component(pawn, movement()).unwrap();
@@ -296,6 +299,12 @@ fn actors(registry: &mut EntityRegistry, descriptor: &WeaponDescriptor, host: bo
 }
 
 struct Fixture {
+    before_switch_resolution: Option<fn(&mut Fixture)>,
+    /// Weapon-ordering adversaries may withhold commands independently of movement prediction.
+    weapon_only_input: bool,
+    lifecycle_drive: bool,
+    retired_pawn_network: Option<u32>,
+    slot_pawns: netcode::TestSlotPawns,
     server: NetServer,
     client: NetClient,
     up: PacketConditioner,
@@ -425,6 +434,11 @@ impl Fixture {
         let mut down_link = link;
         down_link.seed ^= 0x5a5a;
         let mut fixture = Self {
+            before_switch_resolution: None,
+            weapon_only_input: false,
+            lifecycle_drive: false,
+            retired_pawn_network: None,
+            slot_pawns: Default::default(),
             server,
             client,
             up: PacketConditioner::new(link),
@@ -547,8 +561,9 @@ impl Fixture {
     fn pawn_network(&self) -> u32 {
         self.allocator
             .network_id_for_entity(self.host_actors.pawn)
-            .unwrap()
-            .0
+            .map(|id| id.0)
+            .or(self.retired_pawn_network)
+            .expect("current or retired shooter network identity")
     }
     fn shot_id(&self, token: ActivationToken, ordinal: u8) -> ShotId {
         ShotId::from_parts(self.pawn_network(), token.start_tick, token.lane, ordinal)
@@ -579,7 +594,10 @@ impl Fixture {
         for packet in self.down.take_ready() {
             self.client.process_packet(&packet);
         }
-        let _ = self.server.poll_handshakes();
+        let poll = self.server.poll_handshakes();
+        if self.lifecycle_drive {
+            self.drive_switch_lifecycle(&poll.lifecycle);
+        }
         for message in self.client.drain_control() {
             if let Some(receive) = self.receive.as_mut() {
                 receive.control(&message, &mut self.local.borrow_mut());
@@ -703,7 +721,7 @@ impl Fixture {
                 cancel: command.activation.cancel.map(wire_token),
             },
         };
-        if let Some(receive) = self.receive.as_mut() {
+        if let Some(receive) = self.receive.as_mut().filter(|_| !self.weapon_only_input) {
             let no_volumes = postretro_collision::EnvironmentVolumes::empty();
             // The send seam reads pitch off the command, as the app's camera
             // stamps it there.
@@ -968,6 +986,9 @@ impl Fixture {
             self.tick,
             u64::from(self.tick) * 16_667,
         );
+        if let Some(before) = self.before_switch_resolution {
+            before(self);
+        }
         let resolved = netcode::host_resolve_remote_commands_with_switches(
             &mut self.host.borrow_mut(),
             &mut self.server,

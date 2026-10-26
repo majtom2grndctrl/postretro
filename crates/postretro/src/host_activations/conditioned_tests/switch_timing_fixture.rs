@@ -12,6 +12,7 @@ pub(in crate::host_activations::conditioned_tests) struct SwitchReceive {
     pub(in crate::host_activations::conditioned_tests) hold_declarations: bool,
     pub(in crate::host_activations::conditioned_tests) last_tuning:
         HashMap<u64, postretro_combat_model::TuningPayload>,
+    pub(in crate::host_activations::conditioned_tests) raw_outcomes: Vec<(u32, u32, bool)>,
     pub(in crate::host_activations::conditioned_tests) resolutions:
         Vec<netcode::CurrentSwitchResolution>,
     pub(in crate::host_activations::conditioned_tests) observer: Observer,
@@ -97,6 +98,7 @@ impl Fixture {
             hold_declarations: false,
             last_tuning: Default::default(),
             resolutions: Vec::new(),
+            raw_outcomes: Vec::new(),
             owner_slots: Vec::new(),
             observer: Observer {
                 client,
@@ -211,6 +213,14 @@ impl Fixture {
             unreachable!()
         };
         let facts = netcode::client_drive_time_sync(&mut self.client, time_sync, self.tick);
+        for outcome in time_sync.switch_outcomes_for_test() {
+            let (id, accepted) = match outcome {
+                netcode::SwitchOutcome::Accepted(outcome) => (outcome.declaration_id, true),
+                netcode::SwitchOutcome::Refused(outcome) => (outcome.declaration_id, false),
+            };
+            switch.raw_outcomes.push((self.tick, id, accepted));
+        }
+
         for resolution in
             netcode::client_resolve_switch_outcomes(time_sync, pending_switch_declarations)
         {
@@ -240,6 +250,11 @@ impl Fixture {
     }
 
     pub(in crate::host_activations::conditioned_tests) fn resend_switch_tuning(&mut self) {
+        if !self.server.is_participating(CLIENT)
+            || !self.host.borrow().exists(self.host_actors.pawn)
+        {
+            return;
+        }
         let Some(switch) = self.switch_receive.as_mut() else {
             return;
         };

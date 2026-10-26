@@ -83,7 +83,7 @@ impl SwitchLane {
         std::mem::take(&mut self.released)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn retained_len(&self) -> usize {
         self.retained.len()
     }

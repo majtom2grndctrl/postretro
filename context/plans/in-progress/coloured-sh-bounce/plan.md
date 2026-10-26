@@ -1,10 +1,11 @@
 # coloured-sh-bounce — plan of record
 
 mode: compact
-status: active
+status: blocked
 read at: 3275d1480
 
 ## Corrections
+- BLOCKED: P-ALIAS-NAMES requires equal means for backslash aliases, while glow exclusion requires the runtime material strength. The unchanged runtime derives Neon (strength 4) for `neon/neon_panel` but Default (strength 0) for `neon\neon_panel`; texture resolution normalizes both to the same source. `render-data/src/material.rs:342` splits only `/`; `level-loader/src/prl_loader.rs:1623` and `postretro/src/startup/lifecycle.rs:661` pass raw names. Actual source compiled in `work/material-alias-proof.rs` confirms those values. Owner must choose either a qualification of alias equality by material strength, or an expanded runtime material-parsing fix. No colour/material implementation has been integrated.
 - No cited compiler or renderer source changed between the brief read-at commit 25db4c78f and current main; compact-mode grounded reads remain valid.
 - Work in a dedicated clean checkout because the primary checkout contains unrelated owner edits.
 - User approved the claim commit and push to main after automatic approval review requested explicit authorization.
@@ -79,5 +80,5 @@ read at: 3275d1480
 
 ## Resume
 - Branch: codex/coloured-sh-bounce. Claim commit: 3275d1480, published on main.
-- No feature implementation yet; first task is active.
+- Renderer indirect-scale slice is edited and its focused test build is running. Colour integration is blocked pending the alias/glow decision. New oracle harness, unreferenced stats module, and prepared world material code are uncommitted; do not integrate the latter until the owner resolves the block.
 - Baseline usage: 95% five-hour / 68% weekly remaining.

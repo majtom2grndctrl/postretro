@@ -250,7 +250,7 @@ impl Fixture {
     }
 
     pub(in crate::host_activations::conditioned_tests) fn resend_switch_tuning(&mut self) {
-        if !self.server.is_participating(CLIENT)
+        if !self.server.is_participating(self.shooter_client_id)
             || !self.host.borrow().exists(self.host_actors.pawn)
         {
             return;
@@ -271,7 +271,7 @@ impl Fixture {
         netcode::host_send_tuning_if_changed(
             &mut self.server,
             &mut switch.last_tuning,
-            CLIENT,
+            self.shooter_client_id,
             payload,
         );
     }
@@ -436,10 +436,19 @@ impl Fixture {
             .get_component::<postretro_entities::AmmoReserve>(self.host_actors.pawn)
             .unwrap()
             .clone();
-        reserve.set_exact(&ammo_type, 100);
+        reserve.take(&ammo_type, u32::MAX);
         registry
             .set_component(self.host_actors.pawn, reserve)
             .unwrap();
+        assert_eq!(
+            postretro_entities::components::grant::grant_ammo(
+                &mut registry,
+                self.host_actors.pawn,
+                &ammo_type,
+                100.0,
+            ),
+            postretro_entities::components::grant::GrantOutcome::Applied
+        );
     }
 
     pub(in crate::host_activations::conditioned_tests) fn origin_reload_balance(

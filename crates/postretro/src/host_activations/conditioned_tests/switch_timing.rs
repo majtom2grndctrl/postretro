@@ -795,10 +795,35 @@ fn conditioned_target_loss_refuses_the_switch_and_leaves_the_origin_firable() {
                     .unwrap()
                     .clone();
                 registry.set_component(replacement, provenance).unwrap();
-                inventory.wieldables[1] = Some(replacement);
+                // Preserve live lower metadata while replacing only the target instance.
+                // Acquisition keeps this refusal proof focused on instance identity.
+                assert_eq!(inventory.wieldables[1].take(), Some(old_target));
+                let active_slot = inventory.active_slot;
+                let switch_target = inventory.switch_target;
+                let switch_origin = inventory.switch_origin;
                 registry
                     .set_component(fixture.host_actors.pawn, inventory)
                     .unwrap();
+                assert!(sim::acquire_wieldable_at_for_test(
+                    &mut registry,
+                    fixture.host_actors.pawn,
+                    1,
+                    replacement
+                ));
+                let inventory = registry
+                    .get_component::<Inventory>(fixture.host_actors.pawn)
+                    .unwrap();
+                assert_eq!(inventory.active_slot, active_slot);
+                assert_eq!(inventory.switch_target, switch_target);
+                assert_eq!(inventory.switch_origin, switch_origin);
+                assert_eq!(inventory.wieldables[1], Some(replacement));
+                assert_eq!(
+                    registry
+                        .get_component::<WeaponComponent>(fixture.host_actors.weapon)
+                        .unwrap()
+                        .state,
+                    postretro_entities::components::wieldable_state::WieldableState::Lowering
+                );
             } else {
                 registry.despawn(old_target).unwrap();
             }
@@ -873,6 +898,13 @@ fn conditioned_outgoing_start_during_lower_is_refused_and_death_keeps_repoint() 
             1,
             "the repoint remains at the owner's tick whether or not it dies"
         );
+        if dies {
+            assert_eq!(
+                fixture.host_selection_changes(),
+                [(125, 1)],
+                "death must not move the host repoint earlier than the owner's tick"
+            );
+        }
     }
 }
 
@@ -885,3 +917,6 @@ mod ordering;
 
 #[path = "switch_timing_teardown.rs"]
 mod teardown;
+
+#[path = "switch_timing_reload_hold.rs"]
+mod reload_hold;

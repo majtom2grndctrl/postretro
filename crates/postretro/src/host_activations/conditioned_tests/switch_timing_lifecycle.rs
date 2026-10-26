@@ -55,10 +55,19 @@ fn prepare_reload(fixture: &Fixture, slot: usize) -> EntityId {
         .get_component::<postretro_entities::AmmoReserve>(fixture.host_actors.pawn)
         .unwrap()
         .clone();
-    reserve.set_exact(&ammo_type, 100);
+    reserve.take(&ammo_type, u32::MAX);
     registry
         .set_component(fixture.host_actors.pawn, reserve)
         .unwrap();
+    assert_eq!(
+        postretro_entities::components::grant::grant_ammo(
+            &mut registry,
+            fixture.host_actors.pawn,
+            &ammo_type,
+            100.0,
+        ),
+        postretro_entities::components::grant::GrantOutcome::Applied
+    );
     target
 }
 
@@ -218,7 +227,7 @@ fn conditioned_switch_during_raise_starts_a_fresh_lower_and_replaces_the_raise_g
         .unwrap();
     assert_eq!(command.client_tick, 123);
     assert!(
-        123 < 101 + 72,
+        command.reload_press_tick.unwrap() < fixture.host_selection_changes()[0].0 + 72,
         "new reload precedes the abandoned long raise boundary"
     );
     assert_eq!(
@@ -437,8 +446,22 @@ fn conditioned_drop_during_a_long_raise_retires_the_gate_before_the_old_expiry()
             .count(),
         1
     );
+    let (started_host_tick, _, _) = fixture
+        .reloads
+        .iter()
+        .find(|(_, weapon, outcome)| *weapon == origin && *outcome == sim::ReloadOutcome::Started)
+        .unwrap();
+    let delivered_tick = fixture
+        .resolved_commands
+        .iter()
+        .find(|(host_tick, _)| host_tick == started_host_tick)
+        .unwrap()
+        .1
+        .reload_press_tick
+        .unwrap();
+    assert_eq!(delivered_tick, 121);
     assert!(
-        121 < 90 + 300,
+        delivered_tick < fixture.host_selection_changes()[0].0 + 300,
         "reload precedes the dropped weapon's old raise expiry"
     );
 }

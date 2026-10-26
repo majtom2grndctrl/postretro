@@ -2541,13 +2541,14 @@ mod tests {
     }
 
     // A PRLB / wire-32 peer predates the gameplay channel layout, and a wire-33
-    // peer predates the ghost-link record. The admission gate refuses each
-    // declaration with a typed cause and admits a PRLC / 34 one.
+    // peer predates the ghost-link record. A wire-34 peer lacks the switch
+    // declaration kind. The admission gate refuses each declaration with a
+    // typed cause and admits a PRLC / 35 one.
     #[test]
-    fn admission_refuses_prlb_or_wire_32_or_33_and_admits_prlc_34() {
+    fn admission_refuses_prlb_or_wire_32_or_33_or_34_and_admits_prlc_35() {
         let current = wire::ProtocolVersion {
             app_protocol_id: 0x_5052_4C43,
-            wire_version: 34,
+            wire_version: 35,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
@@ -2568,6 +2569,13 @@ mod tests {
             (
                 wire::ProtocolVersion {
                     wire_version: 33,
+                    ..current
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 34,
                     ..current
                 },
                 false,

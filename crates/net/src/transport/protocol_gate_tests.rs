@@ -11,6 +11,8 @@ const PRLB_33: u64 = (0x_5052_4C42_u64 << 32) | 33;
 const PRLC_32: u64 = (0x_5052_4C43_u64 << 32) | 32;
 /// The pair the ghost-link record replaced: PRLC / wire 33.
 const PRLC_33: u64 = (0x_5052_4C43_u64 << 32) | 33;
+/// The pair the switch declaration kind replaced: PRLC / wire 34.
+const PRLC_34: u64 = (0x_5052_4C43_u64 << 32) | 34;
 
 const STEP: Duration = Duration::from_millis(16);
 /// Polls before the matching peer must have connected.
@@ -125,7 +127,7 @@ fn poll_past_connect(mut poll: impl FnMut() -> bool) -> bool {
 // on the same host and the same polls connects: refusal, not a silent link.
 #[test]
 fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one() {
-    assert_eq!(transport_protocol_id(), (0x_5052_4C43_u64 << 32) | 34);
+    assert_eq!(transport_protocol_id(), (0x_5052_4C43_u64 << 32) | 35);
     let socket = loopback_socket();
     let server_addr = socket.local_addr().expect("server address");
     let mut server = NetServer::new(socket, server_addr, 8, Duration::from_secs(1), None)
@@ -144,6 +146,7 @@ fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one(
         (102, PRLB_33),
         (103, PRLC_32),
         (104, PRLC_33),
+        (105, PRLC_34),
     ]
     .into_iter()
     .map(|(id, protocol_id)| (protocol_id, RawClient::new(server_addr, id, protocol_id)))
@@ -158,7 +161,7 @@ fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one(
         matching.is_connected()
     });
 
-    assert!(reached, "the matching PRLC / 34 client connects");
+    assert!(reached, "the matching PRLC / 35 client connects");
     assert_eq!(server.connected_clients(), vec![7]);
     for (protocol_id, client) in &stale {
         assert!(
@@ -169,10 +172,10 @@ fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one(
 }
 
 // The same gate from the other side: this build's client never connects to a
-// PRLB / 32 or a PRLC / 33 host, while that build's own client does.
+// PRLB / 32, PRLC / 33 or PRLC / 34 host, while that build's own client does.
 #[test]
-fn netcode_handshake_never_connects_to_a_prlb_32_or_prlc_33_host() {
-    for stale in [PRLB_32, PRLC_33] {
+fn netcode_handshake_never_connects_to_a_prlb_32_or_prlc_33_or_34_host() {
+    for stale in [PRLB_32, PRLC_33, PRLC_34] {
         let mut host = RawServer::new(stale);
         let mut current = NetClient::new(
             loopback_socket(),

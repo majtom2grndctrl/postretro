@@ -154,6 +154,11 @@ pub(super) fn guard_initiation(
             command.reload_press_tick.unwrap_or(command.client_tick),
         );
     }
+    // Only the retained press lane creates reload intent. A raw held level can
+    // reach another weapon after a trimmed switch; its untouched latch must not
+    // turn that same press into a new reload. Still feed the level to the machine
+    // so refusals consume the latch and a release clears it normally.
+    command.equip.reload_refused |= command.reload_press_tick.is_none();
     let shot_id = command.shot_id;
     let id_for = |token| {
         shot_id.map(|shot| ActivationId {

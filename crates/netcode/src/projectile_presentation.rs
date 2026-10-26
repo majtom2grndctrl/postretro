@@ -1643,7 +1643,9 @@ mod tests {
                 );
             }
         }
-        assert!(postretro_net::handshake::WIRE_VERSION >= 34);
+        const {
+            assert!(postretro_net::handshake::WIRE_VERSION >= 34);
+        }
         assert_eq!(postretro_net::wire::SNAPSHOT_VERSION, 22);
     }
 

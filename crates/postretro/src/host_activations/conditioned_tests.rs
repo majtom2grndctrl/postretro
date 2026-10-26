@@ -303,6 +303,9 @@ struct Fixture {
     /// Weapon-ordering adversaries may withhold commands independently of movement prediction.
     weapon_only_input: bool,
     lifecycle_drive: bool,
+    shooter_client_id: u64,
+    /// Actual retained declaration consumption by the timed host resolver.
+    switch_lane_drains: Vec<(u32, usize)>,
     retired_pawn_network: Option<u32>,
     slot_pawns: netcode::TestSlotPawns,
     server: NetServer,
@@ -437,6 +440,8 @@ impl Fixture {
             before_switch_resolution: None,
             weapon_only_input: false,
             lifecycle_drive: false,
+            shooter_client_id: CLIENT,
+            switch_lane_drains: Vec::new(),
             retired_pawn_network: None,
             slot_pawns: Default::default(),
             server,
@@ -580,7 +585,7 @@ impl Fixture {
                 self.up.enqueue(packet);
             }
         }
-        let downlink = self.server.packets_to_send(CLIENT);
+        let downlink = self.server.packets_to_send(self.shooter_client_id);
         if self.cut_down {
             self.cut_down_packets += downlink.len();
         } else {
@@ -589,13 +594,15 @@ impl Fixture {
         self.up.advance(17);
         self.down.advance(17);
         for packet in self.up.take_ready() {
-            self.server.process_packet_from(&packet, CLIENT);
+            self.server
+                .process_packet_from(&packet, self.shooter_client_id);
         }
         for packet in self.down.take_ready() {
             self.client.process_packet(&packet);
         }
         let poll = self.server.poll_handshakes();
         if self.lifecycle_drive {
+            self.drive_switch_disconnects(&poll.disconnects);
             self.drive_switch_lifecycle(&poll.lifecycle);
         }
         for message in self.client.drain_control() {
@@ -982,13 +989,17 @@ impl Fixture {
             &self.owners,
             &mut self.pending,
             &mut self.open,
-            CLIENT,
+            self.shooter_client_id,
             self.tick,
             u64::from(self.tick) * 16_667,
         );
         if let Some(before) = self.before_switch_resolution {
             before(self);
         }
+        let retained_before = self
+            .queues
+            .queue_state_for_test(self.shooter_client_id)
+            .map_or(0, |queue| queue.retained_switches);
         let resolved = netcode::host_resolve_remote_commands_with_switches(
             &mut self.host.borrow_mut(),
             &mut self.server,
@@ -998,6 +1009,14 @@ impl Fixture {
             false,
             DT,
         );
+        let retained_after = self
+            .queues
+            .queue_state_for_test(self.shooter_client_id)
+            .map_or(0, |queue| queue.retained_switches);
+        if retained_after < retained_before {
+            self.switch_lane_drains
+                .push((self.tick, retained_before - retained_after));
+        }
         let active = self
             .host
             .borrow()
@@ -1011,7 +1030,7 @@ impl Fixture {
             if let Some(start) = resolved.rejected_activation {
                 let why = self
                     .queues
-                    .lane_refusal(CLIENT, start)
+                    .lane_refusal(self.shooter_client_id, start)
                     .expect("the lane names why it refused a start");
                 self.lane_refusals.push((self.tick, start, why));
             }
@@ -1116,16 +1135,18 @@ impl Fixture {
         for progress in events.remote_activation_progress {
             record_activation_progress(&mut self.allocator, &mut self.queues, &progress, |fact| {
                 match fact {
-                    HostActivationFact::Outcome(outcome) => {
-                        netcode::send_activation_outcome(&mut self.server, CLIENT, outcome)
-                    }
+                    HostActivationFact::Outcome(outcome) => netcode::send_activation_outcome(
+                        &mut self.server,
+                        self.shooter_client_id,
+                        outcome,
+                    ),
                     HostActivationFact::ShotVerdict {
                         shot_id,
                         accept,
                         hit_accepted,
                     } => netcode::send_shot_verdict(
                         &mut self.server,
-                        CLIENT,
+                        self.shooter_client_id,
                         shot_id,
                         accept,
                         hit_accepted,

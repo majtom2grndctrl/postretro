@@ -209,13 +209,52 @@ fn conditioned_late_retarget_begins_a_fresh_lower_after_the_first_repoint() {
         assert_eq!(f.host_selection_changes(), [(125, 1)]);
         f.idle(next, extra_delay);
         next += extra_delay;
+        let drains_before_release = f.switch_lane_drains.len();
         f.release_switch_declarations();
+        if extra_delay == 0 {
+            // Run the conditioned delivery/intake while resolution stays at125,
+            // making this the branch where the fresh repoint130 is still ahead.
+            flush_stalled_intake(&mut f);
+        }
         f.idle(next, 160);
         assert_accepted_chain(&f, 2);
         let changes = f.host_selection_changes();
         assert_eq!(changes[0], (125, 1));
         assert_eq!(changes.len(), 2);
-        assert!(changes[1].0 >= 130, "fresh lower is stamped 95 + 36 - 1");
+        let drains = &f.switch_lane_drains[drains_before_release..];
+        assert_eq!(drains.len(), 1, "only the held re-target is consumed");
+        assert_eq!(drains[0].1, 1);
+        let application_host_tick = drains[0].0;
+        let application_tick = f
+            .resolved_commands
+            .iter()
+            .find(|(host_tick, _)| *host_tick == application_host_tick)
+            .expect("declaration applies in a command resolution")
+            .1
+            .client_tick;
+        if extra_delay == 0 {
+            assert!(
+                application_tick < 130,
+                "early delivery starts the remaining fresh lower"
+            );
+            assert_eq!(changes[1], (130, 2), "fresh lower is stamped 95 + 36 - 1");
+        } else {
+            assert!(
+                application_tick > 130,
+                "the held declaration arrives overdue"
+            );
+            let repoint_host_tick = f
+                .host_active
+                .windows(2)
+                .find(|pair| pair[0].1 == 1 && pair[1].1 == 2)
+                .unwrap()[1]
+                .0;
+            assert_eq!(
+                repoint_host_tick, application_host_tick,
+                "an overdue re-target repoints in its declaration's application resolution"
+            );
+            assert_eq!(changes[1], (application_tick, 2));
+        }
         f.assert_settled_selection(2, &["switch-origin", "switch-target", "switch-third"]);
     }
 }

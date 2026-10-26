@@ -421,6 +421,8 @@ pub(crate) struct ResolvedCommand {
 #[derive(Debug, Clone)]
 pub struct ResolvedPawnCommand {
     /// Original client tick of a delivered reload press, including recovered taps.
+    /// A high reload level without this stamp only maintains the held level; it
+    /// cannot start another reload when the command binds a different weapon.
     pub reload_press_tick: Option<u32>,
     pub pawn: EntityId,
     pub client_id: u64,
@@ -984,10 +986,9 @@ impl HostCommandQueues {
 /// explicitly, including the listen host's own pawn (which the caller appends
 /// separately with its locally-sampled input).
 ///
-/// Each command keeps the facing the client sampled, unrotated, beside its
-/// `teleport_yaw_stamp`. Test seam only: production resolves through
-/// [`host_resolve_remote_commands_in_registry`], which turns every command into its
-/// pawn's current teleport frame before movement or aim reads it.
+/// This sampled-frame resolver is a test seam. Production uses
+/// [`crate::host_resolve_remote_commands_with_switches`], which applies timed switch
+/// callbacks and converts each command's facing into its pawn's teleport frame.
 #[cfg(any(test, feature = "test-support"))]
 pub fn host_resolve_remote_commands(
     owners: &MovementOwners,

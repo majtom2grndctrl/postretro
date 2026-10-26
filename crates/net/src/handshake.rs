@@ -635,7 +635,9 @@ mod switch_tick_epoch_tests {
     #[test]
     fn ghost_link_record_refuses_wire_33_peers_and_admits_current_wire() {
         const PRE_GHOST_WIRE_VERSION: u32 = 33;
-        assert!(WIRE_VERSION >= 34);
+        const {
+            assert!(WIRE_VERSION >= 34);
+        }
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 22);
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C43,

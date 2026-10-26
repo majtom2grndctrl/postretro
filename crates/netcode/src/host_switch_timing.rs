@@ -290,7 +290,17 @@ fn apply(
         reply(server, client, declaration, false);
         return;
     }
-    if declaration.kind == SwitchDeclarationKind::Resync || slot == inventory.active_slot {
+    if slot == inventory.active_slot {
+        if let Some(parked) = original_repoint {
+            abandon(registry, pawn, parked);
+            timing.deferred_begin = None;
+        }
+        // A lagged owner projection can resync an already-held active weapon.
+        // Accept without interrupting its charge, burst or remaining raise gate.
+        reply(server, client, declaration, true);
+        return;
+    }
+    if declaration.kind == SwitchDeclarationKind::Resync {
         if let Some(parked) = original_repoint {
             abandon(registry, pawn, parked);
         }

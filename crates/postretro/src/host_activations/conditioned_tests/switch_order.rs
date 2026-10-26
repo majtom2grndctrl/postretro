@@ -151,6 +151,78 @@ fn conditioned_charged_release_then_switch_inside_a_stall_fires_the_charge_then_
     fixture.assert_switches_accepted(1);
 }
 
+#[test]
+fn same_slot_resync_preserves_active_charge_and_burst() {
+    const RESYNC: u32 = START + 2;
+    const RELEASE: u32 = START + 40;
+    for charged in [false, true] {
+        let mut descriptor = if charged {
+            descriptor(false, true, 1, "press")
+        } else {
+            burst_rifle("press", 130.0)
+        };
+        descriptor.lower_ms = 600;
+        descriptor.raise_ms = 600;
+        let mut fixture = Fixture::new(LinkConfig::perfect(), descriptor);
+        let lane = if charged {
+            ActivationLane::Secondary
+        } else {
+            ActivationLane::Primary
+        };
+        let start = token(START, lane);
+        let mut checked_active_resync = false;
+        for tick in START..START + 70 {
+            if tick == RESYNC {
+                // The owner still holds slot 0; a lagged projection names another.
+                fixture.declare_switch(0, tick);
+                fixture.unsent_switches.get_mut(&tick).unwrap().kind =
+                    wire::SwitchDeclarationKind::Resync;
+            }
+            let command = if tick == RELEASE && charged {
+                let mut release = neutral();
+                release.activation.release = Some(ActivationRelease {
+                    token: start,
+                    release_tick: RELEASE,
+                });
+                release
+            } else if tick == START || (charged && tick < RELEASE) {
+                held(lane, tick == START)
+            } else {
+                neutral()
+            };
+            fixture.step(tick, command);
+            if fixture
+                .resolved_commands
+                .last()
+                .is_some_and(|(_, resolved)| resolved.client_tick == RESYNC)
+            {
+                let registry = fixture.host.borrow();
+                let weapon = registry
+                    .get_component::<WeaponComponent>(fixture.host_actors.weapon)
+                    .unwrap();
+                assert!(
+                    weapon.state.activation_cursor().is_some(),
+                    "charged={charged}: same-slot acceptance preserves the live activation"
+                );
+                assert_eq!(fixture.host_active.last().unwrap().1, 0);
+                checked_active_resync = true;
+            }
+        }
+        fixture.idle(START + 70, 120);
+        assert!(
+            checked_active_resync,
+            "the timed resolver applied the resync"
+        );
+        assert_eq!(fixture.sent_switches.len(), 1);
+        fixture.assert_switches_accepted(1);
+        assert_eq!(fixture.accepted(start), 1);
+        assert!(!fixture.cancelled(start));
+        assert_eq!(fixture.snapshots.len(), if charged { 1 } else { 3 });
+        assert_host_fires_what_the_client_fired(&fixture);
+        assert!(fixture.host_active.iter().all(|(_, slot)| *slot == 0));
+    }
+}
+
 /// A drop-capable weapon descriptor: touchable, so the touch stage can place it.
 fn touchable(canonical_name: &str) -> postretro_entities::EntityTypeDescriptor {
     postretro_entities::EntityTypeDescriptor {

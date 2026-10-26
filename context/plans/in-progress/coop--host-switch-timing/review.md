@@ -75,3 +75,30 @@ Initial window paused at owner cutoff (5%, then4%primary remaining); resumed2026
 All mandatory review lenses and seam pass now complete. Findings remain unfixed, and no approval implied. AC31 manual loopback remains external outstanding proof and blocks landing; passing focused tests do not substitute for it. Root owns plan, source fixes, tests/preflight and later disposition.
 
 Suggested fix ownership: netcode host_switch_timing.rs for finding1; coordinated queue/host guard/remote machine repair for finding2 (cross-file semantics); switch_timing.rs for3; one teardown-file worker for4+6; switch_timing_ordering.rs for5; command_queue.rs documentation for drift. Keep test-proof repairs distinct from confirmed runtime regressions.
+
+## Integrating executor resolution — focused gate verified
+
+All findings addressed after the independent panel, with no Decision or Acceptance change. Original request-changes verdict above records the reviewed baseline; this ledger records the subsequent fixes.
+
+| Finding | Repair | Focused verification |
+|---|---|---|
+| 1 | Same-slot acceptance returns before cancellation, preserving active cursor and existing raise gate. | same_slot_resync_preserves_active_charge_and_burst passes both charge/burst cells |
+| 2 | Host reload entry requires a delivered press stamp; raw continued levels still update the latch. | refused_reload_held_through_trim_reloads_incoming_weapon_only_after_release_and_repress passes perfect/conditioned cells; actual trim119/120, no held reload onB, fresh142 starts once |
+| 3 | Death test asserts sole host change125. | conditioned_outgoing_start_during_lower_is_refused_and_death_keeps_repoint passes |
+| 4 | Fresh lower trace covers271–305 with origin/target/Lowering, then sole repoint306. | all three lifecycle boundaries pass |
+| 5 | Trace retained declaration consumption around real timed resolution. Early branch exactly130; overdue branch repoints in application resolution. | conditioned_late_retarget_begins_a_fresh_lower_after_the_first_repoint passes both delays |
+| 6 | Close relay slot7, process real disconnect/lifecycle, replace transport and endpoint with fresh client9, clear retired conditioners, then real parity/reveal admission. | closed oldslot, no retired reply/repoint, fresh exactly-once outcome and observer swap pass |
+| Comment drift | Sampled resolver comment names timed production resolver. | live diff inspected; touched-crate check passes |
+
+Serialized post-fix gate: formatting and touched-crate check pass; composed47/47 and netcode42/42 pass. Final preflight passes: workspace lint and full tests12,927passed/0failed/68ignored. ManualAC31 remains outstanding and blocks landing.
+
+## Final preflight closure
+
+The final gate surfaced additional test/fixture integration defects after the review fixes. All were corrected and verified without changing owner Decisions or Acceptance:
+
+- Version-floor assertions use const blocks; timing comparisons read actual recorded reload/switch ticks.
+- Both encrypted handshake and Control admission tests now use matching wire35 and reject stale wire34, preserving PRLB/wire32/33 refusal checks.
+- Fixture reserve seeding uses canonical grant_ammo; no source-ownership whitelist was widened.
+- Adversarial target replacement fills through canonical acquisition, retaining lower metadata so refusal still requires instance identity. Inventory ownership guard unchanged.
+
+Clean final gate: formatting, workspace all-target lint with dev-tools, and full workspace tests with dev-tools. Independent log aggregation:71 result groups,12,927passed,0failed,68ignored. No further source edits after this successful gate; subsequent changes record results only. ManualAC31 remains outstanding.

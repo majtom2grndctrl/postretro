@@ -282,7 +282,7 @@ fn planar_gpu_layers_read_at_their_own_scale() {
 
 /// One mover: a two-sided magenta quad, 1.4 m wide and 1.8 m tall about its
 /// bottom centre, which sits at its origin.
-fn mover_geometry() -> postretro_level_loader::KinematicGeometry {
+pub(super) fn mover_geometry() -> postretro_level_loader::KinematicGeometry {
     use postretro_level_format::geometry::Vertex;
     let corners = [
         Vec3::new(-0.7, 0.0, 0.0),
@@ -350,7 +350,7 @@ fn mover_geometry() -> postretro_level_loader::KinematicGeometry {
     }
 }
 
-const MOVER: u32 = 1;
+pub(super) const MOVER: u32 = 1;
 
 // AC 12 (O6). A mover above the large plane, off the main screen, moves
 // between two consecutive frames: each frame's reflection lands on that

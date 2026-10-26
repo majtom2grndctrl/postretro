@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use glam::Vec3;
+use glam::{Vec3, Vec4};
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
@@ -11,6 +11,7 @@ use postretro_entities::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
 use postretro_level_loader::LevelWorld;
+use postretro_render_cpu::planar_reflection::MirrorCamera;
 use postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE;
 use postretro_sim::particle_pool::ParticlePool;
 use postretro_visibility::{Frustum, VisibleCells};
@@ -18,7 +19,57 @@ use postretro_visibility::{Frustum, VisibleCells};
 struct CollectionBuffer {
     name: String,
     bytes: Vec<u8>,
+    /// The planar mirror's sprites this frame, collected over the mirror's
+    /// cells and cull frustum (`rendering_pipeline.md` §7.3a).
+    mirror_bytes: Vec<u8>,
     registered: bool,
+}
+
+impl CollectionBuffer {
+    fn bytes_mut(&mut self, view: SpriteView) -> &mut Vec<u8> {
+        match view {
+            SpriteView::Main => &mut self.bytes,
+            SpriteView::Mirror => &mut self.mirror_bytes,
+        }
+    }
+}
+
+/// Which view a collection pass packs for: each keeps its own bytes, so the
+/// mirror's pass never touches what the main view draws.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpriteView {
+    Main,
+    Mirror,
+}
+
+/// The planar mirror's cull for pool particles: its cull frustum's six
+/// planes (cropped to the selected plane) and its water clip plane,
+/// normalized, inward.
+struct MirrorParticleCull {
+    planes: [Vec4; 7],
+}
+
+impl MirrorParticleCull {
+    fn new(camera: &MirrorCamera) -> Self {
+        let mut planes = [camera.clip_plane; 7];
+        planes[..6].copy_from_slice(&camera.cull_planes());
+        for plane in &mut planes {
+            let length = plane.truncate().length();
+            if length > 0.0 && length.is_finite() {
+                *plane /= length;
+            }
+        }
+        Self { planes }
+    }
+
+    /// Whether a quad of `size` at `position` lies wholly outside: its
+    /// circumradius past any plane, as [`quad_outside_frustum`] tests.
+    fn rejects(&self, position: Vec3, size: f32) -> bool {
+        let radius = size.abs() * std::f32::consts::FRAC_1_SQRT_2 + 1.0e-4;
+        self.planes
+            .iter()
+            .any(|plane| plane.truncate().dot(position) + plane.w < -radius)
+    }
 }
 
 /// The game layer owns collection bookkeeping; GPU resources remain in SmokePass.
@@ -58,6 +109,7 @@ impl ParticleRenderCollector {
                 self.buffers.push(CollectionBuffer {
                     name: collection.to_owned(),
                     bytes: Vec::new(),
+                    mirror_bytes: Vec::new(),
                     registered: false,
                 });
                 self.buffers.len() - 1
@@ -97,6 +149,7 @@ impl ParticleRenderCollector {
         self.cull_cells = false;
         for buffer in &mut self.buffers {
             buffer.bytes.clear();
+            buffer.mirror_bytes.clear();
             buffer.registered = false;
         }
     }
@@ -124,8 +177,69 @@ impl ParticleRenderCollector {
         presentation_tick: f64,
         frustum: Option<&Frustum>,
     ) {
+        self.collect_view(
+            SpriteView::Main,
+            registry,
+            particles,
+            world,
+            visible,
+            presentation_tick,
+            |position, size| {
+                frustum.is_some_and(|frustum| quad_outside_frustum(position, size, frustum))
+            },
+        );
+    }
+
+    /// The planar mirror's billboards this frame: the same particles and
+    /// projectile bodies the main view collects, culled against the mirror's
+    /// visible cells (`mirror_visible`) and, for pool particles, its cropped
+    /// cull frustum and water clip plane instead of the main view's, into the
+    /// mirror's own bytes. Ghost billboards never enter: they are the main
+    /// view's alone (`rendering_pipeline.md` §7.3a Content). Reuses each
+    /// collection's buffer, so a warm frame allocates nothing.
+    pub(crate) fn collect_mirror_at_tick(
+        &mut self,
+        registry: &EntityRegistry,
+        particles: &ParticlePool,
+        world: Option<&LevelWorld>,
+        mirror_visible: &VisibleCells,
+        presentation_tick: f64,
+        camera: &MirrorCamera,
+    ) {
+        let cull = MirrorParticleCull::new(camera);
+        self.collect_view(
+            SpriteView::Mirror,
+            registry,
+            particles,
+            world,
+            mirror_visible,
+            presentation_tick,
+            |position, size| cull.rejects(position, size),
+        );
+    }
+
+    /// Drop the mirror's sprites: a frame with no mirror view draws none.
+    pub(crate) fn clear_mirror(&mut self) {
         for buffer in &mut self.buffers {
-            buffer.bytes.clear();
+            buffer.mirror_bytes.clear();
+        }
+    }
+
+    /// One view's collection: `outside` rejects a pool particle's quad before
+    /// its cell lookup, as each view's frustum test does.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_view(
+        &mut self,
+        view: SpriteView,
+        registry: &EntityRegistry,
+        particles: &ParticlePool,
+        world: Option<&LevelWorld>,
+        visible: &VisibleCells,
+        presentation_tick: f64,
+        outside: impl Fn(Vec3, f32) -> bool,
+    ) {
+        for buffer in &mut self.buffers {
+            buffer.bytes_mut(view).clear();
         }
         self.visible_cells.clear();
         self.cull_cells = if let (VisibleCells::Culled(cells), Some(_)) = (visible, world) {
@@ -136,9 +250,8 @@ impl ParticleRenderCollector {
         };
 
         for particle in particles.iter() {
-            if frustum.is_some_and(|frustum| {
-                quad_outside_frustum(particle.position, particle.size, frustum)
-            }) || !self.position_visible(particle.position, world)
+            if outside(particle.position, particle.size)
+                || !self.position_visible(particle.position, world)
             {
                 continue;
             }
@@ -155,7 +268,7 @@ impl ParticleRenderCollector {
                 particle.size,
                 particle.rotation,
                 particle.opacity,
-                &mut buffer.bytes,
+                buffer.bytes_mut(view),
             );
         }
 
@@ -170,7 +283,13 @@ impl ParticleRenderCollector {
             let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
                 continue;
             };
-            self.collect_sprite(transform, visual, gameplay_sprite_age(projectile), world);
+            self.collect_sprite(
+                view,
+                transform,
+                visual,
+                gameplay_sprite_age(projectile),
+                world,
+            );
         }
 
         // Provenance restricts this to replicated projectile display copies.
@@ -192,7 +311,7 @@ impl ParticleRenderCollector {
                 continue;
             };
             let age = presentation_sprite_age(registry, id, presentation_tick);
-            self.collect_sprite(transform, visual, age, world);
+            self.collect_sprite(view, transform, visual, age, world);
         }
     }
 
@@ -216,6 +335,7 @@ impl ParticleRenderCollector {
 
     fn collect_sprite(
         &mut self,
+        view: SpriteView,
         transform: &Transform,
         visual: &SpriteVisual,
         age: f32,
@@ -233,7 +353,7 @@ impl ParticleRenderCollector {
             visual.size,
             visual.rotation,
             visual.opacity,
-            &mut self.buffers[index].bytes,
+            self.buffers[index].bytes_mut(view),
         );
     }
 
@@ -242,6 +362,15 @@ impl ParticleRenderCollector {
             .iter()
             .filter(|buffer| buffer.registered && !buffer.bytes.is_empty())
             .map(|buffer| (buffer.name.as_str(), buffer.bytes.as_slice()))
+    }
+
+    /// The planar mirror's sprites per collection, as
+    /// [`Self::iter_collections`] hands the main view's.
+    pub(crate) fn iter_mirror_collections(&self) -> impl Iterator<Item = (&str, &[u8])> + '_ {
+        self.buffers
+            .iter()
+            .filter(|buffer| buffer.registered && !buffer.mirror_bytes.is_empty())
+            .map(|buffer| (buffer.name.as_str(), buffer.mirror_bytes.as_slice()))
     }
 }
 
@@ -1632,5 +1761,131 @@ mod tests {
                 live / 2 * SPRITE_INSTANCE_SIZE
             );
         }
+    }
+
+    /// The proof view over water at height 0: 2 m up, looking down and ahead,
+    /// 60° square, and its mirror camera.
+    fn mirror_proof_views() -> (glam::Mat4, MirrorCamera) {
+        let eye = Vec3::new(0.0, 2.0, 0.0);
+        let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::new(0.0, 0.5, 5.0), Vec3::Y);
+        let projection =
+            glam::camera::rh::proj::directx::perspective(60.0_f32.to_radians(), 1.0, 0.1, 100.0);
+        let camera = MirrorCamera::new(eye, view, projection, 0.0, None)
+            .expect("the eye is above the water");
+        (projection * view, camera)
+    }
+
+    /// The x and y of every sprite one collection packed.
+    fn packed_positions(bytes: &[u8]) -> Vec<(f32, f32)> {
+        bytes
+            .as_chunks::<SPRITE_INSTANCE_SIZE>()
+            .0
+            .iter()
+            .map(|sprite| {
+                (
+                    f32::from_ne_bytes(sprite[0..4].try_into().unwrap()),
+                    f32::from_ne_bytes(sprite[4..8].try_into().unwrap()),
+                )
+            })
+            .collect()
+    }
+
+    // The mirror collects over its own cells and frustum, into its own bytes:
+    // a particle over the top of the main view that the water reflects joins
+    // it, one under the water (past the mirror's clip plane) or in a cell the
+    // mirror does not reach does not, and the main view's collection over its
+    // own cells and frustum is unchanged by it.
+    #[test]
+    fn collect_mirror_culls_by_mirror_cells_and_frustum_into_its_own_bytes() {
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("smoke");
+        let world = two_cell_world();
+        let (main_vp, camera) = mirror_proof_views();
+        let both = Vec3::new(0.5, 1.5, 5.0);
+        let over_the_top = Vec3::new(0.5, 5.0, 7.0);
+        let under_water = Vec3::new(0.5, -1.0, 5.0);
+        let other_cell = Vec3::new(-0.5, 1.5, 5.0);
+        for position in [both, over_the_top, under_water, other_cell] {
+            spawn_particle(&mut particles, &mut collector, position, "smoke");
+        }
+        // Size 1 at age 0 from the size curve: a small quad.
+        let main_frustum = postretro_visibility::extract_frustum_planes(main_vp);
+        let main_cells = VisibleCells::Culled(vec![0, 1]);
+        collector.collect_at_tick(
+            &registry,
+            &particles,
+            Some(&world),
+            &main_cells,
+            0.0,
+            Some(&main_frustum),
+        );
+        let main_before: Vec<_> = collector
+            .iter_collections()
+            .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+            .collect();
+        let main_positions = packed_positions(&main_before[0].1);
+        assert_eq!(
+            main_positions,
+            [(0.5, 1.5), (0.5, -1.0), (-0.5, 1.5)],
+            "the main view's own cull"
+        );
+
+        collector.collect_mirror_at_tick(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+            0.0,
+            &camera,
+        );
+        let mirror: Vec<_> = collector.iter_mirror_collections().collect();
+        assert_eq!(mirror.len(), 1);
+        assert_eq!(mirror[0].0, "smoke");
+        assert_eq!(packed_positions(mirror[0].1), [(0.5, 1.5), (0.5, 5.0)]);
+        let main_after: Vec<_> = collector
+            .iter_collections()
+            .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+            .collect();
+        assert_eq!(main_after, main_before, "the mirror leaves the main bytes");
+
+        collector.clear_mirror();
+        assert!(collector.iter_mirror_collections().next().is_none());
+        assert_eq!(collector.iter_collections().count(), 1);
+    }
+
+    // Projectile bodies reflect too, culled by the mirror's cells, and a later
+    // main collection never clears the mirror's sprites.
+    #[test]
+    fn collect_mirror_packs_projectile_bodies_by_mirror_cells() {
+        let mut registry = EntityRegistry::new();
+        let particles = ParticlePool::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("plasma");
+        let world = two_cell_world();
+        let (_, camera) = mirror_proof_views();
+        spawn_projectile_sprite(&mut registry, Vec3::new(0.5, 1.0, 4.0), "plasma");
+        spawn_projectile_sprite(&mut registry, Vec3::new(-0.5, 1.0, 4.0), "plasma");
+
+        collector.collect_mirror_at_tick(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![1]),
+            0.0,
+            &camera,
+        );
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+        );
+
+        let mirror: Vec<_> = collector.iter_mirror_collections().collect();
+        assert_eq!(packed_positions(mirror[0].1), [(-0.5, 1.0)]);
+        let main: Vec<_> = collector.iter_collections().collect();
+        assert_eq!(packed_positions(main[0].1), [(0.5, 1.0)]);
     }
 }

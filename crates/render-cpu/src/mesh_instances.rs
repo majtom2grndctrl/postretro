@@ -39,6 +39,11 @@ pub const MAX_PALETTE_ENTRIES: usize = 4096;
 /// the instance cap even for a pure-rigid flood. One cap value covers both buffers.
 pub const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 
+/// The planner's last priority: world instances only the planar mirror
+/// reaches, after forward draws (0), dynamic shadow casters (1) and
+/// promoted-static relevance (2), and after every ghost.
+const MIRROR_ONLY_PRIORITY: u8 = 3;
+
 /// Stable identity for one instance's renderer-side palette cache entry.
 ///
 /// An attachment has no animation/snapshot identity of its own, but it still
@@ -112,6 +117,45 @@ pub enum MeshPresentation {
     Ghost(GhostInstanceLook),
 }
 
+/// How the planar water mirror (`rendering_pipeline.md` §7.3a) reaches a
+/// world instance this frame. The mirror pass draws every instance it reaches;
+/// the main forward pass never draws [`MirrorReach::Only`] ones, and the
+/// planner ranks them after every main-view admission, ghosts and
+/// shadow-only casters included, so a full pool drops them first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MirrorReach {
+    /// Outside the mirror's visible cells, or no mirror this frame.
+    #[default]
+    Hidden,
+    /// In the mirror's visible cells and reached by the main view too: drawn,
+    /// cast as a shadow, or retained by promoted-static relevance.
+    AlsoMain,
+    /// Reached by the mirror alone.
+    Only,
+}
+
+impl MirrorReach {
+    /// The reach of an instance the main view does (`main`) or does not
+    /// reach, which the mirror does (`mirror`) or does not.
+    pub fn from_reaches(main: bool, mirror: bool) -> Self {
+        match (main, mirror) {
+            (_, false) => Self::Hidden,
+            (true, true) => Self::AlsoMain,
+            (false, true) => Self::Only,
+        }
+    }
+
+    /// Whether the mirror pass draws the instance.
+    pub fn drawn(self) -> bool {
+        self != Self::Hidden
+    }
+
+    /// Whether only the mirror reaches the instance.
+    pub fn is_only(self) -> bool {
+        self == Self::Only
+    }
+}
+
 impl MeshPresentation {
     pub fn is_viewmodel(self) -> bool {
         matches!(self, Self::Viewmodel)
@@ -180,6 +224,10 @@ pub struct MeshInstanceInput {
     /// relevance may retain additional off-PVS meshes that dynamic slots must
     /// not admit.
     pub dynamic_shadow_visible: bool,
+    /// How the planar mirror reaches the instance. Only world instances carry
+    /// a mirror reach: viewmodels and ghosts stay out of the mirror whatever
+    /// this holds, because the mirror draws the world plan alone.
+    pub mirror: MirrorReach,
     /// Which plan the instance enters. Viewmodels and ghosts are planned
     /// separately from world instances so they use the shared palette/instance
     /// buffers without ever entering world shadow-depth passes.
@@ -229,6 +277,10 @@ pub struct PlannedInstance {
     /// Dynamic shadow passes filter on this while promoted-static passes may use
     /// every retained planned instance.
     pub dynamic_shadow_visible: bool,
+    /// Carried from [`MeshInstanceInput::mirror`], normalized over the holder
+    /// group like the flags above. The mirror pass draws [`MirrorReach::drawn`]
+    /// instances; promoted-static depth skips [`MirrorReach::Only`] ones.
+    pub mirror: MirrorReach,
     /// A ghost instance's presented look, packed into the instance record's
     /// free lanes; `None` for world and viewmodel instances.
     pub ghost_look: Option<GhostInstanceLook>,
@@ -268,8 +320,10 @@ pub struct MeshFramePlan {
 ///
 /// Budget admission is global across the plans: all real forward-visible groups
 /// are considered before dynamic-shadow-only and promoted-static-only groups,
-/// within a priority world before viewmodel, and ghosts after every real group,
-/// so an overflow drops ghosts before any real mesh. Dense instance offsets
+/// within a priority world before viewmodel, ghosts after every real main-view
+/// group, and world instances only the planar mirror reaches last, so an
+/// overflow drops those first, then ghosts, before any real mesh the main view
+/// reaches. Dense instance offsets
 /// place the viewmodel after the world plan and ghosts last; no plan owns a
 /// separate GPU buffer. Only `world` reaches shadow depth and SH sampling.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -279,9 +333,10 @@ pub struct MeshFramePlans {
     pub ghost: MeshFramePlan,
 }
 
-/// World-space bounds for forward receivers admitted by the shared mesh-frame
-/// budget. Shadow-only instances and inputs rejected for cache absence or
-/// overflow never enter this iterator.
+/// World-space bounds for receivers admitted by the shared mesh-frame budget:
+/// forward draws and the planar mirror's draws, which sample the same SH.
+/// Shadow-only instances and inputs rejected for cache absence or overflow
+/// never enter this iterator.
 pub fn planned_forward_sample_bounds(
     plans: &MeshFramePlans,
     include_viewmodels: bool,
@@ -296,7 +351,7 @@ pub fn planned_forward_sample_bounds(
             &[]
         })
         .flat_map(|group| group.instances.iter())
-        .filter(|instance| instance.forward_visible)
+        .filter(|instance| instance.forward_visible || instance.mirror.drawn())
         .map(|instance| instance.bounds.transformed(&instance.transform))
 }
 
@@ -338,10 +393,11 @@ pub trait JointCounts {
 /// silently omitted and are not counted as budget drops; a missing holder still
 /// suppresses its holder group.
 ///
-/// The mesh collector may emit forward-visible, dynamic-shadow-only, and
-/// promoted-static-only instances. They are budgeted in that order so broader
-/// static relevance cannot evict an explicitly opted dynamic caster, and
-/// neither shadow class can evict drawable meshes.
+/// The mesh collector may emit forward-visible, dynamic-shadow-only,
+/// promoted-static-only and mirror-only instances. They are budgeted in that
+/// order so broader static relevance cannot evict an explicitly opted dynamic
+/// caster, neither shadow class can evict drawable meshes, and nothing only
+/// the planar mirror reaches evicts a main-view admission.
 ///
 /// The returned plan's groups carry dense instance offsets so the GPU layer can
 /// write one flat instance SSBO and issue one instanced draw per group.
@@ -352,7 +408,7 @@ pub fn plan_mesh_frame(
     let mut palette_cursor = 0;
     let mut instance_cursor = 0;
     let mut plan = MeshFramePlan::default();
-    for visibility_priority in 0..3 {
+    for visibility_priority in 0..=MIRROR_ONLY_PRIORITY {
         plan_mesh_priority(
             instances,
             joints,
@@ -404,41 +460,50 @@ pub fn plan_mesh_frame_plans(
             .iter()
             .all(|instance| instance.presentation.is_viewmodel())
     });
-    if viewmodels_are_a_suffix {
-        let split = first_viewmodel.unwrap_or(instances.len());
-        let (world_instances, viewmodel_instances) = instances.split_at(split);
-        for visibility_priority in 0..3 {
-            plan_mesh_priority(
-                world_instances,
+    let world_split = viewmodels_are_a_suffix.then(|| first_viewmodel.unwrap_or(instances.len()));
+    let plan_world = |visibility_priority: u8,
+                      palette_cursor: &mut usize,
+                      instance_cursor: &mut usize,
+                      world: &mut MeshFramePlan| {
+        match world_split {
+            Some(split) => plan_mesh_priority(
+                &instances[..split],
                 joints,
                 &|_| true,
                 visibility_priority,
-                &mut palette_cursor,
-                &mut instance_cursor,
-                &mut world,
-            );
-            plan_mesh_priority(
-                viewmodel_instances,
+                palette_cursor,
+                instance_cursor,
+                world,
+            ),
+            None => plan_mesh_priority(
+                instances,
+                joints,
+                &|instance| !instance.presentation.is_viewmodel(),
+                visibility_priority,
+                palette_cursor,
+                instance_cursor,
+                world,
+            ),
+        }
+    };
+    for visibility_priority in 0..MIRROR_ONLY_PRIORITY {
+        plan_world(
+            visibility_priority,
+            &mut palette_cursor,
+            &mut instance_cursor,
+            &mut world,
+        );
+        match world_split {
+            Some(split) => plan_mesh_priority(
+                &instances[split..],
                 joints,
                 &|_| true,
                 visibility_priority,
                 &mut palette_cursor,
                 &mut instance_cursor,
                 &mut viewmodel,
-            );
-        }
-    } else {
-        for visibility_priority in 0..3 {
-            plan_mesh_priority(
-                instances,
-                joints,
-                &|instance| !instance.presentation.is_viewmodel(),
-                visibility_priority,
-                &mut palette_cursor,
-                &mut instance_cursor,
-                &mut world,
-            );
-            plan_mesh_priority(
+            ),
+            None => plan_mesh_priority(
                 instances,
                 joints,
                 &|instance| instance.presentation.is_viewmodel(),
@@ -446,13 +511,14 @@ pub fn plan_mesh_frame_plans(
                 &mut palette_cursor,
                 &mut instance_cursor,
                 &mut viewmodel,
-            );
+            ),
         }
     }
 
-    // Ghosts plan after every real group, shadow-only casters included, so an
-    // overflow drops ghosts before any real mesh.
-    for visibility_priority in 0..3 {
+    // Ghosts plan after every real main-view group, shadow-only casters
+    // included, so an overflow drops ghosts before any real mesh the main view
+    // reaches.
+    for visibility_priority in 0..MIRROR_ONLY_PRIORITY {
         plan_mesh_priority(
             ghosts,
             joints,
@@ -463,6 +529,16 @@ pub fn plan_mesh_frame_plans(
             &mut ghost,
         );
     }
+
+    // World instances only the planar mirror reaches plan last, after every
+    // main-view admission and every ghost, so a full pool drops them first and
+    // they never evict anything the main view draws or casts.
+    plan_world(
+        MIRROR_ONLY_PRIORITY,
+        &mut palette_cursor,
+        &mut instance_cursor,
+        &mut world,
+    );
 
     let mut offset_cursor = 0;
     assign_dense_instance_offsets(&mut world, &mut offset_cursor);
@@ -486,9 +562,10 @@ fn plan_mesh_priority(
     plan: &mut MeshFramePlan,
 ) {
     // Budget forward-visible groups first, then dynamic-shadow casters, then the
-    // broader promoted-static-only relevance set. Collector output keeps each
-    // holder immediately followed by its attachments, so three scans preserve
-    // group order without an allocation.
+    // broader promoted-static-only relevance set, then what only the planar
+    // mirror reaches. Collector output keeps each holder immediately followed
+    // by its attachments, so one scan per priority preserves group order
+    // without an allocation.
     let mut group_start = 0;
     while group_start < instances.len() {
         let holder_group = instances[group_start].palette_cache_key.holder_group();
@@ -513,7 +590,25 @@ fn plan_mesh_priority(
         let dynamic_shadow_visible = input_group
             .iter()
             .any(|instance| instance.dynamic_shadow_visible);
-        let priority = if forward_visible {
+        // Only a world draw has a mirror reach; the mirror never draws a
+        // viewmodel or a ghost.
+        let world_draw = plan_kind == MeshPresentation::World.plan();
+        let mirror = if !world_draw {
+            MirrorReach::Hidden
+        } else if input_group.iter().all(|instance| instance.mirror.is_only()) {
+            MirrorReach::Only
+        } else if input_group.iter().any(|instance| instance.mirror.drawn()) {
+            MirrorReach::AlsoMain
+        } else {
+            MirrorReach::Hidden
+        };
+        debug_assert!(
+            !mirror.is_only() || (!forward_visible && !dynamic_shadow_visible),
+            "a mirror-only instance has no main-view reach"
+        );
+        let priority = if mirror.is_only() {
+            MIRROR_ONLY_PRIORITY
+        } else if forward_visible {
             0
         } else if dynamic_shadow_visible {
             1
@@ -525,6 +620,7 @@ fn plan_mesh_priority(
                 input_group,
                 forward_visible,
                 dynamic_shadow_visible,
+                mirror,
                 joints,
                 &mut plan.groups,
                 palette_cursor,
@@ -552,6 +648,7 @@ fn plan_instance_group(
     input_group: &[MeshInstanceInput],
     forward_visible: bool,
     dynamic_shadow_visible: bool,
+    mirror: MirrorReach,
     joints: &impl JointCounts,
     groups: &mut Vec<ModelDrawGroup>,
     palette_cursor: &mut usize,
@@ -616,6 +713,7 @@ fn plan_instance_group(
             // forward and shadow draws cannot split malformed mixed inputs.
             forward_visible,
             dynamic_shadow_visible,
+            mirror,
             ghost_look: match instance.presentation {
                 MeshPresentation::Ghost(look) => Some(look),
                 MeshPresentation::World | MeshPresentation::Viewmodel => None,
@@ -700,6 +798,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            mirror: MirrorReach::Hidden,
             presentation: MeshPresentation::World,
         }
     }
@@ -1309,6 +1408,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            mirror: MirrorReach::Hidden,
             ghost_look: None,
         };
         assert!(
@@ -1331,6 +1431,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            mirror: MirrorReach::Hidden,
             ghost_look: None,
         };
         assert!(
@@ -1391,6 +1492,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            mirror: MirrorReach::Hidden,
             ghost_look: None,
         };
         assert!(
@@ -1446,6 +1548,7 @@ mod tests {
             palette_cache_key: input.palette_cache_key.ghost_through(link),
             forward_visible: true,
             dynamic_shadow_visible: false,
+            mirror: MirrorReach::Hidden,
             presentation: MeshPresentation::Ghost(ghost_look(opacity)),
             ..input
         }
@@ -1601,5 +1704,162 @@ mod tests {
         assert_eq!(plans.world.dropped, 0, "every real shadow-only mesh plans");
         assert_eq!(plans.ghost.instance_count, 0);
         assert_eq!(plans.ghost.dropped, 1, "the ghost drops instead");
+    }
+
+    /// A world instance only the planar mirror reaches.
+    fn mirror_only_instance(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
+        let mut i = non_forward_instance(model, x, seed);
+        i.mirror = MirrorReach::Only;
+        i
+    }
+
+    /// Every planned instance across the three plans, by phase seed, with its
+    /// palette base: the frame's admissions in budget order.
+    fn admissions(plans: &MeshFramePlans) -> Vec<(u32, u32)> {
+        let mut out: Vec<_> = [&plans.world, &plans.viewmodel, &plans.ghost]
+            .into_iter()
+            .flat_map(|plan| &plan.groups)
+            .flat_map(|group| &group.instances)
+            .map(|instance| (instance.phase_seed, instance.palette_base))
+            .collect();
+        out.sort_unstable_by_key(|&(_, base)| base);
+        out
+    }
+
+    // Mirror-only instances rank after every main-view admission: forward,
+    // dynamic shadow-only and promoted-static-only casters, then ghosts. Listed
+    // first, the mirror-only one still takes the last palette run, and it
+    // keeps its reach for the mirror pass.
+    #[test]
+    fn plan_ranks_mirror_only_instances_after_ghosts_and_shadow_only_casters() {
+        let per = (MAX_PALETTE_ENTRIES / 5) as u32;
+        let joints = joints(&[
+            ("mirror", per),
+            ("static-only", per),
+            ("dynamic", per),
+            ("world-forward", per),
+            ("pawn", per),
+        ]);
+        let inputs = [
+            mirror_only_instance("mirror", 0.0, 5),
+            non_forward_instance("static-only", 1.0, 1),
+            dynamic_shadow_instance("dynamic", 2.0, 2),
+            instance("world-forward", 3.0, 3),
+        ];
+        let ghosts = [ghost_of(instance("pawn", 4.0, 7), 0, 1.0)];
+
+        let plans = plan_mesh_frame_plans(&inputs, &ghosts, &joints);
+
+        let order: Vec<u32> = admissions(&plans).iter().map(|&(seed, _)| seed).collect();
+        assert_eq!(
+            order,
+            [3, 2, 1, 7, 5],
+            "forward, dynamic, static, ghost, mirror"
+        );
+        let mirror = plans
+            .world
+            .groups
+            .iter()
+            .flat_map(|group| &group.instances)
+            .find(|instance| instance.phase_seed == 5)
+            .expect("the mirror-only instance plans with room");
+        assert_eq!(mirror.mirror, MirrorReach::Only);
+        assert!(!mirror.forward_visible && !mirror.dynamic_shadow_visible);
+        assert_eq!(plans.world.dropped + plans.ghost.dropped, 0);
+
+        // The single-plan entry ranks it last too.
+        let plan = plan_mesh_frame(&inputs, &joints);
+        let last = plan
+            .groups
+            .iter()
+            .flat_map(|group| &group.instances)
+            .max_by_key(|instance| instance.palette_base)
+            .expect("planned");
+        assert_eq!(last.phase_seed, 5);
+    }
+
+    // With the pool full of main-view admissions and ghosts, the mirror-only
+    // instance is the one dropped: nothing the main view draws or casts, and
+    // no ghost, yields to it.
+    #[test]
+    fn plan_drops_mirror_only_instances_first_when_the_pool_is_full() {
+        let per = (MAX_PALETTE_ENTRIES / 4) as u32;
+        let joints = joints(&[
+            ("mirror", per),
+            ("static-only", per),
+            ("dynamic", per),
+            ("world-forward", per),
+            ("pawn", per),
+        ]);
+        let inputs = [
+            mirror_only_instance("mirror", 0.0, 5),
+            non_forward_instance("static-only", 1.0, 1),
+            dynamic_shadow_instance("dynamic", 2.0, 2),
+            instance("world-forward", 3.0, 3),
+        ];
+        let ghosts = [ghost_of(instance("pawn", 4.0, 7), 0, 1.0)];
+
+        let plans = plan_mesh_frame_plans(&inputs, &ghosts, &joints);
+
+        assert_eq!(plans.world.dropped, 1, "the mirror-only instance drops");
+        assert_eq!(plans.ghost.dropped, 0, "the ghost keeps its run");
+        let order: Vec<u32> = admissions(&plans).iter().map(|&(seed, _)| seed).collect();
+        assert_eq!(order, [3, 2, 1, 7]);
+    }
+
+    // Adding mirror-only instances, with room or past a full pool, changes no
+    // main-view admission: the same instances plan at the same palette runs,
+    // in every plan, and an instance the mirror shares with the main view keeps
+    // its main rank and carries its mirror reach.
+    #[test]
+    fn plan_main_view_admissions_unchanged_by_mirror_only_instances() {
+        for per in [MAX_PALETTE_ENTRIES / 8, MAX_PALETTE_ENTRIES / 3] {
+            let joints = joints(&[("grunt", per as u32), ("gun", 1), ("pawn", per as u32)]);
+            let mut shared = instance("grunt", 1.0, 1);
+            shared.mirror = MirrorReach::AlsoMain;
+            let mut viewmodel = instance("gun", 0.0, 9);
+            viewmodel.presentation = MeshPresentation::Viewmodel;
+            let main = vec![
+                shared,
+                dynamic_shadow_instance("grunt", 2.0, 2),
+                non_forward_instance("grunt", 3.0, 3),
+                instance("grunt", 4.0, 4),
+                viewmodel,
+            ];
+            let ghosts = [ghost_of(instance("pawn", 5.0, 7), 0, 1.0)];
+            let mut with_mirror = vec![
+                mirror_only_instance("grunt", 10.0, 10),
+                mirror_only_instance("grunt", 11.0, 11),
+            ];
+            with_mirror.extend(main.iter().cloned());
+
+            let before = plan_mesh_frame_plans(&main, &ghosts, &joints);
+            let after = plan_mesh_frame_plans(&with_mirror, &ghosts, &joints);
+
+            let after_main: Vec<_> = admissions(&after)
+                .into_iter()
+                .filter(|&(seed, _)| seed < 10)
+                .collect();
+            assert_eq!(after_main, admissions(&before), "per {per}");
+            assert_eq!(after.viewmodel.dropped, before.viewmodel.dropped);
+            assert_eq!(after.ghost.dropped, before.ghost.dropped);
+            let shared = after
+                .world
+                .groups
+                .iter()
+                .flat_map(|group| &group.instances)
+                .find(|instance| instance.phase_seed == 1);
+            if let Some(shared) = shared {
+                assert_eq!(shared.mirror, MirrorReach::AlsoMain);
+                assert!(shared.forward_visible);
+            }
+            assert!(
+                after.viewmodel.groups[0]
+                    .instances
+                    .iter()
+                    .all(|instance| instance.mirror == MirrorReach::Hidden),
+                "a viewmodel never carries a mirror reach"
+            );
+        }
     }
 }

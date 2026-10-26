@@ -3,6 +3,8 @@
 
 mod api;
 #[cfg(test)]
+mod frame_content_tests;
+#[cfg(test)]
 mod frame_port_tests;
 #[cfg(test)]
 mod frame_test_fixtures;
@@ -11,6 +13,7 @@ mod frame_tests;
 #[cfg(test)]
 mod frame_tilt_tests;
 mod mirror_draws;
+mod mirror_sprites;
 mod pipelines;
 mod record;
 mod targets;
@@ -57,6 +60,8 @@ pub(super) struct PlanarReflectionPass {
     /// exactly while the planar layer does.
     targets: Option<PlanarTargets>,
     draws: mirror_draws::MirrorDraws,
+    /// The mirror's billboards and particles, in their own instance store.
+    sprites: mirror_sprites::MirrorSprites,
     /// A test-only preset in place of the tier's, for the D and R proofs.
     #[cfg(test)]
     preset_override: Option<PlanarPreset>,
@@ -71,12 +76,14 @@ pub(super) struct PlanarReflectionPass {
 
 impl PlanarReflectionPass {
     /// Build the mirror's group 0 over the shared camera layout, the inputs
-    /// uniform, and every planar pipeline (the resolve over the shared camera
-    /// and world-material layouts), at full init and at every tier.
+    /// uniform, every planar pipeline (the resolve over the shared camera
+    /// and world-material layouts) and the mirror's sprite store over the
+    /// billboard pipeline's instance layout, at full init and at every tier.
     pub fn new(
         device: &wgpu::Device,
         camera_layout: &wgpu::BindGroupLayout,
         material_layout: &wgpu::BindGroupLayout,
+        sprite_instance_layout: &wgpu::BindGroupLayout,
     ) -> Self {
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Planar Mirror Camera Uniform"),
@@ -110,6 +117,7 @@ impl PlanarReflectionPass {
             pipelines: pipelines::PlanarPipelines::new(device, camera_layout, material_layout),
             targets: None,
             draws: mirror_draws::MirrorDraws::default(),
+            sprites: mirror_sprites::MirrorSprites::new(device, sprite_instance_layout),
             #[cfg(test)]
             preset_override: None,
             #[cfg(test)]
@@ -149,15 +157,7 @@ impl PlanarReflectionPass {
         let Some(camera) = self.camera.filter(|_| self.targets.is_some()) else {
             return;
         };
-        let mut data = *main;
-        for (index, value) in camera.raster_vp.to_cols_array().iter().enumerate() {
-            data[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
-        }
-        for (index, value) in camera.eye.to_array().iter().enumerate() {
-            data[64 + index * 4..68 + index * 4].copy_from_slice(&value.to_ne_bytes());
-        }
-        // The SDF shadow factor is main-screen aligned: the mirror never reads it.
-        data[96..100].copy_from_slice(&0u32.to_ne_bytes());
+        let data = mirror_camera_uniform(main, &camera);
         if self.uploaded_camera == Some(data) {
             return;
         }
@@ -192,8 +192,51 @@ impl PlanarReflectionPass {
         }
         self.targets = None;
         self.draws.clear();
+        self.sprites.clear();
     }
 }
+
+/// The mirror's group-0 uniform: the main frame's, with the mirror's raster
+/// view-projection and eye, so every world, mover, mesh and billboard draw
+/// shades from the mirror camera and every billboard faces it. The world
+/// forward pass still binds the main view's group 5, whose SDF shadow factor
+/// and scene depth are main-screen aligned, so nothing in the mirror reads
+/// them: the SDF flags are cleared (SDF-tagged static lights reflect
+/// unshadowed), and the SDF debug views that read those textures or the
+/// factor (`SdfShadowMode` 2 to 4) shade the reflection as `On`. The
+/// shadowmask views read no screen texture and stay.
+fn mirror_camera_uniform(main: &[u8; UNIFORM_SIZE], camera: &MirrorCamera) -> [u8; UNIFORM_SIZE] {
+    use postretro_render_cpu::frame_uniforms::SdfShadowMode;
+    let mut data = *main;
+    for (index, value) in camera.raster_vp.to_cols_array().iter().enumerate() {
+        data[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    for (index, value) in camera.eye.to_array().iter().enumerate() {
+        data[64 + index * 4..68 + index * 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    data[MIRROR_SDF_FLAGS_BYTES].copy_from_slice(&0u32.to_ne_bytes());
+    let mode = u32::from_ne_bytes(
+        data[MIRROR_SDF_MODE_BYTES]
+            .try_into()
+            .expect("a four-byte word"),
+    );
+    if [
+        SdfShadowMode::Visualize,
+        SdfShadowMode::VisualizeDebugPaths,
+        SdfShadowMode::VisualizeNormals,
+    ]
+    .iter()
+    .any(|screen_view| *screen_view as u32 == mode)
+    {
+        data[MIRROR_SDF_MODE_BYTES].copy_from_slice(&(SdfShadowMode::On as u32).to_ne_bytes());
+    }
+    data
+}
+
+/// `sdf_shadow_flags` and `sdf_shadow_mode` in the group-0 uniform
+/// (`pipeline_layout.rs`'s offset table).
+const MIRROR_SDF_FLAGS_BYTES: std::ops::Range<usize> = 96..100;
+const MIRROR_SDF_MODE_BYTES: std::ops::Range<usize> = 100..104;
 
 /// `main ∪ mirror` into `out`, ascending, allocation-free once grown. Either
 /// side drawing all makes the union draw all.

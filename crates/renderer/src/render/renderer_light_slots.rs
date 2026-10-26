@@ -2940,6 +2940,7 @@ mod tests {
             resample: true,
             forward_visible: false,
             dynamic_shadow_visible: false,
+            mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
             ghost_look: None,
         };
         let planned_outside = PlannedInstance {

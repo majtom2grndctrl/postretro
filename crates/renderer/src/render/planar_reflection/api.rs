@@ -23,6 +23,32 @@ impl Renderer {
         }
     }
 
+    /// This frame's mirror billboards and particles, one `(collection, packed
+    /// bytes)` region per collection, collected over the mirror's cells and
+    /// cull frustum; empty with no mirror view. They upload into the mirror's
+    /// own sprite store, apart from the billboard pass's, and draw facing the
+    /// mirror camera on a frame the planar pass records.
+    pub fn set_planar_particle_draws<'a>(
+        &mut self,
+        collections: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+    ) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.planar_reflection.sprites.upload(
+            device,
+            queue,
+            full.smoke_pass.instance_bind_group_layout(),
+            collections,
+        );
+    }
+
     /// The planar preset the next frame draws by: `None` below very high.
     pub fn planar_reflection_preset(&self) -> Option<PlanarPreset> {
         self.full

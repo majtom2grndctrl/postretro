@@ -406,8 +406,9 @@ impl PlanarRenderPreparation {
     }
 
     /// Every cell the frame draws: the main view's, plus the mirror's reach.
-    /// Mesh and mover collection, lightmap demand and SH sample regions read
-    /// it. The lightmap's path rules keep it read-free on a non-walk path:
+    /// Mover collection, lightmap demand and SH sample regions read it; mesh
+    /// collection reads the main and mirror sets apart, to tag mirror-only
+    /// instances. The lightmap's path rules keep it read-free on a non-walk path:
     /// there its blocks are held, resident ones still draw, and misses count.
     pub(crate) fn drawn_cells<'a>(&'a self, main: &'a VisibleCells) -> &'a VisibleCells {
         if self.camera.is_none() || matches!(main, VisibleCells::DrawAll) {

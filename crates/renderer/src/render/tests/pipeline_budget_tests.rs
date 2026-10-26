@@ -62,6 +62,7 @@ fn frame_plan_routes_viewmodels_away_from_shadow_depth() {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: !is_viewmodel,
+            mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
             presentation: if is_viewmodel {
                 postretro_render_cpu::mesh_instances::MeshPresentation::Viewmodel
             } else {

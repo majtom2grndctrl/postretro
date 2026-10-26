@@ -20,6 +20,8 @@ pub(crate) enum MeshDepthInstanceFilter {
     DynamicCasters,
     /// Promoted-static slots consume the broader collection retained by static
     /// light relevance, including off-PVS meshes that are not dynamic casters.
+    /// An instance only the planar mirror reaches was retained for the mirror,
+    /// not for static relevance, so it casts into neither.
     AllRetained,
 }
 
@@ -27,7 +29,7 @@ impl MeshDepthInstanceFilter {
     fn includes(self, instance: &postretro_render_cpu::mesh_instances::PlannedInstance) -> bool {
         match self {
             Self::DynamicCasters => instance.dynamic_shadow_visible,
-            Self::AllRetained => true,
+            Self::AllRetained => !instance.mirror.is_only(),
         }
     }
 }
@@ -287,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn depth_instance_filter_separates_dynamic_and_promoted_static_relevance() {
+    fn depth_instance_filter_separates_dynamic_promoted_static_and_mirror_only() {
         let visible = PlannedInstance {
             transform: glam::Mat4::IDENTITY,
             shadow_bias_scale: 1.0,
@@ -301,6 +303,7 @@ mod tests {
             resample: true,
             forward_visible: true,
             dynamic_shadow_visible: true,
+            mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
             ghost_look: None,
         };
         let shadow_only = PlannedInstance {
@@ -316,5 +319,18 @@ mod tests {
         assert!(MeshDepthInstanceFilter::DynamicCasters.includes(&shadow_only));
         assert!(!MeshDepthInstanceFilter::DynamicCasters.includes(&static_relevance_only));
         assert!(MeshDepthInstanceFilter::AllRetained.includes(&static_relevance_only));
+
+        // Reached by the mirror alone: no shadow pass of either kind.
+        let mirror_only = PlannedInstance {
+            mirror: postretro_render_cpu::mesh_instances::MirrorReach::Only,
+            ..static_relevance_only.clone()
+        };
+        assert!(!MeshDepthInstanceFilter::DynamicCasters.includes(&mirror_only));
+        assert!(!MeshDepthInstanceFilter::AllRetained.includes(&mirror_only));
+        let also_main = PlannedInstance {
+            mirror: postretro_render_cpu::mesh_instances::MirrorReach::AlsoMain,
+            ..static_relevance_only.clone()
+        };
+        assert!(MeshDepthInstanceFilter::AllRetained.includes(&also_main));
     }
 }

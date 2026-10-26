@@ -268,6 +268,7 @@ impl GhostRenderCollector {
             resample: false,
             forward_visible: true,
             dynamic_shadow_visible: false,
+            mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
             presentation: MeshPresentation::World,
         });
         let has_skinned_attachment = attachments::emit_for_holder(
@@ -283,6 +284,7 @@ impl GhostRenderCollector {
             seed,
             true,
             false,
+            postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
             &mesh.attachments,
         );
 

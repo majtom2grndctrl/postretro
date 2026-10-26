@@ -1,6 +1,7 @@
 // The windowed frame loop: one `RedrawRequested` frame from timing through present.
 // See: context/lib/rendering_pipeline.md §1 · context/lib/entity_model.md §5
 
+mod mirror_content;
 pub(crate) mod named_drains;
 mod planar;
 
@@ -1994,6 +1995,15 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 presentation_tick,
                 Some(&postretro_visibility::extract_frustum_planes(view_proj)),
             );
+            mirror_content::collect_mirror_particles(
+                &app.planar_render,
+                &mut session.particle_render,
+                &registry,
+                &session.particle_pool,
+                app.level.as_ref(),
+                presentation_tick,
+                renderer,
+            );
             // Projectile billboard ghosts: each at its mapped position, culled
             // at its mapped cell, through the collections the billboards use.
             if let Some(world) = app.level.as_ref() {
@@ -2092,10 +2102,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // Same frame alpha the player camera reads from
             // `frame_timing` — interpolate each mesh between its
             // previous- and current-tick transforms.
-            session.mesh_render.collect_with_hit_zones(
+            session.mesh_render.collect_with_mirror(
                 &registry,
                 world,
-                app.planar_render.drawn_cells(&visible_cells),
+                &visible_cells,
+                mirror_content::mirror_cells(&app.planar_render),
                 frame_result.alpha,
                 app.anim_time,
                 &session.mesh_clip_tables,

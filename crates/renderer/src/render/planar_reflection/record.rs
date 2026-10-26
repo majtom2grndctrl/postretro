@@ -1,4 +1,4 @@
-// Planar pass recording: mask, mirror world, movers and skinned meshes, then the resolve.
+// Planar pass recording: mask, mirror world, movers, skinned meshes, billboards, then the resolve.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
@@ -179,9 +179,10 @@ struct PlanarFrame<'a> {
     sh_mesh: &'a wgpu::BindGroup,
 }
 
-/// Record the mask, the mirror's world, movers and skinned meshes, and the
-/// resolve, all on `encoder`. False, recording nothing, without targets or
-/// a planar layer.
+/// Record the mask, the mirror's world, movers, skinned meshes and
+/// billboards, and the resolve, all on `encoder`. False, recording nothing,
+/// without targets or a planar layer. Ghosts and the viewmodel never enter:
+/// only the world mesh plan and the mirror's own sprites reach the mirror.
 fn record_planar_passes(
     full: &crate::render::renderer_types::FullRenderer,
     encoder: &mut wgpu::CommandEncoder,
@@ -306,7 +307,26 @@ fn record_planar_passes(
         });
         skinned.set_bind_group(0, &pass.uniform_bind_group, &[]);
         skinned.set_bind_group(4, sh_mesh, &[]);
-        full.mesh_pass.record_draws(&mut skinned, plan);
+        full.mesh_pass.record_mirror_draws(&mut skinned, plan);
+    }
+    if pass.sprites.has_draws() && full.smoke_pass.has_any_sheet() {
+        // After the opaque mirror, as the billboard pass follows the opaque
+        // scene: depth-tested, never written, additive. The mirror's group 0
+        // turns every quad to the mirror camera.
+        let mut sprites = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Planar Billboards"),
+            color_attachments: &[Some(color_attachment(&targets.color, wgpu::LoadOp::Load))],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &targets.depth,
+                depth_ops: None,
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        sprites.set_bind_group(0, &pass.uniform_bind_group, &[]);
+        sprites.set_bind_group(2, &full.lighting_bind_group, &[]);
+        sprites.set_bind_group(3, sh, &[]);
+        pass.sprites.record_draws(&mut sprites, &full.smoke_pass);
     }
     {
         // Cleared every frame it records, colour and depth, so a texel no

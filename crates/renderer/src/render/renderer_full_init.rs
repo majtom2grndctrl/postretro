@@ -541,6 +541,7 @@ pub(crate) fn build_full_renderer(
         device,
         &uniform_bind_group_layout,
         &texture_bind_group_layout,
+        smoke_pass.instance_bind_group_layout(),
     );
     let rigid_occluder_depth = rigid_occluder_depth::RigidOccluderDepthPass::new(
         device,

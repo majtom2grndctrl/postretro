@@ -356,7 +356,7 @@ impl BloomPass {
         self.enabled
     }
 
-    #[cfg(feature = "dev-tools")]
+    #[cfg(any(test, feature = "dev-tools"))]
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }

@@ -105,17 +105,16 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             primary: remote.command.fire_button,
             secondary: remote.command.secondary_button,
         };
-        let mut machine = tick_weapon_machine_activation(
+        let mut machine = super::super::machine::tick_remote_weapon_machine(
             &mut registry,
             Some(remote.pawn),
             weapon,
             &mut weapon_component,
             remote.command.reload,
             &command,
-            false,
             tick_dt,
             activation,
-            false,
+            remote.equip,
         );
         if let Some(rejected) = remote.rejected_activation {
             machine.activation.rejected = Some(rejected);

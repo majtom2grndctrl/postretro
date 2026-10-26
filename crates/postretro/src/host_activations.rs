@@ -147,6 +147,13 @@ pub(super) fn guard_initiation(
     if let Some((_, bound_weapon)) = queues.activations.live_binding(command.owner_client_id) {
         command.weapon = Some(bound_weapon);
     }
+    if let Some(weapon) = command.weapon {
+        command.equip = queues.remote_equip_gate(
+            command.owner_client_id,
+            weapon,
+            command.reload_press_tick.unwrap_or(command.client_tick),
+        );
+    }
     let shot_id = command.shot_id;
     let id_for = |token| {
         shot_id.map(|shot| ActivationId {
@@ -213,6 +220,9 @@ pub(super) fn guard_initiation(
         || !ledger_allows
         || cadence == netcode::CadenceVerdict::Refused
         || fire_blocked
+        || command.weapon.is_some_and(|weapon| {
+            queues.switch_start_refused(command.owner_client_id, weapon, token.start_tick)
+        })
     {
         command.command.activation.initiation = None;
         command.rejected_activation = Some(token);
@@ -1221,6 +1231,8 @@ mod tests {
         );
         assert_eq!(resolved.command.activation.initiation, Some(start));
         let command = sim::RemotePawnCommand {
+            reload_press_tick: None,
+            equip: Default::default(),
             real_command: true,
             rejected_activation: None,
             pawn,

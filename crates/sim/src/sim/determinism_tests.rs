@@ -683,6 +683,8 @@ impl SimHarness {
             sim_command.select_slot = Some(1);
         }
         let remote_pawn_commands = [RemotePawnCommand {
+            reload_press_tick: None,
+            equip: Default::default(),
             real_command: true,
             rejected_activation: None,
             pawn: self.remote_player,

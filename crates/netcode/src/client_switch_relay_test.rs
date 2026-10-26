@@ -411,8 +411,13 @@ impl SwitchRelay {
         }
         let tick = self.client_tick;
         if let Some(slot) = declare {
-            self.endpoint
-                .send_client_switch_declaration(slot, tick, 0, None);
+            self.endpoint.send_client_switch_declaration(
+                slot,
+                tick,
+                0,
+                None,
+                wire::SwitchDeclarationKind::Switch,
+            );
         }
         if self.send_commands {
             self.client()

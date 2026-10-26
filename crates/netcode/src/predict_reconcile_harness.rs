@@ -143,11 +143,13 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
             declaration_id: 41,
             slot: 1,
             client_tick: 10,
+            kind: postretro_net::wire::SwitchDeclarationKind::Switch,
         },
         ClientSwitchDeclaration {
             declaration_id: 42,
             slot: 2,
             client_tick: 11,
+            kind: postretro_net::wire::SwitchDeclarationKind::Switch,
         },
     ] {
         to_host.enqueue(postretro_net::wire::encode(

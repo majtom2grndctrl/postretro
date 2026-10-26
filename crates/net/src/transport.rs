@@ -2360,6 +2360,7 @@ mod tests {
             declaration_id: 9,
             slot: 2,
             client_tick: 4_000,
+            kind: crate::wire::SwitchDeclarationKind::Switch,
         });
         client.send_input(wire::encode(&declaration));
 

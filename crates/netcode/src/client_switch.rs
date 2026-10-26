@@ -51,6 +51,7 @@ impl NetEndpoint {
         client_tick: u32,
         rollback_slot: usize,
         rollback_last_weapon_slot: Option<usize>,
+        kind: wire::SwitchDeclarationKind,
     ) {
         if let Self::Client {
             client,
@@ -76,6 +77,7 @@ impl NetEndpoint {
                     declaration_id,
                     slot,
                     client_tick,
+                    kind,
                 },
             )));
         }

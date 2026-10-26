@@ -259,6 +259,62 @@ fn conditioned_drop_then_switch_then_fire_inside_a_stall_drops_the_pressed_slot(
     assert_eq!(inventory.active_slot, 0);
 }
 
+// Regression: the host repointed at begin and dropped the incoming weapon
+// while its owner still held the outgoing weapon through a non-zero lower.
+#[test]
+fn conditioned_drop_mid_lower_releases_outgoing_and_holds_switch_target() {
+    let (mut fixture, outgoing) = two_rifles_on_a_floor();
+    fixture.up = PacketConditioner::new(mandated_link());
+    let mut down = mandated_link();
+    down.seed ^= 0x5a5a;
+    fixture.down = PacketConditioner::new(down);
+    for (registry, pawn) in [
+        (&fixture.host, fixture.host_actors.pawn),
+        (&fixture.local, fixture.local_actors.pawn),
+    ] {
+        let mut registry = registry.borrow_mut();
+        let weapon = registry
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .wieldables[1]
+            .unwrap();
+        let Ok(ComponentValue::Weapon(component)) =
+            registry.get_component_value_mut(weapon, ComponentKind::Weapon)
+        else {
+            panic!("outgoing slot has a weapon");
+        };
+        component.lower_ms = 200;
+    }
+    fixture.run_stalled(40, 0..0, |offset| match offset {
+        5 => switch_to(0),
+        8 => {
+            let mut command = neutral();
+            command.movement.drop_pressed = true;
+            command
+        }
+        _ => neutral(),
+    });
+    let registry = fixture.host.borrow();
+    let inventory = registry
+        .get_component::<Inventory>(fixture.host_actors.pawn)
+        .unwrap();
+    assert_eq!(
+        inventory.wieldables[1], None,
+        "the weapon in hand was dropped"
+    );
+    assert_eq!(inventory.active_slot, 0, "drop lands on the pending target");
+    assert_eq!(inventory.switch_target, None);
+    assert_eq!(
+        registry
+            .get_component::<WeaponComponent>(outgoing)
+            .unwrap()
+            .state,
+        postretro_entities::components::wieldable_state::WieldableState::Idle
+    );
+    drop(registry);
+    fixture.assert_switches_accepted(2);
+}
+
 /// A rifle with a small magazine and a 50 ms reload from the pawn's reserve.
 fn reloading_rifle() -> WeaponDescriptor {
     serde_json::from_value::<WeaponDescriptor>(json!({
@@ -354,6 +410,7 @@ fn conditioned_switch_with_a_malformed_tick_is_refused_without_switching() {
             declaration_id,
             slot,
             client_tick,
+            kind: postretro_net::wire::SwitchDeclarationKind::Switch,
         });
     }
     fixture.idle(START + 10, 30);
@@ -582,16 +639,14 @@ fn conditioned_lost_switch_datagram_still_resolves_before_a_later_start() {
     fixture.assert_switches_accepted(1);
 }
 
-// A start on the switch's own command lands after the switch in the same
-// resolution, as the client's equip pass runs before its fire, even when the
-// datagram carrying both is lost once (P5). Host order only: this fixture's
-// client predicts no shot on a switch tick, a client-side question apart from
-// delivery.
+// A forged start on the repoint tick is judged after the switch. Even a
+// zero raise takes its first machine pass on the next client tick; the owner
+// predicts no shot here, so the host must refuse it through the same boundary.
 #[test]
-fn conditioned_start_on_the_switchs_own_command_lands_after_it_across_a_loss() {
+fn conditioned_start_on_switch_tick_is_refused_by_raise_after_switch_across_loss() {
     const SWITCH: u32 = 10;
     let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
-    let second = fixture.equip_second(&hitscan_rifle("press", 130.0));
+    fixture.equip_second(&hitscan_rifle("press", 130.0));
     fixture.run_with_lost_uplink(30, SWITCH, |offset| match offset {
         SWITCH => {
             let mut command = stamped_start(START + SWITCH);
@@ -600,13 +655,18 @@ fn conditioned_start_on_the_switchs_own_command_lands_after_it_across_a_loss() {
         }
         _ => neutral(),
     });
-    let fired: Vec<EntityId> = fixture.authorized.iter().map(|shot| shot.weapon).collect();
-    assert_eq!(fired, [second], "the start fires from the switched-to slot");
+    assert!(
+        fixture.authorized.is_empty(),
+        "the raise refuses the forged start"
+    );
     assert_eq!(
         fixture.accepted(token(START + SWITCH, ActivationLane::Primary)),
-        1,
-        "the host accepts the start once"
+        0
     );
+    assert!(rejected(
+        &fixture,
+        token(START + SWITCH, ActivationLane::Primary)
+    ));
     assert_eq!(
         fixture.host_switched_to(1),
         fixture.resolved_on(START + SWITCH),

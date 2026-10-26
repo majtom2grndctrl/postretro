@@ -55,6 +55,8 @@ mod host_input;
 // Weapon-switch declarations: intake into the ordered switch lane, then
 // validation, application and reply on the fixed tick that releases them.
 mod host_switch;
+mod host_switch_timing;
+pub use host_switch_timing::{host_resolve_remote_commands_with_switches, host_settle_switches};
 // Fix B: host-side delay-buffered presentation of connected-client pawns. New logic
 // lives here; `main.rs`/`interpolation.rs`/`endpoint.rs` carry only thin wiring.
 mod host_presentation;

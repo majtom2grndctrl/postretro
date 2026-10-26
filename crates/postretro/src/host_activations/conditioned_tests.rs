@@ -375,6 +375,7 @@ struct Fixture {
     /// Opt-in composition coverage: ordinary tests intentionally leave snapshot
     /// receive outside their transport/activation seam.
     receive: Option<receive_alternate::SnapshotReceive>,
+    switch_receive: Option<switch_timing::SwitchReceive>,
     /// Client ticks the host's copy of the pawn starts vaulting with fire
     /// blocked, set at each resolution as its movement would have left it.
     /// Tests vault the client's pawn over the same ticks.
@@ -482,6 +483,7 @@ impl Fixture {
             touch: Default::default(),
             descriptors: Vec::new(),
             receive: None,
+            switch_receive: None,
             vault_ticks: None,
             host_pose: None,
         };
@@ -584,8 +586,10 @@ impl Fixture {
             }
         }
         self.receive_snapshots();
-        for bytes in self.client.drain_input() {
-            match wire::decode::<wire::ServerMessage>(&bytes).unwrap() {
+        self.receive_switch_observer();
+        let messages = self.receive_switch_messages();
+        for message in messages {
+            match message {
                 wire::ServerMessage::ActivationOutcomes(outcomes) => {
                     for outcome in outcomes {
                         let effect = {
@@ -653,7 +657,12 @@ impl Fixture {
     }
 
     fn send_input(&mut self, tick: u32, command: &sim::SimCommand) {
-        if let Some(declaration) = self.unsent_switches.remove(&tick) {
+        if !self
+            .switch_receive
+            .as_ref()
+            .is_some_and(|receive| receive.hold_declarations)
+            && let Some(declaration) = self.unsent_switches.remove(&tick)
+        {
             self.send_switch_declaration(declaration);
         }
         // Fixed fixture data, not an alternative serializer or queue: actual
@@ -730,12 +739,14 @@ impl Fixture {
     /// Declare a switch to `slot` made on `tick`'s command; `send_input` sends
     /// it just before that command.
     fn declare_switch(&mut self, slot: usize, tick: u32) {
+        self.register_switch_pending(slot);
         self.unsent_switches.insert(
             tick,
             wire::ClientSwitchDeclaration {
                 declaration_id: self.next_switch_id,
                 slot: u8::try_from(slot).expect("inventory slots fit a u8"),
                 client_tick: tick,
+                kind: postretro_net::wire::SwitchDeclarationKind::Switch,
             },
         );
         self.next_switch_id += 1;
@@ -780,6 +791,12 @@ impl Fixture {
         command.input_tick = tick;
         // Match the real main loop: equip/switch first, fixed activation second,
         // spatial resolution last. This catches accidental double advancement.
+        let origin = self
+            .local
+            .borrow()
+            .get_component::<Inventory>(self.local_actors.pawn)
+            .ok()
+            .map(|inventory| inventory.active_slot);
         let (switch_accepted, _) = sim::simulate_client_wieldable_tick(
             self.local.clone(),
             &self.world,
@@ -796,6 +813,7 @@ impl Fixture {
         // command it was made on, stamped with that command's tick.
         if switch_accepted && let Some(slot) = command.select_slot {
             self.declare_switch(slot, tick);
+            self.correct_switch_origin(origin.expect("accepted switch has an inventory"));
         }
         let pawn_network = self.pawn_network();
         self.frame.predict(
@@ -950,14 +968,14 @@ impl Fixture {
             self.tick,
             u64::from(self.tick) * 16_667,
         );
-        let resolved = netcode::host_resolve_remote_commands(&self.owners, &mut self.queues);
-        netcode::host_apply_switch_deliveries(
+        let resolved = netcode::host_resolve_remote_commands_with_switches(
             &mut self.host.borrow_mut(),
             &mut self.server,
             &self.owners,
             &mut self.queues,
             &mut self.weapon_owners,
             false,
+            DT,
         );
         let active = self
             .host
@@ -1116,6 +1134,14 @@ impl Fixture {
             |_| {},
             |_, _| {},
             |_| {},
+        );
+        self.resend_switch_tuning();
+        netcode::host_settle_switches(
+            &mut self.host.borrow_mut(),
+            &mut self.server,
+            &self.owners,
+            &mut self.queues,
+            &mut self.weapon_owners,
         );
         self.publish_receive_snapshots();
         self.tick = self.tick.wrapping_add(1);
@@ -3582,6 +3608,7 @@ mod receive_alternate;
 mod lane_delivery;
 // Weapon-switch declarations ordered by client tick with starts and presses.
 mod switch_order;
+mod switch_timing;
 
 // --- Vault fire gate on the host's remote path ---------------------------------
 

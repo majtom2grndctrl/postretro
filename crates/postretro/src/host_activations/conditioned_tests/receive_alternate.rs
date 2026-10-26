@@ -12,7 +12,7 @@ use postretro_entities::{EntityTypeDescriptor, ScriptCtx, SlotValue};
 use postretro_foundation::{ActivationCursor, ActivationPhase};
 use postretro_sim::scripting_systems::ui_proxy::PlayerHudStatePublisher;
 
-struct NoBindings;
+pub(super) struct NoBindings;
 impl PresentationBindingResolver for NoBindings {
     fn resolve(&self, _: &EntityRegistry, _: PresentationBindingKey) -> Option<(EntityId, Vec3)> {
         None
@@ -422,6 +422,11 @@ impl Fixture {
             }
         }
         self.projection.merge(&outcome.owner_private_weapon);
+        if let Some(switch) = self.switch_receive.as_mut() {
+            switch
+                .owner_slots
+                .push((self.tick, self.projection.agreed_slot()));
+        }
     }
 
     pub(super) fn publish_receive_snapshots(&mut self) {

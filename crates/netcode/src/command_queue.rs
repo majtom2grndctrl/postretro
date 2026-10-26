@@ -35,6 +35,8 @@ mod activation_cadence;
 mod departed_weapons;
 mod press_edges;
 mod switch_lane;
+#[cfg(test)]
+mod switch_timing_tests;
 pub use activation_cadence::CadenceVerdict;
 use press_edges::Press;
 pub use switch_lane::SwitchDelivery;
@@ -231,6 +233,7 @@ struct ClientCommandState {
     /// press waits behind one false tick when necessary so the weapon's level-to-edge
     /// dedup sees a genuine rising edge.
     last_emitted_reload: bool,
+    delivered_reload_tick: Option<u32>,
     /// One-shot buildup latch for the standing playout floor. Armed at stream begin
     /// (`resolved_cursor == None`) and re-armed by a give-up that empties `pending`;
     /// disarmed the instant `pending.len()` first reaches [`INPUT_BUFFER_TARGET`].
@@ -379,6 +382,8 @@ pub struct HostCommandQueues {
 /// `resolve_tick`.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedCommand {
+    /// Original client tick of the reload edge delivered in this resolution.
+    pub(crate) reload_press_tick: Option<u32>,
     /// The sim command to feed the movement seam this tick.
     pub(crate) command: SimCommand,
     pub(crate) teleport_yaw_stamp: f32,
@@ -399,6 +404,8 @@ pub(crate) struct ResolvedCommand {
 /// weapon intent later in the sim weapon stage.
 #[derive(Debug, Clone)]
 pub struct ResolvedPawnCommand {
+    /// Original client tick of a delivered reload press, including recovered taps.
+    pub reload_press_tick: Option<u32>,
     pub pawn: EntityId,
     pub client_id: u64,
     pub command: SimCommand,
@@ -504,12 +511,21 @@ impl HostCommandQueues {
     /// single far-future command after a silence does NOT trip it — the resume path stays
     /// intact.
     pub(crate) fn resolve_tick(&mut self, client_id: u64) -> Option<ResolvedCommand> {
+        self.resolve_tick_with_switches(client_id, None)
+    }
+
+    pub(crate) fn resolve_tick_with_switches(
+        &mut self,
+        client_id: u64,
+        apply: Option<&mut crate::host_switch_timing::SwitchApply<'_>>,
+    ) -> Option<ResolvedCommand> {
         let live_activation = self
             .activations
             .live_binding(client_id)
             .map(|(id, _)| id.token);
         let state = self.clients.get_mut(&client_id)?;
         state.host_tick = state.host_tick.wrapping_add(1);
+        state.delivered_reload_tick = None;
 
         // Diagnostics-only: whether this resolution performed a catch-up trim and how
         // many trimmed commands carried a pressed jump. Pure observability.
@@ -570,7 +586,7 @@ impl HostCommandQueues {
             // command is withheld until a small playout depth accumulates.
             None => {
                 let Some((oldest, _)) = state.serial_bounds() else {
-                    state.deliver_switches(live_activation);
+                    state.deliver_switches(live_activation, apply);
                     return None;
                 };
                 let first = state.pending[oldest].client_tick;
@@ -603,7 +619,7 @@ impl HostCommandQueues {
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
             state.drop_stale(expected);
-            state.deliver_switches(live_activation);
+            state.deliver_switches(live_activation, apply);
             let rejected_activation =
                 state.deliver_retained(expected, live_activation, true, &mut sim);
             state.deliver_edges(&mut sim.activation, live_activation);
@@ -620,6 +636,7 @@ impl HostCommandQueues {
                 trimmed_jump: diag_trimmed_jump,
             });
             return Some(ResolvedCommand {
+                reload_press_tick: state.delivered_reload_tick,
                 command: sim,
                 teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
@@ -656,7 +673,7 @@ impl HostCommandQueues {
                     ResolutionSource::Neutral,
                 ),
             };
-            state.deliver_switches(live_activation);
+            state.deliver_switches(live_activation, apply);
             state.deliver_edges(&mut sim.activation, live_activation);
             let diag_lead = state
                 .latest_observed_reload
@@ -671,6 +688,7 @@ impl HostCommandQueues {
                 trimmed_jump: diag_trimmed_jump,
             });
             return Some(ResolvedCommand {
+                reload_press_tick: state.delivered_reload_tick,
                 command: sim,
                 teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
@@ -715,7 +733,7 @@ impl HostCommandQueues {
                     .as_ref()
                     .expect("frontier freeze requires a command to hold"),
             );
-            state.deliver_switches(live_activation);
+            state.deliver_switches(live_activation, apply);
             state.hold_gated_reload(live_activation, &mut sim);
             let source = ResolutionSource::Held;
             state.deliver_edges(&mut sim.activation, live_activation);
@@ -732,6 +750,7 @@ impl HostCommandQueues {
                 trimmed_jump: diag_trimmed_jump,
             });
             return Some(ResolvedCommand {
+                reload_press_tick: state.delivered_reload_tick,
                 command: sim,
                 teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
@@ -780,7 +799,7 @@ impl HostCommandQueues {
         // disarms so the neutral-walk advances toward them. For a neutral-walk or a
         // deep-buffer yield, `pending` still holds commands, so this stays false.
         state.building_playout = state.pending.is_empty();
-        state.deliver_switches(live_activation);
+        state.deliver_switches(live_activation, apply);
         state.deliver_retained(expected, live_activation, false, &mut sim);
         state.deliver_edges(&mut sim.activation, live_activation);
         let diag_lead = state
@@ -796,12 +815,31 @@ impl HostCommandQueues {
             trimmed_jump: diag_trimmed_jump,
         });
         Some(ResolvedCommand {
+            reload_press_tick: state.delivered_reload_tick,
             command: sim,
             teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
             client_tick: expected,
             rejected_activation: None,
             source,
         })
+    }
+
+    pub(crate) fn switch_timing(
+        &self,
+        client_id: u64,
+    ) -> Option<&crate::host_switch_timing::HostSwitchTiming> {
+        self.clients
+            .get(&client_id)
+            .map(|state| &state.switches.timing)
+    }
+
+    pub(crate) fn switch_timing_mut(
+        &mut self,
+        client_id: u64,
+    ) -> Option<&mut crate::host_switch_timing::HostSwitchTiming> {
+        self.clients
+            .get_mut(&client_id)
+            .map(|state| &mut state.switches.timing)
     }
 
     /// Retain a client's weapon-switch declaration for in-order release on a
@@ -917,6 +955,7 @@ fn resolve_remote_commands_in_sampled_frame(
         if let Some(resolved) = command_queues.resolve_tick(client_id) {
             let aim_pitch = command_queues.current_aim_pitch(client_id).unwrap_or(0.0);
             commands.push(ResolvedPawnCommand {
+                reload_press_tick: resolved.reload_press_tick,
                 pawn,
                 client_id,
                 command: resolved.command,

@@ -149,7 +149,12 @@ pub(crate) fn apply_host_switch_declaration(
     HostSwitchDecision::Accepted
 }
 
-fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
+pub(crate) fn send_switch_accepted(
+    server: &mut NetServer,
+    client_id: u64,
+    declaration_id: u32,
+    slot: u8,
+) {
     server.send_input(
         client_id,
         wire::encode(&ServerMessage::SwitchAccepted(ServerSwitchAccepted {
@@ -159,7 +164,12 @@ fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: 
     );
 }
 
-fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
+pub(crate) fn send_switch_refusal(
+    server: &mut NetServer,
+    client_id: u64,
+    declaration_id: u32,
+    slot: u8,
+) {
     server.send_input(
         client_id,
         wire::encode(&ServerMessage::SwitchRefused(ServerSwitchRefused {
@@ -207,6 +217,7 @@ mod tests {
                 declaration_id: 41,
                 slot: 3,
                 client_tick: 100,
+                kind: postretro_net::wire::SwitchDeclarationKind::Switch,
             },
         );
 

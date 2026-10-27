@@ -2,7 +2,7 @@
 
 ## Goal
 
-Let mod authors build revive mechanics (Borderlands second wind, L4D teammate revive) with author-chosen bonuses. The engine adds a teammate **assist** interaction, driven by its own `assist` input command, and life-state reads and effects on an impact's source. The dev mod upgrades its down/bleed-out policy to full Borderlands. Depends on `E18--player-life-states` (Spec A) having landed: its life states, capability gates, verbs, name table and slots are the base this spec extends. Also depends on `input-contextual-priority` (`context/plans/drafts/input-contextual-priority/`, not yet drafted) for the default binding that shares `assist` with `use` on one key.
+Let mod authors build revive mechanics (Borderlands second wind, L4D teammate revive) with author-chosen bonuses. The engine adds a teammate **assist** interaction, driven by its own `assist` input command, and life-state reads and effects on an impact's source. The dev mod upgrades its down/bleed-out policy to full Borderlands. Depends on `E18--player-life-states` (Spec A) having landed: its life states, capability gates, verbs, name table and slots are the base this spec extends. Also depends on `input-contextual-priority` (`context/plans/drafts/input-contextual-priority/`) for the default binding that shares `assist` with `use` on one key.
 
 ## Scope
 

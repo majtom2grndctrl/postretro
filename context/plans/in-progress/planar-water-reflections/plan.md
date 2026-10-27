@@ -238,7 +238,7 @@ AC numbers follow the brief's Acceptance order.
 | 39 | M: mesh-instance cap and shadow occupancy with/without mirror | capture report / instrumented run, same poses | achievable as stated | reported: identical with and without the mirror at every pose; no pose on today's maps admits a mirror-only light or instance |
 | 40 | Manual: owner motion read, presets fixed and recorded | owner, in-engine | manual | outstanding: owner |
 | 41 | Manual: Windows 1660 release perf matrix | owner run (`long-bake`/timed runs are owner-launched); executor prepares commands | manual | outstanding: owner |
-| 42 | Manual: Mac 5300M native bounded run | owner, Mac | manual | measured 2026-10-26, CPU side only: very_high reaches world frames natively and holds 60 at vsync on in all 22 runs; planar adds 0.6–0.8 ms CPU work over SSR-only very_high. Not measurable on this adapter: GPU pass timings (no timestamp queries) and vsync-off frame time. See §Owner handoff AC 42 |
+| 42 | Manual: Mac 5300M native bounded run | owner, Mac | manual | measured 2026-10-26, CPU side only: very_high reaches world frames natively and holds 60 at vsync on in all 22 runs; planar adds 0.6–0.8 ms CPU work over SSR-only very_high. GPU (Instruments, native 1440p): planar costs 1.0–1.1 ms and removes a 7.4–7.6 ms SSR pass, so very_high is about 7 ms cheaper per frame than SSR-only very_high; ultra's planar cost equals very_high's. Vsync-off frame time is not measured. See §Owner handoff AC 42 |
 | 43 | Manual: resident memory at 4K ultra lake pose | executor computes from allocation sizes; owner confirms in-engine | manual | computed (47.5 MiB at 4K ultra, scale ½); owner confirms |
 
 ## Owner handoff (Task 12)
@@ -328,8 +328,48 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
 - **What this settles for the optional decisions:**
   - GPU indirect mirror cull: `rec_planar` is about 0.07 ms, far below a 1 ms bar, so the CPU cull stays.
   - D at very_high: D=15 saves about 0.29 ms of CPU on the Mac. That's small, and it changes what the reflection shows, so it's a motion-read call (AC 40).
-  - Per-style crop pad: no CPU case at the lake; the GPU half is unmeasured.
-- **Still open:** planar's GPU cost on the Mac. It needs a manual vsync-off run, or an Instruments Metal trace.
+  - Per-style crop pad: no case at the lake, on CPU or GPU (GPU below).
+
+**GPU results (Instruments Metal System Trace, 2026-10-26, 4d579df16).** All 26 captures were valid on the first try, plus the e24 ultra settle run.
+- **Method:**
+  - §12's `--launch` recording never finalised for the windowed engine (xctrace at 100% CPU, a 40 GB ktrace, export failed). So the run launched the engine, waited for `[Settling] entry` plus 5 s, then ran `xctrace record --attach <pid> --time-limit 12s` and read the trailing ~10 s (about 465 frames).
+  - Frames counted only where exactly one Depth Pre-Pass, Textured Pass and Fluid Surface Pass encoder appears (71–89% of frames).
+  - Extent native: surface and scene 2560×1440, divisor 1, chosen to saturate the GPU. This differs from the CPU batch's 1280×720.
+  - Settings dirs `postretro-t11-vhn`, `-hn` and `-ultra` with `render_resolution = "native"`.
+  - GPU clock pinned at 1227–1230 MHz busy median; GPU temperature median 87–94 °C, max 96–100. Frames were GPU-bound at 20 ms or more under vsync, so the GPU didn't idle.
+  - Minimum free VRAM during runs: 488 MB.
+- **Table:** GPU ms per frame, mean of the forward and reversed runs. "Rest" is planar total minus planar world forward. Run-to-run spread on planar total is about ±0.01 ms.
+
+| Pose | Config | Planar total | Planar forward | Rest | SSR (Fluid Reflection Pass) | Fluid Surface | Main Textured | GPU frame |
+|---|---|---|---|---|---|---|---|---|
+| lake down | very_high | 1.134 | 0.356 | 0.778 | – | 4.452 | 10.354 | 20.47 |
+| lake down | very_high, planar off | – | – | – | 7.585 | 4.513 | 10.351 | 27.41 |
+| lake down | high | – | – | – | 4.091 | 4.449 | 10.227 | 23.34 |
+| lake down | ultra | 1.137 | 0.379 | 0.758 | – | 4.461 | 10.522 | 20.66 |
+| lake down | ultra, planar off | – | – | – | 10.874 | 4.534 | 10.457 | 30.98 |
+| lake across | very_high | 0.966 | 0.330 | 0.636 | – | 3.718 | 10.895 | 20.23 |
+| lake across | very_high, planar off | – | – | – | 7.369 | 3.786 | 10.961 | 27.24 |
+| lake across | high | – | – | – | 3.983 | 3.756 | 10.804 | 23.35 |
+| lake across | ultra | 0.966 | 0.358 | 0.609 | – | 3.719 | 10.888 | 20.24 |
+| lake across | ultra, planar off | – | – | – | 10.645 | 3.826 | 10.995 | 30.81 |
+
+- **Net:**
+  - At very_high the selected plane is all the lake's water, so the SSR pass disappears entirely. The GPU frame is 20.2–20.5 ms with planar, 27.2–27.4 SSR-only, and 23.3 at high.
+  - Ultra's planar cost equals very_high's. Ultra SSR-only costs 10.6–10.9 ms.
+  - Every configuration misses 16.7 ms at native 1440p, high included. The main forward pass alone is 10.3–10.9 ms, and the Skinned Viewmodel Pass about 2.2 ms (pilot).
+- **Per planar pass, lake down, scale ½ (ms):** Water Mask 0.055, World Prepass 0.029, World Forward 0.356, Skinned Meshes 0.502, Resolve 0.193.
+  - Movers and Billboards recorded no Metal encoders. That matches `record.rs`, which opens them only when they have draws.
+- **Scale, lake down (¼ / ½ / 1):** planar total 0.500 / 1.134 / 3.449; forward 0.174 / 0.356 / 0.853; Skinned Meshes 0.181 / 0.502 / 1.805; GPU frame 19.69 / 20.47 / 22.64.
+- **Crop, lake across:** planar total 0.966 with the crop, 0.965 without, so no difference on the GPU either. The per-style crop pad has nothing to save at these poses.
+- **e24 ultra:** "Reflection quality: Ultra", `[Settling] entry outcome=settled frames=16`, and world frames reached (`[CpuTiming]` total 17.7–20.4 ms).
+- **Open finding: Planar Skinned Meshes costs 0.36–0.50 ms at scale ½, the largest planar pass after forward.** It grows close to target area (1 : 2.8 : 10 against 1 : 4 : 16).
+  - The Mac session read it as empty-pass attachment cost. `record.rs` contradicts that: the pass opens only when the frame has a mesh plan, and it draws only the instances whose mirror reach is drawn (`MeshPass::record_mirror_draws`).
+  - On an immediate-mode AMD GPU, the load and store of an empty pass shouldn't cost 0.5 ms. Growth with area fits fill on real draws.
+  - The likely candidate is the player's own pawn body reflecting below the camera, but that's unverified.
+  - Next step: log the mirror-drawn instance count at the lake-down pose. If the pawn draws, the cost is correct content, and its price is a preset matter (scale). If nothing draws, skip the pass when no instance reaches the mirror.
+- **The seven-pass merge item:** apart from Skinned Meshes, the non-forward passes total about 0.28 ms at scale ½ (mask, prepass, resolve). A merge has little to save.
+- **Not measured:** the 1280×720 auto extent, a quarter of the pixels. By the scale rows, planar there should be well under 1 ms.
+- **Raw results** are on the Mac, in the Mac session's scratchpad (`ac42-gpu/out/`: `results.md`, `aggregate.json` and per-run `runs/*.run.json`). Raw traces were deleted.
 
 **AC 43 — 4K ultra resident memory (computed; owner confirms).**
 - **Basis:** scene extent 3840×2160 (Native, the worst case; Auto picks divisor 2 on a 4K panel, a 1920×1080 scene, which quarters every figure) at the ultra preset scale ½ gives 1920×1080 = 2,073,600 texels.

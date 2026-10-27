@@ -12,7 +12,7 @@ Owner request: multi-bounce indirect light, and SH bake cost that does not grow 
 - **Sequenced after the lightmap culls and coloured bounce (owner).** A sizing pass first measures the share of one-sample SH Bake still spent on shadow rays at gather hits; it prices the scaling half of the case before promotion.
 - **Scope: id 34 and id 27.** Base and deltas share one estimator, so an animated light's bounce matches the static bounce beside it (owner). Ids 35, 41, 45, 47 and 48 trace no gather hits and keep their paths.
 - **Albedo is whatever the bake uses when this builds.** That is grey today; coloured bounce is its own step and may land first. The cache reproduces the pre-cache estimator in single-bounce mode.
-- **Multi-bounce is in scope (owner), a look change judged by A/B.** Bounce two and later gathers patch to patch from the cache. A `prl-build` switch selects single-bounce for the parity row; it is listed in `--help`, absent from `docs/`, and folded into the SH keys.
+- **Multi-bounce is in scope (owner), a look change judged by A/B.** Bounce two and later gathers patch to patch from the cache. Fill strength is a mood choice, not only a correctness one, so a `prl-build` later-bounce scale s ∈ [0, 1] weights it: shipped bounce = bounce one + s × later bounces, wherever later bounces ship. s = 0 is single-bounce mode, used by the parity row; default 1. The scale is listed in `--help`, absent from `docs/`, and folded into the SH keys.
 - **Warm locality kept (owner).** Editing one light re-bakes only that light's bounce-one patch radiance and the SH groups and delta entries it reaches. Warm stays dimmer-or-equal to cold, never miscoloured (`done/incremental-bake-per-element/`).
 - **IP guard (owner).** Gather rays stay uniform or cosine and are never aimed using a prior result (ARM '177). Only summed bounce ships. The cache drops before packing and no patch list reaches PRL (`ip-check.md` Piece 6).
 - **The cache lives between Geometry and atlas preparation and never reaches PRL.** It is keyed on positions, built on pre-cut faces and dropped before atlas preparation. No face identity crosses the cut (`build_pipeline.md` §Compiler pipeline). Bake-only: no format, runtime or shader change; SH and delta stage versions bump.
@@ -35,11 +35,12 @@ Parity: per-probe pre-encode irradiance, single-bounce cache vs the one-sample e
 Multi-bounce:
 - [ ] A probe in a room lit only by bounce off an adjacent lit room reads brighter with multi-bounce than single-bounce; a probe in direct-lit open space changes by less than the parity bound.
 - [ ] Each added bounce adds less energy than the one before, and the total converges under a fixed bounce count.
+- [ ] At s = 0, id 34 and id 27 bytes equal single-bounce output; at s = 1, the unscaled multi-bounce sum; between, each probe reads between the two per channel.
 
 Locality and keys:
 - [ ] A patch reached by no light stores zero bounce-one radiance; a patch in reach stores nonzero.
 - [ ] Warm, after one light edit: only that light's patch layer, and only groups and delta entries whose reaching sets hold it, re-bake (counts asserted). Groups beyond its reach hit cache.
-- [ ] Toggling single-bounce mode re-keys the SH stages; toggling it back hits cache.
+- [ ] Changing s re-keys the SH stages; restoring it hits cache.
 - [ ] Warm output is never brighter than cold per probe per channel.
 
 Order and determinism:
@@ -53,7 +54,7 @@ Bounds:
 - [ ] Cold `--release --no-cache` Build Summary on hallway-mini, the full hallway, `stress-warren-mini` and `campaign-test`, before (one-sample estimator) and after: SH Bake, Delta SH Bake and total, serialized one bake at a time. Share of patches gather rays reach.
 
 ### Manual
-- [ ] Owner A/B, single- vs multi-bounce, at `campaign-test` stations: shadowed fill reads right, no hot spots, overall energy acceptable.
+- [ ] Owner A/B at `campaign-test` stations: s = 0, an intermediate s, and s = 1. Shadowed fill reads right, no hot spots, overall energy acceptable; the owner picks the default s.
 - [ ] Entities and fog under the new id 34 show no patch-scale blotches or new leaks.
 
 ## Path
@@ -70,5 +71,6 @@ Bounds:
 - After the sizing pass: does the shadow-ray share, plus multi-bounce, still earn this shape? — owner — **blocks build**
 - Multi-bounce under warm locality: warm builds bake bounce one only (dimmer-or-equal, local) while cold adds later bounces, or bounces two and later re-bake globally on any light edit? Recommend warm bounce one only. — owner — **blocks build**
 - Animated lights under multi-bounce: do deltas carry bounces two and later, or bounce one only? — owner — **blocks build**
+- Later-bounce scale: bake-wide only, or also a per-map authored value? The A/B decides. — owner — does not block the first slice
 - Patch size, and nearest vs filtered lookup across patches — **delegated**: the parity row and the RAM row decide.
 - Whether a patch stores both sides of a face or back-face hits are shaded another way — **delegated**: the back-face row decides.

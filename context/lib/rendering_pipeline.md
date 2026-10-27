@@ -1078,8 +1078,11 @@ zero-cost pass.
 **Without timestamp support.** Some Metal adapters lack the timestamp features, so the
 engine's GPU timing reports unsupported. On macOS, take per-pass GPU time from an
 Instruments Metal System Trace instead. wgpu forwards pass labels, so the trace groups
-GPU intervals by pass. Record headless with `xcrun xctrace record --template 'Metal
-System Trace' --launch -- <postretro binary> <map>.prl`, then read its tables with
+GPU intervals by pass. A capture run, which exits on its own, records under
+`xcrun xctrace record --template 'Metal System Trace' --launch -- <postretro binary> <map>.prl`.
+A windowed run attaches instead: launch the engine, wait for the level to settle, then
+`xctrace record --attach <pid> --time-limit <seconds>`. Under `--launch`, a windowed
+recording can fail to finalise while its ktrace grows to tens of GB. Read the tables with
 `xctrace export`. Reduce the export per encoder. A pass's time is the union of its
 encoder's intervals, with nested and coalesced rows counted once. Divide by a once-per-frame
 encoder of the same pass to get a per-frame figure. Never take the frame count from

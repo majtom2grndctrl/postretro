@@ -190,6 +190,7 @@ read at: 25db4c78f (crates/ identical to main 8ea68d8be; spike `claude/planar-wa
 
   No ghost pass draws into the mirror, and the planar pass records before the fluid pass that samples it (O6). This gets recorded in `rendering_pipeline.md` §7.3a at landing.
 - **Spike records.** `planar-water-spike-{contract,findings,drafting-handoff,windows-handoff}.md` move from the spike branch to `context/plans/done/planar-water-spike/`. The `-evidence/` tree stays on the spike branch, as the brief's Path says.
+- **Owner direction (2026-10-26): the local player's body reflects.** The shadow-only body (`shadowOnly: true`, the local player's `exo_red` and its attachments) now reaches the planar mirror like any world mesh. The main view still draws it only as a shadow. Changed: `mesh_render.rs` (mirror reach no longer gated on `shadow_only`) and its test `collect_with_mirror_keeps_shadow_casters_main_ranked` (body reach `AlsoMain`). The `shadowOnly` doc text now says "renders into shadow-depth passes and planar water reflections only", in `sim/scripting/primitives/mod.rs`, `sdk/types/postretro.d.{ts,luau}` and the typedef fixtures. It was triggered by the AC 42 trace: the Planar Skinned Meshes pass opened with nothing to draw, because the body was planned but excluded. Peer avatars were already forward-drawn, so they already reflected.
 
 ## AC-to-proof
 
@@ -371,7 +372,7 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
     - Excluding the body is deliberate: `mesh_render.rs` passes `with_mirror = !mesh.shadow_only` ("A shadow-only body never draws in colour, the mirror's included"), and the test `collect_with_mirror_keeps_shadow_casters_main_ranked` pins it.
   - **The 0.5 ms is probably misattributed, not this pass's own work.** In older Mac traces of the same scene (`context/plans/ready/occluder-first-partition/measurement/frame-cost/results/gpu/`), the empty main Skinned Mesh Pass swings from 0.020 to 0.764 ms while Textured plus Skinned stays about 3 ms. That fits an empty encoder absorbing the previous heavy encoder's tail. Here it follows Planar World Forward. Not verified on the Mac.
   - **Proposed guard (not applied):** add `MeshFramePlan::any_mirror_drawn()` and open the pass only when it's true. The same guard could apply to the main Skinned Mesh Pass on `forward_visible`. The expected real saving is small (one encoder and its Load/Store, about 0.02–0.07 ms). To confirm it, re-trace and compare planar total, not the per-pass split.
-  - **Owner question:** should the local player's shadow-only body reflect in the planar mirror? Today, looking down at the lake you have no reflection. Changing it is a content change to `mesh_render.rs` and its test, and would make this pass draw real fill.
+  - **Owner answer (2026-10-26): the body reflects** (see Delegated answers, "Owner direction"). At the lake pose this pass now draws the body and its shotgun, so the skip guard no longer applies there. It still helps any frame whose plan has nothing the mirror reaches.
 - **The seven-pass merge item:** apart from Skinned Meshes, the non-forward passes total about 0.28 ms at scale ½ (mask, prepass, resolve). A merge has little to save.
 - **Not measured:** the 1280×720 auto extent, a quarter of the pixels. By the scale rows, planar there should be well under 1 ms.
 - **Raw results** are on the Mac, in the Mac session's scratchpad (`ac42-gpu/out/`: `results.md`, `aggregate.json` and per-run `runs/*.run.json`). Raw traces were deleted.
@@ -465,6 +466,7 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
 **For landing (`context/lib`):** besides the items already listed:
 - **§7.3a** names the shared horizon floor in `fluid_reflection_above_horizon` as the one direction-conditioned placement composed from the pinned helper. It also words "never c" as ip-check D1 does, including the empty-texel cut, and scopes "reads no probe table" to the planar passes: routing and selection read only whether a face binds a probe.
 - **§12** gains `rec_planar` beside `mirror_walk`.
+- **§7.3a content** lists the local player's shadow-only body (and its attachments) as reflected, unlike the viewmodel and ghosts. §7.3a pool rank still ranks shadow-only casters as main-view admissions.
 
 ## Tasks
 

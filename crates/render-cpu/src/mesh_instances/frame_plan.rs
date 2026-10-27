@@ -154,7 +154,8 @@ impl MeshFramePlans {
 
 /// World-space bounds for receivers admitted by the shared mesh-frame budget:
 /// forward draws and the planar mirror's draws, which sample the same SH.
-/// Shadow-only instances and inputs rejected for cache absence or overflow
+/// Instances drawn neither forward nor by the mirror (a shadow-only body the
+/// mirror doesn't reach), and inputs rejected for cache absence or overflow,
 /// never enter this iterator.
 pub fn planned_forward_sample_bounds(
     plans: &MeshFramePlans,

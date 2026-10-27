@@ -342,9 +342,9 @@ impl MeshRenderCollector {
                 continue;
             };
             let current_model_position = current.position + mesh.origin_offset;
-            // A shadow-only body never draws in colour, the mirror's included.
-            let (portal_visible, mirror_visible) =
-                views.reach(world, current_model_position, !mesh.shadow_only);
+            // A shadow-only body never draws in the main view's colour, but the
+            // planar mirror reflects it like any world mesh.
+            let (portal_visible, mirror_visible) = views.reach(world, current_model_position, true);
             let forward_visible = portal_visible && !mesh.shadow_only;
             let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
             let handle = ModelHandle::from(mesh.model.clone());
@@ -2447,7 +2447,8 @@ mod tests {
 
     // Shadow casting is a main-view reach: a mesh only promoted-static
     // relevance keeps for the main view is shared with the mirror, never
-    // mirror-only, and a shadow-only body never draws in the mirror.
+    // mirror-only, and a shadow-only body the mirror reaches reflects there
+    // while the main view still draws it only as a shadow.
     #[test]
     fn collect_with_mirror_keeps_shadow_casters_main_ranked() {
         let mut registry = EntityRegistry::new();
@@ -2486,6 +2487,6 @@ mod tests {
             .find(|instance| instance.model.as_str() == "body")
             .expect("a shadow-only body still casts");
         assert!(body.dynamic_shadow_visible && !body.forward_visible);
-        assert_eq!(body.mirror, MirrorReach::Hidden);
+        assert_eq!(body.mirror, MirrorReach::AlsoMain);
     }
 }

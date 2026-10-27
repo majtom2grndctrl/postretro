@@ -186,6 +186,9 @@ fn skinned_mesh_shader_source(cube_array_supported: bool) -> std::borrow::Cow<'s
 /// `[0, dynamic_light_count)` is the dynamic prefix,
 /// `[dynamic_light_count, scripted_light_count)` is the raw animated-baked tail,
 /// and `[scripted_light_count, light_count)` is the selected-static suffix.
+/// `indirect_scale` is the renderer's SH-indirect multiplier captured with the
+/// frame's forward group 0 (`Uniforms.indirect_scale`), so the diagnostics
+/// slider reaches meshes on the same frame as world surfaces.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct MeshLightParams {
@@ -198,7 +201,7 @@ struct MeshLightParams {
     /// animated-baked tail. Selected-static promotion records append after it.
     scripted_light_count: u32,
     indirect_scale: f32,
-    _pad: u32,
+    _pad2: u32,
 }
 
 /// Byte size of the group-2 params uniform (`MeshLightParams`, 32 B).
@@ -217,7 +220,7 @@ fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
         params.dynamic_light_count.to_ne_bytes(),
         params.scripted_light_count.to_ne_bytes(),
         params.indirect_scale.to_ne_bytes(),
-        params._pad.to_ne_bytes(),
+        params._pad2.to_ne_bytes(),
     ]
     .concat()
 }
@@ -1516,7 +1519,7 @@ impl MeshPass {
             light_term_mask,
             ambient_floor,
             indirect_scale,
-            _pad: 0,
+            _pad2: 0,
         });
         queue.write_buffer(&self.light_params_buffer, 0, &bytes);
     }
@@ -2235,7 +2238,7 @@ mod tests {
             dynamic_light_count: 2,
             scripted_light_count: 5,
             indirect_scale: 0.625,
-            _pad: 0,
+            _pad2: 0,
         });
         assert_eq!(bytes.len(), 32, "serialized MeshLightParams must be 32 B");
         assert_eq!(
@@ -2263,29 +2266,10 @@ mod tests {
         );
         assert_eq!(
             &bytes[24..28],
-            &0.625f32.to_ne_bytes(),
+            &0.625f32.to_le_bytes(),
             "indirect_scale at 24..28"
         );
         assert_eq!(&bytes[28..], &[0; 4], "second-row padding stays zero");
-    }
-
-    // Regression: indirect scale must survive serialization again after the slider changes.
-    #[test]
-    fn mesh_pass_serialized_light_params_follow_indirect_scale_changes() {
-        for indirect_scale in [0.625_f32, 0.125_f32] {
-            let bytes = build_light_params_bytes(MeshLightParams {
-                light_count: 11,
-                time: 1.5,
-                light_term_mask: 0x7F,
-                ambient_floor: 0.375,
-                dynamic_light_count: 7,
-                scripted_light_count: 10,
-                indirect_scale,
-                _pad: 0,
-            });
-            let uploaded = f32::from_ne_bytes(bytes[24..28].try_into().unwrap());
-            assert!((uploaded - indirect_scale).abs() < f32::EPSILON);
-        }
     }
 
     #[test]

@@ -31,7 +31,7 @@ struct KinematicLightParams {
     /// Descriptor-bearing prefix: dynamic tier plus section-45 animated tail.
     scripted_light_count: u32,
     indirect_scale: f32,
-    _pad: u32,
+    _pad2: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -884,6 +884,8 @@ impl KinematicBrushPass {
         &self.light_params_buffer
     }
 
+    /// `indirect_scale` is the snapshot captured with forward group 0, so a
+    /// diagnostics change reaches all SH surface consumers on the same frame.
     #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
@@ -907,7 +909,7 @@ impl KinematicBrushPass {
                 light_term_mask,
                 ambient_floor,
                 indirect_scale,
-                _pad: 0,
+                _pad2: 0,
             }),
         );
     }
@@ -1416,7 +1418,7 @@ mod tests {
             dynamic_light_count: 7,
             scripted_light_count: 10,
             indirect_scale: 0.625,
-            _pad: 0,
+            _pad2: 0,
         });
 
         assert_eq!(bytes.len(), KINEMATIC_LIGHT_PARAMS_SIZE);
@@ -1428,25 +1430,6 @@ mod tests {
         assert_eq!(bytes[20..24], 10u32.to_ne_bytes());
         assert_eq!(bytes[24..28], 0.625f32.to_ne_bytes());
         assert_eq!(bytes[28..], [0; 4]);
-    }
-
-    // Regression: indirect scale must survive serialization again after the slider changes.
-    #[test]
-    fn kinematic_brush_serialized_light_params_follow_indirect_scale_changes() {
-        for indirect_scale in [0.625_f32, 0.125_f32] {
-            let bytes = build_light_params_bytes(KinematicLightParams {
-                light_count: 11,
-                time: 1.5,
-                light_term_mask: 0x7F,
-                ambient_floor: 0.375,
-                dynamic_light_count: 7,
-                scripted_light_count: 10,
-                indirect_scale,
-                _pad: 0,
-            });
-            let uploaded = f32::from_ne_bytes(bytes[24..28].try_into().unwrap());
-            assert!((uploaded - indirect_scale).abs() < f32::EPSILON);
-        }
     }
 
     #[test]

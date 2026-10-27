@@ -14,8 +14,9 @@ struct Uniforms {
     // independently gate the lighting terms; bit 7 is reserved/emissive and
     // intentionally unwired.
     light_term_mask: u32,
-    // Per-frame multiplier on the SH indirect term. 1.0 preserves baked
-    // intensity; lower values suppress SH fill on static surfaces to keep
+    // Per-frame multiplier on the SH indirect term, snapshotted once per frame
+    // and shared by every SH surface (world, fluid, billboard, mesh, mover).
+    // 1.0 preserves baked intensity; lower values suppress SH fill to keep
     // lightmap shadow contrast.
     indirect_scale: f32,
     // Gates whether the half-res SDF visibility target is sampled at all. See

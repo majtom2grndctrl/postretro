@@ -14,8 +14,9 @@ use super::sh_sample::{ShVolumeSampler, SlotRead};
 use crate::surface_materials::SurfaceMaterials;
 
 /// The renderer's production SH indirect weight, `DEFAULT_INDIRECT_SCALE`
-/// (`renderer_types.rs`), which the forward and fluid passes multiply into SH
-/// indirect, base and delta alike. A capture at full weight would reflect
+/// (`renderer_types.rs`), which all five SH surface consumers (forward, fluid,
+/// billboard, mesh and mover passes) multiply into SH indirect, base and delta
+/// alike. A capture at full weight would reflect
 /// bounce about 3× brighter than the room it mirrors; the diagnostics slider
 /// cannot reach a bake.
 pub(crate) const PRODUCTION_INDIRECT_WEIGHT: f32 = 0.33;

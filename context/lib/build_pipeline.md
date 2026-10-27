@@ -593,6 +593,8 @@ have distinct runtime-loadable filenames. Stored at
 identical complete bundles produce the same `.prm` regardless of which mod
 authored them.
 
+Texture means derive from the sidecar's full-size level whether the sidecar is reused or rebaked, and a sidecar rejected for any reason is rebaked before any mean is taken.
+
 **Root derivation.** Compiler and runtime reach the materials tree by two
 different relative routes. prl-build walks up from the map source to the nearest
 `Cargo.toml` ancestor and appends `baked/materials`. The engine derives the root

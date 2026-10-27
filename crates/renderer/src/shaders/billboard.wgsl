@@ -9,7 +9,7 @@
 
 // --- Group 0: camera uniforms (shared with forward pass) ---
 // Shares the forward pass's group-0 uniform buffer. The billboard path reads
-// `view_proj`, `camera_position`, `light_term_mask`, `total_light_count`, and
+// `view_proj`, `camera_position`, `light_term_mask`, `total_light_count`, `indirect_scale`, and
 // the dynamic-direct tail (`direct_scale` / `has_scatter` / `has_direct`); the rest are declared
 // so the field offsets line up with the Rust `Uniforms` writer (a 4-way byte
 // contract: Rust writer + forward.wgsl + billboard.wgsl + wireframe.wgsl).

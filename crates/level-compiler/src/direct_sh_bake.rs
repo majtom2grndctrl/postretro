@@ -577,6 +577,7 @@ fn bake_direct_delta_subblock(
         / (layout.dims[0].div_ceil(AFFINITY_FACTOR) * layout.dims[1].div_ceil(AFFINITY_FACTOR));
 
     let ctx = RaytracingCtx {
+        // Direct-light visibility rays never bounce, so they stay colour-blind.
         bounce_materials: None,
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,
@@ -672,6 +673,7 @@ fn bake_probe_tile(
         .collect();
 
     let ctx = RaytracingCtx {
+        // Direct-light visibility rays never bounce, so they stay colour-blind.
         bounce_materials: None,
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,

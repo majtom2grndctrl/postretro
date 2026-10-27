@@ -21,7 +21,9 @@ pub mod navmesh_bake;
 pub mod partition;
 pub mod texture_mips;
 
-// The library exposes derived stats without loading reflection footprint code.
+// `texture_mips` derives bounce stats while it bakes, so the library needs this
+// module; the parent's footprint sampler serves reflection capture, which only
+// the binary builds.
 pub mod surface_materials {
     pub mod stats;
 }

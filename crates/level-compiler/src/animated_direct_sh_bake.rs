@@ -224,6 +224,7 @@ fn bake_direct_subblock(
     let nx = layout.dims[0] as usize;
     let ny = layout.dims[1] as usize;
     let ray_ctx = RaytracingCtx {
+        // Direct-light visibility rays never bounce, so they stay colour-blind.
         bounce_materials: None,
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,

@@ -438,14 +438,8 @@ fn explicit_empty_and_unused_name_material_seams_keep_grey_and_empty_face_keys()
         });
         (
             key,
-            MaterialStats::from_slots(
-                slots[0].as_ref().ok(),
-                slots[3].as_ref().ok(),
-                0.0,
-                1.0,
-                &lut,
-            )
-            .unwrap(),
+            MaterialStats::from_slots(slots[0].as_ref().ok(), slots[3].as_ref().ok(), 0.0, &lut)
+                .unwrap(),
         )
     };
     let geometry = GeometryResult {

@@ -437,11 +437,7 @@ pub(crate) fn group_cache_key(
 
     // Whole-map geometry content hash — SH rays trace full geometry.
     hasher.update(geometry_content_hash);
-    if let Some(bounce_hash) = bounce_hash {
-        hasher.update(bounce_hash);
-    } else {
-        hasher.update(&crate::surface_materials::stats::BOUNCE_SATURATION.to_le_bytes());
-    }
+    fold_bounce_hash(&mut hasher, bounce_hash);
 
     // Probe-grid layout descriptor.
     hasher.update(&probe_spacing.to_le_bytes());
@@ -760,6 +756,33 @@ fn build_shell(inputs: &ShBakeCtx<'_>) -> ShVolumeShell {
     ShVolumeShell {
         animation_descriptors,
         slot_for_map_light,
+    }
+}
+
+/// Compute once per stage; no geometry scan or allocation occurs per group/entry.
+pub(crate) fn bounce_material_hash(
+    materials: Option<&crate::surface_materials::stats::BounceMaterials>,
+    geometry: &crate::geometry::GeometryResult,
+) -> Option<[u8; 32]> {
+    materials.map(|materials| {
+        let mut hasher = Hasher::new();
+        materials.fold_key(&mut hasher, geometry);
+        *hasher.finalize().as_bytes()
+    })
+}
+
+/// The one encoding both SH group and delta-entry keys fold for the material
+/// table. Presence is tagged so a colour-blind bake never shares a key with a
+/// coloured one; absence folds no saturation, since nothing reads it then.
+pub(crate) fn fold_bounce_hash(hasher: &mut Hasher, bounce_hash: Option<&[u8; 32]>) {
+    match bounce_hash {
+        Some(bounce_hash) => {
+            hasher.update(&[1]);
+            hasher.update(bounce_hash);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
     }
 }
 
@@ -1892,16 +1915,4 @@ mod tests {
             );
         }
     }
-}
-
-/// Compute once per stage; no geometry scan or allocation occurs per group/entry.
-pub(crate) fn bounce_material_hash(
-    materials: Option<&crate::surface_materials::stats::BounceMaterials>,
-    geometry: &crate::geometry::GeometryResult,
-) -> Option<[u8; 32]> {
-    materials.map(|materials| {
-        let mut hasher = blake3::Hasher::new();
-        materials.fold_key(&mut hasher, geometry);
-        *hasher.finalize().as_bytes()
-    })
 }

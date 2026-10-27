@@ -1,4 +1,6 @@
 // Canonical empty material/geometry states at the actual SH bake boundary.
+// See: context/lib/build_pipeline.md §Compiler pipeline
+
 // The CLI adapter cannot produce an empty name table with a finite-brush BSP:
 // names intern before exterior culling; brushless input fails CellVisibility.
 
@@ -144,7 +146,7 @@ fn empty_name_material_stage_preserves_legacy_empty_base_and_delta_bakes() {
             &room.dir.path().join("textures"),
             &sidecars,
             &mut report,
-            Some(saturation),
+            true,
         )
         .unwrap();
         assert!(keys.is_empty() && stats.is_empty());
@@ -175,7 +177,7 @@ fn actual_material_names_without_static_faces_preserve_empty_bakes_and_empty_fac
             &room.dir.path().join("textures"),
             &sidecars,
             &mut report,
-            Some(saturation),
+            true,
         )
         .unwrap();
         assert_eq!(keys.len(), names.len());

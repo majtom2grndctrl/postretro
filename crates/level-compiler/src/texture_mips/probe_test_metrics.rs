@@ -1,5 +1,5 @@
 // Test-only observations of decode calls and one-texture material-bake lifetimes.
-// Measures explicitly observed buffers, not hidden allocations inside the image crate.
+// See: context/lib/build_pipeline.md §Baked texture mips
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -31,6 +31,8 @@ thread_local! {
 }
 
 /// A per-thread observation avoids cross-test totals or serialization locks.
+/// It measures the buffers the bake reports through `probe`, not hidden
+/// allocations inside the image crate.
 pub(crate) struct Observation;
 
 impl Observation {
@@ -159,6 +161,7 @@ impl Drop for TextureLifetime {
     }
 }
 
+#[must_use]
 pub(super) struct StatsBorrow;
 
 impl Drop for StatsBorrow {
@@ -169,23 +172,4 @@ impl Drop for StatsBorrow {
             }
         });
     }
-}
-
-/// Allocated slot payloads can coexist with source bytes and encoded sidecars.
-pub(super) fn payload_bytes<'a>(
-    slots: impl IntoIterator<Item = &'a postretro_level_format::prm::PrmSlot>,
-) -> usize {
-    slots.into_iter().map(|slot| slot.payload.capacity()).sum()
-}
-
-pub(super) fn stats_bytes(
-    diffuse: Option<&postretro_level_format::prm::PrmSlot>,
-    emissive: Option<&postretro_level_format::prm::PrmSlot>,
-) -> usize {
-    diffuse.map_or(0, |diffuse| {
-        usize::from(diffuse.width) * usize::from(diffuse.height) * 4
-            + emissive.map_or(0, |slot| {
-                usize::from(slot.width) * usize::from(slot.height) * 4
-            })
-    })
 }

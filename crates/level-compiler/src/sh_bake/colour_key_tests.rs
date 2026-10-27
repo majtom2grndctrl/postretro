@@ -1,5 +1,5 @@
 // PNG-derived material dependencies at the real SH group and delta cache boundaries.
-// See: context/plans/in-progress/coloured-sh-bounce/index.md
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use super::*;
 use crate::cache::{CacheKey, StageCache};

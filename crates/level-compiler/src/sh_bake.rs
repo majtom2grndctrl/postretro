@@ -49,7 +49,9 @@ const RAYS_PER_PROBE: u32 = 256;
 // whole number of passes is what makes every lattice sample equally likely.
 const _: () = assert!(RAYS_PER_PROBE.is_multiple_of(DEFAULT_AREA_SAMPLE_COUNT));
 
-/// Indirect-only: lightmap carries the direct term; folding direct into SH would double-count it at runtime.
+/// Fallback albedo when a hit has no resolved diffuse mean. SH stays
+/// indirect-only: lightmap carries the direct term; folding direct into SH would
+/// double-count it at runtime.
 const BOUNCE_ALBEDO: f32 = crate::surface_materials::stats::GREY_BOUNCE_ALBEDO;
 
 const SKY_COLOR: [f32; 3] = [0.0, 0.0, 0.0];

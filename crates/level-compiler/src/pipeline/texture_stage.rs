@@ -2,7 +2,7 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline, §Baked texture mips
 
 use super::*;
-use crate::surface_materials::stats::{BOUNCE_SATURATION, BounceMaterials};
+use crate::surface_materials::stats::{BOUNCE_SATURATION, BounceMaterials, validate_saturation};
 use std::path::Path;
 
 pub(super) struct MaterialStageResult {
@@ -17,18 +17,31 @@ pub(super) fn bake_world_materials(
     texture_root: &Path,
     prm_root: &Path,
 ) -> anyhow::Result<MaterialStageResult> {
+    bake_world_materials_at(names, texture_root, prm_root, BOUNCE_SATURATION)
+}
+
+fn bake_world_materials_at(
+    names: &[String],
+    texture_root: &Path,
+    prm_root: &Path,
+    saturation: f32,
+) -> anyhow::Result<MaterialStageResult> {
+    // Validate even an empty material stage before walking the texture root.
+    validate_saturation(saturation)?;
     let mut texture_bytes = texture_mips::StageTextureBytes::new();
-    let (name_to_key, stats) = texture_mips::bake_materials_into(
-        names,
-        texture_root,
-        prm_root,
-        &mut texture_bytes,
-        Some(BOUNCE_SATURATION),
-    )?;
+    let (name_to_key, stats) =
+        texture_mips::bake_materials_into(names, texture_root, prm_root, &mut texture_bytes, true)?;
+    // SH hits index the table by texture index, so one record per name is the contract.
+    anyhow::ensure!(
+        stats.len() == names.len(),
+        "material stage produced {} stats for {} texture names",
+        stats.len(),
+        names.len()
+    );
     Ok(MaterialStageResult {
         name_to_key,
         texture_bytes,
-        bounce_materials: BounceMaterials::new(stats, BOUNCE_SATURATION)?,
+        bounce_materials: BounceMaterials::new(stats, saturation)?,
         world_name_count: names.len(),
     })
 }
@@ -43,6 +56,10 @@ pub(super) fn bake_remaining_textures(
 ) -> anyhow::Result<()> {
     // Fluid names append after every world/mover name, so existing indices and
     // first-name byte-report ownership survive the split.
+    debug_assert!(
+        texture_names.len() >= materials.world_name_count,
+        "texture names may only grow between the material stage and the fluid tail"
+    );
     let fluid_names = &texture_names[materials.world_name_count..];
     if !fluid_names.is_empty() {
         let (keys, _) = texture_mips::bake_materials_into(
@@ -50,7 +67,7 @@ pub(super) fn bake_remaining_textures(
             texture_root,
             prm_root,
             &mut materials.texture_bytes,
-            None,
+            false,
         )?;
         materials.name_to_key.extend(keys);
     }
@@ -67,6 +84,41 @@ pub(super) fn bake_remaining_textures(
         prm_root,
         &mut materials.texture_bytes,
     );
+    // Flush once, after world, fluid, model and sprite bundles are all charged:
+    // the report describes the level's whole texture cost, deduplicated.
     texture_mips::log_texture_byte_summary(materials.texture_bytes.summary());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn material_stage_rejects_bad_saturation_before_baking_any_texture() {
+        let root = tempfile::tempdir().unwrap();
+        let textures = root.path().join("textures");
+        std::fs::create_dir_all(textures.join("panels")).unwrap();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 40, 20, 255]))
+            .save(textures.join("panels/red.png"))
+            .unwrap();
+        let prm_root = root.path().join("materials");
+        for names in [Vec::new(), vec!["panels/red".to_owned()]] {
+            for saturation in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
+                let error = bake_world_materials_at(&names, &textures, &prm_root, saturation)
+                    .err()
+                    .expect("invalid saturation must fail the material stage");
+                assert!(error.to_string().contains("saturation"));
+                assert!(
+                    !prm_root.exists(),
+                    "no sidecar is written before validation"
+                );
+            }
+        }
+        bake_world_materials_at(&["panels/red".to_owned()], &textures, &prm_root, 1.0).unwrap();
+        assert!(
+            prm_root.exists(),
+            "the same names bake at a valid saturation"
+        );
+    }
 }

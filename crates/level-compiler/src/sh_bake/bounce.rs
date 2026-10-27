@@ -165,6 +165,8 @@ pub(super) fn sample_radiance_rgb(
                 .and_then(|materials| materials.resolved_albedo(hit.texture_index))
             {
                 Some(albedo) => radiance * albedo / std::f32::consts::PI,
+                // The scalar multiply, not a splatted Vec3, keeps an unresolved
+                // hit's bytes identical to the pre-colour grey bake.
                 None => radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
             };
             (bounced, hit.distance)

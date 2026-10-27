@@ -1,5 +1,5 @@
 // Shared PNG-backed room for coloured-bounce estimator and pipeline tests.
-// See: context/plans/in-progress/coloured-sh-bounce/index.md
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::path::Path;
 

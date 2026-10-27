@@ -1,5 +1,5 @@
 // Ephemeral, per-name diffuse statistics shared by the SH estimators and their cache keys.
-// See: context/plans/in-progress/coloured-sh-bounce/index.md
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::collections::BTreeSet;
 
@@ -8,25 +8,17 @@ use glam::Vec3;
 use postretro_level_format::prm::{PrmFormat, PrmSlot};
 
 use crate::geometry::GeometryResult;
-use crate::texture_mips::linear_to_srgb_u8;
+use crate::texture_mips::{build_srgb_to_linear_lut, linear_to_srgb_u8};
 
 pub const BOUNCE_SATURATION: f32 = 1.0;
 pub const GREY_BOUNCE_ALBEDO: f32 = 0.45;
 
-/// A fixed-size derived record; texels remain borrowed from the material baker.
-#[derive(Clone, Copy, Debug)]
+/// A fixed-size, glow-resolved record; texels remain borrowed from the material
+/// baker. It carries no saturation: [`BounceMaterials`] is that value's one owner,
+/// so the key it folds and the albedo it serves cannot disagree.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct MaterialStats {
     snapped_mean: Option<[u8; 3]>,
-    albedo: Vec3,
-}
-
-impl Default for MaterialStats {
-    fn default() -> Self {
-        Self {
-            snapped_mean: None,
-            albedo: Vec3::splat(GREY_BOUNCE_ALBEDO),
-        }
-    }
 }
 
 impl MaterialStats {
@@ -34,41 +26,39 @@ impl MaterialStats {
         diffuse: Option<&PrmSlot>,
         emissive: Option<&PrmSlot>,
         emissive_strength: f32,
-        saturation: f32,
         lut: &[f32; 256],
     ) -> Result<Self> {
-        validate_saturation(saturation)?;
         let Some(diffuse) = diffuse else {
             // No diffuse means no reflectance; do not inspect an orphan glow slot.
             return Ok(Self::default());
         };
         let mean = mean_from_slots(diffuse, emissive, emissive_strength, lut)?;
-        let snapped_mean = mean.map(linear_to_srgb_u8);
-        let colour = Vec3::from_array(snapped_mean.map(|v| lut[usize::from(v)]));
-        let luminance = colour.dot(Vec3::new(0.2126, 0.7152, 0.0722));
-        // This form returns the snapped colour bit-for-bit at saturation 1.
-        let albedo = saturation * colour + (1.0 - saturation) * Vec3::splat(luminance);
         Ok(Self {
-            snapped_mean: Some(snapped_mean),
-            albedo,
+            snapped_mean: Some(mean.map(linear_to_srgb_u8)),
         })
     }
 
     pub fn snapped_mean(&self) -> Option<[u8; 3]> {
         self.snapped_mean
     }
-
-    pub fn albedo(&self) -> Vec3 {
-        self.albedo
-    }
 }
 
-fn validate_saturation(saturation: f32) -> Result<()> {
+/// The bake-wide saturation must be checked before the material stage walks the
+/// texture root, so a bad constant fails a build without touching sidecars.
+pub fn validate_saturation(saturation: f32) -> Result<()> {
     ensure!(
         saturation.is_finite() && (0.0..=1.0).contains(&saturation),
         "bounce saturation must be finite and between 0 and 1"
     );
     Ok(())
+}
+
+/// Pulls a snapped mean toward its own Rec. 709 luminance. This form returns
+/// the snapped colour's decode bit-for-bit at saturation 1.
+fn saturated_albedo(snapped_mean: [u8; 3], saturation: f32, lut: &[f32; 256]) -> Vec3 {
+    let colour = Vec3::from_array(snapped_mean.map(|v| lut[usize::from(v)]));
+    let luminance = colour.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+    saturation * colour + (1.0 - saturation) * Vec3::splat(luminance)
 }
 
 fn mip_zero(slot: &PrmSlot) -> Result<&[u8]> {
@@ -110,7 +100,7 @@ fn mean_from_slots(
     let mut full = [0.0_f64; 3];
     let mut non_glow = [0.0_f64; 3];
     let mut retained = 0_u64;
-    for (index, texel) in diffuse_texels.chunks_exact(4).enumerate() {
+    for (index, texel) in diffuse_texels.as_chunks::<4>().0.iter().enumerate() {
         let glowing = emissive_strength > 0.0
             && emissive_texels.is_some_and(|bytes| {
                 bytes[index * 4..index * 4 + 3]
@@ -126,6 +116,8 @@ fn mean_from_slots(
         }
         retained += u64::from(!glowing);
     }
+    // An all-glow texture keeps its full average rather than falling to grey:
+    // its diffuse is still the colour authors painted, and grey means "unknown".
     let (sum, count) = if retained == 0 {
         (full, (diffuse_texels.len() / 4) as u64)
     } else {
@@ -138,29 +130,44 @@ fn mean_from_slots(
 /// are available for materials but never affect a static-world SH key.
 pub struct BounceMaterials {
     stats: Vec<MaterialStats>,
+    /// Derived from `stats` and `saturation` once, so every hit reads the same value.
+    albedo: Vec<Option<Vec3>>,
     saturation: f32,
 }
 
 impl BounceMaterials {
     pub fn new(stats: Vec<MaterialStats>, saturation: f32) -> Result<Self> {
         validate_saturation(saturation)?;
-        Ok(Self { stats, saturation })
+        let lut = build_srgb_to_linear_lut();
+        let albedo = stats
+            .iter()
+            .map(|record| {
+                record
+                    .snapped_mean()
+                    .map(|mean| saturated_albedo(mean, saturation, &lut))
+            })
+            .collect();
+        Ok(Self {
+            stats,
+            albedo,
+            saturation,
+        })
     }
 
+    /// Kept public for the library's integration tests, which cannot see a
+    /// `#[cfg(test)]` item; the estimator reads [`Self::resolved_albedo`].
     pub fn albedo(&self, index: u32) -> Vec3 {
-        self.stats
-            .get(index as usize)
-            .copied()
-            .unwrap_or_default()
-            .albedo()
+        self.resolved_albedo(index)
+            .unwrap_or(Vec3::splat(GREY_BOUNCE_ALBEDO))
     }
 
     /// Absence keeps the estimator's original scalar grey multiply unchanged.
     pub fn resolved_albedo(&self, index: u32) -> Option<Vec3> {
-        let record = self.stats.get(index as usize)?;
-        record.snapped_mean().map(|_| record.albedo())
+        self.albedo.get(index as usize).copied().flatten()
     }
 
+    /// Folds every index some static-world face names, including faces that
+    /// emit no triangles: over-keying them costs a spurious miss at most.
     pub fn fold_key(&self, hasher: &mut blake3::Hasher, geometry: &GeometryResult) {
         hasher.update(b"bounce material means\0");
         hasher.update(&self.saturation.to_bits().to_le_bytes());
@@ -193,7 +200,6 @@ impl BounceMaterials {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::texture_mips::build_srgb_to_linear_lut;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, NO_TEXTURE};
     use postretro_level_format::texture_names::TextureNamesSection;
 
@@ -207,20 +213,21 @@ mod tests {
         }
     }
 
-    fn stats(
-        diffuse: &PrmSlot,
-        emissive: Option<&PrmSlot>,
-        strength: f32,
-        saturation: f32,
-    ) -> MaterialStats {
+    fn stats(diffuse: &PrmSlot, emissive: Option<&PrmSlot>, strength: f32) -> MaterialStats {
         MaterialStats::from_slots(
             Some(diffuse),
             emissive,
             strength,
-            saturation,
             &build_srgb_to_linear_lut(),
         )
         .unwrap()
+    }
+
+    fn albedo(record: MaterialStats, saturation: f32) -> Vec3 {
+        BounceMaterials::new(vec![record], saturation)
+            .unwrap()
+            .resolved_albedo(0)
+            .unwrap()
     }
 
     fn near(actual: Vec3, expected: Vec3, epsilon: f32) {
@@ -246,10 +253,10 @@ mod tests {
             (raw[0] - lut[128]).abs() > 0.2,
             "linear average differs from decoded sRGB average"
         );
-        let result = stats(&diffuse, None, 0.0, 1.0);
+        let result = stats(&diffuse, None, 0.0);
         assert_eq!(result.snapped_mean(), Some([188, 188, 0]));
         assert_eq!(
-            result.albedo().to_array().map(f32::to_bits),
+            albedo(result, 1.0).to_array().map(f32::to_bits),
             [lut[188], lut[188], lut[0]].map(f32::to_bits)
         );
     }
@@ -296,7 +303,7 @@ mod tests {
             2.0 * f32::EPSILON,
         );
         assert_eq!(
-            stats(&diffuse, None, 0.0, 1.0).snapped_mean(),
+            stats(&diffuse, None, 0.0).snapped_mean(),
             Some(expected.map(linear_to_srgb_u8))
         );
     }
@@ -305,12 +312,12 @@ mod tests {
     fn glow_mask_uses_rgb_and_per_name_strength_with_full_average_when_all_glow() {
         let diffuse = slot(2, 1, &[[32, 64, 96, 0], [255, 255, 255, 255]]);
         let mask = slot(2, 1, &[[0, 0, 0, 255], [1, 0, 0, 0]]);
-        let painted = stats(&diffuse, None, 0.0, 1.0);
-        let neon = stats(&diffuse, Some(&mask), 4.0, 1.0);
+        let painted = stats(&diffuse, None, 0.0);
+        let neon = stats(&diffuse, Some(&mask), 4.0);
         assert_eq!(neon.snapped_mean(), Some([32, 64, 96]));
         // The same sidecar under a zero-strength name keeps its bright strip.
         for strength in [0.0, 4.0, 0.0, 4.0] {
-            let actual = stats(&diffuse, Some(&mask), strength, 1.0);
+            let actual = stats(&diffuse, Some(&mask), strength);
             assert_eq!(
                 actual.snapped_mean(),
                 if strength > 0.0 {
@@ -322,7 +329,7 @@ mod tests {
         }
         let all_glow = slot(2, 1, &[[0, 1, 0, 0], [0, 0, 255, 255]]);
         assert_eq!(
-            stats(&diffuse, Some(&all_glow), 4.0, 1.0).snapped_mean(),
+            stats(&diffuse, Some(&all_glow), 4.0).snapped_mean(),
             painted.snapped_mean()
         );
     }
@@ -330,10 +337,10 @@ mod tests {
     #[test]
     fn saturation_preserves_luminance_interpolates_colour_and_never_adds_energy() {
         assert!((0.0..=1.0).contains(&BOUNCE_SATURATION));
-        let diffuse = slot(1, 1, &[[235, 47, 11, 255]]);
-        let full = stats(&diffuse, None, 0.0, 1.0).albedo();
-        let neutral = stats(&diffuse, None, 0.0, 0.0).albedo();
-        let half = stats(&diffuse, None, 0.0, 0.5).albedo();
+        let red = stats(&slot(1, 1, &[[235, 47, 11, 255]]), None, 0.0);
+        let full = albedo(red, 1.0);
+        let neutral = albedo(red, 0.0);
+        let half = albedo(red, 0.5);
         let weights = Vec3::new(0.2126, 0.7152, 0.0722);
         near(neutral, Vec3::splat(neutral.x), f32::EPSILON);
         near(half, (full + neutral) * 0.5, f32::EPSILON);
@@ -342,15 +349,11 @@ mod tests {
             assert!((colour.dot(weights) - full.dot(weights)).abs() <= f32::EPSILON);
             assert!(colour.max_element() <= f32::from_bits(full.max_element().to_bits() + 1));
         }
-        let grey = slot(1, 1, &[[128; 4]]);
+        let grey = stats(&slot(1, 1, &[[128; 4]]), None, 0.0);
         let expected = build_srgb_to_linear_lut()[128];
         let ulp = f32::from_bits(expected.to_bits() + 1) - expected;
         for saturation in [0.0, 0.5, 1.0] {
-            near(
-                stats(&grey, None, 0.0, saturation).albedo(),
-                Vec3::splat(expected),
-                ulp,
-            );
+            near(albedo(grey, saturation), Vec3::splat(expected), ulp);
         }
     }
 
@@ -358,16 +361,11 @@ mod tests {
     fn missing_diffuse_and_invalid_indices_keep_exact_unsaturated_grey() {
         let mut orphan = slot(1, 1, &[[255; 4]]);
         orphan.payload.clear();
+        let unresolved =
+            MaterialStats::from_slots(None, Some(&orphan), 4.0, &build_srgb_to_linear_lut())
+                .unwrap();
+        assert_eq!(unresolved.snapped_mean(), None);
         for saturation in [0.0, 0.5, 1.0] {
-            let unresolved = MaterialStats::from_slots(
-                None,
-                Some(&orphan),
-                4.0,
-                saturation,
-                &build_srgb_to_linear_lut(),
-            )
-            .unwrap();
-            assert_eq!(unresolved.snapped_mean(), None);
             let table = BounceMaterials::new(vec![unresolved], saturation).unwrap();
             for index in [0, 1, NO_TEXTURE] {
                 assert!(table.resolved_albedo(index).is_none());
@@ -384,11 +382,9 @@ mod tests {
         let diffuse = slot(1, 1, &[[128; 4]]);
         let lut = build_srgb_to_linear_lut();
         for saturation in [-0.1, 1.1, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(
-                MaterialStats::from_slots(Some(&diffuse), None, 0.0, saturation, &lut).is_err()
-            );
-            assert!(MaterialStats::from_slots(None, None, 0.0, saturation, &lut).is_err());
+            assert!(validate_saturation(saturation).is_err());
             assert!(BounceMaterials::new(Vec::new(), saturation).is_err());
+            assert!(BounceMaterials::new(vec![stats(&diffuse, None, 0.0)], saturation).is_err());
         }
         let mut malformed = vec![diffuse.clone(); 5];
         malformed[0].format = PrmFormat::Rgba8Unorm;
@@ -397,13 +393,11 @@ mod tests {
         malformed[3].level_count = 0;
         malformed[4].payload.pop();
         for slot in &malformed {
-            assert!(MaterialStats::from_slots(Some(slot), None, 0.0, 1.0, &lut).is_err());
-            assert!(MaterialStats::from_slots(Some(&diffuse), Some(slot), 4.0, 1.0, &lut).is_err());
+            assert!(MaterialStats::from_slots(Some(slot), None, 0.0, &lut).is_err());
+            assert!(MaterialStats::from_slots(Some(&diffuse), Some(slot), 4.0, &lut).is_err());
         }
         let mismatch = slot(2, 1, &[[0; 4], [0; 4]]);
-        assert!(
-            MaterialStats::from_slots(Some(&diffuse), Some(&mismatch), 4.0, 1.0, &lut).is_err()
-        );
+        assert!(MaterialStats::from_slots(Some(&diffuse), Some(&mismatch), 4.0, &lut).is_err());
     }
 
     fn geometry(indices: &[u32]) -> GeometryResult {
@@ -441,8 +435,8 @@ mod tests {
 
     #[test]
     fn keys_fold_every_used_index_once_and_ignore_mover_fluid_means_and_name_order() {
-        let red = stats(&slot(1, 1, &[[255, 0, 0, 255]]), None, 0.0, 1.0);
-        let blue = stats(&slot(1, 1, &[[0, 0, 255, 255]]), None, 0.0, 1.0);
+        let red = stats(&slot(1, 1, &[[255, 0, 0, 255]]), None, 0.0);
+        let blue = stats(&slot(1, 1, &[[0, 0, 255, 255]]), None, 0.0);
         let table = vec![red; 4];
         let base = key(table.clone(), 1.0, &geometry(&[0, 1, 0]));
         assert_eq!(base, key(table.clone(), 1.0, &geometry(&[1, 0])));
@@ -464,6 +458,7 @@ mod tests {
         );
         assert_ne!(key(table.clone(), 1.0, &empty), key(table, 0.0, &empty));
         // A texture's derived value is independent of the other names in a map.
+        let alone = albedo(red, 1.0).to_array().map(f32::to_bits);
         for neighbours in [[red, blue], [red, MaterialStats::default()]] {
             let materials = BounceMaterials::new(neighbours.to_vec(), 1.0).unwrap();
             assert_eq!(
@@ -472,12 +467,9 @@ mod tests {
                     .unwrap()
                     .to_array()
                     .map(f32::to_bits),
-                red.albedo().to_array().map(f32::to_bits)
+                alone
             );
-            assert_eq!(
-                materials.albedo(0).to_array().map(f32::to_bits),
-                red.albedo().to_array().map(f32::to_bits)
-            );
+            assert_eq!(materials.albedo(0).to_array().map(f32::to_bits), alone);
         }
     }
 }

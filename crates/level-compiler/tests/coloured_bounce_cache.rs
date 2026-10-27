@@ -57,7 +57,8 @@ impl Fixture {
     fn run(&self, cache: bool, workers: u32, extra: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
         command
-            .env("RUST_LOG", "info")
+            // Per-entry delta cache lines are debug-level; the tally reads them.
+            .env("RUST_LOG", "info,prl_build::delta_sh_cache=debug")
             .arg(&self.map)
             .arg("-o")
             .arg(self.dir.path().join("room.prl"))
@@ -306,8 +307,10 @@ fn warm_is_no_brighter_than_cold(warm: &[u8], cold: &[u8]) {
     assert!(!warm.compact_atlas.is_empty());
     for (warm, cold) in warm
         .compact_atlas
-        .chunks_exact(8)
-        .zip(cold.compact_atlas.chunks_exact(8))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(cold.compact_atlas.as_chunks::<8>().0)
     {
         for channel in 0..3 {
             let warm = u16::from_le_bytes([warm[channel * 2], warm[channel * 2 + 1]]);

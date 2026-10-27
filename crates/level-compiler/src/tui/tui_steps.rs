@@ -29,6 +29,8 @@ const WORLD_GEOMETRY_STAGES: &[StageId] = &[
     StageId::CellVisibility,
     StageId::NavMesh,
 ];
+// Texture validation and the world material bake lead the SH section: SH
+// bounce reads each world texture's diffuse mean, so they run just before it.
 const SH_LIGHTING_STAGES: &[StageId] = &[
     StageId::TextureValidation,
     StageId::Materials,
@@ -395,10 +397,10 @@ mod tests {
         state.begin_step(StageId::EntityShadowLights);
         state.begin_step(StageId::DirectShDeltaBake);
         let text = rendered(&mut state, 40, 30);
-        assert!(text.contains("Lighting 0/7"));
+        assert!(text.contains("Lighting 0/9"));
         assert!(text.contains("EntityShadowLights"));
         assert!(text.contains("Direct SH Delta Bake"));
-        assert!(!text.contains("Parse 0/2\nParsing"));
+        assert!(!text.contains("Parse 0/1\nParsing"));
 
         // Only the newest foreground stage is highlighted; its open outer
         // stage stays muted.
@@ -421,9 +423,9 @@ mod tests {
         let mut state = state();
         state.begin_step(StageId::LightmapBake);
         let text = rendered(&mut state, 40, 30);
-        assert!(text.contains("Parse 0/2"));
+        assert!(text.contains("Parse 0/1"));
         assert!(text.contains("World 0/7"));
-        assert!(text.contains("Lighting 0/7"));
+        assert!(text.contains("Lighting 0/9"));
         assert!(text.contains("World 0/3"));
         assert!(text.contains("Lighting 0/4"));
         assert!(text.contains("Pack 0/5"));

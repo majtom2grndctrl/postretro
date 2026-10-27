@@ -1,5 +1,5 @@
 // Coloured indirect changes the existing id-41 quality reference, never its direct samples.
-// See: context/plans/in-progress/coloured-sh-bounce/index.md §Acceptance
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use super::*;
 use crate::delta_drop_policy::ScriptMutableDescriptorSlots;
@@ -24,7 +24,7 @@ fn changed_indirect_reference_keeps_direct_samples_quality_protection_and_seams(
     let mut new_indirect = bright_base_indirect(dims, 0.25);
     new_indirect.probes = old_indirect.probes.clone();
     // A dim red composed reference; preserve the same direct tiles below.
-    for texel in new_indirect.compact_atlas.chunks_exact_mut(8) {
+    for texel in new_indirect.compact_atlas.as_chunks_mut::<8>().0 {
         for (channel, value) in [0.25, 0.05, 0.05].into_iter().enumerate() {
             texel[channel * 2..channel * 2 + 2]
                 .copy_from_slice(&f32_to_f16_bits(value).to_le_bytes());

@@ -1,5 +1,5 @@
 // PNG-backed, pre-encoding colour and base/delta estimator contracts.
-// See: context/plans/in-progress/coloured-sh-bounce/index.md
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use super::*;
 use crate::bvh_build::build_bvh;
@@ -62,7 +62,7 @@ impl Room {
             &self.dir.path().join("textures"),
             &self.dir.path().join("materials"),
             &mut StageTextureBytes::new(),
-            Some(saturation),
+            true,
         )
         .unwrap();
         BounceMaterials::new(stats, saturation).unwrap()

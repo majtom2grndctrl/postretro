@@ -724,17 +724,6 @@ fn run_after_parsing(
     let sh_config = sh_bake::ShConfig {
         probe_spacing: args.probe_spacing,
     };
-    let sh_ctx = sh_bake::ShBakeCtx {
-        bounce_materials: None,
-        bvh: &bvh,
-        primitives: &bvh_primitives,
-        geometry: &geo_result,
-        tree: &result.tree,
-        exterior_leaves: &exterior_leaves,
-        static_lights: &static_baked_lights,
-        animated_lights: &animated_baked_lights,
-        total_light_count: map_data.lights.len(),
-    };
     if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
         anyhow::bail!("light animation validation failed: {msg}");
     }
@@ -828,9 +817,18 @@ fn run_after_parsing(
         stage_start,
         true,
     );
+    // Built only once the material table exists, so no SH bake can see a
+    // colour-blind context by accident.
     let sh_ctx = sh_bake::ShBakeCtx {
         bounce_materials: Some(&material_stage.bounce_materials),
-        ..sh_ctx
+        bvh: &bvh,
+        primitives: &bvh_primitives,
+        geometry: &geo_result,
+        tree: &result.tree,
+        exterior_leaves: &exterior_leaves,
+        static_lights: &static_baked_lights,
+        animated_lights: &animated_baked_lights,
+        total_light_count: map_data.lights.len(),
     };
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);

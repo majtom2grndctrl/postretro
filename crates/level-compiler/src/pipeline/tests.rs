@@ -431,8 +431,8 @@ fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
     let without_sdf = planned_stages_for_sdf(false);
     let with_sdf = planned_stages_for_sdf(true);
 
-    assert_eq!(without_sdf.len(), 28);
-    assert_eq!(with_sdf.len(), 28);
+    assert_eq!(without_sdf.len(), 29);
+    assert_eq!(with_sdf.len(), 29);
     assert_eq!(
         without_sdf
             .iter()
@@ -440,7 +440,6 @@ fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
             .collect::<Vec<_>>(),
         vec![
             (StageId::Parsing, "Parsing"),
-            (StageId::TextureValidation, "TexValidation"),
             (StageId::Partitioning, "Partitioning"),
             (StageId::DataScript, "DataScript"),
             (StageId::Visibility, "Visibility"),
@@ -448,6 +447,8 @@ fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
             (StageId::BvhBuild, "BVH Build"),
             (StageId::CellVisibility, "Cell Visibility"),
             (StageId::NavMesh, "NavMesh"),
+            (StageId::TextureValidation, "TexValidation"),
+            (StageId::Materials, "Materials"),
             (StageId::ShBake, "SH Bake"),
             (StageId::DeltaShBake, "Delta SH Bake"),
             (StageId::DirectShBake, "Direct SH Bake"),

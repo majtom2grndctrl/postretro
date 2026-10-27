@@ -78,9 +78,7 @@ pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> Ca
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(inputs.geometry_hash);
-    if let Some(bounce_hash) = inputs.bounce_hash {
-        hasher.update(bounce_hash);
-    }
+    crate::sh_group::fold_bounce_hash(&mut hasher, inputs.bounce_hash);
     for dimension in inputs.affinity_dims {
         hasher.update(&dimension.to_le_bytes());
     }
@@ -191,15 +189,16 @@ where
             let loaded = stage_cache
                 .get(&key)
                 .and_then(|bytes| decode_subblock(&bytes, inputs.expected_subblock_f16_len));
+            // One line per (cell, light) entry: debug, or large maps flood the log.
             let (subblock, hit) = match loaded {
                 Some(subblock) => {
-                    log::info!("[cache] {} hit", inputs.stage_id);
+                    log::debug!("[cache] {} hit", inputs.stage_id);
                     // Whole-cache hits checkpoint without a bake permit.
                     control.governor().checkpoint();
                     (subblock, true)
                 }
                 None => {
-                    log::info!("[cache] {} miss", inputs.stage_id);
+                    log::debug!("[cache] {} miss", inputs.stage_id);
                     // Permit guards ray work, not cache I/O.
                     let subblock = {
                         let _permit = control.governor().enter();

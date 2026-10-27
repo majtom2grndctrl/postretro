@@ -337,6 +337,8 @@ fn static_probe_scatter(
         .map(Vec::as_slice)
         .unwrap_or(&[]);
     let ray_ctx = RaytracingCtx {
+        // Direct-light visibility rays never bounce, so they stay colour-blind.
+        bounce_materials: None,
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,
         geometry: inputs.sh_ctx.geometry,
@@ -366,6 +368,8 @@ fn bake_animated_scatter_block(
     let nx = layout.dims[0] as usize;
     let ny = layout.dims[1] as usize;
     let ray_ctx = RaytracingCtx {
+        // Direct-light visibility rays never bounce, so they stay colour-blind.
+        bounce_materials: None,
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,
         geometry: inputs.sh_ctx.geometry,
@@ -819,6 +823,7 @@ mod tests {
         let geometry = cube_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture geometry must build a BVH");
         let trace_ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -944,6 +949,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -1130,6 +1136,7 @@ mod tests {
         let geometry = triangle_geometry(&triangles);
         let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture geometry must build a BVH");
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,

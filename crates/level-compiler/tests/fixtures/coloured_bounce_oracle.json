@@ -1,0 +1,38 @@
+{
+  "baseline_revision": "ecbc27435023931f919484036619f339438f1e30",
+  "fixtures": {
+    "red-wall": {
+      "sections": {
+        "35": "5902cd462ecf632efb16fe5a7414a2a4fd54cc1bfc9a1e2c648b154b493d68b9",
+        "41": "45e6009aa665bc4b227bc814a5a2cc54d136fbb9b7b18700950d744ff9c37313",
+        "45": "19954d7e4dbb41e68108141f8286ceeca992097916b06164067aa2a74c7d6082",
+        "47": "c0b3080a241d927865ef4887f9024a854781c769182d06ba3dbe55b2811c0e86",
+        "48": "2a24d9b5dc2a1f47835aac3ada7ce4a6b2db99b87a62b87f8899f75106b48e4d"
+      },
+      "sidecars": {
+        "4ddd435bae8bf8500e511e93a7266f00af8dd9ea9ea870f6dfcdf39f7ce80a13.prm": "225f0d2b9f8f071f4ee7a0b094416171976f42c48257012185dd05f7e055d22e",
+        "890dc201dae416e8862372be288b10392fb8b50f101934ccc7ff7337fec2ba20.prm": "10b11245a68e885329152d1b99cfc1a657fbe453e230c55b6b1822f43a6b3be8",
+        "94b4e5d3e94fc4309160894c4347cccb281221ae83710e9faceddb8e56422d3f.prm": "918f0bd803683c2dbdcf2409ec7a40ac58f1626f3b8126efc704f7a0abe6dafe"
+      }
+    },
+    "unresolved-slots": {
+      "sections": {
+        "27": "225183482f2ffa7bb5408f3f89465c4d6fc08028dd6c9d7285d9b56ef9369b02",
+        "34": "d9ced57739837a5dc35c6203354075642d88682917f89dfc004bd7558de389a5",
+        "54": "87f4f53ab988ac05c68dc73fc9194c21da48e4508e92e3995e80faef95f5e3c5"
+      },
+      "sidecars": {
+        "2defabc643f9308d879f694b0becd5720e971e3a1e165e6078da77aa9f633f0e.prm": "25b68caca436b5ed346e2b68ade733afd90f1d493afd4e354e04add263ba6c90",
+        "6c210948749a9ccbc3fff8fd534e0789369defcd033c04021b7b2dd17cdace1a.prm": "897701bd2c1ea58ef6650d8d5ae6ffc9cebaeb0217d3d0b2277531ab5e562376"
+      }
+    },
+    "unresolved-sources": {
+      "sections": {
+        "27": "225183482f2ffa7bb5408f3f89465c4d6fc08028dd6c9d7285d9b56ef9369b02",
+        "34": "d9ced57739837a5dc35c6203354075642d88682917f89dfc004bd7558de389a5",
+        "54": "87f4f53ab988ac05c68dc73fc9194c21da48e4508e92e3995e80faef95f5e3c5"
+      },
+      "sidecars": {}
+    }
+  }
+}

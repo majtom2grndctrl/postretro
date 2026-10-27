@@ -654,6 +654,7 @@ pub(crate) fn build_full_renderer(
         total_light_count: light_count,
         mesh_dynamic_time: 0.0,
         frame_light_term_mask: LightTermMask::ALL,
+        frame_indirect_scale: DEFAULT_INDIRECT_SCALE,
         kinematic_mover_draws: Vec::new(),
         kinematic_mover_shadow_draws: Vec::new(),
         mover_occluder_aabbs: Vec::new(),

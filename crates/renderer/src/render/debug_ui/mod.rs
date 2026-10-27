@@ -155,7 +155,7 @@ pub struct DiagnosticsState {
     pub ambient_floor: f32,
     pub indirect_scale: f32,
     /// Scale slider for the baked static-direct SH term on entities/billboards.
-    /// Independent of `indirect_scale` (which controls the static-surface indirect).
+    /// Independent of `indirect_scale` (which scales SH indirect on every SH surface: world, fluids, movers, meshes and sprites).
     pub dynamic_direct_scale: f32,
     pub direct_sh_override_enabled: bool,
     pub direct_sh_override_selection: u32,

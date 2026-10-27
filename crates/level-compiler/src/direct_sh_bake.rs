@@ -577,6 +577,8 @@ fn bake_direct_delta_subblock(
         / (layout.dims[0].div_ceil(AFFINITY_FACTOR) * layout.dims[1].div_ceil(AFFINITY_FACTOR));
 
     let ctx = RaytracingCtx {
+        // Direct-light visibility rays never bounce, so they stay colour-blind.
+        bounce_materials: None,
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,
         geometry: inputs.sh_ctx.geometry,
@@ -671,6 +673,8 @@ fn bake_probe_tile(
         .collect();
 
     let ctx = RaytracingCtx {
+        // Direct-light visibility rays never bounce, so they stay colour-blind.
+        bounce_materials: None,
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,
         geometry: inputs.sh_ctx.geometry,
@@ -1158,6 +1162,7 @@ mod tests {
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1285,6 +1290,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: geo,
@@ -1383,6 +1389,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1487,6 +1494,7 @@ mod tests {
             ],
         };
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1557,6 +1565,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1632,6 +1641,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1684,6 +1694,7 @@ mod tests {
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1824,6 +1835,7 @@ mod tests {
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1928,6 +1940,7 @@ mod tests {
         let light = static_point_light(DVec3::new(1.0, 2.0, 3.0), 8.0, [0.25, 0.5, 0.75]);
         let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: DIRECT_SH_DELTA_STAGE_ID,
                 stage_version: DIRECT_SH_DELTA_STAGE_VERSION,
                 geometry_hash: &[17; 32],
@@ -1941,6 +1954,7 @@ mod tests {
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: DIRECT_SH_DELTA_STAGE_ID,
                 stage_version: DIRECT_SH_DELTA_STAGE_VERSION + 1,
                 geometry_hash: &[17; 32],
@@ -1973,6 +1987,7 @@ mod tests {
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2041,6 +2056,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2080,6 +2096,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2133,6 +2150,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2378,6 +2396,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2463,6 +2482,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2547,6 +2567,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,

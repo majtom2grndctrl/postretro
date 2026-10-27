@@ -622,3 +622,31 @@ fn forward_bindings_add_only_the_vertex_block_table() {
         );
     }
 }
+
+#[test]
+fn renderer_threads_frame_indirect_scale_into_dynamic_receiver_uploads() {
+    let frame = include_str!("../renderer_frame.rs");
+    let snapshot = frame
+        .find("full.frame_indirect_scale = full.indirect_scale;")
+        .expect("each frame must capture the live renderer scale");
+    let upload = frame
+        .find("indirect_scale: full.frame_indirect_scale,")
+        .expect("world/fluid group 0 must use that frame snapshot");
+    assert!(snapshot < upload, "capture scale before uploading group 0");
+    let source = include_str!("../renderer_render_frame.rs");
+    for receiver in ["mesh_pass", "kinematic_brush"] {
+        let anchor = format!("{receiver}.write_light_params(");
+        let args = source
+            .split(&anchor)
+            .nth(1)
+            .expect("receiver must upload params during rendering")
+            .split_once(");")
+            .expect("params upload call must terminate")
+            .0;
+        assert!(
+            args.contains("full.frame_indirect_scale,"),
+            "{receiver} must upload the renderer scale captured with world/fluid group 0",
+        );
+        assert!(!args.contains("full.indirect_scale,"));
+    }
+}

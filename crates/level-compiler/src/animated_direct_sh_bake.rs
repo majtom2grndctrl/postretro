@@ -224,6 +224,8 @@ fn bake_direct_subblock(
     let nx = layout.dims[0] as usize;
     let ny = layout.dims[1] as usize;
     let ray_ctx = RaytracingCtx {
+        // Direct-light visibility rays never bounce, so they stay colour-blind.
+        bounce_materials: None,
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,
         geometry: inputs.sh_ctx.geometry,
@@ -413,6 +415,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -464,6 +467,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -476,6 +480,7 @@ mod tests {
         let config = ShConfig { probe_spacing: 1.0 };
         let indirect = crate::delta_sh_bake::bake_delta_sh_volumes(
             &crate::delta_sh_bake::DeltaBakeInputs {
+                bounce_materials: None,
                 bvh: &bvh,
                 primitives: &primitives,
                 geometry: &geometry,
@@ -569,6 +574,7 @@ mod tests {
         authored.intensity = 7.0;
         let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
                 stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
                 geometry_hash: &[11; 32],
@@ -586,6 +592,7 @@ mod tests {
         recolored.intensity = 0.1;
         let recolored_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
                 stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
                 geometry_hash: &[11; 32],
@@ -599,6 +606,7 @@ mod tests {
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
                 stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION + 1,
                 geometry_hash: &[11; 32],
@@ -612,6 +620,7 @@ mod tests {
         );
         let different_source_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
                 stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
                 geometry_hash: &[11; 32],

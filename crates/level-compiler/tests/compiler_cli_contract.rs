@@ -13,7 +13,6 @@ use postretro_level_format::{SectionId, read_container, read_section_data};
 
 const SUMMARY_LABELS: &[&str] = &[
     "Parsing",
-    "TexValidation",
     "Partitioning",
     "DataScript",
     "Visibility",
@@ -21,6 +20,8 @@ const SUMMARY_LABELS: &[&str] = &[
     "BVH Build",
     "Cell Visibility",
     "NavMesh",
+    "TexValidation",
+    "Materials",
     "SH Bake",
     "Delta SH Bake",
     "Direct SH Bake",

@@ -425,6 +425,7 @@ impl Renderer {
                     full.mesh_dynamic_time,
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
+                    full.frame_indirect_scale,
                 );
             }
         }
@@ -591,6 +592,7 @@ impl Renderer {
                     full.mesh_dynamic_time,
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
+                    full.frame_indirect_scale,
                 );
             }
             let mut mover_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

@@ -31,6 +31,7 @@ mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
 mod sdf_stage;
 mod stage_registry;
+mod texture_stage;
 use crate::buried_lights::BuriedLights;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
@@ -403,17 +404,6 @@ fn run_after_parsing(
         );
     }
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
-    let texture_root = resolve_texture_root(&args.input);
-    texture_validation::validate_sibling_color_spaces(&texture_root)?;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::TextureValidation,
-        stage_start,
-        true,
-    );
-
     let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
     let result = partition::partition(&map_data.brush_volumes)?;
     finish_stage(
@@ -734,16 +724,6 @@ fn run_after_parsing(
     let sh_config = sh_bake::ShConfig {
         probe_spacing: args.probe_spacing,
     };
-    let sh_ctx = sh_bake::ShBakeCtx {
-        bvh: &bvh,
-        primitives: &bvh_primitives,
-        geometry: &geo_result,
-        tree: &result.tree,
-        exterior_leaves: &exterior_leaves,
-        static_lights: &static_baked_lights,
-        animated_lights: &animated_baked_lights,
-        total_light_count: map_data.lights.len(),
-    };
     if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
         anyhow::bail!("light animation validation failed: {msg}");
     }
@@ -812,6 +792,45 @@ fn run_after_parsing(
     let direct_plan = planned_deltas.direct;
     let animated_direct_plan = planned_deltas.animated_direct;
 
+    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
+    let texture_root = resolve_texture_root(&args.input);
+    texture_validation::validate_sibling_color_spaces(&texture_root)?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::TextureValidation,
+        stage_start,
+        true,
+    );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Materials);
+    let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
+    let mut material_stage = texture_stage::bake_world_materials(
+        &geo_result.texture_names.names,
+        &texture_root,
+        &prm_root,
+    )?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Materials,
+        stage_start,
+        true,
+    );
+    // Built only once the material table exists, so no SH bake can see a
+    // colour-blind context by accident.
+    let sh_ctx = sh_bake::ShBakeCtx {
+        bounce_materials: Some(&material_stage.bounce_materials),
+        bvh: &bvh,
+        primitives: &bvh_primitives,
+        geometry: &geo_result,
+        tree: &result.tree,
+        exterior_leaves: &exterior_leaves,
+        static_lights: &static_baked_lights,
+        animated_lights: &animated_baked_lights,
+        total_light_count: map_data.lights.len(),
+    };
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
@@ -875,6 +894,7 @@ fn run_after_parsing(
     let delta_sh_control = BakeControl::new(Arc::clone(&governor), &delta_sh_progress);
     let delta_sh_volumes_section = {
         let inputs = delta_sh_bake::DeltaBakeInputs {
+            bounce_materials: Some(&material_stage.bounce_materials),
             bvh: &bvh,
             primitives: &bvh_primitives,
             geometry: &geo_result,
@@ -1844,33 +1864,15 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
-    let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
-    let (name_to_key, mut texture_bytes) = texture_mips::bake_world_texture_mips(
+    texture_stage::bake_remaining_textures(
+        &args.input,
         &geo_result.texture_names.names,
+        &map_data.map_entities,
         &texture_root,
         &prm_root,
+        &mut material_stage,
     )?;
-    let content_root = resolve_content_root(&args.input);
-    bake_model_textures(
-        &map_data.map_entities,
-        &content_root,
-        &prm_root,
-        &mut texture_bytes,
-    );
-    bake_sprite_textures(
-        &map_data.map_entities,
-        &texture_root,
-        &prm_root,
-        &mut texture_bytes,
-    );
-    // Logged HERE, at the stage boundary, rather than inside the world bake:
-    // the stage bakes world bundles, model sidecars AND sprite collections, and
-    // a report flushed after the first omitted the other two entirely. Sprite
-    // collections are the heaviest bundles the format produces — one complete
-    // mip chain per frame — so a level with a billboard emitter under-reported
-    // by more than a rounding error, and this total is what the streaming work
-    // builds residency decisions on.
-    texture_mips::log_texture_byte_summary(texture_bytes.summary());
+    let name_to_key = material_stage.name_to_key;
     finish_stage(
         &mut timings,
         reporter.as_ref(),

@@ -667,3 +667,6 @@ mod lifecycle;
 #[path = "renderer_tests/streamed_inventory.rs"]
 #[cfg(feature = "dev-tools")]
 mod streamed_inventory;
+
+#[path = "renderer_tests/indirect_scale.rs"]
+mod indirect_scale;

@@ -37,8 +37,9 @@ pub enum BvhBuildError {
 }
 
 /// One primitive fed to the BVH builder: a contiguous index-buffer slice for a
-/// single `(face, material_bucket)` pair. `material_bucket_id` is currently
-/// the face's texture index; the struct shape is stable if bucket criteria expand.
+/// single `(face, material_bucket)` pair. `material_bucket_id` must remain the
+/// face's texture index for the SH bounce material lookup; future bucket
+/// expansion must preserve that identity or carry it explicitly.
 #[derive(Debug, Clone)]
 pub struct BvhPrimitive {
     pub aabb_min: [f32; 3],

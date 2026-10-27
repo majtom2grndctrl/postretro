@@ -88,7 +88,7 @@ struct KinematicLightParams {
     // Dynamic tier plus raw AnimatedBakedLights tail. Keep this scalar-packed
     // row at 32 bytes; a vec3 here would make the uniform 48 bytes.
     scripted_light_count: u32,
-    _pad1: u32,
+    indirect_scale: f32,
     _pad2: u32,
 };
 @group(2) @binding(4) var<uniform> kinematic_light_params: KinematicLightParams;
@@ -510,7 +510,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // The normal map still applies on TOP faces; a side wall uses the exact
     // axis normal. `mesh_n` stays geometric for shadow-map receiver bias.
     let n = select(depth.normal, n_bump, depth.hit_top);
-    var indirect = sample_sh_indirect(in.world_position, n, n_bump, mesh_n);
+    var indirect = sample_sh_indirect(in.world_position, n, n_bump, mesh_n)
+        * kinematic_light_params.indirect_scale;
     var direct = vec3<f32>(0.0);
     if dynamic_direct.has_direct != 0u {
         direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, n_bump, mesh_n);

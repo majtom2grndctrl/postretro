@@ -15,6 +15,7 @@ pub enum StageId {
     BvhBuild,
     CellVisibility,
     NavMesh,
+    Materials,
     ShBake,
     DeltaShBake,
     DirectShBake,
@@ -56,6 +57,7 @@ impl StageId {
             Self::BvhBuild => "BVH Build",
             Self::CellVisibility => "Cell Visibility",
             Self::NavMesh => "NavMesh",
+            Self::Materials => "Materials",
             Self::ShBake => "SH Bake",
             Self::DeltaShBake => "Delta SH Bake",
             Self::DirectShBake => "Direct SH Bake",
@@ -89,6 +91,7 @@ impl StageId {
             Self::BvhBuild => "BVH build...",
             Self::CellVisibility => "Cell visibility bake...",
             Self::NavMesh => "NavMesh bake...",
+            Self::Materials => "World material bake...",
             Self::ShBake => "SH volume bake...",
             Self::DeltaShBake => "Delta SH volume bake...",
             Self::DirectShBake => "Direct SH volume bake...",
@@ -115,9 +118,8 @@ impl StageId {
 /// Execution order. Partitioning precedes DataScript because buried-light
 /// classification needs the BSP, and the data script's light table must
 /// already omit buried lights.
-pub(crate) const ORDERED_STAGES: [StageId; 28] = [
+pub(crate) const ORDERED_STAGES: [StageId; 29] = [
     StageId::Parsing,
-    StageId::TextureValidation,
     StageId::Partitioning,
     StageId::DataScript,
     StageId::Visibility,
@@ -125,6 +127,8 @@ pub(crate) const ORDERED_STAGES: [StageId; 28] = [
     StageId::BvhBuild,
     StageId::CellVisibility,
     StageId::NavMesh,
+    StageId::TextureValidation,
+    StageId::Materials,
     StageId::ShBake,
     StageId::DeltaShBake,
     StageId::DirectShBake,

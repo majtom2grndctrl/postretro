@@ -536,6 +536,10 @@ mod tests {
     use super::*;
     use postretro_level_format::delta_sh_volumes::DELTA_TILE_TEXEL_F16_COUNT;
 
+    mod colour_reference_tests {
+        include!("sh_coarsen/colour_reference_tests.rs");
+    }
+
     const L0: u8 = 0;
     const L1: u8 = 1;
     const L2: u8 = 2;

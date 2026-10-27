@@ -46,8 +46,8 @@ pub const SH_GROUP_STAGE_ID: &str = "sh_group";
 /// The downstream compact-section/BC6H packaging transform is not part of these
 /// cached records. Versions independently from the other cached stages so each
 /// can evolve without invalidating the other.
-/// v3: the bounce traces one stratified emitter sample per (hit, soft light).
-pub const SH_GROUP_STAGE_VERSION: u32 = 3;
+/// v4: indirect bounce reads keyed, per-texture diffuse means.
+pub const SH_GROUP_STAGE_VERSION: u32 = 4;
 
 /// Edge length of a probe group, in probes, per axis. 4³ aligns with the
 /// existing `affinity_grid::AFFINITY_FACTOR = 4` decomposition.
@@ -418,6 +418,7 @@ pub(crate) fn group_cache_key(
     layout: &ProbeGridLayout,
     probe_spacing: f32,
     geometry_content_hash: &[u8; 32],
+    bounce_hash: Option<&[u8; 32]>,
 ) -> CacheKey {
     let mut hasher = Hasher::new();
     hasher.update(&SH_REACH_CUTOFF_METERS.to_le_bytes());
@@ -436,6 +437,7 @@ pub(crate) fn group_cache_key(
 
     // Whole-map geometry content hash — SH rays trace full geometry.
     hasher.update(geometry_content_hash);
+    fold_bounce_hash(&mut hasher, bounce_hash);
 
     // Probe-grid layout descriptor.
     hasher.update(&probe_spacing.to_le_bytes());
@@ -493,6 +495,7 @@ pub(crate) struct BakedGroup {
 /// set and stores the payload. With `cache == None` (the `--no-cache`-bypassed
 /// caller, though the compiler selects the exact whole-volume bake instead) it
 /// always bakes. Returns the records in ascending probe-index order.
+#[allow(clippy::too_many_arguments)] // Group context plus the once-per-stage material fingerprint.
 pub(crate) fn bake_or_load_group(
     inputs: &ShBakeCtx<'_>,
     layout: &ProbeGridLayout,
@@ -501,6 +504,7 @@ pub(crate) fn bake_or_load_group(
     probe_spacing: f32,
     geometry_content_hash: &[u8; 32],
     cache: Option<&StageCache>,
+    bounce_hash: Option<&[u8; 32]>,
 ) -> BakedGroup {
     let reaching = reaching_lights(static_lights, group, layout);
     let key = group_cache_key(
@@ -509,6 +513,7 @@ pub(crate) fn bake_or_load_group(
         layout,
         probe_spacing,
         geometry_content_hash,
+        bounce_hash,
     );
 
     if let Some(cache) = cache {
@@ -700,6 +705,7 @@ pub fn bake_sh_volume_grouped_controlled(
 
     let static_lights = static_light_refs(inputs);
     let geom_hash = geometry_content_hash(inputs.geometry);
+    let bounce_hash = bounce_material_hash(inputs.bounce_materials, inputs.geometry);
     let groups = partition_groups(layout.dims);
     control.publish_total(layout.total_probes());
 
@@ -719,6 +725,7 @@ pub fn bake_sh_volume_grouped_controlled(
                 config.probe_spacing,
                 &geom_hash,
                 cache,
+                bounce_hash.as_ref(),
             );
             control.advance(group.probe_indices.len());
             baked
@@ -749,6 +756,33 @@ fn build_shell(inputs: &ShBakeCtx<'_>) -> ShVolumeShell {
     ShVolumeShell {
         animation_descriptors,
         slot_for_map_light,
+    }
+}
+
+/// Compute once per stage; no geometry scan or allocation occurs per group/entry.
+pub(crate) fn bounce_material_hash(
+    materials: Option<&crate::surface_materials::stats::BounceMaterials>,
+    geometry: &crate::geometry::GeometryResult,
+) -> Option<[u8; 32]> {
+    materials.map(|materials| {
+        let mut hasher = Hasher::new();
+        materials.fold_key(&mut hasher, geometry);
+        *hasher.finalize().as_bytes()
+    })
+}
+
+/// The one encoding both SH group and delta-entry keys fold for the material
+/// table. Presence is tagged so a colour-blind bake never shares a key with a
+/// coloured one; absence folds no saturation, since nothing reads it then.
+pub(crate) fn fold_bounce_hash(hasher: &mut Hasher, bounce_hash: Option<&[u8; 32]>) {
+    match bounce_hash {
+        Some(bounce_hash) => {
+            hasher.update(&[1]);
+            hasher.update(bounce_hash);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
     }
 }
 
@@ -978,6 +1012,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1034,6 +1069,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1088,6 +1124,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1121,6 +1158,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1159,6 +1197,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1207,6 +1246,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1227,8 +1267,15 @@ mod tests {
             .iter()
             .map(|g| {
                 let reaching = reaching_lights(&static_refs, g, &layout);
-                group_cache_key(g, &reaching, &layout, config.probe_spacing, &geom_hash)
-                    .as_filename()
+                group_cache_key(
+                    g,
+                    &reaching,
+                    &layout,
+                    config.probe_spacing,
+                    &geom_hash,
+                    None,
+                )
+                .as_filename()
             })
             .collect();
 
@@ -1238,6 +1285,7 @@ mod tests {
         edited[0].color = [0.2, 0.2, 0.2];
         let edited_static = StaticBakedLights::from_lights(&edited);
         let edited_inputs = ShBakeCtx {
+            bounce_materials: None,
             static_lights: &edited_static,
             ..clone_ctx(&inputs)
         };
@@ -1247,8 +1295,15 @@ mod tests {
         let mut any_unchanged = false;
         for (g, base) in groups.iter().zip(base_keys.iter()) {
             let reaching = reaching_lights(&edited_refs, g, &layout);
-            let key = group_cache_key(g, &reaching, &layout, config.probe_spacing, &geom_hash)
-                .as_filename();
+            let key = group_cache_key(
+                g,
+                &reaching,
+                &layout,
+                config.probe_spacing,
+                &geom_hash,
+                None,
+            )
+            .as_filename();
             let in_reach = !reaching.is_empty();
             if in_reach {
                 assert_ne!(&key, base, "in-reach group must change key on a light edit");
@@ -1278,6 +1333,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1295,8 +1351,15 @@ mod tests {
 
         let group = &groups[0];
         let reaching = reaching_lights(&static_refs, group, &layout);
-        let base_key = group_cache_key(group, &reaching, &layout, config.probe_spacing, &geom_hash)
-            .as_filename();
+        let base_key = group_cache_key(
+            group,
+            &reaching,
+            &layout,
+            config.probe_spacing,
+            &geom_hash,
+            None,
+        )
+        .as_filename();
 
         // Flip one of this group's probes' validity; geometry hash is unchanged.
         let mut edited_layout = ProbeGridLayout {
@@ -1316,6 +1379,7 @@ mod tests {
             &edited_layout,
             config.probe_spacing,
             &geom_hash,
+            None,
         )
         .as_filename();
         assert_ne!(
@@ -1328,6 +1392,7 @@ mod tests {
     /// swap one field (the light set) via struct update syntax.
     fn clone_ctx<'a>(ctx: &ShBakeCtx<'a>) -> ShBakeCtx<'a> {
         ShBakeCtx {
+            bounce_materials: None,
             bvh: ctx.bvh,
             primitives: ctx.primitives,
             geometry: ctx.geometry,
@@ -1353,6 +1418,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1373,8 +1439,15 @@ mod tests {
             .iter()
             .map(|g| {
                 let reaching = reaching_lights(&static_refs, g, &layout);
-                group_cache_key(g, &reaching, &layout, config.probe_spacing, &base_hash)
-                    .as_filename()
+                group_cache_key(
+                    g,
+                    &reaching,
+                    &layout,
+                    config.probe_spacing,
+                    &base_hash,
+                    None,
+                )
+                .as_filename()
             })
             .collect();
 
@@ -1386,8 +1459,15 @@ mod tests {
 
         for (g, base) in groups.iter().zip(base_keys.iter()) {
             let reaching = reaching_lights(&static_refs, g, &layout);
-            let key = group_cache_key(g, &reaching, &layout, config.probe_spacing, &edited_hash)
-                .as_filename();
+            let key = group_cache_key(
+                g,
+                &reaching,
+                &layout,
+                config.probe_spacing,
+                &edited_hash,
+                None,
+            )
+            .as_filename();
             assert_ne!(
                 &key, base,
                 "every SH group must re-bake on any geometry edit (whole-map dependency)"
@@ -1411,6 +1491,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1431,8 +1512,15 @@ mod tests {
             .map(|g| {
                 let reaching = reaching_lights(&static_refs, g, &layout);
                 assert_eq!(reaching.len(), 1, "directional must reach every group");
-                group_cache_key(g, &reaching, &layout, config.probe_spacing, &geom_hash)
-                    .as_filename()
+                group_cache_key(
+                    g,
+                    &reaching,
+                    &layout,
+                    config.probe_spacing,
+                    &geom_hash,
+                    None,
+                )
+                .as_filename()
             })
             .collect();
 
@@ -1440,14 +1528,22 @@ mod tests {
         edited[0].color = [0.5, 0.4, 0.3];
         let edited_static = StaticBakedLights::from_lights(&edited);
         let edited_inputs = ShBakeCtx {
+            bounce_materials: None,
             static_lights: &edited_static,
             ..clone_ctx(&inputs)
         };
         let edited_refs = static_light_refs(&edited_inputs);
         for (g, base) in groups.iter().zip(base_keys.iter()) {
             let reaching = reaching_lights(&edited_refs, g, &layout);
-            let key = group_cache_key(g, &reaching, &layout, config.probe_spacing, &geom_hash)
-                .as_filename();
+            let key = group_cache_key(
+                g,
+                &reaching,
+                &layout,
+                config.probe_spacing,
+                &geom_hash,
+                None,
+            )
+            .as_filename();
             assert_ne!(&key, base, "directional edit must re-bake every group");
         }
     }
@@ -1464,6 +1560,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1508,6 +1605,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1575,6 +1673,7 @@ mod tests {
         animated_lights: &'a AnimatedBakedLights<'a>,
     ) -> ShBakeCtx<'a> {
         ShBakeCtx {
+            bounce_materials: None,
             bvh: &fx.bvh,
             primitives: &fx.primitives,
             geometry: &fx.geometry,

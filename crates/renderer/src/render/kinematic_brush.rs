@@ -30,7 +30,8 @@ struct KinematicLightParams {
     dynamic_light_count: u32,
     /// Descriptor-bearing prefix: dynamic tier plus section-45 animated tail.
     scripted_light_count: u32,
-    _pad: [u32; 2],
+    indirect_scale: f32,
+    _pad2: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +167,7 @@ fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGH
     bytes[12..16].copy_from_slice(&params.ambient_floor.to_ne_bytes());
     bytes[16..20].copy_from_slice(&params.dynamic_light_count.to_ne_bytes());
     bytes[20..24].copy_from_slice(&params.scripted_light_count.to_ne_bytes());
+    bytes[24..28].copy_from_slice(&params.indirect_scale.to_ne_bytes());
     bytes
 }
 
@@ -877,6 +879,13 @@ impl KinematicBrushPass {
         queue.write_buffer(&self.instance_buffer, 0, &self.instance_bytes);
     }
 
+    #[cfg(test)]
+    pub(super) fn light_params_buffer_for_test(&self) -> &wgpu::Buffer {
+        &self.light_params_buffer
+    }
+
+    /// `indirect_scale` is the snapshot captured with forward group 0, so a
+    /// diagnostics change reaches all SH surface consumers on the same frame.
     #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
@@ -887,6 +896,7 @@ impl KinematicBrushPass {
         time: f32,
         light_term_mask: u32,
         ambient_floor: f32,
+        indirect_scale: f32,
     ) {
         queue.write_buffer(
             &self.light_params_buffer,
@@ -898,7 +908,8 @@ impl KinematicBrushPass {
                 time,
                 light_term_mask,
                 ambient_floor,
-                _pad: [0; 2],
+                indirect_scale,
+                _pad2: 0,
             }),
         );
     }
@@ -1406,7 +1417,8 @@ mod tests {
             ambient_floor: 0.375,
             dynamic_light_count: 7,
             scripted_light_count: 10,
-            _pad: [0; 2],
+            indirect_scale: 0.625,
+            _pad2: 0,
         });
 
         assert_eq!(bytes.len(), KINEMATIC_LIGHT_PARAMS_SIZE);
@@ -1416,7 +1428,8 @@ mod tests {
         assert_eq!(bytes[12..16], 0.375f32.to_ne_bytes());
         assert_eq!(bytes[16..20], 7u32.to_ne_bytes());
         assert_eq!(bytes[20..24], 10u32.to_ne_bytes());
-        assert_eq!(bytes[24..], [0; 8]);
+        assert_eq!(bytes[24..28], 0.625f32.to_ne_bytes());
+        assert_eq!(bytes[28..], [0; 4]);
     }
 
     #[test]
@@ -1456,7 +1469,7 @@ mod tests {
                 Some("ambient_floor"),
                 Some("dynamic_light_count"),
                 Some("scripted_light_count"),
-                Some("_pad1"),
+                Some("indirect_scale"),
                 Some("_pad2"),
             ],
         );

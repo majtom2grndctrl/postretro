@@ -186,6 +186,9 @@ fn skinned_mesh_shader_source(cube_array_supported: bool) -> std::borrow::Cow<'s
 /// `[0, dynamic_light_count)` is the dynamic prefix,
 /// `[dynamic_light_count, scripted_light_count)` is the raw animated-baked tail,
 /// and `[scripted_light_count, light_count)` is the selected-static suffix.
+/// `indirect_scale` is the renderer's SH-indirect multiplier captured with the
+/// frame's forward group 0 (`Uniforms.indirect_scale`), so the diagnostics
+/// slider reaches meshes on the same frame as world surfaces.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct MeshLightParams {
@@ -197,7 +200,8 @@ struct MeshLightParams {
     /// Descriptor-bearing prefix: dynamic tier plus the raw section-45
     /// animated-baked tail. Selected-static promotion records append after it.
     scripted_light_count: u32,
-    _pad: [u32; 2],
+    indirect_scale: f32,
+    _pad2: u32,
 }
 
 /// Byte size of the group-2 params uniform (`MeshLightParams`, 32 B).
@@ -215,8 +219,8 @@ fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
         params.ambient_floor.to_ne_bytes(),
         params.dynamic_light_count.to_ne_bytes(),
         params.scripted_light_count.to_ne_bytes(),
-        params._pad[0].to_ne_bytes(),
-        params._pad[1].to_ne_bytes(),
+        params.indirect_scale.to_ne_bytes(),
+        params._pad2.to_ne_bytes(),
     ]
     .concat()
 }
@@ -1477,6 +1481,11 @@ impl MeshPass {
         self.mirror_light_records = mirror;
     }
 
+    #[cfg(test)]
+    pub(super) fn light_params_buffer_for_test(&self) -> &wgpu::Buffer {
+        &self.light_params_buffer
+    }
+
     /// Write this frame's group-2 params uniform (binding 4): the dynamic-light
     /// `light_count`, the frame's render-clock `time`, and `light_term_mask`.
     /// `time` MUST be the SAME value the renderer wrote to forward `Uniforms.time`
@@ -1488,6 +1497,8 @@ impl MeshPass {
     /// `ambient_floor` MUST be the SAME value the renderer writes to forward
     /// `Uniforms.ambient_floor` this frame, so shadowed mesh faces lift with the
     /// diagnostics ambient-floor slider exactly as world surfaces do.
+    /// `indirect_scale` is the snapshot captured with forward group 0, so a
+    /// diagnostics change reaches all SH surface consumers on the same frame.
     #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
@@ -1498,6 +1509,7 @@ impl MeshPass {
         time: f32,
         light_term_mask: u32,
         ambient_floor: f32,
+        indirect_scale: f32,
     ) {
         let bytes = build_light_params_bytes(MeshLightParams {
             light_count,
@@ -1506,7 +1518,8 @@ impl MeshPass {
             time,
             light_term_mask,
             ambient_floor,
-            _pad: [0; 2],
+            indirect_scale,
+            _pad2: 0,
         });
         queue.write_buffer(&self.light_params_buffer, 0, &bytes);
     }
@@ -2224,7 +2237,8 @@ mod tests {
             ambient_floor,
             dynamic_light_count: 2,
             scripted_light_count: 5,
-            _pad: [0; 2],
+            indirect_scale: 0.625,
+            _pad2: 0,
         });
         assert_eq!(bytes.len(), 32, "serialized MeshLightParams must be 32 B");
         assert_eq!(
@@ -2250,7 +2264,12 @@ mod tests {
             &5u32.to_le_bytes(),
             "scripted_light_count at 20..24",
         );
-        assert_eq!(&bytes[24..], &[0; 8], "second-row padding stays zero");
+        assert_eq!(
+            &bytes[24..28],
+            &0.625f32.to_le_bytes(),
+            "indirect_scale at 24..28"
+        );
+        assert_eq!(&bytes[28..], &[0; 4], "second-row padding stays zero");
     }
 
     #[test]
@@ -2290,7 +2309,7 @@ mod tests {
                 Some("ambient_floor"),
                 Some("dynamic_light_count"),
                 Some("scripted_light_count"),
-                Some("_pad1"),
+                Some("indirect_scale"),
                 Some("_pad2"),
             ],
         );

@@ -9,7 +9,7 @@
 
 // --- Group 0: camera uniforms (shared with forward pass) ---
 // Shares the forward pass's group-0 uniform buffer. The billboard path reads
-// `view_proj`, `camera_position`, `light_term_mask`, `total_light_count`, and
+// `view_proj`, `camera_position`, `light_term_mask`, `total_light_count`, `indirect_scale`, and
 // the dynamic-direct tail (`direct_scale` / `has_scatter` / `has_direct`); the rest are declared
 // so the field offsets line up with the Rust `Uniforms` writer (a 4-way byte
 // contract: Rust writer + forward.wgsl + billboard.wgsl + wireframe.wgsl).
@@ -311,7 +311,7 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     let use_dynamic_direct = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
     let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;
 
-    let sh_ambient = sample_sh_indirect(sprite_pos, N);
+    let sh_ambient = sample_sh_indirect(sprite_pos, N) * uniforms.indirect_scale;
     var sh_direct = vec3<f32>(0.0);
     var direct_scatter = vec3<f32>(0.0);
     if uniforms.has_scatter != 0u {

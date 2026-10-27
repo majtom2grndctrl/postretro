@@ -25,6 +25,7 @@ fn bake_volume_both_ways(
     let static_lights = StaticBakedLights::from_lights(lights);
     let animated_lights = AnimatedBakedLights::from_lights(lights);
     let inputs = ShBakeCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &prims,
         geometry: geo,
@@ -89,6 +90,7 @@ fn one_sample_lattice_mean_equals_escalated_full_set_fraction() {
     let geo = penumbra_geometry();
     let (bvh, primitives, _) = build_bvh(&geo).unwrap();
     let ctx = RaytracingCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry: &geo,
@@ -173,6 +175,7 @@ fn one_sample_bounce_summed_over_every_pass_offset_is_the_lattice_sum_exactly() 
     let geo = penumbra_geometry();
     let (bvh, primitives, _) = build_bvh(&geo).unwrap();
     let ctx = RaytracingCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry: &geo,
@@ -231,6 +234,7 @@ fn one_sample_bounce_mean_converges_to_full_set_fraction() {
     let geo = penumbra_geometry();
     let (bvh, primitives, _) = build_bvh(&geo).unwrap();
     let ctx = RaytracingCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry: &geo,
@@ -373,6 +377,7 @@ fn warm_light_subset_never_brightens_a_one_sample_bounce() {
     let static_lights = StaticBakedLights::from_lights(&lights);
     let animated_lights = AnimatedBakedLights::from_lights(&lights);
     let inputs = ShBakeCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &prims,
         geometry: &geo,

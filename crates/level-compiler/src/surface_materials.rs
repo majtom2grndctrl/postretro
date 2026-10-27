@@ -1,5 +1,7 @@
-// Reflection-probe surface materials: albedo and emissive read back from the baked `.prm` sidecars.
+// Shared bake-side surface materials: albedo and emissive read back from the baked `.prm` sidecars.
 // See: context/lib/build_pipeline.md §Baked texture mips · resource_management.md §3, §4.5
+
+pub mod stats;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,10 +28,12 @@ pub(crate) struct MaterialSample {
     pub emissive: Vec3,
 }
 
-/// World materials by texture index, each loaded from its sidecar the first
-/// time a capture ray reaches it, so only reflected materials are held. The
-/// sidecar bytes are content-addressed by the key, so whichever thread loads
-/// one, every reader sees the same texels.
+/// World materials by texture index for footprint sampling. Reflection capture
+/// is the only footprint reader today (SH bounce reads [`stats`] instead), so
+/// each material loads from its sidecar the first time a capture ray reaches
+/// it, and read failures log under the reflection stage's tag. The sidecar
+/// bytes are content-addressed by the key, so whichever thread loads one,
+/// every reader sees the same texels.
 pub(crate) struct SurfaceMaterials<'a> {
     names: &'a [String],
     keys: &'a HashMap<String, [u8; 32]>,

@@ -87,13 +87,14 @@ const DIRECTIONAL_FALLBACK_RANGE_METERS: f64 = 100.0;
 pub(crate) const INDIRECT_DELTA_SH_STAGE_ID: &str = "indirect_delta_sh_subblock";
 
 /// Bump when the indirect-delta sub-block computation or its key inputs change.
-/// v4: the bounce traces one stratified emitter sample per (hit, soft light).
-pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 4;
+/// v5: indirect bounce reads keyed, per-texture diffuse means.
+pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 5;
 
 /// Inputs for the delta SH bake. Mirrors `sh_bake::ShBakeCtx` (same BVH,
 /// same geometry, same BSP tree) plus the animated-light envelope and the
 /// portal graph the affinity decomposition floods over.
 pub struct DeltaBakeInputs<'a> {
+    pub bounce_materials: Option<&'a crate::surface_materials::stats::BounceMaterials>,
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
@@ -232,8 +233,12 @@ pub(crate) fn bake_delta_sh_volumes_with_visibility(
     // each light's content axis, all already folded in the entry key. Unlike the
     // two direct-delta bakes it has no light-global seed axis to add.
     let light_seed_axes = vec![0; keyed_lights.len()];
+    let bounce_hash = cache.and_then(|_| {
+        crate::sh_group::bounce_material_hash(inputs.bounce_materials, inputs.geometry)
+    });
     let cached_subblocks = bake_or_load_delta_subblocks(
         &DeltaShCacheInputs {
+            bounce_hash: bounce_hash.as_ref(),
             stage_id: INDIRECT_DELTA_SH_STAGE_ID,
             stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
             geometry_hash: crate::sh_group::geometry_content_hash(inputs.geometry),
@@ -334,6 +339,7 @@ fn bake_subblock(
     let (light_min, light_max) = light_aabb(unit_light, world_aabb_for_directional(inputs));
 
     let ctx = RaytracingCtx {
+        bounce_materials: inputs.bounce_materials,
         bvh: inputs.bvh,
         primitives: inputs.primitives,
         geometry: inputs.geometry,
@@ -395,7 +401,7 @@ fn bake_subblock(
 /// lattice rotations, correlating their one-sample noise when deltas compose. A
 /// list position would decorrelate them too, but would change bytes under an
 /// unchanged key whenever lights reorder.
-fn indirect_light_axis(unit_light: &MapLight) -> u64 {
+pub(crate) fn indirect_light_axis(unit_light: &MapLight) -> u64 {
     let digest = blake3::hash(&encoded_key_light(unit_light));
     let mut axis = [0u8; 8];
     axis.copy_from_slice(&digest.as_bytes()[..8]);
@@ -405,7 +411,7 @@ fn indirect_light_axis(unit_light: &MapLight) -> u64 {
 /// Normalize a delta's single light to unit radiance. The runtime descriptor
 /// supplies authored color and intensity during composition, so neither may
 /// affect this transport payload or its cache key.
-fn unit_radiance_light(light: &MapLight) -> MapLight {
+pub(crate) fn unit_radiance_light(light: &MapLight) -> MapLight {
     let mut unit_light = light.clone();
     unit_light.color = [1.0, 1.0, 1.0];
     unit_light.intensity = 1.0;
@@ -696,6 +702,7 @@ mod tests {
         let lights = vec![animated_point_light(DVec3::ZERO, 2.0)];
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -747,6 +754,7 @@ mod tests {
         let lights = vec![authored_light];
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -784,6 +792,7 @@ mod tests {
         // through the same octahedral tile path the base bake uses, then compare
         // bit-for-bit.
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -830,6 +839,7 @@ mod tests {
         assert_eq!(lights[0].light_size, 0.0, "fixture light must be hard");
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -909,6 +919,7 @@ mod tests {
         let exterior: HashSet<usize> = HashSet::new();
         let envelope = AnimatedBakedLights::from_lights(lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1083,6 +1094,7 @@ mod tests {
         let lights = vec![animated_point_light(DVec3::new(-7.0, -7.0, -7.0), 1.5)];
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1166,6 +1178,7 @@ mod tests {
 
         let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: INDIRECT_DELTA_SH_STAGE_ID,
                 stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
                 geometry_hash: &[11; 32],
@@ -1182,6 +1195,7 @@ mod tests {
         recolored.intensity = 0.1;
         let recolored_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: INDIRECT_DELTA_SH_STAGE_ID,
                 stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
                 geometry_hash: &[11; 32],
@@ -1195,6 +1209,7 @@ mod tests {
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
             &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                bounce_hash: None,
                 stage_id: INDIRECT_DELTA_SH_STAGE_ID,
                 stage_version: INDIRECT_DELTA_SH_STAGE_VERSION + 1,
                 geometry_hash: &[11; 32],
@@ -1257,6 +1272,7 @@ mod tests {
         let lights = vec![animated_point_light(DVec3::new(-4.0, 0.0, 0.0), 50.0)];
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1287,6 +1303,7 @@ mod tests {
         let lights: Vec<MapLight> = Vec::new();
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1311,6 +1328,7 @@ mod tests {
         let lights = vec![animated_point_light(DVec3::ZERO, 4.0)];
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1336,6 +1354,7 @@ mod tests {
         let lights = vec![animated_point_light(DVec3::ZERO, 1.5)];
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,

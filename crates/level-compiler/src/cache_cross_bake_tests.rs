@@ -254,6 +254,7 @@ fn bake_deltas_with_controls(
     let animated_lights = AnimatedBakedLights::from_lights(lights);
     let alpha_lights = AlphaLightsNs::from_lights(lights);
     let sh_ctx = ShBakeCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry: &geometry,
@@ -265,6 +266,7 @@ fn bake_deltas_with_controls(
     };
     let config = ShConfig { probe_spacing: 1.0 };
     let indirect_inputs = DeltaBakeInputs {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry: &geometry,
@@ -330,6 +332,7 @@ fn bake_animated_delta_pair(
     let static_lights = StaticBakedLights::from_lights(lights);
     let animated_lights = AnimatedBakedLights::from_lights(lights);
     let sh_ctx = ShBakeCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry,
@@ -340,6 +343,7 @@ fn bake_animated_delta_pair(
         total_light_count: lights.len(),
     };
     let indirect_inputs = DeltaBakeInputs {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry,
@@ -390,6 +394,7 @@ fn bake_direct_delta_only(
     let animated_lights = AnimatedBakedLights::from_lights(lights);
     let alpha_lights = AlphaLightsNs::from_lights(lights);
     let sh_ctx = ShBakeCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry: &geometry,
@@ -755,6 +760,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
 
     {
         let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -772,6 +778,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         );
 
         let indirect_inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -1069,6 +1076,7 @@ fn bake_deltas_empty_animated(
     let exterior = HashSet::new();
     let animated_lights = AnimatedBakedLights::from_lights(lights);
     let inputs = DeltaBakeInputs {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &primitives,
         geometry: &geometry,
@@ -1287,6 +1295,7 @@ fn five_stage_version_bumps_miss_then_hit() {
     ];
     for (stage_id, version) in delta_keys {
         let previous = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+            bounce_hash: None,
             stage_id,
             stage_version: version - 1,
             geometry_hash: &[9; 32],
@@ -1298,6 +1307,7 @@ fn five_stage_version_bumps_miss_then_hit() {
             light: &key_light,
         });
         let current = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+            bounce_hash: None,
             stage_id,
             stage_version: version,
             geometry_hash: &[9; 32],
@@ -1369,8 +1379,8 @@ fn lighting_scale_cache_versions_pin_current_epochs() {
     assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 3);
     assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 3);
     assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
-    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 4);
-    assert_eq!(SH_GROUP_STAGE_VERSION, 3);
+    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 5);
+    assert_eq!(SH_GROUP_STAGE_VERSION, 4);
 
     let (dir, cache) = fresh_cache("cone_reach_billboard_epoch");
     let current = CacheKey::new(

@@ -2,12 +2,12 @@
   "map": "content/dev/maps/occlusion-test.prl",
   "camera": {
     "position": [
-      -23.165,
-      3.0,
-      -15.037
+      -31.75,
+      4.064,
+      -1.524
     ],
-    "yaw_deg": 0,
-    "pitch_deg": -8,
+    "yaw_deg": 30,
+    "pitch_deg": -15,
     "fov_deg": 90
   },
   "resolution": [

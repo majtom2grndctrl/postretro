@@ -12,9 +12,9 @@ use postretro_level_loader::LevelWorld;
 use postretro_model::ModelHandle;
 use postretro_model::sample_params::MeshSampleParams;
 use postretro_render_cpu::mesh_instances::{
-    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
+    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation, MirrorReach,
 };
-use postretro_render_cpu::mesh_pass::mesh_visible;
+use postretro_render_cpu::mesh_pass::mesh_visible_in_cell;
 use postretro_render_data::cone_frustum::Aabb;
 use postretro_render_data::influence::LightInfluence;
 use postretro_visibility::VisibleCells;
@@ -82,7 +82,7 @@ pub(super) fn should_resample(distance: f32, frame_index: u64, seed: u32, force:
 ///
 /// Runs in the render-frame collection sub-stage (NOT the game-logic tick): it
 /// reads the registry + the world + this frame's visible-cell set, applies the
-/// pure `mesh_pass::mesh_visible` cull, and emits per-instance draw inputs
+/// pure `mesh_pass` cell cull, and emits per-instance draw inputs
 /// (model handle + interpolated world transform). Forward visibility, dynamic
 /// shadow eligibility, and promoted-static relevance remain distinct. Explicit
 /// shadow-only instances stay eligible for dynamic depth even outside camera PVS;
@@ -130,6 +130,32 @@ pub(crate) struct MeshRenderCollector {
     viewmodel_model_handles: HashMap<String, ModelHandle>,
 }
 
+/// The cells one collection culls against: the main view's, and the planar
+/// mirror's on a frame it draws.
+#[derive(Clone, Copy)]
+struct CullViews<'a> {
+    main: &'a VisibleCells,
+    mirror: Option<&'a VisibleCells>,
+}
+
+impl CullViews<'_> {
+    /// Whether the main view's cells, and the mirror's when `with_mirror`,
+    /// hold `position`. One cell-locator descent serves both views, and none
+    /// runs when neither tested view culls by cell.
+    fn reach(&self, world: &LevelWorld, position: glam::Vec3, with_mirror: bool) -> (bool, bool) {
+        let mirror = self.mirror.filter(|_| with_mirror);
+        let culls = |cells: &VisibleCells| matches!(cells, VisibleCells::Culled(_));
+        if !culls(self.main) && !mirror.is_some_and(culls) {
+            return (true, mirror.is_some());
+        }
+        let cell = world.locate_cell(position) as u32;
+        (
+            mesh_visible_in_cell(self.main, cell),
+            mirror.is_some_and(|mirror| mesh_visible_in_cell(mirror, cell)),
+        )
+    }
+}
+
 impl MeshRenderCollector {
     pub(crate) fn new() -> Self {
         Self {
@@ -162,7 +188,7 @@ impl MeshRenderCollector {
     /// entity: read-borrows its `MeshComponent` (the model handle + optional
     /// animation state) and its `Transform`. The cull tests the entity's
     /// **current-tick** rendered model origin (`Transform.position +
-    /// MeshComponent.origin_offset`) via the pure `mesh_pass::mesh_visible`;
+    /// MeshComponent.origin_offset`) via the pure `mesh_pass` cell cull;
     /// survivors emit their **interpolated** transform (the registry's
     /// interpolated-transform accessor at the frame `alpha`, the same alpha the
     /// player camera reads from `frame_timing`) plus that same origin offset so
@@ -207,7 +233,10 @@ impl MeshRenderCollector {
         self.collect_inner(
             registry,
             world,
-            visible,
+            CullViews {
+                main: visible,
+                mirror: None,
+            },
             alpha,
             anim_time,
             tables,
@@ -217,12 +246,9 @@ impl MeshRenderCollector {
         );
     }
 
-    /// Production collect path. Precise skeletal hit zones force a palette
-    /// resample every visible frame to align presentation animation timing with
-    /// authoritative capsule samples. A non-empty pose stack also forces a
-    /// resample because its presentation inputs may change independently of
-    /// animation timing. Pose modifiers intentionally leave authoritative
-    /// capsules unmodified.
+    /// Test entry, with no mirror: [`Self::collect_with_mirror`] with `None`.
+    /// The frame loop and capture collect through that method directly.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect_with_hit_zones(
         &mut self,
@@ -235,11 +261,44 @@ impl MeshRenderCollector {
         camera_pos: glam::Vec3,
         hit_zones: &HitZoneStore,
     ) {
+        self.collect_with_mirror(
+            registry, world, visible, None, alpha, anim_time, tables, camera_pos, hit_zones,
+        );
+    }
+
+    /// Production collect path, with the planar mirror's visible cells
+    /// (`rendering_pipeline.md` §7.3a), `None` on a frame with no mirror.
+    /// `visible` stays the main view's: it alone decides forward draws and
+    /// shadow casting. The mirror's cells add [`MirrorReach`]: an instance in
+    /// them is drawn by the mirror, and one no main-view rule reaches is
+    /// collected for the mirror alone, ranked after every main-view admission.
+    ///
+    /// Precise skeletal hit zones force a palette resample every visible
+    /// frame to align presentation animation timing with authoritative
+    /// capsule samples. A non-empty pose stack also forces a resample because
+    /// its presentation inputs may change independently of animation timing.
+    /// Pose modifiers intentionally leave authoritative capsules unmodified.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn collect_with_mirror(
+        &mut self,
+        registry: &EntityRegistry,
+        world: &LevelWorld,
+        visible: &VisibleCells,
+        mirror: Option<&VisibleCells>,
+        alpha: f32,
+        anim_time: f64,
+        tables: &MeshClipTables,
+        camera_pos: glam::Vec3,
+        hit_zones: &HitZoneStore,
+    ) {
         let socket_poses = SocketPoseResolver::new(hit_zones);
         self.collect_inner(
             registry,
             world,
-            visible,
+            CullViews {
+                main: visible,
+                mirror,
+            },
             alpha,
             anim_time,
             tables,
@@ -254,7 +313,7 @@ impl MeshRenderCollector {
         &mut self,
         registry: &EntityRegistry,
         world: &LevelWorld,
-        visible: &VisibleCells,
+        views: CullViews<'_>,
         alpha: f32,
         anim_time: f64,
         tables: &MeshClipTables,
@@ -283,7 +342,9 @@ impl MeshRenderCollector {
                 continue;
             };
             let current_model_position = current.position + mesh.origin_offset;
-            let portal_visible = mesh_visible(world, visible, current_model_position);
+            // A shadow-only body never draws in the main view's colour, but the
+            // planar mirror reflects it like any world mesh.
+            let (portal_visible, mirror_visible) = views.reach(world, current_model_position, true);
             let forward_visible = portal_visible && !mesh.shadow_only;
             let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
             let handle = ModelHandle::from(mesh.model.clone());
@@ -301,9 +362,14 @@ impl MeshRenderCollector {
                 .transformed(&current_model_transform);
             let selected_static_shadow_relevant =
                 selected_static_shadow_light_reaches_bounds(world, &current_model_bounds);
-            if !dynamic_shadow_visible && !selected_static_shadow_relevant {
+            // Any main-view reach, shadow casting included, makes the mirror's
+            // draw a shared one; only an instance no main-view rule keeps is
+            // mirror-only.
+            let main_reach = dynamic_shadow_visible || selected_static_shadow_relevant;
+            if !main_reach && !mirror_visible {
                 continue;
             }
+            let mirror = MirrorReach::from_reaches(main_reach, mirror_visible);
             // Draw at the interpolated transform (smooth between ticks). Fall
             // back to the current transform if the interpolated read fails (a
             // stale id is not expected mid-iteration, but never fail the frame).
@@ -354,6 +420,7 @@ impl MeshRenderCollector {
                 resample: false,
                 forward_visible,
                 dynamic_shadow_visible,
+                mirror,
                 presentation: MeshPresentation::World,
             });
             let has_skinned_attachment = attachments::emit_for_holder(
@@ -369,6 +436,7 @@ impl MeshRenderCollector {
                 seed,
                 forward_visible,
                 dynamic_shadow_visible,
+                mirror,
                 &mesh.attachments,
             );
             let force = state_changed
@@ -434,6 +502,9 @@ impl MeshRenderCollector {
             resample: false,
             forward_visible: true,
             dynamic_shadow_visible: false,
+            // The viewmodel never draws in the mirror (`rendering_pipeline.md`
+            // §7.3a Content).
+            mirror: MirrorReach::Hidden,
             presentation: MeshPresentation::Viewmodel,
         });
     }
@@ -600,10 +671,11 @@ mod tests {
     }
 
     // The collector reuses the SAME pure cull the renderer pass documents
-    // (`mesh_pass::mesh_visible`); membership behavior is covered by `mesh_pass`'s
-    // own cull tests against a synthetic visible-set. Here we verify the
-    // collector's emit + transform composition against a minimal single-cell
-    // world (cell 0 spans all space, so any position lands in cell 0).
+    // (`mesh_pass::mesh_visible_in_cell`, per view through `CullViews::reach`);
+    // membership behavior is covered by `mesh_pass`'s own cull tests against a
+    // synthetic visible-set. Here we verify the collector's emit + transform
+    // composition against a minimal single-cell world (cell 0 spans all space,
+    // so any position lands in cell 0).
 
     fn single_cell_world() -> LevelWorld {
         LevelWorld {
@@ -2273,5 +2345,148 @@ mod tests {
             collector.instances()[1].model,
             ModelHandle::from("remote-prop")
         );
+    }
+
+    /// One collection over `world` with the main view's `main` cells and the
+    /// planar mirror's `mirror` cells.
+    fn collect_mirrored(
+        collector: &mut MeshRenderCollector,
+        registry: &EntityRegistry,
+        world: &LevelWorld,
+        main: &VisibleCells,
+        mirror: Option<&VisibleCells>,
+    ) {
+        collector.collect_with_mirror(
+            registry,
+            world,
+            main,
+            mirror,
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            Vec3::ZERO,
+            &HitZoneStore::new(),
+        );
+    }
+
+    // The mirror's cells add a mirror reach and nothing else: a mesh the main
+    // view draws stays a forward caster (the mirror shares it where its cells
+    // hold it), a mesh only the mirror's cells hold is collected for the
+    // mirror alone, out of forward draws and shadow depth, and its attachment
+    // inherits that reach.
+    #[test]
+    fn collect_with_mirror_tags_mirror_only_shared_and_hidden_meshes() {
+        let mut registry = EntityRegistry::new();
+        let world = two_cell_world_split_at_x_zero();
+        spawn_mesh(&mut registry, "main", Vec3::new(1.0, 0.0, 0.0));
+        let id = registry.spawn(Transform {
+            position: Vec3::new(-1.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let mut mesh = MeshComponent::stateless("reflected".to_string());
+        mesh.attachments.push(attachment(
+            AttachmentBinding::Rigid(glam::Mat4::from_translation(Vec3::X)),
+            "prop",
+        ));
+        registry.set_component(id, mesh).unwrap();
+        let mut collector = MeshRenderCollector::new();
+        let main = VisibleCells::Culled(vec![0]);
+
+        collect_mirrored(&mut collector, &registry, &world, &main, None);
+        let models: Vec<_> = collector
+            .instances()
+            .iter()
+            .map(|i| i.model.as_str())
+            .collect();
+        assert_eq!(models, ["main"], "no mirror: the main view's cull alone");
+        assert_eq!(collector.instances()[0].mirror, MirrorReach::Hidden);
+
+        collect_mirrored(
+            &mut collector,
+            &registry,
+            &world,
+            &main,
+            Some(&VisibleCells::Culled(vec![1])),
+        );
+        let by_model = |collector: &MeshRenderCollector, model: &str| {
+            collector
+                .instances()
+                .iter()
+                .filter(|instance| instance.model.as_str() == model)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let main_mesh = &by_model(&collector, "main")[0];
+        assert!(main_mesh.forward_visible && main_mesh.dynamic_shadow_visible);
+        assert_eq!(main_mesh.mirror, MirrorReach::Hidden);
+        let reflected = by_model(&collector, "reflected");
+        let prop = by_model(&collector, "prop");
+        assert_eq!((reflected.len(), prop.len()), (1, 1));
+        for instance in reflected.iter().chain(&prop) {
+            assert!(!instance.forward_visible, "the main view never draws it");
+            assert!(!instance.dynamic_shadow_visible, "nor casts it");
+            assert_eq!(instance.mirror, MirrorReach::Only);
+        }
+
+        collect_mirrored(
+            &mut collector,
+            &registry,
+            &world,
+            &main,
+            Some(&VisibleCells::Culled(vec![0, 1])),
+        );
+        assert_eq!(
+            by_model(&collector, "main")[0].mirror,
+            MirrorReach::AlsoMain
+        );
+        assert_eq!(
+            by_model(&collector, "reflected")[0].mirror,
+            MirrorReach::Only
+        );
+    }
+
+    // Shadow casting is a main-view reach: a mesh only promoted-static
+    // relevance keeps for the main view is shared with the mirror, never
+    // mirror-only, and a shadow-only body the mirror reaches reflects there
+    // while the main view still draws it only as a shadow.
+    #[test]
+    fn collect_with_mirror_keeps_shadow_casters_main_ranked() {
+        let mut registry = EntityRegistry::new();
+        let world = single_cell_world_with_selected_static_shadow_light();
+        spawn_mesh(&mut registry, "caster", Vec3::new(1.0, 0.0, 0.0));
+        let shadow_only = registry.spawn(Transform {
+            position: Vec3::new(2.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                shadow_only,
+                MeshComponent::stateless("body".into()).with_shadow_only(true),
+            )
+            .unwrap();
+        let mut collector = MeshRenderCollector::new();
+
+        collect_mirrored(
+            &mut collector,
+            &registry,
+            &world,
+            &VisibleCells::Culled(vec![1]),
+            Some(&VisibleCells::Culled(vec![0])),
+        );
+
+        let caster = collector
+            .instances()
+            .iter()
+            .find(|instance| instance.model.as_str() == "caster")
+            .expect("static relevance keeps the caster");
+        assert!(!caster.forward_visible && !caster.dynamic_shadow_visible);
+        assert_eq!(caster.mirror, MirrorReach::AlsoMain);
+        let body = collector
+            .instances()
+            .iter()
+            .find(|instance| instance.model.as_str() == "body")
+            .expect("a shadow-only body still casts");
+        assert!(body.dynamic_shadow_visible && !body.forward_visible);
+        assert_eq!(body.mirror, MirrorReach::AlsoMain);
     }
 }

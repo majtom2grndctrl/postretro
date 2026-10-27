@@ -273,6 +273,16 @@ impl LightmapStreamingSession {
         self.controller.settle_set_blocks()
     }
 
+    /// Blocks of `cells` outside the camera cell's baked set and the pins;
+    /// `None` before the first demand update. See
+    /// [`LightmapResidencyController::blocks_outside_camera_set`].
+    pub(crate) fn blocks_outside_camera_set(
+        &self,
+        cells: impl IntoIterator<Item = u32>,
+    ) -> Option<usize> {
+        self.controller.blocks_outside_camera_set(cells)
+    }
+
     /// Blocks the latest counted frame drew while not installed, whatever
     /// their class: the gauge behind the `not resident` visible-miss bucket.
     pub(crate) fn last_frame_drawn_not_resident(&self) -> u32 {

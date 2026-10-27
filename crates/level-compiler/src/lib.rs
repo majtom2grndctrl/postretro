@@ -20,3 +20,6 @@ pub mod map_format;
 pub mod navmesh_bake;
 pub mod partition;
 pub mod texture_mips;
+
+#[cfg(test)]
+mod planar_map_key_gate_tests;

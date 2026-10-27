@@ -832,6 +832,10 @@ pub(super) struct FullRenderer {
     /// Always bound; maps with zero lights get a 1-element dummy buffer —
     /// wgpu rejects zero-sized storage buffer bindings.
     pub(super) lighting_bind_group: wgpu::BindGroup,
+    /// The planar mirror's light records and their bind group, the frame's
+    /// mirror light reach and its admission tags (`rendering_pipeline.md`
+    /// §7.3a, Pool rank).
+    pub(super) mirror_lighting: renderer_mirror_lights::MirrorLighting,
     pub(super) influence_buffer: wgpu::Buffer,
     /// Maximum dynamic-direct prefix accepted from the scripting bridge.
     /// Promoted static records occupy a separate reserved tail.
@@ -1031,6 +1035,9 @@ pub(super) struct FullRenderer {
     pub(super) kinematic_ghost: kinematic_ghost::KinematicGhostPass,
     /// Translucent fluid surfaces; idle until a level with fluid faces installs.
     pub(super) fluid_surface: fluid_surface::FluidSurfacePass,
+    /// Planar water reflection: the mirror view, its targets and pipelines,
+    /// built at full init at every tier.
+    pub(super) planar_reflection: planar_reflection::PlanarReflectionPass,
     pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
     pub(super) promoted_static_states: Vec<PromotedBakedLightState>,
     /// Promotion ramp state keyed by `AnimatedBakedLights` index. Keeping this
@@ -1230,10 +1237,11 @@ pub(super) struct FullRenderer {
     /// Per-frame skinned-mesh instance list: surviving (model handle,
     /// interpolated transform, phase seed) tuples. Refilled each frame via
     /// `set_mesh_draws` from the render-frame mesh collector (which classifies
-    /// forward visibility via `mesh_pass::mesh_visible` and may retain additional
-    /// selected-static-light shadow casters as non-forward instances). Empty when
-    /// no mesh entity is visible or shadow-relevant. Planned into per-model draw
-    /// groups + palette runs each frame by `mesh_instances::plan_mesh_frame`.
+    /// forward visibility per view via `mesh_pass::mesh_visible_in_cell` and may
+    /// retain additional selected-static-light shadow casters as non-forward
+    /// instances). Empty when no mesh entity is visible or shadow-relevant.
+    /// Planned into per-model draw groups + palette runs each frame by
+    /// `mesh_instances::plan_mesh_frame`.
     pub(super) mesh_draws: Vec<mesh_instances::MeshInstanceInput>,
 
     /// Per-frame ghost instances (`rendering_pipeline.md` §7.9): unlit,

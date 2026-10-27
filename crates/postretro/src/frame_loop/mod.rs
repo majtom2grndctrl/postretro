@@ -1,7 +1,9 @@
 // The windowed frame loop: one `RedrawRequested` frame from timing through present.
 // See: context/lib/rendering_pipeline.md §1 · context/lib/entity_model.md §5
 
+mod mirror_content;
 pub(crate) mod named_drains;
+mod planar;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -1717,6 +1719,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         ),
         None => render_preparation::VisibleRenderPreparation::empty_world(),
     };
+    planar::prepare_planar_mirror(app, &render_camera, &visible_render);
     let render_preparation::VisibleRenderPreparation {
         visible_cells,
         fog_reachable,
@@ -1954,6 +1957,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let point_bytes = session.fog_volume_bridge.update_points(&all_lights);
         renderer.upload_fog_points(point_bytes);
 
+        renderer
+            .set_planar_reflection_view(app.planar_render.camera(), app.planar_render.visible());
+        renderer.set_planar_mirror_light_reach(app.planar_render.mirror_light_cell_aabbs());
         renderer.update_per_frame_uniforms(view_proj, render_eye_position, app.script_time as f32);
         renderer.update_viewmodel_view_projection(app.camera.aspect(), render_camera.view_matrix);
 
@@ -1969,6 +1975,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // Cull each billboard by its own position against this
             // frame's visible cells. Pool particles also receive a
             // conservative full-frustum pretest before the cell lookup.
+            // The same pass collects the planar mirror's billboards
+            // against its cells and cropped frustum on a frame it draws.
             // `visible_cells` remains live here and is reclaimed after
             // the frame.
             let presentation_tick = match session.net_endpoint.as_ref() {
@@ -1983,13 +1991,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 None => 0.0,
             };
             let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Collect);
-            session.particle_render.collect_at_tick(
+            mirror_content::collect_particles(
+                &app.planar_render,
+                &mut session.particle_render,
                 &registry,
                 &session.particle_pool,
                 app.level.as_ref(),
                 &visible_cells,
                 presentation_tick,
-                Some(&postretro_visibility::extract_frustum_planes(view_proj)),
+                &postretro_visibility::extract_frustum_planes(view_proj),
+                renderer,
             );
             // Projectile billboard ghosts: each at its mapped position, culled
             // at its mapped cell, through the collections the billboards use.
@@ -2037,7 +2048,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             app.level.as_ref(),
             renderer,
             crate::session::level_streaming::StreamingFrame {
-                visible_cells: &visible_cells,
+                visible_cells: app.planar_render.drawn_cells(&visible_cells),
+                sh_visible_cells: app.planar_render.sh_visible_cells(&visible_cells),
                 camera_cell: app.level.as_ref().map(|_| stats.camera_cell as usize),
                 path: stats.path,
                 monotonic_seconds: app.script_time,
@@ -2064,8 +2076,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // Mesh render — emits per-instance inputs (model handle +
         // interpolated transform + phase seed) for skinned-mesh
         // entities. Forward visibility comes from
-        // `mesh_pass::mesh_visible`; selected-static shadow casters
-        // can be retained as non-forward instances. Like the particle
+        // `mesh_pass::mesh_visible_in_cell`, tested per view (main and
+        // planar mirror); selected-static shadow casters can be
+        // retained as non-forward instances. Like the particle
         // collector it never touches wgpu; the renderer consumes the
         // inputs via `set_mesh_draws`. Runs before
         // `render_frame_indirect`, while `visible_cells` is still live
@@ -2088,10 +2101,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // Same frame alpha the player camera reads from
             // `frame_timing` — interpolate each mesh between its
             // previous- and current-tick transforms.
-            session.mesh_render.collect_with_hit_zones(
+            session.mesh_render.collect_with_mirror(
                 &registry,
                 world,
                 &visible_cells,
+                mirror_content::mirror_cells(&app.planar_render),
                 frame_result.alpha,
                 app.anim_time,
                 &session.mesh_clip_tables,
@@ -2192,10 +2206,15 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             );
             renderer.set_ghost_mesh_draws(app.ghost_render.instances());
 
-            app.kinematic_mover_render.collect(
+            // Movers collect over main ∪ mirror cells, so a mirror-only
+            // mover also records in the main mover pass: off screen, it
+            // draws no pixel there (an accepted cost). Ghosts cull against
+            // the main view's cells alone.
+            app.kinematic_mover_render.collect_with_mirror(
                 &registry,
                 world,
                 &visible_cells,
+                app.planar_render.drawn_cells(&visible_cells),
                 frame_result.alpha,
             );
             renderer.set_kinematic_mover_draws(
@@ -2579,8 +2598,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             &reachable_cell_aabbs,
             &fog_reachable,
             render::ShSampleRegionSets {
-                visible_cells: &visible_cells,
-                fog_cells: &fog_reachable,
+                visible_cells: app.planar_render.drawn_cells(&visible_cells),
+                fog_cells: app.planar_render.sample_fog_cells(&fog_reachable),
                 movers: app.kinematic_mover_render.sh_sample_regions(),
             },
             Some(stats.camera_cell),

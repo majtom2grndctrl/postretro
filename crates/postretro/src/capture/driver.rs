@@ -34,8 +34,9 @@ use super::setup::{
 };
 
 #[cfg(test)]
-use super::prepared::{
-    capture_mesh_models, collect_capture_receiver_draws, spawn_capture_receiver_registry,
+use super::receivers::{
+    CaptureCullViews, capture_mesh_models, collect_capture_receiver_draws,
+    collect_capture_receiver_draws_with_mirror, spawn_capture_receiver_registry,
 };
 #[cfg(test)]
 use crate::camera;
@@ -134,7 +135,8 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             gpu_windows,
             cpu_windows.report(),
         )
-        .with_lightmap_streaming(prepared.lightmap_streaming());
+        .with_lightmap_streaming(prepared.lightmap_streaming())
+        .with_planar_reflection(prepared.planar_report());
         let staged_report = stage_measurement_report(
             report_path.expect("measurement report path was preflighted"),
             &report,
@@ -953,6 +955,47 @@ mod tests {
             mesh_collector.instances()[0].transform.w_axis.truncate(),
             Vec3::new(4.0, 5.0, 6.0),
             "the dispatched prop_mesh is collected at its authored rest transform"
+        );
+    }
+
+    // With the planar mirror drawing, a mover in a cell only the mirror draws
+    // (the main view draws nothing here) still records for the beauty pass,
+    // while the mover ghost cull reads the main view's cells alone.
+    #[test]
+    fn capture_receiver_draws_admit_movers_by_drawn_cells_and_cull_ghosts_by_main_view() {
+        let world = capture_receiver_test_world();
+        let registry = spawn_capture_receiver_registry(&world)
+            .expect("valid capture receiver fixture must spawn without scripts");
+        let main = VisibleCells::Culled(Vec::new());
+        let drawn = VisibleCells::Culled(vec![0]);
+
+        let mut mover_collector = KinematicMoverRenderCollector::new();
+        collect_capture_receiver_draws_with_mirror(
+            &registry,
+            &world,
+            CaptureCullViews {
+                main: &main,
+                drawn: &drawn,
+                mirror: None,
+            },
+            Vec3::ZERO,
+            &mut mover_collector,
+            &mut MeshRenderCollector::new(),
+            &mut crate::ghost_links::GhostLinks::default(),
+            &mut crate::scripting_systems::ghost_render::GhostRenderCollector::new(),
+            &mut crate::scripting_systems::mover_ghost_render::MoverGhostRenderCollector::new(),
+        );
+
+        assert_eq!(
+            mover_collector.instances().len(),
+            1,
+            "the mirror's drawn cell admits the mover's beauty draw"
+        );
+        let instance = &mover_collector.instances()[0];
+        let (mover_id, rest) = (instance.mover_id, instance.transform);
+        assert!(
+            !mover_collector.visible_at(&world, &main, mover_id, rest),
+            "a ghost of the mover culls against the main view's cells, never the drawn set"
         );
     }
 

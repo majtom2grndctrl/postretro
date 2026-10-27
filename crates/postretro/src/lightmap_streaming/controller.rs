@@ -569,6 +569,23 @@ impl LightmapResidencyController {
         })
     }
 
+    /// How many blocks of `cells` lie outside the camera cell's baked set
+    /// and the pins, as of the latest demand update: blocks only a drawn-cell
+    /// demand holds. `None` before the first update. Cells past the map hold
+    /// no block. Settling reports it over the mirror-only cells.
+    pub(crate) fn blocks_outside_camera_set(
+        &self,
+        cells: impl IntoIterator<Item = u32>,
+    ) -> Option<usize> {
+        self.demand_updated.then(|| {
+            cells
+                .into_iter()
+                .flat_map(|cell| self.map.blocks_of_cell(cell))
+                .filter(|&block| !self.demand.in_camera_set(&self.map, block))
+                .count()
+        })
+    }
+
     fn retarget_dirty(&mut self) {
         for index in 0..self.demand.dirty_len() {
             let block = self.demand.dirty_at(index);

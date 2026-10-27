@@ -1,11 +1,11 @@
-// Public walk entries outside the frame loop: the id-51 bake and the mirror.
+// Public walk entries outside the frame loop: the id-51 bake and the seeded entry.
 // See: context/lib/rendering_pipeline.md §2
 
 use glam::{Mat4, Vec3};
 
 use super::{
-    MAX_PORTAL_WALK_STEPS, PortalWalkScratch, WalkView, WalkWorld, walk_from_camera,
-    walk_from_seeds,
+    MAX_PORTAL_WALK_STEPS, PortalWalkScratch, RegionWalkStats, WalkView, WalkWorld,
+    walk_from_camera, walk_from_seeds,
 };
 use crate::visibility::FrustumPlane;
 use postretro_level_loader::LevelWorld;
@@ -78,18 +78,19 @@ pub enum SeededWalk<'a> {
     Tripped { considered: u32 },
 }
 
-/// The seeded entry (`rendering_pipeline.md` §2), for the planar water
-/// mirror: walk from caller-given seed cells under the caller's eye,
-/// view-projection and near plane, taken as given. It never calls the
-/// locator and never slides the near plane; a portal wholly behind
-/// `near_plane` is rejected before the camera-on-plane bypass is tested, so
-/// the bypass never crosses it. Every usable seed starts with the full
-/// screen and is queued before any cell expands, sharing one region state
-/// and one cap, so seed order and repeats change neither the set nor the
-/// portal-test count; the reach-order slice can differ. Seeds out of range,
-/// solid, exterior or wholly off screen are skipped. The result is
-/// the raw reach, a conservative superset per §2; filtering it into draw
-/// and fog sets is the caller's.
+/// The plain seeded entry (`rendering_pipeline.md` §2): walk from
+/// caller-given seed cells under the caller's eye, view-projection and near
+/// plane, taken as given, under the shared cap. The planar water mirror
+/// runs the same walk through the crate's `walk_seeded`, for its counters
+/// and its test cap. It never calls the locator and never slides the near
+/// plane; a portal wholly behind `near_plane` is rejected before the
+/// camera-on-plane bypass is tested, so the bypass never crosses it. Every
+/// usable seed starts with the full screen and is queued before any cell
+/// expands, sharing one region state and one cap, so seed order and repeats
+/// change neither the set nor the portal-test count; the reach-order slice
+/// can differ. Seeds out of range, solid, exterior or wholly off screen are
+/// skipped. The result is the raw reach, a conservative superset per §2;
+/// filtering it into draw and fog sets is the caller's.
 pub fn portal_walk_seeded<'a>(
     eye: Vec3,
     view_proj: Mat4,
@@ -99,19 +100,52 @@ pub fn portal_walk_seeded<'a>(
     blocked_portals: &[bool],
     scratch: &'a mut PortalWalkScratch,
 ) -> SeededWalk<'a> {
+    let stats = walk_seeded(
+        eye,
+        view_proj,
+        near_plane,
+        seeds,
+        world,
+        blocked_portals,
+        MAX_PORTAL_WALK_STEPS,
+        scratch,
+    );
+    SeededWalk::from_stats(&stats, scratch)
+}
+
+/// The seeded walk under `step_limit`, returning the walk's counters; the
+/// reach stays in `scratch`. The mirror walks through it: it reads the
+/// counters, and its test seam lowers the cap.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn walk_seeded(
+    eye: Vec3,
+    view_proj: Mat4,
+    near_plane: FrustumPlane,
+    seeds: &[usize],
+    world: &LevelWorld,
+    blocked_portals: &[bool],
+    step_limit: u32,
+    scratch: &mut PortalWalkScratch,
+) -> RegionWalkStats {
     let input = WalkWorld {
         world,
         blocked_portals,
     };
     let view = WalkView::seeded(eye, view_proj, near_plane);
-    let stats = walk_from_seeds(input, &view, seeds, MAX_PORTAL_WALK_STEPS, scratch);
-    if stats.step_limit_hit {
-        SeededWalk::Tripped {
-            considered: stats.considered,
-        }
-    } else {
-        SeededWalk::Completed {
-            reached: scratch.reached(),
+    walk_from_seeds(input, &view, seeds, step_limit, scratch)
+}
+
+impl<'a> SeededWalk<'a> {
+    /// How the seeded walk that left `stats` in `scratch` ended.
+    pub(crate) fn from_stats(stats: &RegionWalkStats, scratch: &'a PortalWalkScratch) -> Self {
+        if stats.step_limit_hit {
+            SeededWalk::Tripped {
+                considered: stats.considered,
+            }
+        } else {
+            SeededWalk::Completed {
+                reached: scratch.reached(),
+            }
         }
     }
 }

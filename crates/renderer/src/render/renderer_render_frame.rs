@@ -253,6 +253,18 @@ impl Renderer {
         let promotion_mesh_frame_plan = selected_static_needs_mesh_gate
             .then(|| mesh_frame_plans.as_ref().map(|plans| &plans.world))
             .flatten();
+        // The mesh-instance cap's occupancy by admission rank (§7.3a, Pool
+        // rank). A frame that draws no world plans nothing, so it keeps the
+        // last world frame's count.
+        if render_world {
+            let mesh_occupancy = mesh_frame_plans
+                .as_ref()
+                .map(mesh_instances::MeshFramePlans::occupancy)
+                .unwrap_or_default();
+            self.full_mut()
+                .mirror_lighting
+                .set_mesh_occupancy(mesh_occupancy);
+        }
         drop(mesh_plan_scope);
         if render_world {
             let light_slots_scope = cpu.scope(RenderStage::LightSlots);
@@ -730,6 +742,13 @@ impl Renderer {
                 mode,
             );
         }
+
+        // Planar water reflection: one mirror view of the selected plane at
+        // very high and ultra, then its resolve into the planar layer, before
+        // the fluid pass samples it this frame. Ghosts and the viewmodel stay
+        // out of the mirror. It reads the frame's tier itself and records
+        // nothing at lower tiers or with no selected plane.
+        self.record_planar_reflection_pass(encoder, render_world, world_mesh_frame_plan);
 
         // Fluid surfaces: translucent, after every opaque pass and before
         // billboards, so smoke above the water draws over it undimmed (and

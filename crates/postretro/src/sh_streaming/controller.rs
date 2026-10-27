@@ -713,3 +713,7 @@ mod trace_tests;
 #[cfg(test)]
 #[path = "controller_refusal_tests.rs"]
 mod refusal_tests;
+
+#[cfg(test)]
+#[path = "controller_planar_tests.rs"]
+mod planar_tests;

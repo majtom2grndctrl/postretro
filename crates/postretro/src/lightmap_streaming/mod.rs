@@ -6,6 +6,8 @@ pub(crate) mod controller;
 pub(crate) mod demand;
 pub(crate) mod levers;
 #[cfg(test)]
+mod planar_demand_tests;
+#[cfg(test)]
 pub(crate) mod prl_test_fixture;
 pub(crate) mod route;
 pub(crate) mod source;

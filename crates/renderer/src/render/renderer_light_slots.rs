@@ -3,6 +3,9 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use super::renderer_lighting::LIGHT_INFLUENCE_SIZE;
+use super::renderer_mirror_lights::{
+    AdmissionTags, clear_mirror_only_promoted_slots, pool_occupancy, update_held_as_mirror_only,
+};
 use super::renderer_types::{
     FullRenderer, MAX_ANIMATED_BAKED_LIGHTS, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT,
     PromotedBakedLightRecord, PromotedBakedLightSource, PromotedBakedLightState,
@@ -38,14 +41,15 @@ fn selected_static_record_count(records: &[PromotedBakedLightRecord]) -> usize {
 /// Reverse maps from each promotion-state namespace to the shared candidate
 /// index. The candidate-side tag vectors remain the identity source; building
 /// this once per frame avoids rescanning them for every state and pool.
-struct PromotionCandidateLookup {
-    selected_static: Vec<Option<usize>>,
-    animated_baked: Vec<Option<usize>>,
+pub(super) struct PromotionCandidateLookup {
+    pub(super) selected_static: Vec<Option<usize>>,
+    pub(super) animated_baked: Vec<Option<usize>>,
 }
 
 /// Per-pool inputs for shadow-slot assignment. These values travel together:
 /// they describe one frame's candidate eligibility and the pool competing for
 /// those candidates.
+#[derive(Clone, Copy)]
 struct ShadowPoolSlotAssignmentInputs<'a> {
     pool_kind: PromotedShadowPoolKind,
     camera_position: Vec3,
@@ -54,6 +58,7 @@ struct ShadowPoolSlotAssignmentInputs<'a> {
     capacity: usize,
     promoted_cap: usize,
     promotion_candidate_lookup: &'a PromotionCandidateLookup,
+    admission: AdmissionTags<'a>,
 }
 
 fn build_promotion_candidate_lookup(
@@ -183,6 +188,11 @@ impl Renderer {
     /// brightness is keyed on `level_lights`; animated brightness is supplied
     /// separately in `animated_window_brightness`, keyed by
     /// `AnimatedBakedLights` index.
+    ///
+    /// It also consumes the reach set by `set_planar_mirror_light_reach` and
+    /// tags the lights only the planar mirror reaches, which rank after every
+    /// main-view light (`renderer_mirror_lights.rs`; `rendering_pipeline.md`
+    /// §7.3a, Pool rank).
     #[allow(clippy::too_many_arguments)] // Per-frame bridge inputs remain separate index spaces.
     pub fn update_dynamic_light_slots(
         &mut self,
@@ -268,6 +278,13 @@ impl Renderer {
             );
             full.dynamic_depth_cache.state.reset_level();
             full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
+            // No candidate, no mirror-only light: the mirror reads the main
+            // view's records, and the frame's reach is spent.
+            full.mirror_lighting.clear_reach();
+            full.mirror_lighting.clear_frame();
+            full.mirror_lighting.report(now_seconds);
+            full.mesh_pass.set_mirror_light_records(false);
+            full.kinematic_brush.set_mirror_light_records(false);
             apply_capture_animated_promotion_weights(
                 &mut full.promoted_animated_states,
                 &mut full.promoted_baked_records,
@@ -289,13 +306,25 @@ impl Renderer {
         // Empty `reachable_cell_aabbs` = DrawAll sentinel (fallback visibility
         // paths) → all cell-assigned lights eligible. ALPHA_LIGHT_LEAF_UNASSIGNED
         // = degenerate (couldn't assign to a non-solid cell) → always cull.
+        //
+        // The planar mirror's reach (cells only the mirror reaches) tags the
+        // rest: a light reaching no main-view cell but a mirror cell is
+        // eligible as mirror-only, and ranks after every main-view light
+        // (`rendering_pipeline.md` §7.3a, Pool rank). An empty mirror reach
+        // means no mirror; on the main view's empty sentinel every light is
+        // main-view already.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
-        let mut visible_lights = vec![false; self.full().shadow_candidate_lights.len()];
+        let candidate_count = self.full().shadow_candidate_lights.len();
+        let mut visible_lights = vec![false; candidate_count];
+        let mirror_reach = self.full_mut().mirror_lighting.take_reach();
+        let mirror_present = !mirror_reach.is_empty();
+        let mut mirror_only_lights = std::mem::take(&mut self.full_mut().mirror_lighting.tags);
+        mirror_only_lights.clear();
+        mirror_only_lights.resize(candidate_count, false);
         // Distinct from the brightness/visibility gate: a receiver despawn
         // resets animated promotion immediately, so no stale `(1 - w)` compose
         // factor or cache key survives.
-        let mut promoted_baked_has_shadow_receiver =
-            vec![false; self.full().shadow_candidate_lights.len()];
+        let mut promoted_baked_has_shadow_receiver = vec![false; candidate_count];
         {
             let full = self.full_mut();
             // Fixed within the frame — build the source→level reverse lookup once
@@ -375,7 +404,14 @@ impl Renderer {
                     full.shadow_candidate_influences.get(i),
                     reachable_cell_aabbs,
                 );
-                if !reaches_view {
+                let reaches_mirror_only = !reaches_view
+                    && mirror_present
+                    && shadow_candidate_reaches_visible_cell(
+                        light,
+                        full.shadow_candidate_influences.get(i),
+                        &mirror_reach,
+                    );
+                if !reaches_view && !reaches_mirror_only {
                     continue;
                 }
                 // Dynamic and animated-baked candidates intentionally read
@@ -394,8 +430,17 @@ impl Renderer {
                     continue;
                 }
                 visible_lights[i] = true;
+                mirror_only_lights[i] = reaches_mirror_only;
             }
         }
+        self.full_mut().mirror_lighting.return_reach(mirror_reach);
+        // Last frame's mirror-only seats: the incumbency rank input.
+        let mut held_mirror_only = std::mem::take(&mut self.full_mut().mirror_lighting.held);
+        let admission = AdmissionTags {
+            mirror_present,
+            mirror_only: &mirror_only_lights,
+            held_mirror_only: &held_mirror_only,
+        };
 
         let frame_dt = {
             let full = self.full_mut();
@@ -427,7 +472,7 @@ impl Renderer {
         }
 
         let mut slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
-            self.full(),
+            ShadowRankingState::of(self.full(), PromotedShadowPoolKind::Spot),
             ShadowPoolSlotAssignmentInputs {
                 pool_kind: PromotedShadowPoolKind::Spot,
                 camera_position,
@@ -436,6 +481,7 @@ impl Renderer {
                 capacity: crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
                 promoted_cap: MAX_PROMOTED_SPOT,
                 promotion_candidate_lookup: &promotion_candidate_lookup,
+                admission,
             },
         );
 
@@ -450,6 +496,7 @@ impl Renderer {
             &visible_lights,
             stride,
             &promotion_candidate_lookup,
+            admission,
         );
         self.update_promoted_baked_weights_and_records(
             &slot_assignment,
@@ -477,6 +524,41 @@ impl Renderer {
                 &full.promoted_animated_states,
                 &mut cube_slot_assignment,
             );
+        }
+        // This frame's mirror-only seats, from the final assignments.
+        update_held_as_mirror_only(
+            &slot_assignment,
+            &cube_slot_assignment,
+            &visible_lights,
+            &mirror_only_lights,
+            &mut held_mirror_only,
+        );
+        let mirror_view_differs = held_mirror_only.iter().any(|&held| held);
+        {
+            let full = self.full_mut();
+            full.mirror_lighting.tags = mirror_only_lights;
+            full.mirror_lighting.held = held_mirror_only;
+            let spot = pool_occupancy(
+                &slot_assignment,
+                crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
+                full,
+                &full.mirror_lighting.held,
+            );
+            let cube = pool_occupancy(
+                &cube_slot_assignment,
+                if full.cube_shadow_pool.is_some() {
+                    crate::lighting::cube_shadow::CUBE_COUNT
+                } else {
+                    0
+                },
+                full,
+                &full.mirror_lighting.held,
+            );
+            full.mirror_lighting.set_pool_occupancy(spot, cube);
+            full.mirror_lighting.report(now_seconds);
+            full.mesh_pass.set_mirror_light_records(mirror_view_differs);
+            full.kinematic_brush
+                .set_mirror_light_records(mirror_view_differs);
         }
         {
             // Capture pins the already-assigned state before either arm is
@@ -520,20 +602,19 @@ impl Renderer {
         // assignments from candidate-index space into `level_lights`-index
         // space via each light's original full level-light index. This keeps
         // duplicate dynamic lights with identical origin/type independent.
-        let level_slots = slot_assignment_for_level_lights(
-            &self.full().level_light_source_indices,
-            &self.full().shadow_candidate_source_indices,
-            &slot_assignment,
-        );
-        let level_cube_slots = if cube_slot_assignment.is_empty() {
-            vec![crate::lighting::spot_shadow::NO_SHADOW_SLOT; self.full().level_lights.len()]
-        } else {
-            slot_assignment_for_level_lights(
-                &self.full().level_light_source_indices,
-                &self.full().shadow_candidate_source_indices,
-                &cube_slot_assignment,
-            )
-        };
+        //
+        // The main view's records drop every mirror-only light's slot, so the
+        // main passes shade it exactly as with no slot; the mirror's copy
+        // keeps them (built below only while one is held, in buffers it
+        // reuses across frames).
+        let mut level_slots = Vec::new();
+        let mut level_cube_slots = Vec::new();
+        {
+            let full = self.full();
+            let held = &full.mirror_lighting.held;
+            fill_level_slots(full, &slot_assignment, held, &mut level_slots);
+            fill_level_slots(full, &cube_slot_assignment, held, &mut level_cube_slots);
+        }
 
         // Patch the per-light spot AND cube shadow-slot fields onto the CPU
         // mirror of the light buffer, then re-upload only if a slot changed. The
@@ -550,13 +631,35 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
+        if mirror_view_differs {
+            // Built before the main upload: both start from the same base.
+            let mut mirror = std::mem::take(&mut full.mirror_lighting.scratch);
+            let mut mirror_spot = std::mem::take(&mut full.mirror_lighting.spot_level_slots);
+            let mut mirror_cube = std::mem::take(&mut full.mirror_lighting.cube_level_slots);
+            fill_level_slots(full, &slot_assignment, &[], &mut mirror_spot);
+            fill_level_slots(full, &cube_slot_assignment, &[], &mut mirror_cube);
+            build_count_split_light_upload(full, &mirror_spot, &mirror_cube, &mut mirror);
+            full.mirror_lighting.scratch = mirror;
+            full.mirror_lighting.spot_level_slots = mirror_spot;
+            full.mirror_lighting.cube_level_slots = mirror_cube;
+        }
         build_count_split_light_upload(full, &level_slots, &level_cube_slots, &mut scratch);
+        if mirror_view_differs {
+            clear_mirror_only_promoted_slots(
+                &mut scratch,
+                full,
+                &promotion_candidate_lookup,
+                &full.mirror_lighting.held,
+            );
+        }
         if scratch != full.last_lights_upload {
             queue.write_buffer(&full.lights_buffer, 0, &scratch);
             full.last_lights_upload.clear();
             full.last_lights_upload.extend_from_slice(&scratch);
         }
         full.lights_pack_scratch = scratch;
+        full.mirror_lighting
+            .finish_light_records(queue, mirror_view_differs);
 
         // The bridge owns the complete dynamic prefix plus one raw section-45
         // influence per animated-baked tail record. Selected-static promotion
@@ -684,57 +787,67 @@ impl Renderer {
         // re-tenanted this frame.
         use crate::lighting::cube_shadow::{CUBE_COUNT, CUBE_FACES, CubeShadowPool};
         use crate::lighting::spot_shadow::{NO_SHADOW_SLOT, SHADOW_POOL_SIZE};
-        let mut spot_inputs = [(0, 0, Mat4::IDENTITY); SHADOW_POOL_SIZE];
-        let mut spot_count = 0;
-        for (candidate_index, &slot) in full.spot_shadow_pool.slot_assignment.iter().enumerate() {
-            if slot == NO_SHADOW_SLOT
-                || shadow_candidate_is_promoted_baked(
+        // Main-view slots feed the cache first: it hands out free layers in
+        // input order, so a light only the mirror holds never takes a free
+        // layer ahead of a main-view light. Order picks layers, never pixels.
+        let held = &full.mirror_lighting.held;
+        let mirror_held =
+            |candidate_index: usize| held.get(candidate_index).copied().unwrap_or(false);
+        let cache_input = |candidate_index: usize, slot: u32, mirror_pass: bool| {
+            slot != NO_SHADOW_SLOT
+                && mirror_held(candidate_index) == mirror_pass
+                && !shadow_candidate_is_promoted_baked(
                     &full.shadow_candidate_selection_indices,
                     &full.shadow_candidate_animated_baked_indices,
                     candidate_index,
                 )
+        };
+        let mut spot_inputs = [(0, 0, Mat4::IDENTITY); SHADOW_POOL_SIZE];
+        let mut spot_count = 0;
+        for mirror_pass in [false, true] {
+            for (candidate_index, &slot) in full.spot_shadow_pool.slot_assignment.iter().enumerate()
             {
-                continue;
-            }
-            if let Some(matrix) = full.spot_shadow_pool.slot_cone_matrices[slot as usize] {
-                spot_inputs[spot_count] = (
-                    slot,
-                    full.shadow_candidate_source_indices[candidate_index],
-                    matrix,
-                );
-                spot_count += 1;
+                if !cache_input(candidate_index, slot, mirror_pass) {
+                    continue;
+                }
+                if let Some(matrix) = full.spot_shadow_pool.slot_cone_matrices[slot as usize] {
+                    spot_inputs[spot_count] = (
+                        slot,
+                        full.shadow_candidate_source_indices[candidate_index],
+                        matrix,
+                    );
+                    spot_count += 1;
+                }
             }
         }
         let mut cube_inputs = [(0, 0, [Mat4::IDENTITY; CUBE_FACES]); CUBE_COUNT];
         let mut cube_count = 0;
         if let Some(pool) = &full.cube_shadow_pool {
-            for (candidate_index, &slot) in pool.slot_assignment.iter().enumerate() {
-                if slot == NO_SHADOW_SLOT
-                    || shadow_candidate_is_promoted_baked(
-                        &full.shadow_candidate_selection_indices,
-                        &full.shadow_candidate_animated_baked_indices,
-                        candidate_index,
-                    )
-                {
-                    continue;
-                }
-                let mut matrices = [Mat4::IDENTITY; CUBE_FACES];
-                let mut complete = true;
-                for (face, matrix) in matrices.iter_mut().enumerate() {
-                    if let Some(live) = pool.face_matrices[CubeShadowPool::face_layer(slot, face)] {
-                        *matrix = live;
-                    } else {
-                        complete = false;
-                        break;
+            for mirror_pass in [false, true] {
+                for (candidate_index, &slot) in pool.slot_assignment.iter().enumerate() {
+                    if !cache_input(candidate_index, slot, mirror_pass) {
+                        continue;
                     }
-                }
-                if complete {
-                    cube_inputs[cube_count] = (
-                        slot,
-                        full.shadow_candidate_source_indices[candidate_index],
-                        matrices,
-                    );
-                    cube_count += 1;
+                    let mut matrices = [Mat4::IDENTITY; CUBE_FACES];
+                    let mut complete = true;
+                    for (face, matrix) in matrices.iter_mut().enumerate() {
+                        if let Some(live) =
+                            pool.face_matrices[CubeShadowPool::face_layer(slot, face)]
+                        {
+                            *matrix = live;
+                        } else {
+                            complete = false;
+                            break;
+                        }
+                    }
+                    if complete {
+                        cube_inputs[cube_count] = (
+                            slot,
+                            full.shadow_candidate_source_indices[candidate_index],
+                            matrices,
+                        );
+                        cube_count += 1;
+                    }
                 }
             }
         }
@@ -784,6 +897,11 @@ impl Renderer {
     ///   `non_forward` includes explicit dynamic `shadowOnly` casters and the
     ///   broader promoted-baked shadow-relevance set; `forward` is a mesh-pass
     ///   classification, not a raw PVS count.
+    /// - `admission:` — the frame's admissions by rank (`[Admission]`'s
+    ///   segment): mesh-cap main and mirror-only counts with what the cap
+    ///   dropped of each, then each shadow pool as `main+mirror_only/capacity`
+    ///   with its promoted part. Mirror-only seats are lights only the planar
+    ///   mirror reaches (`rendering_pipeline.md` §7.3a, Pool rank).
     #[allow(clippy::too_many_arguments)] // Mirrors the shadow-slot diagnostics inputs.
     pub(super) fn emit_shadow_debug(
         &mut self,
@@ -853,7 +971,9 @@ impl Renderer {
             };
             // THE eligibility criterion: runtime influence sphere reaches a
             // fog/light-reachable cell. Mirrors `update_dynamic_light_slots`
-            // exactly (pure read).
+            // for main-view reach only (pure read): a seated light only the
+            // planar mirror reaches shows `slot=`, an unseated one
+            // `NONE:no_reach_to_view`.
             let reach = shadow_candidate_reaches_visible_cell(
                 light,
                 self.full().shadow_candidate_influences.get(i),
@@ -1008,8 +1128,10 @@ impl Renderer {
         } else {
             0
         };
+        let admission =
+            super::renderer_mirror_lights::describe(&self.full().mirror_lighting.occupancy());
         log::info!(
-            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) cell={cell_str} vis_cells={vis_cells} | pools: spot={spot_used}/{} cube={cube_used}/{cube_pool_size} elig_spot={elig_spot} elig_cube={elig_cube} spot_overflow={spot_overflow} cube_overflow={cube_overflow} | casters: forward={forward_visible} non_forward={non_forward} total={} | occupied_spot_slots={} occupied_cube_slots={} | lights[{}]: {}",
+            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) cell={cell_str} vis_cells={vis_cells} | pools: spot={spot_used}/{} cube={cube_used}/{cube_pool_size} elig_spot={elig_spot} elig_cube={elig_cube} spot_overflow={spot_overflow} cube_overflow={cube_overflow} | casters: forward={forward_visible} non_forward={non_forward} total={} | occupied_spot_slots={} occupied_cube_slots={} | admission: {admission} | lights[{}]: {}",
             if changed { " CHANGED" } else { " (hb)" },
             pitch_deg,
             fwd.x,
@@ -1053,6 +1175,7 @@ impl Renderer {
         visible_lights: &[bool],
         stride: usize,
         promotion_candidate_lookup: &PromotionCandidateLookup,
+        admission: AdmissionTags<'_>,
     ) -> Vec<u32> {
         use crate::lighting::cube_shadow;
 
@@ -1066,7 +1189,7 @@ impl Renderer {
         }
 
         let slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
-            full,
+            ShadowRankingState::of(full, PromotedShadowPoolKind::Cube),
             ShadowPoolSlotAssignmentInputs {
                 pool_kind: PromotedShadowPoolKind::Cube,
                 camera_position,
@@ -1075,6 +1198,7 @@ impl Renderer {
                 capacity: cube_shadow::CUBE_COUNT,
                 promoted_cap: MAX_PROMOTED_CUBE,
                 promotion_candidate_lookup,
+                admission,
             },
         );
 
@@ -1479,12 +1603,13 @@ const EVICTION_MARGIN: f32 = 1.25;
 
 /// Rank this pool's lights (dynamic-tier + promoted-baked) into slots through
 /// the shared [`postretro_lighting::shadow_ranking`] core. The renderer-specific
-/// state — which lights are promoted-baked, and each slot's prior occupant for
-/// hysteresis — is assembled here; the pure score sort, cap enforcement, and
-/// tier-neutral eviction live in the lighting crate so the spot and cube pools
-/// cannot drift and no scoring/assignment formula is duplicated.
+/// state — which lights are promoted-baked, each light's admission rank, and
+/// each slot's prior occupant for hysteresis — is assembled here; the pure
+/// score sort, cap enforcement, tier-neutral eviction and the main-view-first
+/// phases live in the lighting crate so the spot and cube pools cannot drift
+/// and no scoring/assignment formula is duplicated.
 fn assign_shadow_pool_slots_with_promoted_baked(
-    full: &FullRenderer,
+    state: ShadowRankingState<'_>,
     inputs: ShadowPoolSlotAssignmentInputs<'_>,
 ) -> Vec<u32> {
     let light_type = match inputs.pool_kind {
@@ -1493,9 +1618,10 @@ fn assign_shadow_pool_slots_with_promoted_baked(
     };
 
     // Unified candidate set: every eligible light of this pool's type competes
-    // on score alone; no tier is reserved ahead of the sort.
+    // on score alone; no tier is reserved ahead of the sort. A light only the
+    // mirror reaches ranks after every main-view one.
     let mut candidates = Vec::new();
-    for (candidate_index, light) in full.shadow_candidate_lights.iter().enumerate() {
+    for (candidate_index, light) in state.candidate_lights.iter().enumerate() {
         if light.light_type != light_type {
             continue;
         }
@@ -1507,8 +1633,8 @@ fn assign_shadow_pool_slots_with_promoted_baked(
             continue;
         }
         let is_promoted_baked = shadow_candidate_is_promoted_baked(
-            &full.shadow_candidate_selection_indices,
-            &full.shadow_candidate_animated_baked_indices,
+            state.selection_indices,
+            state.animated_baked_indices,
             candidate_index,
         );
         // A baked, non-selected light never earns a runtime slot.
@@ -1519,27 +1645,54 @@ fn assign_shadow_pool_slots_with_promoted_baked(
             candidate_index,
             score: candidate_slot_score(light, inputs.camera_position, inputs.camera_near_clip),
             is_promoted_baked,
+            mirror_only: inputs.admission.mirror_only(candidate_index),
         });
     }
 
-    let incumbents = build_slot_incumbents(
-        full,
-        inputs.pool_kind,
-        inputs.capacity,
-        inputs.camera_position,
-        inputs.camera_near_clip,
-        inputs.eligible_lights,
-        inputs.promotion_candidate_lookup,
-    );
+    let incumbents = build_slot_incumbents(&state, &inputs);
 
     postretro_lighting::shadow_ranking::assign_slots_with_hysteresis(
         &candidates,
         &incumbents,
         inputs.capacity,
         inputs.promoted_cap,
-        full.shadow_candidate_lights.len(),
+        state.candidate_lights.len(),
         EVICTION_MARGIN,
     )
+}
+
+/// What shadow-slot ranking reads of the renderer for one pool, as plain
+/// slices, so ranking runs (and is tested) without a device.
+#[derive(Clone, Copy)]
+struct ShadowRankingState<'a> {
+    candidate_lights: &'a [MapLight],
+    selection_indices: &'a [Option<usize>],
+    animated_baked_indices: &'a [Option<usize>],
+    promoted_static_states: &'a [PromotedBakedLightState],
+    promoted_animated_states: &'a [PromotedBakedLightState],
+    /// The pool's assignment last frame, candidate-indexed.
+    prior_assignment: &'a [u32],
+}
+
+impl<'a> ShadowRankingState<'a> {
+    fn of(full: &'a FullRenderer, pool_kind: PromotedShadowPoolKind) -> Self {
+        let prior_assignment = match pool_kind {
+            PromotedShadowPoolKind::Spot => full.spot_shadow_pool.slot_assignment.as_slice(),
+            PromotedShadowPoolKind::Cube => full
+                .cube_shadow_pool
+                .as_ref()
+                .map(|pool| pool.slot_assignment.as_slice())
+                .unwrap_or(&[]),
+        };
+        Self {
+            candidate_lights: &full.shadow_candidate_lights,
+            selection_indices: &full.shadow_candidate_selection_indices,
+            animated_baked_indices: &full.shadow_candidate_animated_baked_indices,
+            promoted_static_states: &full.promoted_static_states,
+            promoted_animated_states: &full.promoted_animated_states,
+            prior_assignment,
+        }
+    }
 }
 
 /// Prior-frame slot occupants for tier-neutral eviction hysteresis. Static
@@ -1549,95 +1702,92 @@ fn assign_shadow_pool_slots_with_promoted_baked(
 /// still-eligible dynamic lights that held a slot last frame — they have no
 /// sticky window, so an ineligible dynamic frees its slot immediately. Every
 /// incumbent's `score` is the CURRENT-frame score so a camera jump is reflected
-/// before the margin comparison.
+/// before the margin comparison, and its rank is this frame's
+/// ([`AdmissionTags::incumbent_mirror_only`]).
 fn build_slot_incumbents(
-    full: &FullRenderer,
-    pool_kind: PromotedShadowPoolKind,
-    capacity: usize,
-    camera_position: Vec3,
-    camera_near_clip: f32,
-    eligible_lights: &[bool],
-    promotion_candidate_lookup: &PromotionCandidateLookup,
+    state: &ShadowRankingState<'_>,
+    inputs: &ShadowPoolSlotAssignmentInputs<'_>,
 ) -> Vec<postretro_lighting::shadow_ranking::SlotIncumbent> {
     use postretro_lighting::shadow_ranking::SlotIncumbent;
+    let ShadowPoolSlotAssignmentInputs {
+        pool_kind,
+        capacity,
+        camera_position,
+        camera_near_clip,
+        eligible_lights,
+        promotion_candidate_lookup,
+        admission,
+        ..
+    } = *inputs;
+    let eligible = |candidate_index: usize| {
+        eligible_lights
+            .get(candidate_index)
+            .copied()
+            .unwrap_or(true)
+    };
     let mut incumbents = Vec::new();
 
     // Selected-static incumbents: their dedicated weight state owns the slot and
-    // sticky window, independent of this frame's eligibility.
-    for (selection_index, state) in full.promoted_static_states.iter().enumerate() {
-        if state.pool_kind != Some(pool_kind) || state.weight <= 0.0 {
+    // sticky window, independent of this frame's eligibility. Animated-baked
+    // incumbents use the same shared ranker and sticky ramp, but their state
+    // index is the section-45 `AnimatedBakedLights` index rather than an
+    // `EntityShadowLights` index.
+    let promoted = state
+        .promoted_static_states
+        .iter()
+        .enumerate()
+        .map(|(index, promotion)| {
+            (
+                promotion,
+                promotion_candidate_lookup.selected_static.get(index),
+            )
+        })
+        .chain(
+            state
+                .promoted_animated_states
+                .iter()
+                .enumerate()
+                .map(|(index, promotion)| {
+                    (
+                        promotion,
+                        promotion_candidate_lookup.animated_baked.get(index),
+                    )
+                }),
+        );
+    for (promotion, candidate_index) in promoted {
+        if promotion.pool_kind != Some(pool_kind) || promotion.weight <= 0.0 {
             continue;
         }
-        let slot = state.slot as usize;
+        let slot = promotion.slot as usize;
         if slot >= capacity {
             continue;
         }
-        let Some(candidate_index) = promotion_candidate_lookup
-            .selected_static
-            .get(selection_index)
-            .copied()
-            .flatten()
+        let Some(candidate_index) = candidate_index.copied().flatten() else {
+            continue;
+        };
+        let Some(mirror_only) =
+            admission.incumbent_mirror_only(candidate_index, eligible(candidate_index))
         else {
             continue;
         };
-        let score = full
-            .shadow_candidate_lights
+        let score = state
+            .candidate_lights
             .get(candidate_index)
             .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
-            .unwrap_or(state.last_score)
+            .unwrap_or(promotion.last_score)
             .max(0.0);
         incumbents.push(SlotIncumbent {
             slot,
             candidate_index,
             score,
             is_promoted_baked: true,
-        });
-    }
-
-    // Animated-baked incumbents use the same shared ranker and sticky ramp as
-    // selected statics, but their state index is the section-45
-    // `AnimatedBakedLights` index rather than an `EntityShadowLights` index.
-    for (animated_index, state) in full.promoted_animated_states.iter().enumerate() {
-        if state.pool_kind != Some(pool_kind) || state.weight <= 0.0 {
-            continue;
-        }
-        let slot = state.slot as usize;
-        if slot >= capacity {
-            continue;
-        }
-        let Some(candidate_index) = promotion_candidate_lookup
-            .animated_baked
-            .get(animated_index)
-            .copied()
-            .flatten()
-        else {
-            continue;
-        };
-        let score = full
-            .shadow_candidate_lights
-            .get(candidate_index)
-            .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
-            .unwrap_or(state.last_score)
-            .max(0.0);
-        incumbents.push(SlotIncumbent {
-            slot,
-            candidate_index,
-            score,
-            is_promoted_baked: true,
+            mirror_only,
         });
     }
 
     // Dynamic incumbents: last frame's assignment for this pool, restricted to
     // still-eligible dynamic (non-selected) lights.
-    let prior = match pool_kind {
-        PromotedShadowPoolKind::Spot => full.spot_shadow_pool.slot_assignment.as_slice(),
-        PromotedShadowPoolKind::Cube => full
-            .cube_shadow_pool
-            .as_ref()
-            .map(|pool| pool.slot_assignment.as_slice())
-            .unwrap_or(&[]),
-    };
-    for (candidate_index, &slot) in prior.iter().enumerate() {
+    for (candidate_index, &slot) in state.prior_assignment.iter().enumerate() {
         if slot == postretro_lighting::NO_SHADOW_SLOT {
             continue;
         }
@@ -1646,8 +1796,8 @@ fn build_slot_incumbents(
             continue;
         }
         let is_promoted_baked = shadow_candidate_is_promoted_baked(
-            &full.shadow_candidate_selection_indices,
-            &full.shadow_candidate_animated_baked_indices,
+            state.selection_indices,
+            state.animated_baked_indices,
             candidate_index,
         );
         if is_promoted_baked {
@@ -1655,24 +1805,24 @@ fn build_slot_incumbents(
             // seeded twice.
             continue;
         }
-        let Some(light) = full.shadow_candidate_lights.get(candidate_index) else {
+        let Some(light) = state.candidate_lights.get(candidate_index) else {
             continue;
         };
         if !light.is_dynamic {
             continue;
         }
-        if !eligible_lights
-            .get(candidate_index)
-            .copied()
-            .unwrap_or(true)
-        {
+        if !eligible(candidate_index) {
             continue;
         }
+        let Some(mirror_only) = admission.incumbent_mirror_only(candidate_index, true) else {
+            continue;
+        };
         incumbents.push(SlotIncumbent {
             slot,
             candidate_index,
             score: candidate_slot_score(light, camera_position, camera_near_clip).max(0.0),
             is_promoted_baked: false,
+            mirror_only,
         });
     }
 
@@ -1867,6 +2017,10 @@ fn reset_animated_promotion_without_receiver(
     true
 }
 
+/// Whether a planned world instance lies in a promoted light's influence. An
+/// instance only the planar mirror reaches never counts: promoted depth never
+/// draws it, so it cannot make a main-view light eligible or hold one's slot
+/// (`rendering_pipeline.md` §7.3a, Pool rank).
 fn selected_static_light_has_shadow_entity(
     light: &MapLight,
     influence: Option<&LightInfluence>,
@@ -1879,6 +2033,7 @@ fn selected_static_light_has_shadow_entity(
     plan.groups
         .iter()
         .flat_map(|group| group.instances.iter())
+        .filter(|instance| !instance.mirror.is_only())
         .any(|instance| {
             let world = instance.bounds.transformed(&instance.transform);
             static_light_influence_intersects_aabb(light, &influence, &world)
@@ -1923,6 +2078,27 @@ fn static_light_influence_intersects_aabb(
     let radius_sq = influence.radius.max(light.falloff_range).max(0.0).powi(2);
     let closest = center.clamp(world_aabb.min, world_aabb.max);
     closest.distance_squared(center) <= radius_sq
+}
+
+/// One candidate-indexed assignment in `level_lights` space, written into a
+/// reused buffer; candidates `skipped` marks keep no slot. An empty
+/// assignment (a disabled pool) leaves every level light unslotted.
+fn fill_level_slots(full: &FullRenderer, assignment: &[u32], skipped: &[bool], out: &mut Vec<u32>) {
+    if assignment.is_empty() {
+        out.clear();
+        out.resize(
+            full.level_lights.len(),
+            crate::lighting::spot_shadow::NO_SHADOW_SLOT,
+        );
+    } else {
+        fill_level_light_slots(
+            &full.level_light_source_indices,
+            &full.shadow_candidate_source_indices,
+            assignment,
+            skipped,
+            out,
+        );
+    }
 }
 
 fn build_count_split_light_upload(
@@ -2061,6 +2237,10 @@ fn apply_animated_promotion_to_tail_record(
     postretro_lighting::patch_shadow_slots(record, &[spot_slot]);
     postretro_lighting::patch_cube_slots(record, &[cube_slot]);
 }
+
+#[cfg(test)]
+#[path = "renderer_light_slots_admission_tests.rs"]
+mod admission_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2809,11 +2989,13 @@ mod tests {
                 candidate_index: 0,
                 score: 1.0,
                 is_promoted_baked: true,
+                mirror_only: false,
             },
             postretro_lighting::shadow_ranking::SlotCandidate {
                 candidate_index: 1,
                 score: 3.0,
                 is_promoted_baked: false,
+                mirror_only: false,
             },
         ];
         let assignment = postretro_lighting::shadow_ranking::assign_slots_with_hysteresis(
@@ -2839,6 +3021,7 @@ mod tests {
                     candidate_index,
                     score: 1.0,
                     is_promoted_baked: true,
+                    mirror_only: false,
                 },
             )
             .collect::<Vec<_>>();
@@ -2940,6 +3123,7 @@ mod tests {
             resample: true,
             forward_visible: false,
             dynamic_shadow_visible: false,
+            mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
             ghost_look: None,
         };
         let planned_outside = PlannedInstance {

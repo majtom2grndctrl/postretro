@@ -152,6 +152,7 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
         resample: true,
         forward_visible: true,
         dynamic_shadow_visible: true,
+        mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
         presentation: if is_viewmodel {
             postretro_render_cpu::mesh_instances::MeshPresentation::Viewmodel
         } else {

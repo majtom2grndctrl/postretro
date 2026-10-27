@@ -13,7 +13,7 @@ use crate::session::level_streaming::settle::{ResourceSettle, SettleReport, Sett
 /// One entry's Settling frames, from install to the release decision. A
 /// resource that never answered (it does not stream, or was never asked)
 /// keeps its peaks `None`.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub(crate) struct SettleLog {
     frames: u32,
     walk_frames: u32,
@@ -22,6 +22,12 @@ pub(crate) struct SettleLog {
     lightmap_set_peak: Option<usize>,
     sh_unsettled_peak: Option<usize>,
     lightmap_unsettled_peak: Option<usize>,
+    /// The height of the plane the latest held frame's mirror drew, `None`
+    /// with no mirror view.
+    planar_held: Option<f32>,
+    /// The latest held frame's lightmap blocks in mirror-only cells outside
+    /// the camera cell's baked set; `None` when the lightmap does not stream.
+    mirror_only_blocks: Option<usize>,
 }
 
 fn raise(peak: &mut Option<usize>, value: Option<usize>) {
@@ -63,6 +69,16 @@ impl SettleLog {
         );
     }
 
+    /// One held frame's planar mirror: `plane` is the selected plane's height
+    /// when the mirror drew, `mirror_only_blocks` the lightmap blocks of its
+    /// mirror-only cells outside the camera cell's baked set (`None` when
+    /// the lightmap does not stream). The held pose is fixed, so the latest
+    /// frame's values stand for the entry.
+    pub(crate) fn observe_planar(&mut self, plane: Option<f32>, mirror_only_blocks: Option<usize>) {
+        self.planar_held = plane;
+        self.mirror_only_blocks = mirror_only_blocks;
+    }
+
     /// Closes the stretch on its release decision. `hold` runs from entry to
     /// the deciding frame, the span the timeout measures.
     pub(crate) fn finish(self, timed_out: bool, hold: Duration) -> SettleSummary {
@@ -75,7 +91,7 @@ impl SettleLog {
 }
 
 /// A released entry's Settling record, waiting for its reveal frame's misses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SettleSummary {
     log: SettleLog,
     timed_out: bool,
@@ -94,19 +110,36 @@ impl<T: Display> Display for Count<T> {
     }
 }
 
+/// A planar plane's height to the millimetre, or `none` with no mirror view.
+struct PlaneHeight(Option<f32>);
+
+impl Display for PlaneHeight {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(h) => write!(f, "{h:.3}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
 impl SettleSummary {
     /// The entry's one `[Settling]` line. `reveal_misses` is the lightmap
     /// blocks the reveal frame drew while not installed, `None` when the
     /// lightmap does not stream. On a settled entry every settle-set block
     /// was installed, so when the reveal pose is the settled pose these lie
     /// outside the settle set; a timed-out entry's count also holds
-    /// settle-set blocks still missing.
-    pub(crate) fn line(&self, reveal_misses: Option<u32>) -> String {
+    /// settle-set blocks still missing. `planar_reveal` is the plane the
+    /// reveal frame's mirror drew: at the held pose it is `planar_held`'s.
+    /// `mirror_only_blocks` counts the held pose's lightmap blocks that only
+    /// the mirror draws and the camera cell's baked set does not hold: what
+    /// planar adds to the settle set past the baked lead.
+    pub(crate) fn line(&self, reveal_misses: Option<u32>, planar_reveal: Option<f32>) -> String {
         let log = &self.log;
         format!(
             "[Settling] entry outcome={} hold_ms={} frames={} walk_frames={} \
              step_limit_frames={} sh_set_peak={} lightmap_set_peak={} \
-             sh_unsettled_peak={} lightmap_unsettled_peak={} reveal_misses={}",
+             sh_unsettled_peak={} lightmap_unsettled_peak={} reveal_misses={} \
+             planar_held={} planar_reveal={} mirror_only_blocks={}",
             if self.timed_out {
                 "timed_out"
             } else {
@@ -121,11 +154,14 @@ impl SettleSummary {
             Count(log.sh_unsettled_peak),
             Count(log.lightmap_unsettled_peak),
             Count(reveal_misses),
+            PlaneHeight(log.planar_held),
+            PlaneHeight(planar_reveal),
+            Count(log.mirror_only_blocks),
         )
     }
 
-    pub(crate) fn log(&self, reveal_misses: Option<u32>) {
-        log::info!("{}", self.line(reveal_misses));
+    pub(crate) fn log(&self, reveal_misses: Option<u32>, planar_reveal: Option<f32>) {
+        log::info!("{}", self.line(reveal_misses, planar_reveal));
     }
 }
 
@@ -168,7 +204,7 @@ mod tests {
         ] {
             log.observe_frame(path, pending, SettleSetSize::default());
         }
-        let line = log.finish(false, Duration::ZERO).line(None);
+        let line = log.finish(false, Duration::ZERO).line(None, None);
         assert!(
             line.contains("frames=6 walk_frames=2 step_limit_frames=2 "),
             "{line}"
@@ -201,12 +237,13 @@ mod tests {
             set(9, 50),
         );
         let summary = log.finish(false, Duration::from_millis(742));
-        summary.log(Some(3));
+        summary.log(Some(3), None);
         capture.assert_logged_once(
             log::Level::Info,
             "[Settling] entry outcome=settled hold_ms=742 frames=3 walk_frames=3 \
              step_limit_frames=0 sh_set_peak=9 lightmap_set_peak=52 sh_unsettled_peak=7 \
-             lightmap_unsettled_peak=40 reveal_misses=3",
+             lightmap_unsettled_peak=40 reveal_misses=3 planar_held=none planar_reveal=none \
+             mirror_only_blocks=n/a",
         );
     }
 
@@ -226,12 +263,47 @@ mod tests {
                 },
             );
         }
-        log.finish(true, Duration::from_secs(10)).log(None);
+        log.finish(true, Duration::from_secs(10)).log(None, None);
         capture.assert_logged_once(
             log::Level::Info,
             "[Settling] entry outcome=timed_out hold_ms=10000 frames=4 walk_frames=0 \
              step_limit_frames=4 sh_set_peak=5 lightmap_set_peak=n/a sh_unsettled_peak=2 \
-             lightmap_unsettled_peak=n/a reveal_misses=n/a",
+             lightmap_unsettled_peak=n/a reveal_misses=n/a planar_held=none \
+             planar_reveal=none mirror_only_blocks=n/a",
+        );
+    }
+
+    // O2, O3, AC 38: the line ends with the plane the held frames' mirror
+    // drew, the reveal frame's plane, and the held pose's mirror-only blocks
+    // outside the baked set, from the latest held frame. A pose whose mirror
+    // stopped drawing reads `none`; a streaming lightmap with nothing
+    // mirror-only reads 0, not n/a.
+    #[test]
+    fn settle_line_reports_the_held_and_reveal_planes_and_mirror_only_blocks() {
+        let capture = LogCapture::start();
+        let mut log = SettleLog::default();
+        let settled = report(ResourceSettle::Settled, ResourceSettle::Settled);
+        log.observe_frame(Some(WALK), settled, set(4, 12));
+        log.observe_planar(Some(-0.25), Some(5));
+        log.observe_frame(Some(WALK), settled, set(4, 12));
+        log.observe_planar(Some(-16.0), Some(3));
+        log.finish(false, Duration::from_millis(80))
+            .log(Some(0), Some(-16.0));
+        capture.assert_logged_once(
+            log::Level::Info,
+            "[Settling] entry outcome=settled hold_ms=80 frames=2 walk_frames=2 \
+             step_limit_frames=0 sh_set_peak=4 lightmap_set_peak=12 sh_unsettled_peak=0 \
+             lightmap_unsettled_peak=0 reveal_misses=0 planar_held=-16.000 \
+             planar_reveal=-16.000 mirror_only_blocks=3",
+        );
+
+        let mut log = SettleLog::default();
+        log.observe_frame(Some(STEP_LIMIT), settled, set(1, 2));
+        log.observe_planar(None, Some(0));
+        let line = log.finish(false, Duration::ZERO).line(Some(0), None);
+        assert!(
+            line.ends_with(" planar_held=none planar_reveal=none mirror_only_blocks=0"),
+            "{line}"
         );
     }
 }

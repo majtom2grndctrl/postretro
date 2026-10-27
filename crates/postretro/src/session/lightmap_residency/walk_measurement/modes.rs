@@ -4,7 +4,9 @@
 // Read once per process from `POSTRETRO_LIGHTMAP_WALK_*`; unset keeps the
 // harness's original run: 100° 16:9, pitch 0, reads racing real time.
 
-use glam::{Mat4, Vec3};
+use glam::Vec3;
+
+use crate::camera::RenderCamera;
 
 const HFOV_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_HFOV";
 const ASPECT_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_ASPECT";
@@ -12,6 +14,7 @@ const PITCH_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PITCH";
 const READS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_READS";
 const RECORD_OUT_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT";
 const RECORD_IN_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_IN";
+const PLANAR_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PLANAR";
 
 /// Default camera: `camera.rs` HFOV at 16:9.
 const DEFAULT_HFOV_DEGREES: f32 = 100.0;
@@ -83,6 +86,10 @@ pub(super) struct WalkModes {
     pub(super) record_out: Option<String>,
     /// A pre-change run's record this run is paired with.
     pub(super) record_in: Option<String>,
+    /// Run the play frame's planar mirror step each frame, at the very high
+    /// tier's preset, and stream main visible ∪ the mirror's drawable
+    /// visible cells (`mirror`).
+    pub(super) planar: bool,
 }
 
 impl WalkModes {
@@ -125,10 +132,19 @@ impl WalkModes {
         }
         modes.record_out = var(RECORD_OUT_ENV);
         modes.record_in = var(RECORD_IN_ENV);
+        if let Some(planar) = var(PLANAR_ENV) {
+            modes.planar = match planar.trim() {
+                "1" | "on" => true,
+                "0" | "off" => false,
+                other => panic!("{PLANAR_ENV} = 1 | on | 0 | off, not {other:?}"),
+            };
+        }
         modes
     }
 
     /// Projection, pitch and read mode: a paired run must match all three.
+    /// Planar stays out, so a planar-on run pairs with the same walk's
+    /// planar-off record: the bake-gap gate with planar on (§4).
     pub(super) fn label(&self) -> String {
         format!(
             "{}, pitch {} deg, {}",
@@ -139,12 +155,25 @@ impl WalkModes {
     }
 }
 
-/// The eye looking along `yaw` (0 faces -Z) tilted by `pitch`.
-pub(super) fn view_projection(eye: Vec3, yaw: f32, pitch: f32, projection: Projection) -> Mat4 {
+/// The eye looking along `yaw` (0 faces -Z) tilted by `pitch`, as the render
+/// camera the walk and the planar mirror step read: view and projection apart,
+/// as the play frame hands them over.
+pub(super) fn render_camera(
+    eye: Vec3,
+    yaw: f32,
+    pitch: f32,
+    projection: Projection,
+) -> RenderCamera {
     let (up, level) = pitch.sin_cos();
     let look = Vec3::new(-yaw.sin() * level, up, -yaw.cos() * level);
     let view = glam::camera::rh::view::look_at_mat4(eye, eye + look, Vec3::Y);
     let aspect = projection.aspect;
     let vfov = 2.0 * ((projection.hfov_degrees.to_radians() / 2.0).tan() / aspect).atan();
-    glam::camera::rh::proj::directx::perspective(vfov, aspect, 0.1, 4096.0) * view
+    let proj = glam::camera::rh::proj::directx::perspective(vfov, aspect, 0.1, 4096.0);
+    RenderCamera {
+        eye_position: eye,
+        forward: look,
+        view_matrix: view,
+        view_projection: proj * view,
+    }
 }

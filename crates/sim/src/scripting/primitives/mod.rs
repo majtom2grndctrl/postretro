@@ -104,7 +104,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket.",
         )
         .field("shadowBiasScale?", "number", "Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.")
-        .field("shadowOnly?", "bool", "When true, renders this mesh into shadow-depth passes only. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward.")
+        .field("shadowOnly?", "bool", "When true, hides this mesh from the main view: it renders only into shadow-depth passes and, at Reflection quality very high and ultra, the water mirror. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward.")
         .field(
             "animations?",
             "MeshAnimationStates",

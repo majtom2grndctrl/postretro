@@ -11,11 +11,15 @@ use crate::region_walk::RegionWalkStats;
 /// A walk frame (the portal path, including one that trips the step limit)
 /// records `portal_walk` and every counter, zeros included. A frame on any
 /// other path records only `portal_fallback`, so walk averages never mix in
-/// fallback frames.
+/// fallback frames. The mirror's walk records `mirror_walk` alone, on every
+/// frame it walks from a usable seed, a tripped walk included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisibilityStage {
     /// Time inside the portal walk only.
     PortalWalk,
+    /// Time inside the planar water mirror's seeded walk only, separate from
+    /// the camera walk.
+    MirrorWalk,
     Considered,
     Accepted,
     RejectedBlocked,
@@ -32,6 +36,7 @@ pub enum VisibilityStage {
 impl StageSet for VisibilityStage {
     const ALL: &'static [Self] = &[
         Self::PortalWalk,
+        Self::MirrorWalk,
         Self::Considered,
         Self::Accepted,
         Self::RejectedBlocked,
@@ -49,6 +54,7 @@ impl StageSet for VisibilityStage {
     fn label(self) -> &'static str {
         match self {
             Self::PortalWalk => "portal_walk",
+            Self::MirrorWalk => "mirror_walk",
             Self::Considered => "walk_considered",
             Self::Accepted => "walk_accepted",
             Self::RejectedBlocked => "walk_rejected_blocked",
@@ -62,14 +68,14 @@ impl StageSet for VisibilityStage {
 
     fn parent(self) -> Option<Self> {
         match self {
-            Self::PortalWalk | Self::StepLimit | Self::PortalFallback => None,
+            Self::PortalWalk | Self::MirrorWalk | Self::StepLimit | Self::PortalFallback => None,
             _ => Some(Self::PortalWalk),
         }
     }
 
     fn kind(self) -> StageKind {
         match self {
-            Self::PortalWalk => StageKind::Time,
+            Self::PortalWalk | Self::MirrorWalk => StageKind::Time,
             Self::StepLimit | Self::PortalFallback => StageKind::Marker,
             _ => StageKind::Count,
         }

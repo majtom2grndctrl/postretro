@@ -110,8 +110,9 @@ observability = []
 # gates binary modules and deliberately adds no dependencies.
 observe-live = []
 # Static offscreen frame capture for content CI. Gates binary-only modules and
-# adds no dependencies or UI surface.
-capture = []
+# adds no dependencies or UI surface. Also enables the renderer's capture-only
+# planar preset override, so a capture scene can retune it.
+capture = ["postretro-renderer/capture"]
 # Tracy profiler bridge: every CPU stage scope becomes a Tracy zone, with or
 # without POSTRETRO_CPU_TIMING. Adds tracy-client; never part of a release,
 # dist, or dependency-free diagnostic build. See: rendering_pipeline.md §12
@@ -138,6 +139,8 @@ postretro-ui = { workspace = true, features = ["test-fixtures"] }
 postretro-physics = { workspace = true, features = ["test-support"] }
 postretro-sim = { workspace = true, features = ["test-support"] }
 postretro-netcode = { workspace = true, features = ["test-support"] }
+# The mirror entry's capped test seam, for the app-side forced-trip test.
+postretro-visibility = { workspace = true, features = ["test-seams"] }
 # Exercise shipped TypeScript data scripts through the same SWC bundler used by
 # `scripts-build`, without spawning the sidecar process during unit tests.
 postretro-script-compiler = { path = "../script-compiler" }

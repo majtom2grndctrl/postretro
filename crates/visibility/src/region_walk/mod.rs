@@ -10,6 +10,8 @@ mod trace;
 #[cfg(test)]
 mod oracle;
 #[cfg(test)]
+mod real_map_mirror;
+#[cfg(test)]
 mod real_map_orientation;
 #[cfg(test)]
 mod real_map_sweep;
@@ -37,8 +39,9 @@ use geometry::{distance_to_polygon, wholly_behind};
 use postretro_level_loader::LevelWorld;
 use trace::Reject;
 
+pub(crate) use entries::walk_seeded;
 pub use entries::{PortalTraversal, SeededWalk, portal_traverse, portal_walk_seeded};
-pub(crate) use rect::ScreenRect;
+pub(crate) use rect::{SNAP_STEPS, ScreenRect};
 pub use scratch::PortalWalkScratch;
 pub(crate) use trace::{WalkTrace, trace_out_of_range};
 
@@ -97,9 +100,7 @@ impl WalkView {
     /// Seeded entry: the caller's eye, view-projection and near plane, as
     /// given. Nothing slides.
     pub(crate) fn seeded(eye: Vec3, view_proj: Mat4, near: FrustumPlane) -> Self {
-        let mut planes = frustum_plane_array(view_proj);
-        planes[NEAR_PLANE_INDEX] = near;
-        Self::from_planes(eye, view_proj, planes, true)
+        Self::from_planes(eye, view_proj, seeded_view_planes(view_proj, near), true)
     }
 
     fn from_planes(
@@ -140,6 +141,26 @@ impl WalkView {
         rect.push_planes(&self.rows, out);
         out.push(self.far);
     }
+}
+
+/// The seeded entry's view frustum: `view_proj`'s planes with `near` in
+/// place of its near plane. Used by the seeded entry's off-screen seed test
+/// and by the mirror's cull.
+pub(crate) fn seeded_view_planes(view_proj: Mat4, near: FrustumPlane) -> [FrustumPlane; 6] {
+    let mut planes = frustum_plane_array(view_proj);
+    planes[NEAR_PLANE_INDEX] = near;
+    planes
+}
+
+/// Whether the seeded entry walks from `seed` under `planes`
+/// ([`seeded_view_planes`]): in range, not solid, not exterior, and not wholly
+/// outside the frustum.
+pub(crate) fn seed_is_usable(world: &LevelWorld, planes: &[FrustumPlane], seed: usize) -> bool {
+    world.cells.get(seed).is_some_and(|cell| {
+        !cell.is_solid
+            && !cell.is_exterior
+            && !is_aabb_outside_planes(cell.bounds_min, cell.bounds_max, planes)
+    })
 }
 
 /// The walk's outermost clip region for `view`, in `scratch`'s plane buffer:
@@ -228,15 +249,10 @@ pub(crate) fn walk_from_seeds(
     let world = input.world;
     scratch.begin(world.cell_count());
     for &seed in seeds {
-        let Some(cell) = world.cells.get(seed) else {
-            continue;
-        };
-        if cell.is_solid
-            || cell.is_exterior
-            || is_aabb_outside_planes(cell.bounds_min, cell.bounds_max, &view.planes)
-        {
+        if !seed_is_usable(world, &view.planes, seed) {
             continue;
         }
+        let cell = &world.cells[seed];
         let nearest = view.eye.clamp(cell.bounds_min, cell.bounds_max);
         scratch.offer(seed, &ScreenRect::FULL, nearest.distance(view.eye));
     }

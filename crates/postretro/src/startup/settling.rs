@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 
+use postretro_visibility::VisibleCells;
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
@@ -145,9 +146,30 @@ impl App {
         // A load or unload request that arrived in this frame's transport
         // poll wins: no release is decided for a level about to unload.
         if self.level_requests.is_empty() {
+            // The plane the held pose's mirror drew, and the lightmap blocks
+            // only it demands past the camera cell's baked set. A frame with
+            // no held level frame walked nothing, so it leaves the last held
+            // frame's values standing.
+            let planar = held.as_ref().map(|held| {
+                let plane = self.planar_render.camera().map(|mirror| mirror.h);
+                // The mirror's drawable cells: what its draw adds to the
+                // drawn set, and so to lightmap demand. Its empty reach
+                // demands no block.
+                let mirror_cells: &[u32] = match self.planar_render.visible() {
+                    VisibleCells::Culled(cells) if self.planar_render.camera().is_some() => cells,
+                    _ => &[],
+                };
+                let mirror_only_blocks = self.session.as_ref().and_then(|session| {
+                    session.mirror_only_lightmap_blocks(held.visible_cells(), mirror_cells)
+                });
+                (plane, mirror_only_blocks)
+            });
             if let Some(settle) = self.settle.as_mut() {
                 let path = held.as_ref().map(|held| held.path());
                 settle.log.observe_frame(path, report, set);
+                if let Some((plane, mirror_only_blocks)) = planar {
+                    settle.log.observe_planar(plane, mirror_only_blocks);
+                }
             }
             self.advance_settle(report, frame_start);
         }
@@ -278,8 +300,9 @@ impl App {
     }
 
     /// The reveal frame's tail, after its lightmap drain counted the frame's
-    /// visible misses: logs the entry's one `[Settling]` line. An entry
-    /// abandoned before its reveal logs none.
+    /// visible misses: logs the entry's one `[Settling]` line, with the plane
+    /// the reveal frame's mirror drew. An entry abandoned before its reveal
+    /// logs none.
     pub(crate) fn log_settle_summary(&mut self) {
         let Some(summary) = self.settle_summary.take() else {
             return;
@@ -288,9 +311,14 @@ impl App {
             .session
             .as_ref()
             .and_then(|session| session.last_frame_lightmap_misses());
-        summary.log(reveal_misses);
+        let planar_reveal = self.planar_render.camera().map(|mirror| mirror.h);
+        summary.log(reveal_misses, planar_reveal);
     }
 }
+
+#[cfg(test)]
+#[path = "settling_planar_tests.rs"]
+mod planar_tests;
 
 #[cfg(test)]
 mod tests {
@@ -457,6 +485,7 @@ mod tests {
                 None,
                 StreamingFrame {
                     visible_cells: &visible,
+                    sh_visible_cells: &visible,
                     camera_cell: Some(0),
                     path: VisibilityPath::PrlPortal { walk_reach: 0 },
                     monotonic_seconds: 0.0,
@@ -562,7 +591,8 @@ mod tests {
             log::Level::Info,
             "[Settling] entry outcome=timed_out hold_ms=10000 frames=2 walk_frames=1 \
              step_limit_frames=1 sh_set_peak=n/a lightmap_set_peak=n/a sh_unsettled_peak=3 \
-             lightmap_unsettled_peak=n/a reveal_misses=n/a",
+             lightmap_unsettled_peak=n/a reveal_misses=n/a planar_held=none \
+             planar_reveal=none mirror_only_blocks=n/a",
         );
     }
 

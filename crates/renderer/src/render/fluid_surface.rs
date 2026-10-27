@@ -1,6 +1,7 @@
 // Fluid surface pass: environment-volume surface faces drawn translucent,
 // two-sided and moving in whole texels, after skinned meshes and before billboards.
-// The screen-space reflection pass lives in the submodule `fluid_surface/reflection_pass.rs`.
+// Submodules: the screen-space reflection pass (`fluid_surface/reflection_pass.rs`) and
+// planar routing (`fluid_surface/planar_routing.rs`: per-draw plane split, planar group 5).
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use std::num::NonZeroU64;
@@ -31,8 +32,10 @@ pub(crate) use super::fluid_scene_inputs::{FLUID_SCENE_INPUTS_GROUP, FluidSceneI
 
 use super::*;
 
-// The reflection pass reaches the installed level's buffers, so it lives
-// beneath this module.
+// The reflection pass and planar routing (the per-draw plane split and the
+// planar group 5) reach the installed level's buffers, so they live beneath
+// this module.
+mod planar_routing;
 mod reflection_pass;
 pub(crate) use reflection_pass::FluidReflectionMarchTuning;
 #[cfg(test)]
@@ -259,6 +262,13 @@ struct InstalledFluidSurfaces {
     /// Indexed by draw slot.
     volumes: Vec<FluidSurfaceVolume>,
     slots: FluidSurfaceSlots,
+    /// Every material range's triangles in runs by plane, for per-draw
+    /// planar routing.
+    planar_parts: Vec<planar_routing::PlanarIndexRange>,
+    /// Whether the level holds a candidate plane by the selection's own
+    /// install rule (`PlanarCandidates::from_volumes`, area floor included):
+    /// what holds the planar layer, with the app's verdict over it.
+    planar_candidate: bool,
     /// The planes the faces were cut along; tests read it.
     #[cfg(test)]
     grid: Option<postretro_render_cpu::fluid_surface::FluidGridPlanes>,
@@ -282,9 +292,10 @@ pub(crate) struct FluidSurfacePass {
     /// reflecting one. Each draw takes its row's variant.
     pipelines: [wgpu::RenderPipeline; 2],
     params_bind_group_layout: wgpu::BindGroupLayout,
-    /// Group 5. Built at full init, level or not, and rebuilt only by the
-    /// scene-target rebuild, when a fluid install or a tier change creates,
-    /// resizes or releases the reflection target, and at unload.
+    /// The SSR group 5; planar routing binds its own group 5 for the routed
+    /// plane's runs. Built at full init, level or not, and rebuilt only by
+    /// the scene-target rebuild, when a fluid install or a tier change
+    /// creates, resizes or releases the reflection target, and at unload.
     scene_inputs: FluidSceneInputs,
     /// The screen-space reflection pass, its pipeline built at full init at
     /// every tier; its target exists only while a level with a probe-bound
@@ -293,6 +304,8 @@ pub(crate) struct FluidSurfacePass {
     /// `None` until a level with drawable fluid surfaces installs: a level
     /// without them allocates nothing and never opens the pass.
     installed: Option<InstalledFluidSurfaces>,
+    /// The planar layer, its own group 5 and this frame's routed plane.
+    planar: planar_routing::PlanarRouting,
 }
 
 impl FluidSurfacePass {
@@ -351,12 +364,14 @@ impl FluidSurfacePass {
             scene_inputs,
             reflection,
             installed: None,
+            planar: Default::default(),
         }
     }
 
     /// Store the frame's eye fog weight; it uploads before the next fluid pass.
     pub fn set_fog_weight(&mut self, weight: f32) {
         self.scene_inputs.set_fog_weight(weight);
+        self.planar.set_fog_weight(weight);
     }
 
     /// Store the mod's reflection style; it uploads before the next
@@ -366,6 +381,7 @@ impl FluidSurfacePass {
         style: postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
     ) {
         self.scene_inputs.set_reflection_style(style);
+        self.planar.set_reflection_style(style);
         self.set_reflection_pass_style(style);
     }
 
@@ -387,6 +403,7 @@ impl FluidSurfacePass {
     pub fn clear(&mut self, device: &wgpu::Device) {
         self.installed = None;
         self.set_reflection_target(device, None);
+        self.set_planar_layer(device, None, false);
     }
 
     /// Upload every drawable surface face of `volumes`, triangulated by
@@ -490,6 +507,7 @@ impl FluidSurfacePass {
                 mesh.vertices.len(),
             ),
         }
+        let planar_parts = planar_routing::split_planar_ranges(&mesh, volumes, reflection_probes);
         self.installed = Some(InstalledFluidSurfaces {
             vertex_buffer,
             drift_buffer,
@@ -503,6 +521,8 @@ impl FluidSurfacePass {
             reflection_probe_bind_group,
             volumes: mesh.volumes,
             slots,
+            planar_parts,
+            planar_candidate: planar_routing::has_candidate_plane(volumes, reflection_probes),
             #[cfg(test)]
             grid: mesh.grid,
             #[cfg(test)]
@@ -623,7 +643,8 @@ impl FluidSurfacePass {
 
     /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
     /// binds 1, 4 and the scene inputs (5), built with the scene targets and
-    /// the reflection target.
+    /// the reflection target. Group 5 starts as the SSR group; the routed
+    /// plane's reflecting runs rebind the planar group (`planar_routing.rs`).
     /// Each draw takes its row's shader variant under `light_term_mask` and
     /// `quality`, the frame's group-0 mask and tier, the ones the reflection
     /// pass took its draws by; the pipeline is set only where it changes
@@ -651,6 +672,10 @@ impl FluidSurfacePass {
         pass.set_vertex_buffer(2, installed.probe_index_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
+        // Group 5 per draw by plane identity: the routed plane's reflecting
+        // runs read the planar layer, every other draw the SSR target.
+        let route = self.planar_route(quality);
+        let mut bound_inputs = planar_routing::BoundSceneInputs::Ssr;
         let mut bound_variant = None;
         let mut bound_window = None;
         let mut bound_material = None;
@@ -659,6 +684,7 @@ impl FluidSurfacePass {
                 pass.set_pipeline(self.pipeline(variant));
                 bound_variant = Some(variant);
             }
+            let routed = route.filter(|_| variant.reflections());
             let (window, element) = slot_window(slot);
             if bound_window != Some(window) {
                 let offset = u64::from(window) * FLUID_PARAMS_WINDOW_BYTES;
@@ -678,11 +704,7 @@ impl FluidSurfacePass {
                     pass.set_bind_group(1, &material.bind_group, &[]);
                     bound_material = Some(range.material_index);
                 }
-                pass.draw_indexed(
-                    range.index_start..range.index_start + range.index_count,
-                    0,
-                    element..element + 1,
-                );
+                self.draw_routed_range(pass, installed, range, element, routed, &mut bound_inputs);
             }
         }
     }
@@ -782,6 +804,8 @@ impl Renderer {
             material_count,
             lattice.as_ref(),
         );
+        // A candidate plane at a planar tier holds the planar layer from install.
+        self.sync_planar_layer();
     }
 
     /// Every installed fluid face's world drift, one per surface face of every
@@ -860,6 +884,9 @@ impl Renderer {
         if let Some(full) = full.as_mut() {
             full.fluid_surface.set_reflection_quality(device, quality);
         }
+        // The planar layer follows the tier: allocated at very high and ultra
+        // on a level with a candidate plane, released below. Compiles nothing.
+        self.sync_planar_layer();
         log::info!("[Renderer] Reflection quality: {quality:?}");
     }
 

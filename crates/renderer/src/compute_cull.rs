@@ -438,6 +438,12 @@ impl ComputeCullPipeline {
         self.total_leaves
     }
 
+    /// The level's per-material leaf buckets; the planar mirror draws its
+    /// visible spans over them directly.
+    pub(crate) fn bucket_ranges(&self) -> &[BucketRange] {
+        &self.bucket_ranges
+    }
+
     pub fn debug_bitmask_fingerprint(&self) -> (u32, u32) {
         let mut pop = 0u32;
         let mut hash = 0u32;

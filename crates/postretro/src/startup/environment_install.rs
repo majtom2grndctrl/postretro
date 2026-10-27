@@ -129,13 +129,16 @@ impl App {
         }
     }
 
-    /// Install `world`'s environment volumes against the active fluid table.
-    /// The level install calls this before the parity digest and any tick.
+    /// Install `world`'s environment volumes against the active fluid table,
+    /// then its planar candidates from that table, telling the renderer
+    /// whether the level holds one. The level install calls this before the
+    /// parity digest and any tick.
     pub(crate) fn install_environment_volumes(&mut self, world: &LevelWorld) {
         let (fluids, source) = self.active_fluid_table();
         self.environment_volumes = environment_volumes_for(world, fluids.names(), source);
         self.environment_fluids = fluids;
         self.environment_fluid_source = source;
+        self.install_planar_candidates(world);
     }
 
     /// Re-read the active fluid table and, when its names or source differ
@@ -169,6 +172,7 @@ impl App {
                 environment_volumes_for(world, self.environment_fluids.names(), source);
         }
         self.resolve_fluid_surface_drift();
+        self.reinstall_planar_candidates();
     }
 
     /// Point every `Swim { fluid }` pawn at `next`'s index for the name its

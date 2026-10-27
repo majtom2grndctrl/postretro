@@ -314,7 +314,7 @@ fn unorm16(value: f32) -> u16 {
 
 /// Upload a rigid skinned model under `handle` whose geometry is `quads` in
 /// draw order, one submesh on the placeholder material.
-fn install_skinned_model(renderer: &mut Renderer, handle: &str, quads: &[[Vertex; 4]]) {
+pub(super) fn install_skinned_model(renderer: &mut Renderer, handle: &str, quads: &[[Vertex; 4]]) {
     let mut mesh = SkinnedMesh::default();
     for corners in quads {
         let base = mesh.vertices.len() as u32;
@@ -388,6 +388,7 @@ fn skinned_ghost(handle: &str, holder: u32, look: GhostInstanceLook) -> MeshInst
         resample: true,
         forward_visible: true,
         dynamic_shadow_visible: false,
+        mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
         presentation: MeshPresentation::Ghost(look),
     }
 }
@@ -408,6 +409,7 @@ fn off_screen_world_mesh() -> MeshInstanceInput {
         resample: true,
         forward_visible: true,
         dynamic_shadow_visible: false,
+        mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
         presentation: MeshPresentation::World,
     }
 }

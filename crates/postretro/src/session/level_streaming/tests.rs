@@ -70,6 +70,7 @@ fn frame<'a>(
 ) -> StreamingFrame<'a> {
     StreamingFrame {
         visible_cells,
+        sh_visible_cells: visible_cells,
         camera_cell: Some(camera_cell),
         path: PORTAL,
         monotonic_seconds: 0.0,

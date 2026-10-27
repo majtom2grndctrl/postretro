@@ -246,6 +246,7 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
                 resample: true,
                 forward_visible: true,
                 dynamic_shadow_visible: false,
+                mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
                 presentation: if is_viewmodel {
                     postretro_render_cpu::mesh_instances::MeshPresentation::Viewmodel
                 } else {
@@ -314,6 +315,7 @@ fn ghost_draws_record_through_blend_and_dither_pipelines() {
         resample: true,
         forward_visible: true,
         dynamic_shadow_visible: true,
+        mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
         presentation: MeshPresentation::World,
     };
     let ghosts: Vec<_> = [0u16, 1]
@@ -321,6 +323,7 @@ fn ghost_draws_record_through_blend_and_dither_pipelines() {
             transform: Mat4::from_translation(Vec3::new(f32::from(link) + 1.0, 0.0, 0.0)),
             palette_cache_key: real.palette_cache_key.ghost_through(link),
             dynamic_shadow_visible: false,
+            mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
             presentation: MeshPresentation::Ghost(GhostInstanceLook {
                 opacity: 0.5,
                 saturation: 0.0,

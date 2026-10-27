@@ -14,7 +14,7 @@ use postretro_model::anim::{
 use postretro_model::sample_params::{ClipSample, FadeSource, MeshSampleParams};
 use postretro_model::skeleton::AnimationClip;
 use postretro_render_cpu::mesh_instances::{
-    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation,
+    MeshInstanceInput, MeshPaletteCacheKey, MeshPresentation, MirrorReach,
 };
 
 use super::hit_zones::{HitZoneStore, ModelHitZones};
@@ -54,10 +54,10 @@ impl<'a> SocketPoseResolver<'a> {
 
 /// Emit attachment draw inputs for one already-collected holder.
 ///
-/// Every attachment inherits the holder's cull decision. Skinned bindings share
-/// a single modifier-applied world-pose sample; rigid bindings consume their
-/// load-resolved rest matrix directly. No attachment independently looks up its
-/// socket table or cell.
+/// Every attachment inherits the holder's cull decision, its mirror reach
+/// included. Skinned bindings share a single modifier-applied world-pose
+/// sample; rigid bindings consume their load-resolved rest matrix directly. No
+/// attachment independently looks up its socket table or cell.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_for_holder(
     instances: &mut Vec<MeshInstanceInput>,
@@ -72,6 +72,7 @@ pub(crate) fn emit_for_holder(
     holder_seed: u32,
     forward_visible: bool,
     dynamic_shadow_visible: bool,
+    mirror: MirrorReach,
     attachments: &[MeshAttachment],
 ) -> bool {
     if attachments.is_empty() {
@@ -123,6 +124,7 @@ pub(crate) fn emit_for_holder(
             resample: false,
             forward_visible,
             dynamic_shadow_visible,
+            mirror,
             presentation: MeshPresentation::World,
         });
     }

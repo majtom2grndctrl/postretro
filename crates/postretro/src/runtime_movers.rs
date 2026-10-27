@@ -222,7 +222,12 @@ pub(crate) struct KinematicMoverRenderCollector {
     sh_sample_regions: Vec<ShSampleRegion>,
     mover_bounds: HashMap<u32, postretro_render_data::cone_frustum::Aabb>,
     mover_bounds_source: Option<MoverBoundsSource>,
+    /// The main view's visible-cell bounds: what [`Self::visible_at`] culls
+    /// against, so a ghost never reads the mirror's cells.
     visible_cell_bounds: Vec<(u32, Vec3, Vec3)>,
+    /// The drawn set's cell bounds (main and mirror) when it differs from
+    /// the main view's; beauty admission reads them. Reused across frames.
+    drawn_cell_bounds: Vec<(u32, Vec3, Vec3)>,
 }
 
 impl KinematicMoverRenderCollector {
@@ -235,6 +240,7 @@ impl KinematicMoverRenderCollector {
             mover_bounds: HashMap::new(),
             mover_bounds_source: None,
             visible_cell_bounds: Vec::new(),
+            drawn_cell_bounds: Vec::new(),
         }
     }
 
@@ -246,8 +252,12 @@ impl KinematicMoverRenderCollector {
         self.mover_bounds.clear();
         self.mover_bounds_source = None;
         self.visible_cell_bounds.clear();
+        self.drawn_cell_bounds.clear();
     }
 
+    /// Test entry, with no planar mirror: [`Self::collect_with_mirror`] with
+    /// `visible` as both sets.
+    #[cfg(test)]
     pub(crate) fn collect(
         &mut self,
         registry: &EntityRegistry,
@@ -255,12 +265,40 @@ impl KinematicMoverRenderCollector {
         visible: &VisibleCells,
         alpha: f32,
     ) {
+        self.collect_with_mirror(registry, world, visible, visible, alpha);
+    }
+
+    /// One frame's movers. Beauty draws and SH sample regions admit against
+    /// `drawn`, the frame's drawn set (`main` plus the planar mirror's
+    /// cells), so a mover only the mirror sees still draws there.
+    /// [`Self::visible_at`] culls against `main` alone. Shadow casters ignore
+    /// both.
+    pub(crate) fn collect_with_mirror(
+        &mut self,
+        registry: &EntityRegistry,
+        world: &LevelWorld,
+        main: &VisibleCells,
+        drawn: &VisibleCells,
+        alpha: f32,
+    ) {
         self.instances.clear();
         self.shadow_instances.clear();
         self.occluder_aabbs.clear();
         self.sh_sample_regions.clear();
         self.refresh_mover_bounds(world);
-        self.rebuild_visible_cell_bounds(world, visible);
+        rebuild_cell_bounds(world, main, &mut self.visible_cell_bounds);
+        // The drawn set is `main` itself with no mirror view: share its bounds.
+        let drawn_is_main = std::ptr::eq(main, drawn);
+        if drawn_is_main {
+            self.drawn_cell_bounds.clear();
+        } else {
+            rebuild_cell_bounds(world, drawn, &mut self.drawn_cell_bounds);
+        }
+        let drawn_cell_bounds = if drawn_is_main {
+            &self.visible_cell_bounds
+        } else {
+            &self.drawn_cell_bounds
+        };
 
         for (id, value) in registry.iter_with_kind(ComponentKind::KinematicMover) {
             let ComponentValue::KinematicMover(mover) = value else {
@@ -294,11 +332,11 @@ impl KinematicMoverRenderCollector {
 
             let origin_cell = world.locate_cell(current.position) as u32;
             if mover_visible_against_cell_bounds(
-                visible,
+                drawn,
                 origin_cell,
                 current_world_aabb.min,
                 current_world_aabb.max,
-                &self.visible_cell_bounds,
+                drawn_cell_bounds,
             ) {
                 self.instances.push(instance);
                 self.sh_sample_regions.push(ShSampleRegion::new(
@@ -341,11 +379,13 @@ impl KinematicMoverRenderCollector {
         Some(bounds_center_under((local.min + local.max) * 0.5, pose))
     }
 
-    /// Whether mover `mover_id` drawn at `model` passes the beauty draw's cull:
-    /// its origin cell or its world bounds against this frame's visible cells.
-    /// A ghost culls here at its mapped model, whatever the real mover's
-    /// visibility. Reads the visible-cell bounds [`Self::collect`] rebuilt this
-    /// frame, so it runs after `collect`. A mover with no geometry draws nothing.
+    /// Whether mover `mover_id` drawn at `model` passes the main view's cull:
+    /// its origin cell or its world bounds against this frame's main visible
+    /// cells, never the planar mirror's. A ghost culls here at its mapped
+    /// model, whatever the real mover's visibility. Reads the main view's
+    /// cell bounds [`Self::collect_with_mirror`] rebuilt this frame, so it
+    /// runs after the collect, with the same `visible` set as its `main`. A
+    /// mover with no geometry draws nothing.
     pub(crate) fn visible_at(
         &self,
         world: &LevelWorld,
@@ -383,21 +423,25 @@ impl KinematicMoverRenderCollector {
         }
         self.mover_bounds_source = Some(source);
     }
+}
 
-    fn rebuild_visible_cell_bounds(&mut self, world: &LevelWorld, visible: &VisibleCells) {
-        self.visible_cell_bounds.clear();
-        let VisibleCells::Culled(cells) = visible else {
-            return;
-        };
-
-        self.visible_cell_bounds.reserve(cells.len());
-        self.visible_cell_bounds
-            .extend(cells.iter().filter_map(|cell| {
-                world
-                    .cell_bounds(*cell as usize)
-                    .map(|(min, max)| (*cell, min, max))
-            }));
-    }
+/// `visible`'s cell bounds into `out`, reused; empty for `DrawAll`, which
+/// admits every mover without them.
+fn rebuild_cell_bounds(
+    world: &LevelWorld,
+    visible: &VisibleCells,
+    out: &mut Vec<(u32, Vec3, Vec3)>,
+) {
+    out.clear();
+    let VisibleCells::Culled(cells) = visible else {
+        return;
+    };
+    out.reserve(cells.len());
+    out.extend(cells.iter().filter_map(|cell| {
+        world
+            .cell_bounds(*cell as usize)
+            .map(|(min, max)| (*cell, min, max))
+    }));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1562,6 +1606,7 @@ pub(crate) mod tests {
         collector
             .visible_cell_bounds
             .push((2, Vec3::ZERO, Vec3::ONE));
+        collector.drawn_cell_bounds.push((3, Vec3::ZERO, Vec3::ONE));
 
         collector.clear();
 
@@ -1572,6 +1617,7 @@ pub(crate) mod tests {
         assert!(collector.mover_bounds.is_empty());
         assert_eq!(collector.mover_bounds_source, None);
         assert!(collector.visible_cell_bounds.is_empty());
+        assert!(collector.drawn_cell_bounds.is_empty());
     }
 
     #[test]
@@ -1678,6 +1724,35 @@ pub(crate) mod tests {
         assert!(collector.instances().is_empty());
         assert!(collector.shadow_instances().is_empty());
         assert!(collector.occluder_aabbs().is_empty());
+    }
+
+    // With the planar mirror drawing, a mover in a cell only the mirror
+    // draws (cell 0 here; the main view draws cell 1) records for the beauty
+    // pass and SH sampling, while a ghost culled at the same pose through
+    // `visible_at` reads the main view's cells alone and is not collected.
+    #[test]
+    fn mover_collector_admits_mirror_only_movers_but_culls_ghosts_against_main_cells() {
+        let mut registry = EntityRegistry::new();
+        let geometry = geometry(0);
+        let mover_id = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
+        let world = two_cell_world(geometry);
+        let main = VisibleCells::Culled(vec![1]);
+        let drawn = VisibleCells::Culled(vec![0, 1]);
+        let pose = *registry.get_component::<Transform>(mover_id).unwrap();
+
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect_with_mirror(&registry, &world, &main, &drawn, 1.0);
+        assert_eq!(collector.instances().len(), 1, "the mirror draws the mover");
+        assert_eq!(collector.sh_sample_regions().len(), 1);
+        assert!(
+            !collector.visible_at(&world, &main, 7, transform_matrix(pose)),
+            "a ghost overlapping only a mirror-only cell is not collected"
+        );
+
+        // Planar off: the same main set admits neither.
+        collector.collect(&registry, &world, &main, 1.0);
+        assert!(collector.instances().is_empty());
+        assert!(!collector.visible_at(&world, &main, 7, transform_matrix(pose)));
     }
 
     #[test]

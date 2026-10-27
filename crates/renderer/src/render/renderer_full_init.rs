@@ -120,6 +120,20 @@ pub(crate) fn build_full_renderer(
         &dynamic_influences,
         geometry,
     );
+    // The planar mirror's copy of the light records and its forward group 2,
+    // over the same influence, spec-light and chunk-grid buffers.
+    let mirror_lighting = renderer_mirror_lights::MirrorLighting::new(
+        device,
+        &lighting_bind_group_layout,
+        &lights_buffer,
+        &renderer_mirror_lights::SharedLightingBuffers {
+            influence: &influence_buffer,
+            spec_lights: &spec_lights_buffer,
+            chunk_grid_info: &chunk_grid_info_buffer,
+            chunk_grid_offsets: &chunk_grid_offsets_buffer,
+            chunk_grid_indices: &chunk_grid_indices_buffer,
+        },
+    );
 
     // Sampler pool seeded with the placeholder's mip count of `1`. The
     // pool grows in `install_textures` once `LoadedTexture::mip_count`
@@ -476,6 +490,7 @@ pub(crate) fn build_full_renderer(
     mesh_pass.rebuild_light_bind_group(
         device,
         &lights_buffer,
+        mirror_lighting.lights_buffer(),
         &influence_buffer,
         &sh_volume_resources.scripted_light_descriptors,
         &sh_volume_resources.animation.anim_samples,
@@ -511,6 +526,7 @@ pub(crate) fn build_full_renderer(
     kinematic_brush.rebuild_light_bind_group(
         device,
         &lights_buffer,
+        mirror_lighting.lights_buffer(),
         &influence_buffer,
         &sh_volume_resources.scripted_light_descriptors,
         &sh_volume_resources.animation.anim_samples,
@@ -534,6 +550,14 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources.bind_group_layout,
         &depth_view,
         screen_effects.scene_color_view(),
+    );
+    // Every planar pipeline builds here at every tier, so a tier change
+    // compiles nothing. See: context/lib/rendering_pipeline.md §7.3a
+    let planar_reflection = planar_reflection::PlanarReflectionPass::new(
+        device,
+        &uniform_bind_group_layout,
+        &texture_bind_group_layout,
+        smoke_pass.instance_bind_group_layout(),
     );
     let rigid_occluder_depth = rigid_occluder_depth::RigidOccluderDepthPass::new(
         device,
@@ -622,6 +646,7 @@ pub(crate) fn build_full_renderer(
         uniform_buffer,
         uniform_bind_group,
         lighting_bind_group,
+        mirror_lighting,
         influence_buffer,
         dynamic_light_capacity: level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
         light_count,
@@ -690,6 +715,7 @@ pub(crate) fn build_full_renderer(
         kinematic_brush,
         kinematic_ghost,
         fluid_surface,
+        planar_reflection,
         rigid_occluder_depth,
         promoted_static_states: vec![
             PromotedBakedLightState::default();

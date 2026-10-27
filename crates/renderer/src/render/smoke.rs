@@ -1354,6 +1354,18 @@ impl SmokePass {
         &self.sheet_bind_group_layout
     }
 
+    /// The billboard pipeline, which the planar mirror also draws its sprites
+    /// through (`rendering_pipeline.md` §7.3a).
+    pub(super) fn pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+
+    /// The group-6 sprite-instance layout, so another instance store (the
+    /// planar mirror's) binds into this pipeline.
+    pub(super) fn instance_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.instance_bind_group_layout
+    }
+
     /// Collection `collection`'s group-1 bind group (frame array, sampler and
     /// draw params), if it registered this level.
     pub(super) fn sheet_bind_group(&self, collection: &str) -> Option<&wgpu::BindGroup> {

@@ -347,6 +347,7 @@ mod tests {
         for capture in [
             include_str!("../capture/mod.rs"),
             include_str!("../capture/prepared.rs"),
+            include_str!("../capture/receivers.rs"),
             include_str!("../capture/driver.rs"),
             include_str!("../capture/setup.rs"),
             include_str!("../capture/scene.rs"),
@@ -357,8 +358,8 @@ mod tests {
             assert!(!code.contains("ModRenderProfile"));
             assert!(!code.contains("ModReflection"));
         }
-        let prepared = code_only(include_str!("../capture/prepared.rs"));
-        assert!(prepared.contains(
+        let setup = code_only(include_str!("../capture/setup.rs"));
+        assert!(setup.contains(
             "ifletSome(style)=scene.reflection_style{\
              renderer.set_fluid_reflection_style(style.renderer());}"
         ));
@@ -454,8 +455,8 @@ mod tests {
             }
         }
         // The tier capture sets comes from its scene file alone.
-        let prepared = include_str!("../capture/prepared.rs");
-        let code: String = prepared.split_whitespace().collect();
+        let setup = include_str!("../capture/setup.rs");
+        let code: String = setup.split_whitespace().collect();
         assert_eq!(code.matches("set_reflection_quality(").count(), 1);
         assert!(code.contains(
             "ifletSome(quality)=scene.reflection_quality{\

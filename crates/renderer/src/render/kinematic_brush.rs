@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use postretro_render_cpu::planar_reflection::aabb_in_planes;
 use postretro_render_data::cone_frustum::Aabb;
 use wgpu::util::DeviceExt;
 
@@ -74,6 +75,12 @@ pub(crate) struct KinematicBrushPass {
     instance_bind_group: wgpu::BindGroup,
     light_bind_group_layout: wgpu::BindGroupLayout,
     light_bind_group: Option<wgpu::BindGroup>,
+    /// Group 2 for the planar mirror's draws, over the mirror's light records
+    /// (`rendering_pipeline.md` §7.3a, Pool rank); built beside
+    /// `light_bind_group`.
+    mirror_light_bind_group: Option<wgpu::BindGroup>,
+    /// Whether this frame's mirror draws read the mirror's light records.
+    mirror_light_records: bool,
     light_params_buffer: wgpu::Buffer,
     cube_array_supported: bool,
     movers: Vec<UploadedMoverDraw>,
@@ -503,6 +510,8 @@ impl KinematicBrushPass {
             instance_bind_group,
             light_bind_group_layout,
             light_bind_group: None,
+            mirror_light_bind_group: None,
+            mirror_light_records: false,
             light_params_buffer,
             cube_array_supported,
             movers: Vec::new(),
@@ -712,6 +721,7 @@ impl KinematicBrushPass {
         &mut self,
         device: &wgpu::Device,
         lights: &wgpu::Buffer,
+        mirror_lights: &wgpu::Buffer,
         influence: &wgpu::Buffer,
         scripted_descriptors: &wgpu::Buffer,
         anim_samples: &wgpu::Buffer,
@@ -787,6 +797,18 @@ impl KinematicBrushPass {
             layout: &self.light_bind_group_layout,
             entries: &entries,
         }));
+        // The mirror's group differs only in b0.
+        entries[0].resource = mirror_lights.as_entire_binding();
+        self.mirror_light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Kinematic Brush Mirror Light Bind Group (group 2)"),
+            layout: &self.light_bind_group_layout,
+            entries: &entries,
+        }));
+    }
+
+    /// Whether this frame's mirror draws read the mirror's light records.
+    pub(crate) fn set_mirror_light_records(&mut self, mirror: bool) {
+        self.mirror_light_records = mirror;
     }
 
     pub fn upload_instances(
@@ -909,20 +931,64 @@ impl KinematicBrushPass {
     }
 
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
+        self.record_draws_with(pass, materials, false, |_| true);
+    }
+
+    /// The planar mirror's mover draws: [`Self::record_draws`] with group 2
+    /// over the mirror's light records on a frame a mirror-only light holds
+    /// a shadow slot, skipping each mover whose world bounds miss the
+    /// mirror's cull frustum (`cull_planes`) or lie wholly below its clip
+    /// plane, so the mirror pays no vertex work for movers it cannot show.
+    pub fn record_mirror_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        materials: &[GpuTexture],
+        cull_planes: &[glam::Vec4; 6],
+        clip_plane: glam::Vec4,
+    ) {
+        self.record_draws_with(pass, materials, self.mirror_light_records, |active| {
+            let local = self.mover_bounds[active.mover_draw_index];
+            self.instance_model(active.instance_index)
+                .is_none_or(|model| mover_reaches_mirror(local, model, cull_planes, clip_plane))
+        });
+    }
+
+    /// The model transform `upload_instances` packed at `instance_index`.
+    fn instance_model(&self, instance_index: u32) -> Option<glam::Mat4> {
+        let start = instance_index as usize * INSTANCE_ENTRY_SIZE;
+        let bytes = self
+            .instance_bytes
+            .get(start..start + INSTANCE_ENTRY_SIZE)?;
+        let mut cols = [0.0f32; 16];
+        for (value, word) in cols.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *value = f32::from_ne_bytes(*word);
+        }
+        Some(glam::Mat4::from_cols_array(&cols))
+    }
+
+    fn record_draws_with(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        materials: &[GpuTexture],
+        mirror_light_records: bool,
+        draws: impl Fn(&ActiveMoverDraw) -> bool,
+    ) {
         if !self.has_draws() {
             return;
         }
-        let light_bind_group = self
-            .light_bind_group
-            .as_ref()
-            .expect("kinematic brush light bind group must be built before recording draws");
+        let light_bind_group = if mirror_light_records {
+            self.mirror_light_bind_group.as_ref()
+        } else {
+            self.light_bind_group.as_ref()
+        }
+        .expect("kinematic brush light bind group must be built before recording draws");
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(2, light_bind_group, &[]);
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-        for active in &self.beauty_draws {
+        for active in self.beauty_draws.iter().filter(|&active| draws(active)) {
             let mover = &self.movers[active.mover_draw_index];
             let instance_range = active.instance_index..active.instance_index + 1;
             for range in &mover.material_ranges {
@@ -942,6 +1008,23 @@ impl KinematicBrushPass {
             }
         }
     }
+}
+
+/// Whether a mover with local bounds `local` under `model` can show in the
+/// mirror: its world bounds reach inside `cull_planes` and above
+/// `clip_plane`, both as `dot(plane, vec4(p, 1)) >= 0`.
+fn mover_reaches_mirror(
+    local: Aabb,
+    model: glam::Mat4,
+    cull_planes: &[glam::Vec4; 6],
+    clip_plane: glam::Vec4,
+) -> bool {
+    let world = local.transformed(&model);
+    let normal = clip_plane.truncate();
+    // The corner farthest along the clip normal: below the plane there,
+    // the whole box is.
+    let top = glam::Vec3::select(normal.cmpge(glam::Vec3::ZERO), world.max, world.min);
+    aabb_in_planes(world.min, world.max, cull_planes) && normal.dot(top) + clip_plane.w >= 0.0
 }
 
 #[cfg(test)]
@@ -1490,5 +1573,40 @@ mod tests {
                 && dynamic_loop.contains("sample_point_shadow_with_static("),
             "raw section-45 mover tails must keep descriptors while reading their static-world cache metadata after the dynamic prefix",
         );
+    }
+
+    // The mirror's mover draws skip a mover whose world bounds (local bounds
+    // under its model transform) miss the mirror's cull frustum or lie
+    // wholly below its clip plane; one above the water in the reflected view
+    // still draws.
+    #[test]
+    fn mover_mirror_cull_skips_movers_off_the_mirror_view_or_under_the_water() {
+        use glam::{Mat4, Vec3};
+        use postretro_render_cpu::planar_reflection::MirrorCamera;
+        let eye = Vec3::new(0.0, 2.0, 0.0);
+        let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::new(0.0, 0.0, -10.0), Vec3::Y);
+        let proj =
+            glam::camera::rh::proj::directx::perspective(60.0_f32.to_radians(), 1.0, 0.1, 100.0);
+        let mirror = MirrorCamera::new(eye, view, proj, 0.0, None).unwrap();
+        let planes = mirror.cull_planes();
+        let local = Aabb {
+            min: Vec3::splat(-0.5),
+            max: Vec3::splat(0.5),
+        };
+        let reaches = |centre: Vec3| {
+            mover_reaches_mirror(
+                local,
+                Mat4::from_translation(centre),
+                &planes,
+                mirror.clip_plane,
+            )
+        };
+        assert!(reaches(Vec3::new(0.0, 1.0, -10.0)), "above the water");
+        assert!(
+            !reaches(Vec3::new(0.0, -1.5, -10.0)),
+            "inside the frustum but wholly under the water"
+        );
+        assert!(!reaches(Vec3::new(50.0, 1.0, -10.0)), "off to the side");
+        assert!(!reaches(Vec3::new(0.0, 1.0, 10.0)), "behind the eye");
     }
 }

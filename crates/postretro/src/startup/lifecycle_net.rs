@@ -123,6 +123,7 @@ impl App {
         self.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
         self.kinematic_mover_render.clear();
         self.fluid_surface_render.clear();
+        self.planar_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.teleporter_bindings = Default::default();
         self.ghost_links = Default::default();

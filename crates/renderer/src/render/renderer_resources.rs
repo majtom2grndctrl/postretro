@@ -458,6 +458,20 @@ impl Renderer {
                 },
             ],
         });
+        // The mirror's copy follows the reallocated light buffer, and its
+        // group the reallocated influence, spec-light and chunk-grid buffers.
+        full.mirror_lighting.rebuild(
+            device,
+            &full.lighting_bind_group_layout,
+            &full.lights_buffer,
+            &renderer_mirror_lights::SharedLightingBuffers {
+                influence: &full.influence_buffer,
+                spec_lights: &spec_lights_buffer,
+                chunk_grid_info: &chunk_grid_info_buffer,
+                chunk_grid_offsets: &chunk_grid_offsets_buffer,
+                chunk_grid_indices: &chunk_grid_indices_buffer,
+            },
+        );
 
         // --- SH volume, sh_compose, lightmap, animated lightmap ---
         // This ledger is intentionally scoped to one level install. Every SH
@@ -546,6 +560,7 @@ impl Renderer {
         full.mesh_pass.rebuild_light_bind_group(
             device,
             &full.lights_buffer,
+            full.mirror_lighting.lights_buffer(),
             &full.influence_buffer,
             &full.sh_volume_resources.scripted_light_descriptors,
             &full.sh_volume_resources.animation.anim_samples,
@@ -559,6 +574,7 @@ impl Renderer {
         full.kinematic_brush.rebuild_light_bind_group(
             device,
             &full.lights_buffer,
+            full.mirror_lighting.lights_buffer(),
             &full.influence_buffer,
             &full.sh_volume_resources.scripted_light_descriptors,
             &full.sh_volume_resources.animation.anim_samples,
@@ -800,6 +816,7 @@ impl Renderer {
         // every geometry install (unload included) drops the previous level's,
         // its reflection target with them.
         full.fluid_surface.clear(device);
+        full.planar_reflection.clear_level();
         clear_kinematic_mover_frame_state(
             &mut full.kinematic_mover_draws,
             &mut full.kinematic_mover_shadow_draws,

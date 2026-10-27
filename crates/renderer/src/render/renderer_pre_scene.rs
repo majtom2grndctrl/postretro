@@ -349,6 +349,7 @@ impl Renderer {
             device,
             queue,
             full,
+            reflection_quality,
             ..
         } = self;
         let full = full
@@ -550,11 +551,15 @@ impl Renderer {
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_LM_COMPOSE));
+            // The planar mirror's drawn cells compose too, on a frame it draws.
+            let compose = full
+                .planar_reflection
+                .compose_cells(visible, *reflection_quality);
             full.animated_lightmap.dispatch(
                 queue,
                 encoder,
                 &full.uniform_bind_group,
-                visible,
+                compose,
                 animated_ts,
             );
         }

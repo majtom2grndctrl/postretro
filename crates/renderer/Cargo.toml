@@ -40,6 +40,9 @@ dev-tools = [
     "dep:egui-winit",
     "postretro-render-cpu/dev-tools",
 ]
+# Capture-only controls the app's `capture` feature drives: the planar
+# preset override a capture scene sets. Adds no dependencies.
+capture = []
 
 [dev-dependencies]
 blake3.workspace = true

@@ -33,6 +33,7 @@ mod loaded_texture;
 mod mesh_depth;
 mod mesh_ghost;
 mod mesh_pass;
+mod planar_reflection;
 mod promoted_depth_cache;
 pub(crate) mod residency;
 mod rigid_occluder_depth;
@@ -123,6 +124,7 @@ mod renderer_init_resources;
 mod renderer_light_slots;
 mod renderer_light_terms;
 mod renderer_lighting;
+mod renderer_mirror_lights;
 mod renderer_models;
 mod renderer_pre_scene;
 mod renderer_render_frame;
@@ -256,6 +258,7 @@ pub(crate) use renderer_geometry::{
 /// before its next bright interval.
 pub use renderer_light_slots::PROMOTE_SECONDS;
 pub(crate) use renderer_lighting::*;
+pub use renderer_mirror_lights::{AdmissionOccupancy, ShadowPoolOccupancy};
 #[cfg(feature = "dev-tools")]
 pub use renderer_types::AgentOverlayState;
 pub use renderer_types::{

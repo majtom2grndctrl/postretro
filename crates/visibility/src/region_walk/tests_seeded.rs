@@ -15,6 +15,7 @@ use super::{
     MAX_PORTAL_WALK_STEPS, PORTAL_BYPASS_DISTANCE, PortalWalkScratch, RegionWalkStats, WalkView,
     walk_from_camera, walk_from_seeds,
 };
+use crate::mirror_crop::{MIRROR_CROP_PAD_RADIANS, MirrorCropScratch, crop_mirror_view_proj};
 use crate::visibility::{
     FrustumPlane, NEAR_PLANE_INDEX, extract_frustum_planes, is_aabb_outside_frustum,
 };
@@ -29,6 +30,8 @@ const MIRROR_POSES: usize = 48;
 struct MirrorPose {
     eye: Vec3,
     view_proj: Mat4,
+    /// The main camera's view-projection the pose mirrors.
+    camera_view_proj: Mat4,
     water: f32,
     seeds: Vec<usize>,
 }
@@ -37,6 +40,41 @@ impl MirrorPose {
     fn view(&self) -> WalkView {
         WalkView::seeded(self.eye, self.view_proj, water_plane(self.water))
     }
+
+    /// The seeded view cropped to `water` (one face spanning the fixture) as
+    /// the app crops it, when the face is in the main view; `None` when
+    /// nothing of it projects.
+    fn cropped_view(&self, water: &[Vec3], scratch: &mut MirrorCropScratch) -> Option<WalkView> {
+        let lo = water.iter().copied().fold(Vec3::INFINITY, Vec3::min);
+        let hi = water.iter().copied().fold(Vec3::NEG_INFINITY, Vec3::max);
+        if is_aabb_outside_frustum(lo, hi, &extract_frustum_planes(self.camera_view_proj)) {
+            return None;
+        }
+        let view_proj = crop_mirror_view_proj(
+            self.view_proj,
+            self.eye,
+            [water],
+            MIRROR_CROP_PAD_RADIANS,
+            scratch,
+        )?;
+        Some(WalkView::seeded(
+            self.eye,
+            view_proj,
+            water_plane(self.water),
+        ))
+    }
+}
+
+/// The fixture's water: one face over the whole grid at height `h`.
+fn water_face(grid: &GridWorld, h: f32) -> [Vec3; 4] {
+    let (x0, x1) = (grid.xs[0], grid.xs[grid.xs.len() - 1]);
+    let (z0, z1) = (grid.zs[0], grid.zs[grid.zs.len() - 1]);
+    [
+        Vec3::new(x0, h, z0),
+        Vec3::new(x0, h, z1),
+        Vec3::new(x1, h, z1),
+        Vec3::new(x1, h, z0),
+    ]
 }
 
 /// The water plane facing the visible, above-water side.
@@ -93,6 +131,7 @@ fn mirror_poses(grid: &GridWorld, water: f32, clearance: f32, count: usize) -> V
             poses.push(MirrorPose {
                 eye,
                 view_proj,
+                camera_view_proj: camera_view_proj(camera, yaw, pitch),
                 water,
                 seeds,
             });
@@ -508,24 +547,61 @@ fn seeded_walk_between_camera_walks_leaves_the_camera_result_unchanged() {
     }
 }
 
-// Row 33 (seeded part): the cap keeps 2x headroom over every seeded sweep.
+// Row 33 (seeded part), AC 17: the cap keeps 2x headroom over every seeded
+// sweep, the mirror's uncropped and cropped alike; each pose's cropped reach
+// lies within its uncropped reach, and the crop cuts some pose's.
 #[test]
 fn seeded_walk_cap_keeps_double_headroom_over_seeded_sweeps() {
     let mut scratch = PortalWalkScratch::new();
+    let mut crop_scratch = MirrorCropScratch::default();
+    let mut cut_poses = 0;
     for (name, grid, water, clearance) in mirror_fixtures() {
         let world = &grid.world;
-        let mut worst = 0;
+        let face = water_face(&grid, water);
+        let (mut worst, mut worst_cropped, mut cropped_poses, mut cut) = (0, 0, 0, 0);
         for pose in mirror_poses(&grid, water, clearance, 4 * MIRROR_POSES) {
             let stats = seeded(world, &pose.view(), &pose.seeds, u32::MAX, &mut scratch);
             assert!(!stats.step_limit_hit);
             worst = worst.max(stats.considered);
+            let uncropped = reached_set(&scratch);
+
+            let Some(view) = pose.cropped_view(&face, &mut crop_scratch) else {
+                continue;
+            };
+            cropped_poses += 1;
+            let stats = seeded(world, &view, &pose.seeds, u32::MAX, &mut scratch);
+            assert!(!stats.step_limit_hit);
+            worst_cropped = worst_cropped.max(stats.considered);
+            let cropped = reached_set(&scratch);
+            let stray: Vec<u32> = cropped
+                .iter()
+                .copied()
+                .filter(|c| uncropped.binary_search(c).is_err())
+                .collect();
+            assert!(
+                stray.is_empty(),
+                "{name}: the cropped walk reached {stray:?} the uncropped one does not, at eye {:?}",
+                pose.eye
+            );
+            cut += usize::from(cropped.len() < uncropped.len());
         }
-        eprintln!("[region_walk seeded sweep] mirror {name}: worst_tests={worst}");
-        assert!(
-            MAX_PORTAL_WALK_STEPS >= 2 * worst,
-            "{name}: cap needs 2x headroom over {worst}"
+        eprintln!(
+            "[region_walk seeded sweep] mirror {name}: worst_tests={worst} \
+             cropped_worst_tests={worst_cropped} cropped_poses={cropped_poses} cut_poses={cut}"
         );
+        assert!(cropped_poses > 0, "{name}: the water is in view");
+        for (mode, worst) in [("uncropped", worst), ("cropped", worst_cropped)] {
+            assert!(
+                MAX_PORTAL_WALK_STEPS >= 2 * worst,
+                "{name} {mode}: cap needs 2x headroom over {worst}"
+            );
+        }
+        cut_poses += cut;
     }
+    assert!(
+        cut_poses > 0,
+        "some pose's cropped reach is strictly smaller"
+    );
     for (name, grid) in fixtures() {
         let world = &grid.world;
         let mut worst = 0;

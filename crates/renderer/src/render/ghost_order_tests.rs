@@ -42,6 +42,7 @@ fn instance(key: MeshPaletteCacheKey, feet: Vec3) -> PlannedInstance {
         resample: true,
         forward_visible: true,
         dynamic_shadow_visible: false,
+        mirror: postretro_render_cpu::mesh_instances::MirrorReach::Hidden,
         ghost_look: None,
     }
 }

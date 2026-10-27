@@ -15,6 +15,8 @@ pub mod loaded_texture;
 pub mod material_plan;
 pub mod mesh_instances;
 pub mod mesh_pass;
+pub mod planar_reflection;
+pub mod planar_tilt;
 pub mod render_extent;
 pub mod screen_effects;
 pub mod sdf_atlas;

@@ -956,6 +956,17 @@ pub struct MeshPass {
     /// [`MeshPass::light_params_buffer`].
     light_bind_group: Option<wgpu::BindGroup>,
 
+    /// Group 2 for the planar mirror's draws: the same bindings over the
+    /// mirror's light records, which alone carry the shadow slots of lights
+    /// only the mirror reaches (`rendering_pipeline.md` §7.3a, Pool rank).
+    /// Built beside [`Self::light_bind_group`].
+    mirror_light_bind_group: Option<wgpu::BindGroup>,
+
+    /// Whether this frame's mirror draws read the mirror's light records:
+    /// set by slot assignment each frame, true only while a mirror-only light
+    /// holds a shadow slot.
+    mirror_light_records: bool,
+
     /// Group 2 binding 4 params uniform (`MeshLightParams`): light count, the
     /// frame's forward `time`, and the captured forward `light_term_mask`.
     /// Fixed-size, owned here, written per frame by
@@ -1319,6 +1330,8 @@ impl MeshPass {
             viewmodel_uniform_bind_group,
             light_bind_group_layout,
             light_bind_group: None,
+            mirror_light_bind_group: None,
+            mirror_light_records: false,
             light_params_buffer,
             cube_array_supported,
             models: HashMap::new(),
@@ -1369,6 +1382,7 @@ impl MeshPass {
         &mut self,
         device: &wgpu::Device,
         lights: &wgpu::Buffer,
+        mirror_lights: &wgpu::Buffer,
         influence: &wgpu::Buffer,
         scripted_descriptors: &wgpu::Buffer,
         anim_samples: &wgpu::Buffer,
@@ -1449,6 +1463,18 @@ impl MeshPass {
             layout: &self.light_bind_group_layout,
             entries: &entries,
         }));
+        // The mirror's group differs only in b0.
+        entries[0].resource = mirror_lights.as_entire_binding();
+        self.mirror_light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Skinned Mesh Mirror Light Bind Group (group 2)"),
+            layout: &self.light_bind_group_layout,
+            entries: &entries,
+        }));
+    }
+
+    /// Whether this frame's mirror draws read the mirror's light records.
+    pub(crate) fn set_mirror_light_records(&mut self, mirror: bool) {
+        self.mirror_light_records = mirror;
     }
 
     /// Write this frame's group-2 params uniform (binding 4): the dynamic-light
@@ -1828,8 +1854,33 @@ impl MeshPass {
     /// The mesh collector can include shadow-only instances for selected static
     /// lights. Filter `forward_visible` so those instances feed shadow depth but
     /// skip the color pass, batching contiguous visible runs so the common
-    /// all-visible frame issues one draw per group/submesh.
+    /// all-visible frame issues one draw per group/submesh. Instances only
+    /// the planar mirror reaches never draw here.
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, plan: &MeshFramePlan) {
+        self.record_draws_where(pass, plan, false, |instance| instance.forward_visible);
+    }
+
+    /// The planar mirror's skinned-mesh draws from the same uploaded buffers:
+    /// every world instance the mirror reaches, shared with the main view or
+    /// the mirror's alone (`rendering_pipeline.md` §7.3a). Group 0 carries
+    /// the mirror camera. Only the world plan reaches the mirror, so ghosts
+    /// and the viewmodel never draw here. Group 2 carries the mirror's light
+    /// records on a frame a mirror-only light holds a shadow slot.
+    pub fn record_mirror_draws(&self, pass: &mut wgpu::RenderPass<'_>, plan: &MeshFramePlan) {
+        self.record_draws_where(pass, plan, self.mirror_light_records, |instance| {
+            instance.mirror.drawn()
+        });
+    }
+
+    /// One instanced draw per maximal contiguous run of instances `drawn`
+    /// admits, per group and submesh.
+    fn record_draws_where(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        plan: &MeshFramePlan,
+        mirror_light_records: bool,
+        drawn: impl Fn(&postretro_render_cpu::mesh_instances::PlannedInstance) -> bool,
+    ) {
         if plan.groups.is_empty() {
             return;
         }
@@ -1842,10 +1893,12 @@ impl MeshPass {
         // installs, and the draw path is skipped until a model is uploaded, so
         // this is `Some` on every frame a mesh actually draws. The expect guards
         // against a future caller reordering that wiring after the draw.
-        let light_bind_group = self
-            .light_bind_group
-            .as_ref()
-            .expect("mesh group-2 light bind group must be built before recording mesh draws");
+        let light_bind_group = if mirror_light_records {
+            self.mirror_light_bind_group.as_ref()
+        } else {
+            self.light_bind_group.as_ref()
+        }
+        .expect("mesh group-2 light bind group must be built before recording mesh draws");
         pass.set_bind_group(2, light_bind_group, &[]);
         // Group 3 (palette + instance SSBO) is shared across every group/submesh
         // this frame — set once. The shader selects each instance's run via
@@ -1862,16 +1915,16 @@ impl MeshPass {
 
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
             pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            // One instanced draw per maximal contiguous run of `forward_visible`
-            // instances. Non-forward synthetic entries break a run; an all-visible
-            // group collapses to one run. The base instance is
+            // One instanced draw per maximal contiguous run of drawn instances.
+            // Undrawn entries break a run; an all-drawn group collapses to one
+            // run. The base instance is
             // the run's absolute SSBO offset — the palette base still rides each
             // SSBO entry, never `first_instance` (DX12 reads it as 0,
             // gfx-rs/wgpu#2471), addressed by `@builtin(instance_index)`.
             let mut run_start: Option<u32> = None;
             for (i, inst) in group.instances.iter().enumerate() {
                 let abs = group.instance_offset + i as u32;
-                if inst.forward_visible {
+                if drawn(inst) {
                     run_start.get_or_insert(abs);
                 } else if let Some(start) = run_start.take() {
                     draw_forward_run(pass, model, start..abs);
@@ -1885,7 +1938,7 @@ impl MeshPass {
     }
 }
 
-/// One instanced draw per submesh over a contiguous `range` of `forward_visible`
+/// One instanced draw per submesh over a contiguous `range` of drawn
 /// instances. Sets group 1 (material) per submesh; group 3 (palette + instance
 /// SSBO) is bound once per frame by the caller.
 fn draw_forward_run(

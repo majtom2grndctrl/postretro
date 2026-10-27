@@ -1,7 +1,7 @@
 # planar-water-reflections — plan of record
 
 mode: resumable
-status: approved
+status: done (landed 2026-10-27)
 read at: 25db4c78f (crates/ identical to main 8ea68d8be; spike `claude/planar-water-spike` 8201dfb8e, base 473185e88)
 
 **Approved 2026-10-25** by the owner, with the AC 10 restatement below applied to the brief as proposed.

@@ -463,6 +463,15 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
 - Seven render passes per planar frame; measure before merging.
 - A fixture that admits mirror-only lights and instances, so AC 39 reads a non-zero yield in a live run.
 
+**Full gate after the body-mirror change and the merge of `origin/main` 45c7670cc (merge 878a01576), 2026-10-27:**
+- fmt clean; clippy `-D warnings` clean in default, dev-tools and capture.
+- Workspace tests excluding renderer and postretro: 0 failures.
+- Renderer lib, single-threaded: 1,095 passed, 2 failed (the pre-existing ghost pair).
+- `postretro` bin, default / dev-tools / capture: 2,120 / 2,154 / 2,194 passed, each with only the pre-existing font failure.
+- FXC: every full-init pipeline compiled. Release check clean; crate graph up to date.
+
+This matches the baseline. The measured rows weren't rerun: High captures (AC 34) don't run planar, and crop parity (AC 36) compares two very_high runs that the body change affects equally.
+
 **Landing docs drafted 2026-10-26, ahead of "land the plane":** every `context/lib` item below and in the earlier landing list is written. That covers `rendering_pipeline.md` §4, §7.3a, the tier table, §7.8 capture `planar_reflection`, §9, §10 and §12, plus `boot_sequence.md` §1, `player_options.md` §4, `index.md`, `resource_management.md` §9 and `entity_model.md` (`shadowOnly`). §12's "Planar cost" cites `plans/done/planar-water-reflections`, so the brief must land there. Left for landing: move the brief to `done/`, clean up, push.
 
 **For landing (`context/lib`):** besides the items already listed:

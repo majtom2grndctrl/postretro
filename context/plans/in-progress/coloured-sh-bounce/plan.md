@@ -56,7 +56,7 @@ read at: 3275d1480
 | 34 | Owner A/B at `campaign-test` stations against a build of the indirect-scale commit alone, grey bounce at the unified scale: hue spill reads right, and overall energy is checked; this decides any retune of the default indirect scale and the saturation constant. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | outstanding — owner; A/B aid: bounce demo room |
 | 35 | Entities beside the world read indirect consistent with it; fluids and water reflections take the tint with it. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | outstanding — owner; A/B aid: bounce demo room (mover cube shows entity tint) |
 | 36 | The A/B checks fog separately: it dims with the darker bounce, the expected result, and raising a volume's `min_brightness` or `ambient_scatter` restores its look. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | outstanding — owner; A/B aid: bounce demo room |
-| 37 | Cold bake time before and after on `campaign-test` and `stress-warren-mini`: SH Bake, the material stage, TextureMips and total, one bake at a time, plus warm material-stage time (baseline: `research.md` §Bake-time baseline). | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | outstanding — warm material-stage timing being measured |
+| 37 | Cold bake time before and after on `campaign-test` and `stress-warren-mini`: SH Bake, the material stage, TextureMips and total, one bake at a time, plus warm material-stage time (baseline: `research.md` §Bake-time baseline). | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | pass — see §Rebase, triage and warm timings |
 | 38 | `docs/level_design.md` tells authors that indirect light takes each texture's average colour, leaving out texels that glow, so repainting a texture changes its bounce. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | pass — note written and later clarified |
 | 39 | Code review: the diff adds no runtime code beyond applying and retuning the indirect scale. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | pass — round-2 renderer contract verifier: only additions are the `frame_indirect_scale` snapshot field plus scale plumbing |
 
@@ -237,15 +237,21 @@ read at: 3275d1480
   - geometry-integrity-validation: "occlusion-test 64"
   - planar-water-reflections research: "2,021 tests"
 
+## Rebase, triage and warm timings — 2026-10-27
+- Compiler `--ignored` rerun (`--no-fail-fast`, env-gated `cluster_directory_threshold_dry_run_from_prl` and `lightmap_residency_dry_run_from_prl` skipped, `POSTRETRO_GREY_PRL_BUILD` set): every coloured-bounce target passes (cache 7, empty 6, oracle 3); "ignored set" rows pass. Remaining failures are pre-existing and fail identically on main: `animated_weight_maps_fixtures` ×4 (all-animated fixtures now get a placeholder lightmap so ids 24/25 are absent; stale map-light-id assertion; stale golden PRL), `oversize_lightmap_maps::fitting_maps…` (needs `POSTRETRO_OVERSIZE_BASELINE_DIR`), `compiler_cli_contract::verbose_bakes_report_peak_texel_overlap…`. Per-section diff of those four fixtures branch vs main: only ids 27, 34 and derived id 50 differ (id 28 embeds the checkout path).
+- Rebased on origin/main 917e6755d (planar water reflections merged): one conflict (`lib.rs` module lines). No new SH consumer: the planar mirror re-renders through the existing forward/kinematic/skinned/billboard shaders and copies group-0 bytes including `indirect_scale`, so the scale applies once; the shader guard now asserts the planar resolve and mask shaders neither sample SH nor scale it. Pre-rebase branch kept as `backup/coloured-sh-bounce-pre-rebase`.
+- Warm timings (AC37), dev-profile `prl-build` at f07503d3e, one bake at a time, seconds:
+
+| Map | Run | Materials | SH Bake | TextureMips | Total |
+|---|---|---|---|---|---|
+| campaign-test | cold `--release` | 3.82 | 1.85 | 0.02 | 20.59 |
+| campaign-test | warm (all caches) | 0.10 | 0.39 | 0.01 | 4.94 |
+| stress-warren-mini | cold `--release` | 6.66 | 26.87 | 0.00 | 181.66 |
+| stress-warren-mini | warm (all caches) | 0.17 | 0.74 | 0.00 | 21.98 |
+
+- Final gate on the rebased tree: fmt and workspace clippy `-D warnings` pass (rebase run); `crate-graph --check` pass; `cargo test --workspace --features postretro/dev-tools` 13,208 passed, 0 failed, 88 ignored.
+
 ## Resume
-- Branch: codex/coloured-sh-bounce. HEAD: `a4fd8c916`. Claim commit `3275d1480` is on main. No push yet.
-- Remaining:
-  - fill in the compiler `--ignored` rerun result (rows marked "ignored set")
-  - warm material-stage timings (AC37)
-  - owner A/B, AC34–36, using the bounce demo room
-  - rebase on main, final gate, then wait for "land the plane"
-- Open owner questions:
-  - Add `context/lib/index.md` router entries for the material stage and indirect-scale consumers?
-  - Update the three stale plan figures listed under Bounce demo room?
-  - Add saturated dev textures?
-  - Retune indirect scale or saturation after the A/B?
+- Branch: codex/coloured-sh-bounce, rebased on origin/main 917e6755d. Not pushed.
+- Remaining: owner A/B (AC34–36) using the bounce demo room in occlusion-test; then "land the plane" (move brief to done/, push, PR).
+- Open owner questions: `context/lib/index.md` router entries (material stage / bounce albedo; indirect-scale consumers incl. the planar mirror); update the three stale occlusion-test figures in other plans; saturated dev textures for the demo; retune indirect scale or saturation after the A/B.

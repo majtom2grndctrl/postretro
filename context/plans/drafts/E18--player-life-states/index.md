@@ -107,6 +107,7 @@ Later phases build on this shape. Each is additive to this surface.
   - an unknown profile key
   - a `speedScale` outside `[0, 1]` or non-finite
   - an unknown `posture`
+  - `posture: "crouch"` on a descriptor whose movement declares no crouch
   - a `rejoin` key or value that names no declared state
   - the block on a descriptor without player movement
   - a mod whose distinct names exceed 255
@@ -122,7 +123,7 @@ Later phases build on this shape. Each is additive to this surface.
 
 ### Verbs and reads
 - [ ] **AC7.** `setLifeState(name)` from a player event applies in-tick. The next tick's gates read the new profile, and `player.lifeStateMs` restarts from 0. Setting the current state again is a no-op that keeps elapsed time. `player.lifeStateMs` reads whole milliseconds in the state, floored from the tick count with no per-tick rounding: at 60 Hz, `≥ 15000` first holds on the 900th tick in the state (O15).
-- [ ] **AC8.** Install rejects any reaction whose `setLifeState`, `respawn({ lifeState })` or `inLifeState` names a state absent from the mod's name table. The error names the reaction and the state. A runtime target whose descriptor lacks that state, or declares no states, warn-skips.
+- [ ] **AC8.** Install rejects any reaction whose `setLifeState` or `respawn({ lifeState })` names a state absent from the mod's name table, and the error names the reaction and the state. A player-event condition or `onStateCrossing` predicate whose `inLifeState` names such a state fails to bind, and the error names the state. A runtime target whose descriptor lacks that state, or declares no states, warn-skips.
 - [ ] **AC9.** `inLifeState(name)` holds exactly while the evaluated pawn is in `name`. This applies in player-event conditions and in local `onStateCrossing` predicates (own pawn).
 - [ ] **AC10.** `player.lifeState` (local String) and `player.lifeStateMs` reach the owning client's HUD. A HUD `visibleWhen` on `player.lifeState` equal to `"down"` shows only while downed. An undeclared pawn reads `player.lifeState` as `""`.
 
@@ -143,18 +144,18 @@ Later phases build on this shape. Each is additive to this surface.
   It enters `initial` instead when S has no `rejoin` entry, when S is absent from the current name table (a hot reload removed it), or when the hold expired. It returns at its seat placement, and carried health ≤ 0 restores max. A host suspend and resume keeps every held seat's carried state. A level change is not a rejoin: every pawn starts the next level in `initial`, held seats included. A pawn whose descriptor declares no states is unaffected.
 
 ### Co-op and lifecycle
-- [ ] **AC15.** A late joiner sees an existing downed teammate's life state (`inLifeState` on the host, posture on the avatar) with no extra baseline work.
+- [ ] **AC15.** A late joiner's baseline carries an existing downed teammate's `life_state`, elapsed and revision on that pawn's replicated movement state, and its avatar presents the crouched posture, with no extra baseline work. The host's `inLifeState` for that teammate holds throughout the join.
 - [ ] **AC16.** After hot reload, a pawn that stays materialized keeps its state by name, with elapsed time continuing, and gates by that state's new profile. This covers the host's own pawn, single player, and any remote pawn the reload does not demote. If the new descriptor removed the name, the pawn enters the new `initial` state with one warning. If it declares no states, the pawn becomes undeclared with one warning and gates by AC2's HP rules. A remote pawn whose slot the reload demotes on the mod digest is harvested and despawned. Its re-promotion is a rejoin and follows AC14 (O23).
 
 ### Client experience
 - [ ] **AC17.** A connected client running into a transition at 150 ms simulated round-trip time gets no teleport-class snap. The cases are down with `speedScale: 0.3` from a full run, and back to a full-speed state.
   - The correction takes a smoothed class (`CorrectionClass::Ordinary`, `Dash` or `OversizedSmoothed`, by size), never `Teleport`.
-  - The camera eases into and out of forced crouch exactly as a crouch-key press does.
+  - The presented eye height eases into and out of forced crouch at the installed `crouch.transition_rate`, with no frame-to-frame step larger than a crouch-key press produces.
   - Respawn is the only life-state path that snaps.
 - [ ] **AC18.** On the owning client, the `player.lifeStateMs` HUD value advances on every rendered frame of positive duration and never moves backwards when a snapshot lands, except at a real reset: a transition, a respawn, a rejoin (a change of pawn) or a teleport generation change (a teleporter use).
 
 ### Orderings and consumer
-- [ ] **AC19.** Every row of the Orderings table has a test asserting its expected outcome.
+- [ ] **AC19.** Every row of the Orderings table has a test asserting its expected outcome. The table is in this plan's `index.md` (`context/plans/in-progress/E18--player-life-states/index.md` while it builds). A task reads there every row its paragraph or Delivers line cites, and those rows' expected outcomes bind it.
 - [ ] **AC20.** The dev mod ships the down/bleed-out policy in TS and Luau twins, with a parity surface test:
   - zero HP → down: crawl, can fire, can't switch, use or touch, no occupancy
   - `inLifeState("down")` and `player.lifeStateMs` ≥ 15000 → respawn
@@ -199,7 +200,7 @@ Task agents cite rows by number. Expected outcomes are binding.
 | O24 | The host trims a client's command backlog past its catch-up bound while the client shows `lifeStateMs` | Host trim, snapshot acks a jumped cursor, replay | The displayed value holds, then rises. It falls only at a real reset: a change of pawn, replicated state or teleport generation, or replicated elapsed falling between consecutive snapshots |
 | O25 | Render rate above tick rate, frames with zero ticks included | Per-frame display over a per-tick value | The displayed `player.lifeStateMs` rises on every frame of positive duration ((elapsed ticks plus alpha) times the step, unfloored) on host, single player and client. A zero-duration frame shows the previous value |
 | O26 | A hot reload shifts ids; the Control datagram with the new `TuningPayload` is lost and resent while snapshots arrive | Unreliable snapshots before reliable, resent Control | For each record whose revision has no installed table, the client keeps its pawn's `life_state`, revision and stamps, and rebases elapsed so replay counts no tick twice. It adopts the record's fields once the matching payload installs. No shifted id resolves under another revision's table |
-| O27 | A pawn enters `x` at T and leaves at T+1, shorter than the snapshot interval | Host ticks T and T+1; snapshots every second tick | Host conditions see `x` for one pass. The owning client and observers may never see `x`, and client-local crossings on `inLifeState("x")` may not fire |
+| O27 | A pawn enters `x` at T and leaves at T+1, shorter than the snapshot interval | Host ticks T and T+1; snapshots every second tick | Host conditions see `x` for exactly one pass. The test asserts nothing on a client: the owning client and observers may never see `x`, and client-local crossings on `inLifeState("x")` may not fire |
 | O28 | A pawn uses a teleporter at T; respawn drains at T+1; one observer snapshot covers both | Coalesced observer sample, last teleporter none | The observer cuts once and plays no cue. The host seat records per tick and plays the T cue. The owning client plays the T cue only from its own forward prediction |
 | O29 | A trigger arms a teleporter whose region contains a respawn placement, on the tick a respawn to it is queued | Both drain at T+1 start, teleporter mutations first | The respawn's latch rebuild includes the newly armed teleporter. The pawn does not teleport until it leaves and re-enters |
 | O30 | The host suspends and resumes while its own pawn and connected P2 are both `down` | Suspend harvest; resume; the first poll drains P2's demotion; re-promotion | The host's pawn stays `down`, and its elapsed does not advance across the suspend, since no ticks run. P2 is harvested and despawned at that poll, then re-enters through the rejoin map at its seat placement: `rejoin.down` else `initial`, elapsed 0 (AC14) |
@@ -228,7 +229,7 @@ This slice falsifies the boundary assumptions.
 
 **Descriptor and validation**
 - Add `lifeStates` as an `EntityTypeDescriptor` field (`life_states`) beside `movement`, not a `DescriptorComponentKind`. That enum maps every kind to a runtime `ComponentKind` and a replication role, and life-state data has no runtime component: per-pawn state lives on `PlayerMovementComponent`, and profiles ride `TuningPayload`.
-- Both VMs read it into a neutral raw form, `rejoin` included. An omitted profile key permits: every boolean key defaults to `true`, `speedScale` to 1 and `posture` to `"stand"`, so `alive: {}` gates nothing. One shared validator, modelled on `validate_charge_interrupts` (sorted keys, `DescriptorError::InvalidShape` with full path), applies AC1. The lowered `rejoin` map stays host-side and does not ride `TuningPayload`.
+- Both VMs read it into a neutral raw form, `rejoin` included. An omitted profile key permits: every boolean key defaults to `true`, `speedScale` to 1 and `posture` to `"stand"`, so `alive: {}` gates nothing. One shared validator, modelled on `validate_charge_interrupts` (sorted keys, `DescriptorError::InvalidShape` with full path), applies AC1. The 255-name cap spans descriptors, so it runs once over the parsed `entities` array. It sits in each manifest reader that already rejects an undeclared entity faction (`runtime/mod_init_exec.rs` and `staged_manifest.rs`, both runtimes) and rejects the manifest. The lowered `rejoin` map stays host-side and does not ride `TuningPayload`.
 
 **Global name table and profiles**
 - Build a sorted union of every declared name across `DataRegistry::entities`. Store it as `DataRegistry::life_state_names` beside `entities`, with `DataRegistry::life_state_table_revision: u8` starting at 0. A state id is its index. Bind-time name resolution, `TuningPayload` construction, seat harvest and the reload remap all read this one table.
@@ -237,7 +238,7 @@ This slice falsifies the boundary assumptions.
 - `TuningPayload` is built per pawn (`tuning_payload_for_pawn`). It carries the full name table, the receiving pawn's own archetype profiles keyed by id, and the table revision (**Wire** below). Observers run no gates, so no other archetype's profiles ride it. `tuning_payload_for_pawn` and `host_resend_changed_tuning` gain `life_state_names: &[String]` and `life_state_table_revision: u8`; each caller passes them from `DataRegistry`.
 
 **Per-pawn state**
-- Add `life_state: u8` (255 = undeclared), `life_state_elapsed_ticks: u32` and `life_state_table_revision: u8` to `PlayerMovementComponent`, beside `teleport`. Elapsed counts whole host ticks in the state; `player.lifeStateMs` converts it per AC7 in integer arithmetic.
+- Add `life_state: u8` (255 = undeclared), `life_state_elapsed_ticks: u32` and `life_state_table_revision: u8` to `PlayerMovementComponent`, beside `teleport`. `from_descriptor` sets `life_state` to 255, and a defaulted `life_state` deserializes to 255, never 0. `LifeStateProfile` is a serde type in `postretro-foundation` beside the component, so the descriptor, `TuningPayload` and `restamp_life_state` share it. Elapsed counts whole host ticks in the state; `player.lifeStateMs` converts it per AC7 in integer arithmetic.
 - **Capability stamps.** Add one boolean stamp per boolean profile key to `PlayerMovementComponent`: `movement.abilities`, `look`, `fire`, `switchWeapon`, `reload`, `use`, `touch`, `occupancy`, `damageable`. Add the two value stamps beside them: `speedScale` (undeclared 1) and `posture` (undeclared stand). Every stamp field exists from this task on. Like `vault_barred`, the stamps are neither replicated nor serialized. An undeclared pawn's stamps are cleared.
 - **One write path.** Add `enter_life_state(component, id, profile, revision)` beside the component. It sets the id and revision, zeroes elapsed, then calls `restamp_life_state(component, profile)`. `restamp_life_state` re-derives every stamp from the profile. This task writes the boolean stamps; Task 2 adds the movement value stamps and the `vault_barred` derivation to the same body. Every `life_state` write either enters through `enter_life_state` or, where elapsed must continue, copies the fields and then calls `restamp_life_state`:
   - enter: spawn and the verb here, the respawn drain (Task 5), rejoin restore (Task 6), and the reload remap's removed-name and newly declared cases (Task 4)
@@ -263,7 +264,7 @@ This slice falsifies the boundary assumptions.
   | Tuning rebuild, after `carry_live_tick_state` | The entry for the carried revision holds a profile for the carried `life_state` | The live component's, carried verbatim | From that entry (O36) |
   | Tuning rebuild, after `carry_live_tick_state` | The carried `life_state` is 255 | The live component's, carried verbatim | Clear |
   | Tuning rebuild, after `carry_live_tick_state` | The carried `life_state` is declared (≠ 255) and the entry for the carried revision holds no profile for it (the installing payload kept the revision and dropped that state from this pawn's descriptor, O42) | The live component's, carried verbatim | None; the live component's stamps are copied onto the rebuilt one and stand until the next merge |
-- `TuningPayload` (`TUNING_PAYLOAD_EPOCH` 15→16, fixture updated) adds `life_state_names: Vec<String>` (sorted, ≤ 255), `life_state_profiles: Vec<(u8, LifeStateProfile)>` and `life_state_table_revision: u8`, JSON-serialized like its existing fields.
+- `TuningPayload` (`TUNING_PAYLOAD_EPOCH` 15→16, fixture updated) adds `life_state_names: Vec<String>` (sorted, ≤ 255), `life_state_profiles: Vec<(u8, LifeStateProfile)>` and `life_state_table_revision: u8`, JSON-serialized like its existing fields. `TuningPayload::same_pawn_tuning` compares all three, so a payload that changes only them bumps the client's tuning generation and runs the tuning rebuild (O14, O42).
 
 **Capability helper**
 - Add one helper, `player_capability(component, Capability) -> Option<bool>`, beside `PlayerMovementComponent` in `postretro-foundation`, so physics, sim and the app all reach it. It reads a boolean key's stamp on the pawn's component, on every role. Every boolean stamp read goes through it, the movement step, the teleporter step and look sampling included: an undeclared pawn's boolean stamps are cleared, so a raw read would gate it. No gate site reads `DataRegistry` or `TuningPayload`. Most sites hold only `&EntityRegistry` (`sweep_deaths`, `is_damage_target_eligible`, `binding_is_live`, `player_is_alive_for_trigger_occupancy`, `SimAiHost::is_quiescent`), and the profile reaches them through the component. On an undeclared pawn it returns `None`, and each gate site keeps its own HP-derived predicate. Those predicates differ per site, and AC2 holds each one exactly. `speedScale` and `posture` are value stamps, written by `restamp_life_state` and read directly by the movement step (Task 2).
@@ -285,17 +286,17 @@ This slice falsifies the boundary assumptions.
 
 **Verb and condition**
 - Add `setLifeState(name)`:
-  - SDK `playerVerbs` in `commands.ts` / `.luau`, plus the six type declarations, then regenerate.
+  - SDK `playerVerbs` in `commands.ts` / `.luau`, plus the type declarations in `commands.ts`, `sdk_lib.d.ts`, `data_script.luau` and `sdk_lib.luau`. Then regenerate `sdk/types/postretro.d.{ts,luau}` and the `expected.d.*` typedef fixtures.
   - A foundation payload check that `state` is an identifier.
   - Entries in `CONSEQUENTIAL_PRIMITIVES` and the debug mirror `is_trigger_consequential_primitive`.
   - `BoundTriggerCommand::SetLifeState { target, state_id }` and its executor. The executor reads the target's profile and revision from its descriptor's lowered block (`ScriptCtx`'s `DataRegistry`), calls `enter_life_state`, and is a no-op when the pawn is already in that state (AC7).
-  - The runtime registry handler for the post-`wait` group path.
+  - The runtime registry handler for the post-`wait` group path. A `ReactionPrimitiveRegistry` handler receives only the entity registry, so its registration captures a `ScriptCtx` clone, as `register_teleporter_reaction_primitives` does. The handler resolves `args.state` through each target descriptor's lowered block when it runs; a target that lacks the name warn-skips (AC8).
   - Deny it on npc groups in `validate_group_kind_primitive`. That function is kind-blind and runs only when a `kind` is present, so it gains the `GroupKind` its callers in `js/reactions.rs` and `lua/reactions.rs` already resolve.
 - Name validation for AC8 is one walk in `validate_reaction_bodies_pass_a`, with bind-time resolution as a fallback.
 - Add the `inLifeState(name)` SDK function, lowering to `{op:"input", name:"player.inLifeState:<name>"}`. `PlayerConditionScope` resolves it at bind to (state id, Bool) and fails the bind on an unknown name.
 
 **Test**
-- A two-player host/client test: a player event downs a pawn, its fire is refused, the client reads the same state.
+- A two-player host/client test: a player event downs a pawn, its fire is refused, the client reads the same state. It runs on the conditioned host/client harness in `postretro/src/host_activations/conditioned_tests.rs`, which drives the production weapon paths over `PacketConditioner`.
 - A downed `fire: true` pawn at zero HP keeps a held, burst and charge execution across death sweeps.
 - O15's player-event and trigger-reaction entries and O39's drain, asserted on `life_state_elapsed_ticks`: 1 at the player-event arm's T+1 pass, 0 at the trigger arm's T pass, 0 at O39's drain. Task 4 asserts their millisecond reads.
 - O26, O36 and O42.
@@ -316,7 +317,7 @@ Delivers AC1, AC3 (state arm), AC4 (`fire` key), AC7 (in-tick apply and same-sta
 - **`movement.posture: "crouch"`** forces crouch intent. Crouch already rewrites `capsule.eye_height`, so fire origin, hit validation and AI line of sight follow without new code.
 - **`look: false`** freezes view yaw and pitch input where it is sampled: the local camera (`app.camera.rotate` in `frame_loop/mod.rs`) on the host, in single player and on the owning client, each reading the own pawn's `look` stamp. A connected client's stamp changes when its replicated state merges. The host applies a remote pawn's command facing as sent and never clamps it, so a turn made before the state reached the client stands, and nothing snaps when it lands (O38). Replay reads each command's facing the same way. Respawn and teleporter turns still apply. Existing camera feel layers still run.
 - **Client smoothness.**
-  - A life-state change replicated to the owning client takes a smoothed reconcile class, never the teleport class. Magnitude alone does not hold it: the overshoot is the speed the state removes times the unacked window, and the teleport floor is `TELEPORT_CORRECTION_MIN_M`. The reconcile therefore forces it, keyed on the record against the pre-merge component, before the revision gate runs, so a merge the gate holds (O26, O42) is forced as one it adopts. A teleport record change still classifies `Teleport`, so the teleport class stays reserved for respawn (Task 5) and teleporters. AC17's 150 ms test pins the common case; a second test drives a transition whose overshoot exceeds the floor and asserts a smoothed class.
+  - A life-state change replicated to the owning client takes a smoothed reconcile class, never the teleport class. Magnitude alone does not hold it: the overshoot is the speed the state removes times the unacked window, and the teleport floor is `TELEPORT_CORRECTION_MIN_M`. The reconcile therefore forces it, keyed on the record against the pre-merge component, before the revision gate runs, so a merge the gate holds (O26, O42) is forced as one it adopts. A teleport record change still classifies `Teleport`, so the teleport class stays reserved for respawn (Task 5) and teleporters. AC17's 150 ms test pins the common case; a second test drives a transition whose overshoot exceeds the floor and asserts a smoothed class. Both run on `netcode/src/predict_reconcile_relay_harness.rs` with a 75 ms one-way `LinkConfig::delay` each direction.
 
     | Teleport record | Record's `life_state` or revision against the pre-merge component's | Magnitude | Class |
     |---|---|---|---|
@@ -324,7 +325,7 @@ Delivers AC1, AC3 (state arm), AC4 (`fire` key), AC7 (in-tick apply and same-sta
     | Unchanged | Differs | At or above the floor | `OversizedSmoothed`; a composed offset reaching the floor in `seed_presentation_offset` glides instead of snapping the eye |
     | Unchanged | Differs | Below the floor | `classify_correction`, by magnitude; a composed offset reaching the floor in `seed_presentation_offset` glides instead of snapping the eye |
     | Unchanged | Equal | Any | `classify_correction`, by magnitude |
-  - A forced posture change reaches the client a round trip late. Replay re-runs the crouch eye easing from the host transition tick, so the replayed `capsule.eye_height` lands mostly eased. The owning client therefore presents eye height through its own ease, at the installed tuning's `crouch.transition_rate`. The ease runs from the eye height presented before that reconcile toward the replayed `capsule.eye_height`.
+  - A forced posture change reaches the client a round trip late. Replay re-runs the crouch eye easing from the host transition tick, so the replayed `capsule.eye_height` lands mostly eased. The owning client therefore presents eye height through its own ease, at the installed tuning's `crouch.transition_rate`. The ease runs from the eye height presented before that reconcile toward the replayed `capsule.eye_height`. The presented eye is composed in `pawn_eye_position` (`main.rs`), so the ease applies there and its state lives in a new module. A concurrent task edits `main.rs`, so this task's `main.rs` edits stay inside `pawn_eye_position` and its call sites.
   - Replay, fire origin and the host never read the presented value.
 - Delivers AC2 (vault, teleporter, movement and look arms), AC4 (movement and look keys), AC5, AC6 (teleporter arm), AC17, O9, O13, O16 (movement and look arms), O38, O40 and O43.
 
@@ -332,6 +333,8 @@ Delivers AC1, AC3 (state arm), AC4 (`fire` key), AC7 (in-tick apply and same-sta
 
 Route each key through the Task 1 helper at its existing site. The helper returns `None` for an undeclared pawn, and the site then keeps its existing predicate unchanged (AC2).
 - **`switchWeapon` and `reload`:** the switch and reload request gates on host, single player and the client weapon frame. These are ungated at zero HP today.
+  - Sites: `run_client_weapon_equip` (`commands/local.rs`), `simulate_client_wieldable_tick`, the host switch timing lane (`switch_start_refused`, `remote_equip_gate` in `host_switch_timing.rs`), and `tick_weapon_machine_phases` with its `reload_refused` input. Also `advance_predicted_weapon_tick`, whose `fresh_reload` cancels an activation even when no reload starts, so a `reload: false` state suppresses that cancel too.
+  - A remote switch or reload sent before the client learned a `false` state is refused through that lane's existing refusal. An active slot that diverges converges through the active-slot resync. The client weapon frame gates on its own replicated state, as for fire.
 - **`use`:** trigger Use edges in `TriggerSystem::run_authoritative_tick_with_dispatch`.
 - **`touch`:** new Touch entries there and pickups in `touch.rs`. Gate the entry, never membership, so no false Exit fires. Teleporter entry reads the same stamp in Task 2's teleporter step.
 - **`occupancy`:** `player_is_alive_for_trigger_occupancy` / `effective_occupants`.
@@ -383,7 +386,7 @@ Route each key through the Task 1 helper at its existing site. The helper return
     | Host or single player | Any | Absent from the committed snapshot | As the matching "Declares no states" row |
     | Connected client | Any | Any | Nothing. Its pawns hold ids under the host's table and change only through the reconcile merge and the tuning rebuild (Task 1), which the next snapshot and payload drive (O37) |
   - The pass restamps every declared pawn it writes and never relies on a stamp the planner carried (`plan_movement_replace` carries `vault_barred`).
-  - `TuningPayload::same_pawn_tuning` compares the life-state fields too, so a profile-only reload re-sends tuning and the client rebuilds and restamps its pawn (O14).
+  - A profile-only reload re-sends tuning, and the client rebuilds and restamps its pawn, through `TuningPayload::same_pawn_tuning`'s life-state comparison (Task 1, O14).
   - The remap covers pawns that stay materialized (AC16). A remote pawn demoted on the mod digest is harvested and re-promoted through Task 6's rejoin path (O23).
 - **Tests.** Every AC arm and row in the Delivers line below. O15's player-event and trigger arms and O39 read through `player.lifeStateMs`, driving Task 1's verb and post-`wait` handler.
 - Delivers AC3 (`player.lifeStateMs` arm), AC7 (millisecond reading), AC9 (crossing arm), AC10, AC16, AC18, O8, O14, O15 (player-event and trigger arms), O24, O25, O27, O34, O37 and O39.
@@ -392,10 +395,10 @@ Route each key through the Task 1 helper at its existing site. The helper return
 
 **SDK and binding**
 - Add `respawn({ health?, lifeState? })`:
-  - SDK `playerVerbs` in `commands.ts` / `.luau`, plus the six type declarations, then regenerate.
+  - SDK `playerVerbs` in `commands.ts` / `.luau`, plus the type declarations in `commands.ts`, `sdk_lib.d.ts`, `data_script.luau` and `sdk_lib.luau`. Then regenerate `sdk/types/postretro.d.{ts,luau}` and the `expected.d.*` typedef fixtures.
   - A foundation payload check that `health`, when present, is a number and `state`, when present, is an identifier.
   - Entries in `CONSEQUENTIAL_PRIMITIVES` and the debug mirror `is_trigger_consequential_primitive`, so a trigger reaction binds it at the fixed tick.
-  - The runtime registry handler for the post-`wait` group path.
+  - The runtime registry handler for the post-`wait` group path. Its registration captures a `ScriptCtx` clone, as `register_teleporter_reaction_primitives` does, and the handler queues onto `ScriptCtx::pending_respawns`.
   - Deny it on npc groups in `validate_group_kind_primitive`, which takes a `GroupKind` (Task 1). A runtime non-player target warn-skips (AC13).
 - Extend the Task 1 name walk in `validate_reaction_bodies_pass_a` to `respawn`'s `state` argument, and warn-skip a runtime target per AC8 (its `respawn` arm).
 - Add `BoundTriggerCommand::Respawn`. It queues a `RespawnRequest { pawn, health, state }`, where `state` names the target state (`None` = `initial`).
@@ -420,7 +423,7 @@ Route each key through the Task 1 helper at its existing site. The helper return
 - One drain relocates its requests in seat order.
 - Pick the placement per AC13. The overlap test is origin distance under the sum of capsule radii with overlapping vertical extents, against other live pawns. No physics query exists for pawn-vs-pawn. Each pick tests against positions after the earlier relocations in the same drain, so pawns respawning on one tick never share a placement while a free one exists (O18). A pawn whose request comes later in the same drain does not count against an earlier pick: it leaves its position in that drain, before any movement.
 - Set position, and transform yaw to the placement facing, through `set_presentation_transform`, as a teleporter arrival does. The **Yaw** bullet's deltas read the facing and transform yaw from before this write. The drain runs after the tick-start transform snapshot, so a plain write would leave the death spot as the previous pose and the host would draw the pawn blending across the map for that tick (O44). Zero `velocity`, `knockback_velocity` and `push_velocity`, and leave `Dash` or `Sliding` for `Normal`, so no banked boost survives.
-- Settle ground at the placement as a teleporter arrival does (`settle_arrival_ground`, exposed from `physics/src/movement/teleport.rs`), so mover carry from the death spot never follows the pawn.
+- Settle ground at the placement as a teleporter arrival does, so mover carry from the death spot never follows the pawn. The arrival tail of `teleport::resolve` (`physics/src/movement/teleport.rs`) is inline there: ground settle (`settle_arrival_ground`), generation bump, `accumulated_yaw`, and the `arrival_latches` rebuild over armed regions. Factor it into one public function that `resolve` and the drain both call.
 - **Yaw.** The delta is the placement facing minus this tick's resolved facing. Remote commands (`host_resolve_remote_commands`) and the local command are resolved in the pre-respawn frame before the tick starts. The drain therefore turns that pawn's movement input facing, its remote aim, its delivered activation start's aim (`RemotePawnCommand::start_aim`) and the host presentation aim by the delta before movement runs, as the movement stage does for a `TeleportEvent`'s `yaw_delta` (O33). A remote pawn with no resolved command on that tick has no input facing to turn: its delta is the placement facing minus its transform yaw, and the drain sets its transform yaw to the placement facing (O32). The respawn tick integrates from rest along the placement facing and ends with transform yaw at the placement facing (O17).
 - Bump the teleport generation with `last_teleporter = NO_TELEPORTER`, and adjust `accumulated_yaw` by the delta. Rebuild `arrival_latches` at the destination after this tick's teleporter mutations, so a newly armed teleporter counts (O29).
 - Set health through `set_health_absolute`.
@@ -455,7 +458,7 @@ Delivers AC14, AC16 (demotion arm), O6, O7, O15 (rejoin arm), O21, O22, O23, O30
 
 ### Task 7: Dev-mod down/bleed-out consumer, co-op lifecycle tests and docs
 
-**Content** (new `content/dev/scripts/player-death.ts` + `.luau` twin, registered in `start-script.ts`)
+**Content** (new `content/dev/scripts/player-death.ts` + `.luau` twin; the TS module registers in `content/dev/start-script.ts`, and the Luau twin serves the parity surface test)
 - **Player descriptor** (`content/dev/scripts/player.ts`):
   - `alive {}`
   - `down { movement: { speedScale: 0.3, abilities: false, posture: "crouch" }, switchWeapon: false, use: false, touch: false, occupancy: false }`
@@ -467,7 +470,7 @@ Delivers AC14, AC16 (demotion arm), O6, O7, O15 (rejoin arm), O21, O22, O23, O30
 
 **Tests**
 - A parity surface test (`*_surface_tests.rs` pattern).
-- The two-player test on `player_events::tests::World`, driving the AC20 path.
+- The two-player test drives the AC20 path through `simulate_tick_with_presentation_aim` and then `PlayerEventTable::run_tick` each tick, as `frame_loop/mod.rs` does. Both pawns are seat-bound and `RespawnPlacements` is published. `player_events::tests::World` runs only the player-event table: it takes no movement step and drains no respawn, so elapsed never advances there. The `Level` harness in `startup/teleporters_surface_tests.rs`, which installs a dev level from dev scripts and calls `simulate_tick`, is the precedent.
 - Lifecycle rows: AC3, AC15, O1, O2, O5.
 - **Manual proof**, recorded in the PR: a two-client playtest of the dev mod at 150 ms RTT (`POSTRETRO_NET_LAG`) on `coop-presentation-test`. Check AC17 and AC18 from the client's seat, covering the cases below. Record each run's lag settings and what was seen.
   - going down mid-sprint
@@ -514,6 +517,7 @@ Both surfaces, `WirePlayerMovementState` and `TuningPayload`, are pinned in Task
 | I5. A respawn relocates exactly once per request batch through the teleport generation, with no teleporter cue | Task 5 | Same-tick teleporter use; hot reload, level unload or harvest (Task 6) between verb and drain | AC12, O3, O10, O19, O20, O21, O28 |
 | I6. The death latch contract is unchanged: `playerDied` fires once per latch, re-armed by positive health | Existing | Task 5 health write | AC11, O1, O2 |
 | I7. Client smoothness: no life-state transition reaches the owning client as a teleport-class snap except respawn; the bleed-out time the client watches is predicted locally and never falls between real resets | Task 2, 4 | Task 5 must keep the teleport class to respawn only; any later state-driven relocation; a host-side clamp of a remote pawn's facing; the host's command-queue trim | AC17, AC18, O9, O24, O25, O38 |
+| I8. File placement: new logic lands in new modules. Large files take only call-site edits, match arms and the small additions a task names, and no task splits or reorganizes one, whatever `development_guide.md` advises on splitting large files: `sim/src/sim/mod.rs`, `physics/src/movement/mod.rs`, `netcode/src/lib.rs`, `netcode/src/client.rs`, `netcode/src/seat.rs`, `netcode/src/reconcile.rs`, `netcode/src/remote_materialize.rs`, `netcode/src/state_slots.rs`, `postretro/src/startup/lifecycle.rs`, `startup/reaction_validation.rs`, `postretro/src/main.rs`, `postretro/src/frame_loop/mod.rs`, `scripting/builtins/data_archetype.rs`, `scripting/builtins/net_descriptor.rs`, `scripting-core/src/runtime/core.rs`, `scripting-core/src/refresh_plan.rs`, `sim/src/scripting_systems/ui_proxy.rs`, `sim/src/trigger_system.rs`. `EntityTypeDescriptor` has no `Default`, so its new field lands as `life_states: None` in every literal, test fixtures included | Every task | Concurrent tasks in isolated worktrees | Merge review |
 
 ## Script syntax examples
 

@@ -9,9 +9,9 @@ use super::capture_fill::fill_surface;
 use super::delta_sample::DeltaShSampler;
 use super::hit::{SceneTracer, SurfacePoint};
 use super::lightmap_sample::LightmapSampler;
-use crate::surface_materials::SurfaceMaterials;
 use super::sdf_lights::SdfLights;
 use super::sh_sample::{ShVolumeSampler, SlotRead};
+use crate::surface_materials::SurfaceMaterials;
 
 /// The renderer's production SH indirect weight, `DEFAULT_INDIRECT_SCALE`
 /// (`renderer_types.rs`), which the forward and fluid passes multiply into SH

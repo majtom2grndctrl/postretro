@@ -75,6 +75,7 @@ use crate::geometry::GeometryResult;
 use crate::map_data::{BrushVolume, MapReflectionVolume, ReflectionCapture};
 use crate::partition::BspTree;
 
+use crate::surface_materials::SurfaceMaterials;
 use animated_direct::AnimatedDirectSampler;
 use box_fit::WorldBounds;
 use capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile, encode_tile};
@@ -85,7 +86,6 @@ use delta_sample::DeltaShSampler;
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
 use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
-use crate::surface_materials::SurfaceMaterials;
 use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
 use roster::{check_roster, references};
 use sdf_lights::SdfLights;

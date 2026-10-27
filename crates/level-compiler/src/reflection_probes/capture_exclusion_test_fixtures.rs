@@ -24,13 +24,13 @@ use super::animated_direct::AnimatedDirectSampler;
 use super::capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
 use super::hit::SceneTracer;
 use super::lightmap_sample::LightmapSampler;
-use crate::surface_materials::SurfaceMaterials;
 use super::placement::PlacedProbe;
 use super::placement_test_fixtures::{PlacementFixture, engine, fluid, textured_box_brush};
 use super::reflection_probes_test_fixtures::dense_sh_volume;
 use super::sdf_lights::SdfLights;
 use super::sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
 use super::shading::CaptureScene;
+use crate::surface_materials::SurfaceMaterials;
 
 pub(super) const WALL_TEXTURE: &str = "test/wall";
 pub(super) const CEILING_TEXTURE: &str = "test/ceiling";

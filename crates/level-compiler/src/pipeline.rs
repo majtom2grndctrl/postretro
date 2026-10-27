@@ -31,6 +31,7 @@ mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
 mod sdf_stage;
 mod stage_registry;
+mod texture_stage;
 use crate::buried_lights::BuriedLights;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
@@ -1845,32 +1846,13 @@ fn run_after_parsing(
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
     let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
-    let (name_to_key, mut texture_bytes) = texture_mips::bake_world_texture_mips(
+    let name_to_key = texture_stage::bake_level_textures(
+        &args.input,
         &geo_result.texture_names.names,
+        &map_data.map_entities,
         &texture_root,
         &prm_root,
     )?;
-    let content_root = resolve_content_root(&args.input);
-    bake_model_textures(
-        &map_data.map_entities,
-        &content_root,
-        &prm_root,
-        &mut texture_bytes,
-    );
-    bake_sprite_textures(
-        &map_data.map_entities,
-        &texture_root,
-        &prm_root,
-        &mut texture_bytes,
-    );
-    // Logged HERE, at the stage boundary, rather than inside the world bake:
-    // the stage bakes world bundles, model sidecars AND sprite collections, and
-    // a report flushed after the first omitted the other two entirely. Sprite
-    // collections are the heaviest bundles the format produces — one complete
-    // mip chain per frame — so a level with a billboard emitter under-reported
-    // by more than a rounding error, and this total is what the streaming work
-    // builds residency decisions on.
-    texture_mips::log_texture_byte_summary(texture_bytes.summary());
     finish_stage(
         &mut timings,
         reporter.as_ref(),

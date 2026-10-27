@@ -1,0 +1,18 @@
+{
+  "map": "content/dev/maps/occlusion-test.prl",
+  "camera": {
+    "position": [
+      -23.165,
+      3.0,
+      -15.037
+    ],
+    "yaw_deg": 0,
+    "pitch_deg": -8,
+    "fov_deg": 90
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "output": "content/dev/ui/loading/occlusion-test.png"
+}

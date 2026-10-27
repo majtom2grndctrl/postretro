@@ -22,6 +22,7 @@ const SCREENSHOT_MAPS = [
   "kinematic-platform",
   "movement-feel",
   "stress-warren-hallway-inspection",
+  "occlusion-test",
   "combat-demo",
 ] as const;
 

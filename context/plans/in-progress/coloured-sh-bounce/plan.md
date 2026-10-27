@@ -1,7 +1,7 @@
 # coloured-sh-bounce — plan of record
 
 mode: compact
-status: active
+status: blocked
 read at: 3275d1480
 
 ## Corrections
@@ -111,3 +111,18 @@ read at: 3275d1480
 ## Resumed — 2026-10-26
 - Owner explicitly asked to resume. Continue from the verified refactor checkpoint de3b056e1.
 - Usage on resume: 100% five-hour / 58% weekly remaining. Disk free: 58 GiB.
+
+## Baseline measurements — serial cold bakes
+- Saved pre-colour compiler ecbc27435, current dev profile, x86_64 Mac, 16 logical CPUs, default compiler jobs, `--release --no-tui --verbose` with explicit work/ab/grey/baked containing materials/. No other build/bake/perf process overlapped.
+- campaign-test: wall 23.777 s; summary SH Bake 2.00 s; TextureMips 3.75 s; texture report 77,449,820 bytes / 16 bundles.
+- stress-warren-mini: wall 202.276 s; summary SH Bake 29.63 s; TextureMips 4.68 s; summary total 201.97 s.
+- Both completed with existing authored geometry/light warnings (including open edges); full PRLs and material sidecars are preserved, not placeholder-only maps. Logs and exact commands: work/ab/grey/*.measurement.json and *.log.
+- Post-colour and warm material-stage comparisons remain pending; preserve these baseline outputs for owner A/B.
+
+## Blocking byte-oracle finding — resumed integration
+- 19 focused tests passed: material stage 8, stats 7, estimator 4. Compile check passed.
+- Exact old scalar fallback preserved; baseline oracle confirms ids 34/27 and reflection 54 on all-unresolved fixtures and every .prm byte remain unchanged. Red fixture ids 35/45/47/48 also match.
+- AC 3 currently FAILS for red fixture id 41 alone: old digest 45e6009aa665bc4b227bc814a5a2cc54d136fbb9b7b18700950d744ff9c37313, new bec5fe1cfe8c65ca5b3a355a548cb255716e9f1622d775dc99a6731fc460e90f.
+- Cause grounded in sh_coarsen.rs §Composed-tile provider: id-41 relative-error/darkness reference is composed base indirect + base direct + all delta sections. Colour changes reference brightness and can change storage classification although raw direct samples are unchanged by the source diff. Do not weaken/re-record the byte oracle to hide this.
+- Proposed owner amendment: ids 35/45/47/48 remain byte-identical; id 41 direct samples before coarsening remain byte-identical, while its existing adaptive storage choices may change with coloured indirect brightness under the existing classifier quality bounds. Prove direct sample identity by comparing old/new compilers on the same uniform-storage red fixture in addition to retaining adaptive production checks.
+- Owner decision requested asynchronously. Do not change coarsening policy or acceptance without that answer. Current feature edits remain uncommitted while independent checks can finish.

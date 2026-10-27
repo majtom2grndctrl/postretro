@@ -11,7 +11,7 @@ Let several interaction commands share one key in a context. Each press drives t
 - A **contextual group**: two or more interaction-class gameplay commands bound to one input with the same activator (kind and threshold). The group is not a conflict.
 - An engine-closed **rank** per command: `assist` (0), `use` (1). Every other command is unranked and never groups. The smallest rank among available members wins. The member with the largest rank present is the fallback and counts as available whatever the facts say, so a group always resolves to exactly one member.
 - **Availability facts**: a small fact struct the App computes once per frame from the local pawn and pushes into the input system. `assist` is available when it is relevant, the local pawn's life state allows `use`, and the assist candidate query finds a target. `use` is always available.
-- **Commit at fire.** The resolver picks the member when the group's slot fires — the press edge for `press`, key-up for `release` and `tap`, the min for `hold` — and drives only that member until release.
+- **Commit at fire.** The resolver picks the member when the group's slot fires and drives only that member until release. The slot fires at the press edge for a `press` group, at a release before the min for a `press` group beside a `hold` partner, and at the min for a `hold` group. `assist` accepts only `press` and `hold` (`E18--player-revive-assist` Task 2), so `tap` and `release` groups cannot form.
 - The Steam rule generalised: a key carries at most one short slot and one hold slot, and either slot may hold a group.
 - Engine default: `assist` on Use's inputs (`KeyE`, gamepad `west`).
 - A readonly, client-local HUD slot `input.interaction`: the command a fresh press of a key carrying the full group performs now (`"assist"` or `"use"`).
@@ -36,7 +36,8 @@ Let several interaction commands share one key in a context. Each press drives t
 **Placement.**
 
 - **Mechanism vs policy; engine vs mod.** The engine owns which commands may group, their rank, and each member's availability. The command set is engine-closed (`player_options.md` §6), and availability reads per-frame pawn state that only engine code holds. The mod owns whether keys are shared, through its `input` block defaults, and how the prompt looks, through its HUD. The player owns the final keys.
-- **Input subsystem vs App composition.** The resolver lives in input, because the choice is per physical input. The snapshot is per action, so a resolver downstream of it cannot tell an `E` press from a second `use` binding on another key. Availability is computed by the App and passed in as a fact struct, as `RelevanceFacts` is. Input stays free of registry types.
+- **Binding layer vs gameplay layer.** Sharing is a binding decision, not a property of Use. Each command keeps its own bindings, so the author chooses to share a key through the `input` block, the player separates them by rebinding, and the panel shows both rows. That keeps the model where authors set defaults and players rebind keys only (`player_options.md` §6). The resolver sits in input because input already owns each press's lifetime: commit, cancel on focus loss or a capturing tree, park on a pad switch, and the stale rule across a rebuild. A group reuses those rules instead of copying them downstream.
+- **Input vs the world.** Availability is computed by the App and enters input only as `ContextualAvailability`, a plain fact struct with no registry types, so input stays testable without a registry. This is a new direction of information flow; see the `input.md` §7 commitment below.
 - **Host vs client.** The client resolves and sends the resolved command (`use_pressed` edge or `assist_held` level). Activator resolution already sits on the client for the same reason (`input.md` §Activators): the press does what the player saw, with no round trip. If the host disagrees about availability, its assist step finds no candidate and nothing happens. The host never turns one command into the other.
 - **Load time vs runtime.** Group membership is fixed when the binding table builds. The member a press drives is chosen at runtime.
 
@@ -45,7 +46,7 @@ Let several interaction commands share one key in a context. Each press drives t
 - **Shared keys (Steam rule):** at most one short binding plus one `hold` per key in a context (`input.md` §Shared keys). Diverges, narrowly. A slot may now hold a group of interaction commands sharing one activator. Every pairing legal today stays legal with the same outcome, and press-only commands still never share. The divergence is needed because the Steam rule resolves by duration, and revive AC8 needs resolution by availability.
 - **Two gameplay commands on one key conflict; the later is unbound** (`input.md` §Contexts, §Author validation; `player_options.md` §6 Conflicts). Kept for every pair except a group. A combat command beside an interaction still conflicts.
 - **Activators resolve client-side; the wire carries resolved intent** (`input.md` §Activators). Kept and extended. Contextual resolution is part of the same client-side step, so `WIRE_VERSION` is unchanged by this spec.
-- **Game logic never pushes state into input mid-frame** (`input.md` §7). Kept. Availability is written once per frame after the tick loop. The next frame's `snapshot()` resolves buffered edges against it. It is a previous-frame fact, like the relevance facts a table rebuild takes.
+- **Information flows one way, input to game logic** (`input.md` §7, No reverse dependency). Diverges, narrowly. Until now input consumed only facts fixed at load or table rebuild; `RelevanceFacts` is derived from descriptors when the table rebuilds. Contextual resolution makes input's output depend on live pawn state: a previous-frame fact from the world, written once per frame after the tick loop, and read by the next frame's `snapshot()` when it resolves buffered edges. Nothing writes into input mid-frame, and the fact enters only through `ContextualAvailability`. The divergence is needed because which member a press drives depends on the world, and the resolver needs that answer when the edge resolves. `input.md` §7 gains this exception at promotion.
 - **Client predicts only with host numbers** (`networking.md` §What gates). Kept. Client availability uses the revive spec's predicted candidate query over replicated life states and `TuningPayload` profiles.
 - **Use edges ride a retained lane; held levels ride hold-then-neutral** (`networking.md` §Host input command queue). Kept. A resolved press emits one of them and never both.
 - **Glyphs draw the command's first binding** (`ui.md` §4 Glyphs). Kept. Grouped members keep their table entries, so both glyphs draw the shared key.
@@ -57,6 +58,7 @@ Let several interaction commands share one key in a context. Each press drives t
 - **Duration split for assist vs use** (assist `hold`, use `tap` on E). This is legal today. But every Use in the game would fire on key-up instead of key-down. A tap beside a downed teammate would still open the door behind them, which breaks revive AC8.
 - **Any commands may group, reload included.** This is Apex Legends' controller layout. When an interactable is in reach, reload stops working: players were forced into revives, finishers and door opens when they meant to reload. It is the Enshrouded failure class (research.md §Precedent survey, pattern 3). Excluding combat commands removes the case without a lockout timer.
 - **Re-resolve every tick.** A teammate going down mid-hold would turn a held Use into an assist. A target drifting out of range would turn an assist into a Use. No working precedent switches a press mid-hold.
+- **Context-sensitive Use in the gameplay layer** (the L4D2 and Darktide shape). This would leave the binding table alone; the client's sim-command builder would turn a Use press into a held assist while a candidate exists, committed until release. It drops most of the grouping, panel and capture work. But it hardwires the policy into Use. No author or player can separate revive from Use short of a new option, the panel cannot show that E revives, and it breaks the model where authors set defaults and players rebind keys only.
 - **Host-side resolution** (send a raw interaction-key level and let the host pick). It adds a round trip before the player learns what the key did, the outcome can disagree with the prompt the player saw, and it adds a wire field.
 - **A dedicated key for assist, with no feature.** All four gamepad face buttons already carry gameplay commands (`south` jump, `east` dash, `west` use, `north` reload). L4D2, Back 4 Blood and Darktide all put revive on the use key.
 
@@ -72,7 +74,7 @@ Let several interaction commands share one key in a context. Each press drives t
 ### Binding table
 - [ ] **AC1.** On one input in the gameplay context, the binding table treats pairs as follows.
   - **Permitted:** `assist` and `use` with the same activator kind and threshold both stay bound. Neither is suppressed or flagged displaced, and validation logs nothing.
-  - **Refused:** `assist` `press` with `use` `tap`, and `assist` `tap` 0.2 s with `use` `tap` 0.3 s, conflict as today, and the later in manifest order is unbound.
+  - **Refused:** `assist` `press` with `use` `tap` conflicts as today, and the later in manifest order is unbound. `assist` `hold` 0.2 s with `use` `hold` 0.3 s conflicts too, since two holds never share.
   - **Refused:** `use` `press` with `reload`, `drop`, `jump` or `dash` `press` conflicts as today.
   - **Permitted:** `reload` `tap` beside an `assist` + `use` `hold` group is legal, and so is a group in the short slot beside a single `hold` command.
 - [ ] **AC2.** With no player rows and `assist` relevant, `KeyE` and gamepad `west` each carry both `assist` and `use`, and both glyphs draw that key. With `assist` irrelevant, or hidden by `show: false`, those inputs carry `use` alone and `assist` is unlisted. A player row binding another command to `KeyE` keeps it: `assist` and `use` defaults there are suppressed and both commands are flagged displaced.
@@ -83,9 +85,8 @@ Let several interaction commands share one key in a context. Each press drives t
   - **Not available:** the key fires exactly one `use` press edge, and `assist` stays inactive.
   - **Helper's life state has `use: false`:** `assist` is unavailable, the press resolves to `use`, and Spec A's gate refuses it. Nothing acts.
 - [ ] **AC4.** Commitment: while the key is held, a change in availability never re-routes it, in either direction (O3, O4). A second press re-resolves.
-- [ ] **AC5.** Each activator kind fires its group at the right moment:
-  - **`tap`, `release`:** resolves at key-up against availability at that snapshot.
-  - **`hold`:** resolves when the min passes.
+- [ ] **AC5.** Each reachable group shape fires at the right moment:
+  - **`hold` group:** resolves when the min passes.
   - **Short group beside a `hold` partner:** resolves at a release before the min; past the min the hold partner fires and no member does.
   - **`reload` `tap` beside an interaction `hold` group:** a release before the min reloads, and past the min the group fires.
 - [ ] **AC6.** Losing focus, a capturing tree opening, an active-pad switch or disconnect, and a table rebuild each leave a committed or pending group firing nothing afterwards: no member pulses and no fallback fires. A key held across a cancel acts again only on its next press. A key held across a rebuild keeps its committed member down until release (O9–O11).
@@ -169,9 +170,9 @@ Delivers AC1, AC2, AC3, O1, O2, O5, O6, O7, O14.
 
 ### Task 2: Resolver breadth
 
-Extend `ActivatorResolver` (`input/activator.rs`) so a group may fill either slot of a key: the short slot (`press`, `release` or `tap`, all members equal) or the hold slot (`hold`, all members equal). The member is chosen at the slot's fire moment, against the facts current at that `snapshot()`:
-- **`release`, `tap`, and a short group beside a `hold`:** in `input_up`, at the `pulse`. Pulse only the chosen member.
-- **`hold`:** in `fire_holds`, set only the chosen member down.
+Extend `ActivatorResolver` (`input/activator.rs`) so a group may fill either slot of a key: the short slot as a `press` group, or the hold slot as a `hold` group (all members' activators equal). `assist` accepts only `press` and `hold`, so no `tap` or `release` group can form; this task adds no path for one. The member is chosen at the slot's fire moment, against the facts current at that `snapshot()`:
+- **`press` group beside a `hold` partner:** in `input_up`, at the `pulse` of a release before the min. Pulse only the chosen member.
+- **`hold` group:** in `fire_holds`, set only the chosen member down.
 
 The existing Steam-rule timing is unchanged: `shares_hold`, strict min, and a tap's max within it. The edge cases need these behaviours:
 - `HeldInput`'s committed binding survives `rebind` while the binding is unchanged, and goes `stale` otherwise.

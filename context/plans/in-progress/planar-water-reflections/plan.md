@@ -463,6 +463,8 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
 - Seven render passes per planar frame; measure before merging.
 - A fixture that admits mirror-only lights and instances, so AC 39 reads a non-zero yield in a live run.
 
+**Landing docs drafted 2026-10-26, ahead of "land the plane":** every `context/lib` item below and in the earlier landing list is written. That covers `rendering_pipeline.md` §4, §7.3a, the tier table, §7.8 capture `planar_reflection`, §9, §10 and §12, plus `boot_sequence.md` §1, `player_options.md` §4, `index.md`, `resource_management.md` §9 and `entity_model.md` (`shadowOnly`). §12's "Planar cost" cites `plans/done/planar-water-reflections`, so the brief must land there. Left for landing: move the brief to `done/`, clean up, push.
+
 **For landing (`context/lib`):** besides the items already listed:
 - **§7.3a** names the shared horizon floor in `fluid_reflection_above_horizon` as the one direction-conditioned placement composed from the pinned helper. It also words "never c" as ip-check D1 does, including the empty-texel cut, and scopes "reads no probe table" to the planar passes: routing and selection read only whether a face binds a probe.
 - **§12** gains `rec_planar` beside `mirror_walk`.

@@ -1,7 +1,7 @@
 # coloured-sh-bounce — plan of record
 
 mode: compact
-status: paused
+status: active
 read at: 3275d1480
 
 ## Corrections
@@ -107,3 +107,7 @@ read at: 3275d1480
 - Preserve the explicit owner alias decision: material strength derives from the original name, source resolution alone normalizes paths. No material-parser runtime changes.
 - Usage checked at pause: 35% five-hour, 59% weekly remaining. Disk free about 59 GiB. Continue checking after tasks and pause at <=5% remaining in either window.
 - Checkpoint branch: codex/coloured-sh-bounce. Feature branch not pushed; only the authorized claim move was published to main.
+
+## Resumed — 2026-10-26
+- Owner explicitly asked to resume. Continue from the verified refactor checkpoint de3b056e1.
+- Usage on resume: 100% five-hour / 58% weekly remaining. Disk free: 58 GiB.

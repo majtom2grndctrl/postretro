@@ -1,7 +1,7 @@
 # coloured-sh-bounce — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: 3275d1480
 
 ## Corrections
@@ -22,7 +22,7 @@ read at: 3275d1480
 |---|---|---|---|
 | 1 | A fixture room with a red wall and a white floor, lit by a white light and baked through the material stage from fixture PNGs, not a hand-built means table: a probe beside the red wall reads R above G and above B in its indirect term. The same bake with an empty material table reads neutral. | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated |
 | 2 | Regression guard: that fixture with every face unresolved, and a map whose textures are all unresolved, bake ids 34 and 27 byte-identical to it, and the map's reflection-probe section too: reflections keep their placeholder. Unresolved covers a face with no texture, a name with no source, and a texture with only a normal or specular slot. | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated |
-| 3 | Regression guard: on the red-wall fixture, ids 35, 41, 45, 47 and 48 are byte-identical to the pre-change bake. | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated |
+| 3 | Regression guard (owner amendment): on the red-wall fixture, ids 35, 45, 47 and 48 remain byte-identical to the pre-change bake. Section 41 direct-light samples before coarsening remain byte-identical, proved against the old compiler on the same uniform-storage fixture. Its existing adaptive storage choices may change with coloured indirect brightness, while retaining the existing reconstruction-error, protection and seam rules. Record storage-size and performance changes; keep this dependency covered by regression tests and durable documentation. | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated |
 | 4 | An animated hard light and a static hard light of the same colour at the same spot, composed through the animated light's scale at its peak, give the same bounce at the probe beside the red wall: the delta composed with its scale and the static base agree per channel within 0.02 absolute, the existing direct delta-versus-base tolerance, on uncompressed, pre-encoding values, with the bounce's largest channel at least 0.2 so the tolerance cannot pass on a near-zero fixture, both with colour and with every face on the grey fallback. | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated |
 | 5 | Regression guard: in a map where some faces resolve and others do not, an unresolved face's hit multiplies by exactly 0.45, today's expression as the reference multiply, at saturations 0, 0.5 and 1, and a resolved face takes its own mean (research P-GREY-MIXED). | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated |
 | 6 | Regression guard: a map with no fluid-only names, one with no textures, one whose static faces use none of its textures, one with no static lights, and one with a degenerate SH grid each bake without error, with the outcomes their pins name (research P-ZERO-TAIL, P-ZERO-TEX, P-ZERO-FACES, P-ZERO-SH-WORK). | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated |
@@ -137,3 +137,9 @@ read at: 3275d1480
 - Further attention after owner resolves AC3: finish zero/degenerate pipeline pins; consider avoiding unused material fingerprint work on the uncached delta path; peer review/focused retests; serial post-colour and warm material timings; final preflight once; fully textured owner A/B and energy/fog checks.
 
 - Final checkpoint formatting and whitespace checks passed. Usage before checkpoint: 64% five-hour / 53% weekly remaining; 56 GiB free. All known build/test/bake commands completed. Continue waiting for owner AC3 choice; no automatic resumption from status blocked.
+
+## Owner-approved AC3 amendment — 2026-10-26
+- Owner agreed to the recommendation after the engineering and IP comparison: “Alright, I think I agree with your recommendation. Let's proceed!”
+- Acceptance now preserves exact direct-light samples before coarsening, allows the existing section-41 adaptive choices to respond to actual composed brightness, retains quality/protection/seam rules, and requires storage/performance evidence plus regression/context documentation.
+- Keep ids 35/45/47/48 byte-identical. Preserve existing baseline records; add a separately proven old-compiler uniform-storage oracle for id41. No new coarsening algorithm, runtime composition, probe visibility method, or adaptive policy for ids27/45. Existing IP questions remain unchanged.
+- Resume from the failed guard: update proof to the authorized boundary and rerun it before further completion.

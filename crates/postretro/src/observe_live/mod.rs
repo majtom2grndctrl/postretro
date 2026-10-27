@@ -65,15 +65,23 @@ pub(crate) fn spawn_observe_live_transport(
             }
         };
 
-        loop {
-            match listener.accept() {
-                Ok((stream, _peer)) => serve_connection(stream, &hello_bytes, &service_tx),
-                Err(error) => log::warn!("[Observe live] accept failed: {error}"),
-            }
-        }
+        serve_listener(listener, &hello_bytes, &service_tx);
     });
 
     (service_rx, handle)
+}
+
+fn serve_listener(
+    listener: TcpListener,
+    hello_bytes: &[u8],
+    service_tx: &mpsc::SyncSender<ServiceRequest>,
+) {
+    loop {
+        match listener.accept() {
+            Ok((stream, _peer)) => serve_connection(stream, hello_bytes, service_tx),
+            Err(error) => log::warn!("[Observe live] accept failed: {error}"),
+        }
+    }
 }
 
 fn serve_connection(
@@ -136,22 +144,9 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::net::{Shutdown, SocketAddr};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::Instant;
 
     const TEST_WAIT: Duration = Duration::from_secs(2);
-
-    // Each socket test reserves an ephemeral port before the daemon thread
-    // binds it. Serialize that handoff to keep the focused suite deterministic
-    // when the test harness otherwise runs cases in parallel.
-    static SOCKET_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn socket_test_lock() -> MutexGuard<'static, ()> {
-        SOCKET_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("socket test lock is not poisoned")
-    }
 
     struct PrefixOnlyReader {
         prefix: [u8; 4],
@@ -169,13 +164,6 @@ mod tests {
             self.offset += copied;
             Ok(copied)
         }
-    }
-
-    fn unused_local_port() -> u16 {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve local test port");
-        let port = listener.local_addr().expect("read reserved port").port();
-        drop(listener);
-        port
     }
 
     fn hello() -> ServerHello {
@@ -220,8 +208,13 @@ mod tests {
     }
 
     fn spawn_test_transport() -> (u16, mpsc::Receiver<ServiceRequest>, JoinHandle<()>) {
-        let port = unused_local_port();
-        let (service_rx, handle) = spawn_observe_live_transport(port, hello());
+        // Regression: releasing a reserved port before the worker rebound it let
+        // another listener steal it, causing timeouts and a poisoned suite lock.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+        let port = listener.local_addr().expect("read test port").port();
+        let hello_bytes = serde_json::to_vec(&hello()).expect("serialize hello");
+        let (service_tx, service_rx) = mpsc::sync_channel(OBSERVE_LIVE_REQUEST_QUEUE_CAPACITY);
+        let handle = thread::spawn(move || serve_listener(listener, &hello_bytes, &service_tx));
         (port, service_rx, handle)
     }
 
@@ -269,7 +262,6 @@ mod tests {
     // Regression: timed-out reconnects could grow the service backlog without bound.
     #[test]
     fn full_service_queue_closes_client_without_extending_backlog() {
-        let _socket_test_lock = socket_test_lock();
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
         let address = listener.local_addr().expect("read listener address");
         let hello_bytes = serde_json::to_vec(&hello()).expect("serialize hello");
@@ -323,7 +315,6 @@ mod tests {
 
     #[test]
     fn socket_round_trip_uses_fake_raw_byte_servicer() {
-        let _socket_test_lock = socket_test_lock();
         let (port, service_rx, _handle) = spawn_test_transport();
         let mut client = connect_when_ready(port);
         let hello_bytes = read_frame(&mut client).expect("read hello");
@@ -349,7 +340,6 @@ mod tests {
 
     #[test]
     fn connection_enqueues_one_request_until_its_prior_reply_is_sent() {
-        let _socket_test_lock = socket_test_lock();
         let (port, service_rx, _handle) = spawn_test_transport();
         let mut client = connect_when_ready(port);
         let _ = read_frame(&mut client).expect("read hello");
@@ -389,7 +379,6 @@ mod tests {
 
     #[test]
     fn reaccepts_after_client_disconnect() {
-        let _socket_test_lock = socket_test_lock();
         let (port, service_rx, _handle) = spawn_test_transport();
         let mut first = connect_when_ready(port);
         let first_hello = read_frame(&mut first).expect("read first hello");
@@ -418,7 +407,6 @@ mod tests {
 
     #[test]
     fn oversized_socket_request_closes_connection_and_listener_reaccepts() {
-        let _socket_test_lock = socket_test_lock();
         let (port, _service_rx, _handle) = spawn_test_transport();
         let mut first = connect_when_ready(port);
         let _ = read_frame(&mut first).expect("read first hello");
@@ -446,7 +434,6 @@ mod tests {
 
     #[test]
     fn second_client_waits_behind_open_first_client() {
-        let _socket_test_lock = socket_test_lock();
         let (port, _service_rx, _handle) = spawn_test_transport();
         let mut first = connect_when_ready(port);
         let _ = read_frame(&mut first).expect("read first hello");
@@ -474,7 +461,6 @@ mod tests {
 
     #[test]
     fn reply_timeout_closes_only_connection_and_preserves_listener() {
-        let _socket_test_lock = socket_test_lock();
         let (port, service_rx, _handle) = spawn_test_transport();
         let mut first = connect_when_ready(port);
         let _ = read_frame(&mut first).expect("read first hello");
@@ -518,7 +504,6 @@ mod tests {
         use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
         use std::collections::HashMap;
 
-        let _socket_test_lock = socket_test_lock();
         let (port, service_rx, _handle) = spawn_test_transport();
         let mut client = connect_when_ready(port);
         let _ = read_frame(&mut client).expect("read hello");

@@ -176,9 +176,13 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
+    // Regression: an installed JetBrains Mono made the initial absence assertion fail.
     #[test]
     fn runtime_loaded_font_bytes_register_family() {
-        let mut fs = FontSystem::new();
+        let mut fs = FontSystem::new_with_locale_and_db(
+            "en-US".to_owned(),
+            cosmic_text::fontdb::Database::new(),
+        );
         assert!(!font_family_is_registered(&fs, UI_MONO_FONT_FAMILY));
         let bytes =
             read_font_file(&bundled_font("JetBrainsMono-Regular.ttf")).expect("mono font reads");

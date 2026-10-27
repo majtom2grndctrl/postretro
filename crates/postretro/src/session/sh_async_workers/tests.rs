@@ -427,15 +427,42 @@ mod positional {
     use std::os::unix::fs::FileExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Reads "payload" out of "headpayloadtail" after a delay, through a
-    /// real positional read.
-    struct DelayedPositionalSource {
+    const WAIT: Duration = Duration::from_secs(10);
+
+    /// Holds the actual positional read until the test has checked frame-side
+    /// operations. The timeout bounds a failure that blocks those operations.
+    struct ReadGate {
+        started: std::sync::mpsc::Receiver<()>,
+        open: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl ReadGate {
+        fn wait_for_read(&self) {
+            self.started
+                .recv_timeout(WAIT)
+                .expect("positional read started");
+        }
+
+        fn release(&self) {
+            *self.open.0.lock().unwrap() = true;
+            self.open.1.notify_all();
+        }
+    }
+
+    impl Drop for ReadGate {
+        fn drop(&mut self) {
+            self.release();
+        }
+    }
+
+    struct GatedPositionalSource {
         file: std::fs::File,
-        delay: Duration,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+        started: std::sync::mpsc::Sender<()>,
         executions: Arc<AtomicUsize>,
     }
 
-    impl ShWorkerSource for DelayedPositionalSource {
+    impl ShWorkerSource for GatedPositionalSource {
         fn cluster_count(&self) -> u32 {
             MAX_STREAM_PERMITS as u32
         }
@@ -450,7 +477,15 @@ mod positional {
 
         fn read_file_span(&self, range: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {
             self.executions.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(self.delay);
+            self.started.send(()).unwrap();
+            let (open, _) = self
+                .gate
+                .1
+                .wait_timeout_while(self.gate.0.lock().unwrap(), WAIT, |open| !*open)
+                .unwrap();
+            let released = *open;
+            drop(open);
+            assert!(released, "test never released positional read");
             let mut bytes = vec![0; (range.end - range.start) as usize];
             self.file.read_at(&mut bytes, range.start).unwrap();
             Ok(bytes)
@@ -469,29 +504,39 @@ mod positional {
         }
     }
 
-    fn delayed_source(
-        delay: Duration,
+    fn gated_source(
         executions: Arc<AtomicUsize>,
-    ) -> (tempfile::TempDir, Arc<dyn ShWorkerSource>) {
+    ) -> (tempfile::TempDir, Arc<dyn ShWorkerSource>, ReadGate) {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("encoded.bin");
         std::fs::write(&path, b"headpayloadtail").unwrap();
-        let source = DelayedPositionalSource {
+        let open = Arc::new((Mutex::new(false), Condvar::new()));
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let source = GatedPositionalSource {
             file: std::fs::File::open(path).unwrap(),
-            delay,
+            gate: Arc::clone(&open),
+            started,
             executions,
         };
-        (temp, Arc::new(source))
+        (
+            temp,
+            Arc::new(source),
+            ReadGate {
+                started: started_rx,
+                open,
+            },
+        )
     }
 
     fn all_targets(workers: &ShAsyncWorkers) {
         publish(workers, 0..MAX_STREAM_PERMITS as u32);
     }
 
+    // Regression: a fixed sleep could expire before worker cleanup under load.
     #[test]
-    fn delayed_positional_reader_never_blocks_completion_drain_or_submission() {
+    fn blocked_positional_reader_never_blocks_completion_drain_or_submission() {
         let executions = Arc::new(AtomicUsize::new(0));
-        let (_temp, source) = delayed_source(Duration::from_millis(250), Arc::clone(&executions));
+        let (_temp, source, gate) = gated_source(Arc::clone(&executions));
         let mut workers = ShAsyncWorkers::with_source(source, 2).unwrap();
         all_targets(&workers);
         let request = ShClusterRequest {
@@ -501,14 +546,10 @@ mod positional {
             chunk_hash: [7; 32],
             mandatory: true,
         };
-        let start = Instant::now();
         workers.submit(request).unwrap();
+        gate.wait_for_read();
         assert!(workers.try_completion().unwrap().is_none());
-        assert!(
-            start.elapsed() < Duration::from_millis(100),
-            "frame-side submission/drain waited for I/O"
-        );
-        std::thread::sleep(Duration::from_millis(300));
+        gate.release();
         let completion = wait_completions(&workers, 1).pop().unwrap();
         assert_eq!(completion.request, request);
         match completion.result {
@@ -520,10 +561,9 @@ mod positional {
     }
 
     #[test]
-    fn delayed_reload_retires_without_blocking_and_cannot_deliver_stale_generation() {
+    fn blocked_reload_retires_without_blocking_and_cannot_deliver_stale_generation() {
         let executions = Arc::new(AtomicUsize::new(0));
-        let (_old_temp, old_source) =
-            delayed_source(Duration::from_millis(250), Arc::clone(&executions));
+        let (_old_temp, old_source, gate) = gated_source(Arc::clone(&executions));
         let mut workers = ShAsyncWorkers::with_source(old_source, 2).unwrap();
         assert_eq!(workers.handles.len(), 3, "one issuer plus two decoders");
         all_targets(&workers);
@@ -537,21 +577,21 @@ mod positional {
         for cluster_id in 0..MAX_STREAM_PERMITS as u32 {
             workers.submit(old_request(cluster_id)).unwrap();
         }
-        while executions.load(Ordering::SeqCst) < 1 {
-            std::thread::yield_now();
-        }
+        gate.wait_for_read();
 
-        let start = Instant::now();
         let mut retirement = workers.begin_retirement();
-        assert!(start.elapsed() < Duration::from_millis(100));
         assert!(workers.handles.is_empty());
         assert!(
             !retirement.try_finish(),
-            "delayed positional read is still live"
+            "blocked positional read is still live"
         );
 
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(retirement.try_finish());
+        gate.release();
+        let deadline = Instant::now() + WAIT;
+        while !retirement.try_finish() {
+            assert!(Instant::now() < deadline, "retired workers never exited");
+            std::thread::yield_now();
+        }
         assert!(retirement.handles.is_empty());
         assert_eq!(
             executions.load(Ordering::SeqCst),
@@ -565,7 +605,8 @@ mod positional {
 
         // Only after every old handle has joined may the next generation
         // start, so lifecycle permits never overlap generations.
-        let (_new_temp, new_source) = delayed_source(Duration::ZERO, Arc::new(AtomicUsize::new(0)));
+        let (_new_temp, new_source, new_gate) = gated_source(Arc::new(AtomicUsize::new(0)));
+        new_gate.release();
         let mut replacement = ShAsyncWorkers::with_source(new_source, 2).unwrap();
         all_targets(&replacement);
         let new_request = ShClusterRequest {

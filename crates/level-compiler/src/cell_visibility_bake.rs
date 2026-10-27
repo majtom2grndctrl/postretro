@@ -703,13 +703,7 @@ impl UnionFind {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::VecDeque,
-        path::PathBuf,
-        sync::Arc,
-        thread,
-        time::{Duration, Instant},
-    };
+    use std::{collections::VecDeque, path::PathBuf, sync::Arc, thread, time::Duration};
 
     use glam::DVec3;
     use log::Level;
@@ -1226,6 +1220,12 @@ mod tests {
 
     #[test]
     fn live_governor_permit_change_keeps_bake_bytes_identical() {
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering as AtomicOrdering},
+            mpsc,
+        };
+
         let pool_width = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
         if pool_width == 1 {
             // There is no wider live setting to exercise on a single-core
@@ -1233,9 +1233,8 @@ mod tests {
             return;
         }
 
-        // The chain makes the p=1 source pass long enough to observe a source
-        // completion before the whole pass ends without relying on a timer to
-        // guess whether the permit change landed mid-bake.
+        // Regression: a progress observer could miss the entire source pass
+        // when it was descheduled before applying the live permit change.
         const CELL_COUNT: usize = 256;
         let centres: Vec<_> = (0..CELL_COUNT)
             .map(|cell| DVec3::new(cell as f64 * 2.0, 0.0, 0.0))
@@ -1257,6 +1256,22 @@ mod tests {
         let live_progress = StageProgress::indeterminate();
         let governor = Arc::new(Governor::new(1, false));
         let live_control = BakeControl::new(Arc::clone(&governor), &live_progress);
+        let (mid_bake_tx, mid_bake_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let resume_rx = Mutex::new(resume_rx);
+        let admissions = AtomicUsize::new(0);
+        governor.set_enter_hook(Arc::new(move || {
+            if admissions.fetch_add(1, AtomicOrdering::Relaxed) == 1 {
+                // P=1 guarantees one source has finished. Keep the second
+                // admitted source parked until the live setting changes.
+                mid_bake_tx.send(()).unwrap();
+                resume_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("live-permit test did not release the second source");
+            }
+        }));
         let worker_tree = Arc::clone(&tree);
         let worker_portals = Arc::clone(&portals);
         let worker_control = live_control.clone();
@@ -1267,19 +1282,12 @@ mod tests {
                 .unwrap()
         });
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while live_progress.completed() <= CELL_COUNT {
-            assert!(
-                Instant::now() < deadline,
-                "live-permit test did not finish one source row"
-            );
-            thread::yield_now();
-        }
-        assert!(
-            live_progress.completed() < CELL_COUNT * 2,
-            "permit change must land while the per-source pass is still active"
-        );
+        mid_bake_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("live-permit test did not reach the second source");
+        assert_eq!(live_progress.completed(), CELL_COUNT + 1);
         governor.set_permits(pool_width);
+        resume_tx.send(()).expect("resume the second source");
         let live_bytes = worker.join().expect("live-permit bake worker panicked");
 
         let fixed_progress = StageProgress::indeterminate();

@@ -9,7 +9,7 @@ use super::capture_fill::fill_surface;
 use super::delta_sample::DeltaShSampler;
 use super::hit::{SceneTracer, SurfacePoint};
 use super::lightmap_sample::LightmapSampler;
-use super::materials::SurfaceMaterials;
+use crate::surface_materials::SurfaceMaterials;
 use super::sdf_lights::SdfLights;
 use super::sh_sample::{ShVolumeSampler, SlotRead};
 

@@ -52,6 +52,7 @@ pub mod pipeline;
 pub mod portals;
 pub mod ray_traversal;
 pub mod reflection_probes;
+pub(crate) mod surface_materials;
 pub mod reporter;
 pub mod script_light_membership;
 pub mod sdf_bake;

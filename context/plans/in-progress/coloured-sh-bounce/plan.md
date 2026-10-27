@@ -94,3 +94,5 @@ read at: 3275d1480
 - Resume from the alias/glow owner decision; re-run the source proof, record only authorized contract wording, then capture byte oracle on task-1 commit ecbc27435 before any compiler implementation.
 
 - Pre-colour oracle captured on ecbc27435: one explicit CLI regression passed, three PNG-backed rooms, baseline JSON saved in tests/fixtures/coloured_bounce_oracle.json. Saved exact baseline prl-build under work/ab/grey for serial full-texture bake timings.
+
+- Shared SurfaceMaterials moved outside reflections without behavior changes. Explicit byte-oracle regression passed after move: all recorded unaffected lighting, unresolved SH and reflection, and .prm digests unchanged.

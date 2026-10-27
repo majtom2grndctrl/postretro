@@ -45,7 +45,7 @@ impl MaterialStats {
 
 /// The bake-wide saturation must be checked before the material stage walks the
 /// texture root, so a bad constant fails a build without touching sidecars.
-pub fn validate_saturation(saturation: f32) -> Result<()> {
+pub(crate) fn validate_saturation(saturation: f32) -> Result<()> {
     ensure!(
         saturation.is_finite() && (0.0..=1.0).contains(&saturation),
         "bounce saturation must be finite and between 0 and 1"

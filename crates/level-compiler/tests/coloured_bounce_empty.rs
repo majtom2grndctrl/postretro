@@ -9,7 +9,6 @@ use std::path::Path;
 use coloured_bounce_support::fixtures::{self, Appearance, box_brush};
 use coloured_bounce_support::{
     Bake, FOUR_SHADOW_SAMPLES, Fixture, MATERIALS_START, SH_START, current_compiler, grey_compiler,
-    sha256_hex,
 };
 use postretro_level_format::SectionId;
 use postretro_level_format::geometry::GeometrySection;
@@ -120,27 +119,6 @@ fn compare_with_pre_colour(test: &str, map_text: &str) {
     let current = bake(&fixture, &current_compiler(), "current");
     assert_precolour_equal(&grey, &current);
     assert_current_shape(&current);
-}
-
-#[test]
-fn pinned_compiler_digest_is_fips_sha256() {
-    // FIPS 180-4 examples: empty, one block, and a two-block message.
-    for (message, digest) in [
-        (
-            &b""[..],
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        ),
-        (
-            b"abc",
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-        ),
-        (
-            b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
-        ),
-    ] {
-        assert_eq!(sha256_hex(message), digest);
-    }
 }
 
 fn no_fluid_tail_map() -> String {

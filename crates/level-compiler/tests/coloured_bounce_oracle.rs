@@ -30,7 +30,7 @@ fn baseline_path() -> PathBuf {
 }
 
 const BASELINE_REVISION: &str = "ecbc27435023931f919484036619f339438f1e30";
-const SAVED_COMPILER_SHA256: &str = coloured_bounce_support::GREY_COMPILER_SHA256;
+const SAVED_COMPILER_BLAKE3: &str = coloured_bounce_support::GREY_COMPILER_BLAKE3;
 /// The recorder's own opt-in: its value is the saved compiler's path.
 const RECORD_UNIFORM_ENV: &str = "POSTRETRO_RECORD_COLOURED_BOUNCE_ID41_UNIFORM";
 
@@ -46,7 +46,7 @@ struct Id41Shape {
 #[derive(Debug, Serialize, Deserialize)]
 struct UniformId41Oracle {
     baseline_revision: String,
-    compiler_sha256: String,
+    compiler_blake3: String,
     fixture_map_blake3: String,
     section_blake3: String,
     shape: Id41Shape,
@@ -215,7 +215,7 @@ fn coloured_bounce_preserves_unaffected_section_and_sidecar_bytes() {
     );
 }
 
-/// One-shot pre-change oracle recorder: only the saved, SHA-256-pinned
+/// One-shot pre-change oracle recorder: only the saved, BLAKE3-pinned
 /// pre-colour executable may generate the uniform id 41 record, and only into
 /// a missing file. The original adaptive oracle is never written here. Skips
 /// with a message unless its opt-in names that executable.
@@ -235,7 +235,7 @@ fn record_uniform_id41_from_saved_pre_colour_compiler() {
     let (digests, shape) = bake_using(&saved, Appearance::RedWall, &[41], true);
     let oracle = UniformId41Oracle {
         baseline_revision: BASELINE_REVISION.into(),
-        compiler_sha256: SAVED_COMPILER_SHA256.into(),
+        compiler_blake3: SAVED_COMPILER_BLAKE3.into(),
         fixture_map_blake3: fixture_map_digest(),
         section_blake3: digests.sections[&41].clone(),
         shape: shape.expect("uniform fixture must emit id41"),
@@ -254,7 +254,7 @@ fn uniform_id41_preserves_pre_colour_direct_samples() {
         .expect("capture uniform id41 with the saved old compiler first");
     let expected: UniformId41Oracle = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(expected.baseline_revision, BASELINE_REVISION);
-    assert_eq!(expected.compiler_sha256, SAVED_COMPILER_SHA256);
+    assert_eq!(expected.compiler_blake3, SAVED_COMPILER_BLAKE3);
     assert_eq!(
         expected.fixture_map_blake3,
         fixture_map_digest(),

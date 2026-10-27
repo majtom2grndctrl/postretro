@@ -1,6 +1,6 @@
 {
   "baseline_revision": "ecbc27435023931f919484036619f339438f1e30",
-  "compiler_sha256": "098a6fc94c21ef020e065806b3a2e9600fccea3208c3c5240dccc6c72a332496",
+  "compiler_blake3": "e51489d5a49e148aa900bfe785a80e34cca47da59b06ef82354d60115f2db35b",
   "fixture_map_blake3": "44cc498610b90d330d993b38632abd771e1af6b6ce20ebd9ee6300fa778971f2",
   "section_blake3": "2e4fd26b85a8c28f85271ae6383d11e2ebd5f77eea92e47f79e2440878af37f0",
   "shape": {

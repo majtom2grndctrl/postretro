@@ -1,163 +1,84 @@
-//! PNG edits, sidecar reuse and material-stage ordering through the real compiler CLI.
-//! See: context/plans/in-progress/coloured-sh-bounce/index.md
+//! PNG edits, sidecar reuse, stage-cache contents and material-stage ordering
+//! through the real compiler CLI.
+//! See: context/lib/build_pipeline.md §Compiler pipeline, §Build Cache
 
-#[path = "../src/coloured_bounce_test_fixtures.rs"]
-#[allow(dead_code)] // Other suites use this shared room's unresolved appearances.
-mod fixtures;
+mod coloured_bounce_support;
 
-use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
+use coloured_bounce_support::fixtures;
+use coloured_bounce_support::{
+    Bake, DELTA_START, FOUR_SHADOW_SAMPLES, Fixture, Run, SH_START, TAIL_START,
+    TEXTURE_VALIDATION_START, cache_tally, corrupt_pixels, current_compiler, grey_compiler,
+    sidecars, write_png,
+};
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use postretro_level_format::{read_container, read_section_data};
 
-const SH_START: &str = "SH volume bake...";
-const DELTA_START: &str = "Delta SH volume bake...";
-const TAIL_START: &str = "Texture mip bake...";
+/// Per-entry delta cache lines are debug-level; the tallies read them.
+const TALLY_LOG: &str = "info,prl_build::delta_sh_cache=debug";
+const LABEL: &str = "room";
 
-struct Fixture {
-    dir: tempfile::TempDir,
-    map: PathBuf,
+/// Every stage that caches an entry for the red-wall room. Each existed, and
+/// cached its entries, before coloured bounce; that change added none.
+const PRE_CHANGE_CACHED_STAGES: [&str; 14] = [
+    "animated_billboard_direct_scatter",
+    "animated_lm_weight_maps",
+    "billboard_direct_scatter",
+    "cell_residency_set",
+    "cell_visibility",
+    "chunk_light_list",
+    "direct_sh_volume",
+    "indirect_delta_sh_subblock",
+    "lightmap_layer",
+    "lightmap_section",
+    "navmesh",
+    "reflection_probes",
+    "sh_group",
+    "shadowmask_atlas",
+];
+
+/// The two stages whose keys fold the material table.
+const SH_STAGES: [&str; 2] = ["sh_group", "indirect_delta_sh_subblock"];
+
+fn cache_dir(fixture: &Fixture) -> PathBuf {
+    fixture.root().join("cache")
 }
 
-struct Bake {
-    log: String,
-    sections: BTreeMap<u32, Vec<u8>>,
-    sidecars: BTreeMap<String, blake3::Hash>,
+fn run_with(fixture: &Fixture, compiler: &Path, cache: bool, workers: u32, extra: &[&str]) -> Run {
+    let workers = workers.to_string();
+    let cache_dir = cache_dir(fixture).to_string_lossy().into_owned();
+    let mut flags = vec!["--jobs", workers.as_str()];
+    flags.extend(FOUR_SHADOW_SAMPLES);
+    if cache {
+        flags.extend(["--cache-dir", cache_dir.as_str()]);
+    } else {
+        flags.push("--no-cache");
+    }
+    flags.extend(extra);
+    fixture.run(compiler, LABEL, TALLY_LOG, &flags)
 }
 
-impl Fixture {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("maps")).unwrap();
-        fixtures::write_textures(dir.path());
-        let map = dir.path().join("maps/coloured-bounce.map");
-        std::fs::write(
-            &map,
-            fixtures::room_map(fixtures::Appearance::RedWall, true, true),
-        )
-        .unwrap();
-        Self { dir, map }
-    }
-
-    fn texture(&self, name: &str) -> PathBuf {
-        self.dir
-            .path()
-            .join("textures/bounce")
-            .join(format!("{name}.png"))
-    }
-
-    fn materials(&self) -> PathBuf {
-        self.dir.path().join("baked/materials")
-    }
-
-    fn run(&self, cache: bool, workers: u32, extra: &[&str]) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
-        command
-            // Per-entry delta cache lines are debug-level; the tally reads them.
-            .env("RUST_LOG", "info,prl_build::delta_sh_cache=debug")
-            .arg(&self.map)
-            .arg("-o")
-            .arg(self.dir.path().join("room.prl"))
-            .arg("--baked-root")
-            .arg(self.dir.path().join("baked"))
-            .arg("--jobs")
-            .arg(workers.to_string())
-            .args([
-                "--no-tui",
-                "--lightmap-density",
-                "0.25",
-                "--sh-probe-spacing",
-                "1",
-                "--soft-shadow-samples",
-                "4",
-                "--uncompressed-irradiance",
-            ]);
-        if cache {
-            command
-                .arg("--cache-dir")
-                .arg(self.dir.path().join("cache"));
-        } else {
-            command.arg("--no-cache");
-        }
-        command
-            .args(extra)
-            .output()
-            .expect("run tiny material fixture")
-    }
-
-    fn bake(&self, cache: bool, workers: u32) -> Bake {
-        let output = self.run(cache, workers, &[]);
-        let log = diagnostic(&output);
-        assert!(output.status.success(), "fixture compile failed:\n{log}");
-        let mut cursor = Cursor::new(std::fs::read(self.dir.path().join("room.prl")).unwrap());
-        let metadata = read_container(&mut cursor).unwrap();
-        let sections = [34, 27]
-            .into_iter()
-            .map(|id| {
-                let bytes = read_section_data(&mut cursor, &metadata, id)
-                    .unwrap()
-                    .unwrap_or_else(|| panic!("fixture must exercise id {id}"));
-                (id, bytes)
-            })
-            .collect();
-        Bake {
-            log,
-            sections,
-            sidecars: sidecars(&self.materials()),
-        }
-    }
+fn run(fixture: &Fixture, cache: bool, workers: u32, extra: &[&str]) -> Run {
+    run_with(fixture, &current_compiler(), cache, workers, extra)
 }
 
-fn diagnostic(output: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
+fn bake(fixture: &Fixture, cache: bool, workers: u32) -> Bake {
+    run(fixture, cache, workers, &[]).into_bake()
 }
 
-fn sidecars(root: &Path) -> BTreeMap<String, blake3::Hash> {
-    if !root.exists() {
-        return BTreeMap::new();
-    }
-    std::fs::read_dir(root)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "prm"))
-        .map(|path| {
-            (
-                path.file_name().unwrap().to_string_lossy().into_owned(),
-                blake3::hash(&std::fs::read(path).unwrap()),
-            )
-        })
-        .collect()
-}
-
-fn write_png(path: &Path, texel: impl Fn(usize) -> [u8; 4]) {
-    let pixels: Vec<u8> = (0..256).flat_map(texel).collect();
-    let mut encoder = png::Encoder::new(std::fs::File::create(path).unwrap(), 16, 16);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder
-        .write_header()
-        .unwrap()
-        .write_image_data(&pixels)
-        .unwrap();
+/// The bounce-bearing sections: base SH (34) and indirect deltas (27).
+fn lighting(bake: &Bake) -> BTreeMap<u32, Vec<u8>> {
+    bake.required(&[34, 27])
 }
 
 fn tally(log: &str, stage: &str) -> (usize, usize) {
-    (
-        log.matches(&format!("[cache] {stage} hit")).count(),
-        log.matches(&format!("[cache] {stage} miss")).count(),
-    )
+    cache_tally(log).get(stage).copied().unwrap_or_default()
 }
 
 fn all_miss(bake: &Bake, totals: Option<&Bake>) {
-    for stage in ["sh_group", "indirect_delta_sh_subblock"] {
+    for stage in SH_STAGES {
         let (hits, misses) = tally(&bake.log, stage);
         assert!(
             hits == 0 && misses > 0,
@@ -176,7 +97,7 @@ fn all_miss(bake: &Bake, totals: Option<&Bake>) {
 }
 
 fn all_hit(bake: &Bake, previous: &Bake) {
-    for stage in ["sh_group", "indirect_delta_sh_subblock"] {
+    for stage in SH_STAGES {
         let (hits, misses) = tally(&bake.log, stage);
         let (old_hits, old_misses) = tally(&previous.log, stage);
         assert!(
@@ -192,24 +113,44 @@ fn all_hit(bake: &Bake, previous: &Bake) {
     }
 }
 
+/// Top-level cache entries by file name. Entries are content digests; the
+/// only directory a build may add is the prune's per-map `records/`.
+fn cache_entries(dir: &Path) -> BTreeSet<String> {
+    let mut entries = BTreeSet::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type().unwrap().is_dir() {
+            assert_eq!(name, "records", "unexpected cache subdirectory");
+            continue;
+        }
+        assert!(
+            name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "cache holds only digest-named stage entries, found {name}"
+        );
+        entries.insert(name);
+    }
+    entries
+}
+
 #[test]
 #[ignore = "focused cold-bake/material-cache integration gate"]
 fn mean_edits_rekey_every_group_and_entry_but_auxiliary_and_fluid_edits_hit() {
-    let fixture = Fixture::new();
-    let first = fixture.bake(true, 1);
+    let fixture = Fixture::red_wall();
+    let first = bake(&fixture, true, 1);
     all_miss(&first, None);
-    let warm = fixture.bake(true, 1);
+    let warm = bake(&fixture, true, 1);
     all_hit(&warm, &first);
-    assert_eq!(first.sections, warm.sections);
+    assert_eq!(lighting(&first), lighting(&warm));
     assert_eq!(first.sidecars, warm.sidecars);
 
     // One 255→254 red texel out of 256 leaves the 8-bit mean at 255.
     write_png(&fixture.texture("red"), |i| {
         [if i == 0 { 254 } else { 255 }, 0, 0, 255]
     });
-    let tiny = fixture.bake(true, 1);
+    let tiny = bake(&fixture, true, 1);
     all_hit(&tiny, &warm);
-    assert_eq!(tiny.sections, warm.sections);
+    assert_eq!(lighting(&tiny), lighting(&warm));
     assert_ne!(
         tiny.sidecars, warm.sidecars,
         "changed source still produces a new sidecar"
@@ -221,10 +162,11 @@ fn mean_edits_rekey_every_group_and_entry_but_auxiliary_and_fluid_edits_hit() {
         ("water", [127, 80, 20, 255]),
     ] {
         write_png(&fixture.texture(name), |_| colour);
-        let edited = fixture.bake(true, 2);
+        let edited = bake(&fixture, true, 2);
         all_hit(&edited, &tiny);
         assert_eq!(
-            edited.sections, tiny.sections,
+            lighting(&edited),
+            lighting(&tiny),
             "{name} does not affect static-world bounce"
         );
     }
@@ -236,7 +178,7 @@ fn mean_edits_rekey_every_group_and_entry_but_auxiliary_and_fluid_edits_hit() {
             [255, 0, 0, 255]
         }
     });
-    let repainted = fixture.bake(true, 2);
+    let repainted = bake(&fixture, true, 2);
     all_miss(&repainted, Some(&tiny));
     for id in [34, 27] {
         assert_ne!(
@@ -244,19 +186,16 @@ fn mean_edits_rekey_every_group_and_entry_but_auxiliary_and_fluid_edits_hit() {
             "mean repaint must change id {id}"
         );
     }
-    let repeated = fixture.bake(true, 1);
+    let repeated = bake(&fixture, true, 1);
     all_hit(&repeated, &repainted);
-    assert_eq!(repainted.sections, repeated.sections);
+    assert_eq!(lighting(&repainted), lighting(&repeated));
 }
 
 #[test]
 #[ignore = "focused cold-bake/glow-cache integration gate"]
 fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
-    let fixture = Fixture::new();
-    let map = std::fs::read_to_string(&fixture.map)
-        .unwrap()
-        .replace("bounce/red", "bounce/neon_panel");
-    std::fs::write(&fixture.map, map).unwrap();
+    let fixture = Fixture::red_wall();
+    fixture.edit_map(|map| map.replace("bounce/red", "bounce/neon_panel"));
     write_png(&fixture.texture("neon_panel"), |i| {
         if i < 128 { [255; 4] } else { [64, 16, 16, 255] }
     });
@@ -267,7 +206,7 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
             [0, 0, 0, 255]
         }
     });
-    let first = fixture.bake(true, 1);
+    let first = bake(&fixture, true, 1);
     all_miss(&first, None);
     write_png(&fixture.texture("neon_panel_e"), |i| {
         if i < 128 {
@@ -276,9 +215,9 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
             [0, 0, 0, 255]
         }
     });
-    let brighter = fixture.bake(true, 2);
+    let brighter = bake(&fixture, true, 2);
     all_hit(&brighter, &first);
-    assert_eq!(first.sections, brighter.sections);
+    assert_eq!(lighting(&first), lighting(&brighter));
     assert_ne!(first.sidecars, brighter.sidecars);
     // One extra marked dark texel leaves the retained constant colour unchanged.
     write_png(&fixture.texture("neon_panel_e"), |i| {
@@ -288,11 +227,11 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
             [0, 0, 0, 255]
         }
     });
-    let unchanged_mean = fixture.bake(true, 1);
+    let unchanged_mean = bake(&fixture, true, 1);
     all_hit(&unchanged_mean, &brighter);
-    assert_eq!(brighter.sections, unchanged_mean.sections);
+    assert_eq!(lighting(&brighter), lighting(&unchanged_mean));
     write_png(&fixture.texture("neon_panel_e"), |_| [0, 0, 0, 255]);
-    let unmasked = fixture.bake(true, 1);
+    let unmasked = bake(&fixture, true, 1);
     all_miss(&unmasked, Some(&first));
     assert_ne!(unmasked.sections[&27], first.sections[&27]);
 }
@@ -333,12 +272,13 @@ fn warm_is_no_brighter_than_cold(warm: &[u8], cold: &[u8]) {
 fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
     let mut cold_reference = None;
     for cache in [false, true] {
-        let fixture = Fixture::new();
-        let first = fixture.bake(cache, 1);
+        let fixture = Fixture::red_wall();
+        let first = bake(&fixture, cache, 1);
         assert!(!first.sidecars.is_empty());
-        let reused = fixture.bake(cache, 2);
+        let reused = bake(&fixture, cache, 2);
         assert_eq!(
-            first.sections, reused.sections,
+            lighting(&first),
+            lighting(&reused),
             "sidecars reused with stage cache {cache}"
         );
         assert_eq!(first.sidecars, reused.sidecars);
@@ -346,7 +286,7 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
             all_miss(&first, None);
             all_hit(&reused, &first);
         } else {
-            for stage in ["sh_group", "indirect_delta_sh_subblock"] {
+            for stage in SH_STAGES {
                 assert_eq!(
                     tally(&first.log, stage),
                     (0, 0),
@@ -354,10 +294,11 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
                 );
             }
         }
-        std::fs::remove_dir_all(fixture.materials()).unwrap();
-        let rebuilt = fixture.bake(cache, 2);
+        std::fs::remove_dir_all(fixture.materials(LABEL)).unwrap();
+        let rebuilt = bake(&fixture, cache, 2);
         assert_eq!(
-            first.sections, rebuilt.sections,
+            lighting(&first),
+            lighting(&rebuilt),
             "rebuilt sidecars retain lighting bytes"
         );
         assert_eq!(
@@ -373,17 +314,17 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
             );
             warm_is_no_brighter_than_cold(&rebuilt.sections[&34], &cold.sections[&34]);
             // Warm sidecars must also work when the stage cache is empty.
-            std::fs::remove_dir_all(fixture.dir.path().join("cache")).unwrap();
-            let empty_cache = fixture.bake(true, 2);
+            std::fs::remove_dir_all(cache_dir(&fixture)).unwrap();
+            let empty_cache = bake(&fixture, true, 2);
             all_miss(&empty_cache, Some(&first));
-            assert_eq!(empty_cache.sections, first.sections);
+            assert_eq!(lighting(&empty_cache), lighting(&first));
             assert_eq!(empty_cache.sidecars, first.sidecars);
             // A rejected sidecar is regenerated before a populated SH cache hits.
             let name = empty_cache.sidecars.keys().next().unwrap();
-            std::fs::write(fixture.materials().join(name), b"truncated prm").unwrap();
-            let repaired = fixture.bake(true, 1);
+            std::fs::write(fixture.materials(LABEL).join(name), b"truncated prm").unwrap();
+            let repaired = bake(&fixture, true, 1);
             all_hit(&repaired, &empty_cache);
-            assert_eq!(repaired.sections, first.sections);
+            assert_eq!(lighting(&repaired), lighting(&first));
             assert_eq!(repaired.sidecars, first.sidecars);
         } else {
             cold_reference = Some(first);
@@ -391,91 +332,215 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
     }
 }
 
-/// Keep the IHDR and chunk layout valid, but break compressed IDAT bytes.
-/// Header-only validation succeeds; the production texel decoder must fail.
-fn corrupt_pixels(path: &Path) {
-    let mut bytes = std::fs::read(path).unwrap();
-    let mut offset = 8;
-    loop {
-        let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-        if &bytes[offset + 4..offset + 8] == b"IDAT" {
-            assert!(length > 0);
-            bytes[offset + 8] ^= 0xff;
-            break;
-        }
-        offset += length + 12;
-        assert!(offset < bytes.len(), "fixture PNG has IDAT");
+// The build writes no cache entry for means: every entry a cold build writes
+// belongs to one logged miss of a stage that cached before coloured bounce,
+// and a warm build reads them all and writes nothing new.
+#[test]
+#[ignore = "focused cold/warm stage-cache contents gate"]
+fn cold_and_warm_builds_cache_entries_only_for_pre_change_stages() {
+    let fixture = Fixture::red_wall();
+    // `-v` logs the lightmap layer partitions' own cache lines.
+    let cold = run(&fixture, true, 1, &["-v"]).into_bake();
+    let cold_tally = cache_tally(&cold.log);
+    assert_eq!(
+        cold_tally.keys().map(String::as_str).collect::<Vec<_>>(),
+        PRE_CHANGE_CACHED_STAGES,
+        "cold build caches exactly the pre-change stages:\n{}",
+        cold.log
+    );
+    for (stage, (hits, _)) in &cold_tally {
+        assert_eq!(*hits, 0, "{stage} has nothing to hit in a fresh cache");
     }
-    std::fs::write(path, bytes).unwrap();
+    let cold_entries = cache_entries(&cache_dir(&fixture));
+    let cold_misses: usize = cold_tally.values().map(|(_, misses)| misses).sum();
+    assert_eq!(
+        cold_entries.len(),
+        cold_misses,
+        "one entry per pre-change stage miss, and no other entry"
+    );
+
+    let warm = run(&fixture, true, 1, &["-v"]).into_bake();
+    let warm_tally = cache_tally(&warm.log);
+    for (stage, (hits, misses)) in &warm_tally {
+        assert!(
+            PRE_CHANGE_CACHED_STAGES.contains(&stage.as_str()),
+            "warm build reads an unknown stage {stage}"
+        );
+        assert_eq!(*misses, 0, "{stage} must be warm:\n{}", warm.log);
+        assert_eq!(*hits, cold_tally[stage].1, "{stage} reads every entry");
+    }
+    for stage in PRE_CHANGE_CACHED_STAGES {
+        // A lightmap section hit serves the layer without reading partitions.
+        if stage != "lightmap_layer" {
+            assert!(warm_tally.contains_key(stage), "{stage} must be read warm");
+        }
+    }
+    assert_eq!(
+        cache_entries(&cache_dir(&fixture)),
+        cold_entries,
+        "a warm build writes no entry"
+    );
+    assert_eq!(lighting(&cold), lighting(&warm));
+}
+
+/// One-shot pre-change oracle: a stage cache the saved pre-colour compiler
+/// wrote misses every SH group and indirect delta entry, while the stages
+/// coloured bounce left alone hit that same cache. A fresh cache from either
+/// compiler holds the same number of entries.
+#[test]
+#[ignore = "one-shot pre-change oracle: needs POSTRETRO_GREY_PRL_BUILD"]
+fn pre_colour_stage_cache_misses_both_sh_stages_while_unchanged_stages_hit() {
+    let Some(grey) =
+        grey_compiler("pre_colour_stage_cache_misses_both_sh_stages_while_unchanged_stages_hit")
+    else {
+        return;
+    };
+    let fixture = Fixture::red_wall();
+    let old = run_with(&fixture, &grey, true, 1, &[]).into_bake();
+    let old_entries = cache_entries(&cache_dir(&fixture));
+    let (_, old_groups) = tally(&old.log, "sh_group");
+    assert!(old_groups > 0, "pre-colour build cached SH groups");
+
+    let current = bake(&fixture, true, 1);
+    let current_tally = cache_tally(&current.log);
+    assert_eq!(
+        tally(&current.log, "sh_group"),
+        (0, old_groups),
+        "every pre-colour group entry misses"
+    );
+    let (delta_hits, delta_misses) = tally(&current.log, "indirect_delta_sh_subblock");
+    assert!(
+        delta_hits == 0 && delta_misses > 0,
+        "every pre-colour indirect delta entry misses:\n{}",
+        current.log
+    );
+    // Reflection captures key on the SH bytes, so they follow SH; every other
+    // cached stage must find the pre-colour entry, proving the cache was read.
+    for (stage, (hits, misses)) in &current_tally {
+        if SH_STAGES.contains(&stage.as_str()) || stage == "reflection_probes" {
+            continue;
+        }
+        assert!(
+            *hits > 0 && *misses == 0,
+            "{stage} is unchanged by colour and must hit the old cache"
+        );
+    }
+    assert!(current_tally.len() > SH_STAGES.len() + 1);
+
+    let fresh = Fixture::red_wall();
+    run(&fresh, true, 1, &[]).into_bake();
+    assert_eq!(
+        cache_entries(&cache_dir(&fresh)).len(),
+        old_entries.len(),
+        "coloured bounce caches no entry the pre-colour build did not"
+    );
 }
 
 #[test]
 #[ignore = "focused compiler refusal-before-materials gate"]
 fn budget_and_invalid_animation_fail_before_corrupt_world_texture_is_read() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::red_wall();
     corrupt_pixels(&fixture.texture("red"));
-    let refused = fixture.run(false, 1, &["--working-set-max-size", "0"]);
-    let log = diagnostic(&refused);
-    assert!(!refused.status.success());
+    let refused = run(&fixture, false, 1, &["--working-set-max-size", "0"]);
+    let log = &refused.log;
+    assert!(!refused.succeeded());
     assert!(
         log.contains("SH delta working-set gate refused before dense baking"),
         "{log}"
+    );
+    assert!(
+        !log.contains(TEXTURE_VALIDATION_START),
+        "a refusing gate must precede texture-root reads: {log}"
     );
     assert!(
         !log.contains("decoding PNG"),
         "gate must beat bad source: {log}"
     );
     assert!(!log.contains(SH_START), "{log}");
-    assert!(sidecars(&fixture.materials()).is_empty());
+    assert!(sidecars(&fixture.materials(LABEL)).is_empty());
 
-    let map = std::fs::read_to_string(&fixture.map).unwrap().replacen(
-        "\"_color\" \"255 255 255\"", "\"_color\" \"255 255 255\"\n\"color_curve\" \"[0, 1, 0, 0] [500, 0, 1, 0]\"\n\"period_ms\" \"500\"", 1,
-    );
-    std::fs::write(&fixture.map, map).unwrap();
-    let invalid = fixture.run(false, 1, &[]);
-    let log = diagnostic(&invalid);
-    assert!(!invalid.status.success());
+    fixture.edit_map(|map| {
+        map.replacen(
+            "\"_color\" \"255 255 255\"",
+            "\"_color\" \"255 255 255\"\n\"color_curve\" \"[0, 1, 0, 0] [500, 0, 1, 0]\"\n\"period_ms\" \"500\"",
+            1,
+        )
+    });
+    let invalid = run(&fixture, false, 1, &[]);
+    let log = &invalid.log;
+    assert!(!invalid.succeeded());
     assert!(log.contains("color animation is only valid on"), "{log}");
     assert!(
-        !log.contains("Texture color-space validation..."),
+        !log.contains(TEXTURE_VALIDATION_START),
         "invalid animation must precede texture-root reads: {log}"
     );
     assert!(!log.contains(SH_START), "{log}");
-    assert!(sidecars(&fixture.materials()).is_empty());
+    assert!(sidecars(&fixture.materials(LABEL)).is_empty());
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Fault {
+    /// Valid PNG header, undecodable pixels.
+    Decode,
+    /// An `_e` at half the diffuse's dimensions.
+    EmissiveSize,
 }
 
 #[test]
-#[ignore = "focused world-versus-fluid decode failure ordering gate"]
-fn world_decode_failure_precedes_sh_while_fluid_only_failure_follows_both_sh_bakes() {
-    for (name, late) in [("red", false), ("water", true)] {
-        let fixture = Fixture::new();
-        corrupt_pixels(&fixture.texture(name));
-        let output = fixture.run(false, 1, &[]);
-        let log = diagnostic(&output);
-        assert!(!output.status.success());
-        assert!(
-            log.contains("decoding PNG") && log.contains(&format!("{name}.png")),
-            "pixel decode must report offending source: {log}"
-        );
+#[ignore = "focused world/mover-versus-fluid material failure ordering gate"]
+fn world_and_mover_faults_precede_sh_while_fluid_only_faults_follow_both_sh_bakes() {
+    for (name, fault, late) in [
+        ("red", Fault::Decode, false),
+        ("red", Fault::EmissiveSize, false),
+        ("lift", Fault::Decode, false),
+        ("lift", Fault::EmissiveSize, false),
+        ("water", Fault::Decode, true),
+        ("water", Fault::EmissiveSize, true),
+    ] {
+        let case = format!("{name} {fault:?}");
+        let fixture = Fixture::red_wall();
+        // The mover's name is interned at Geometry, so it belongs to the
+        // material stage even though no static-world face uses it.
+        fixture.edit_map(|map| map + &fixtures::mover_entity("bounce/lift"));
+        fixtures::write_texture(fixture.root(), "lift", [40, 160, 40]);
+        let expected = match fault {
+            Fault::Decode => {
+                corrupt_pixels(&fixture.texture(name));
+                format!("{name}.png")
+            }
+            Fault::EmissiveSize => {
+                image::RgbaImage::from_pixel(8, 8, image::Rgba([255; 4]))
+                    .save(fixture.texture(&format!("{name}_e")))
+                    .unwrap();
+                format!("{name}_e.png is 8x8")
+            }
+        };
+        let output = run(&fixture, false, 1, &[]);
+        let log = &output.log;
+        assert!(!output.succeeded(), "{case} must fail the build");
+        assert!(log.contains(&expected), "{case} must name its fault: {log}");
+        if matches!(fault, Fault::Decode) {
+            assert!(log.contains("decoding PNG"), "{case}: {log}");
+        }
         assert_eq!(
             log.contains(SH_START),
             late,
-            "world material decode must precede SH: {log}"
+            "{case}: world and mover materials fail before SH: {log}"
         );
         assert_eq!(
             log.contains(DELTA_START),
             late,
-            "fluid-only decode must follow delta SH: {log}"
+            "{case}: fluid-only faults follow delta SH: {log}"
         );
         assert_eq!(
             log.contains(TAIL_START),
             late,
-            "fluid-only source belongs to texture tail: {log}"
+            "{case}: fluid-only sources belong to the texture tail: {log}"
         );
         if late {
             assert!(
-                !sidecars(&fixture.materials()).is_empty(),
-                "world materials already baked"
+                !sidecars(&fixture.materials(LABEL)).is_empty(),
+                "{case}: world materials already baked"
             );
         }
     }

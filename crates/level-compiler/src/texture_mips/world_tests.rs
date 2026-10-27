@@ -546,31 +546,117 @@ fn material_stage_and_fluid_tail_match_full_name_byte_accounting_cold_and_warm()
     }
 }
 
+/// Independent sRGB decode, for expected means.
+fn srgb_to_linear(value: u8) -> f64 {
+    let value = f64::from(value) / 255.0;
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn snapped_linear_mean(texels: &[[u8; 3]]) -> [u8; 3] {
+    std::array::from_fn(|channel| {
+        let sum: f64 = texels
+            .iter()
+            .map(|texel| srgb_to_linear(texel[channel]))
+            .sum();
+        linear_to_srgb_u8((sum / texels.len() as f64) as f32)
+    })
+}
+
+#[test]
+fn material_stage_glow_names_exclude_only_masked_texels_and_fall_back_to_the_full_average() {
+    const STRIP: [u8; 3] = [255, 255, 255];
+    const PANEL: [u8; 3] = [40, 80, 160];
+    let fixture = Fixture::new();
+    let diffuse = |x: u32, _| {
+        let [r, g, b] = if x < 2 { STRIP } else { PANEL };
+        [r, g, b, 255]
+    };
+    // One painted strip; three glow-prefixed names that differ only in `_e`.
+    for stem in ["panels/neon_bare", "panels/neon_strip", "panels/neon_all"] {
+        fixture.png(stem, 8, 2, diffuse);
+    }
+    fixture.png("panels/neon_strip_e", 8, 2, |x, _| {
+        if x < 2 {
+            [255, 64, 0, 255]
+        } else {
+            [0, 0, 0, 255]
+        }
+    });
+    fixture.png("panels/neon_all_e", 8, 2, |_, _| [0, 32, 0, 255]);
+    let names: Vec<_> = ["panels/neon_bare", "panels/neon_strip", "panels/neon_all"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let mut warned = HashSet::new();
+    for name in &names {
+        assert!(
+            derive_material(name, &mut warned).emissive_strength() > 0.0,
+            "{name} must be a glowing material"
+        );
+    }
+    let texels: Vec<[u8; 3]> = (0..2)
+        .flat_map(|_| (0..8).map(|x| if x < 2 { STRIP } else { PANEL }))
+        .collect();
+    let full = snapped_linear_mean(&texels);
+    assert_ne!(full, PANEL, "the strip must move the full average");
+    for phase in ["cold", "warm"] {
+        let (_, stats, _) = fixture.bake(&names);
+        let means: Vec<_> = stats.iter().map(MaterialStats::snapped_mean).collect();
+        assert_eq!(
+            means,
+            [Some(full), Some(PANEL), Some(full)],
+            "no `_e`: full; strip `_e`: panel only; all-glow `_e`: full ({phase})"
+        );
+    }
+}
+
 #[test]
 fn material_stage_texel_lifetimes_stay_with_one_texture_and_return_fixed_records() {
     let fixture = Fixture::new();
     let names: Vec<_> = (0..32)
         .map(|index| format!("panels/neon_{index}"))
         .collect();
-    for name in &names {
-        fixture.png(name, 8, 8, |x, y| [(x * 29) as u8, (y * 31) as u8, 73, 255]);
+    // Distinct content per name: every cold bake decodes its own sources.
+    for (index, name) in names.iter().enumerate() {
+        let index = index as u32;
+        fixture.png(name, 8, 8, |x, y| {
+            [(x * 29 + index) as u8, (y * 31 + index * 7) as u8, 73, 255]
+        });
         fixture.png(&format!("{name}_e"), 8, 8, |x, _| {
-            if x < 4 { [0, 0, 0, 255] } else { [255; 4] }
+            if x < 4 {
+                [0, 0, 0, 255]
+            } else {
+                [255, index as u8, 0, 255]
+            }
         });
     }
-    let ((_, single, _), cold_single) = metrics::observe(|| fixture.bake(&names[..1]));
-    std::fs::remove_dir_all(&fixture.cache).unwrap();
+    // Each texture alone, cold then warm, bounds what one texture holds.
+    let mut cold_singles = Vec::new();
+    let mut warm_singles = Vec::new();
+    for name in &names {
+        let one = std::slice::from_ref(name);
+        cold_singles.push(metrics::observe(|| fixture.bake(one)).1);
+        warm_singles.push(metrics::observe(|| fixture.bake(one)).1);
+        std::fs::remove_dir_all(&fixture.cache).unwrap();
+    }
     let ((_, many, _), cold_many) = metrics::observe(|| fixture.bake(&names));
-    let ((_, _, _), warm_single) = metrics::observe(|| fixture.bake(&names[..1]));
     let ((_, _, _), warm_many) = metrics::observe(|| fixture.bake(&names));
-    assert_eq!(single.len(), 1);
     assert_eq!(many.len(), names.len());
     // Records own no texel buffer and require no heap cleanup. Only this
     // fixed-size table grows with names; observed texel bytes do not.
     assert!(!std::mem::needs_drop::<MaterialStats>());
     let table_bytes = many.len() * std::mem::size_of::<MaterialStats>();
     assert_eq!(table_bytes, names.len() * std::mem::size_of_val(&many[0]));
-    for observed in [&cold_single, &cold_many, &warm_single, &warm_many] {
+    for observed in cold_singles
+        .iter()
+        .chain(&warm_singles)
+        .chain([&cold_many, &warm_many])
+    {
+        // The bake runs one texture at a time on its one worker.
         assert_eq!(observed.texture_high_water, 1);
         assert_eq!(observed.active_textures, 0);
         assert_eq!(observed.stats_borrow_high_water, 1);
@@ -579,19 +665,20 @@ fn material_stage_texel_lifetimes_stay_with_one_texture_and_return_fixed_records
         assert!(observed.owned_high_water >= observed.borrowed_high_water);
         assert_eq!(observed.stats_calls, observed.texture_count);
     }
-    assert_eq!(cold_single.texture_count, 1);
     assert_eq!(cold_many.texture_count, names.len());
-    assert_eq!(cold_single.largest_decoded_rgba, 8 * 8 * 4);
-    // Multiple names share the same byte-identical sidecar, so only the
-    // first material decodes its diffuse and glow sources in the cold run.
-    assert_eq!(cold_many.decode_attempts.len(), 2);
+    assert_eq!(cold_many.largest_decoded_rgba, 8 * 8 * 4);
+    // Every distinct diffuse and glow source decodes exactly once, cold.
+    assert_eq!(cold_many.decode_attempts.len(), 2 * names.len());
     assert!(cold_many.decode_attempts.values().all(|&count| count == 1));
+    assert_eq!(cold_many.decode_attempts, cold_many.decode_successes);
     assert!(warm_many.decode_attempts.is_empty());
-    assert_eq!(cold_single.owned_high_water, cold_many.owned_high_water);
-    assert_eq!(warm_single.owned_high_water, warm_many.owned_high_water);
+    // Nothing accumulates: many textures peak at the largest single texture.
+    let peak = |runs: &[metrics::Snapshot]| runs.iter().map(|run| run.owned_high_water).max();
+    assert_eq!(Some(cold_many.owned_high_water), peak(&cold_singles));
+    assert_eq!(Some(warm_many.owned_high_water), peak(&warm_singles));
     assert_eq!(
         fixture.sidecars().len(),
-        1,
-        "stats create no additional persistent files"
+        names.len(),
+        "one sidecar per texture; stats create no additional persistent files"
     );
 }

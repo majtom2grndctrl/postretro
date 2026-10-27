@@ -1,19 +1,16 @@
 //! Pre-colour section and material-byte oracle, recorded on the indirect-scale commit.
-//! See: context/plans/in-progress/coloured-sh-bounce/research.md §Byte oracle
+//! See: context/lib/build_pipeline.md §Compiler pipeline
 
-#[path = "../src/coloured_bounce_test_fixtures.rs"]
-mod fixtures;
+mod coloured_bounce_support;
 
 use std::collections::BTreeMap;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use fixtures::Appearance;
+use coloured_bounce_support::fixtures::{self, Appearance};
+use coloured_bounce_support::{Fixture, current_compiler, pinned_old_compiler};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
-use postretro_level_format::{read_container, read_section_data};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,8 +30,9 @@ fn baseline_path() -> PathBuf {
 }
 
 const BASELINE_REVISION: &str = "ecbc27435023931f919484036619f339438f1e30";
-const SAVED_COMPILER_SHA256: &str =
-    "098a6fc94c21ef020e065806b3a2e9600fccea3208c3c5240dccc6c72a332496";
+const SAVED_COMPILER_SHA256: &str = coloured_bounce_support::GREY_COMPILER_SHA256;
+/// The recorder's own opt-in: its value is the saved compiler's path.
+const RECORD_UNIFORM_ENV: &str = "POSTRETRO_RECORD_COLOURED_BOUNCE_ID41_UNIFORM";
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Id41Shape {
@@ -59,10 +57,10 @@ fn uniform_baseline_path() -> PathBuf {
 }
 
 fn uniform_room_map() -> String {
-    fixtures::room_map(Appearance::RedWall, true, true).replacen(
-        "\"classname\" \"worldspawn\"",
-        "\"classname\" \"worldspawn\"\n\"_sh_coarsen\" \"0\"",
-        1,
+    fixtures::with_worldspawn_key(
+        &fixtures::room_map(Appearance::RedWall, true, true),
+        "_sh_coarsen",
+        "0",
     )
 }
 
@@ -73,14 +71,12 @@ fn fixture_map_digest() -> String {
 }
 
 fn bake(appearance: Appearance, ids: &[u32]) -> FixtureDigests {
-    bake_using(
-        Path::new(env!("CARGO_BIN_EXE_prl-build")),
-        appearance,
-        ids,
-        false,
-    )
-    .0
+    bake_using(&current_compiler(), appearance, ids, false).0
 }
+
+/// The flags the checked-in digests were recorded with; changing them
+/// invalidates the oracle, so they stay exactly these.
+const ORACLE_FLAGS: [&str; 3] = ["--no-cache", "--jobs", "1"];
 
 fn bake_using(
     binary: &Path,
@@ -88,55 +84,22 @@ fn bake_using(
     ids: &[u32],
     uniform: bool,
 ) -> (FixtureDigests, Option<Id41Shape>) {
-    let temp = tempfile::tempdir().expect("isolated fixture build");
-    let root = temp.path();
-    std::fs::create_dir(root.join("maps")).unwrap();
-    fixtures::write_textures(root);
-    let map = root.join("maps/coloured-bounce.map");
     let map_text = if uniform {
         uniform_room_map()
     } else {
         fixtures::room_map(appearance, true, true)
     };
-    std::fs::write(&map, map_text).unwrap();
-    let prl = root.join("room.prl");
-    let output = Command::new(binary)
-        .env("RUST_LOG", "warn")
-        .arg(&map)
-        .arg("-o")
-        .arg(&prl)
-        .arg("--baked-root")
-        .arg(root.join("baked"))
-        .args([
-            "--no-cache",
-            "--no-tui",
-            "--jobs",
-            "1",
-            "--lightmap-density",
-            "0.25",
-            "--sh-probe-spacing",
-            "1",
-            "--uncompressed-irradiance",
-        ])
-        .output()
-        .expect("spawn prl-build");
-    assert!(
-        output.status.success(),
-        "fixture compile failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let mut cursor = Cursor::new(std::fs::read(prl).unwrap());
-    let metadata = read_container(&mut cursor).unwrap();
+    let fixture = Fixture::new(&map_text, true);
+    let bake = fixture.bake(binary, "room", "warn", &ORACLE_FLAGS);
     // The approved storage dependency applies to id 41 only.
     for id in [27, 45] {
-        if let Some(bytes) = read_section_data(&mut cursor, &metadata, id).unwrap() {
+        if let Some(bytes) = bake.sections.get(&id) {
             let levels = if id == 27 {
-                DeltaShVolumesSection::from_bytes(&bytes)
+                DeltaShVolumesSection::from_bytes(bytes)
                     .unwrap()
                     .cell_levels
             } else {
-                AnimatedDirectShDeltaVolumesSection::from_bytes(&bytes)
+                AnimatedDirectShDeltaVolumesSection::from_bytes(bytes)
                     .unwrap()
                     .cell_levels
             };
@@ -146,75 +109,54 @@ fn bake_using(
             );
         }
     }
-    let shape = read_section_data(&mut cursor, &metadata, 41)
-        .unwrap()
-        .map(|bytes| {
-            let section = DirectShDeltaVolumesSection::from_bytes(&bytes).unwrap();
-            let mut cell_levels = [0; 3];
-            for &level in &section.cell_levels {
-                cell_levels[usize::from(level)] += 1;
-            }
-            let shape = Id41Shape {
-                section_bytes: bytes.len(),
-                entries: section.affinity_lights.len(),
-                valid_probes: section
-                    .valid_probe_masks
-                    .iter()
-                    .map(|mask| mask.count_ones())
-                    .sum(),
-                cell_levels,
-                payload_halves: section.delta_subblocks.len(),
-            };
-            eprintln!(
-                "[id41 storage] uniform={uniform}, compiler={}, {shape:?}",
-                binary.display()
-            );
-            if uniform {
-                assert!(
-                    shape.entries > 0 && shape.payload_halves > 0,
-                    "uniform oracle must carry actual direct samples"
-                );
-                assert!(
-                    shape.cell_levels[0] > 0 && shape.cell_levels[1..] == [0, 0],
-                    "uniform fixture must disable adaptive id41 storage"
-                );
-            }
-            shape
-        });
-    let sections = ids
-        .iter()
-        .map(|&id| {
-            let bytes = read_section_data(&mut cursor, &metadata, id)
-                .unwrap_or_else(|e| panic!("read section {id}: {e}"))
-                .unwrap_or_else(|| panic!("fixture must exercise section {id}"));
-            assert!(!bytes.is_empty(), "section {id} must carry a payload");
-            (id, blake3::hash(&bytes).to_hex().to_string())
-        })
-        .collect();
-    let mut sidecars = BTreeMap::new();
-    collect_sidecars(&root.join("baked/materials"), &mut sidecars);
-    (FixtureDigests { sections, sidecars }, shape)
-}
-
-fn collect_sidecars(directory: &Path, digests: &mut BTreeMap<String, String>) {
-    if !directory.exists() {
-        return;
-    }
-    for entry in std::fs::read_dir(directory).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            collect_sidecars(&path, digests);
-        } else if path.extension().is_some_and(|e| e == "prm") {
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let digest = blake3::hash(&std::fs::read(path).unwrap())
-                .to_hex()
-                .to_string();
+    let shape = bake.sections.get(&41).map(|bytes| {
+        let section = DirectShDeltaVolumesSection::from_bytes(bytes).unwrap();
+        let mut cell_levels = [0; 3];
+        for &level in &section.cell_levels {
+            cell_levels[usize::from(level)] += 1;
+        }
+        let shape = Id41Shape {
+            section_bytes: bytes.len(),
+            entries: section.affinity_lights.len(),
+            valid_probes: section
+                .valid_probe_masks
+                .iter()
+                .map(|mask| mask.count_ones())
+                .sum(),
+            cell_levels,
+            payload_halves: section.delta_subblocks.len(),
+        };
+        eprintln!(
+            "[id41 storage] uniform={uniform}, compiler={}, {shape:?}",
+            binary.display()
+        );
+        if uniform {
             assert!(
-                digests.insert(name, digest).is_none(),
-                "unique sidecar names"
+                shape.entries > 0 && shape.payload_halves > 0,
+                "uniform oracle must carry actual direct samples"
+            );
+            assert!(
+                shape.cell_levels[0] > 0 && shape.cell_levels[1..] == [0, 0],
+                "uniform fixture must disable adaptive id41 storage"
             );
         }
-    }
+        shape
+    });
+    let digest = |bytes: &[u8]| blake3::hash(bytes).to_hex().to_string();
+    let sections = bake
+        .required(ids)
+        .into_iter()
+        .map(|(id, bytes)| {
+            assert!(!bytes.is_empty(), "section {id} must carry a payload");
+            (id, digest(&bytes))
+        })
+        .collect();
+    let sidecars = bake
+        .sidecars
+        .iter()
+        .map(|(name, bytes)| (name.clone(), digest(bytes)))
+        .collect();
+    (FixtureDigests { sections, sidecars }, shape)
 }
 
 #[test]
@@ -273,41 +215,19 @@ fn coloured_bounce_preserves_unaffected_section_and_sidecar_bytes() {
     );
 }
 
-/// Explicit recorder: only the saved, proven pre-colour executable may generate
-/// the new record. The original adaptive oracle is never written by this target.
+/// One-shot pre-change oracle recorder: only the saved, SHA-256-pinned
+/// pre-colour executable may generate the uniform id 41 record, and only into
+/// a missing file. The original adaptive oracle is never written here. Skips
+/// with a message unless its opt-in names that executable.
 #[test]
 #[ignore = "opt-in uniform-id41 baseline capture from the saved old compiler"]
 fn record_uniform_id41_from_saved_pre_colour_compiler() {
-    let Ok(binary) = std::env::var("POSTRETRO_RECORD_COLOURED_BOUNCE_ID41_UNIFORM") else {
-        eprintln!("uniform id41 recorder inactive: no saved-compiler path supplied");
+    let Some(saved) = pinned_old_compiler(
+        RECORD_UNIFORM_ENV,
+        "record_uniform_id41_from_saved_pre_colour_compiler",
+    ) else {
         return;
     };
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-    let saved = workspace.join("work/ab/grey/prl-build");
-    assert_eq!(
-        Path::new(&binary),
-        saved,
-        "record only from the exact saved pre-colour compiler path"
-    );
-    let output = Command::new("/usr/bin/shasum")
-        .args(["-a", "256"])
-        .arg(&saved)
-        .output()
-        .expect("hash saved compiler");
-    assert!(
-        output.status.success(),
-        "saved compiler hash must be readable"
-    );
-    let output = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(
-        output.split_whitespace().next().unwrap(),
-        SAVED_COMPILER_SHA256,
-        "saved compiler must match the artifact proven at {BASELINE_REVISION}"
-    );
     assert!(
         !uniform_baseline_path().exists(),
         "uniform baseline already exists; recorder cannot overwrite it"
@@ -340,12 +260,7 @@ fn uniform_id41_preserves_pre_colour_direct_samples() {
         fixture_map_digest(),
         "both compilers must use exactly the same fixture map"
     );
-    let (actual, shape) = bake_using(
-        Path::new(env!("CARGO_BIN_EXE_prl-build")),
-        Appearance::RedWall,
-        &[41],
-        true,
-    );
+    let (actual, shape) = bake_using(&current_compiler(), Appearance::RedWall, &[41], true);
     assert_eq!(
         actual.sections[&41], expected.section_blake3,
         "uniform id41 direct samples, masks and CSR must remain exact"

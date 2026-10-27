@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn saturation_preserves_luminance_interpolates_colour_and_never_adds_energy() {
+    fn saturation_preserves_luminance_and_interpolates_colour() {
         assert!((0.0..=1.0).contains(&BOUNCE_SATURATION));
         let red = stats(&slot(1, 1, &[[235, 47, 11, 255]]), None, 0.0);
         let full = albedo(red, 1.0);
@@ -347,13 +347,64 @@ mod tests {
         assert!(half.x - half.z > 0.0 && half.x - half.z < full.x - full.z);
         for colour in [neutral, half, full] {
             assert!((colour.dot(weights) - full.dot(weights)).abs() <= f32::EPSILON);
-            assert!(colour.max_element() <= f32::from_bits(full.max_element().to_bits() + 1));
         }
-        let grey = stats(&slot(1, 1, &[[128; 4]]), None, 0.0);
-        let expected = build_srgb_to_linear_lut()[128];
-        let ulp = f32::from_bits(expected.to_bits() + 1) - expected;
-        for saturation in [0.0, 0.5, 1.0] {
-            near(albedo(grey, saturation), Vec3::splat(expected), ulp);
+    }
+
+    /// Distance in representable f32 steps between two non-negative values.
+    fn ulps(a: f32, b: f32) -> u32 {
+        assert!(a >= 0.0 && b >= 0.0);
+        a.to_bits().abs_diff(b.to_bits())
+    }
+
+    #[test]
+    fn no_albedo_exceeds_its_largest_snapped_channel_and_neutral_albedo_is_its_mean() {
+        let lut = build_srgb_to_linear_lut();
+        let mut coloured = vec![
+            // Saturated primaries and secondaries pull hardest toward luminance.
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [255, 255, 0],
+            [0, 255, 255],
+            [255, 0, 255],
+            // Near-white: every channel close to the ceiling.
+            [254, 255, 253],
+            [255, 250, 245],
+            [235, 47, 11],
+            [1, 2, 3],
+        ];
+        // A coarse sweep of the cube, corners included.
+        for r in (0..=255).step_by(51) {
+            for g in (0..=255).step_by(51) {
+                for b in (0..=255).step_by(51) {
+                    coloured.push([r as u8, g as u8, b as u8]);
+                }
+            }
+        }
+        for rgb in coloured {
+            let record = stats(&slot(1, 1, &[[rgb[0], rgb[1], rgb[2], 255]]), None, 0.0);
+            assert_eq!(record.snapped_mean(), Some(rgb));
+            let ceiling = lut[usize::from(*rgb.iter().max().unwrap())];
+            for saturation in [0.0, 0.5, 1.0] {
+                for channel in albedo(record, saturation).to_array() {
+                    assert!(
+                        channel <= ceiling || ulps(channel, ceiling) <= 1,
+                        "{rgb:?} at saturation {saturation}: {channel} above {ceiling}"
+                    );
+                }
+            }
+        }
+        for value in [0, 1, 64, 128, 200, 254, 255] {
+            let record = stats(&slot(1, 1, &[[value, value, value, 255]]), None, 0.0);
+            let mean = lut[usize::from(value)];
+            for saturation in [0.0, 0.5, 1.0] {
+                for channel in albedo(record, saturation).to_array() {
+                    assert!(
+                        ulps(channel, mean) <= 1,
+                        "neutral {value} at saturation {saturation}: {channel} != {mean}"
+                    );
+                }
+            }
         }
     }
 

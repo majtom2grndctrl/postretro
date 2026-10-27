@@ -456,7 +456,7 @@ mod tests {
     /// fixed scaling factors — the same shape a single static light's
     /// soft-shadow ramp produces in irradiance space. Per-texel variation is
     /// held under ~0.15 units (the rate real lightmap content varies at the
-    /// default 0.04 m/texel density), so per-block [min, max] stays under ~0.6
+    /// former default 0.04 m/texel density), so per-block [min, max] stays under ~0.6
     /// units and the channels co-vary, letting the single-mode encoder's
     /// shared-selector picks resolve each block within tolerance. (Synthetic
     /// per-channel independent gradients would push higher error because the

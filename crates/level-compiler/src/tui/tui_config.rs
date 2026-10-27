@@ -888,7 +888,7 @@ mod tests {
         terminal.draw(|frame| draw_config(frame, &form)).unwrap();
         let text = buffer_text(&terminal);
 
-        assert!(text.contains("Default 0.04 m/texel; smaller = finer / slower."));
+        assert!(text.contains("Default 0.025 m/texel; smaller = finer / slower."));
         assert!(!text.contains("Default 1 m; smaller = denser SH / slower."));
         assert!(!text.contains("softer penumbra"));
         assert!(!text.contains("Warm cache + approximate"));

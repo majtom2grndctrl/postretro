@@ -20,10 +20,10 @@
     // Earth's). May be changed at runtime via setGravity().
     initialGravity(float) : "Starting gravity (m/s²; default −20.32, about twice Earth); negative = downward, positive = upward. May be changed at runtime via setGravity()." : -20.32
     // Per-map lightmap density opt-in (meters per texel). Smaller = finer
-    // shadows but larger atlas. Default 0.04 m/texel; only fidelity-critical
+    // shadows but larger atlas. Default 0.025 m/texel; only fidelity-critical
     // maps need to author this. Non-finite / <= 0 values are warned and the
     // default is used. The `--lightmap-density` CLI flag overrides this KVP.
-    _lightmap_density(float) : "Lightmap texel size in meters (default 0.04; smaller = finer)" : ""
+    _lightmap_density(float) : "Lightmap texel size in meters (default 0.025; smaller = finer)" : ""
     // Adaptive base-SH and direct-delta density are enabled when this key is
     // absent. Choose Uniform only as a per-map quality fallback; ids 27/45
     // remain uniform in either mode.

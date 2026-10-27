@@ -1510,4 +1510,24 @@ fn every_surface_sh_consumer_applies_its_renderer_indirect_scale_and_fog_ignores
         !fog.contains("indirect_scale"),
         "fog has its own authored scatter controls"
     );
+    // The planar mirror re-runs the world, mover, mesh and billboard shaders
+    // above under a copy of group 0 (`planar_reflection::mirror_camera_uniform`
+    // keeps `indirect_scale`), so mirror texels are already scaled once; its
+    // own shaders composite them and must neither sample SH nor scale again.
+    for (name, source) in [
+        (
+            "planar resolve",
+            include_str!("../../shaders/planar_resolve.wgsl"),
+        ),
+        (
+            "planar mask",
+            include_str!("../../shaders/planar_mask.wgsl"),
+        ),
+    ] {
+        assert!(!source.contains("sample_sh"), "{name} must not sample SH");
+        assert!(
+            !source.contains("* uniforms.indirect_scale"),
+            "{name} must not rescale mirror texels"
+        );
+    }
 }

@@ -1,5 +1,5 @@
 // World/mover material bake and late fluid-only tail; sidecar format stays unchanged.
-// See: context/plans/in-progress/coloured-sh-bounce/index.md
+// See: context/lib/build_pipeline.md §Compiler pipeline, §Baked texture mips
 
 use super::*;
 use crate::surface_materials::stats::{BounceMaterials, MaterialStats};
@@ -222,29 +222,38 @@ pub(crate) fn bake_materials_into(
                 && hdr.bundle_hash == bundle_hash
                 && cache_entry_has_valid_declared_slots(&hdr, &slots)
             {
-                if let Some(saturation) = saturation {
-                    #[cfg(test)]
-                    let _borrow = lifetime.borrow_stats(metrics::stats_bytes(
-                        slots[0].as_ref().ok(),
-                        slots[3].as_ref().ok(),
-                    ));
-                    stats.push(MaterialStats::from_slots(
-                        slots[0].as_ref().ok(),
-                        slots[3].as_ref().ok(),
-                        derive_material(name, &mut warned_prefixes).emissive_strength(),
-                        saturation,
-                        &lut,
-                    )?);
+                let cached_stats = saturation
+                    .map(|saturation| {
+                        #[cfg(test)]
+                        let _borrow = lifetime.borrow_stats(metrics::stats_bytes(
+                            slots[0].as_ref().ok(),
+                            slots[3].as_ref().ok(),
+                        ));
+                        MaterialStats::from_slots(
+                            slots[0].as_ref().ok(),
+                            slots[3].as_ref().ok(),
+                            derive_material(name, &mut warned_prefixes).emissive_strength(),
+                            saturation,
+                            &lut,
+                        )
+                    })
+                    .transpose();
+                // Individually valid slots can still disagree across slots.
+                // Such cached data must be repaired from the validated sources.
+                if let Ok(cached_stats) = cached_stats {
+                    if let Some(cached_stats) = cached_stats {
+                        stats.push(cached_stats);
+                    }
+                    // Account the reused sidecar too: the report describes
+                    // what this level costs, not what this run rebaked.
+                    byte_summary.record_bundle(
+                        filename_key,
+                        name.clone(),
+                        MaterialBytes::from_parsed_slots(&slots, hdr.layer_count),
+                    );
+                    out.insert(name.clone(), filename_key);
+                    continue;
                 }
-                // Account the reused sidecar too: the report describes
-                // what this level costs, not what this run rebaked.
-                byte_summary.record_bundle(
-                    filename_key,
-                    name.clone(),
-                    MaterialBytes::from_parsed_slots(&slots, hdr.layer_count),
-                );
-                out.insert(name.clone(), filename_key);
-                continue;
             }
         }
 
@@ -724,6 +733,49 @@ mod tests {
             assert_same_stats(&expected, &repaired);
             assert_eq!(std::fs::read(&path).unwrap(), intact);
         }
+    }
+
+    #[test]
+    fn material_stage_repairs_stats_incompatible_cached_emissive_dimensions() {
+        let fixture = Fixture::new();
+        fixture.png("panels/neon_panel", 4, 2, |x, y| {
+            [255, (x * 60) as u8, (y * 100) as u8, 255]
+        });
+        fixture.png("panels/neon_panel_e", 4, 2, |x, _| {
+            if x == 0 { [255; 4] } else { [0, 0, 0, 255] }
+        });
+        let names = vec!["panels/neon_panel".to_owned()];
+        let (keys, expected, _) = fixture.bake(&names);
+        let path = fixture
+            .cache
+            .join(format!("{}.prm", cache_filename_for_key(&keys[&names[0]])));
+        let intact = std::fs::read(&path).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&intact);
+        let header = header.unwrap();
+        let mut slots = slots.map(|slot| slot.ok());
+        let emissive = slots[3].as_mut().unwrap();
+        // Transposition preserves pixel count, mip count and payload length.
+        // Every slot still parses, and the original source hash still matches.
+        std::mem::swap(&mut emissive.width, &mut emissive.height);
+        let incompatible = PrmFile { header, slots }.to_bytes().unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&incompatible);
+        let header = header.unwrap();
+        assert!(cache_entry_has_valid_declared_slots(&header, &slots));
+        assert_eq!(slots[3].as_ref().unwrap().width, 2);
+        assert_eq!(slots[3].as_ref().unwrap().height, 4);
+        std::fs::write(&path, &incompatible).unwrap();
+
+        let ((repaired_keys, repaired, _), observed) = metrics::observe(|| fixture.bake(&names));
+        assert_eq!(observed.decode_attempts.len(), 2);
+        assert!(observed.decode_attempts.values().all(|&count| count == 1));
+        assert_eq!(observed.decode_attempts, observed.decode_successes);
+        assert_eq!(keys, repaired_keys);
+        assert_same_stats(&expected, &repaired);
+        assert_eq!(std::fs::read(&path).unwrap(), intact);
+
+        let ((_, reused, _), observed) = metrics::observe(|| fixture.bake(&names));
+        assert!(observed.decode_attempts.is_empty());
+        assert_same_stats(&expected, &reused);
     }
 
     #[test]

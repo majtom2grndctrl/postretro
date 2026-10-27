@@ -64,12 +64,12 @@ read at: 3275d1480
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Unify runtime indirect scale; check serialized dynamic uploads and shader guards; preserve grey baseline commit | bounded renderer worker; integrating executor verifies and commits | — | done: fmt; 4 indirect-scale CPU tests; 9 light-params tests; explicit GPU uniform readback passed all 3 adapter cases |
+| 1 | Unify runtime indirect scale; check serialized dynamic uploads and shader guards; preserve grey baseline commit | bounded renderer worker; integrating executor verifies and commits | — | done: fmt; 4 indirect-scale CPU tests; 9 light-params tests; explicit GPU uniform readback passed on one actual adapter, covering three scale states and receiver buffers |
 | 2 | Capture pre-colour fixture section digests and full-texture bake baseline; move SurfaceMaterials into shared module in its own commit | integrating executor | 1 | done: pre-colour oracle, shared move, and serial fully textured campaign/mini baselines captured |
 | 3 | Split extended large modules; derive fixed-size mean stats in the texture bake without extra decodes; preserve sidecar and byte accounting contracts | integrating executor | 2 | implemented: splits, shared stats, exact means/glow/aliases/lifetimes; 8 material-stage + 7 stats tests passed |
 | 4 | Add material stage after gate and validation; preserve fluid tail, failures, indices and report; share stats with SH estimator and keys | integrating executor | 3 | implemented and focused gates pass; AC3 amendment and uniform/adaptive proofs pass; review pending |
 | 5 | Complete focused acceptance matrix for estimator, saturation, sidecars, order, aliases, caches and determinism; document author surface | integrating executor | 4 | focused proofs complete: all colour/material/key/cache/oracle/empty/quality targets pass; post-colour timing and review remain |
-| 6 | Review-readiness checks; isolated review panel and fix loop; final preflight once | integrating executor and review panel | 5 | pending |
+| 6 | Review-readiness checks; isolated review panel and fix loop; final preflight once | integrating executor and review panel | 5 | isolated five-slice review complete; bounded repair/proof/doc findings being fixed; final preflight pending |
 | 7 | Record AC results, bake timing comparison and owner textured-map A/B runbook; await blocking manual result and landing instruction | integrating executor | 6 | pending |
 
 ## Performance and lifetime
@@ -88,7 +88,7 @@ read at: 3275d1480
 - `CARGO_INCREMENTAL=0 cargo fmt --check`: pass.
 - `cargo test -p postretro-renderer --lib --features dev-tools indirect_scale`: 4 passed, 1 explicitly GPU-gated test ignored.
 - `cargo test -p postretro-renderer --lib --features dev-tools light_params`: 9 passed.
-- `cargo test -p postretro-renderer --lib --features dev-tools indirect_scale_runtime_change -- --ignored --nocapture`: pass with graphics access, 1 test / 3 adapter cases. Restricted execution saw no adapter and failed explicitly; rerun with graphics access read actual world/fluid, mover and mesh uniforms successfully.
+- `cargo test -p postretro-renderer --lib --features dev-tools indirect_scale_runtime_change -- --ignored --nocapture`: pass with graphics access, 1 test on one actual adapter, covering three scale states and receiver buffers. Restricted execution saw no adapter and failed explicitly; rerun with graphics access read actual world/fluid, mover and mesh uniforms successfully.
 - No baked-map visuals performed yet. Default indirect scale remains 0.33, fog unscaled. Full preflight/review deferred until integration per skill.
 - Usage after task: 58% five-hour / 63% weekly remaining. Disk free: 61 GiB.
 - Resume from the alias/glow owner decision; re-run the source proof, record only authorized contract wording, then capture byte oracle on task-1 commit ecbc27435 before any compiler implementation.
@@ -174,3 +174,24 @@ read at: 3275d1480
 - Pending canonical empty-material tests: 2 passed. Corrected coloured_bounce_empty target: all4 passed (one ordinary seam + three CLI comparisons against saved old compiler). No weakening of emitted-geometry/name/byte/report assertions.
 - cargo fmt --check and compiler cargo check pass. Renderer --features dev-tools check passed on unchanged renderer source at the prior checkpoint.
 - Ready for isolated review-panel / fix-review-findings loop; full preflight remains deferred until review fixes are integrated. Usage after these gates: 95% five-hour / 43% weekly remaining, disk56GiB.
+
+## Review and measurements — 2026-10-27
+- Isolated review complete at 580caa899: five depth+breadth slices, material/cache seam and actual id41 quality/render-consumer seam. Report: review.md. No runtime lighting defect found. Required findings: repair stats-incompatible cached sidecar rather than abort; SHA256-pin empty-case old compiler; correct BVH texture-index contract, density-independence prose and GPU coverage label. Optional header-routing nits remain listed in report.
+- Reference-space id41 bound remains unchanged. It is not a rendered-pixel percentage guarantee at 0.33; owner A/B remains required.
+- Grey spawn and nearby stationary captures completed with full material sidecars and correct content-root layout. No missing texture sidecar/diffuse load failures; expected authored unknown-prefix/SDF warnings retained. GPU proof wording corrected: one actual adapter, three scale states and three receiver buffers, not three adapters.
+- First serial post-colour campaign cold bake completed at 580caa899: wall22.535s, Materials3.90s, SH Bake1.97s, TextureMips0.03s, summary total22.44s. Grey wall23.777s, SH2.00s, TextureMips3.75s. One run each is descriptive, not a speedup claim. Repair affects rejected cache entries only; this cold valid-source run does not exercise it. Stress mini measurement in progress.
+- No full preflight yet. Owner manual AC34–36 still outstanding; feature branch not pushed or landed.
+
+## Review-fix gate and deliverables — 2026-10-27
+- Required panel findings repaired: cached stats-incompatible slots fall through to fresh rebake (new parser-valid 4x2/2x4 regression checks exact repaired bytes/means, once-only decodes and zero-decode next reuse); empty-case old compiler SHA256 pinned; BVH material identity and atlas-density contract clarified; GPU output label corrected. Optional header-route nits remain deferred except files already touched.
+- Focused gate: compiler check PASS; material_stage_10 passed (includes one canonical empty-material seam); coloured_bounce_empty4 passed, including all three old-compiler CLI cases. Initial fmt check found two wrapping differences; cargo fmt applied only those mechanical changes. Final fmt check PASS. Full preflight lint/test sequence now started in isolated clippy target, no claim of final pass yet.
+- Post-colour stress-warren-mini cold at580caa899: wall205.537s; Materials5.37s; SH32.39s; TextureMips0.00s; summary total205.23s. Grey wall202.276s/SH29.63s/TextureMips4.68s. Section41 grey→colour: campaign2,698,714→2,747,746B (+49,032); mini12,756,418→13,165,306B (+408,888). These are section sizes, not dense sample equality claims.
+- Both coloured stationary captures completed; visual inspection confirms textured surfaces, same camera locations, no missing texture load failures. Captures do not substitute for owner gameplay/fog acceptance. User-facing outputs outside Git under the task outputs/: owner-check.md (four captures and launch runbook), cold-bake-results.md (serial timings/storage). No manual AC34–36 inferred pass.
+- Pending after final preflight: warm material timings, complete per-row AC evidence/results, owner A/B and eventual explicit landing instruction. Branch remains local.
+
+## Usage-limit pause — 2026-10-27
+- Five-hour usedPercent95 (5% remaining), weekly71 (29% remaining). User-instructed pause threshold reached. Stop work and resume only on owner instruction after checking limits. No reset credits used.
+- Latest committed source remains580caa899; review report and required review repairs are saved UNCOMMITTED. Preserve them; do not reapply old pending drafts. No branch push/landing.
+- Final preflight formatting PASS. Clippy `--workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings` was started; interrupted at usage pause, not a pass or fail. Preserve partial cache/log at work/preflight-clippy.log. Full workspace cargo test NOT STARTED. Resume lint, then tests sequentially; do not repeat completed focused tests without cause.
+- Focused compiler check/material10/empty4 passed after review repairs; cargo fmt applied two mechanical wrapping fixes and final fmt passed. GPU proof output wording changed only; prior actual readback remains one adapter/three scale states.
+- Both full-texture grey and colour captures/two serial cold perf bakes complete; outputs/owner-check.md and outputs/cold-bake-results.md are user-facing. Warm material timings and detailed39-row AC results pending. Owner AC34–36 pending. Disk53GiB.

@@ -1,5 +1,5 @@
 //! Empty material/geometry tails through current and preserved pre-colour compilers.
-//! See: context/plans/in-progress/coloured-sh-bounce/research.md §Pin table
+//! See: context/lib/build_pipeline.md §Compiler pipeline
 
 #[path = "../src/coloured_bounce_test_fixtures.rs"]
 #[allow(dead_code)] // Shared appearance variants also serve the colour/oracle suites.
@@ -31,6 +31,9 @@ struct Bake {
     log: String,
 }
 
+const SAVED_GREY_COMPILER_SHA256: &str =
+    "098a6fc94c21ef020e065806b3a2e9600fccea3208c3c5240dccc6c72a332496";
+
 fn grey_compiler() -> PathBuf {
     let path = std::env::var_os("POSTRETRO_GREY_PRL_BUILD")
         .map(PathBuf::from)
@@ -41,6 +44,22 @@ fn grey_compiler() -> PathBuf {
         path.is_file(),
         "preserved pre-colour compiler required: {} (or POSTRETRO_GREY_PRL_BUILD)",
         path.display()
+    );
+    let output = Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(&path)
+        .output()
+        .expect("hash preserved pre-colour compiler");
+    assert!(
+        output.status.success(),
+        "preserved compiler hash must be readable: {}",
+        path.display()
+    );
+    let output = String::from_utf8(output.stdout).expect("compiler hash is UTF-8");
+    assert_eq!(
+        output.split_whitespace().next(),
+        Some(SAVED_GREY_COMPILER_SHA256),
+        "preserved compiler must match the artifact pinned by the coloured-bounce oracle"
     );
     path
 }

@@ -80,5 +80,7 @@ fn indirect_scale_runtime_change_reaches_serialized_receiver_uploads_next_frame(
     renderer
         .queue
         .assert_empty("indirect scale runtime proof exit");
-    eprintln!("[UploadProof] indirect scale: 3 adapter cases ran");
+    eprintln!(
+        "[UploadProof] indirect scale: 3 scale states across 3 receiver buffers on 1 adapter"
+    );
 }

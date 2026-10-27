@@ -233,8 +233,9 @@ pub(crate) fn bake_delta_sh_volumes_with_visibility(
     // each light's content axis, all already folded in the entry key. Unlike the
     // two direct-delta bakes it has no light-global seed axis to add.
     let light_seed_axes = vec![0; keyed_lights.len()];
-    let bounce_hash =
-        crate::sh_group::bounce_material_hash(inputs.bounce_materials, inputs.geometry);
+    let bounce_hash = cache.and_then(|_| {
+        crate::sh_group::bounce_material_hash(inputs.bounce_materials, inputs.geometry)
+    });
     let cached_subblocks = bake_or_load_delta_subblocks(
         &DeltaShCacheInputs {
             bounce_hash: bounce_hash.as_ref(),

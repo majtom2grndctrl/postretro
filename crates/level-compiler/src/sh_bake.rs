@@ -1470,6 +1470,8 @@ mod bounce_parity_tests;
 mod bounce_tests;
 #[cfg(test)]
 mod colour_tests;
+#[cfg(test)]
+mod empty_material_tests;
 
 #[cfg(test)]
 mod tests {

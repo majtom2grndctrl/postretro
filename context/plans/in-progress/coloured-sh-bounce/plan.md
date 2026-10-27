@@ -1,7 +1,7 @@
 # coloured-sh-bounce — plan of record
 
 mode: compact
-status: active
+status: paused
 read at: 3275d1480
 
 ## Corrections
@@ -143,3 +143,26 @@ read at: 3275d1480
 - Acceptance now preserves exact direct-light samples before coarsening, allows the existing section-41 adaptive choices to respond to actual composed brightness, retains quality/protection/seam rules, and requires storage/performance evidence plus regression/context documentation.
 - Keep ids 35/45/47/48 byte-identical. Preserve existing baseline records; add a separately proven old-compiler uniform-storage oracle for id41. No new coarsening algorithm, runtime composition, probe visibility method, or adaptive policy for ids27/45. Existing IP questions remain unchanged.
 - Resume from the failed guard: update proof to the authorized boundary and rerun it before further completion.
+
+- P-ZERO-SH-WORK source clarification: a nondegenerate no-light base bake still computes required validity/depth-moment metadata, so its stage finishes; direct/delta light-dependent stages skip, and a degenerate base grid skips. Preserve exact pre-change outputs and honest reporting; no production reporter/lighting behavior change is needed.
+
+## Approved-boundary proof and edge-fixture corrections
+- Captured separate uniform-id41 oracle from the saved pre-colour compiler, pinned SHA256 098a6fc94c21ef020e065806b3a2e9600fccea3208c3c5240dccc6c72a332496 / source ecbc27435023931f919484036619f339438f1e30. Original adaptive oracle JSON is unchanged.
+- New/current uniform id41 matches old exactly: 42,486 bytes, 5 CSR entries, 196 valid probe records, 21,168 half values, all 8 cells L0; current adaptive red fixture is 20,886 bytes (6 L0, 2 L1). Both byte regressions pass; recorder is opt-in and inactive in ordinary regression runs. Ids27/45 remain L0 in these bakes.
+- New changed-reference test passed using unchanged direct samples and default classifier thresholds, protection/seam rules, actual runtime-envelope repair and emitted-f16 scoring. Existing sh_runtime_envelope::tests also passed 7 tests. These are existing dense-reference/coefficient-unit bounds, not rendered-pixel bounds at arbitrary diagnostic indirect scale.
+- Review seam to assess independently: composed quality reference is unscaled indirect + direct, while the renderer's production indirect default is .33. World/fluid already used .33; entity unification applies it there too. No new reference/policy change made. Preserve this limitation explicitly in review and manual A/B, rather than claiming arbitrary-scale pixel-error proof.
+- Two initially drafted CLI empty cases failed in the OLD compiler before materials at CellVisibility (brushless world has no BSP leaf). Finite brushes also intern names before exterior culling. This is fixture/adapter reachability, not a colour regression. Correct mover-only fixture uses a finite isolated solid BSP box sharing the mover texture and asserts no emitted static geometry. True empty-name/empty-geometry states are tested at the canonical material/SH seam with a valid BSP, real material stage, and exact legacy-None base bytes / delta absence. No support for invalid brushless CLI maps is added.
+
+## Usage-limit pause — 2026-10-26
+- User's persistent instruction applies: five-hour usedPercent reached 95 (5% remaining), weekly usedPercent56 (44% remaining). Stop feature work now; resume only on owner instruction and check usage before continuing. No goal object exists.
+- All known Cargo/bake processes finished; both workers are completed. Last completed process was `cargo check -p postretro-renderer --features dev-tools`, passed in 2m02s.
+- AC3 is owner-approved and its new proofs PASS: pinned old-compiler uniform capture 1 test; both oracle regression tests pass (recorder inactive in ordinary run); changed_indirect_reference_keeps_direct_samples_quality_protection_and_seams 1 pass; existing sh_runtime_envelope::tests 7 pass. Original adaptive JSON retained. New uniform JSON records exact source/binary/map provenance.
+- The initially added `coloured_bounce_empty` target ran 5 tests: 3 passed, 2 failed in the OLD compiler at CellVisibility because brushless input is unsupported. Corrected fixture/proof structure is now saved but NOT YET EXECUTED: target has 1 ordinary material seam + 3 ignored CLI gates; mover-only CLI uses a valid isolated BSP box sharing its material, with empty emitted static geometry assertions retained.
+- New `src/sh_bake/empty_material_tests.rs`, declared in sh_bake.rs, has 2 ordinary canonical empty-table/unused-name base+delta regressions. These are also NOT YET EXECUTED. They use valid BSP/lights and real material stage; compare degenerate base34 bytes and delta27 absence to legacy None-material path. Do not report them passed until run.
+- Source clarification: finite brushes intern names before exterior cull; the CLI cannot generate a truly empty texture table with a valid BSP, so canonical seam coverage is the honest proof boundary. No brushless CLI support or reporter behavior changed.
+- Uncached indirect delta path now skips material fingerprint work when cache is absent (compiled in CLI test binary); no source output semantics changed.
+- Remaining: run `CARGO_INCREMENTAL=0 cargo test -p postretro-level-compiler --bin prl-build empty_material_tests` (expect2); run `... --test coloured_bounce_empty -- --include-ignored --nocapture` (expect4); fix concrete fixture/compiler failures without weakening assertions. Then fmt/check touched crates and focused gates, commit proof result updates.
+- Review readiness and full isolated review-panel/fix loop remain outstanding. Full preflight has NOT started; run once after review/fixes. Use the project skills, cap concurrency, and check usage after tasks.
+- Independent review seam remains explicit: quality reference includes raw unscaled indirect while renderer default is .33. Existing quality tests are reference/coefficient-space proofs, not arbitrary-scale rendered-pixel guarantees. Review the actual entity consumers before deciding whether a correction is needed; no coarsening policy/reference changes have been made.
+- Post-colour cold and warm material timings, section-size comparisons, engine build and fully textured stationary A/B captures/runbook remain outstanding. Baseline grey maps/binaries/materials still under work/ab/grey; do not overlap bakes with builds or other perf runs.
+- The temporary source tasks are fully saved; don't reapply old work/pending-colour draft files over current integrated code. Latest source commit before this checkpoint was 75e4c7039 (owner amendment).

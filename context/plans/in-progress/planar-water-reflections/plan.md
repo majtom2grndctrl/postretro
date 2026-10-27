@@ -238,7 +238,7 @@ AC numbers follow the brief's Acceptance order.
 | 39 | M: mesh-instance cap and shadow occupancy with/without mirror | capture report / instrumented run, same poses | achievable as stated | reported: identical with and without the mirror at every pose; no pose on today's maps admits a mirror-only light or instance |
 | 40 | Manual: owner motion read, presets fixed and recorded | owner, in-engine | manual | outstanding: owner |
 | 41 | Manual: Windows 1660 release perf matrix | owner run (`long-bake`/timed runs are owner-launched); executor prepares commands | manual | outstanding: owner |
-| 42 | Manual: Mac 5300M native bounded run | owner, Mac | manual | outstanding: owner |
+| 42 | Manual: Mac 5300M native bounded run | owner, Mac | manual | measured 2026-10-26, CPU side only: very_high reaches world frames natively and holds 60 at vsync on in all 22 runs; planar adds 0.6–0.8 ms CPU work over SSR-only very_high. Not measurable on this adapter: GPU pass timings (no timestamp queries) and vsync-off frame time. See §Owner handoff AC 42 |
 | 43 | Manual: resident memory at 4K ultra lake pose | executor computes from allocation sizes; owner confirms in-engine | manual | computed (47.5 MiB at 4K ultra, scale ½); owner confirms |
 
 ## Owner handoff (Task 12)
@@ -277,7 +277,59 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
 - **Poses:** lake across `-48.77,1.7,-16.26,0,-3`; lake down `-16.87,1.7,-48.77,90,-30`; one movers-and-particles pose on the map chosen above.
 - **Pairing:** compare very_high with planar against very_high with SSR only. The latter is `POSTRETRO_PLANAR_OFF=1`, a dev-tools seed. So either run both sides on a release build with `--features dev-tools`, or compare against high and say so.
 
-**AC 42 — Mac 5300M native run.** On the Mac, check out this branch; it needs pushing first. Then `cargo run --release -p postretro -- --windowed content/dev/maps/reflection-lake-test.prl` (baked on the Mac) at VERY HIGH, and again at HIGH, with `POSTRETRO_CPU_TIMING=1`. Report whether world frames are reached and the frame time against SSR-only very_high. A failed native reveal is a finding.
+- **Match the Mac's scene size**, or say so: the Mac ran a 1280×720 scene (see AC 42).
+
+**AC 42 — Mac 5300M native run.** The protocol was agreed with the Mac session and run there on 2026-10-26 at 4d579df16.
+
+- **Setup:**
+  - Bake on the Mac with the release compiler; `.prl` files aren't committed. `cargo run --release -p postretro-level-compiler -- content/dev/maps/<map>.map -o content/dev/maps/<map>.prl` for `reflection-lake-test` and `e24-environment-test`.
+  - Build with `cargo build --release -p postretro --features dev-tools` and `cargo build --release -p postretro-script-compiler --bin scripts-build`.
+  - A release build needs `content/dev/start-script.js`. Make it with `scripts-build --in content/dev/start-script.ts --out content/dev/start-script.js`.
+- **Launch (one process per configuration; seeds are read once at launch):** `RUST_LOG=info POSTRETRO_CPU_TIMING=1 POSTRETRO_GPU_TIMING=1 [seeds] target/release/postretro --app-name postretro-t11-<tier> --mod dev --windowed --start-pose=<pose> maps/<map>.prl`.
+  - With `--mod dev`, the map path is relative to the mod folder.
+  - Write `~/Library/Application Support/postretro-t11-<tier>/settings.toml` first. It holds `reflection_quality` (`very_high` or `high`), `window_mode = "windowed"`, `render_resolution = "auto"`, `shadow_quality = "high"` and `accessibility_panel_shown = true`.
+  - VSync starts on. Only the Alt+Shift+V chord turns it off; there's no env var or flag. The window title shows `vsync:on|off`.
+- **Matrix:**
+  - lake across (`-48.77,1.7,-16.26,0,-3`) and lake down (`-16.87,1.7,-48.77,90,-30`) × {very_high, very_high with `POSTRETRO_PLANAR_OFF=1`, high}, run forward then reversed;
+  - lake across × {`POSTRETRO_PLANAR_D=15`, `POSTRETRO_PLANAR_CROP=0`};
+  - lake down × {`POSTRETRO_PLANAR_SCALE=0.25`, `=1`};
+  - the e24 override pose (`-21.95,1.0,-44.30,180,-35`) × {very_high, high}, for the reveal.
+- **Procedure:** a pilot before each configuration and a thermal cooldown between runs. Read a steady window after the `[Settling] entry` line.
+- **Read:** `[CpuTiming]` frame total, CPU work, `wait_acquire`, `mirror_walk` and `rec_planar`; GPU `planar_reflection`, `planar_forward` and the SSR passes; the settle line.
+- **Machine:** Radeon Pro 5300M, Metal, on AC power, thermal speed limit 100 before every run. Window 1280×720 client on a 5K display, `render_resolution = "auto"`: surface 2560×1440, scene 1280×720, divisor 2. Fresh Mac bakes, default bake mode; a cold cache wasn't confirmed.
+
+**Results.** All 22 runs are valid. Each figure is the mean of the forward and reversed runs, in ms, at vsync on.
+
+| Pose | Config | Frame | CPU work | `wait_acquire` | `mirror_walk` | `rec_planar` |
+|---|---|---|---|---|---|---|
+| lake across | very_high | 16.74 | 5.73 | 10.95 | 0.314 | 0.067 |
+| lake across | very_high, planar off | 16.88 | 4.92 | 11.91 | – | – |
+| lake across | high | 16.86 | 5.10 | 11.70 | – | – |
+| lake down | very_high | 16.61 | 5.66 | 10.90 | 0.317 | 0.070 |
+| lake down | very_high, planar off | 16.74 | 5.06 | 11.62 | – | – |
+| lake down | high | 17.02 | 5.00 | 11.96 | – | – |
+| e24 override | very_high | 16.57 | 4.65 | | | |
+| e24 override | high | 16.70 | 4.59 | | | |
+
+- **Reveal:** every run settled, with `step_limit_frames=0` and `reveal_misses=0`.
+  - Lake very_high, every variant: `walk_frames=15 lightmap_set_peak=128 planar_held=-1.219 planar_reveal=-1.219 mirror_only_blocks=0`. Lake high and planar off: peak 128, `planar_held=none`.
+  - e24 very_high: `walk_frames=16 sh_set_peak=9 lightmap_set_peak=80 planar_held=-0.406 planar_reveal=-0.406 mirror_only_blocks=1`. e24 high: peak 79. This reproduces the Windows peak-above-planar-off result (Windows 74 vs 72, `mirror_only_blocks=2`).
+  - At e24 very_high, steady `[CpuTiming]` has no `mirror_walk` or `rec_planar`. That fits the pawn sinking into the pool after reveal (AC 38 notes): with the eye below the water, no plane is selected. Not verified.
+- **60 fps:** holds at vsync on in all 22 runs. Single-frame spikes of 20–69 ms appear in every configuration, high included, so they aren't planar's.
+- **Planar's CPU cost:** very_high adds 0.6–0.8 ms of CPU work over planar off. `mirror_walk` plus `rec_planar` account for about 0.38 ms of it. The rest is other mirror preparation, not broken out.
+- **D, lake across:** D=15 cuts `mirror_walk` from 0.314 to 0.026 ms and `rec_planar` from 0.067 to 0.023 ms; CPU work goes from 5.73 to 5.40.
+- **Crop, lake across:** `mirror_walk` is 0.314 with the crop and 0.312 without, so the crop saves nothing at this pose and a tighter pad has nothing to cut on CPU there.
+- **Scale, lake down (¼ / ½ / 1):** `mirror_walk` 0.32 / 0.32 / 0.32 and `rec_planar` 0.071 / 0.070 / 0.072, so CPU cost is flat. `wait_acquire` is 10.73 / 10.90 / 11.09; scale 1's first run had a 62.8 ms spike, so its mean is inflated.
+- **Not measurable on this Mac:**
+  - GPU timing. The adapter lacks `TIMESTAMP_QUERY` or `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so `planar_reflection`, `planar_forward`, the SSR passes and the seven-pass overhead are unavailable.
+  - Vsync-off frame time. Scripting the chord needs macOS Accessibility permission, which the run didn't have. VSync state was read from the log (`[Renderer] vsync on`).
+- **No movers-and-particles pose:** campaign-test's water is about 900+ map units from its movers, and spawner-test has no water.
+- **Raw logs** are on the Mac, in the Mac session's scratchpad (`ac42/`: per-run logs, `runs.txt`, `parse.py`).
+- **What this settles for the optional decisions:**
+  - GPU indirect mirror cull: `rec_planar` is about 0.07 ms, far below a 1 ms bar, so the CPU cull stays.
+  - D at very_high: D=15 saves about 0.29 ms of CPU on the Mac. That's small, and it changes what the reflection shows, so it's a motion-read call (AC 40).
+  - Per-style crop pad: no CPU case at the lake; the GPU half is unmeasured.
+- **Still open:** planar's GPU cost on the Mac. It needs a manual vsync-off run, or an Instruments Metal trace.
 
 **AC 43 — 4K ultra resident memory (computed; owner confirms).**
 - **Basis:** scene extent 3840×2160 (Native, the worst case; Auto picks divisor 2 on a 4K panel, a 1920×1080 scene, which quarters every figure) at the ultra preset scale ½ gives 1920×1080 = 2,073,600 texels.
@@ -352,9 +404,9 @@ RUST_LOG=info POSTRETRO_GPU_TIMING=1 POSTRETRO_CPU_TIMING=1 target/release/postr
 **Merge of `origin/main` 3275d1480 (merge commit 53c7756e3).** Clean, no conflicts. Main brought only `context/` changes: plan moves, the occluder-first-partition brief and its measurement scratch (whose `gran` crate is not a workspace member), and `context/lib` edits to `build_pipeline.md`, `index.md` and `rendering_pipeline.md`. No file outside `context/` differs from 06a41967a, so the compiled tree is the one gated above. The gate and measured rows were not rerun.
 
 **For the owner (not done; each is a decision):**
-- **D at very_high only.** A finite D cuts the mirror walk (research: D15 took it from 2.69 to 0.06 ms). Take it only if the Mac run shows `mirror_walk` matters.
+- **D at very_high only.** A finite D cuts the mirror walk (research: D15 took it from 2.69 to 0.06 ms). Take it only if the Mac run shows `mirror_walk` matters. Mac result (AC 42): `mirror_walk` is 0.31 ms with D unlimited and 0.03 ms at D=15, about 0.29 ms of CPU saved.
 - **Per-style crop pad.** Smooth style tilts nothing, so it could crop nearly tight. This reverses Task 4's single-pad choice and needs AC 17, 18 and 35 rerun.
-- **GPU indirect mirror cull: not recommended on perf grounds.** On Metal every indirect slot is a driver draw, so the CPU cull's merged runs are likely cheaper. Reopen it only if the `rec_planar` numbers argue for it.
+- **GPU indirect mirror cull: not recommended on perf grounds.** On Metal every indirect slot is a driver draw, so the CPU cull's merged runs are likely cheaper. Reopen it only if the `rec_planar` numbers argue for it. Mac result (AC 42): `rec_planar` is about 0.07 ms, so they don't.
 - **AC 38 row.** Accept the e24 override pose in place of the lake? The lake makes all 144 blocks mandatory.
 
 **Follow-ups (not this branch):**

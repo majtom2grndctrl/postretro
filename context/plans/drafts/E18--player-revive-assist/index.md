@@ -116,7 +116,7 @@ Task agents cite rows by number. Expected outcomes are binding.
 
 ## Tasks
 
-New logic lands in new modules. Files already past ~800 lines (`sim/src/sim/mod.rs`, `sim/src/impact_policy.rs`, `netcode/src/lib.rs`, `netcode/src/client.rs`, `netcode/src/command_queue.rs`, `ir/scopes.rs`, `netcode/src/state_slots.rs`, `startup/reaction_validation.rs`) receive only call-site edits and match arms. Symbol grounding: Spec A's `research.md` §Task 6 (impact policy) and §Task 7 (assist).
+New logic lands in new modules. Files already past ~800 lines (`sim/src/sim/mod.rs`, `sim/src/impact_policy.rs`, `netcode/src/lib.rs`, `netcode/src/client.rs`, `netcode/src/command_queue.rs`, `ir/scopes.rs`, `netcode/src/state_slots.rs`, `startup/reaction_validation.rs`) receive only call-site edits and match arms. Symbol grounding: Spec A's `research.md` §Grounding for `E18--player-revive-assist` (§Impact policy, §Assist).
 
 ### Task 1: Impact-policy source reads and effects
 

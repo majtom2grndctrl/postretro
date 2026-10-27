@@ -61,8 +61,8 @@ use crate::map_data::{FalloffModel, LightType, MapLight, MapLightmapScaleRegion}
 use crate::ray_traversal::BoundedRay;
 use crate::texel_footprint::{TexelSampler, TexelSite};
 
-/// Default atlas texel density: 4 cm per texel.
-pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
+/// Default atlas texel density: 2.5 cm per texel.
+pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.025;
 
 /// Default per-axis reduction for the static dominant-direction atlas.
 ///

@@ -80,6 +80,13 @@ export const mapCatalog = defineMapCatalog([
     loadingTree: loadingTreeName("stress-warren-hallway-inspection"),
   },
   {
+    id: "occlusion-test",
+    path: "maps/occlusion-test.prl",
+    name: "Occlusion Test",
+    tags: ["occlusion", "lighting", "test"],
+    loadingTree: loadingTreeName("occlusion-test"),
+  },
+  {
     id: "combat-demo",
     path: "maps/combat-demo.prl",
     name: "Combat + Emissive Test",

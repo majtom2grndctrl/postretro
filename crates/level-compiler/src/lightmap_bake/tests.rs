@@ -271,6 +271,9 @@ fn no_static_lights_bakes_no_blocks() {
 fn chart_past_the_pool_layer_edge_is_cut_at_its_parents_density() {
     use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
+    // Pinned, not the default: the piece counts below are worked at 0.04.
+    const BASE_DENSITY: f32 = 0.04;
+
     let lights = vec![point_light_above()];
     let static_lights = StaticBakedLights::from_lights(&lights);
     // The region holds only the quad's first vertex, which sets the whole
@@ -280,14 +283,14 @@ fn chart_past_the_pool_layer_edge_is_cut_at_its_parents_density() {
     let prepared = prepare_atlas(
         &mut geo,
         &static_lights,
-        DEFAULT_TEXEL_DENSITY_METERS,
+        BASE_DENSITY,
         std::slice::from_ref(&region),
     )
     .expect("an oversize chart is cut, not rejected");
     assert_eq!(prepared.charts.len(), 9, "three pieces a side");
     assert_eq!(geo.face_index_ranges.len(), 9);
 
-    let density = DEFAULT_TEXEL_DENSITY_METERS / 200.0;
+    let density = BASE_DENSITY / 200.0;
     let mut outside_region = 0;
     for (face, chart) in prepared.charts.iter().enumerate() {
         assert!(chart.width_texels <= LIGHTMAP_POOL_LAYER_EDGE);
@@ -2073,7 +2076,9 @@ fn occluder_produces_dark_texel() {
 fn oversize_face_is_cut_into_charts_that_fit_a_pool_layer() {
     // A 400 m face past one pool layer is cut into sub-charts that each fit
     // the pool edge, rather than failing the build.
-    let size = 400.0; // 10000 texels at 0.04 m/texel, beyond one pool layer
+    // Pinned, not the default: the piece counts below are worked at 0.04.
+    const DENSITY: f32 = 0.04;
+    let size = 400.0; // 10000 texels at DENSITY, beyond one pool layer
     let v0 = Vertex::new(
         [0.0, 0.0, 0.0],
         [0.0, 0.0],
@@ -2127,7 +2132,7 @@ fn oversize_face_is_cut_into_charts_that_fit_a_pool_layer() {
     };
     let lights = vec![point_light_above()];
     let static_lights = StaticBakedLights::from_lights(&lights);
-    let prepared = prepare_atlas(&mut geo, &static_lights, DEFAULT_TEXEL_DENSITY_METERS, &[])
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[])
         .expect("a 400 m face is cut, not rejected");
     // 10,000 interior texels a side: five pieces of 2,000 plus overlap.
     assert_eq!(prepared.charts.len(), 25);

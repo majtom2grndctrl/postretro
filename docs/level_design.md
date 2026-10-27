@@ -29,7 +29,7 @@ bin/prl-build <content-root>/maps/input.map \
 | `-o <PATH>` | same as input, `.prl` extension | Where to write the compiled file |
 | `--baked-root <DIR>` | derived from the map's location | The directory that **contains** `materials/` — where the compiled texture sidecars go. Point it at your project's `baked/`. See below. |
 | `--cache-dir <DIR>` | `.build-caches/prl-cache` beside the map | Disposable compiler scratch. Name it, or it lands among your `.map` sources. |
-| `--lightmap-density <METERS>` | `0.04` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. The worldspawn key `_lightmap_density` (meters per texel, smaller = finer) sets the same thing per map; the flag overrides it. |
+| `--lightmap-density <METERS>` | `0.025` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. The worldspawn key `_lightmap_density` (meters per texel, smaller = finer) sets the same thing per map; the flag overrides it. |
 | `--sh-probe-spacing <METERS>` | `1.0` | How dense the indirect lighting probes are. `2.0` is fine for large open areas. |
 | `-v`, `--verbose` | off | Prints each compilation step — useful when something goes wrong |
 

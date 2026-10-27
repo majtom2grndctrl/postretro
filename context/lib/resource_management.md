@@ -142,11 +142,12 @@ Optional per-texture normal maps for fine surface detail.
 ### 4.5 Emissive Surfaces
 
 Optional emissive color maps add static, per-texel self-illumination to world and
-kinematic-brush surfaces. They are not lights: they do not change the lightmap,
-SH irradiance, dynamic-light buffer, or neighboring surfaces. Glow texels are
-also left out of the per-texture diffuse mean SH bounce reads, so a glow painted
-into the diffuse tints no bounce either (`build_pipeline.md` §Compiler pipeline;
-not built yet). To light a scene, an author places a separate light entity.
+kinematic-brush surfaces. They do not emit light into lightmaps, SH irradiance or
+neighboring surfaces, and do not create dynamic lights. Glow texels are excluded
+from the per-texture diffuse mean used by SH bounce when non-glowing texels
+remain; an all-glowing texture uses its full average (`build_pipeline.md`
+§Compiler pipeline). Glow strength follows the original material name, as at
+runtime. To light a scene, an author places a separate light entity.
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions

@@ -404,17 +404,6 @@ fn run_after_parsing(
         );
     }
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
-    let texture_root = resolve_texture_root(&args.input);
-    texture_validation::validate_sibling_color_spaces(&texture_root)?;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::TextureValidation,
-        stage_start,
-        true,
-    );
-
     let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
     let result = partition::partition(&map_data.brush_volumes)?;
     finish_stage(
@@ -736,6 +725,7 @@ fn run_after_parsing(
         probe_spacing: args.probe_spacing,
     };
     let sh_ctx = sh_bake::ShBakeCtx {
+        bounce_materials: None,
         bvh: &bvh,
         primitives: &bvh_primitives,
         geometry: &geo_result,
@@ -813,6 +803,36 @@ fn run_after_parsing(
     let direct_plan = planned_deltas.direct;
     let animated_direct_plan = planned_deltas.animated_direct;
 
+    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
+    let texture_root = resolve_texture_root(&args.input);
+    texture_validation::validate_sibling_color_spaces(&texture_root)?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::TextureValidation,
+        stage_start,
+        true,
+    );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Materials);
+    let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
+    let mut material_stage = texture_stage::bake_world_materials(
+        &geo_result.texture_names.names,
+        &texture_root,
+        &prm_root,
+    )?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Materials,
+        stage_start,
+        true,
+    );
+    let sh_ctx = sh_bake::ShBakeCtx {
+        bounce_materials: Some(&material_stage.bounce_materials),
+        ..sh_ctx
+    };
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
@@ -876,6 +896,7 @@ fn run_after_parsing(
     let delta_sh_control = BakeControl::new(Arc::clone(&governor), &delta_sh_progress);
     let delta_sh_volumes_section = {
         let inputs = delta_sh_bake::DeltaBakeInputs {
+            bounce_materials: Some(&material_stage.bounce_materials),
             bvh: &bvh,
             primitives: &bvh_primitives,
             geometry: &geo_result,
@@ -1845,14 +1866,15 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
-    let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
-    let name_to_key = texture_stage::bake_level_textures(
+    texture_stage::bake_remaining_textures(
         &args.input,
         &geo_result.texture_names.names,
         &map_data.map_entities,
         &texture_root,
         &prm_root,
+        &mut material_stage,
     )?;
+    let name_to_key = material_stage.name_to_key;
     finish_stage(
         &mut timings,
         reporter.as_ref(),

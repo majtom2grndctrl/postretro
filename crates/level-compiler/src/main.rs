@@ -21,6 +21,9 @@ pub mod chart_raster;
 pub mod chunk_light_list_bake;
 mod cli;
 pub mod cluster_directory_bake;
+#[cfg(test)]
+#[allow(dead_code)] // Shared fixture appearances are also used by CLI integration targets.
+mod coloured_bounce_test_fixtures;
 pub mod delta_drop_policy;
 pub mod delta_sections;
 pub mod delta_sh_bake;

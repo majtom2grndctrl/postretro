@@ -160,10 +160,14 @@ pub(super) fn sample_radiance_rgb(
                 }
                 radiance += contribution * v;
             }
-            (
-                radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
-                hit.distance,
-            )
+            let bounced = match ctx
+                .bounce_materials
+                .and_then(|materials| materials.resolved_albedo(hit.texture_index))
+            {
+                Some(albedo) => radiance * albedo / std::f32::consts::PI,
+                None => radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
+            };
+            (bounced, hit.distance)
         }
     }
 }

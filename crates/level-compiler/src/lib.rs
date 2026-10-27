@@ -21,5 +21,10 @@ pub mod navmesh_bake;
 pub mod partition;
 pub mod texture_mips;
 
+// The library exposes derived stats without loading reflection footprint code.
+pub mod surface_materials {
+    pub mod stats;
+}
+
 #[cfg(test)]
 mod planar_map_key_gate_tests;

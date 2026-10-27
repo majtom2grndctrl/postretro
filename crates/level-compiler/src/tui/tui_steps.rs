@@ -17,7 +17,7 @@ struct StepSection {
     stages: &'static [StageId],
 }
 
-const PARSE_STAGES: &[StageId] = &[StageId::Parsing, StageId::TextureValidation];
+const PARSE_STAGES: &[StageId] = &[StageId::Parsing];
 // DataScript sits with the world stages: it runs after partitioning, which
 // classifies the buried lights its light table omits.
 const WORLD_GEOMETRY_STAGES: &[StageId] = &[
@@ -30,6 +30,8 @@ const WORLD_GEOMETRY_STAGES: &[StageId] = &[
     StageId::NavMesh,
 ];
 const SH_LIGHTING_STAGES: &[StageId] = &[
+    StageId::TextureValidation,
+    StageId::Materials,
     StageId::ShBake,
     StageId::DeltaShBake,
     StageId::DirectShBake,

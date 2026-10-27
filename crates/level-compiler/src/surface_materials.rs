@@ -1,6 +1,8 @@
 // Shared bake-side surface materials: albedo and emissive read back from the baked `.prm` sidecars.
 // See: context/lib/build_pipeline.md §Baked texture mips · resource_management.md §3, §4.5
 
+pub mod stats;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

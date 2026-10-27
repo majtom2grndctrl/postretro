@@ -2285,6 +2285,7 @@ mod tests {
             crate::light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
         let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
         let sh_inputs = crate::sh_bake::ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo_result,
@@ -2636,6 +2637,7 @@ mod tests {
             let animated_lights =
                 crate::light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
             let sh_inputs = crate::sh_bake::ShBakeCtx {
+                bounce_materials: None,
                 bvh: &bvh,
                 primitives: &primitives,
                 geometry: &geo_result,

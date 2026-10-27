@@ -50,7 +50,7 @@ const RAYS_PER_PROBE: u32 = 256;
 const _: () = assert!(RAYS_PER_PROBE.is_multiple_of(DEFAULT_AREA_SAMPLE_COUNT));
 
 /// Indirect-only: lightmap carries the direct term; folding direct into SH would double-count it at runtime.
-const BOUNCE_ALBEDO: f32 = 0.45;
+const BOUNCE_ALBEDO: f32 = crate::surface_materials::stats::GREY_BOUNCE_ALBEDO;
 
 const SKY_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 
@@ -95,12 +95,14 @@ pub(crate) enum BounceVisibility {
 
 /// Shared between the base SH baker and per-light delta SH baker (`delta_sh_bake.rs`).
 pub(crate) struct RaytracingCtx<'a> {
+    pub bounce_materials: Option<&'a crate::surface_materials::stats::BounceMaterials>,
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
 }
 
 pub struct ShBakeCtx<'a> {
+    pub bounce_materials: Option<&'a crate::surface_materials::stats::BounceMaterials>,
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
@@ -118,6 +120,7 @@ pub struct ShBakeCtx<'a> {
 impl<'a> ShBakeCtx<'a> {
     fn ray_ctx(&self) -> RaytracingCtx<'a> {
         RaytracingCtx {
+            bounce_materials: self.bounce_materials,
             bvh: self.bvh,
             primitives: self.primitives,
             geometry: self.geometry,
@@ -670,6 +673,7 @@ fn sphere_directions(count: u32, seed: u64) -> Vec<Vec3> {
 }
 
 struct Hit {
+    texture_index: u32,
     point: Vec3,
     normal: Vec3,
     distance: f32,
@@ -708,6 +712,7 @@ fn closest_hit_in_leaf(
             let update = best.as_ref().map(|b| dist < b.distance).unwrap_or(true);
             if update {
                 *best = Some(Hit {
+                    texture_index: prim.material_bucket_id,
                     point: ray_origin + ray_dir * dist,
                     normal,
                     distance: dist,
@@ -1463,6 +1468,8 @@ mod bounce_parity_tests;
 
 #[cfg(test)]
 mod bounce_tests;
+#[cfg(test)]
+mod colour_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1940,6 +1947,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo,
@@ -2057,6 +2065,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo,
@@ -2446,6 +2455,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2531,6 +2541,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2585,6 +2596,7 @@ mod tests {
         let geometry = multi_triangle_geometry(&[floor_a, floor_b]);
         let (bvh, primitives, _) = build_bvh(&geometry).expect("floor geometry builds a BVH");
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -2695,6 +2707,7 @@ mod tests {
         let geometry = multi_triangle_geometry(&[floor_a, floor_b, occluder_a, occluder_b]);
         let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture builds a BVH");
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -2836,6 +2849,7 @@ mod tests {
         let geometry = multi_triangle_geometry(&[floor_a, floor_b]);
         let (bvh, primitives, _) = build_bvh(&geometry).expect("floor builds a BVH");
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geometry,
@@ -2895,6 +2909,7 @@ mod tests {
         let geo = multi_triangle_geometry(&[floor_a, floor_b, occluder_a, occluder_b]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -2926,6 +2941,7 @@ mod tests {
         let clear_geo = multi_triangle_geometry(&[floor_a, floor_b]);
         let (clear_bvh, clear_prims, _) = build_bvh(&clear_geo).unwrap();
         let clear_ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &clear_bvh,
             primitives: &clear_prims,
             geometry: &clear_geo,
@@ -2977,6 +2993,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3025,6 +3042,7 @@ mod tests {
             let animated_lights = AnimatedBakedLights::from_lights(lights);
             bake_sh_volume(
                 &ShBakeCtx {
+                    bounce_materials: None,
                     bvh: &bvh,
                     primitives: &prims,
                     geometry: &geo,
@@ -3096,6 +3114,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3155,6 +3174,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3242,6 +3262,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3303,6 +3324,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3344,6 +3366,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3382,6 +3405,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3474,6 +3498,7 @@ mod tests {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3517,6 +3542,7 @@ mod tests {
             let static_lights = StaticBakedLights::from_lights(lights);
             let animated_lights = AnimatedBakedLights::from_lights(lights);
             let inputs = ShBakeCtx {
+                bounce_materials: None,
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
@@ -3560,6 +3586,7 @@ mod tests {
             let static_lights = StaticBakedLights::from_lights(lights);
             let animated_lights = AnimatedBakedLights::from_lights(lights);
             let inputs = ShBakeCtx {
+                bounce_materials: None,
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
@@ -3600,6 +3627,7 @@ mod tests {
             let static_lights = StaticBakedLights::from_lights(lights);
             let animated_lights = AnimatedBakedLights::from_lights(lights);
             let inputs = ShBakeCtx {
+                bounce_materials: None,
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
@@ -3646,6 +3674,7 @@ mod tests {
             );
             let animated_lights = AnimatedBakedLights::from_lights(lights);
             let inputs = ShBakeCtx {
+                bounce_materials: None,
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
@@ -3753,6 +3782,7 @@ mod tests {
             let geo = crease_geometry(shared_leaf);
             let (bvh, prims, _) = build_bvh(&geo).unwrap();
             let ctx = RaytracingCtx {
+                bounce_materials: None,
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
@@ -3800,6 +3830,7 @@ mod tests {
         let geo = crease_geometry(false);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3848,6 +3879,7 @@ mod tests {
         let geo = crease_geometry(true);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -3883,6 +3915,7 @@ mod tests {
         let geo = crease_geometry(true);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -4103,6 +4136,7 @@ mod tests {
         let geo = multi_triangle_geometry(&triangles);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let ctx = RaytracingCtx {
+            bounce_materials: None,
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,

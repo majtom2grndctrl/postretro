@@ -30,6 +30,7 @@ pub(crate) struct DeltaShCachedSubblocks {
 /// caches; the direct and animated-direct bakes call
 /// [`bake_delta_subblocks_uncached`] and build no key inputs.
 pub(crate) struct DeltaShCacheInputs<'a> {
+    pub(crate) bounce_hash: Option<&'a [u8; 32]>,
     pub(crate) stage_id: &'a str,
     pub(crate) stage_version: u32,
     pub(crate) geometry_hash: [u8; 32],
@@ -53,6 +54,7 @@ pub(crate) struct DeltaShCacheInputs<'a> {
 /// f16 payload shapes match across the three delta sections, including the two
 /// uncached direct-delta stages whose dormant key folds the tests still pin.
 pub(crate) struct DeltaShEntryKeyInputs<'a> {
+    pub(crate) bounce_hash: Option<&'a [u8; 32]>,
     pub(crate) stage_id: &'a str,
     pub(crate) stage_version: u32,
     pub(crate) geometry_hash: &'a [u8; 32],
@@ -76,6 +78,9 @@ pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> Ca
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(inputs.geometry_hash);
+    if let Some(bounce_hash) = inputs.bounce_hash {
+        hasher.update(bounce_hash);
+    }
     for dimension in inputs.affinity_dims {
         hasher.update(&dimension.to_le_bytes());
     }
@@ -171,6 +176,7 @@ where
                 .get(cell as usize)
                 .expect("delta cache cell must have a probe-validity mask");
             let key = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+                bounce_hash: inputs.bounce_hash,
                 stage_id: inputs.stage_id,
                 stage_version: inputs.stage_version,
                 geometry_hash: &inputs.geometry_hash,
@@ -187,11 +193,13 @@ where
                 .and_then(|bytes| decode_subblock(&bytes, inputs.expected_subblock_f16_len));
             let (subblock, hit) = match loaded {
                 Some(subblock) => {
+                    log::info!("[cache] {} hit", inputs.stage_id);
                     // Whole-cache hits checkpoint without a bake permit.
                     control.governor().checkpoint();
                     (subblock, true)
                 }
                 None => {
+                    log::info!("[cache] {} miss", inputs.stage_id);
                     // Permit guards ray work, not cache I/O.
                     let subblock = {
                         let _permit = control.governor().enter();
@@ -360,6 +368,7 @@ mod tests {
         seed_axes: &'a [u64],
     ) -> DeltaShCacheInputs<'a> {
         DeltaShCacheInputs {
+            bounce_hash: None,
             stage_id: TEST_STAGE_ID,
             stage_version: TEST_STAGE_VERSION,
             geometry_hash: [9; 32],
@@ -380,6 +389,7 @@ mod tests {
 
     fn key_inputs<'a>(stage_version: u32, light: &'a MapLight) -> DeltaShEntryKeyInputs<'a> {
         DeltaShEntryKeyInputs {
+            bounce_hash: None,
             stage_id: TEST_STAGE_ID,
             stage_version,
             geometry_hash: &[9; 32],
@@ -491,6 +501,7 @@ mod tests {
         assert_eq!(first.tally, DeltaShCacheTally { hits: 0, misses: 1 });
 
         let key = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+            bounce_hash: None,
             seed_axis: seed_axes[0],
             ..key_inputs(TEST_STAGE_VERSION, &light_table[0])
         });

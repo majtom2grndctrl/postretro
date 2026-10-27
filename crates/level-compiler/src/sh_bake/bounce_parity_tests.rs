@@ -551,6 +551,7 @@ fn one_sample_bounce_parity_on_real_maps() {
         let static_lights = StaticBakedLights::from_lights_excluding(&fx.lights, &buried);
         let animated_lights = AnimatedBakedLights::from_lights_excluding(&fx.lights, &buried);
         let inputs = ShBakeCtx {
+            bounce_materials: None,
             bvh: &fx.bvh,
             primitives: &fx.primitives,
             geometry: &fx.geometry,
@@ -604,6 +605,7 @@ fn one_sample_bounce_parity_on_real_maps() {
         }
         let portals = crate::portals::generate_portals(&fx.tree);
         let delta_inputs = DeltaBakeInputs {
+            bounce_materials: None,
             bvh: &fx.bvh,
             primitives: &fx.primitives,
             geometry: &fx.geometry,

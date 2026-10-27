@@ -15,8 +15,13 @@ use postretro_level_format::sprite_collection::{
 
 mod bake;
 mod cache;
+#[cfg(test)]
+pub(crate) mod metrics;
 mod resolution;
 mod world;
+#[allow(unused_imports)]
+// The binary pipeline consumes this export; the helper library omits it.
+pub(crate) use world::bake_materials_into;
 pub use world::bake_world_texture_mips;
 
 use bake::{
@@ -58,7 +63,7 @@ fn linear_to_srgb(linear: f32) -> f32 {
 
 /// `linear_to_srgb` then quantise to u8. Re-clamped after the encode in case
 /// the polynomial leaves an out-of-range value at the seam.
-fn linear_to_srgb_u8(linear: f32) -> u8 {
+pub(crate) fn linear_to_srgb_u8(linear: f32) -> u8 {
     (linear_to_srgb(linear).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
@@ -446,10 +451,14 @@ fn pad_rgba8_clamp_edge(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u
 /// without a second read.
 fn decode_png_rgba(bytes: &[u8], path: &Path) -> anyhow::Result<(Vec<u8>, u32, u32)> {
     use anyhow::Context as _;
+    #[cfg(test)]
+    metrics::decode_attempt(path);
     let img = image::load_from_memory(bytes)
         .with_context(|| format!("decoding PNG {}", path.display()))?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
+    #[cfg(test)]
+    metrics::decode_success(path, rgba.len());
     Ok((rgba.into_raw(), w, h))
 }
 

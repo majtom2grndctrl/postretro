@@ -1,11 +1,12 @@
 # coloured-sh-bounce — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: 3275d1480
 
 ## Corrections
-- BLOCKED: P-ALIAS-NAMES requires equal means for backslash aliases, while glow exclusion requires the runtime material strength. The unchanged runtime derives Neon (strength 4) for `neon/neon_panel` but Default (strength 0) for `neon\neon_panel`; texture resolution normalizes both to the same source. `render-data/src/material.rs:342` splits only `/`; `level-loader/src/prl_loader.rs:1623` and `postretro/src/startup/lifecycle.rs:661` pass raw names. Actual source compiled in `work/material-alias-proof.rs` confirms those values. Owner must choose either a qualification of alias equality by material strength, or an expanded runtime material-parsing fix. No colour/material implementation has been integrated.
+- Texture metadata validation previously scanned the texture root before budget admission. Move that validation with the new material stage after the delta gate and animation validation to satisfy P-GATE-ORDER; no lighting or texture payload semantics change.
+- RESOLVED BY OWNER: Keep current glow behavior; allow alias means to differ when their glow strength differs. Rechecked actual unchanged material derivation: forward-slash neon name has strength 4, backslash alias strength 0. Texture resolution still normalizes source paths, while mean exclusion uses the original per-name runtime strength. P-ALIAS-NAMES equality is qualified by equal effective glow strength; no runtime parsing changes.
 - No cited compiler or renderer source changed between the brief read-at commit 25db4c78f and current main; compact-mode grounded reads remain valid.
 - Work in a dedicated clean checkout because the primary checkout contains unrelated owner edits.
 - User approved the claim commit and push to main after automatic approval review requested explicit authorization.
@@ -80,7 +81,7 @@ read at: 3275d1480
 
 ## Resume
 - Branch: codex/coloured-sh-bounce. Claim commit: 3275d1480, published on main.
-- Renderer indirect-scale slice is edited and its focused test build is running. Colour integration is blocked pending the alias/glow decision. New oracle harness, unreferenced stats module, and prepared world material code are uncommitted; do not integrate the latter until the owner resolves the block.
+- Renderer indirect-scale slice is edited and its focused test build is running. Owner resolved the alias/glow decision; colour integration may continue. New oracle harness, unreferenced stats module, and prepared world material code are uncommitted; do not integrate the latter until the owner resolves the block.
 - Baseline usage: 95% five-hour / 68% weekly remaining.
 
 ## Task 1 verification
@@ -90,4 +91,6 @@ read at: 3275d1480
 - `cargo test -p postretro-renderer --lib --features dev-tools indirect_scale_runtime_change -- --ignored --nocapture`: pass with graphics access, 1 test / 3 adapter cases. Restricted execution saw no adapter and failed explicitly; rerun with graphics access read actual world/fluid, mover and mesh uniforms successfully.
 - No baked-map visuals performed yet. Default indirect scale remains 0.33, fog unscaled. Full preflight/review deferred until integration per skill.
 - Usage after task: 58% five-hour / 63% weekly remaining. Disk free: 61 GiB.
-- Resume from the alias/glow owner decision; re-run the source proof, record only authorized contract wording, then capture byte oracle on the task-1 commit before any compiler implementation.
+- Resume from the alias/glow owner decision; re-run the source proof, record only authorized contract wording, then capture byte oracle on task-1 commit ecbc27435 before any compiler implementation.
+
+- Pre-colour oracle captured on ecbc27435: one explicit CLI regression passed, three PNG-backed rooms, baseline JSON saved in tests/fixtures/coloured_bounce_oracle.json. Saved exact baseline prl-build under work/ab/grey for serial full-texture bake timings.

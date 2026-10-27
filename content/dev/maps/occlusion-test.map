@@ -1517,13 +1517,41 @@
 "classname" "light"
 "_shadow_type" "static_light_map"
 "origin" "1920 1696 224"
-"light" "400"
+"light" "30"
 "_color" "255 255 255"
 "_falloff_range" "600"
 "delay" "0"
 "_bake_only" "0"
 }
 // entity 19
+{
+"classname" "light_spot"
+"_shadow_type" "static_light_map"
+"origin" "1904 1720 240"
+"angles" "-26 90 0"
+"_cone" "20"
+"_cone2" "28"
+"light" "1200"
+"_color" "255 255 255"
+"_falloff_range" "400"
+"delay" "0"
+"_bake_only" "0"
+}
+// entity 20
+{
+"classname" "light_spot"
+"_shadow_type" "static_light_map"
+"origin" "1904 1672 240"
+"angles" "-26 270 0"
+"_cone" "20"
+"_cone2" "28"
+"light" "1200"
+"_color" "255 255 255"
+"_falloff_range" "400"
+"delay" "0"
+"_bake_only" "0"
+}
+// entity 21
 {
 "classname" "kinematic_mover"
 "name" "bounce_demo_cube"
@@ -1543,14 +1571,14 @@
 ( 1968 1862 64 ) ( 2032 1798 64 ) ( 1968 1798 64 ) debug_ceiling_grey 0 0 0 1 1
 }
 }
-// entity 20
+// entity 22
 {
 "classname" "kinematic_waypoint"
 "name" "bounce_demo_cube_rest"
 "next" "bounce_demo_cube_raised"
 "origin" "2000 1830 32"
 }
-// entity 21
+// entity 23
 {
 "classname" "kinematic_waypoint"
 "name" "bounce_demo_cube_raised"

@@ -204,7 +204,7 @@ Task agents cite rows by number. Expected outcomes are binding.
 
 ## Tasks
 
-New logic lands in new modules. Files already past ~800 lines (`sim/src/sim/mod.rs`, `physics/src/movement/mod.rs`, `netcode/src/lib.rs`, `netcode/src/client.rs`, `netcode/src/seat.rs`, `postretro/src/startup/lifecycle.rs`, `startup/reaction_validation.rs`, `netcode/src/state_slots.rs`, `scripting/builtins/data_archetype.rs`, `scripting/builtins/net_descriptor.rs`) receive only call-site edits, match arms and the small additions a task names.
+New logic lands in new modules. Files already past ~800 lines (`sim/src/sim/mod.rs`, `physics/src/movement/mod.rs`, `netcode/src/lib.rs`, `netcode/src/client.rs`, `netcode/src/seat.rs`, `postretro/src/startup/lifecycle.rs`, `startup/reaction_validation.rs`, `netcode/src/state_slots.rs`, `scripting/builtins/data_archetype.rs`, `scripting/builtins/net_descriptor.rs`, `postretro/src/main.rs`) receive only call-site edits, match arms and the small additions a task names.
 
 ### Task 1: Thin slice: descriptor → state → verb → condition → wire → fire gate
 
@@ -228,7 +228,13 @@ This slice falsifies the boundary assumptions.
 **Wire**
 - `WirePlayerMovementState` (bitcode `Encode`/`Decode`) gains the **Per-pawn state** fields, same types and order, after `aim_pitch`. `SNAPSHOT_VERSION` goes 22→23 and `WIRE_VERSION` 35→36. `movement_state_to_wire` writes all three. Late-join baselines carry them through `collect_payloads`.
 - `merge_wire_into_movement_state_checked` copies them onto the predicted component before replay, which also carries them through `carry_live_tick_state`. It then calls `restamp_life_state` from the `TuningPayload` profile, so replay runs on the merged state's stamps.
-- **Revision gate.** Control is reliable and Snapshot is not, so a snapshot carrying ids from a rebuilt table can land before the payload that names them. The merge copies a record's life-state fields only when its revision matches the installed `TuningPayload`'s. Otherwise it keeps the component's current life-state fields and stamps for that record (O26).
+- **Revision gate.** Control is reliable and Snapshot is not, so a rebuilt table's payload and the first snapshot carrying its ids land in either order. The client keeps the previous payload's life-state names and profiles until its own pawn carries the installed revision. Every client resolution of the own pawn's `life_state` (the helper, `restamp_life_state`, `player.lifeState`) uses the table whose revision equals the component's `life_state_table_revision` (O26).
+
+  | Arrival | Merge | Resolution |
+  |---|---|---|
+  | Record revision equals the installed payload's | Copies the record's life-state fields, then restamps | Installed table |
+  | Record revision differs (snapshot before payload, or a record in flight after it) | Keeps the component's life-state fields and stamps | Table matching the component's revision |
+  | Payload installs while the component holds the previous revision | None; the tuning rebuild carries the fields through `carry_live_tick_state` and restamps | Previous table until a record at the installed revision merges, then the previous table drops |
 - `TuningPayload` (`TUNING_PAYLOAD_EPOCH` 15→16, fixture updated) adds `life_state_names: Vec<String>` (sorted, ≤ 255), `life_state_profiles: Vec<(u8, LifeStateProfile)>` and `life_state_table_revision: u8`, JSON-serialized like its existing fields.
 
 **Capability helper**
@@ -236,10 +242,10 @@ This slice falsifies the boundary assumptions.
 
   | Pawn | Helper | Site verdict |
   |---|---|---|
-  | Committed to removal | not consulted | Refused |
+  | Declares states, committed to removal | not consulted | Refused |
   | Declares states, key `true` | `Some(true)` | Permitted at any HP |
   | Declares states, key `false` | `Some(false)` | Refused at any HP |
-  | Declares no states (`life_state` 255) | `None` | The site's existing predicate (`pawn_alive`, `is_quiescent`, `player_is_alive_for_trigger_occupancy`, `is_damage_target_eligible`), unchanged |
+  | Declares no states (`life_state` 255), committed to removal or not | `None` | The site's existing predicate (`pawn_alive`, `is_quiescent`, `player_is_alive_for_trigger_occupancy`, `is_damage_target_eligible`), its removal handling included, unchanged |
 
 - Wire it, with the `fire` key, into every HP-derived fire site in this task:
   - `pawn_alive` (local and remote weapon command stages)
@@ -269,7 +275,7 @@ Delivers AC1, AC3, AC4 (`fire` key), AC7, AC8 (`setLifeState` and `inLifeState` 
 
 ### Task 2: Movement capabilities
 
-- **Stamping.** The movement tick reads profile-derived capability fields stamped onto `PlayerMovementComponent`. Replay cannot read the registry; `vault_barred` is the precedent for the field, not its timing: it is stamped only on forward ticks, so replay runs on the pre-merge value. Stamps are a pure function of `life_state` and its profile. Add the fields and fill the body of Task 1's `restamp_life_state`. Every `life_state` write already calls it: spawn, the verb, the client merge before replay, the reload remap, the respawn drain and rejoin restore. Never stamp on forward ticks only. Replay and forward prediction then read the same stamps (O13).
+- **Stamping.** The movement tick reads profile-derived capability fields stamped onto `PlayerMovementComponent`. Replay cannot read the registry; `vault_barred` is the precedent for the field, not its timing: it is stamped only on forward ticks, so replay runs on the pre-merge value. Stamps are a pure function of `life_state` and its profile. Add the fields and fill the body of Task 1's `restamp_life_state`. Every `life_state` write calls it: spawn, the verb, the client merge before replay, the reload remap, the respawn drain and rejoin restore. Never stamp on forward ticks only. Replay and forward prediction then read the same stamps (O13).
 - **`movement.speedScale`** multiplies the per-state wish speed.
 - **`movement.abilities: false`** blocks entry to jump, dash, slide, vault and crouch toggling. Vault keeps its existing barring path, `drop_vault_if_dead`, which becomes a capability read for declared pawns.
 - **`movement.posture: "crouch"`** forces crouch intent. Crouch already rewrites `capsule.eye_height`, so fire origin, hit validation and AI line of sight follow without new code.
@@ -308,14 +314,21 @@ Route each key through the Task 1 helper at its existing site. The helper return
 
 - **`player.lifeStateMs`.** Add a `PlayerSlot` variant read from the component's elapsed ticks by AC7's conversion: catalog entry with `OwnerPrivatePlayer`, `player_slots.rs` arm, a host and single-player store publish beside `publish_swim_values`, `MIRRORED_GAME_STATE_LEAVES`, regenerated types and fixtures. This makes 15 player slots; the u16 bitset cap holds.
 - **HUD value.** The UI reads a display value; the store keeps tick values.
-  - **Site.** The display value is substituted into the UI's frozen value map at the store-to-UI boundary, `build_ui_display_slot_snapshot` (`main.rs`), beside `apply_timed_slot_targets`, on every role. It is never written to the store. That function gains the frame's interpolation alpha and the own pawn's elapsed ticks as inputs; its callers pass them. Its hold state (previous displayed value and reset witness) lives with those callers.
-  - **Store.** On a connected client the store record holds the replicated owner-private samples: snapshot apply writes it, and the store and state crossings read it. Host and single player store the component's tick value at the publish above. The owner-private copy stays the host's per-player source for conditions.
+  - **Site.** The display value is substituted into the UI's frozen value map at the store-to-UI boundary, `build_ui_display_slot_snapshot` (`main.rs`), beside `apply_timed_slot_targets`, on every role. It is never written to the store. That function gains the frame's interpolation alpha, the own pawn's elapsed ticks and its reset witness (pawn, `life_state`, teleport generation, authoritative elapsed) as inputs, plus the hold state (previous displayed value and previous witness) by mutable reference. The frame path in `main.rs` owns the hold state and passes all of them; `startup/loading_screen.rs` has no own pawn and passes none.
+  - **Store.** On a connected client the store record holds the replicated owner-private samples: snapshot apply writes it, and the store and state crossings read it. Host and single player store AC7's millisecond value of the component's elapsed ticks at the publish above. The owner-private copy stays the host's per-player source for conditions.
   - **Value.** The own pawn's elapsed in milliseconds plus alpha × `TICK_DURATION`, so it rises on every rendered frame, zero-tick frames included, on every role (O25). On a connected client the source is the *predicted* elapsed, which advances every fixed tick and reconciles with movement.
   - **Monotonic hold.** The displayed value never falls below the previous frame's except at a real reset: a change of pawn, of `life_state` or of teleport generation, or the authoritative elapsed falling (host and single player: the component; client: consecutive replicated records). The host's command-queue catch-up trim drops commands the client already counted, so a replayed value can land lower with no reset (AC18, O24).
 - **`player.lifeState`.** Add a local String catalog slot with `ReplicationScope::None` (precedent `player.weapon.current`). Every role publishes it for its own pawn from the replicated `life_state` and the name table (host and single player: `DataRegistry::life_state_names`; client: the `TuningPayload` table). A connected client returns from `tick_for_role_and_report_sampled_weapon` before `publish_swim_values`, so the write goes in its role-independent part, beside `publish_local_weapon_state`. An undeclared pawn reads `""`.
-- **`inLifeState` in local crossings.** `StoreScope` resolves only slot-table names. Add a `StoreScope` input handle for `player.inLifeState:<name>` that holds while the local `player.lifeState` slot equals `<name>`, so local `onStateCrossing` predicates read the own pawn on every role. A name absent from the table fails the bind, as in `PlayerConditionScope`.
+- **`inLifeState` in local crossings.** `StoreScope` resolves only slot-table names. Add a `StoreScope` input handle for `player.inLifeState:<name>` that holds while the local `player.lifeState` slot equals `<name>`, so local `onStateCrossing` predicates read the own pawn on every role. A name absent from `DataRegistry::life_state_names` fails the bind, as in `PlayerConditionScope`. Every role builds that table at manifest load, so a client binds before any `TuningPayload` arrives.
 - **Hot reload remap.** The commit rebuilds `DataRegistry::life_state_names` and re-lowers each descriptor's ids. When the table changes, it bumps `DataRegistry::life_state_table_revision`, wrapping. In the descriptor refresh path (`plan_descriptor_refresh`), remap each live pawn by name.
-  - Every reload rebuilds the movement component through `plan_movement_replace`, which resets any field it does not list. The remap therefore carries the remapped `life_state` id, elapsed ticks and the new revision explicitly.
+  - The remap runs for every live pawn whose `life_state` is not 255, whatever the planner decides for its movement component.
+
+    | Planner outcome for the movement component | Remap write |
+    |---|---|
+    | Replaced through `plan_movement_replace`, which resets any field it does not list | The replacement carries the remapped `life_state` id, elapsed ticks and the new revision explicitly |
+    | Kept old (`keep_old`: a rejected refresh, such as a capsule that would embed the pawn) | The remap writes the same three fields onto the kept component |
+    | Skipped (no previous descriptor snapshot) | Same as kept old |
+    | New descriptor declares no states | `life_state` 255, revision updated, stamps cleared, one warning |
   - Kept name: elapsed continues, then `restamp_life_state` from the new profile. Stamps are never carried the way `plan_movement_replace` carries `vault_barred`.
   - Removed name: `enter_life_state` into the new `initial`, elapsed 0, with one warning.
   - `TuningPayload::same_pawn_tuning` compares the life-state fields too, so a profile-only reload re-sends tuning and the client rebuilds and restamps its pawn (O14).
@@ -328,7 +341,15 @@ Route each key through the Task 1 helper at its existing site. The helper return
 - Add `respawn({ health?, lifeState? })` to `playerVerbs` and the type declarations.
 - Extend the Task 1 name walk in `validate_reaction_bodies_pass_a` to `respawn`'s `state` argument, and warn-skip a runtime target per AC8 (its `respawn` arm).
 - Add `BoundTriggerCommand::Respawn`. It queues a `RespawnRequest { pawn, health, state }`, where `state` names the target state (`None` = `initial`).
-  - **Resolution.** The drain resolves the name against the current name table, never the verb: a hot reload commits at frame tail, between the verb and the drain. A name the table no longer holds enters `initial` with one warning (O19).
+  - **Resolution.** The drain resolves the name through the pawn descriptor's lowered block, as rejoin restore does, never at the verb: a hot reload commits at frame tail, between the verb and the drain, and re-lowers ids. AC8's runtime arm runs at the verb.
+
+    | Case | Where | Outcome |
+    |---|---|---|
+    | `state` named; target declares no states | Verb | Warn-skip; nothing queued (AC8) |
+    | `state` named; target's descriptor does not declare it | Verb | Warn-skip; nothing queued (AC8) |
+    | `state` is `None` | Drain | Relocates; a declaring pawn enters `initial` |
+    | Descriptor still declares `state` | Drain | Enters it |
+    | A reload removed `state` from the descriptor between verb and drain | Drain | Relocates and enters `initial`, one warning (O19) |
   - **Replacement.** A second request for the same pawn replaces the first (O3).
   - **Queue lifetime.** The drain skips a request whose pawn no longer exists, with one warning (O21). Level unload clears the queue beside `pending_teleporter_mutations` (`startup/lifecycle_net.rs`; O20). A hot reload keeps it, because the bleed-out edge that queued it does not re-fire.
 
@@ -350,8 +371,8 @@ Route each key through the Task 1 helper at its existing site. The helper return
 **Rejoin** (AC14)
 - `CarriedState` (`combat-model/src/carried_loadout.rs`) gains `life_state: Option<String>`, the leaving state's *name*.
 - `SeatTable::harvest_pawn` records it on every participation exit. `host_handle_lifecycle` routes `SlotEvent::Closed` and `SlotEvent::Demoted` alike through `host_handle_transport_disconnect`, which harvests before despawn. A demoted slot's re-promotion therefore re-enters through the `rejoin` map at its seat placement, like a reconnect (AC14, O23).
-- Both `harvest_pawn` cfg variants gain a name-table parameter (`&[String]`, `DataRegistry::life_state_names`). The host builds `TuningPayload` per pawn from descriptors, so no disconnect-path function holds the table. `host_handle_lifecycle` and `host_handle_transport_disconnect` in `netcode/src/host.rs` gain the parameter, and each `main.rs` caller passes it from `DataRegistry`. An undeclared pawn, or an id the table does not name, records `None`. The id → name lookup lives in `player_life.rs`. The `seat.rs` edits are the new `CarriedField` arm, the `harvest_pawn` parameter, `placement_for_seat`, and the level-unload clear below.
-- `SeatTable::harvest_bound_pawns` runs on suspend as well as at level unload, and passes the name table to `harvest_pawn` like any harvest. A held seat has no pawn binding, so its loop never reaches one.
+- Both `harvest_pawn` cfg variants gain a name-table parameter (`&[String]`, `DataRegistry::life_state_names`). The host builds `TuningPayload` per pawn from descriptors, so no disconnect-path function holds the table. `host_handle_lifecycle` and `host_handle_transport_disconnect` in `netcode/src/host.rs` gain the parameter, and each `main.rs` caller passes it from `DataRegistry`. An undeclared pawn, or an id the table does not name, records `None`. The id → name lookup lives in `player_life.rs`. The `seat.rs` edits are the new `CarriedField` arm, the `harvest_pawn` and `harvest_bound_pawns` parameters, `placement_for_seat`, and the level-unload clear below.
+- `SeatTable::harvest_bound_pawns` runs on suspend (`main.rs`) as well as at level unload (`startup/lifecycle_net.rs`). It gains the same name-table parameter and passes it to `harvest_pawn` like any harvest; both callers pass `DataRegistry::life_state_names`. The level-unload caller clears `DataRegistry` before it harvests, so the table must survive that clear (Task 1). A held seat has no pawn binding, so its loop never reaches one.
 - The level-change clear lives in `SeatTable::clear_pawn_bindings_for_level_unload`, which runs only at actual level unload, after `harvest_bound_pawns` and the registry clear. It clears `life_state` on every carried record, held seats included, so the next level starts in `initial` (O7). Suspend never calls it, so a suspend and resume leaves every carried name intact (O22).
 - Either drain order of a level-change demotion holds. One drained before unload records a name this clear removes. One drained after finds its pawn despawned and records nothing.
 - Hold expiry already releases the seat and mints a fresh one with no carried record, so a late reconnect starts in `initial` with no new code.
@@ -360,7 +381,7 @@ Route each key through the Task 1 helper at its existing site. The helper return
 **Tests**
 - Every AC and row in the Delivers line below, including a rejoin across a hot reload that removed the carried name.
 
-Delivers AC8 (`respawn` arm), AC11, AC12, AC13, AC14, O3, O4, O6, O7, O10, O15 (respawn and rejoin arms), O17, O18, O19, O20, O21, O22, O23, O28 and O29.
+Delivers AC8 (`respawn` arm), AC11, AC12, AC13, AC14, AC16 (demotion arm), O3, O4, O6, O7, O10, O15 (respawn and rejoin arms), O17, O18, O19, O20, O21, O22, O23, O28 and O29.
 
 ### Task 6: Dev-mod down/bleed-out consumer, co-op lifecycle tests and docs
 
@@ -416,7 +437,7 @@ Both surfaces, `WirePlayerMovementState` and `TuningPayload`, are pinned in Task
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
 | I1. One capability source: every gate on a declared pawn reads its current profile; undeclared pawns keep today's HP-derived gates | Task 1 (helper, fire sites) | Task 2, 3 gate sites; the death sweep's activation cancel; any new gate added later | AC2, AC4, AC6, O16 |
-| I2. Host, single player and client prediction derive capabilities from the same data: replicated `life_state` + `TuningPayload` profiles. Stamps are recomputed from them at every `life_state` write | Task 1 (write pair, revision gate), Task 2 (stamps) | Client merge before replay; Task 4 reload remap; Task 5 respawn drain and restore; a snapshot whose table revision differs from the installed payload's; client weapon frame | AC4, O9, O13, O14, O26 |
+| I2. Host, single player and client prediction derive capabilities from the same descriptor data: host and single player read the pawn descriptor's lowered block; the client reads the replicated `life_state` + `TuningPayload` profiles built from that block. Stamps are recomputed from them at every `life_state` write | Task 1 (write pair, revision gate), Task 2 (stamps) | Client merge before replay; Task 4 reload remap; Task 5 respawn drain and restore; a snapshot whose table revision differs from the installed payload's; client weapon frame | AC4, O9, O13, O14, O26 |
 | I3. The engine never changes life state on HP. Only `initial` at spawn/join/restart, the `rejoin` map at restore, `setLifeState`, `respawn` and hot-reload remap move it | Task 1 | Task 4 (remap), Task 5 (respawn, rejoin, demotion re-promotion) | AC3, AC7, AC14, AC16 |
 | I4. Elapsed time resets on every actual transition, on respawn and on rejoin; a same-state set and a kept-name reload preserve it | Task 1 | Task 4 (remap carries elapsed through the movement rebuild), Task 5 | AC7, AC14, AC16, O5, O8, O15 |
 | I5. A respawn relocates exactly once per request batch through the teleport generation, with no teleporter cue | Task 5 | Same-tick teleporter use; hot reload, level unload or harvest between verb and drain | AC12, O3, O10, O19, O20, O21, O28 |

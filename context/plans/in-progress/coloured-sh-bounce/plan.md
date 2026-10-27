@@ -1,7 +1,7 @@
 # coloured-sh-bounce — plan of record
 
 mode: compact
-status: paused
+status: active
 read at: 3275d1480
 
 ## Corrections
@@ -67,8 +67,8 @@ read at: 3275d1480
 | 1 | Unify runtime indirect scale; check serialized dynamic uploads and shader guards; preserve grey baseline commit | bounded renderer worker; integrating executor verifies and commits | — | done: fmt; 4 indirect-scale CPU tests; 9 light-params tests; explicit GPU uniform readback passed all 3 adapter cases |
 | 2 | Capture pre-colour fixture section digests and full-texture bake baseline; move SurfaceMaterials into shared module in its own commit | integrating executor | 1 | done: pre-colour oracle, shared move, and serial fully textured campaign/mini baselines captured |
 | 3 | Split extended large modules; derive fixed-size mean stats in the texture bake without extra decodes; preserve sidecar and byte accounting contracts | integrating executor | 2 | implemented: splits, shared stats, exact means/glow/aliases/lifetimes; 8 material-stage + 7 stats tests passed |
-| 4 | Add material stage after gate and validation; preserve fluid tail, failures, indices and report; share stats with SH estimator and keys | integrating executor | 3 | implemented: compile check, 7 estimator/key and 5 CLI tests passed; AC 3 storage coupling blocks completion |
-| 5 | Complete focused acceptance matrix for estimator, saturation, sidecars, order, aliases, caches and determinism; document author surface | integrating executor | 4 | partial: docs added, 27 focused tests passed; byte oracle fails only red id 41, owner decision pending; empty/degenerate full-pipeline pins and post-colour timing remain |
+| 4 | Add material stage after gate and validation; preserve fluid tail, failures, indices and report; share stats with SH estimator and keys | integrating executor | 3 | implemented and focused gates pass; AC3 amendment and uniform/adaptive proofs pass; review pending |
+| 5 | Complete focused acceptance matrix for estimator, saturation, sidecars, order, aliases, caches and determinism; document author surface | integrating executor | 4 | focused proofs complete: all colour/material/key/cache/oracle/empty/quality targets pass; post-colour timing and review remain |
 | 6 | Review-readiness checks; isolated review panel and fix loop; final preflight once | integrating executor and review panel | 5 | pending |
 | 7 | Record AC results, bake timing comparison and owner textured-map A/B runbook; await blocking manual result and landing instruction | integrating executor | 6 | pending |
 
@@ -166,3 +166,11 @@ read at: 3275d1480
 - Independent review seam remains explicit: quality reference includes raw unscaled indirect while renderer default is .33. Existing quality tests are reference/coefficient-space proofs, not arbitrary-scale rendered-pixel guarantees. Review the actual entity consumers before deciding whether a correction is needed; no coarsening policy/reference changes have been made.
 - Post-colour cold and warm material timings, section-size comparisons, engine build and fully textured stationary A/B captures/runbook remain outstanding. Baseline grey maps/binaries/materials still under work/ab/grey; do not overlap bakes with builds or other perf runs.
 - The temporary source tasks are fully saved; don't reapply old work/pending-colour draft files over current integrated code. Latest source commit before this checkpoint was 75e4c7039 (owner amendment).
+
+## Resumed — 2026-10-27
+- Owner resumed in a fresh five-hour window. Usage at resume: 100% five-hour / 43% weekly remaining. Continue checking after tasks; pause at <=5% in either window. Resume from a056374be; no source changes outside this branch.
+
+## Readiness gate — 2026-10-27
+- Pending canonical empty-material tests: 2 passed. Corrected coloured_bounce_empty target: all4 passed (one ordinary seam + three CLI comparisons against saved old compiler). No weakening of emitted-geometry/name/byte/report assertions.
+- cargo fmt --check and compiler cargo check pass. Renderer --features dev-tools check passed on unchanged renderer source at the prior checkpoint.
+- Ready for isolated review-panel / fix-review-findings loop; full preflight remains deferred until review fixes are integrated. Usage after these gates: 95% five-hour / 43% weekly remaining, disk56GiB.

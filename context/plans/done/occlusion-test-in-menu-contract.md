@@ -19,6 +19,7 @@ Offer `occlusion-test` from the dev mod's level select under Development Tests, 
 
 ## Acceptance
 
-- `cargo test -p postretro --lib loading` passes, count > 0.
-- The PNG shows the map, looked at.
-- `postretro-tool dist --install-root .` reports `maps/occlusion-test.prl` among shipped levels, and the payload holds it.
+- `cargo test -p postretro --bin postretro -- loading menu` — 68 passed, including both `dev_mod_*` loading-screen tests.
+- PNG looked at: the main hall's block field from the north-west, spot shadows raking across it. The spawn view rendered near-black (no ambient, unlit corner), so the camera moved.
+- Stage 3's scan rule over the emitted `content/dev/start-script.js` yields `maps/occlusion-test.prl` beside the other five catalog levels.
+- Not run: a full `dist`/`sdk-dist`. It bakes every catalog level at `--release` (the hallway alone is ~21 min cold), so it belongs in the owner's terminal.
